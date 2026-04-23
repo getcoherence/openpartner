@@ -4,7 +4,7 @@ import type { Knex } from 'knex';
 const config: { [env: string]: Knex.Config } = {
   development: {
     client: 'pg',
-    connection: process.env.DATABASE_URL ?? 'postgres://openpartner:openpartner@localhost:5432/openpartner',
+    connection: process.env.DATABASE_URL ?? 'postgres://openpartner:openpartner@localhost:5433/openpartner',
     migrations: {
       directory: './migrations',
       extension: 'ts',

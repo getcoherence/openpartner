@@ -30,6 +30,11 @@ partnersRouter.post('/partners', requireAuth, requireAdmin, async (req, res) => 
   res.status(201).json(partner);
 });
 
+partnersRouter.get('/partners', requireAuth, requireAdmin, async (_req, res) => {
+  const partners = await db<PartnerRow>(TABLES.Partner).orderBy('createdAt', 'desc').limit(500);
+  res.json({ partners });
+});
+
 partnersRouter.get('/partners/:id', requireAuth, requirePartnerOrAdmin('id'), async (req, res) => {
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });

@@ -8,9 +8,10 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "migrate": "tsx node_modules/knex/bin/knex.js migrate:latest --knexfile knexfile.ts",
-    "migrate:rollback": "tsx node_modules/knex/bin/knex.js migrate:rollback --knexfile knexfile.ts",
-    "migrate:make": "tsx node_modules/knex/bin/knex.js migrate:make --knexfile knexfile.ts",
+    "migrate": "tsx scripts/migrate.ts latest",
+    "migrate:rollback": "tsx scripts/migrate.ts rollback",
+    "migrate:make": "tsx scripts/migrate.ts make",
+    "migrate:status": "tsx scripts/migrate.ts status",
     "lint": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },

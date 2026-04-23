@@ -3,7 +3,9 @@ services:
     image: postgres:16-alpine
     container_name: openpartner-postgres
     ports:
-      - "5432:5432"
+      # Host 5433 because 5432 often collides with other local pgs. In-container
+      # port is still 5432, so connection strings from other containers look normal.
+      - "5433:5432"
     environment:
       POSTGRES_USER: openpartner
       POSTGRES_PASSWORD: openpartner

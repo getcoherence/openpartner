@@ -24,6 +24,11 @@ const createSchema = z.object({
 
 export const campaignsRouter = Router();
 
+campaignsRouter.get('/campaigns', requireAuth, requireAdmin, async (_req, res) => {
+  const campaigns = await db<CampaignRow>(TABLES.Campaign).orderBy('createdAt', 'desc');
+  res.json({ campaigns });
+});
+
 campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) => {
   const body = createSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });

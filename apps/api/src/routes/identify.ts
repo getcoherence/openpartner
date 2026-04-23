@@ -24,16 +24,22 @@ identifyRouter.post('/attribution/identify', async (req, res) => {
   const click = await db<ClickRow>(TABLES.Click).where({ id: cref }).first();
   if (!click) return res.status(404).json({ error: 'click_not_found' });
 
-  const existing = await db<IdentityRow>(TABLES.Identity).where({ userId }).first();
-  if (existing) {
-    return res.json({ ok: true, identityId: existing.id, firstStitch: false });
-  }
-
+  // Multi-touch: we keep every (clickId, userId) pair. The unique constraint
+  // makes re-identify() calls for the same click a no-op.
   const identityId = ulid();
-  await db(TABLES.Identity).insert({ id: identityId, clickId: cref, userId });
+  const inserted = await db<IdentityRow>(TABLES.Identity)
+    .insert({ id: identityId, clickId: cref, userId })
+    .onConflict(['clickId', 'userId'])
+    .ignore()
+    .returning('id');
 
-  // Catch up any events that arrived before the stitch.
-  const attributed = await attributeBacklogForUser(db, userId);
+  const firstStitch = inserted.length > 0;
+  const attributed = firstStitch ? await attributeBacklogForUser(db, userId) : 0;
 
-  res.json({ ok: true, identityId, firstStitch: true, backfilledAttributions: attributed });
+  res.json({
+    ok: true,
+    identityId: firstStitch ? identityId : null,
+    firstStitch,
+    backfilledAttributions: attributed,
+  });
 });

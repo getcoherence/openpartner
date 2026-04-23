@@ -4,7 +4,7 @@ import { ulid } from 'ulid';
 import { createHash } from 'node:crypto';
 import { createDb, TABLES, type LinkRow } from '@openpartner/db';
 import { checkVelocity } from './velocity.js';
-import 'dotenv/config';
+import './env.js';
 
 const app = new Hono();
 const PORT = Number(process.env.ROUTER_PORT ?? 4000);
