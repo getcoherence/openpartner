@@ -19,6 +19,7 @@ import { commissionsRouter } from './routes/commissions.js';
 import { exportRouter } from './routes/export.js';
 import { billingRouter } from './routes/billing.js';
 import { authRouter } from './routes/auth.js';
+import { adminOverviewRouter } from './routes/admin-overview.js';
 
 export function createApp(options: { enableLogger?: boolean } = {}) {
   const app = express();
@@ -51,6 +52,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(commissionsRouter);
   app.use(exportRouter);
   app.use(billingRouter);
+  app.use(adminOverviewRouter);
 
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
     req.log?.error({ err }, 'request_failed');

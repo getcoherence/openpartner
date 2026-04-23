@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Plus, Tag } from 'lucide-react';
 import { api } from '../api.js';
-import { Button, Card, ErrorBanner, Input, Label, Page, Table, formatDate } from '../ui.js';
+import { theme } from '../theme.js';
+import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 
 interface Campaign {
   id: string;
@@ -21,7 +23,15 @@ export function AdminCampaigns() {
   });
 
   return (
-    <Page title="Campaigns" actions={<Button onClick={() => setShowCreate(true)}>New campaign</Button>}>
+    <Page
+      title="Campaigns"
+      subtitle="Commission rules, attribution windows, and models applied to partner clicks."
+      actions={
+        <Button icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
+          New campaign
+        </Button>
+      }
+    >
       <ErrorBanner error={campaigns.error} />
       {showCreate && (
         <CreateCampaign
@@ -34,17 +44,20 @@ export function AdminCampaigns() {
       )}
       {campaigns.isLoading ? (
         <Card>Loading…</Card>
+      ) : (campaigns.data?.campaigns ?? []).length === 0 ? (
+        <EmptyState title="No campaigns yet" hint="A campaign holds the commission rule and attribution settings." icon={<Tag size={28} strokeWidth={1.25} />} />
       ) : (
         <Table
           columns={['Name', 'Commission', 'Window', 'Model', 'Created']}
           rows={(campaigns.data?.campaigns ?? []).map((c) => [
-            <strong>{c.name}</strong>,
-            c.commissionRule.type === 'percent'
-              ? `${c.commissionRule.value}% ${c.commissionRule.recurring ? '(recurring)' : ''}`
-              : `$${c.commissionRule.value} fixed ${c.commissionRule.recurring ? '(recurring)' : ''}`,
-            `${c.attributionWindowDays}d`,
-            <code style={{ fontSize: 12 }}>{c.attributionModel}</code>,
-            formatDate(c.createdAt),
+            <span style={{ fontWeight: 500 }}>{c.name}</span>,
+            <span>
+              {c.commissionRule.type === 'percent' ? `${c.commissionRule.value}%` : `$${c.commissionRule.value} fixed`}
+              {c.commissionRule.recurring && <span style={{ color: theme.textDim, fontSize: 12, marginLeft: 6 }}>(recurring)</span>}
+            </span>,
+            <span style={{ color: theme.textMuted }}>{c.attributionWindowDays}d</span>,
+            <code style={{ color: theme.accent, fontSize: 12 }}>{c.attributionModel}</code>,
+            <span style={{ color: theme.textMuted }}>{formatDate(c.createdAt, { relative: true })}</span>,
           ])}
         />
       )}
@@ -75,56 +88,50 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
   });
 
   return (
-    <Card style={{ marginBottom: 16 }}>
-      <div style={{ fontWeight: 600, marginBottom: 12 }}>New campaign</div>
+    <Card style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 14 }}>New campaign</div>
       <ErrorBanner error={mut.error} />
-      <div style={{ marginBottom: 12 }}>
+      <div style={{ marginBottom: 14 }}>
         <Label>Name</Label>
-        <Input value={name} onChange={(e) => setName(e.target.value)} />
+        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Default" />
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 12, alignItems: 'end', marginBottom: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr auto', gap: 12, marginBottom: 14, alignItems: 'end' }}>
         <div>
           <Label>Rule</Label>
-          <select value={ruleType} onChange={(e) => setRuleType(e.target.value as 'percent' | 'fixed')} style={{ padding: '8px 10px', fontSize: 14, border: '1px solid #ddd', borderRadius: 4 }}>
+          <Select value={ruleType} onChange={(e) => setRuleType(e.target.value as 'percent' | 'fixed')}>
             <option value="percent">Percent</option>
             <option value="fixed">Fixed</option>
-          </select>
+          </Select>
         </div>
         <div>
           <Label>Value</Label>
           <Input type="number" value={ruleValue} onChange={(e) => setRuleValue(e.target.value)} />
         </div>
-        <label style={{ fontSize: 13, display: 'flex', gap: 6, alignItems: 'center', paddingBottom: 8 }}>
+        <label style={{ fontSize: 13, display: 'flex', gap: 8, alignItems: 'center', paddingBottom: 10, color: theme.textMuted }}>
           <input type="checkbox" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} />
           Recurring
         </label>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 14, marginBottom: 16 }}>
         <div>
           <Label>Attribution window (days)</Label>
           <Input type="number" value={windowDays} onChange={(e) => setWindowDays(e.target.value)} />
         </div>
         <div>
           <Label>Attribution model</Label>
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value as typeof model)}
-            style={{ padding: '8px 10px', fontSize: 14, border: '1px solid #ddd', borderRadius: 4, width: '100%' }}
-          >
+          <Select value={model} onChange={(e) => setModel(e.target.value as typeof model)}>
             <option value="last_click">Last click</option>
             <option value="first_click">First click</option>
             <option value="linear">Linear</option>
-            <option value="position">Position (40/20/40)</option>
-          </select>
+            <option value="position">Position (40 / 20 / 40)</option>
+          </Select>
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+      <div style={{ display: 'flex', gap: 8 }}>
         <Button onClick={() => mut.mutate()} disabled={!name || !ruleValue || mut.isPending}>
-          {mut.isPending ? 'Creating…' : 'Create'}
+          {mut.isPending ? 'Creating…' : 'Create campaign'}
         </Button>
-        <Button variant="secondary" onClick={onClose}>
-          Cancel
-        </Button>
+        <Button variant="secondary" onClick={onClose}>Cancel</Button>
       </div>
     </Card>
   );

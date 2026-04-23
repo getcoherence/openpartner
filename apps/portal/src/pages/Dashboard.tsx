@@ -1,8 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
+import { MousePointerClick, Receipt, Wallet, Users } from 'lucide-react';
 import { api, type Principal } from '../api.js';
-import { Card, ErrorBanner, Page, Stat, money } from '../ui.js';
+import { theme } from '../theme.js';
+import { Avatar, Card, EmptyState, ErrorBanner, Page, SectionHeading, Stat, StatusPill, money } from '../ui.js';
 
-interface DashboardStats {
+// ---------- Partner ----------
+
+interface PartnerDashboard {
   partnerId: string;
   since: string;
   clicks: number;
@@ -13,39 +17,53 @@ interface DashboardStats {
 
 export function Dashboard({ principal }: { principal: Principal }) {
   if (principal.role === 'admin') return <AdminDashboard />;
-  return <PartnerDashboard partnerId={principal.partnerId!} />;
+  return <PartnerDashboard partnerId={principal.partnerId!} name={principal.partner?.name ?? ''} />;
 }
 
-function PartnerDashboard({ partnerId }: { partnerId: string }) {
+function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string }) {
   const { data, error, isLoading } = useQuery({
     queryKey: ['dashboard', partnerId],
-    queryFn: () => api<DashboardStats>(`/partners/${partnerId}/dashboard`),
+    queryFn: () => api<PartnerDashboard>(`/partners/${partnerId}/dashboard`),
   });
 
   return (
-    <Page title="Dashboard">
+    <Page
+      title={`Hi ${name.split(' ')[0] || 'there'}`}
+      subtitle="Last 30 days"
+    >
       <ErrorBanner error={error} />
       {isLoading || !data ? (
         <Card>Loading…</Card>
       ) : (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 24 }}>
-            <Stat label="Clicks (30d)" value={data.clicks} />
-            <Stat label="Attributed events" value={data.attributedEvents} />
-            <Stat label="Attributed revenue" value={money(data.attributedRevenue)} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
+            <Stat label="Clicks" value={data.clicks} icon={<MousePointerClick size={16} />} />
+            <Stat label="Attributed events" value={data.attributedEvents} icon={<Receipt size={16} />} />
+            <Stat label="Attributed revenue" value={money(data.attributedRevenue)} icon={<Wallet size={16} />} />
+            <Stat label="Earned (paid)" value={money(data.commissionByStatus.paid ?? 0)} icon={<Wallet size={16} />} />
           </div>
+
+          <SectionHeading>Commissions</SectionHeading>
           <Card>
-            <div style={{ fontWeight: 600, marginBottom: 8 }}>Commission by status (30d)</div>
             {Object.keys(data.commissionByStatus).length === 0 ? (
-              <div style={{ color: '#888' }}>No commissions yet.</div>
+              <div style={{ color: theme.textMuted, fontSize: 14 }}>
+                You'll see commission activity here once events start attributing.
+              </div>
             ) : (
-              <ul style={{ margin: 0, paddingLeft: 20 }}>
-                {Object.entries(data.commissionByStatus).map(([status, amount]) => (
-                  <li key={status}>
-                    <strong>{status}:</strong> {money(amount)}
-                  </li>
-                ))}
-              </ul>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {(['accrued', 'approved', 'paid', 'reversed'] as const).map((status) => {
+                  const amount = data.commissionByStatus[status] ?? 0;
+                  if (amount === 0) return null;
+                  return (
+                    <div key={status} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <StatusPill status={status} />
+                      <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 15, fontWeight: 500 }}>
+                        {money(amount)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </Card>
         </>
@@ -54,41 +72,115 @@ function PartnerDashboard({ partnerId }: { partnerId: string }) {
   );
 }
 
-interface AdminSummary {
-  totalPartners: number;
-  totalClicks30d: number;
-  pendingCommissions: number;
-  approvedCommissions: number;
+// ---------- Admin ----------
+
+interface AdminOverview {
+  since: string;
+  totals: {
+    partners: number;
+    clicks: number;
+    attributedRevenue: number;
+    attributedEvents: number;
+    commissionAccrued: number;
+    commissionApproved: number;
+    commissionPaid: number;
+  };
+  partners: Array<{
+    id: string;
+    name: string;
+    email: string;
+    stripeConnected: boolean;
+    clicks: number;
+    revenue: number;
+    events: number;
+    commission: Record<string, number>;
+  }>;
 }
 
 function AdminDashboard() {
-  const partners = useQuery({ queryKey: ['admin', 'partners'], queryFn: () => api<{ partners: unknown[] }>('/partners') });
-  const commissions = useQuery({
-    queryKey: ['admin', 'commissions'],
-    queryFn: () => api<{ commissions: Array<{ status: string; amount: string }> }>('/commissions?limit=500'),
+  const { data, error, isLoading } = useQuery({
+    queryKey: ['admin-overview'],
+    queryFn: () => api<AdminOverview>('/admin/overview'),
   });
 
-  const summary: AdminSummary = {
-    totalPartners: partners.data?.partners.length ?? 0,
-    totalClicks30d: 0,
-    pendingCommissions: commissions.data?.commissions.filter((c) => c.status === 'accrued').length ?? 0,
-    approvedCommissions: commissions.data?.commissions.filter((c) => c.status === 'approved').length ?? 0,
-  };
-
   return (
-    <Page title="Admin dashboard">
-      <ErrorBanner error={commissions.error ?? partners.error} />
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 24 }}>
-        <Stat label="Partners" value={summary.totalPartners} />
-        <Stat label="Awaiting review" value={summary.pendingCommissions} />
-        <Stat label="Approved, unpaid" value={summary.approvedCommissions} />
-        <Stat label="Commissions tracked" value={commissions.data?.commissions.length ?? 0} />
-      </div>
-      <Card>
-        <div style={{ fontSize: 13, color: '#666' }}>
-          Use the admin nav to manage partners, campaigns, approve commissions, and export data.
-        </div>
-      </Card>
+    <Page title="Partner Program" subtitle="Overview of every partner driving attributed revenue.">
+      <ErrorBanner error={error} />
+      {isLoading || !data ? (
+        <Card>Loading…</Card>
+      ) : (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
+            <Stat label="Partners" value={data.totals.partners} icon={<Users size={16} />} />
+            <Stat label="Clicks (30d)" value={data.totals.clicks} icon={<MousePointerClick size={16} />} />
+            <Stat label="Attributed revenue" value={money(data.totals.attributedRevenue)} icon={<Wallet size={16} />} />
+            <Stat
+              label="Awaiting approval"
+              value={money(data.totals.commissionAccrued)}
+              hint={`${money(data.totals.commissionApproved)} approved, ${money(data.totals.commissionPaid)} paid`}
+              icon={<Receipt size={16} />}
+            />
+          </div>
+
+          <SectionHeading>Partners</SectionHeading>
+          {data.partners.length === 0 ? (
+            <EmptyState
+              title="No partners yet"
+              hint="Create one from Admin → Partners to get started."
+              icon={<Users size={28} strokeWidth={1.25} />}
+            />
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
+              {data.partners.map((p) => (
+                <PartnerCard key={p.id} partner={p} />
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </Page>
+  );
+}
+
+function PartnerCard({
+  partner,
+}: {
+  partner: AdminOverview['partners'][number];
+}) {
+  return (
+    <Card>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+        <Avatar name={partner.name} size={40} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {partner.name}
+          </div>
+          <div style={{ fontSize: 12, color: theme.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {partner.email}
+          </div>
+        </div>
+        {partner.stripeConnected && <StatusPill status="connected" />}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <MiniStat label="Revenue" value={money(partner.revenue)} />
+        <MiniStat
+          label="Payouts"
+          value={money((partner.commission.paid ?? 0) + (partner.commission.approved ?? 0))}
+        />
+        <MiniStat label="Clicks" value={String(partner.clicks)} />
+        <MiniStat label="Events" value={String(partner.events)} />
+      </div>
+    </Card>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
+        {label}
+      </div>
+      <div style={{ fontSize: 15, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+    </div>
   );
 }

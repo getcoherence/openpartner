@@ -1,9 +1,12 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link2, Plus, ArrowRight } from 'lucide-react';
 import { api, type Principal } from '../api.js';
-import { Button, Card, ErrorBanner, Input, Label, Page, Table, formatDate } from '../ui.js';
+import { theme } from '../theme.js';
+import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, SectionHeading, Select, Table, formatDate } from '../ui.js';
 
-interface Link {
+interface LinkRow {
   id: string;
   linkKey: string;
   destinationUrl: string;
@@ -24,53 +27,79 @@ export function LinksPage({ principal }: { principal: Principal }) {
   if (principal.role === 'admin' && !partnerId) {
     return <AdminLinksHub />;
   }
-  return <PartnerLinks partnerId={partnerId!} isAdmin={principal.role === 'admin'} />;
+  return <PartnerLinks partnerId={partnerId!} />;
 }
 
 function AdminLinksHub() {
   const { data, error, isLoading } = useQuery({
     queryKey: ['partners'],
-    queryFn: () => api<{ partners: Array<{ id: string; name: string }> }>('/partners'),
+    queryFn: () => api<{ partners: Array<{ id: string; name: string; email: string }> }>('/partners'),
   });
 
   return (
-    <Page title="Links">
+    <Page title="Links" subtitle="Pick a partner to see or create their links.">
       <ErrorBanner error={error} />
       {isLoading ? (
         <Card>Loading…</Card>
+      ) : data?.partners.length === 0 ? (
+        <EmptyState title="No partners yet" hint="Add a partner to start issuing links." icon={<Link2 size={28} strokeWidth={1.25} />} />
       ) : (
-        <Card>
-          <div style={{ marginBottom: 12, color: '#666', fontSize: 13 }}>Pick a partner to manage their links.</div>
-          <Table
-            columns={['Partner', 'Open']}
-            rows={(data?.partners ?? []).map((p) => [
-              p.name,
-              <a href={`/links?partnerId=${p.id}`} style={{ color: '#2563eb' }}>Open →</a>,
-            ])}
-          />
-        </Card>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+          {data?.partners.map((p) => (
+            <Link
+              key={p.id}
+              to={`/links?partnerId=${p.id}`}
+              style={{
+                display: 'block',
+                background: theme.surface,
+                border: `1px solid ${theme.border}`,
+                borderRadius: theme.radiusMd,
+                padding: 16,
+                transition: 'all 120ms',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.borderColor = theme.accent)}
+              onMouseLeave={(e) => (e.currentTarget.style.borderColor = theme.border)}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <Avatar name={p.name} size={32} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</div>
+                  <div style={{ fontSize: 12, color: theme.textMuted }}>{p.email}</div>
+                </div>
+                <ArrowRight size={14} color={theme.textDim} />
+              </div>
+            </Link>
+          ))}
+        </div>
       )}
     </Page>
   );
 }
 
-function PartnerLinks({ partnerId, isAdmin }: { partnerId: string; isAdmin: boolean }) {
+function PartnerLinks({ partnerId }: { partnerId: string }) {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
 
   const links = useQuery({
     queryKey: ['links', partnerId],
-    queryFn: () => api<{ links: Link[] }>(`/partners/${partnerId}/links`),
+    queryFn: () => api<{ links: LinkRow[] }>(`/partners/${partnerId}/links`),
   });
 
   const campaigns = useQuery({
     queryKey: ['campaigns'],
-    queryFn: () => api<{ campaigns: Campaign[] }>('/campaigns'),
-    enabled: isAdmin,
+    queryFn: () => api<{ campaigns: Campaign[] }>('/campaigns').catch(() => ({ campaigns: [] })),
   });
 
   return (
-    <Page title="Links" actions={<Button onClick={() => setShowCreate(true)}>New link</Button>}>
+    <Page
+      title="Links"
+      subtitle="Short links the router resolves into attributed clicks."
+      actions={
+        <Button icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
+          New link
+        </Button>
+      }
+    >
       <ErrorBanner error={links.error} />
       {showCreate && (
         <CreateLink
@@ -85,14 +114,16 @@ function PartnerLinks({ partnerId, isAdmin }: { partnerId: string; isAdmin: bool
       )}
       {links.isLoading ? (
         <Card>Loading…</Card>
+      ) : (links.data?.links ?? []).length === 0 ? (
+        <EmptyState title="No links yet" hint="Create one to start capturing clicks." icon={<Link2 size={28} strokeWidth={1.25} />} />
       ) : (
         <Table
           columns={['Key', 'Destination', 'Campaign', 'Created']}
           rows={(links.data?.links ?? []).map((l) => [
-            <code>{l.linkKey}</code>,
-            <span style={{ color: '#555' }}>{l.destinationUrl}</span>,
-            <code style={{ color: '#888' }}>{l.campaignId.slice(0, 10)}…</code>,
-            formatDate(l.createdAt),
+            <code style={{ color: theme.accent }}>/r/{l.linkKey}</code>,
+            <span style={{ color: theme.textMuted }}>{l.destinationUrl}</span>,
+            <code style={{ color: theme.textDim, fontSize: 12 }}>{l.campaignId.slice(0, 8)}…</code>,
+            <span style={{ color: theme.textMuted }}>{formatDate(l.createdAt, { relative: true })}</span>,
           ])}
         />
       )}
@@ -115,7 +146,7 @@ function CreateLink({
   const [destinationUrl, setDestinationUrl] = useState('');
   const [campaignId, setCampaignId] = useState(campaigns[0]?.id ?? '');
 
-  const createLink = useMutation({
+  const mut = useMutation({
     mutationFn: () =>
       api(`/partners/${partnerId}/links`, {
         method: 'POST',
@@ -126,39 +157,35 @@ function CreateLink({
 
   return (
     <Card style={{ marginBottom: 16 }}>
-      <div style={{ fontWeight: 600, marginBottom: 12 }}>Create link</div>
-      <ErrorBanner error={createLink.error} />
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 12 }}>
+      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 16 }}>New link</div>
+      <ErrorBanner error={mut.error} />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 14, marginBottom: 14 }}>
         <div>
           <Label>Link key</Label>
-          <Input value={linkKey} onChange={(e) => setLinkKey(e.target.value)} placeholder="e.g. ada" />
+          <Input value={linkKey} onChange={(e) => setLinkKey(e.target.value)} placeholder="ada" />
         </div>
         <div>
           <Label>Destination URL</Label>
           <Input value={destinationUrl} onChange={(e) => setDestinationUrl(e.target.value)} placeholder="https://…" />
         </div>
       </div>
-      <div style={{ marginTop: 12 }}>
+      <div style={{ marginBottom: 16 }}>
         <Label>Campaign</Label>
         {campaigns.length === 0 ? (
-          <Input value={campaignId} onChange={(e) => setCampaignId(e.target.value)} placeholder="campaign id" />
+          <Input value={campaignId} onChange={(e) => setCampaignId(e.target.value)} placeholder="campaign id (ULID)" />
         ) : (
-          <select
-            value={campaignId}
-            onChange={(e) => setCampaignId(e.target.value)}
-            style={{ padding: '8px 10px', fontSize: 14, border: '1px solid #ddd', borderRadius: 4, width: '100%' }}
-          >
+          <Select value={campaignId} onChange={(e) => setCampaignId(e.target.value)}>
             {campaigns.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.name} — {c.id.slice(0, 10)}…
+                {c.name}
               </option>
             ))}
-          </select>
+          </Select>
         )}
       </div>
-      <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-        <Button onClick={() => createLink.mutate()} disabled={!linkKey || !destinationUrl || !campaignId || createLink.isPending}>
-          {createLink.isPending ? 'Creating…' : 'Create'}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button onClick={() => mut.mutate()} disabled={!linkKey || !destinationUrl || !campaignId || mut.isPending}>
+          {mut.isPending ? 'Creating…' : 'Create link'}
         </Button>
         <Button variant="secondary" onClick={onClose}>
           Cancel

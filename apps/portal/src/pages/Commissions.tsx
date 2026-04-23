@@ -1,6 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
+import { Receipt } from 'lucide-react';
 import { api, type Principal } from '../api.js';
-import { Card, ErrorBanner, Page, Table, formatDate, money } from '../ui.js';
+import { theme } from '../theme.js';
+import { Card, EmptyState, ErrorBanner, Page, StatusPill, Table, formatDate, money, shortId } from '../ui.js';
+
+export { StatusPill };
 
 interface Commission {
   id: string;
@@ -22,40 +26,37 @@ export function CommissionsPage({ principal }: { principal: Principal }) {
     queryFn: () => api<{ commissions: Commission[] }>(url),
   });
 
-  const rows = (data?.commissions ?? []).map((c) => [
-    <code style={{ fontSize: 12 }}>{c.id.slice(0, 10)}…</code>,
-    principal.role === 'admin' ? <code style={{ fontSize: 12 }}>{c.partnerId.slice(0, 10)}…</code> : null,
-    money(c.amount, c.currency),
-    <StatusPill status={c.status} />,
-    formatDate(c.accruedAt),
-    formatDate(c.paidAt),
-  ].filter((x) => x !== null));
+  const isAdminView = principal.role === 'admin' && !partnerId;
+  const columns = isAdminView
+    ? ['ID', 'Partner', { label: 'Amount', align: 'right' as const }, 'Status', 'Accrued', 'Paid']
+    : ['ID', { label: 'Amount', align: 'right' as const }, 'Status', 'Accrued', 'Paid'];
 
-  const columns = principal.role === 'admin'
-    ? ['ID', 'Partner', 'Amount', 'Status', 'Accrued', 'Paid']
-    : ['ID', 'Amount', 'Status', 'Accrued', 'Paid'];
+  const rows = (data?.commissions ?? []).map((c) => {
+    const base = [
+      <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(c.id)}</code>,
+      isAdminView ? <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(c.partnerId)}</code> : null,
+      <span style={{ fontWeight: 500 }}>{money(c.amount, c.currency)}</span>,
+      <StatusPill status={c.status} />,
+      <span style={{ color: theme.textMuted }}>{formatDate(c.accruedAt, { relative: true })}</span>,
+      <span style={{ color: theme.textMuted }}>{formatDate(c.paidAt, { relative: true })}</span>,
+    ];
+    return base.filter((x) => x !== null) as React.ReactNode[];
+  });
 
   return (
-    <Page title="Commissions">
+    <Page title="Commissions" subtitle={partnerId ? 'Earnings on attributed events.' : 'Every partner, every commission.'}>
       <ErrorBanner error={error} />
-      {isLoading ? <Card>Loading…</Card> : <Table columns={columns} rows={rows} />}
+      {isLoading ? (
+        <Card>Loading…</Card>
+      ) : rows.length === 0 ? (
+        <EmptyState
+          title="No commissions yet"
+          hint="Commissions accrue when an attributed event is ingested."
+          icon={<Receipt size={28} strokeWidth={1.25} />}
+        />
+      ) : (
+        <Table columns={columns} rows={rows} />
+      )}
     </Page>
-  );
-}
-
-export function StatusPill({ status }: { status: string }) {
-  const colors: Record<string, { bg: string; fg: string }> = {
-    accrued: { bg: '#fef3c7', fg: '#92400e' },
-    approved: { bg: '#dbeafe', fg: '#1e40af' },
-    paid: { bg: '#d1fae5', fg: '#065f46' },
-    reversed: { bg: '#fee2e2', fg: '#991b1b' },
-    pending: { bg: '#e5e7eb', fg: '#374151' },
-    failed: { bg: '#fee2e2', fg: '#991b1b' },
-  };
-  const c = colors[status] ?? { bg: '#e5e7eb', fg: '#374151' };
-  return (
-    <span style={{ background: c.bg, color: c.fg, padding: '2px 8px', borderRadius: 10, fontSize: 12, fontWeight: 600 }}>
-      {status}
-    </span>
   );
 }

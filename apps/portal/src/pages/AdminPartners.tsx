@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Plus, Users, KeyRound, Copy, Check } from 'lucide-react';
 import { api } from '../api.js';
-import { Button, Card, ErrorBanner, Input, Label, Page, Table, formatDate } from '../ui.js';
+import { theme } from '../theme.js';
+import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, StatusPill, Table, formatDate } from '../ui.js';
 
 interface Partner {
   id: string;
@@ -10,15 +12,6 @@ interface Partner {
   name: string;
   stripeConnectAccountId: string | null;
   createdAt: string;
-}
-
-interface ApiKey {
-  id: string;
-  prefix: string;
-  label: string | null;
-  createdAt: string;
-  lastUsedAt: string | null;
-  revokedAt: string | null;
 }
 
 export function AdminPartners() {
@@ -29,7 +22,15 @@ export function AdminPartners() {
   const partners = useQuery({ queryKey: ['partners'], queryFn: () => api<{ partners: Partner[] }>('/partners') });
 
   return (
-    <Page title="Partners" actions={<Button onClick={() => setShowCreate(true)}>New partner</Button>}>
+    <Page
+      title="Partners"
+      subtitle="Create partner accounts and issue their personal API keys."
+      actions={
+        <Button icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
+          New partner
+        </Button>
+      }
+    >
       <ErrorBanner error={partners.error} />
       {showCreate && (
         <CreatePartner
@@ -37,28 +38,35 @@ export function AdminPartners() {
           onCreated={() => {
             setShowCreate(false);
             qc.invalidateQueries({ queryKey: ['partners'] });
+            qc.invalidateQueries({ queryKey: ['admin-overview'] });
           }}
         />
       )}
       {issueKeyFor && <IssueKey partner={issueKeyFor} onClose={() => setIssueKeyFor(null)} />}
+
       {partners.isLoading ? (
         <Card>Loading…</Card>
+      ) : (partners.data?.partners ?? []).length === 0 ? (
+        <EmptyState title="No partners yet" hint="Create one to start tracking attributed revenue." icon={<Users size={28} strokeWidth={1.25} />} />
       ) : (
         <Table
-          columns={['Name', 'Email', 'Stripe', 'Created', 'Actions']}
+          columns={['Partner', 'Email', 'Stripe', 'Created', 'Actions']}
           rows={(partners.data?.partners ?? []).map((p) => [
-            <strong>{p.name}</strong>,
-            <span style={{ color: '#666' }}>{p.email}</span>,
-            p.stripeConnectAccountId ? <span style={{ color: '#065f46' }}>connected</span> : <span style={{ color: '#888' }}>—</span>,
-            formatDate(p.createdAt),
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <Avatar name={p.name} size={28} />
+              <span style={{ fontWeight: 500 }}>{p.name}</span>
+            </div>,
+            <span style={{ color: theme.textMuted }}>{p.email}</span>,
+            p.stripeConnectAccountId ? <StatusPill status="connected" /> : <span style={{ color: theme.textDim }}>—</span>,
+            <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
             <div style={{ display: 'flex', gap: 6 }}>
-              <Link to={`/links?partnerId=${p.id}`} style={{ fontSize: 12, color: '#2563eb' }}>Links</Link>
-              <span style={{ color: '#ddd' }}>·</span>
-              <Link to={`/payouts?partnerId=${p.id}`} style={{ fontSize: 12, color: '#2563eb' }}>Payouts</Link>
-              <span style={{ color: '#ddd' }}>·</span>
+              <Link to={`/links?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Links</Link>
+              <span style={{ color: theme.border }}>·</span>
+              <Link to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Payouts</Link>
+              <span style={{ color: theme.border }}>·</span>
               <button
                 onClick={() => setIssueKeyFor(p)}
-                style={{ background: 'none', border: 'none', padding: 0, fontSize: 12, color: '#2563eb', cursor: 'pointer' }}
+                style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accent, cursor: 'pointer' }}
               >
                 Issue key
               </button>
@@ -79,26 +87,24 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
   });
 
   return (
-    <Card style={{ marginBottom: 16 }}>
-      <div style={{ fontWeight: 600, marginBottom: 12 }}>New partner</div>
+    <Card style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 14 }}>New partner</div>
       <ErrorBanner error={mut.error} />
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
         <div>
           <Label>Name</Label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} />
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ada Lovelace" />
         </div>
         <div>
           <Label>Email</Label>
-          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ada@example.com" />
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+      <div style={{ display: 'flex', gap: 8 }}>
         <Button onClick={() => mut.mutate()} disabled={!name || !email || mut.isPending}>
-          {mut.isPending ? 'Creating…' : 'Create'}
+          {mut.isPending ? 'Creating…' : 'Create partner'}
         </Button>
-        <Button variant="secondary" onClick={onClose}>
-          Cancel
-        </Button>
+        <Button variant="secondary" onClick={onClose}>Cancel</Button>
       </div>
     </Card>
   );
@@ -106,6 +112,7 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
 
 function IssueKey({ partner, onClose }: { partner: Partner; onClose: () => void }) {
   const [label, setLabel] = useState('');
+  const [copied, setCopied] = useState(false);
   const mut = useMutation({
     mutationFn: () =>
       api<{ id: string; plaintext: string }>(`/partners/${partner.id}/api-keys`, {
@@ -115,30 +122,54 @@ function IssueKey({ partner, onClose }: { partner: Partner; onClose: () => void 
   });
 
   return (
-    <Card style={{ marginBottom: 16 }}>
-      <div style={{ fontWeight: 600, marginBottom: 12 }}>Issue API key for {partner.name}</div>
+    <Card style={{ marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+        <KeyRound size={18} color={theme.accent} />
+        <div style={{ fontSize: 15, fontWeight: 500 }}>Issue API key for {partner.name}</div>
+      </div>
       <ErrorBanner error={mut.error} />
       {mut.data ? (
         <>
-          <div style={{ marginBottom: 8, color: '#666', fontSize: 13 }}>
+          <div style={{ marginBottom: 10, color: theme.textMuted, fontSize: 13 }}>
             Copy this key now — it won't be shown again.
           </div>
-          <pre style={{ background: '#fef3c7', padding: 12, borderRadius: 4, fontSize: 13, wordBreak: 'break-all' }}>
-            {mut.data.plaintext}
-          </pre>
-          <Button onClick={onClose} style={{ marginTop: 12 }}>Done</Button>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              background: theme.warnSoft,
+              border: `1px solid ${theme.warn}55`,
+              padding: '10px 12px',
+              borderRadius: theme.radiusSm,
+              marginBottom: 12,
+            }}
+          >
+            <code style={{ flex: 1, fontSize: 13, color: theme.text, wordBreak: 'break-all' }}>{mut.data.plaintext}</code>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={copied ? <Check size={14} /> : <Copy size={14} />}
+              onClick={() => {
+                navigator.clipboard.writeText(mut.data!.plaintext);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              }}
+            >
+              {copied ? 'Copied' : 'Copy'}
+            </Button>
+          </div>
+          <Button onClick={onClose}>Done</Button>
         </>
       ) : (
         <>
           <Label>Label (optional)</Label>
-          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. laptop" />
-          <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. production server" />
+          <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
             <Button onClick={() => mut.mutate()} disabled={mut.isPending}>
               {mut.isPending ? 'Issuing…' : 'Issue key'}
             </Button>
-            <Button variant="secondary" onClick={onClose}>
-              Cancel
-            </Button>
+            <Button variant="secondary" onClick={onClose}>Cancel</Button>
           </div>
         </>
       )}

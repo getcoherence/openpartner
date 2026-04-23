@@ -1,5 +1,7 @@
+import { Download, FileJson, FileSpreadsheet, Archive } from 'lucide-react';
 import { getApiKey } from '../api.js';
-import { Card, Page } from '../ui.js';
+import { theme } from '../theme.js';
+import { Button, Card, Page, SectionHeading } from '../ui.js';
 
 const TABLES = ['Partner', 'Campaign', 'Link', 'Click', 'Identity', 'Event', 'Attribution', 'Commission', 'Payout'];
 
@@ -7,8 +9,6 @@ export function AdminExport() {
   const key = getApiKey() ?? '';
 
   function download(path: string) {
-    // Browsers don't support Authorization headers on direct navigation, so
-    // we fetch, convert to a blob, and trigger the download from a temp URL.
     fetch(`/api${path}`, { headers: { Authorization: `Bearer ${key}` } })
       .then((res) => res.blob())
       .then((blob) => {
@@ -24,50 +24,67 @@ export function AdminExport() {
   }
 
   return (
-    <Page title="Export / import">
-      <Card style={{ marginBottom: 16 }}>
-        <div style={{ fontWeight: 600, marginBottom: 12 }}>Full bundle</div>
-        <div style={{ color: '#666', marginBottom: 12, fontSize: 13 }}>
-          One JSON file with every exportable table. Round-trippable into a self-hosted instance via <code>POST /import</code>.
-        </div>
-        <button
-          onClick={() => download('/export.json')}
-          style={{ background: '#111', color: 'white', border: 'none', padding: '8px 12px', borderRadius: 4, cursor: 'pointer' }}
-        >
-          Download openpartner-export.json
-        </button>
-      </Card>
+    <Page title="Export / import" subtitle="Your data stays yours. Download everything, any time.">
       <Card>
-        <div style={{ fontWeight: 600, marginBottom: 12 }}>Per-table</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <Archive size={22} color={theme.accent} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 15, fontWeight: 500 }}>Full bundle</div>
+            <div style={{ color: theme.textMuted, fontSize: 13 }}>
+              Every exportable table as one JSON file. Round-trippable into a self-hosted instance via <code>POST /import</code>.
+            </div>
+          </div>
+          <Button icon={<Download size={14} />} onClick={() => download('/export.json')}>
+            Download
+          </Button>
+        </div>
+      </Card>
+
+      <SectionHeading>Per-table</SectionHeading>
+      <Card padded={false}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
           <thead>
-            <tr style={{ background: '#fafafa' }}>
-              <th style={{ textAlign: 'left', padding: '8px 12px' }}>Table</th>
-              <th style={{ textAlign: 'left', padding: '8px 12px' }}>JSON</th>
-              <th style={{ textAlign: 'left', padding: '8px 12px' }}>CSV</th>
+            <tr>
+              {['Table', 'JSON', 'CSV'].map((h) => (
+                <th
+                  key={h}
+                  style={{
+                    textAlign: 'left',
+                    padding: '12px 18px',
+                    fontWeight: 500,
+                    color: theme.textMuted,
+                    fontSize: 12,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    borderBottom: `1px solid ${theme.border}`,
+                    background: theme.surface2,
+                  }}
+                >
+                  {h}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
-            {TABLES.map((t) => (
-              <tr key={t} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                <td style={{ padding: '8px 12px' }}>
-                  <code>{t}</code>
+            {TABLES.map((t, i) => (
+              <tr
+                key={t}
+                style={{
+                  borderBottom: i < TABLES.length - 1 ? `1px solid ${theme.borderSubtle}` : 'none',
+                }}
+              >
+                <td style={{ padding: '12px 18px' }}>
+                  <code style={{ color: theme.text }}>{t}</code>
                 </td>
-                <td style={{ padding: '8px 12px' }}>
-                  <button
-                    onClick={() => download(`/export/${t}.json`)}
-                    style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: 0, fontSize: 13 }}
-                  >
-                    Download
-                  </button>
+                <td style={{ padding: '8px 18px' }}>
+                  <Button size="sm" variant="ghost" icon={<FileJson size={14} />} onClick={() => download(`/export/${t}.json`)}>
+                    JSON
+                  </Button>
                 </td>
-                <td style={{ padding: '8px 12px' }}>
-                  <button
-                    onClick={() => download(`/export/${t}.csv`)}
-                    style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: 0, fontSize: 13 }}
-                  >
-                    Download
-                  </button>
+                <td style={{ padding: '8px 18px' }}>
+                  <Button size="sm" variant="ghost" icon={<FileSpreadsheet size={14} />} onClick={() => download(`/export/${t}.csv`)}>
+                    CSV
+                  </Button>
                 </td>
               </tr>
             ))}

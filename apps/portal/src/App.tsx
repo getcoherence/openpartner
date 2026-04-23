@@ -1,6 +1,20 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import {
+  LayoutDashboard,
+  Link2,
+  Receipt,
+  Banknote,
+  CreditCard,
+  Users,
+  Tag,
+  ShieldCheck,
+  Download,
+  LogOut,
+  KeyRound,
+} from 'lucide-react';
 import { clearApiKey, getApiKey, setApiKey, api, type Principal, ApiError } from './api.js';
+import { theme } from './theme.js';
 import { Dashboard } from './pages/Dashboard.js';
 import { LinksPage } from './pages/Links.js';
 import { CommissionsPage } from './pages/Commissions.js';
@@ -45,9 +59,9 @@ function Shell() {
   if (!auth.principal) return <Navigate to="/login" state={{ from: location }} replace />;
 
   return (
-    <div style={{ fontFamily: 'system-ui', display: 'flex', minHeight: '100vh' }}>
+    <div style={{ display: 'flex', minHeight: '100vh', background: theme.bg }}>
       <Sidebar principal={auth.principal} />
-      <main style={{ flex: 1, padding: 24, maxWidth: 1100 }}>
+      <main style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
         <Routes>
           <Route index element={<Dashboard principal={auth.principal} />} />
           <Route path="links" element={<LinksPage principal={auth.principal} />} />
@@ -72,77 +86,191 @@ function Shell() {
 function Sidebar({ principal }: { principal: Principal }) {
   const nav = useNavigate();
   return (
-    <aside style={{ width: 220, background: '#111', color: '#eee', padding: '24px 16px' }}>
-      <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 24 }}>OpenPartner</div>
-      <div style={{ fontSize: 12, color: '#aaa', marginBottom: 16 }}>
-        Signed in as <strong style={{ color: '#eee' }}>{principal.role}</strong>
-        {principal.partner ? ` — ${principal.partner.name}` : ''}
+    <aside
+      style={{
+        width: 248,
+        background: theme.sidebar,
+        borderRight: `1px solid ${theme.borderSubtle}`,
+        display: 'flex',
+        flexDirection: 'column',
+        padding: '20px 14px',
+      }}
+    >
+      {/* Brand */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 8px', marginBottom: 20 }}>
+        <Logo />
+        <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>OpenPartner</div>
       </div>
-      <NavSection title="Yours">
-        <NavItem to="/">Dashboard</NavItem>
-        <NavItem to="/links">Links</NavItem>
-        <NavItem to="/commissions">Commissions</NavItem>
-        <NavItem to="/payouts">Payouts</NavItem>
-        {principal.role === 'partner' && <NavItem to="/connect">Stripe Connect</NavItem>}
-      </NavSection>
-      {principal.role === 'admin' && (
-        <NavSection title="Admin">
-          <NavItem to="/admin/partners">Partners</NavItem>
-          <NavItem to="/admin/campaigns">Campaigns</NavItem>
-          <NavItem to="/admin/review">Review queue</NavItem>
-          <NavItem to="/admin/export">Export / import</NavItem>
+
+      {/* Principal chip */}
+      <div
+        style={{
+          background: theme.surface,
+          border: `1px solid ${theme.borderSubtle}`,
+          borderRadius: theme.radiusSm,
+          padding: '10px 12px',
+          marginBottom: 18,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+        }}
+      >
+        <div
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: '50%',
+            background: principal.role === 'admin' ? theme.accentSoft : '#1e2a3d',
+            color: principal.role === 'admin' ? theme.accent : theme.info,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
+          {principal.role === 'admin' ? 'A' : principal.partner?.name?.[0]?.toUpperCase() ?? 'P'}
+        </div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {principal.partner?.name ?? (principal.role === 'admin' ? 'Admin' : 'Partner')}
+          </div>
+          <div style={{ fontSize: 11, color: theme.textDim, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            {principal.role}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 14, overflow: 'auto' }}>
+        <NavSection title="Yours">
+          <NavItem to="/" icon={<LayoutDashboard size={16} />}>Dashboard</NavItem>
+          <NavItem to="/links" icon={<Link2 size={16} />}>Links</NavItem>
+          <NavItem to="/commissions" icon={<Receipt size={16} />}>Commissions</NavItem>
+          <NavItem to="/payouts" icon={<Banknote size={16} />}>Payouts</NavItem>
+          {principal.role === 'partner' && <NavItem to="/connect" icon={<CreditCard size={16} />}>Stripe Connect</NavItem>}
         </NavSection>
-      )}
+
+        {principal.role === 'admin' && (
+          <NavSection title="Admin">
+            <NavItem to="/admin/partners" icon={<Users size={16} />}>Partners</NavItem>
+            <NavItem to="/admin/campaigns" icon={<Tag size={16} />}>Campaigns</NavItem>
+            <NavItem to="/admin/review" icon={<ShieldCheck size={16} />}>Review queue</NavItem>
+            <NavItem to="/admin/export" icon={<Download size={16} />}>Export / import</NavItem>
+          </NavSection>
+        )}
+      </div>
+
       <button
         onClick={() => {
           clearApiKey();
           nav('/login');
         }}
         style={{
-          marginTop: 32,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          marginTop: 14,
           background: 'transparent',
-          border: '1px solid #444',
-          color: '#eee',
-          padding: '8px 12px',
-          borderRadius: 4,
+          color: theme.textMuted,
+          border: `1px solid ${theme.borderSubtle}`,
+          borderRadius: theme.radiusSm,
+          padding: '9px 12px',
+          fontSize: 13,
           cursor: 'pointer',
-          width: '100%',
+          transition: 'all 120ms',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = theme.surface;
+          e.currentTarget.style.color = theme.text;
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'transparent';
+          e.currentTarget.style.color = theme.textMuted;
         }}
       >
+        <LogOut size={14} />
         Sign out
       </button>
     </aside>
   );
 }
 
-function NavSection({ title, children }: { title: string; children: React.ReactNode }) {
+function NavSection({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>{title}</div>
-      {children}
+    <div>
+      <div
+        style={{
+          fontSize: 11,
+          color: theme.textDim,
+          textTransform: 'uppercase',
+          letterSpacing: '0.08em',
+          fontWeight: 600,
+          padding: '0 8px 8px',
+        }}
+      >
+        {title}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>{children}</div>
     </div>
   );
 }
 
-function NavItem({ to, children }: { to: string; children: React.ReactNode }) {
+function NavItem({ to, icon, children }: { to: string; icon: ReactNode; children: ReactNode }) {
   const location = useLocation();
   const active = location.pathname === to || (to !== '/' && location.pathname.startsWith(to));
   return (
     <Link
       to={to}
       style={{
-        display: 'block',
-        padding: '6px 10px',
-        margin: '2px 0',
-        borderRadius: 4,
-        background: active ? '#333' : 'transparent',
-        color: '#eee',
-        textDecoration: 'none',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '8px 10px',
+        borderRadius: 6,
+        background: active ? theme.surface : 'transparent',
+        color: active ? theme.text : theme.textMuted,
+        fontSize: 13.5,
+        fontWeight: active ? 500 : 400,
+        transition: 'all 120ms',
+      }}
+      onMouseEnter={(e) => {
+        if (!active) {
+          e.currentTarget.style.background = theme.surface;
+          e.currentTarget.style.color = theme.text;
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (!active) {
+          e.currentTarget.style.background = 'transparent';
+          e.currentTarget.style.color = theme.textMuted;
+        }
+      }}
+    >
+      <span style={{ display: 'inline-flex', color: active ? theme.accent : 'inherit' }}>{icon}</span>
+      {children}
+    </Link>
+  );
+}
+
+function Logo() {
+  return (
+    <div
+      style={{
+        width: 26,
+        height: 26,
+        borderRadius: 8,
+        background: `linear-gradient(135deg, ${theme.accent}, #0891b2)`,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: theme.accentInk,
+        fontWeight: 700,
         fontSize: 14,
       }}
     >
-      {children}
-    </Link>
+      O
+    </div>
   );
 }
 
@@ -162,43 +290,107 @@ function LoginPage() {
       nav('/');
     } catch (e) {
       clearApiKey();
-      setErr(e instanceof ApiError && e.status === 401 ? 'Invalid token' : 'Could not reach the API');
+      setErr(e instanceof ApiError && e.status === 401 ? 'That key didn\'t work.' : 'Could not reach the API.');
       setBusy(false);
     }
   }
 
   return (
-    <div style={{ fontFamily: 'system-ui', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: '#f5f5f5' }}>
-      <form onSubmit={submit} style={{ background: 'white', padding: 32, borderRadius: 8, boxShadow: '0 2px 12px rgba(0,0,0,0.08)', width: 380 }}>
-        <h1 style={{ fontSize: 20, marginTop: 0, marginBottom: 4 }}>OpenPartner</h1>
-        <p style={{ color: '#666', fontSize: 14, marginTop: 0, marginBottom: 20 }}>Sign in with your API key</p>
-        <input
-          type="password"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          placeholder="op_…"
-          autoFocus
-          style={{ width: '100%', padding: '10px 12px', fontSize: 14, border: '1px solid #ddd', borderRadius: 4, marginBottom: 12, fontFamily: 'ui-monospace, Menlo, monospace' }}
-        />
-        {err && <div style={{ color: 'crimson', fontSize: 13, marginBottom: 12 }}>{err}</div>}
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '100vh',
+        background: `radial-gradient(1200px 800px at 50% -20%, ${theme.accentSoft}40, transparent), ${theme.bg}`,
+        padding: 24,
+      }}
+    >
+      <form
+        onSubmit={submit}
+        style={{
+          background: theme.surface,
+          border: `1px solid ${theme.border}`,
+          padding: 32,
+          borderRadius: theme.radiusLg,
+          width: 400,
+          boxShadow: '0 30px 80px -30px rgba(0,0,0,0.6)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
+          <Logo />
+          <div style={{ fontSize: 18, fontWeight: 600 }}>OpenPartner</div>
+        </div>
+        <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: 6 }}>Sign in</div>
+        <div style={{ color: theme.textMuted, fontSize: 13, marginBottom: 24 }}>
+          Paste your API key to continue.
+        </div>
+        <div style={{ position: 'relative' }}>
+          <KeyRound
+            size={15}
+            style={{ position: 'absolute', left: 12, top: 12, color: theme.textDim, pointerEvents: 'none' }}
+          />
+          <input
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="op_..."
+            autoFocus
+            style={{
+              width: '100%',
+              padding: '10px 12px 10px 34px',
+              fontSize: 14,
+              background: theme.surface2,
+              border: `1px solid ${theme.border}`,
+              borderRadius: theme.radiusSm,
+              color: theme.text,
+              fontFamily: theme.fontMono,
+            }}
+          />
+        </div>
+        {err && (
+          <div style={{ color: theme.danger, fontSize: 13, marginTop: 10 }}>{err}</div>
+        )}
         <button
           type="submit"
           disabled={busy || !token}
-          style={{ width: '100%', padding: '10px 12px', fontSize: 14, background: '#111', color: 'white', border: 'none', borderRadius: 4, cursor: busy ? 'wait' : 'pointer' }}
+          style={{
+            marginTop: 16,
+            width: '100%',
+            padding: '10px 14px',
+            background: theme.accent,
+            color: theme.accentInk,
+            border: 'none',
+            borderRadius: theme.radiusSm,
+            fontSize: 14,
+            fontWeight: 600,
+            cursor: busy || !token ? 'not-allowed' : 'pointer',
+            opacity: busy || !token ? 0.5 : 1,
+          }}
         >
           {busy ? 'Checking…' : 'Sign in'}
         </button>
-        <p style={{ color: '#999', fontSize: 12, marginTop: 16, marginBottom: 0 }}>
-          Admin keys come from the <code>ADMIN_API_KEY</code> env var. Partner keys are issued via <code>POST /partners/:id/api-keys</code>.
-        </p>
+        <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${theme.borderSubtle}`, color: theme.textDim, fontSize: 12, lineHeight: 1.6 }}>
+          Admin keys come from <code style={{ color: theme.textMuted }}>ADMIN_API_KEY</code> in your env.
+          <br />
+          Partner keys are issued from <code style={{ color: theme.textMuted }}>Admin → Partners → Issue key</code>.
+        </div>
       </form>
     </div>
   );
 }
 
-function CenteredMessage({ children }: { children: React.ReactNode }) {
+function CenteredMessage({ children }: { children: ReactNode }) {
   return (
-    <div style={{ fontFamily: 'system-ui', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: '#666' }}>
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '100vh',
+        color: theme.textMuted,
+      }}
+    >
       {children}
     </div>
   );

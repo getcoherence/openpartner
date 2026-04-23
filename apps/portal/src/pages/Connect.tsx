@@ -1,6 +1,8 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
+import { CreditCard, CheckCircle2, XCircle } from 'lucide-react';
 import { api, type Principal } from '../api.js';
-import { Button, Card, ErrorBanner, Page } from '../ui.js';
+import { theme } from '../theme.js';
+import { Button, Card, EmptyState, ErrorBanner, Page } from '../ui.js';
 
 interface ConnectStatus {
   connected: boolean;
@@ -14,7 +16,7 @@ export function ConnectPage({ principal }: { principal: Principal }) {
   if (principal.role !== 'partner' || !principal.partnerId) {
     return (
       <Page title="Stripe Connect">
-        <Card>Only partners can connect Stripe accounts from the portal.</Card>
+        <EmptyState title="Partners only" hint="Stripe Connect onboarding is a partner-side flow." icon={<CreditCard size={28} strokeWidth={1.25} />} />
       </Page>
     );
   }
@@ -43,14 +45,19 @@ export function ConnectPage({ principal }: { principal: Principal }) {
   const s = status.data;
 
   return (
-    <Page title="Stripe Connect">
+    <Page
+      title="Stripe Connect"
+      subtitle="Receive payouts straight into your own Stripe account."
+    >
       <ErrorBanner error={status.error ?? start.error} />
       {status.isLoading ? (
         <Card>Loading…</Card>
       ) : !s?.connected ? (
         <Card>
-          <div style={{ marginBottom: 12 }}>
-            Connect a Stripe account to receive payouts. You'll be redirected to Stripe to complete onboarding.
+          <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>Connect an account</div>
+          <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 16, maxWidth: 560 }}>
+            You'll be redirected to Stripe's hosted onboarding. Once you've finished,
+            OpenPartner will transfer approved commissions directly to your balance.
           </div>
           <Button onClick={() => start.mutate()} disabled={start.isPending}>
             {start.isPending ? 'Preparing…' : 'Connect Stripe'}
@@ -58,16 +65,20 @@ export function ConnectPage({ principal }: { principal: Principal }) {
         </Card>
       ) : (
         <Card>
-          <div style={{ marginBottom: 12 }}>
-            <strong>Account:</strong> <code>{s.accountId}</code>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+            <CreditCard size={18} color={theme.accent} />
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 500 }}>Connected</div>
+              <code style={{ fontSize: 12, color: theme.textMuted }}>{s.accountId}</code>
+            </div>
           </div>
-          <ul style={{ margin: 0, paddingLeft: 20 }}>
-            <li>Details submitted: {s.detailsSubmitted ? 'yes' : 'no'}</li>
-            <li>Charges enabled: {s.chargesEnabled ? 'yes' : 'no'}</li>
-            <li>Payouts enabled: {s.payoutsEnabled ? 'yes' : 'no'}</li>
-          </ul>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            <ChecklistItem label="Details submitted" ok={!!s.detailsSubmitted} />
+            <ChecklistItem label="Charges enabled" ok={!!s.chargesEnabled} />
+            <ChecklistItem label="Payouts enabled" ok={!!s.payoutsEnabled} />
+          </div>
           {!s.payoutsEnabled && (
-            <div style={{ marginTop: 12 }}>
+            <div style={{ marginTop: 16 }}>
               <Button onClick={() => start.mutate()} disabled={start.isPending}>
                 Finish onboarding
               </Button>
@@ -76,5 +87,25 @@ export function ConnectPage({ principal }: { principal: Principal }) {
         </Card>
       )}
     </Page>
+  );
+}
+
+function ChecklistItem({ label, ok }: { label: string; ok: boolean }) {
+  return (
+    <div
+      style={{
+        background: theme.bg,
+        border: `1px solid ${theme.borderSubtle}`,
+        borderRadius: theme.radiusSm,
+        padding: '10px 12px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        fontSize: 13,
+      }}
+    >
+      {ok ? <CheckCircle2 size={14} color={theme.success} /> : <XCircle size={14} color={theme.textDim} />}
+      <span style={{ color: ok ? theme.text : theme.textMuted }}>{label}</span>
+    </div>
   );
 }
