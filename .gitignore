@@ -1,0 +1,17 @@
+node_modules
+dist
+build
+.turbo
+.cache
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea
+.vscode/*
+!.vscode/settings.json
+coverage
+.nyc_output
+.claude/settings.local.json
+*.tsbuildinfo

@@ -1,0 +1,29 @@
+{
+  "name": "@openpartner/router",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Edge click router. Receives partner link clicks, sets first-party attribution cookie, redirects to destination.",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "lint": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.2",
+    "@openpartner/db": "workspace:*",
+    "dotenv": "^16.4.5",
+    "hono": "^4.6.3",
+    "pg": "^8.11.5",
+    "ulid": "^2.3.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.0",
+    "typescript": "5.4.5",
+    "vitest": "^1.6.0"
+  }
+}

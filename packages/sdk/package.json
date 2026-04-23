@@ -1,0 +1,25 @@
+{
+  "name": "@openpartner/sdk",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenPartner client SDK. Embed in a customer site to stitch first-party cookie to authenticated user.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "typescript": "5.4.5",
+    "vitest": "^1.6.0"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "@openpartner/portal",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Partner dashboard. Links, clicks, attributed revenue, commissions, payouts.",
+  "scripts": {
+    "dev": "vite --port 5173",
+    "build": "tsc -p tsconfig.json && vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.56.2",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-router-dom": "^6.26.2"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.26",
+    "@types/react-dom": "18.3.7",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "5.4.5",
+    "vite": "^5.4.8",
+    "vitest": "^1.6.0"
+  }
+}
