@@ -54,8 +54,12 @@ export class ApiError extends Error {
 }
 
 export interface Principal {
-  role: 'admin' | 'partner';
+  role: 'admin' | 'partner' | 'network_vendor' | 'network_creator';
   source?: string;
   partnerId?: string;
   partner?: { id: string; name: string; email: string; stripeConnected: boolean };
+  networkVendorId?: string;
+  vendor?: { id: string; name: string; slug: string; logoUrl: string | null; websiteUrl: string | null; status: string };
+  networkCreatorId?: string;
+  creator?: { id: string; name: string; handle: string; email: string; avatarUrl: string | null; status: string };
 }

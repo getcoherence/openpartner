@@ -119,10 +119,113 @@ export interface ApiKeyRow {
   prefix: string;
   keyHash: string;
   partnerId: string | null;
+  networkVendorId: string | null;
+  networkCreatorId: string | null;
   label: string | null;
   createdAt: Date;
   lastUsedAt: Date | null;
   revokedAt: Date | null;
+}
+
+// ---- OpenPartner Network ----
+
+export type NetworkVendorStatus = 'pending' | 'active' | 'suspended';
+export type NetworkCreatorStatus = 'pending' | 'active' | 'suspended';
+export type PartnershipRequestStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
+export type PartnershipRequestDirection = 'creator_to_vendor' | 'vendor_to_creator';
+export type PartnershipStatus = 'active' | 'ended';
+
+export interface CreatorPlatform {
+  platform: 'youtube' | 'twitter' | 'instagram' | 'tiktok' | 'blog' | 'podcast' | 'other';
+  url: string;
+  followers?: number;
+}
+
+export type OfferingPayout =
+  | { type: 'recurring_percent'; percent: number; durationMonths: number | null } // null = lifetime
+  | { type: 'one_time_fee'; amount: number; currency?: string }
+  | { type: 'tiered_percent'; tiers: Array<{ minRevenueUsd: number; percent: number }> };
+
+export interface OfferingBonus {
+  description: string;
+  triggerRevenueUsd: number;
+  bonusUsd: number;
+}
+
+export interface OfferingTerms {
+  payout: OfferingPayout;
+  bonuses?: OfferingBonus[];
+  cookieWindowDays: number;
+  exclusions?: string[];
+}
+
+export interface NetworkVendorRow {
+  id: string;
+  name: string;
+  slug: string;
+  websiteUrl: string | null;
+  logoUrl: string | null;
+  description: string | null;
+  instanceUrl: string;
+  instanceKeyCiphertext: string;
+  instanceKeyPrefix: string;
+  status: NetworkVendorStatus;
+  createdAt: Date;
+  activatedAt: Date | null;
+}
+
+export interface NetworkCreatorRow {
+  id: string;
+  name: string;
+  handle: string;
+  email: string;
+  bio: string | null;
+  avatarUrl: string | null;
+  platforms: CreatorPlatform[];
+  status: NetworkCreatorStatus;
+  createdAt: Date;
+  activatedAt: Date | null;
+}
+
+export interface OfferingRow {
+  id: string;
+  vendorId: string;
+  title: string;
+  productUrl: string;
+  description: string | null;
+  heroImageUrl: string | null;
+  vendorCampaignId: string;
+  terms: OfferingTerms;
+  published: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface PartnershipRequestRow {
+  id: string;
+  offeringId: string;
+  vendorId: string;
+  creatorId: string;
+  direction: PartnershipRequestDirection;
+  message: string | null;
+  status: PartnershipRequestStatus;
+  createdAt: Date;
+  decidedAt: Date | null;
+  decisionNote: string | null;
+}
+
+export interface PartnershipRow {
+  id: string;
+  requestId: string;
+  offeringId: string;
+  vendorId: string;
+  creatorId: string;
+  vendorPartnerId: string;
+  vendorLinkKey: string;
+  publicShareUrl: string;
+  status: PartnershipStatus;
+  createdAt: Date;
+  endedAt: Date | null;
 }
 
 export interface PayoutRow {

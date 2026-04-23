@@ -19,7 +19,9 @@ import { db } from './db.js';
 export type ApiKeyPrincipal =
   | { role: 'admin'; source: 'env' }
   | { role: 'admin'; source: 'db'; apiKeyId: string }
-  | { role: 'partner'; source: 'db'; apiKeyId: string; partnerId: string };
+  | { role: 'partner'; source: 'db'; apiKeyId: string; partnerId: string }
+  | { role: 'network_vendor'; source: 'db'; apiKeyId: string; networkVendorId: string }
+  | { role: 'network_creator'; source: 'db'; apiKeyId: string; networkCreatorId: string };
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -68,7 +70,7 @@ export function requirePartnerOrAdmin(paramName: string = 'id') {
     const p = req.principal;
     if (!p) return void res.status(401).json({ error: 'unauthorized' });
     if (p.role === 'admin') return next();
-    if (p.partnerId === req.params[paramName]) return next();
+    if (p.role === 'partner' && p.partnerId === req.params[paramName]) return next();
     res.status(403).json({ error: 'forbidden' });
   };
 }
@@ -97,10 +99,16 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
   // Non-blocking last-used bump.
   void db<ApiKeyRow>(TABLES.ApiKey).where({ id: match2.id }).update({ lastUsedAt: new Date() });
 
-  if (match2.partnerId === null) {
-    return { role: 'admin', source: 'db', apiKeyId: match2.id };
+  if (match2.networkVendorId) {
+    return { role: 'network_vendor', source: 'db', apiKeyId: match2.id, networkVendorId: match2.networkVendorId };
   }
-  return { role: 'partner', source: 'db', apiKeyId: match2.id, partnerId: match2.partnerId };
+  if (match2.networkCreatorId) {
+    return { role: 'network_creator', source: 'db', apiKeyId: match2.id, networkCreatorId: match2.networkCreatorId };
+  }
+  if (match2.partnerId) {
+    return { role: 'partner', source: 'db', apiKeyId: match2.id, partnerId: match2.partnerId };
+  }
+  return { role: 'admin', source: 'db', apiKeyId: match2.id };
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -110,18 +118,36 @@ function constantTimeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-export async function createApiKeyRow(params: { partnerId: string | null; label?: string }): Promise<{
-  id: string;
-  plaintext: string;
-}> {
+export async function createApiKeyRow(params: {
+  partnerId?: string | null;
+  networkVendorId?: string | null;
+  networkCreatorId?: string | null;
+  label?: string;
+}): Promise<{ id: string; plaintext: string }> {
   const { plaintext, prefix, hash } = generateApiKey();
   const id = ulid();
   await db<ApiKeyRow>(TABLES.ApiKey).insert({
     id,
     prefix,
     keyHash: hash,
-    partnerId: params.partnerId,
+    partnerId: params.partnerId ?? null,
+    networkVendorId: params.networkVendorId ?? null,
+    networkCreatorId: params.networkCreatorId ?? null,
     label: params.label ?? null,
   });
   return { id, plaintext };
+}
+
+export function requireNetworkVendor(req: Request, res: Response, next: NextFunction): void {
+  const p = req.principal;
+  if (!p) return void res.status(401).json({ error: 'unauthorized' });
+  if (p.role === 'admin' || p.role === 'network_vendor') return next();
+  res.status(403).json({ error: 'forbidden' });
+}
+
+export function requireNetworkCreator(req: Request, res: Response, next: NextFunction): void {
+  const p = req.principal;
+  if (!p) return void res.status(401).json({ error: 'unauthorized' });
+  if (p.role === 'admin' || p.role === 'network_creator') return next();
+  res.status(403).json({ error: 'forbidden' });
 }

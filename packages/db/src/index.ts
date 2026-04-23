@@ -36,4 +36,9 @@ export const TABLES = {
   Payout: 'Payout',
   ApiKey: 'ApiKey',
   Config: 'Config',
+  NetworkVendor: 'NetworkVendor',
+  NetworkCreator: 'NetworkCreator',
+  Offering: 'Offering',
+  PartnershipRequest: 'PartnershipRequest',
+  Partnership: 'Partnership',
 } as const;
