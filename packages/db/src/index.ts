@@ -1,10 +1,10 @@
 /**
  * Shared database types + connection factory.
- *
- * Phase 1 will flesh out per-table TypeScript interfaces matching the migration schema.
  */
 
 import knex, { type Knex } from 'knex';
+
+export * from './types.js';
 
 export interface DbConfig {
   connectionString: string;
@@ -34,4 +34,6 @@ export const TABLES = {
   Attribution: 'Attribution',
   Commission: 'Commission',
   Payout: 'Payout',
+  ApiKey: 'ApiKey',
+  Config: 'Config',
 } as const;

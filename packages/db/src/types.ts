@@ -1,0 +1,139 @@
+/**
+ * Row types matching the initial schema migration 1:1.
+ *
+ * These are the canonical on-the-wire shapes for export/import too — keeping
+ * them close to the migration columns is what makes round-trip portability
+ * between hosted and self-hosted tractable. If you add a column, update both.
+ */
+
+export type CommissionRule =
+  | { type: 'percent'; value: number; recurring?: boolean }
+  | { type: 'fixed'; value: number; currency?: string; recurring?: boolean };
+
+export type AttributionModel = 'last_click' | 'first_click' | 'linear' | 'position';
+
+export type CommissionStatus = 'accrued' | 'approved' | 'paid' | 'reversed';
+
+export type PayoutStatus = 'pending' | 'paid' | 'failed';
+
+export type PayoutMethod = 'stripe_connect' | 'manual' | 'external';
+
+export interface PartnerRow {
+  id: string;
+  email: string;
+  name: string;
+  stripeConnectAccountId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CampaignRow {
+  id: string;
+  name: string;
+  commissionRule: CommissionRule;
+  attributionWindowDays: number;
+  attributionModel: AttributionModel;
+  createdAt: Date;
+}
+
+export interface LinkRow {
+  id: string;
+  linkKey: string;
+  partnerId: string;
+  campaignId: string;
+  destinationUrl: string;
+  createdAt: Date;
+}
+
+export type ClickFraudFlag = 'velocity' | 'manual' | null;
+
+export interface ClickRow {
+  id: string;
+  linkId: string;
+  partnerId: string;
+  campaignId: string;
+  landingUrl: string;
+  ipHash: string | null;
+  userAgent: string | null;
+  referer: string | null;
+  fraudFlag: ClickFraudFlag;
+  ts: Date;
+}
+
+export interface IdentityRow {
+  id: string;
+  clickId: string;
+  userId: string;
+  stitchedAt: Date;
+}
+
+export type EventType =
+  | 'signup'
+  | 'trial_started'
+  | 'subscription_created'
+  | 'invoice_paid'
+  | (string & {});
+
+export interface EventRow {
+  id: string;
+  userId: string;
+  type: EventType;
+  value: string | null; // decimal comes back as string from pg
+  currency: string | null;
+  metadata: Record<string, unknown>;
+  ts: Date;
+}
+
+export interface AttributionRow {
+  id: string;
+  eventId: string;
+  partnerId: string;
+  campaignId: string;
+  clickId: string;
+  model: AttributionModel;
+  weight: string; // decimal as string
+  computedAt: Date;
+}
+
+export interface CommissionRow {
+  id: string;
+  attributionId: string;
+  partnerId: string;
+  amount: string; // decimal as string
+  currency: string;
+  status: CommissionStatus;
+  accruedAt: Date;
+  paidAt: Date | null;
+  payoutId: string | null;
+}
+
+export interface ConfigRow {
+  key: string;
+  value: unknown;
+  updatedAt: Date;
+}
+
+export interface ApiKeyRow {
+  id: string;
+  prefix: string;
+  keyHash: string;
+  partnerId: string | null;
+  label: string | null;
+  createdAt: Date;
+  lastUsedAt: Date | null;
+  revokedAt: Date | null;
+}
+
+export interface PayoutRow {
+  id: string;
+  partnerId: string;
+  amount: string;
+  currency: string;
+  method: PayoutMethod;
+  stripeTransferId: string | null;
+  status: PayoutStatus;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+  completedAt: Date | null;
+}

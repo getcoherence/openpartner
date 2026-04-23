@@ -76,4 +76,24 @@ MIT. See [LICENSE](./LICENSE).
 
 ## Status
 
-Early-stage. API unstable. Do not run in production yet.
+v1. End-to-end attribution, payouts, and export are working; API surface is stable but unversioned. See [docs/quickstart.md](./docs/quickstart.md) for the walk-through.
+
+### What's implemented
+
+- Edge click router with first-party cookie and SHA-256-hashed IP
+- Identity stitching (`POST /attribution/identify`) with late-binding backlog attribution
+- Event ingest (`POST /attribution/events`) and Stripe webhook mapping
+- Last-click attribution within configurable window, re-derivable from raw tables
+- Commission accrual + review queue (approve / reverse) + Stripe Connect Standard payouts with idempotent transfers
+- Three deployment modes gated by `OPENPARTNER_MODE`: `selfhost`, `flat` (Stripe subscription), `revshare` (3% platform fee)
+- Click velocity limits (flagged clicks are kept as audit, excluded from attribution)
+- API-key auth with admin and partner-scoped tokens
+- Portable JSON + CSV export per table; full bundle export round-trippable into self-hosted via `POST /import`
+- Partner dashboard in the portal (clicks, attributed revenue, commission by status, links)
+
+### Deferred
+
+- Multi-touch attribution models (scaffolded in the schema; only `last_click` wired)
+- Fraud detection beyond velocity
+- Historical merchant billing reconciliation for revshare mode
+- OAuth-based partner portal login (currently API-key only)
