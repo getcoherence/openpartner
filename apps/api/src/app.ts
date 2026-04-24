@@ -21,6 +21,7 @@ import { commissionsRouter } from './routes/commissions.js';
 import { exportRouter } from './routes/export.js';
 import { billingRouter } from './routes/billing.js';
 import { authRouter } from './routes/auth.js';
+import { partnerAuthRouter } from './routes/partner-auth.js';
 import { adminOverviewRouter } from './routes/admin-overview.js';
 import { funnelRouter } from './routes/funnel.js';
 import { fraudReviewRouter } from './routes/fraud-review.js';
@@ -101,6 +102,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   });
 
   app.use(authRouter);
+  app.use(partnerAuthRouter);
   app.use(funnelRouter);
   app.use(fraudReviewRouter);
   app.use(webhooksRouter);

@@ -22,6 +22,7 @@ export type ApiKeyPrincipal =
   | { role: 'admin'; source: 'env' }
   | { role: 'admin'; source: 'db'; apiKeyId: string }
   | { role: 'partner'; source: 'db'; apiKeyId: string; partnerId: string }
+  | { role: 'partner'; source: 'session'; sessionId: string; partnerId: string }
   | { role: 'scoped'; source: 'db'; apiKeyId: string; scopes: string[] };
 
 declare global {
@@ -78,7 +79,15 @@ export function requirePartnerOrAdmin(paramName: string = 'id') {
 
 async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
   const header = req.header('authorization');
-  if (!header) return null;
+  if (!header) {
+    // No Bearer — fall back to the session cookie (set by magic-link verify).
+    const cookie = (req as unknown as { cookies?: Record<string, string> }).cookies?.op_session;
+    if (!cookie) return null;
+    const { resolveSession } = await import('./auth-sessions.js');
+    const session = await resolveSession(cookie);
+    if (!session) return null;
+    return { role: 'partner', source: 'session', sessionId: session.id, partnerId: session.partnerId };
+  }
 
   const match = /^Bearer\s+(\S+)$/i.exec(header);
   if (!match) return null;

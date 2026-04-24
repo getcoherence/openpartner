@@ -25,6 +25,7 @@ import { AdminCampaigns } from './pages/AdminCampaigns.js';
 import { AdminReview } from './pages/AdminReview.js';
 import { AdminExport } from './pages/AdminExport.js';
 import { LoginPage } from './pages/auth/Login.js';
+import { MagicLandingPage } from './pages/auth/MagicLanding.js';
 import { WebhooksPage } from './pages/admin/Webhooks.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
 
@@ -38,6 +39,7 @@ export function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/auth/magic" element={<MagicLandingPage />} />
         <Route path="/*" element={<Shell />} />
       </Routes>
     </BrowserRouter>
@@ -129,8 +131,16 @@ function Sidebar({ principal }: { principal: Principal }) {
       </div>
 
       <button
-        onClick={() => {
+        onClick={async () => {
           clearApiKey();
+          // Fire-and-forget — server-side revokes the session. If we're
+          // signed in via API key only, the server sees no cookie and
+          // just returns 200.
+          try {
+            await api('/auth/signout', { method: 'POST' });
+          } catch {
+            /* ignore */
+          }
           nav('/login');
         }}
         style={{

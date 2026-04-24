@@ -12,6 +12,7 @@ interface Partner {
   name: string;
   stripeConnectAccountId: string | null;
   createdAt: string;
+  activatedAt: string | null;
 }
 
 export function AdminPartners() {
@@ -24,10 +25,10 @@ export function AdminPartners() {
   return (
     <Page
       title="Partners"
-      subtitle="Create partner accounts and issue their personal API keys."
+      subtitle="Invite partners — they set up their own dashboard via an emailed magic link."
       actions={
         <Button icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
-          New partner
+          Invite partner
         </Button>
       }
     >
@@ -47,22 +48,29 @@ export function AdminPartners() {
       {partners.isLoading ? (
         <Card>Loading…</Card>
       ) : (partners.data?.partners ?? []).length === 0 ? (
-        <EmptyState title="No partners yet" hint="Create one to start tracking attributed revenue." icon={<Users size={28} strokeWidth={1.25} />} />
+        <EmptyState title="No partners yet" hint="Invite one to start tracking attributed revenue." icon={<Users size={28} strokeWidth={1.25} />} />
       ) : (
         <Table
-          columns={['Partner', 'Email', 'Stripe', 'Created', 'Actions']}
+          columns={['Partner', 'Email', 'Status', 'Stripe', 'Created', 'Actions']}
           rows={(partners.data?.partners ?? []).map((p) => [
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <Avatar name={p.name} size={28} />
               <span style={{ fontWeight: 500 }}>{p.name}</span>
             </div>,
             <span style={{ color: theme.textMuted }}>{p.email}</span>,
+            p.activatedAt ? <StatusPill status="active" /> : <StatusPill status="invited" />,
             p.stripeConnectAccountId ? <StatusPill status="connected" /> : <span style={{ color: theme.textDim }}>—</span>,
             <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
             <div style={{ display: 'flex', gap: 6 }}>
               <Link to={`/links?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Links</Link>
               <span style={{ color: theme.border }}>·</span>
               <Link to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Payouts</Link>
+              {!p.activatedAt && (
+                <>
+                  <span style={{ color: theme.border }}>·</span>
+                  <ResendInvite partnerId={p.id} />
+                </>
+              )}
               <span style={{ color: theme.border }}>·</span>
               <button
                 onClick={() => setIssueKeyFor(p)}
@@ -88,7 +96,10 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
 
   return (
     <Card style={{ marginBottom: 14 }}>
-      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 14 }}>New partner</div>
+      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>Invite a partner</div>
+      <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
+        They'll get an email with a one-time link to set up their dashboard.
+      </div>
       <ErrorBanner error={mut.error} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
         <div>
@@ -102,11 +113,31 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
         <Button onClick={() => mut.mutate()} disabled={!name || !email || mut.isPending}>
-          {mut.isPending ? 'Creating…' : 'Create partner'}
+          {mut.isPending ? 'Sending…' : 'Send invite'}
         </Button>
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
       </div>
     </Card>
+  );
+}
+
+function ResendInvite({ partnerId }: { partnerId: string }) {
+  const [sent, setSent] = useState(false);
+  const mut = useMutation({
+    mutationFn: () => api(`/partners/${partnerId}/invite`, { method: 'POST' }),
+    onSuccess: () => {
+      setSent(true);
+      setTimeout(() => setSent(false), 2000);
+    },
+  });
+  return (
+    <button
+      onClick={() => mut.mutate()}
+      disabled={mut.isPending}
+      style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accent, cursor: 'pointer' }}
+    >
+      {sent ? 'Sent' : mut.isPending ? 'Sending…' : 'Resend invite'}
+    </button>
   );
 }
 

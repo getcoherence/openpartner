@@ -26,6 +26,43 @@ export interface PartnerRow {
   metadata: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
+  // null until the partner accepts their invite magic link
+  activatedAt: Date | null;
+}
+
+export type MagicLinkPurpose = 'partner_invite' | 'partner_signin';
+
+export interface MagicLinkTokenRow {
+  id: string;
+  prefix: string;
+  tokenHash: string;
+  email: string;
+  purpose: MagicLinkPurpose;
+  partnerId: string;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  createdAt: Date;
+}
+
+export interface SessionRow {
+  id: string;
+  prefix: string;
+  tokenHash: string;
+  partnerId: string;
+  expiresAt: Date;
+  createdAt: Date;
+  lastSeenAt: Date | null;
+  revokedAt: Date | null;
+}
+
+export interface DevMessageRow {
+  id: string;
+  to: string;
+  subject: string;
+  body: string;
+  html: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
 }
 
 export interface CampaignRow {

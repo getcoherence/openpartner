@@ -36,6 +36,9 @@ export const TABLES = {
   Payout: 'Payout',
   ApiKey: 'ApiKey',
   Config: 'Config',
+  MagicLinkToken: 'MagicLinkToken',
+  Session: 'Session',
+  DevMessage: 'DevMessage',
   WebhookEndpoint: 'WebhookEndpoint',
   WebhookDelivery: 'WebhookDelivery',
 } as const;

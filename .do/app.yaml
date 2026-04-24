@@ -57,7 +57,17 @@ services:
         value: ${openpartner-db.DATABASE_URL}
       - key: OPENPARTNER_MODE
         value: flat
+      - key: MAIL_TRANSPORT
+        value: postmark
+      - key: POSTMARK_MESSAGE_STREAM
+        value: outbound
       - key: ADMIN_API_KEY
+        type: SECRET
+        scope: RUN_TIME
+      - key: POSTMARK_SERVER_TOKEN
+        type: SECRET
+        scope: RUN_TIME
+      - key: MAIL_FROM
         type: SECRET
         scope: RUN_TIME
       - key: PORTAL_URL

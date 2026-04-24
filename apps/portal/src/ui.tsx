@@ -309,6 +309,8 @@ export function StatusPill({ status }: { status: string }) {
     pending: { bg: theme.surface2, fg: theme.textMuted },
     failed: { bg: theme.dangerSoft, fg: theme.danger },
     connected: { bg: theme.successSoft, fg: theme.success },
+    invited: { bg: theme.warnSoft, fg: theme.warn },
+    active: { bg: theme.successSoft, fg: theme.success },
   };
   const c = palette[status] ?? { bg: theme.surface2, fg: theme.textMuted };
   return (

@@ -1,15 +1,106 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { KeyRound } from 'lucide-react';
+import { KeyRound, Mail } from 'lucide-react';
 import { api, clearApiKey, setApiKey, ApiError, type Principal } from '../../api.js';
 import { theme } from '../../theme.js';
 import { Logo, AuthFrame } from './Shared.js';
 
+type Tab = 'email' | 'key';
+
 export function LoginPage() {
+  const [tab, setTab] = useState<Tab>('email');
   return (
-    <AuthFrame title="Sign in" subtitle="Paste your API key to continue.">
-      <KeyTab />
+    <AuthFrame title="Sign in" subtitle="Choose how you want to sign in.">
+      <div style={{ display: 'flex', gap: 4, background: theme.bg, padding: 4, borderRadius: theme.radiusSm, marginBottom: 20 }}>
+        <TabButton active={tab === 'email'} onClick={() => setTab('email')} icon={<Mail size={14} />}>
+          Email
+        </TabButton>
+        <TabButton active={tab === 'key'} onClick={() => setTab('key')} icon={<KeyRound size={14} />}>
+          API key
+        </TabButton>
+      </div>
+      {tab === 'email' ? <EmailTab /> : <KeyTab />}
     </AuthFrame>
+  );
+}
+
+function TabButton({ active, onClick, icon, children }: { active: boolean; onClick: () => void; icon: ReactNode; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        flex: 1,
+        padding: '7px 10px',
+        background: active ? theme.surface : 'transparent',
+        color: active ? theme.text : theme.textMuted,
+        border: 'none',
+        borderRadius: theme.radiusSm,
+        fontSize: 13,
+        fontWeight: 500,
+        cursor: 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        justifyContent: 'center',
+      }}
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
+function EmailTab() {
+  const [email, setEmail] = useState('');
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setErr(null);
+    try {
+      await api('/auth/signin', { method: 'POST', body: { email } });
+      setSent(true);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (sent) {
+    return (
+      <div style={{ background: theme.successSoft, border: `1px solid ${theme.success}55`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
+        <div style={{ fontWeight: 500, marginBottom: 4 }}>Check your inbox</div>
+        <div style={{ color: `${theme.success}cc` }}>
+          If an account exists for <strong>{email}</strong>, we sent a sign-in link. It's good for 15 minutes.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={submit}>
+      <div style={{ position: 'relative' }}>
+        <Mail size={15} style={{ position: 'absolute', left: 12, top: 12, color: theme.textDim, pointerEvents: 'none' }} />
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@example.com"
+          autoFocus
+          required
+          style={inputStyle}
+        />
+      </div>
+      {err && <div style={{ color: theme.danger, fontSize: 13, marginTop: 8 }}>{err}</div>}
+      <button type="submit" disabled={busy || !email} style={primaryBtnStyle(busy || !email)}>
+        {busy ? 'Sending…' : 'Email me a sign-in link'}
+      </button>
+    </form>
   );
 }
 
