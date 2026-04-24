@@ -1,24 +1,55 @@
 {
   "name": "@openpartner/sdk",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "OpenPartner SDK. Browser client for click → identity stitching + Node server SDK for conversion events and attribution reads.",
   "type": "module",
-  "description": "OpenPartner client SDK. Embed in a customer site to stitch first-party cookie to authenticated user.",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "./dist/browser.cjs",
+  "module": "./dist/browser.js",
+  "types": "./dist/browser.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js",
+      "require": "./dist/browser.cjs"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js",
+      "require": "./dist/server.cjs"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "openpartner",
+    "affiliate",
+    "attribution",
+    "referral",
+    "partner",
+    "sdk"
+  ],
+  "homepage": "https://github.com/openpartner/openpartner/tree/main/packages/sdk",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/openpartner/openpartner.git",
+    "directory": "packages/sdk"
+  },
+  "license": "MIT",
+  "sideEffects": false,
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsup",
+    "dev": "tsup --watch",
     "lint": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },
   "devDependencies": {
+    "jsdom": "^29.0.2",
+    "tsup": "^8.5.1",
     "typescript": "5.4.5",
     "vitest": "^1.6.0"
   }

@@ -131,3 +131,25 @@ op.identify(currentUser.id);
 ```
 
 The SDK captures `?cref=…` from the landing URL and the `_cref` cookie, stashes in localStorage so the attribution survives ITP / multi-session gaps, then POSTs to `/attribution/identify` when you call `identify()`.
+
+## 8. Server SDK
+
+For conversion events your backend controls (custom events, non-Stripe billing):
+
+```ts
+import { OpenPartnerServer } from '@openpartner/sdk/server';
+
+const op = new OpenPartnerServer({
+  apiUrl: process.env.OPENPARTNER_API_URL!,
+  apiKey: process.env.OPENPARTNER_API_KEY!,
+});
+
+await op.trackEvent({
+  userId: user.id,
+  type: 'invoice_paid',
+  value: 249,
+  currency: 'USD',
+});
+```
+
+See [`packages/sdk/README.md`](../packages/sdk/README.md) for full integration docs, including framework notes and error handling.

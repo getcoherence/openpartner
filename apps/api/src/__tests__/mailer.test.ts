@@ -24,7 +24,7 @@ describe('PostmarkMailer', () => {
     process.env.MAIL_FROM = 'OpenPartner <no-reply@example.com>';
     process.env.POSTMARK_MESSAGE_STREAM = 'transactional-1';
 
-    const fetchMock = vi.fn(async () =>
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
       new Response(JSON.stringify({ ErrorCode: 0, Message: 'OK' }), { status: 200 }),
     );
     vi.stubGlobal('fetch', fetchMock);
@@ -42,14 +42,15 @@ describe('PostmarkMailer', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledOnce();
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe('https://api.postmarkapp.com/email');
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe('https://api.postmarkapp.com/email');
 
-    const headers = (init as RequestInit).headers as Record<string, string>;
+    const init = call[1]!;
+    const headers = init.headers as Record<string, string>;
     expect(headers['x-postmark-server-token']).toBe('test-token');
     expect(headers['content-type']).toBe('application/json');
 
-    const body = JSON.parse(String((init as RequestInit).body));
+    const body = JSON.parse(String(init.body));
     expect(body.From).toBe('OpenPartner <no-reply@example.com>');
     expect(body.To).toBe('grace@example.com');
     expect(body.Subject).toBe('Hi');
