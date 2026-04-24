@@ -28,11 +28,16 @@ export function LoginPage() {
           borderTop: `1px solid ${theme.borderSubtle}`,
           fontSize: 13,
           color: theme.textDim,
+          lineHeight: 1.8,
         }}
       >
         New to OpenPartner?{' '}
         <Link to="/signup" style={{ color: theme.accent, fontWeight: 500 }}>
-          Sign up as a creator
+          Creator signup
+        </Link>
+        {' · '}
+        <Link to="/signup/vendor" style={{ color: theme.accent, fontWeight: 500 }}>
+          Vendor signup
         </Link>
       </div>
     </AuthFrame>
@@ -87,7 +92,7 @@ function EmailTab() {
     setBusy(true);
     setErr(null);
     try {
-      await api('/auth/creator/signin', { method: 'POST', body: { email } });
+      await api('/auth/signin', { method: 'POST', body: { email } });
       setSent(true);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Something went wrong.');

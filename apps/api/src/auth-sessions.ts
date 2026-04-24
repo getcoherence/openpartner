@@ -11,6 +11,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { ulid } from 'ulid';
 import {
   TABLES,
+  type MagicLinkClaim,
   type MagicLinkPurpose,
   type MagicLinkTokenRow,
   type SessionPrincipalKind,
@@ -41,7 +42,7 @@ export interface IssuedToken {
 export async function issueMagicLink(params: {
   email: string;
   purpose: MagicLinkPurpose;
-  claim?: { handle?: string; name?: string };
+  claim?: MagicLinkClaim;
   ttlSeconds?: number;
 }): Promise<IssuedToken> {
   const plaintext = `mlt_${randomBytes(32).toString('base64url')}`;
@@ -56,7 +57,7 @@ export async function issueMagicLink(params: {
     tokenHash,
     email: params.email.toLowerCase(),
     purpose: params.purpose,
-    claim: (params.claim ?? null) as never,
+    claim: params.claim ? (JSON.stringify(params.claim) as unknown as never) : null,
     expiresAt,
   });
 

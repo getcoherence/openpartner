@@ -145,6 +145,109 @@ describe.skipIf(skipIntegration)('magic-link auth', () => {
     void dupEmail;
   });
 
+  it('vendor signup: rejects bad keys, creates pending vendor on verify, activates + signin', async () => {
+    // Bad instance URL → instance_unreachable.
+    const badUrl = await request(app)
+      .post('/auth/vendor/signup')
+      .send({
+        email: 'bad@vendor.com',
+        name: 'Bad',
+        slug: `bad-${Date.now()}`,
+        instanceUrl: 'http://127.0.0.1:1',
+        instanceKey: 'op_nothing',
+      });
+    expect(badUrl.status).toBe(400);
+
+    // Stand up a real vendor instance (same server). Mint a scoped key
+    // with only the federation scopes.
+    const { AddressInfo } = await import('node:net');
+    void AddressInfo;
+    const appListen = app.listen(0);
+    const port = (appListen.address() as import('node:net').AddressInfo).port;
+    const vendorInstanceUrl = `http://127.0.0.1:${port}`;
+    const scopedMint = await request(app)
+      .post('/api-keys/scoped')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ scopes: ['partners:write', 'partners:read', 'links:write', 'commissions:read'] });
+    const scopedKey = scopedMint.body.plaintext as string;
+
+    const slug = `good-${Date.now()}`;
+    const signup = await request(app)
+      .post('/auth/vendor/signup')
+      .send({
+        email: 'good@vendor.com',
+        name: 'GoodVendor',
+        slug,
+        instanceUrl: vendorInstanceUrl,
+        instanceKey: scopedKey,
+      });
+    expect(signup.status).toBe(200);
+
+    const mailbox = await request(app).get('/dev/mailbox').set('Authorization', `Bearer ${ADMIN_KEY}`);
+    const signupMsg = mailbox.body.messages.find((m: { to: string }) => m.to === 'good@vendor.com');
+    expect(signupMsg).toBeDefined();
+    const token = extractToken(signupMsg.body);
+
+    const verify = await request(app).post('/auth/magic/verify').send({ token });
+    expect(verify.status).toBe(200);
+    expect(verify.body.role).toBe('network_vendor');
+    expect(verify.body.status).toBe('pending');
+    // No session cookie yet — vendor is pending admin approval.
+    expect(verify.headers['set-cookie']).toBeUndefined();
+
+    // Signin right now should no-op (vendor not active) → no magic link.
+    await db(TABLES.DevMessage).del(); // clear so we can tell if anything arrives
+    await request(app).post('/auth/signin').send({ email: 'good@vendor.com' });
+    const mailbox2 = await request(app).get('/dev/mailbox').set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(mailbox2.body.messages.filter((m: { to: string }) => m.to === 'good@vendor.com')).toHaveLength(0);
+
+    // Admin activates.
+    const vendorId = verify.body.vendor.id;
+    await request(app).post(`/network/vendors/${vendorId}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    // Signin now DOES issue a link.
+    await request(app).post('/auth/signin').send({ email: 'good@vendor.com' });
+    const mailbox3 = await request(app).get('/dev/mailbox').set('Authorization', `Bearer ${ADMIN_KEY}`);
+    const signinMsg = mailbox3.body.messages.find(
+      (m: { to: string; subject: string }) => m.to === 'good@vendor.com' && m.subject.includes('sign-in'),
+    );
+    expect(signinMsg).toBeDefined();
+    const signinToken = extractToken(signinMsg.body);
+    const signinVerify = await request(app).post('/auth/magic/verify').send({ token: signinToken });
+    expect(signinVerify.status).toBe(200);
+    expect(signinVerify.body.role).toBe('network_vendor');
+    const cookie = (signinVerify.headers['set-cookie'] as unknown as string[])[0]!.split(';')[0]!;
+
+    // Session-backed whoami.
+    const me = await request(app).get('/auth/whoami').set('Cookie', cookie);
+    expect(me.status).toBe(200);
+    expect(me.body.role).toBe('network_vendor');
+    expect(me.body.vendor.slug).toBe(slug);
+
+    await new Promise<void>((resolve) => appListen.close(() => resolve()));
+  });
+
+  it('unified /auth/signin tries creator then vendor', async () => {
+    // Creator email → creator signin link.
+    await request(app)
+      .post('/auth/creator/signup')
+      .send({ email: 'c@example.com', handle: 'cuser', name: 'Cuser Name' });
+    let msgs = (await request(app).get('/dev/mailbox').set('Authorization', `Bearer ${ADMIN_KEY}`)).body.messages;
+    await request(app).post('/auth/magic/verify').send({ token: extractToken(msgs[0].body) });
+
+    await db(TABLES.DevMessage).del();
+    await request(app).post('/auth/signin').send({ email: 'c@example.com' });
+    msgs = (await request(app).get('/dev/mailbox').set('Authorization', `Bearer ${ADMIN_KEY}`)).body.messages;
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].metadata?.purpose).toBe('creator_signin');
+
+    // Unknown email → silent (no message).
+    await db(TABLES.DevMessage).del();
+    await request(app).post('/auth/signin').send({ email: 'nobody@example.com' });
+    const after = await request(app).get('/dev/mailbox').set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(after.body.messages).toHaveLength(0);
+  });
+
   it('signout clears the session cookie', async () => {
     await request(app)
       .post('/auth/creator/signup')

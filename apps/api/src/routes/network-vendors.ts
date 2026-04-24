@@ -25,7 +25,12 @@ const verifyKeySchema = z.object({
  * partners:read, commissions:read). If they paste a full admin key we
  * want to warn them so they can go mint a scoped one instead.
  */
-networkVendorsRouter.post('/network/vendors/verify-key', requireAuth, requireAdmin, async (req, res) => {
+// Intentionally open (no auth) — useful during the unauthenticated vendor
+// signup flow so the prospective vendor can sanity-check the key they're
+// about to hand over. The caller must already know the key + instance
+// URL, so this grants nothing they don't already have. We only proxy
+// GET /auth/introspect (narrow surface), not arbitrary URLs.
+networkVendorsRouter.post('/network/vendors/verify-key', async (req, res) => {
   const body = verifyKeySchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 

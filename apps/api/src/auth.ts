@@ -20,7 +20,7 @@ export type ApiKeyPrincipal =
   | { role: 'admin'; source: 'env' }
   | { role: 'admin'; source: 'db'; apiKeyId: string }
   | { role: 'partner'; source: 'db'; apiKeyId: string; partnerId: string }
-  | { role: 'network_vendor'; source: 'db'; apiKeyId: string; networkVendorId: string }
+  | { role: 'network_vendor'; source: 'db' | 'session'; apiKeyId?: string; sessionId?: string; networkVendorId: string }
   | { role: 'network_creator'; source: 'db' | 'session'; apiKeyId?: string; sessionId?: string; networkCreatorId: string }
   | { role: 'scoped'; source: 'db'; apiKeyId: string; scopes: string[] };
 
@@ -94,7 +94,15 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
         networkCreatorId: session.principalId,
       };
     }
-    // Future: other session principal kinds. None implemented yet.
+    if (session.principalKind === 'network_vendor') {
+      return {
+        role: 'network_vendor',
+        source: 'session',
+        sessionId: session.id,
+        networkVendorId: session.principalId,
+      };
+    }
+    // Future: partner / admin session kinds if we add human auth for them.
     return null;
   }
   const match = /^Bearer\s+(\S+)$/i.exec(header);

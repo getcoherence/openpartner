@@ -1,24 +1,20 @@
 /**
- * Human-auth endpoints — magic-link signup/signin for creators + dev
- * mailbox.
+ * Human-auth endpoints — magic-link signup/signin for creators AND
+ * vendors, plus dev mailbox.
  *
- * Signup flow:
- *   POST /auth/creator/signup {email, handle, name}
- *     → writes a MagicLinkToken(purpose=signup, claim={handle,name})
- *     → mails a link containing the token
- *   GET /auth/magic?token=…&purpose=signup  (the mailed link)
- *     → front-end POSTs the token to /auth/magic/verify
- *   POST /auth/magic/verify {token}
- *     → consumes token; if signup, create NetworkCreator using claim
- *     → create Session, set cookie, return whoami-shaped principal
+ * Purpose strings encode BOTH the role (creator / vendor) and the
+ * lifecycle stage (signup / signin), giving us four values:
+ *   creator_signup  — claim carries handle + name → creates active NetworkCreator
+ *   creator_signin  — returning active creator → new session
+ *   vendor_signup   — claim carries full vendor profile → creates pending NetworkVendor
+ *   vendor_signin   — returning active vendor → new session
  *
- * Signin flow:
- *   POST /auth/creator/signin {email}  → signin token for an already-
- *   active creator with that email. verify endpoint is the same.
+ * We deliberately use 'pending' status for vendor signup so an admin
+ * still reviews the federation credentials before activating — unlike
+ * creator signup where magic-link email verification is enough.
  *
- * Tokens are single-use (consumeMagicLink atomically flips consumedAt),
- * short-TTL (15 min default), and per-email rate-limited at the DB level
- * via the unique tokens only being useful once.
+ * Token consumption is single-use and atomic (conditional update on
+ * consumedAt IS NULL). Tokens expire after 15 minutes.
  */
 
 import { Router } from 'express';
@@ -27,8 +23,11 @@ import { ulid } from 'ulid';
 import {
   TABLES,
   type DevMessageRow,
+  type MagicLinkCreatorClaim,
   type MagicLinkTokenRow,
+  type MagicLinkVendorClaim,
   type NetworkCreatorRow,
+  type NetworkVendorRow,
 } from '@openpartner/db';
 import { db } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
@@ -41,10 +40,12 @@ import {
   revokeSession,
   sessionCookieOptions,
 } from '../auth-sessions.js';
+import { encryptKey } from '../network/crypto.js';
+import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
 
 export const magicLinkRouter = Router();
 
-const signupSchema = z.object({
+const creatorSignupSchema = z.object({
   email: z.string().email(),
   handle: z
     .string()
@@ -54,77 +55,197 @@ const signupSchema = z.object({
   name: z.string().min(2).max(80),
 });
 
-const signinSchema = z.object({ email: z.string().email() });
+const vendorSignupSchema = z.object({
+  email: z.string().email(),
+  name: z.string().min(2).max(120),
+  slug: z
+    .string()
+    .min(2)
+    .max(40)
+    .regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase letters, digits, or -'),
+  instanceUrl: z.string().url(),
+  instanceKey: z.string().min(8),
+  routerUrl: z.string().url().optional(),
+  description: z.string().max(1000).optional(),
+  websiteUrl: z.string().url().optional(),
+  logoUrl: z.string().url().optional(),
+});
 
+const signinSchema = z.object({ email: z.string().email() });
 const verifySchema = z.object({ token: z.string().min(8) });
 
-// Where magic links point. In dev the portal is on :5173; in prod
-// override via PORTAL_URL so emails link to the right host.
 function portalOrigin(): string {
   return (process.env.PORTAL_URL ?? 'http://localhost:5173').replace(/\/$/, '');
 }
 
-function magicUrl(token: string, purpose: 'signup' | 'signin'): string {
+function magicUrl(token: string, purpose: string): string {
   return `${portalOrigin()}/auth/magic?token=${encodeURIComponent(token)}&purpose=${purpose}`;
 }
 
-// -------- Signup --------
+// -------- Creator signup --------
 
 magicLinkRouter.post('/auth/creator/signup', async (req, res) => {
-  const body = signupSchema.safeParse(req.body);
+  const body = creatorSignupSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
   const email = body.data.email.toLowerCase();
   const handle = body.data.handle.toLowerCase();
 
-  // Reject if a creator already exists at this email OR handle. We do
-  // NOT leak which one — "already in use" keeps enumeration harder.
   const existing = await db<NetworkCreatorRow>(TABLES.NetworkCreator)
     .where({ email })
     .orWhere({ handle })
     .first();
-  if (existing) {
-    return res.status(409).json({ error: 'email_or_handle_taken' });
-  }
+  if (existing) return res.status(409).json({ error: 'email_or_handle_taken' });
 
-  const issued = await issueMagicLink({
-    email,
-    purpose: 'signup',
-    claim: { handle, name: body.data.name },
-  });
+  const claim: MagicLinkCreatorClaim = { kind: 'creator', handle, name: body.data.name };
+  const issued = await issueMagicLink({ email, purpose: 'creator_signup', claim });
 
   await getMailer().send({
     to: email,
     subject: 'Finish your OpenPartner signup',
-    text: `Hi ${body.data.name},\n\nClick this link within 15 minutes to finish creating your OpenPartner creator account:\n\n${magicUrl(issued.plaintext, 'signup')}\n\nIf you didn't request this, ignore this email.`,
-    metadata: { purpose: 'signup', handle },
+    text: `Hi ${body.data.name},\n\nClick this link within 15 minutes to finish creating your OpenPartner creator account:\n\n${magicUrl(issued.plaintext, 'creator_signup')}\n\nIf you didn't request this, ignore this email.`,
+    metadata: { purpose: 'creator_signup', handle },
   });
 
   res.json({ ok: true });
 });
 
-// -------- Signin --------
+// -------- Vendor signup --------
+//
+// We verify the vendor's scoped API key against their own instance BEFORE
+// issuing the magic link — no point emailing them a verification link
+// only to fail at admin-approval time because the key doesn't work.
 
-magicLinkRouter.post('/auth/creator/signin', async (req, res) => {
-  const body = signinSchema.safeParse(req.body);
+magicLinkRouter.post('/auth/vendor/signup', async (req, res) => {
+  const body = vendorSignupSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
   const email = body.data.email.toLowerCase();
-  const creator = await db<NetworkCreatorRow>(TABLES.NetworkCreator).where({ email }).first();
 
-  // We respond identically whether or not the creator exists — another
-  // small step against email enumeration. The mailer writes to the
-  // DevMessage table either way; if no creator, no link is minted.
-  if (creator && creator.status === 'active') {
-    const issued = await issueMagicLink({ email, purpose: 'signin' });
-    await getMailer().send({
-      to: email,
-      subject: 'Your OpenPartner sign-in link',
-      text: `Click within 15 minutes to sign in to OpenPartner:\n\n${magicUrl(issued.plaintext, 'signin')}\n\nIf you didn't request this, ignore this email.`,
-      metadata: { purpose: 'signin' },
+  const existing = await db<NetworkVendorRow>(TABLES.NetworkVendor).where({ slug: body.data.slug }).first();
+  if (existing) return res.status(409).json({ error: 'slug_taken' });
+
+  // Probe the instance's /auth/introspect with the pasted key. Reject if
+  // the key can't reach the instance or doesn't have the federation
+  // scopes (unrestricted admin keys are accepted but flagged in the UI).
+  const introspectUrl = `${body.data.instanceUrl.replace(/\/$/, '')}/auth/introspect`;
+  try {
+    const response = await fetch(introspectUrl, {
+      headers: { authorization: `Bearer ${body.data.instanceKey}` },
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      return res.status(400).json({
+        error: 'instance_rejected_key',
+        status: response.status,
+        detail: text.slice(0, 300),
+      });
+    }
+    const intro = (await response.json()) as Record<string, unknown>;
+    const scopes = Array.isArray(intro.scopes) ? (intro.scopes as string[]) : null;
+    const unrestricted = intro.role === 'admin' && intro.unrestricted === true;
+    const missing =
+      scopes != null
+        ? (NETWORK_FEDERATION_SCOPES as readonly string[]).filter((s) => !scopes.includes(s))
+        : [];
+    if (!unrestricted && (scopes == null || missing.length > 0)) {
+      return res.status(400).json({
+        error: 'missing_scopes',
+        missing,
+        have: scopes ?? [],
+      });
+    }
+  } catch (err: unknown) {
+    return res.status(400).json({
+      error: 'instance_unreachable',
+      detail: err instanceof Error ? err.message : String(err),
     });
   }
 
+  const claim: MagicLinkVendorClaim = {
+    kind: 'vendor',
+    name: body.data.name,
+    slug: body.data.slug,
+    instanceUrl: body.data.instanceUrl.replace(/\/$/, ''),
+    instanceKey: body.data.instanceKey,
+    ...(body.data.routerUrl ? { routerUrl: body.data.routerUrl } : {}),
+    ...(body.data.description ? { description: body.data.description } : {}),
+    ...(body.data.websiteUrl ? { websiteUrl: body.data.websiteUrl } : {}),
+    ...(body.data.logoUrl ? { logoUrl: body.data.logoUrl } : {}),
+  };
+  const issued = await issueMagicLink({ email, purpose: 'vendor_signup', claim });
+
+  await getMailer().send({
+    to: email,
+    subject: 'Finish your OpenPartner vendor signup',
+    text: `Hi ${body.data.name},\n\nClick this link within 15 minutes to submit your Network vendor application:\n\n${magicUrl(issued.plaintext, 'vendor_signup')}\n\nOnce you verify, an admin will review your federation credentials before activating your account.\n\nIf you didn't request this, ignore this email.`,
+    metadata: { purpose: 'vendor_signup', slug: body.data.slug },
+  });
+
+  res.json({ ok: true });
+});
+
+// -------- Unified signin --------
+//
+// One endpoint for humans. Looks up creator first, then vendor; issues a
+// link for whichever role matches. Response is identical regardless of
+// which (or neither) matches, so the endpoint doesn't leak whether an
+// email is registered on the Network.
+
+magicLinkRouter.post('/auth/signin', async (req, res) => {
+  const body = signinSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const email = body.data.email.toLowerCase();
+
+  const creator = await db<NetworkCreatorRow>(TABLES.NetworkCreator).where({ email }).first();
+  if (creator && creator.status === 'active') {
+    const issued = await issueMagicLink({ email, purpose: 'creator_signin' });
+    await getMailer().send({
+      to: email,
+      subject: 'Your OpenPartner sign-in link',
+      text: `Click within 15 minutes to sign in to OpenPartner:\n\n${magicUrl(issued.plaintext, 'creator_signin')}\n\nIf you didn't request this, ignore this email.`,
+      metadata: { purpose: 'creator_signin' },
+    });
+    return res.json({ ok: true });
+  }
+
+  // Vendors use email too; we need a way to tie vendors to an email. For
+  // now we assume vendor.description or a dedicated column — but we don't
+  // have vendor.email yet. We infer via MagicLinkToken history: find the
+  // most recent consumed vendor_signup token for this email and look up
+  // the vendor created from it. That keeps migrations light for MVP.
+  const vendor = await findVendorByEmail(email);
+  if (vendor && vendor.status === 'active') {
+    const issued = await issueMagicLink({ email, purpose: 'vendor_signin' });
+    await getMailer().send({
+      to: email,
+      subject: 'Your OpenPartner sign-in link',
+      text: `Click within 15 minutes to sign in to OpenPartner:\n\n${magicUrl(issued.plaintext, 'vendor_signin')}\n\nIf you didn't request this, ignore this email.`,
+      metadata: { purpose: 'vendor_signin', vendorId: vendor.id },
+    });
+  }
+
+  // No-op on unknown / inactive — don't reveal which.
+  res.json({ ok: true });
+});
+
+// Deprecated alias for older clients still calling /auth/creator/signin.
+// Scoped to creators only — matches the pre-unified contract.
+magicLinkRouter.post('/auth/creator/signin', async (req, res) => {
+  const body = signinSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const email = body.data.email.toLowerCase();
+
+  const creator = await db<NetworkCreatorRow>(TABLES.NetworkCreator).where({ email }).first();
+  if (creator && creator.status === 'active') {
+    const issued = await issueMagicLink({ email, purpose: 'creator_signin' });
+    await getMailer().send({
+      to: email,
+      subject: 'Your OpenPartner sign-in link',
+      text: `Click within 15 minutes to sign in to OpenPartner:\n\n${magicUrl(issued.plaintext, 'creator_signin')}\n\nIf you didn't request this, ignore this email.`,
+      metadata: { purpose: 'creator_signin' },
+    });
+  }
   res.json({ ok: true });
 });
 
@@ -138,38 +259,48 @@ magicLinkRouter.post('/auth/magic/verify', async (req, res) => {
   if (!result.ok) return res.status(400).json({ error: result.error });
 
   const token: MagicLinkTokenRow = result.token;
-  let creator: NetworkCreatorRow | undefined;
 
-  if (token.purpose === 'signup') {
-    const claim = token.claim ?? {};
-    if (!claim.handle || !claim.name) return res.status(400).json({ error: 'invalid_signup_claim' });
-    // Someone may have registered the same handle/email in the meantime —
-    // fail cleanly with 409 so the UI can prompt to sign in instead.
-    const collision = await db<NetworkCreatorRow>(TABLES.NetworkCreator)
-      .where({ email: token.email })
-      .orWhere({ handle: claim.handle })
-      .first();
-    if (collision) return res.status(409).json({ error: 'email_or_handle_taken' });
-
-    const id = ulid();
-    await db<NetworkCreatorRow>(TABLES.NetworkCreator).insert({
-      id,
-      name: claim.name,
-      handle: claim.handle,
-      email: token.email,
-      bio: null,
-      avatarUrl: null,
-      platforms: JSON.stringify([]) as unknown as never,
-      defaultPromoCode: null,
-      status: 'active', // signup flow goes straight to active; email was verified
-      activatedAt: new Date(),
-    });
-    creator = (await db<NetworkCreatorRow>(TABLES.NetworkCreator).where({ id }).first())!;
-  } else {
-    creator = await db<NetworkCreatorRow>(TABLES.NetworkCreator).where({ email: token.email }).first();
-    if (!creator) return res.status(404).json({ error: 'creator_not_found' });
-    if (creator.status !== 'active') return res.status(403).json({ error: 'creator_not_active' });
+  if (token.purpose === 'creator_signup') {
+    return verifyCreatorSignup(token, res);
   }
+  if (token.purpose === 'creator_signin') {
+    return verifyCreatorSignin(token, res);
+  }
+  if (token.purpose === 'vendor_signup') {
+    return verifyVendorSignup(token, res);
+  }
+  if (token.purpose === 'vendor_signin') {
+    return verifyVendorSignin(token, res);
+  }
+  res.status(400).json({ error: 'unknown_purpose' });
+});
+
+async function verifyCreatorSignup(token: MagicLinkTokenRow, res: Parameters<Parameters<typeof magicLinkRouter.post>[1]>[1]) {
+  const claim = token.claim;
+  if (!claim || claim.kind !== 'creator') {
+    return res.status(400).json({ error: 'invalid_signup_claim' });
+  }
+
+  const collision = await db<NetworkCreatorRow>(TABLES.NetworkCreator)
+    .where({ email: token.email })
+    .orWhere({ handle: claim.handle })
+    .first();
+  if (collision) return res.status(409).json({ error: 'email_or_handle_taken' });
+
+  const id = ulid();
+  await db<NetworkCreatorRow>(TABLES.NetworkCreator).insert({
+    id,
+    name: claim.name,
+    handle: claim.handle,
+    email: token.email,
+    bio: null,
+    avatarUrl: null,
+    platforms: JSON.stringify([]) as unknown as never,
+    defaultPromoCode: null,
+    status: 'active',
+    activatedAt: new Date(),
+  });
+  const creator = (await db<NetworkCreatorRow>(TABLES.NetworkCreator).where({ id }).first())!;
 
   const session = await createSession({ principalKind: 'network_creator', principalId: creator.id });
   res.cookie(SESSION_COOKIE_NAME, session.plaintext, sessionCookieOptions());
@@ -186,14 +317,107 @@ magicLinkRouter.post('/auth/magic/verify', async (req, res) => {
       status: creator.status,
     },
   });
-});
+}
+
+async function verifyCreatorSignin(token: MagicLinkTokenRow, res: Parameters<Parameters<typeof magicLinkRouter.post>[1]>[1]) {
+  const creator = await db<NetworkCreatorRow>(TABLES.NetworkCreator).where({ email: token.email }).first();
+  if (!creator) return res.status(404).json({ error: 'creator_not_found' });
+  if (creator.status !== 'active') return res.status(403).json({ error: 'creator_not_active' });
+
+  const session = await createSession({ principalKind: 'network_creator', principalId: creator.id });
+  res.cookie(SESSION_COOKIE_NAME, session.plaintext, sessionCookieOptions());
+  res.json({
+    ok: true,
+    role: 'network_creator',
+    creator: {
+      id: creator.id,
+      name: creator.name,
+      handle: creator.handle,
+      email: creator.email,
+      avatarUrl: creator.avatarUrl,
+      defaultPromoCode: creator.defaultPromoCode,
+      status: creator.status,
+    },
+  });
+}
+
+async function verifyVendorSignup(token: MagicLinkTokenRow, res: Parameters<Parameters<typeof magicLinkRouter.post>[1]>[1]) {
+  const claim = token.claim;
+  if (!claim || claim.kind !== 'vendor') {
+    return res.status(400).json({ error: 'invalid_signup_claim' });
+  }
+
+  const collision = await db<NetworkVendorRow>(TABLES.NetworkVendor).where({ slug: claim.slug }).first();
+  if (collision) return res.status(409).json({ error: 'slug_taken' });
+
+  const id = ulid();
+  const ciphertext = encryptKey(claim.instanceKey);
+  await db<NetworkVendorRow>(TABLES.NetworkVendor).insert({
+    id,
+    name: claim.name,
+    slug: claim.slug,
+    websiteUrl: claim.websiteUrl ?? null,
+    logoUrl: claim.logoUrl ?? null,
+    description: claim.description ?? null,
+    instanceUrl: claim.instanceUrl,
+    instanceKeyCiphertext: ciphertext,
+    instanceKeyPrefix: claim.instanceKey.slice(0, 8),
+    routerUrl: claim.routerUrl ?? null,
+    status: 'pending', // admin still reviews the federation relationship
+  });
+
+  // No session yet — the vendor is pending. Returning a helpful message
+  // so the portal can show "admin is reviewing your application."
+  res.json({
+    ok: true,
+    role: 'network_vendor',
+    status: 'pending',
+    vendor: { id, name: claim.name, slug: claim.slug },
+  });
+}
+
+async function verifyVendorSignin(token: MagicLinkTokenRow, res: Parameters<Parameters<typeof magicLinkRouter.post>[1]>[1]) {
+  const vendor = await findVendorByEmail(token.email);
+  if (!vendor) return res.status(404).json({ error: 'vendor_not_found' });
+  if (vendor.status !== 'active') return res.status(403).json({ error: 'vendor_not_active' });
+
+  const session = await createSession({ principalKind: 'network_vendor', principalId: vendor.id });
+  res.cookie(SESSION_COOKIE_NAME, session.plaintext, sessionCookieOptions());
+  res.json({
+    ok: true,
+    role: 'network_vendor',
+    vendor: {
+      id: vendor.id,
+      name: vendor.name,
+      slug: vendor.slug,
+      logoUrl: vendor.logoUrl,
+      websiteUrl: vendor.websiteUrl,
+      status: vendor.status,
+    },
+  });
+}
+
+/**
+ * Map a vendor back to the email that signed them up. We don't store
+ * email directly on NetworkVendor today (it's carried on the MagicLink
+ * claim), so we look up the most recent consumed vendor_signup token for
+ * this email and locate the vendor by the slug it held.
+ */
+async function findVendorByEmail(email: string): Promise<NetworkVendorRow | undefined> {
+  const token = await db<MagicLinkTokenRow>(TABLES.MagicLinkToken)
+    .where({ email, purpose: 'vendor_signup' })
+    .whereNotNull('consumedAt')
+    .orderBy('consumedAt', 'desc')
+    .first();
+  if (!token?.claim || token.claim.kind !== 'vendor') return undefined;
+  return db<NetworkVendorRow>(TABLES.NetworkVendor).where({ slug: token.claim.slug }).first();
+}
 
 // -------- Signout --------
 
 magicLinkRouter.post('/auth/signout', async (req, res) => {
   const plaintext = req.cookies?.[SESSION_COOKIE_NAME];
   if (plaintext) {
-    // Best-effort — unknown tokens are already effectively signed out.
     const { resolveSession } = await import('../auth-sessions.js');
     const session = await resolveSession(plaintext);
     if (session) await revokeSession(session.id);

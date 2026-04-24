@@ -40,6 +40,7 @@ import { AdminNetworkVendors } from './pages/network/AdminNetworkVendors.js';
 import { AdminNetworkCreators } from './pages/network/AdminNetworkCreators.js';
 import { LoginPage } from './pages/auth/Login.js';
 import { SignupPage } from './pages/auth/Signup.js';
+import { VendorSignupPage } from './pages/auth/VendorSignup.js';
 import { MagicLandingPage } from './pages/auth/MagicLanding.js';
 import { DevMailboxPage } from './pages/admin/DevMailbox.js';
 import { OfferingDetailPage } from './pages/network/OfferingDetail.js';
@@ -56,6 +57,7 @@ export function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
+        <Route path="/signup/vendor" element={<VendorSignupPage />} />
         <Route path="/auth/magic" element={<MagicLandingPage />} />
         <Route path="/*" element={<Shell />} />
       </Routes>

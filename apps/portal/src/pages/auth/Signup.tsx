@@ -78,12 +78,21 @@ export function SignupPage() {
           borderTop: `1px solid ${theme.borderSubtle}`,
           fontSize: 13,
           color: theme.textDim,
+          lineHeight: 1.8,
         }}
       >
-        Already have an account?{' '}
-        <Link to="/login" style={{ color: theme.accent, fontWeight: 500 }}>
-          Sign in
-        </Link>
+        <div>
+          Already have an account?{' '}
+          <Link to="/login" style={{ color: theme.accent, fontWeight: 500 }}>
+            Sign in
+          </Link>
+        </div>
+        <div>
+          Building a product to list?{' '}
+          <Link to="/signup/vendor" style={{ color: theme.accent, fontWeight: 500 }}>
+            Vendor signup
+          </Link>
+        </div>
       </div>
     </AuthFrame>
   );

@@ -228,7 +228,31 @@ export interface PartnershipRequestRow {
 
 // ---- Human auth (magic-link + sessions) ----
 
-export type MagicLinkPurpose = 'signup' | 'signin';
+export type MagicLinkPurpose =
+  | 'creator_signup'
+  | 'creator_signin'
+  | 'vendor_signup'
+  | 'vendor_signin';
+
+export interface MagicLinkCreatorClaim {
+  kind: 'creator';
+  handle: string;
+  name: string;
+}
+
+export interface MagicLinkVendorClaim {
+  kind: 'vendor';
+  name: string;
+  slug: string;
+  instanceUrl: string;
+  instanceKey: string;
+  routerUrl?: string;
+  description?: string;
+  websiteUrl?: string;
+  logoUrl?: string;
+}
+
+export type MagicLinkClaim = MagicLinkCreatorClaim | MagicLinkVendorClaim;
 
 export interface MagicLinkTokenRow {
   id: string;
@@ -236,7 +260,7 @@ export interface MagicLinkTokenRow {
   tokenHash: string;
   email: string;
   purpose: MagicLinkPurpose;
-  claim: { handle?: string; name?: string } | null;
+  claim: MagicLinkClaim | null;
   expiresAt: Date;
   consumedAt: Date | null;
   createdAt: Date;
