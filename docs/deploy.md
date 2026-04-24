@@ -74,6 +74,20 @@ cp .env.example .env
 docker compose -f docker-compose.prod.yml up -d
 ```
 
+### Skipping the build — prebuilt images
+
+Every push to `main` publishes three images to GitHub Container Registry:
+
+- `ghcr.io/openpartner/openpartner-api:edge`
+- `ghcr.io/openpartner/openpartner-router:edge`
+- `ghcr.io/openpartner/openpartner-portal:edge`
+
+Tagged releases (`v1.2.3`) publish `1.2.3`, `1.2`, `1`, and `latest`. To run
+those instead of building locally, swap each service's `build:` block in
+`docker-compose.prod.yml` for `image: ghcr.io/openpartner/openpartner-<service>:edge`
+and `docker compose pull` before `up -d`. Fork users: replace `openpartner`
+with your GitHub username / org.
+
 Caddy terminates TLS via Let's Encrypt automatically and reverse-proxies three subdomains (`portal.`, `api.`, `go.`) at the three services. Point their DNS at the box's IP and Caddy handles the rest.
 
 ```bash
