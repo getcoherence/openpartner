@@ -33,9 +33,11 @@ jobs:
     env:
       DATABASE_URL: postgres://openpartner:openpartner@localhost:5432/openpartner
       # A deterministic 32-byte key so federation code paths that require
-      # NETWORK_ENCRYPTION_KEY don't throw during boot.
-      NETWORK_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
-      ADMIN_API_KEY: op_ci_0000000000000000000000000000000000000000000000000000000000
+      # NETWORK_ENCRYPTION_KEY don't throw during boot. Quoted — YAML
+      # would otherwise parse 64 zeros as the integer 0 and hand the
+      # runner the string "0".
+      NETWORK_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      ADMIN_API_KEY: "op_ci_0000000000000000000000000000000000000000000000000000000000"
 
     steps:
       - uses: actions/checkout@v4
