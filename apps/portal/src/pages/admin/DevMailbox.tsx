@@ -12,6 +12,7 @@ interface DevMessage {
   body: string;
   html: string | null;
   createdAt: string;
+  metadata?: Record<string, unknown>;
 }
 
 export function DevMailboxPage() {
@@ -46,11 +47,10 @@ export function DevMailboxPage() {
 }
 
 function MessageCard({ message }: { message: DevMessage }) {
-  // Extract any magic-link URL from the body so we can surface a
-  // one-click "Open link" button right on the card.
   const match = message.body.match(/https?:\/\/\S+/);
   const link = match ? match[0] : null;
   const [copied, setCopied] = useState(false);
+  const [view, setView] = useState<'html' | 'text'>(message.html ? 'html' : 'text');
 
   return (
     <Card>
@@ -61,24 +61,63 @@ function MessageCard({ message }: { message: DevMessage }) {
             to <code>{message.to}</code> · {formatDate(message.createdAt, { relative: true })}
           </div>
         </div>
+        {message.html && (
+          <div style={{ display: 'flex', gap: 2, background: theme.bg, padding: 2, borderRadius: theme.radiusSm }}>
+            {(['html', 'text'] as const).map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                style={{
+                  background: view === v ? theme.surface2 : 'transparent',
+                  color: view === v ? theme.text : theme.textMuted,
+                  border: 'none',
+                  fontSize: 11,
+                  padding: '4px 10px',
+                  borderRadius: theme.radiusSm,
+                  cursor: 'pointer',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  fontWeight: 500,
+                }}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
-      <pre
-        style={{
-          margin: 0,
-          padding: 12,
-          background: theme.bg,
-          border: `1px solid ${theme.borderSubtle}`,
-          borderRadius: theme.radiusSm,
-          color: theme.text,
-          fontSize: 12,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          maxHeight: 200,
-          overflow: 'auto',
-        }}
-      >
-        {message.body}
-      </pre>
+      {view === 'html' && message.html ? (
+        <iframe
+          title={message.subject}
+          srcDoc={message.html}
+          sandbox=""
+          style={{
+            width: '100%',
+            height: 420,
+            border: `1px solid ${theme.borderSubtle}`,
+            borderRadius: theme.radiusSm,
+            background: '#fff',
+          }}
+        />
+      ) : (
+        <pre
+          style={{
+            margin: 0,
+            padding: 12,
+            background: theme.bg,
+            border: `1px solid ${theme.borderSubtle}`,
+            borderRadius: theme.radiusSm,
+            color: theme.text,
+            fontSize: 12,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            maxHeight: 200,
+            overflow: 'auto',
+          }}
+        >
+          {message.body}
+        </pre>
+      )}
       {link && (
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
           <a

@@ -160,8 +160,6 @@ describe.skipIf(skipIntegration)('magic-link auth', () => {
 
     // Stand up a real vendor instance (same server). Mint a scoped key
     // with only the federation scopes.
-    const { AddressInfo } = await import('node:net');
-    void AddressInfo;
     const appListen = app.listen(0);
     const port = (appListen.address() as import('node:net').AddressInfo).port;
     const vendorInstanceUrl = `http://127.0.0.1:${port}`;

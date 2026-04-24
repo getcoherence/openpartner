@@ -41,6 +41,12 @@ import {
   sessionCookieOptions,
 } from '../auth-sessions.js';
 import { encryptKey } from '../network/crypto.js';
+import {
+  creatorSigninEmail,
+  creatorSignupEmail,
+  vendorSigninEmail,
+  vendorSignupEmail,
+} from '../email-templates.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
 
 export const magicLinkRouter = Router();
@@ -100,10 +106,13 @@ magicLinkRouter.post('/auth/creator/signup', async (req, res) => {
   const claim: MagicLinkCreatorClaim = { kind: 'creator', handle, name: body.data.name };
   const issued = await issueMagicLink({ email, purpose: 'creator_signup', claim });
 
+  const tmpl = creatorSignupEmail(body.data.name, magicUrl(issued.plaintext, 'creator_signup'));
   await getMailer().send({
     to: email,
-    subject: 'Finish your OpenPartner signup',
-    text: `Hi ${body.data.name},\n\nClick this link within 15 minutes to finish creating your OpenPartner creator account:\n\n${magicUrl(issued.plaintext, 'creator_signup')}\n\nIf you didn't request this, ignore this email.`,
+    subject: tmpl.subject,
+    text: tmpl.text,
+    html: tmpl.html,
+    tag: tmpl.tag,
     metadata: { purpose: 'creator_signup', handle },
   });
 
@@ -175,10 +184,13 @@ magicLinkRouter.post('/auth/vendor/signup', async (req, res) => {
   };
   const issued = await issueMagicLink({ email, purpose: 'vendor_signup', claim });
 
+  const tmpl = vendorSignupEmail(body.data.name, magicUrl(issued.plaintext, 'vendor_signup'));
   await getMailer().send({
     to: email,
-    subject: 'Finish your OpenPartner vendor signup',
-    text: `Hi ${body.data.name},\n\nClick this link within 15 minutes to submit your Network vendor application:\n\n${magicUrl(issued.plaintext, 'vendor_signup')}\n\nOnce you verify, an admin will review your federation credentials before activating your account.\n\nIf you didn't request this, ignore this email.`,
+    subject: tmpl.subject,
+    text: tmpl.text,
+    html: tmpl.html,
+    tag: tmpl.tag,
     metadata: { purpose: 'vendor_signup', slug: body.data.slug },
   });
 
@@ -200,10 +212,13 @@ magicLinkRouter.post('/auth/signin', async (req, res) => {
   const creator = await db<NetworkCreatorRow>(TABLES.NetworkCreator).where({ email }).first();
   if (creator && creator.status === 'active') {
     const issued = await issueMagicLink({ email, purpose: 'creator_signin' });
+    const tmpl = creatorSigninEmail(magicUrl(issued.plaintext, 'creator_signin'));
     await getMailer().send({
       to: email,
-      subject: 'Your OpenPartner sign-in link',
-      text: `Click within 15 minutes to sign in to OpenPartner:\n\n${magicUrl(issued.plaintext, 'creator_signin')}\n\nIf you didn't request this, ignore this email.`,
+      subject: tmpl.subject,
+      text: tmpl.text,
+      html: tmpl.html,
+      tag: tmpl.tag,
       metadata: { purpose: 'creator_signin' },
     });
     return res.json({ ok: true });
@@ -217,10 +232,13 @@ magicLinkRouter.post('/auth/signin', async (req, res) => {
   const vendor = await findVendorByEmail(email);
   if (vendor && vendor.status === 'active') {
     const issued = await issueMagicLink({ email, purpose: 'vendor_signin' });
+    const tmpl = vendorSigninEmail(magicUrl(issued.plaintext, 'vendor_signin'));
     await getMailer().send({
       to: email,
-      subject: 'Your OpenPartner sign-in link',
-      text: `Click within 15 minutes to sign in to OpenPartner:\n\n${magicUrl(issued.plaintext, 'vendor_signin')}\n\nIf you didn't request this, ignore this email.`,
+      subject: tmpl.subject,
+      text: tmpl.text,
+      html: tmpl.html,
+      tag: tmpl.tag,
       metadata: { purpose: 'vendor_signin', vendorId: vendor.id },
     });
   }
@@ -239,10 +257,13 @@ magicLinkRouter.post('/auth/creator/signin', async (req, res) => {
   const creator = await db<NetworkCreatorRow>(TABLES.NetworkCreator).where({ email }).first();
   if (creator && creator.status === 'active') {
     const issued = await issueMagicLink({ email, purpose: 'creator_signin' });
+    const tmpl = creatorSigninEmail(magicUrl(issued.plaintext, 'creator_signin'));
     await getMailer().send({
       to: email,
-      subject: 'Your OpenPartner sign-in link',
-      text: `Click within 15 minutes to sign in to OpenPartner:\n\n${magicUrl(issued.plaintext, 'creator_signin')}\n\nIf you didn't request this, ignore this email.`,
+      subject: tmpl.subject,
+      text: tmpl.text,
+      html: tmpl.html,
+      tag: tmpl.tag,
       metadata: { purpose: 'creator_signin' },
     });
   }
