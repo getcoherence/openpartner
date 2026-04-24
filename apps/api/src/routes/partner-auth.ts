@@ -4,7 +4,6 @@
  *   POST /auth/signin          email → magic link (returning partners)
  *   POST /auth/magic/verify    token → session cookie + whoami
  *   POST /auth/signout         revokes the session cookie
- *   GET  /dev/mailbox          (admin) reads the DevMessage outbox
  *
  * The invite-on-create side lives on POST /partners in partners.ts — this
  * file handles everything the partner themselves interacts with.
@@ -12,9 +11,8 @@
 
 import { Router } from 'express';
 import { z } from 'zod';
-import { TABLES, type DevMessageRow, type PartnerRow } from '@openpartner/db';
+import { TABLES, type PartnerRow } from '@openpartner/db';
 import { db } from '../db.js';
-import { requireAdmin, requireAuth } from '../auth.js';
 import {
   SESSION_COOKIE_NAME,
   consumeMagicLink,
@@ -110,9 +108,3 @@ partnerAuthRouter.post('/auth/signout', async (req, res) => {
   res.json({ ok: true });
 });
 
-// -------- Dev mailbox — admin-only read of the DevMessage outbox --------
-
-partnerAuthRouter.get('/dev/mailbox', requireAuth, requireAdmin, async (_req, res) => {
-  const messages = await db<DevMessageRow>(TABLES.DevMessage).orderBy('createdAt', 'desc').limit(100);
-  res.json({ messages });
-});

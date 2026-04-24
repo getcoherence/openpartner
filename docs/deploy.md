@@ -27,7 +27,7 @@ Ingress rules fan incoming traffic out: `/api/*` → `api`, everything else → 
 3. **Set the secrets** App Platform marked as `SECRET` in the spec:
    - `ADMIN_API_KEY` — bootstrap admin token. Generate with `node -e "console.log('op_' + require('crypto').randomBytes(24).toString('hex'))"`.
    - `PORTAL_URL` — e.g. `https://partners.yourdomain.com`. Required in production (CORS allowlist + invite email links).
-   - `POSTMARK_SERVER_TOKEN`, `MAIL_FROM` — Postmark credentials + verified sender for partner invite + signin emails. Leave `MAIL_TRANSPORT=dev` for local / skip-email deploys.
+   - `POSTMARK_SERVER_TOKEN`, `MAIL_FROM` — Postmark credentials + verified sender for partner invite + signin emails. Leave either unset and mail falls back to stdout (useful for staging, not production).
    - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_FLAT_PRICE_ID` — only if running `flat` or `revshare` mode.
    - `COOKIE_DOMAIN` — `.yourdomain.com` so the router's `_cref` cookie covers your landing pages.
    - `METRICS_TOKEN` — optional; set to require Bearer auth on `/metrics`.

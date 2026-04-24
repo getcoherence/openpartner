@@ -1,19 +1,12 @@
 /**
  * Transactional mailer for partner invite + signin magic links.
  *
- * Two transports:
- *   dev       writes to the DevMessage table so tests + local devs can
- *             read the link back without Postmark credentials.
- *   postmark  POSTs to api.postmarkapp.com/email.
+ * Transport is implicit from env:
+ *   POSTMARK_SERVER_TOKEN + MAIL_FROM set → Postmark
+ *   otherwise                            → console (stdout only)
  *
- * Minimal and partner-scoped — the earlier multi-purpose mailer (creator
- * signups, vendor approvals, cross-network notifications) was carved out
- * with the Network service.
+ * Tests override via __setMailerForTests with an in-memory capturer.
  */
-
-import { ulid } from 'ulid';
-import { TABLES, type DevMessageRow } from '@openpartner/db';
-import { db } from './db.js';
 
 export interface Message {
   to: string;
@@ -28,18 +21,13 @@ export interface Mailer {
   send(msg: Message): Promise<void>;
 }
 
-class DevMailer implements Mailer {
+class ConsoleMailer implements Mailer {
   async send(msg: Message): Promise<void> {
-    await db<DevMessageRow>(TABLES.DevMessage).insert({
-      id: ulid(),
-      to: msg.to,
-      subject: msg.subject,
-      body: msg.text,
-      html: msg.html ?? null,
-      metadata: (msg.metadata ?? {}) as unknown as never,
-    });
-    // Also print so `pnpm dev:api` shows the link without opening the portal.
-    console.log(`[dev-mail] to=${msg.to} subject=${JSON.stringify(msg.subject)}`);
+    // Dev fallback when no Postmark creds are present. Prints enough to
+    // recover the magic link from the terminal without needing a mailbox
+    // UI or third-party sandbox.
+    console.log(`[mail] to=${msg.to} subject=${JSON.stringify(msg.subject)}`);
+    console.log(msg.text);
   }
 }
 
@@ -83,21 +71,17 @@ let cached: Mailer | null = null;
 
 export function getMailer(): Mailer {
   if (cached) return cached;
-  const transport = process.env.MAIL_TRANSPORT ?? 'dev';
-  if (transport === 'postmark') {
-    const token = process.env.POSTMARK_SERVER_TOKEN;
-    const from = process.env.MAIL_FROM;
-    if (!token || !from) {
-      throw new Error('MAIL_TRANSPORT=postmark requires POSTMARK_SERVER_TOKEN and MAIL_FROM');
-    }
+  const token = process.env.POSTMARK_SERVER_TOKEN;
+  const from = process.env.MAIL_FROM;
+  if (token && from) {
     cached = new PostmarkMailer(token, from, process.env.POSTMARK_MESSAGE_STREAM ?? 'outbound');
-    return cached;
+  } else {
+    cached = new ConsoleMailer();
   }
-  cached = new DevMailer();
   return cached;
 }
 
-/** For tests: swap in a mock mailer. */
+/** For tests: inject a capturing / mock mailer. Pass null to reset. */
 export function __setMailerForTests(mailer: Mailer | null): void {
   cached = mailer;
 }

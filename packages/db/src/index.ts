@@ -38,7 +38,6 @@ export const TABLES = {
   Config: 'Config',
   MagicLinkToken: 'MagicLinkToken',
   Session: 'Session',
-  DevMessage: 'DevMessage',
   WebhookEndpoint: 'WebhookEndpoint',
   WebhookDelivery: 'WebhookDelivery',
 } as const;

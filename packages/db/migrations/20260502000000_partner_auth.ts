@@ -12,14 +12,10 @@ import type { Knex } from 'knex';
  *                          for returning logins. partnerId is the partner
  *                          the token resolves to.
  *
- *   Session               cookie-backed auth state. The portal stores an
+*   Session               cookie-backed auth state. The portal stores an
  *                          op_session cookie; the API verifies on each
  *                          request via the same prefix+hash scheme as
  *                          ApiKey. Revocable server-side.
- *
- *   DevMessage            stand-in "outbox" for MAIL_TRANSPORT=dev — lets
- *                          integration tests and local devs read the link
- *                          instead of setting up Postmark.
  */
 export async function up(knex: Knex): Promise<void> {
   await knex.schema.alterTable('Partner', (t) => {
@@ -56,19 +52,9 @@ export async function up(knex: Knex): Promise<void> {
     t.index(['partnerId']);
   });
 
-  await knex.schema.createTable('DevMessage', (t) => {
-    t.string('id').primary();
-    t.string('to').notNullable();
-    t.string('subject').notNullable();
-    t.text('body').notNullable();
-    t.text('html');
-    t.jsonb('metadata').notNullable().defaultTo('{}');
-    t.timestamp('createdAt', { useTz: true }).notNullable().defaultTo(knex.fn.now());
-  });
 }
 
 export async function down(knex: Knex): Promise<void> {
-  await knex.schema.dropTableIfExists('DevMessage');
   await knex.schema.dropTableIfExists('Session');
   await knex.schema.dropTableIfExists('MagicLinkToken');
   await knex.schema.alterTable('Partner', (t) => {

@@ -55,16 +55,6 @@ export interface SessionRow {
   revokedAt: Date | null;
 }
 
-export interface DevMessageRow {
-  id: string;
-  to: string;
-  subject: string;
-  body: string;
-  html: string | null;
-  metadata: Record<string, unknown>;
-  createdAt: Date;
-}
-
 export interface CampaignRow {
   id: string;
   name: string;

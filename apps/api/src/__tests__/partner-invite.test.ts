@@ -1,19 +1,19 @@
 /**
  * Partner invite + magic-link signin happy paths.
  *
- * Uses MAIL_TRANSPORT=dev so the magic link lands in the DevMessage
- * table where the test can read it back instead of hitting Postmark.
+ * Uses an in-memory capturing mailer injected via __setMailerForTests so
+ * the suite can read the magic-link URL without hitting Postmark.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { TABLES } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApp } from '../app.js';
+import { __setMailerForTests, type Mailer, type Message } from '../mailer.js';
 
 const ADMIN_KEY = 'op_test_invite_admin_0123456789abcdef0123';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
-process.env.MAIL_TRANSPORT = 'dev';
 process.env.PORTAL_URL = 'http://localhost:5673';
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
@@ -21,33 +21,48 @@ const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION ===
 const TABLES_TO_CLEAN = [
   TABLES.Session,
   TABLES.MagicLinkToken,
-  TABLES.DevMessage,
   TABLES.ApiKey,
   TABLES.Partner,
 ];
 
 const app = createApp({ enableLogger: false });
 
+class CapturingMailer implements Mailer {
+  readonly sent: Message[] = [];
+  async send(msg: Message): Promise<void> {
+    this.sent.push(msg);
+  }
+  findFor(to: string, purpose?: string): Message | undefined {
+    return this.sent.find(
+      (m) => m.to === to && (purpose == null || m.metadata?.purpose === purpose),
+    );
+  }
+}
+
+let mailer: CapturingMailer;
+
 beforeAll(async () => {
   if (skipIntegration) return;
   await db.raw('select 1');
 });
 
-afterAll(async () => {
-  await db.destroy();
-});
-
 beforeEach(async () => {
+  mailer = new CapturingMailer();
+  __setMailerForTests(mailer);
   if (skipIntegration) return;
   for (const t of TABLES_TO_CLEAN) {
     await db(t).del();
   }
 });
 
-/**
- * Fish the magic-link token out of a dev email body — emails carry the
- * URL `http://localhost:5673/auth/magic?token=<opml_...>`.
- */
+afterEach(() => {
+  __setMailerForTests(null);
+});
+
+afterAll(async () => {
+  await db.destroy();
+});
+
 function extractToken(body: string): string {
   const match = /token=([^\s&"]+)/.exec(body);
   if (!match) throw new Error(`no token in body:\n${body}`);
@@ -64,24 +79,18 @@ describe.skipIf(skipIntegration)('partner invite + signin', () => {
     expect(created.body.invited).toBe(true);
     expect(created.body.activatedAt).toBeNull();
 
-    // No admin-visible credential in the response.
     expect(created.body).not.toHaveProperty('plaintext');
     expect(created.body).not.toHaveProperty('apiKey');
 
-    const mailbox = await request(app).get('/dev/mailbox').set('Authorization', `Bearer ${ADMIN_KEY}`);
-    const invite = mailbox.body.messages.find(
-      (m: { to: string; metadata?: { purpose?: string } }) =>
-        m.to === 'gracie@example.com' && m.metadata?.purpose === 'partner_invite',
-    );
+    const invite = mailer.findFor('gracie@example.com', 'partner_invite');
     expect(invite).toBeDefined();
 
-    const token = extractToken(invite.body);
+    const token = extractToken(invite!.text);
     const verify = await request(app).post('/auth/magic/verify').send({ token });
     expect(verify.status).toBe(200);
     expect(verify.body.role).toBe('partner');
     expect(verify.body.partner.email).toBe('gracie@example.com');
 
-    // Session cookie set; partner.activatedAt stamped.
     const setCookie = verify.headers['set-cookie'] as unknown as string[] | undefined;
     expect(setCookie).toBeTruthy();
     const cookie = setCookie![0]!.split(';')[0]!;
@@ -90,7 +99,6 @@ describe.skipIf(skipIntegration)('partner invite + signin', () => {
     const activated = await db(TABLES.Partner).where({ id: created.body.id }).first();
     expect((activated as { activatedAt: Date | null }).activatedAt).not.toBeNull();
 
-    // whoami with the cookie resolves to the partner
     const who = await request(app).get('/auth/whoami').set('Cookie', cookie);
     expect(who.status).toBe(200);
     expect(who.body.role).toBe('partner');
@@ -103,8 +111,7 @@ describe.skipIf(skipIntegration)('partner invite + signin', () => {
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
       .send({ email: 'dup@example.com', name: 'Dup' });
 
-    const mailbox = await request(app).get('/dev/mailbox').set('Authorization', `Bearer ${ADMIN_KEY}`);
-    const token = extractToken(mailbox.body.messages[0].body);
+    const token = extractToken(mailer.findFor('dup@example.com')!.text);
 
     const first = await request(app).post('/auth/magic/verify').send({ token });
     expect(first.status).toBe(200);
@@ -115,40 +122,31 @@ describe.skipIf(skipIntegration)('partner invite + signin', () => {
   });
 
   it('returning-partner /auth/signin emails a signin link when the partner is activated', async () => {
-    // Invite + verify to activate.
     await request(app)
       .post('/partners')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
       .send({ email: 'return@example.com', name: 'Return' });
-    let mailbox = await request(app).get('/dev/mailbox').set('Authorization', `Bearer ${ADMIN_KEY}`);
-    const inviteToken = extractToken(mailbox.body.messages[0].body);
+    const inviteToken = extractToken(mailer.findFor('return@example.com', 'partner_invite')!.text);
     await request(app).post('/auth/magic/verify').send({ token: inviteToken });
 
-    // Clear so we can spot the signin email specifically.
-    await db(TABLES.DevMessage).del();
+    mailer.sent.length = 0;
 
     const signin = await request(app).post('/auth/signin').send({ email: 'return@example.com' });
     expect(signin.status).toBe(200);
 
-    mailbox = await request(app).get('/dev/mailbox').set('Authorization', `Bearer ${ADMIN_KEY}`);
-    const signinMsg = mailbox.body.messages.find(
-      (m: { metadata?: { purpose?: string } }) => m.metadata?.purpose === 'partner_signin',
-    );
+    const signinMsg = mailer.findFor('return@example.com', 'partner_signin');
     expect(signinMsg).toBeDefined();
 
-    const signinToken = extractToken(signinMsg.body);
+    const signinToken = extractToken(signinMsg!.text);
     const verify = await request(app).post('/auth/magic/verify').send({ token: signinToken });
     expect(verify.status).toBe(200);
   });
 
   it('signin for an unknown email silently returns ok (no user enumeration)', async () => {
-    await db(TABLES.DevMessage).del();
     const res = await request(app).post('/auth/signin').send({ email: 'nobody@example.com' });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
-
-    const mailbox = await request(app).get('/dev/mailbox').set('Authorization', `Bearer ${ADMIN_KEY}`);
-    expect(mailbox.body.messages.length).toBe(0);
+    expect(mailer.sent.length).toBe(0);
   });
 
   it('resend invite generates a fresh token and 409s once the partner is already activated', async () => {
@@ -163,16 +161,13 @@ describe.skipIf(skipIntegration)('partner invite + signin', () => {
       .set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(resend.status).toBe(200);
 
-    // Two invite emails in the mailbox now.
-    const mailbox = await request(app).get('/dev/mailbox').set('Authorization', `Bearer ${ADMIN_KEY}`);
-    const invites = mailbox.body.messages.filter(
-      (m: { to: string; metadata?: { purpose?: string } }) =>
-        m.to === 'resend@example.com' && m.metadata?.purpose === 'partner_invite',
+    const invites = mailer.sent.filter(
+      (m) => m.to === 'resend@example.com' && m.metadata?.purpose === 'partner_invite',
     );
     expect(invites.length).toBe(2);
 
-    // Activate via the latest token, then resend should 409.
-    const token = extractToken(invites[0].body);
+    // Activate via the first token, then resend should 409.
+    const token = extractToken(invites[0]!.text);
     await request(app).post('/auth/magic/verify').send({ token });
 
     const after = await request(app)
