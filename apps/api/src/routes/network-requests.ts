@@ -11,12 +11,13 @@ import {
 import { db } from '../db.js';
 import { requireAuth, requireNetworkCreator, requireNetworkVendor } from '../auth.js';
 import { z } from 'zod';
-import { requestCreateSchema, requestDecideSchema } from '../network/validation.js';
+import { promoCodeSchema, requestCreateSchema, requestDecideSchema } from '../network/validation.js';
 
 const inviteSchema = z.object({
   offeringId: z.string().min(1),
   creatorId: z.string().min(1),
   message: z.string().max(2000).optional(),
+  promoCode: promoCodeSchema.optional(),
 });
 import { provisionPartnerOnVendor } from '../network/federation.js';
 
@@ -37,6 +38,9 @@ networkRequestsRouter.post('/network/requests', requireAuth, requireNetworkCreat
   const offering = await db<OfferingRow>(TABLES.Offering).where({ id: body.data.offeringId, published: true }).first();
   if (!offering) return res.status(404).json({ error: 'offering_not_found' });
 
+  // Fall back chain: request override → creator default → handle.
+  const promoCode = body.data.promoCode ?? creator.defaultPromoCode ?? creator.handle;
+
   const id = ulid();
   try {
     await db<PartnershipRequestRow>(TABLES.PartnershipRequest).insert({
@@ -46,6 +50,7 @@ networkRequestsRouter.post('/network/requests', requireAuth, requireNetworkCreat
       creatorId: creator.id,
       direction: 'creator_to_vendor',
       message: body.data.message ?? null,
+      promoCode,
       status: 'pending',
     });
   } catch (err: unknown) {
@@ -74,6 +79,8 @@ networkRequestsRouter.post('/network/invites', requireAuth, requireNetworkVendor
   const creator = await db<NetworkCreatorRow>(TABLES.NetworkCreator).where({ id: body.data.creatorId }).first();
   if (!creator) return res.status(404).json({ error: 'creator_not_found' });
 
+  const promoCode = body.data.promoCode ?? creator.defaultPromoCode ?? creator.handle;
+
   const id = ulid();
   try {
     await db<PartnershipRequestRow>(TABLES.PartnershipRequest).insert({
@@ -83,6 +90,7 @@ networkRequestsRouter.post('/network/invites', requireAuth, requireNetworkVendor
       creatorId: creator.id,
       direction: 'vendor_to_creator',
       message: body.data.message ?? null,
+      promoCode,
       status: 'pending',
     });
   } catch (err: unknown) {
@@ -137,7 +145,12 @@ networkRequestsRouter.post('/network/requests/:id/approve', requireAuth, require
     federated = await provisionPartnerOnVendor({
       vendor,
       offering,
-      creator: { name: creator.name, email: creator.email, handle: creator.handle },
+      creator: {
+        name: creator.name,
+        email: creator.email,
+        handle: creator.handle,
+        promoCode: reqRow.promoCode,
+      },
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -38,6 +38,14 @@ export const termsSchema = z.object({
   exclusions: z.array(z.string()).optional(),
 });
 
+// Same shape as vendor-side Link.linkKey — URL-safe, 3–40 chars. Applies
+// to both creator.defaultPromoCode and request.promoCode.
+export const promoCodeSchema = z
+  .string()
+  .min(3)
+  .max(40)
+  .regex(/^[a-zA-Z0-9_-]+$/, 'promo code must be url-safe (letters, digits, _ or -)');
+
 export const vendorCreateSchema = z.object({
   name: z.string().min(2),
   slug: z
@@ -50,6 +58,9 @@ export const vendorCreateSchema = z.object({
   description: z.string().max(1000).optional(),
   instanceUrl: z.string().url(),
   instanceKey: z.string().min(8), // the admin key on the vendor's instance
+  // Optional for dev (we fall back to the port-swap convention); required
+  // in practice for production so share URLs resolve at the vendor's apex.
+  routerUrl: z.string().url().optional(),
 });
 
 export const creatorCreateSchema = z.object({
@@ -63,6 +74,7 @@ export const creatorCreateSchema = z.object({
   bio: z.string().max(2000).optional(),
   avatarUrl: z.string().url().optional(),
   platforms: z.array(platformSchema).optional(),
+  defaultPromoCode: promoCodeSchema.optional(),
 });
 
 export const offeringCreateSchema = z.object({
@@ -80,6 +92,7 @@ export const offeringUpdateSchema = offeringCreateSchema.partial();
 export const requestCreateSchema = z.object({
   offeringId: z.string().min(1),
   message: z.string().max(2000).optional(),
+  promoCode: promoCodeSchema.optional(),
 });
 
 export const requestDecideSchema = z.object({

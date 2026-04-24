@@ -224,6 +224,131 @@ describe.skipIf(skipIntegration)('openpartner network', () => {
     expect(second.status).toBe(409);
   });
 
+  it('creator-chosen promo code becomes the share-link slug', async () => {
+    const campaign = (await request(app)
+      .post('/campaigns')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Promo test', commissionRule: { type: 'percent', value: 20 } })).body;
+
+    const vendorRouter = `${instanceUrl}`; // point router at same server for the test
+    const vendorRes = await request(app)
+      .post('/network/vendors')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({
+        name: 'Coherence',
+        slug: `coherence-${Date.now()}`,
+        instanceUrl,
+        instanceKey: ADMIN_KEY,
+        routerUrl: vendorRouter,
+      });
+    const vendorKey = vendorRes.body.apiKey;
+    await request(app).post(`/network/vendors/${vendorRes.body.vendor.id}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    const offeringRes = await request(app)
+      .post('/network/offerings')
+      .set('Authorization', `Bearer ${vendorKey}`)
+      .send({
+        title: 'Coherence Pro',
+        productUrl: 'https://getcoherence.io/pro',
+        vendorCampaignId: campaign.id,
+        terms: { payout: { type: 'recurring_percent', percent: 20, durationMonths: null }, cookieWindowDays: 60 },
+        published: true,
+      });
+    const offeringId = offeringRes.body.offering.id;
+
+    const creatorRes = await request(app)
+      .post('/network/creators')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Grace', handle: `g_${Date.now()}`, email: `g${Date.now()}@e.com` });
+    const creatorKey = creatorRes.body.apiKey;
+    await request(app).post(`/network/creators/${creatorRes.body.creator.id}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    const applyRes = await request(app)
+      .post('/network/requests')
+      .set('Authorization', `Bearer ${creatorKey}`)
+      .send({ offeringId, promoCode: 'graciefindsdeals' });
+    expect(applyRes.status).toBe(201);
+    expect(applyRes.body.request.promoCode).toBe('graciefindsdeals');
+
+    const approveRes = await request(app)
+      .post(`/network/requests/${applyRes.body.request.id}/approve`)
+      .set('Authorization', `Bearer ${vendorKey}`)
+      .send({});
+    expect(approveRes.status).toBe(200);
+    expect(approveRes.body.federated.linkKey).toBe('graciefindsdeals');
+    expect(approveRes.body.federated.publicShareUrl).toBe(`${vendorRouter}/r/graciefindsdeals`);
+
+    const linkOnVendor = await db(TABLES.Link).where({ linkKey: 'graciefindsdeals' }).first();
+    expect(linkOnVendor).toBeDefined();
+  });
+
+  it('defaults to creator default promo code, falls back to handle', async () => {
+    const campaign = (await request(app)
+      .post('/campaigns')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Defaults', commissionRule: { type: 'percent', value: 10 } })).body;
+
+    const vendorRes = await request(app)
+      .post('/network/vendors')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'DefaultCo', slug: `default-${Date.now()}`, instanceUrl, instanceKey: ADMIN_KEY });
+    const vendorKey = vendorRes.body.apiKey;
+    await request(app).post(`/network/vendors/${vendorRes.body.vendor.id}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    const offering = (await request(app)
+      .post('/network/offerings')
+      .set('Authorization', `Bearer ${vendorKey}`)
+      .send({
+        title: 'Offering One',
+        productUrl: 'https://example.com',
+        vendorCampaignId: campaign.id,
+        terms: { payout: { type: 'one_time_fee', amount: 1 }, cookieWindowDays: 30 },
+        published: true,
+      })).body.offering;
+
+    // Creator WITH a default
+    const handle = `ada_${Date.now()}`;
+    const creatorRes = await request(app)
+      .post('/network/creators')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Ada', handle, email: `ada${Date.now()}@e.com`, defaultPromoCode: 'ada-picks' });
+    const creatorKey = creatorRes.body.apiKey;
+    await request(app).post(`/network/creators/${creatorRes.body.creator.id}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    // No promoCode on the request — should use the creator's default.
+    const req1 = await request(app)
+      .post('/network/requests')
+      .set('Authorization', `Bearer ${creatorKey}`)
+      .send({ offeringId: offering.id });
+    expect(req1.body.request.promoCode).toBe('ada-picks');
+
+    // Creator WITHOUT a default → handle
+    const handle2 = `rose_${Date.now()}`;
+    const c2 = await request(app)
+      .post('/network/creators')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Rose', handle: handle2, email: `rose${Date.now()}@e.com` });
+    const c2key = c2.body.apiKey;
+    await request(app).post(`/network/creators/${c2.body.creator.id}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    const o2 = (await request(app)
+      .post('/network/offerings')
+      .set('Authorization', `Bearer ${vendorKey}`)
+      .send({
+        title: 'Offering Two',
+        productUrl: 'https://example.com',
+        vendorCampaignId: campaign.id,
+        terms: { payout: { type: 'one_time_fee', amount: 2 }, cookieWindowDays: 30 },
+        published: true,
+      })).body.offering;
+
+    const req2 = await request(app)
+      .post('/network/requests')
+      .set('Authorization', `Bearer ${c2key}`)
+      .send({ offeringId: o2.id });
+    expect(req2.body.request.promoCode).toBe(handle2);
+  });
+
   it('encryption round-trips', async () => {
     const { encryptKey, decryptKey } = await import('../network/crypto.js');
     const enc = encryptKey('hello-secret-key');

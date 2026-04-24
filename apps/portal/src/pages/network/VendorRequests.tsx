@@ -11,6 +11,7 @@ interface Request {
   creatorId: string;
   direction: 'creator_to_vendor' | 'vendor_to_creator';
   message: string | null;
+  promoCode: string | null;
   status: string;
   createdAt: string;
   decidedAt: string | null;
@@ -54,7 +55,7 @@ export function VendorRequestsPage() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>
                 {pending.map((r) => (
                   <Card key={r.id}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
                       <div>
                         <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 4 }}>
                           From creator <code>{shortId(r.creatorId)}</code>
@@ -66,6 +67,27 @@ export function VendorRequestsPage() {
                       </div>
                       <StatusPill status={r.status} />
                     </div>
+                    {r.promoCode && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '10px 12px',
+                          borderRadius: theme.radiusSm,
+                          background: theme.accentSoft,
+                          border: `1px solid ${theme.accent}33`,
+                          marginBottom: 12,
+                        }}
+                      >
+                        <span style={{ fontSize: 11, color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                          Requested share code
+                        </span>
+                        <code style={{ fontSize: 14, color: theme.accent, fontWeight: 600 }}>
+                          /r/{r.promoCode}
+                        </code>
+                      </div>
+                    )}
                     {r.message && (
                       <div
                         style={{

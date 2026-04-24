@@ -124,6 +124,7 @@ function CreateCreator({ onClose, onCreated }: { onClose: () => void; onCreated:
   const [handle, setHandle] = useState('');
   const [email, setEmail] = useState('');
   const [bio, setBio] = useState('');
+  const [defaultPromoCode, setDefaultPromoCode] = useState('');
   const [platform, setPlatform] = useState('youtube');
   const [platformUrl, setPlatformUrl] = useState('');
   const [followers, setFollowers] = useState('');
@@ -137,6 +138,7 @@ function CreateCreator({ onClose, onCreated }: { onClose: () => void; onCreated:
           handle,
           email,
           bio: bio || undefined,
+          defaultPromoCode: defaultPromoCode || undefined,
           platforms: platformUrl
             ? [{ platform, url: platformUrl, followers: followers ? Number(followers) : undefined }]
             : [],
@@ -168,6 +170,14 @@ function CreateCreator({ onClose, onCreated }: { onClose: () => void; onCreated:
           <Label>Bio (optional)</Label>
           <Input value={bio} onChange={(e) => setBio(e.target.value)} placeholder="What they publish about" />
         </div>
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <Label>Default share code (optional)</Label>
+        <Input
+          value={defaultPromoCode}
+          onChange={(e) => setDefaultPromoCode(e.target.value)}
+          placeholder="graciefindsdeals"
+        />
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '120px 2fr 1fr', gap: 12, marginBottom: 14 }}>
         <div>

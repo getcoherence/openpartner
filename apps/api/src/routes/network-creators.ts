@@ -28,6 +28,7 @@ networkCreatorsRouter.post('/network/creators', requireAuth, requireAdmin, async
       bio: body.data.bio ?? null,
       avatarUrl: body.data.avatarUrl ?? null,
       platforms: JSON.stringify(body.data.platforms ?? []) as unknown as never, // jsonb
+      defaultPromoCode: body.data.defaultPromoCode ?? null,
       status: 'pending',
     });
   } catch (err: unknown) {

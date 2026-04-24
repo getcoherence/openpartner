@@ -16,6 +16,8 @@ interface DirOffering {
   vendorName: string;
   vendorSlug: string;
   vendorLogoUrl: string | null;
+  vendorRouterUrl: string | null;
+  vendorInstanceUrl: string;
   terms: {
     payout:
       | { type: 'recurring_percent'; percent: number; durationMonths: number | null }
@@ -32,6 +34,8 @@ export function DiscoverPage({ principal }: { principal: Principal }) {
     queryFn: () => api<{ offerings: DirOffering[] }>('/network/directory/offerings'),
   });
 
+  const defaultCode = principal.creator?.defaultPromoCode ?? principal.creator?.handle ?? '';
+
   return (
     <Page title="Discover" subtitle="Offerings from every active vendor on the Network.">
       <ErrorBanner error={error} />
@@ -46,7 +50,12 @@ export function DiscoverPage({ principal }: { principal: Principal }) {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
           {(data?.offerings ?? []).map((o) => (
-            <OfferingCard key={o.id} offering={o} canApply={principal.role === 'network_creator'} />
+            <OfferingCard
+              key={o.id}
+              offering={o}
+              canApply={principal.role === 'network_creator'}
+              defaultCode={defaultCode}
+            />
           ))}
         </div>
       )}
@@ -54,7 +63,15 @@ export function DiscoverPage({ principal }: { principal: Principal }) {
   );
 }
 
-function OfferingCard({ offering, canApply }: { offering: DirOffering; canApply: boolean }) {
+function OfferingCard({
+  offering,
+  canApply,
+  defaultCode,
+}: {
+  offering: DirOffering;
+  canApply: boolean;
+  defaultCode: string;
+}) {
   const [showApply, setShowApply] = useState(false);
   return (
     <Card>
@@ -84,9 +101,27 @@ function OfferingCard({ offering, canApply }: { offering: DirOffering; canApply:
           </Button>
         )}
       </div>
-      {showApply && <ApplyDialog offeringId={offering.id} onClose={() => setShowApply(false)} />}
+      {showApply && <ApplyDialog offering={offering} defaultCode={defaultCode} onClose={() => setShowApply(false)} />}
     </Card>
   );
+}
+
+const PROMO_CODE_REGEX = /^[a-zA-Z0-9_-]+$/;
+
+export function shareUrlHost(offering: Pick<DirOffering, 'vendorRouterUrl' | 'vendorInstanceUrl'>): string {
+  // Mirror the API's deriveRouterUrl: vendor.routerUrl → port-swap on
+  // instanceUrl (4601 → 4701 for local dev) → instance origin as fallback.
+  if (offering.vendorRouterUrl) return offering.vendorRouterUrl.replace(/\/$/, '');
+  try {
+    const url = new URL(offering.vendorInstanceUrl);
+    if (url.port === '4601') {
+      url.port = '4701';
+      return url.origin;
+    }
+    return url.origin;
+  } catch {
+    return offering.vendorInstanceUrl.replace(/\/$/, '');
+  }
 }
 
 function TermsSummary({ terms }: { terms: DirOffering['terms'] }) {
@@ -116,14 +151,31 @@ function TermsSummary({ terms }: { terms: DirOffering['terms'] }) {
   );
 }
 
-function ApplyDialog({ offeringId, onClose }: { offeringId: string; onClose: () => void }) {
+function ApplyDialog({
+  offering,
+  defaultCode,
+  onClose,
+}: {
+  offering: DirOffering;
+  defaultCode: string;
+  onClose: () => void;
+}) {
   const qc = useQueryClient();
   const [message, setMessage] = useState('');
+  const [promoCode, setPromoCode] = useState(defaultCode);
+
+  const codeValid = promoCode.length >= 3 && promoCode.length <= 40 && PROMO_CODE_REGEX.test(promoCode);
+  const host = shareUrlHost(offering);
+
   const mut = useMutation({
     mutationFn: () =>
       api('/network/requests', {
         method: 'POST',
-        body: { offeringId, message },
+        body: {
+          offeringId: offering.id,
+          message: message || undefined,
+          promoCode: promoCode || undefined,
+        },
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['network-requests-mine'] });
@@ -151,15 +203,49 @@ function ApplyDialog({ offeringId, onClose }: { offeringId: string; onClose: () 
           border: `1px solid ${theme.border}`,
           borderRadius: theme.radiusLg,
           padding: 24,
-          width: 480,
+          width: 520,
           maxWidth: '90vw',
         }}
       >
-        <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Apply to promote</div>
-        <div style={{ color: theme.textMuted, fontSize: 13, marginBottom: 16 }}>
-          Tell the vendor why you're a fit — audience, niche, channels.
+        <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>Apply to promote {offering.vendorName}</div>
+        <div style={{ color: theme.textMuted, fontSize: 13, marginBottom: 18 }}>
+          Pick a memorable share code and tell the vendor why you're a fit.
         </div>
         <ErrorBanner error={mut.error} />
+
+        <Label>Your share code</Label>
+        <Input
+          value={promoCode}
+          onChange={(e) => setPromoCode(e.target.value)}
+          placeholder="graciefindsdeals"
+        />
+        <div
+          style={{
+            background: theme.bg,
+            border: `1px solid ${theme.borderSubtle}`,
+            padding: '10px 12px',
+            borderRadius: theme.radiusSm,
+            marginTop: 8,
+            marginBottom: 4,
+            fontSize: 13,
+            color: theme.textMuted,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <span style={{ color: theme.textDim }}>Preview</span>
+          <code style={{ color: codeValid ? theme.accent : theme.textMuted }}>
+            {host}/r/{promoCode || '...'}
+          </code>
+        </div>
+        <div style={{ fontSize: 11, color: theme.textDim, marginBottom: 16 }}>
+          Letters, digits, underscores or dashes. 3–40 chars. Taken codes get a short suffix on approval.
+        </div>
+
         <Label>Message (optional)</Label>
         <textarea
           value={message}
@@ -178,11 +264,12 @@ function ApplyDialog({ offeringId, onClose }: { offeringId: string; onClose: () 
           }}
           placeholder="120k YouTube subs in the indie-hacker niche, mostly US + EU."
         />
+
         <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={() => mut.mutate()} disabled={mut.isPending}>
+          <Button onClick={() => mut.mutate()} disabled={!codeValid || mut.isPending}>
             {mut.isPending ? 'Sending…' : 'Send application'}
           </Button>
         </div>

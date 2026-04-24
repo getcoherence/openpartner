@@ -61,5 +61,13 @@ export interface Principal {
   networkVendorId?: string;
   vendor?: { id: string; name: string; slug: string; logoUrl: string | null; websiteUrl: string | null; status: string };
   networkCreatorId?: string;
-  creator?: { id: string; name: string; handle: string; email: string; avatarUrl: string | null; status: string };
+  creator?: {
+    id: string;
+    name: string;
+    handle: string;
+    email: string;
+    avatarUrl: string | null;
+    defaultPromoCode: string | null;
+    status: string;
+  };
 }

@@ -169,6 +169,7 @@ export interface NetworkVendorRow {
   instanceUrl: string;
   instanceKeyCiphertext: string;
   instanceKeyPrefix: string;
+  routerUrl: string | null;
   status: NetworkVendorStatus;
   createdAt: Date;
   activatedAt: Date | null;
@@ -182,6 +183,7 @@ export interface NetworkCreatorRow {
   bio: string | null;
   avatarUrl: string | null;
   platforms: CreatorPlatform[];
+  defaultPromoCode: string | null;
   status: NetworkCreatorStatus;
   createdAt: Date;
   activatedAt: Date | null;
@@ -208,6 +210,7 @@ export interface PartnershipRequestRow {
   creatorId: string;
   direction: PartnershipRequestDirection;
   message: string | null;
+  promoCode: string | null;
   status: PartnershipRequestStatus;
   createdAt: Date;
   decidedAt: Date | null;

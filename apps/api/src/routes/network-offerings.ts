@@ -92,6 +92,8 @@ networkOfferingsRouter.get('/network/directory/offerings', async (_req, res) => 
       `${TABLES.NetworkVendor}.name as vendorName`,
       `${TABLES.NetworkVendor}.slug as vendorSlug`,
       `${TABLES.NetworkVendor}.logoUrl as vendorLogoUrl`,
+      `${TABLES.NetworkVendor}.routerUrl as vendorRouterUrl`,
+      `${TABLES.NetworkVendor}.instanceUrl as vendorInstanceUrl`,
     )) as Array<Record<string, unknown>>;
 
   res.json({ offerings: rows });

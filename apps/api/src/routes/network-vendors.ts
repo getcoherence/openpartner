@@ -36,6 +36,7 @@ networkVendorsRouter.post('/network/vendors', requireAuth, requireAdmin, async (
       instanceUrl: body.data.instanceUrl.replace(/\/$/, ''),
       instanceKeyCiphertext: ciphertext,
       instanceKeyPrefix: prefix,
+      routerUrl: body.data.routerUrl ? body.data.routerUrl.replace(/\/$/, '') : null,
       status: 'pending',
     });
   } catch (err: unknown) {

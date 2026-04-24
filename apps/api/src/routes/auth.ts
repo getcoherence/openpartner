@@ -54,6 +54,7 @@ authRouter.get('/auth/whoami', requireAuth, async (req, res) => {
             handle: creator.handle,
             email: creator.email,
             avatarUrl: creator.avatarUrl,
+            defaultPromoCode: creator.defaultPromoCode,
             status: creator.status,
           }
         : null,

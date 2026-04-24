@@ -14,6 +14,13 @@
 import type { NetworkVendorRow, OfferingRow } from '@openpartner/db';
 import { decryptKey } from './crypto.js';
 
+export interface FederationCreator {
+  name: string;
+  email: string;
+  handle: string;
+  promoCode?: string | null;
+}
+
 export interface FederatedPartner {
   partnerId: string;
   linkKey: string;
@@ -24,7 +31,7 @@ export interface FederatedPartner {
 export async function provisionPartnerOnVendor(params: {
   vendor: NetworkVendorRow;
   offering: OfferingRow;
-  creator: { name: string; email: string; handle: string };
+  creator: FederationCreator;
 }): Promise<FederatedPartner> {
   const { vendor, offering, creator } = params;
   const key = decryptKey(vendor.instanceKeyCiphertext);
@@ -41,10 +48,13 @@ export async function provisionPartnerOnVendor(params: {
 
   const partnerId = String(createPartnerRes.id);
 
-  // The link key embeds the creator's handle so the share URL is readable.
-  // Uniqueness is enforced per-vendor-instance; if it collides, append the
-  // partnerId suffix as a fallback.
-  const linkKey = sanitizeLinkKey(creator.handle);
+  // Preferred link key order: request-level promoCode → creator handle. The
+  // slug is what appears in the share URL (e.g. getcoherence.io/r/<slug>),
+  // so we respect whatever the creator chose up-front. If uniqueness
+  // collides on the vendor's instance, fetchJsonWithFallback retries with
+  // a short suffix so the creator still gets something close to what they
+  // picked instead of the provisioning failing outright.
+  const linkKey = sanitizeLinkKey(creator.promoCode || creator.handle);
   const linkPayload = {
     linkKey,
     campaignId: offering.vendorCampaignId,
@@ -61,7 +71,7 @@ export async function provisionPartnerOnVendor(params: {
   // Router URL is co-deployed with the vendor's OpenPartner. Convention:
   // swap the API host's default port (4601) for the router's (4701), or
   // honor a routerUrl override we could add to NetworkVendor later.
-  const routerUrl = deriveRouterUrl(vendor.instanceUrl);
+  const routerUrl = deriveRouterUrl(vendor);
   const actualLinkKey = String(linkRes.linkKey);
   const publicShareUrl = `${routerUrl}/r/${actualLinkKey}`;
 
@@ -77,14 +87,16 @@ function sanitizeLinkKey(raw: string): string {
   return cleaned || 'creator';
 }
 
-function deriveRouterUrl(instanceUrl: string): string {
-  // Our default dev setup: API on :4601, router on :4701. In prod, most
-  // vendors will want the router on a branded apex (go.vendor.com), so this
-  // should become a field on NetworkVendor. For now, honor the convention.
+function deriveRouterUrl(vendor: NetworkVendorRow): string {
+  // Priority: explicit NetworkVendor.routerUrl → env override → port-swap
+  // convention (API 4601 → router 4701) for localhost dev. Production
+  // vendors should set routerUrl to their branded apex (e.g.
+  // https://getcoherence.io) so share URLs land at the right hostname.
+  if (vendor.routerUrl) return vendor.routerUrl;
   const env = process.env.NETWORK_ROUTER_URL;
   if (env) return env;
   try {
-    const url = new URL(instanceUrl);
+    const url = new URL(vendor.instanceUrl);
     if (url.port === '4601') {
       url.port = '4701';
       return url.origin;
@@ -92,7 +104,7 @@ function deriveRouterUrl(instanceUrl: string): string {
   } catch {
     /* ignore */
   }
-  return instanceUrl;
+  return vendor.instanceUrl;
 }
 
 interface FetchParams {
