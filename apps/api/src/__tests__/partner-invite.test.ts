@@ -33,8 +33,13 @@ class CapturingMailer implements Mailer {
     this.sent.push(msg);
   }
   findFor(to: string, purpose?: string): Message | undefined {
+    // Matches either metadata.purpose or tag — the /auth/signin path
+    // for revoked partners sets purpose to
+    // 'partner_revoked_signin_attempt' but keeps tag='partner_revoked'.
     return this.sent.find(
-      (m) => m.to === to && (purpose == null || m.metadata?.purpose === purpose),
+      (m) =>
+        m.to === to &&
+        (purpose == null || m.metadata?.purpose === purpose || m.tag === purpose),
     );
   }
 }
@@ -160,28 +165,34 @@ describe.skipIf(skipIntegration)('partner invite + signin', () => {
     const verify = await request(app).post('/auth/magic/verify').send({ token });
     const cookie = (verify.headers['set-cookie'] as unknown as string[])[0]!.split(';')[0]!;
 
-    // Partner's session works before revoke.
     const before = await request(app).get('/auth/whoami').set('Cookie', cookie);
     expect(before.status).toBe(200);
 
-    // Revoke.
+    mailer.sent.length = 0;
     const revoke = await request(app)
       .post(`/partners/${partnerId}/revoke`)
-      .set('Authorization', `Bearer ${ADMIN_KEY}`);
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ reason: 'Ending our partnership — thanks for your work' });
     expect(revoke.status).toBe(200);
+    expect(revoke.body.notified).toBe(true);
 
-    // Session is now invalid — the same cookie should no longer whoami.
+    // Notification email fired with the reason in the body.
+    const notice = mailer.findFor('rev@example.com', 'partner_revoked');
+    expect(notice).toBeDefined();
+    expect(notice!.text).toContain('suspended');
+    expect(notice!.text).toContain('Ending our partnership');
+
+    // Session killed.
     const after = await request(app).get('/auth/whoami').set('Cookie', cookie);
     expect(after.status).toBe(401);
 
-    // Second revoke is a 409.
+    // Second revoke → 409.
     const dupe = await request(app)
       .post(`/partners/${partnerId}/revoke`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(dupe.status).toBe(409);
 
-    // Reinstate clears revokedAt. Session remains dead (we killed it),
-    // but partner could sign in fresh.
+    // Reinstate + sign-in works again.
     const reinstate = await request(app)
       .post(`/partners/${partnerId}/reinstate`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`);
@@ -191,6 +202,50 @@ describe.skipIf(skipIntegration)('partner invite + signin', () => {
     const signin = await request(app).post('/auth/signin').send({ email: 'rev@example.com' });
     expect(signin.status).toBe(200);
     expect(mailer.findFor('rev@example.com', 'partner_signin')).toBeDefined();
+  });
+
+  it('revoke with notify=false does not email the partner', async () => {
+    const created = await request(app)
+      .post('/partners')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ email: 'silent@example.com', name: 'Silent' });
+    const partnerId = created.body.id;
+    const token = extractToken(mailer.findFor('silent@example.com')!.text);
+    await request(app).post('/auth/magic/verify').send({ token });
+
+    mailer.sent.length = 0;
+    const revoke = await request(app)
+      .post(`/partners/${partnerId}/revoke`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ notify: false, reason: 'Investigating fraud' });
+    expect(revoke.status).toBe(200);
+    expect(revoke.body.notified).toBe(false);
+    expect(mailer.sent.length).toBe(0);
+  });
+
+  it('signin for a revoked partner sends the suspension notice, not a magic link', async () => {
+    // Invite + activate + revoke.
+    const created = await request(app)
+      .post('/partners')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ email: 'after@example.com', name: 'After' });
+    const token = extractToken(mailer.findFor('after@example.com')!.text);
+    await request(app).post('/auth/magic/verify').send({ token });
+    await request(app)
+      .post(`/partners/${created.body.id}/revoke`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ reason: 'Program closed', notify: false });
+
+    mailer.sent.length = 0;
+    const signin = await request(app).post('/auth/signin').send({ email: 'after@example.com' });
+    expect(signin.status).toBe(200);
+    expect(signin.body.ok).toBe(true);
+
+    // Partner gets the suspension notice (with reason), not a signin link.
+    const notice = mailer.findFor('after@example.com', 'partner_revoked');
+    expect(notice).toBeDefined();
+    expect(notice!.text).toContain('Program closed');
+    expect(mailer.findFor('after@example.com', 'partner_signin')).toBeUndefined();
   });
 
   it('resend invite generates a fresh token and 409s once the partner is already activated', async () => {

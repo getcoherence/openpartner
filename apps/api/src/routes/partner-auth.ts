@@ -44,20 +44,37 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
   const email = body.data.email.toLowerCase();
   const partner = await db<PartnerRow>(TABLES.Partner).where({ email }).first();
 
-  // Intentionally always return {ok:true} — don't leak whether the email
-  // belongs to a known partner. Only issue + email a link if we'd
-  // actually let them in.
+  // Always return {ok:true} — don't leak whether the email is known.
+  // Three outcomes internally:
+  //   - unknown / pending           → no email, silent
+  //   - active                      → magic-link email
+  //   - revoked                     → suspension-notice email (the
+  //     partner already knows, but a reminder short-circuits the
+  //     "why doesn't my link work?" loop)
   if (partner && partner.activatedAt) {
-    const issued = await issueMagicLink({ email, purpose: 'partner_signin', partnerId: partner.id });
-    const tmpl = partnerSigninEmail(partner.name, buildMagicLinkUrl(issued.plaintext));
-    await getMailer().send({
-      to: email,
-      subject: tmpl.subject,
-      text: tmpl.text,
-      html: tmpl.html,
-      tag: 'partner_signin',
-      metadata: { purpose: 'partner_signin', partnerId: partner.id },
-    });
+    if (partner.revokedAt) {
+      const { partnerRevokedEmail } = await import('../email-templates.js');
+      const tmpl = partnerRevokedEmail(partner.name, partner.revokeReason);
+      await getMailer().send({
+        to: email,
+        subject: tmpl.subject,
+        text: tmpl.text,
+        html: tmpl.html,
+        tag: 'partner_revoked',
+        metadata: { purpose: 'partner_revoked_signin_attempt', partnerId: partner.id },
+      });
+    } else {
+      const issued = await issueMagicLink({ email, purpose: 'partner_signin', partnerId: partner.id });
+      const tmpl = partnerSigninEmail(partner.name, buildMagicLinkUrl(issued.plaintext));
+      await getMailer().send({
+        to: email,
+        subject: tmpl.subject,
+        text: tmpl.text,
+        html: tmpl.html,
+        tag: 'partner_signin',
+        metadata: { purpose: 'partner_signin', partnerId: partner.id },
+      });
+    }
   }
   res.json({ ok: true });
 });

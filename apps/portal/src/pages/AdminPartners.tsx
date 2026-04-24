@@ -19,6 +19,7 @@ interface Partner {
 export function AdminPartners() {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
+  const [revoking, setRevoking] = useState<Partner | null>(null);
 
   const partners = useQuery({ queryKey: ['partners'], queryFn: () => api<{ partners: Partner[] }>('/partners') });
 
@@ -40,6 +41,16 @@ export function AdminPartners() {
             setShowCreate(false);
             qc.invalidateQueries({ queryKey: ['partners'] });
             qc.invalidateQueries({ queryKey: ['admin-overview'] });
+          }}
+        />
+      )}
+      {revoking && (
+        <RevokeDialog
+          partner={revoking}
+          onClose={() => setRevoking(null)}
+          onDone={() => {
+            setRevoking(null);
+            qc.invalidateQueries({ queryKey: ['partners'] });
           }}
         />
       )}
@@ -75,7 +86,7 @@ export function AdminPartners() {
                 </>
               )}
               <span style={{ color: theme.border }}>·</span>
-              <RevokeAction partner={p} />
+              <RevokeAction partner={p} openDialog={() => setRevoking(p)} />
             </div>,
           ])}
         />
@@ -119,31 +130,23 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
   );
 }
 
-function RevokeAction({ partner }: { partner: Partner }) {
+function RevokeAction({ partner, openDialog }: { partner: Partner; openDialog: () => void }) {
   const qc = useQueryClient();
   const isRevoked = !!partner.revokedAt;
-  const mut = useMutation({
-    mutationFn: () => api(`/partners/${partner.id}/${isRevoked ? 'reinstate' : 'revoke'}`, { method: 'POST' }),
+  // Reinstate is single-click (no email, no reason). Revoke opens the
+  // dialog so the admin can set a reason + opt out of notification.
+  const reinstate = useMutation({
+    mutationFn: () => api(`/partners/${partner.id}/reinstate`, { method: 'POST' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['partners'] });
       qc.invalidateQueries({ queryKey: ['admin-overview'] });
     },
   });
 
-  function onClick() {
-    if (!isRevoked) {
-      const ok = window.confirm(
-        `Revoke ${partner.name}?\n\nThey'll be signed out immediately and new clicks to their links will be flagged. Historical commissions are kept. You can reinstate later.`,
-      );
-      if (!ok) return;
-    }
-    mut.mutate();
-  }
-
   return (
     <button
-      onClick={onClick}
-      disabled={mut.isPending}
+      onClick={() => (isRevoked ? reinstate.mutate() : openDialog())}
+      disabled={reinstate.isPending}
       style={{
         background: 'none',
         border: 'none',
@@ -153,8 +156,61 @@ function RevokeAction({ partner }: { partner: Partner }) {
         cursor: 'pointer',
       }}
     >
-      {mut.isPending ? '…' : isRevoked ? 'Reinstate' : 'Revoke'}
+      {reinstate.isPending ? '…' : isRevoked ? 'Reinstate' : 'Revoke'}
     </button>
+  );
+}
+
+function RevokeDialog({
+  partner,
+  onClose,
+  onDone,
+}: {
+  partner: Partner;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [reason, setReason] = useState('');
+  const [notify, setNotify] = useState(true);
+  const mut = useMutation({
+    mutationFn: () =>
+      api(`/partners/${partner.id}/revoke`, {
+        method: 'POST',
+        body: { reason: reason.trim() || undefined, notify },
+      }),
+    onSuccess: onDone,
+  });
+
+  return (
+    <Card style={{ marginBottom: 14, borderColor: `${theme.danger}44` }}>
+      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6, color: theme.danger }}>
+        Revoke {partner.name}?
+      </div>
+      <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
+        They're signed out immediately and new clicks on their links stop accruing commission.
+        Historical commissions are kept. You can reinstate at any time.
+      </div>
+      <ErrorBanner error={mut.error} />
+      <div style={{ marginBottom: 14 }}>
+        <Label>Reason (optional, included in their email)</Label>
+        <Input
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="e.g. Ending partnership — no longer active"
+          maxLength={500}
+        />
+      </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.textMuted, marginBottom: 16 }}>
+        <input type="checkbox" checked={notify} onChange={(e) => setNotify(e.target.checked)} />
+        Email the partner about the suspension
+      </label>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button onClick={() => mut.mutate()} disabled={mut.isPending}>
+          {mut.isPending ? 'Revoking…' : 'Revoke partner'}
+        </Button>
+        <Button variant="secondary" onClick={onClose}>Cancel</Button>
+      </div>
+    </Card>
   );
 }
 

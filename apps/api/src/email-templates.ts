@@ -45,6 +45,38 @@ export function partnerSigninEmail(name: string, link: string): EmailTemplate {
   return { subject, text, html: wrap(text, link, 'Sign in') };
 }
 
+export function partnerRevokedEmail(name: string, reason: string | null): EmailTemplate {
+  const subject = `Your partner account has been suspended`;
+  const text = [
+    `Hi ${name},`,
+    ``,
+    `Your partner account has been suspended by the program administrator.`,
+    ...(reason ? [``, `Reason: ${reason}`] : []),
+    ``,
+    `If you believe this was done in error, please contact the administrator of the partner program directly.`,
+  ].join('\n');
+  // No CTA button on this template — there's nowhere for the partner
+  // to go. Plain-text-in-HTML is fine.
+  const html = `<!DOCTYPE html>
+<html>
+  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#f4f4f5; padding:24px 0; margin:0;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+      <tr><td align="center">
+        <table role="presentation" width="520" cellspacing="0" cellpadding="0" border="0" style="background:#ffffff; border-radius:8px; overflow:hidden;">
+          <tr><td style="padding:28px 32px; color:#1f2937; font-size:14px; line-height:1.6;">
+            ${text
+              .split('\n')
+              .map((l) => l.replace(/</g, '&lt;').replace(/>/g, '&gt;'))
+              .join('<br>')}
+          </td></tr>
+        </table>
+      </td></tr>
+    </table>
+  </body>
+</html>`;
+  return { subject, text, html };
+}
+
 function wrap(text: string, cta: string, ctaLabel: string): string {
   const escaped = text
     .split('\n')

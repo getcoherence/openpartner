@@ -31,6 +31,9 @@ export interface PartnerRow {
   // non-null = admin has suspended the partner; sessions + future
   // attribution stop, historical commissions untouched
   revokedAt: Date | null;
+  // Admin-supplied free-text reason surfaced in the revoke notification
+  // email and shown if the partner later tries to sign in.
+  revokeReason: string | null;
 }
 
 export type MagicLinkPurpose = 'partner_invite' | 'partner_signin';

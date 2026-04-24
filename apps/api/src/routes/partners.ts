@@ -6,7 +6,7 @@ import { db } from '../db.js';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
-import { buildMagicLinkUrl, partnerInviteEmail } from '../email-templates.js';
+import { buildMagicLinkUrl, partnerInviteEmail, partnerRevokedEmail } from '../email-templates.js';
 
 const createSchema = z.object({
   email: z.string().email(),
@@ -84,26 +84,53 @@ partnersRouter.post('/partners/:id/invite', requireAuth, requireAdmin, async (re
   res.json({ ok: true });
 });
 
+const revokeSchema = z.object({
+  reason: z.string().max(500).optional(),
+  // Default true: industry-standard partner-program norm is to notify.
+  // Admin unchecks for fraud cases where tipping the partner off is
+  // counterproductive.
+  notify: z.boolean().optional().default(true),
+});
+
 /**
  * Suspend a partner. Flips revokedAt, revokes all of their sessions so
- * they're kicked out mid-request, and leaves historical commissions
+ * they're kicked out mid-request, leaves historical commissions
  * untouched. Future attribution skips them; router flags clicks on their
- * links as 'revoked'.
+ * links as 'revoked'. Sends a notification email unless notify=false.
  */
 partnersRouter.post('/partners/:id/revoke', requireAuth, requireAdmin, async (req, res) => {
+  const body = revokeSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });
   if (partner.revokedAt) return res.status(409).json({ error: 'already_revoked' });
 
   const now = new Date();
+  const reason = body.data.reason ?? null;
   await db.transaction(async (trx) => {
-    await trx<PartnerRow>(TABLES.Partner).where({ id: partner.id }).update({ revokedAt: now, updatedAt: now });
+    await trx<PartnerRow>(TABLES.Partner)
+      .where({ id: partner.id })
+      .update({ revokedAt: now, revokeReason: reason, updatedAt: now });
     await trx<SessionRow>(TABLES.Session)
       .where({ partnerId: partner.id })
       .whereNull('revokedAt')
       .update({ revokedAt: now });
   });
-  res.json({ ok: true, revokedAt: now });
+
+  if (body.data.notify) {
+    const tmpl = partnerRevokedEmail(partner.name, reason);
+    await getMailer().send({
+      to: partner.email,
+      subject: tmpl.subject,
+      text: tmpl.text,
+      html: tmpl.html,
+      tag: 'partner_revoked',
+      metadata: { purpose: 'partner_revoked', partnerId: partner.id },
+    });
+  }
+
+  res.json({ ok: true, revokedAt: now, notified: body.data.notify });
 });
 
 /** Undo revoke — partner regains dashboard access and future attribution. */
@@ -114,7 +141,7 @@ partnersRouter.post('/partners/:id/reinstate', requireAuth, requireAdmin, async 
 
   await db<PartnerRow>(TABLES.Partner)
     .where({ id: partner.id })
-    .update({ revokedAt: null, updatedAt: new Date() });
+    .update({ revokedAt: null, revokeReason: null, updatedAt: new Date() });
   res.json({ ok: true });
 });
 
