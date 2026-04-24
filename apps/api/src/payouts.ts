@@ -109,7 +109,25 @@ export async function runPayouts(): Promise<PayoutRunResult> {
       });
     }
 
-    if (method === 'stripe_connect' && partner.stripeConnectAccountId) {
+    // Preflight: a linked Connect account that hasn't finished onboarding
+    // will return an error on transfers.create. Skip gracefully — the
+    // Payout stays 'pending' so the next run picks it up once onboarding
+    // completes (tracked via the account.updated webhook).
+    const stripeMeta = (partner.metadata as { stripe?: { payoutsEnabled?: boolean } }).stripe;
+    const payoutsReady = stripeMeta?.payoutsEnabled === true;
+
+    if (method === 'stripe_connect' && partner.stripeConnectAccountId && !payoutsReady) {
+      results.push({
+        payoutId,
+        partnerId: partner.id,
+        amount,
+        currency: group.currency,
+        method,
+        status: 'pending',
+        platformFee: platformFee || undefined,
+        error: 'stripe_onboarding_incomplete',
+      });
+    } else if (method === 'stripe_connect' && partner.stripeConnectAccountId) {
       try {
         const stripe = requireStripe();
         const transfer = await stripe.transfers.create(

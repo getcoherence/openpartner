@@ -1,9 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
-import { Navigate } from 'react-router-dom';
-import { MousePointerClick, Receipt, Wallet, Users, UserCheck, CreditCard } from 'lucide-react';
+import { Link, Navigate } from 'react-router-dom';
+import { MousePointerClick, Receipt, Wallet, Users, UserCheck, CreditCard, AlertCircle } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { theme } from '../theme.js';
-import { Avatar, Card, EmptyState, ErrorBanner, Page, SectionHeading, Stat, StatusPill, money } from '../ui.js';
+import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, SectionHeading, Stat, StatusPill, money } from '../ui.js';
 
 // ---------- Partner ----------
 
@@ -36,6 +36,11 @@ interface Funnel {
   revenue: number;
 }
 
+interface ConnectStatus {
+  connected: boolean;
+  payoutsEnabled?: boolean;
+}
+
 function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string }) {
   const { data, error, isLoading } = useQuery({
     queryKey: ['dashboard', partnerId],
@@ -45,6 +50,20 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
     queryKey: ['funnel', partnerId],
     queryFn: () => api<Funnel>(`/partners/${partnerId}/funnel`),
   });
+  // Non-critical — render the rest of the dashboard even if this 503s
+  // (Stripe not configured on a selfhost instance, for instance).
+  const connect = useQuery({
+    queryKey: ['connect-status', partnerId],
+    queryFn: () => api<ConnectStatus>(`/partners/${partnerId}/connect/status`),
+    retry: false,
+  });
+
+  const owedAmount = (data?.commissionByStatus.approved ?? 0) + (data?.commissionByStatus.accrued ?? 0);
+  const needsConnect =
+    !!data &&
+    owedAmount > 0 &&
+    connect.data != null &&
+    (!connect.data.connected || !connect.data.payoutsEnabled);
 
   return (
     <Page
@@ -52,6 +71,7 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
       subtitle="Last 30 days"
     >
       <ErrorBanner error={error} />
+      {needsConnect && <ConnectNudge owed={owedAmount} connected={connect.data!.connected} />}
       {isLoading || !data ? (
         <Card>Loading…</Card>
       ) : (
@@ -91,6 +111,29 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
         </>
       )}
     </Page>
+  );
+}
+
+function ConnectNudge({ owed, connected }: { owed: number; connected: boolean }) {
+  return (
+    <Card>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+        <div style={{ color: theme.warn, marginTop: 2 }}>
+          <AlertCircle size={18} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>
+            {connected ? 'Finish Stripe onboarding to receive payouts' : 'Connect Stripe to receive payouts'}
+          </div>
+          <div style={{ fontSize: 13, color: theme.textMuted }}>
+            You have {money(owed)} in commissions {connected ? 'waiting — complete onboarding to get paid.' : 'that can’t be paid out yet.'}
+          </div>
+        </div>
+        <Link to="/connect" style={{ textDecoration: 'none' }}>
+          <Button icon={<CreditCard size={14} />}>{connected ? 'Finish onboarding' : 'Connect Stripe'}</Button>
+        </Link>
+      </div>
+    </Card>
   );
 }
 
