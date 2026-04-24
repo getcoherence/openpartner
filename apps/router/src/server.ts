@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { ulid } from 'ulid';
 import { createHash } from 'node:crypto';
 import { createDb, TABLES, type LinkRow } from '@openpartner/db';
-import { checkVelocity } from './velocity.js';
+import { checkIpCap, checkVelocity } from './velocity.js';
 import './env.js';
 
 const app = new Hono();
@@ -31,6 +31,14 @@ app.get('/r/:linkKey', async (c) => {
   const ipHash = hashIp(
     c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? c.req.header('x-real-ip') ?? '',
   );
+
+  // Hard per-IP cap — refuse before we hit the DB. Unlike velocity this
+  // rejects outright; a real user clicking 300 links in a minute doesn't
+  // exist. Tests share the process and bypass to avoid fighting it.
+  if (process.env.NODE_ENV !== 'test' && checkIpCap(ipHash)) {
+    c.header('Retry-After', '60');
+    return c.text('Rate limited', 429);
+  }
 
   const velocityFlagged = checkVelocity(ipHash, linkKey);
 

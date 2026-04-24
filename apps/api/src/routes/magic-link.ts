@@ -48,8 +48,20 @@ import {
   vendorSignupEmail,
 } from '../email-templates.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
+import { ipRateLimit } from '../middleware/rate-limit.js';
 
 export const magicLinkRouter = Router();
+
+// Shared bucket across every email-triggering auth endpoint — stops an
+// attacker from rotating across /creator/signin, /vendor/signin, etc. to
+// multiply the cap. 10/min per IP is loose for one real user, tight for
+// a bot.
+const mailAuthLimit = ipRateLimit({ name: 'magic-link-mail', max: 10, windowMs: 60_000 });
+
+// Token verification is single-use already, but brute-forcing /verify
+// across many IPs is still a theoretical risk. Modest cap — a legit
+// user verifies once.
+const verifyLimit = ipRateLimit({ name: 'magic-link-verify', max: 30, windowMs: 60_000 });
 
 const creatorSignupSchema = z.object({
   email: z.string().email(),
@@ -90,7 +102,7 @@ function magicUrl(token: string, purpose: string): string {
 
 // -------- Creator signup --------
 
-magicLinkRouter.post('/auth/creator/signup', async (req, res) => {
+magicLinkRouter.post('/auth/creator/signup', mailAuthLimit, async (req, res) => {
   const body = creatorSignupSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
@@ -125,7 +137,7 @@ magicLinkRouter.post('/auth/creator/signup', async (req, res) => {
 // issuing the magic link — no point emailing them a verification link
 // only to fail at admin-approval time because the key doesn't work.
 
-magicLinkRouter.post('/auth/vendor/signup', async (req, res) => {
+magicLinkRouter.post('/auth/vendor/signup', mailAuthLimit, async (req, res) => {
   const body = vendorSignupSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
@@ -204,7 +216,7 @@ magicLinkRouter.post('/auth/vendor/signup', async (req, res) => {
 // which (or neither) matches, so the endpoint doesn't leak whether an
 // email is registered on the Network.
 
-magicLinkRouter.post('/auth/signin', async (req, res) => {
+magicLinkRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
   const body = signinSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
   const email = body.data.email.toLowerCase();
@@ -249,7 +261,7 @@ magicLinkRouter.post('/auth/signin', async (req, res) => {
 
 // Deprecated alias for older clients still calling /auth/creator/signin.
 // Scoped to creators only — matches the pre-unified contract.
-magicLinkRouter.post('/auth/creator/signin', async (req, res) => {
+magicLinkRouter.post('/auth/creator/signin', mailAuthLimit, async (req, res) => {
   const body = signinSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
   const email = body.data.email.toLowerCase();
@@ -272,7 +284,7 @@ magicLinkRouter.post('/auth/creator/signin', async (req, res) => {
 
 // -------- Verify --------
 
-magicLinkRouter.post('/auth/magic/verify', async (req, res) => {
+magicLinkRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
   const body = verifySchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 

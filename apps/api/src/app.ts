@@ -35,6 +35,12 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   const app = express();
   const MODE = process.env.OPENPARTNER_MODE ?? 'selfhost';
 
+  // Trust the first proxy hop so req.ip is the client IP, not the load
+  // balancer. DO App Platform and Caddy both terminate TLS and forward
+  // with X-Forwarded-For. One hop is correct — trusting more would let a
+  // client spoof their IP by setting X-Forwarded-For themselves.
+  app.set('trust proxy', 1);
+
   app.use(helmet());
   // CORS: credentials: true so the portal can send the op_session cookie
   // cross-origin in dev (portal on :5173, api on :4601). In prod the
