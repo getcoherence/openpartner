@@ -25,7 +25,7 @@ export async function api<T = unknown>(
   const res = await fetch(`/api${path}`, {
     ...init,
     headers,
-    credentials: 'include', // send op_session cookie on magic-link flow
+    credentials: 'include',
     body: init.body === undefined
       ? undefined
       : typeof init.body === 'string'
@@ -55,20 +55,8 @@ export class ApiError extends Error {
 }
 
 export interface Principal {
-  role: 'admin' | 'partner' | 'network_vendor' | 'network_creator';
+  role: 'admin' | 'partner';
   source?: string;
   partnerId?: string;
   partner?: { id: string; name: string; email: string; stripeConnected: boolean };
-  networkVendorId?: string;
-  vendor?: { id: string; name: string; slug: string; logoUrl: string | null; websiteUrl: string | null; status: string };
-  networkCreatorId?: string;
-  creator?: {
-    id: string;
-    name: string;
-    handle: string;
-    email: string;
-    avatarUrl: string | null;
-    defaultPromoCode: string | null;
-    status: string;
-  };
 }

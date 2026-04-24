@@ -128,173 +128,11 @@ export interface ApiKeyRow {
   prefix: string;
   keyHash: string;
   partnerId: string | null;
-  networkVendorId: string | null;
-  networkCreatorId: string | null;
   scopes: ApiScope[] | null;
   label: string | null;
   createdAt: Date;
   lastUsedAt: Date | null;
   revokedAt: Date | null;
-}
-
-// ---- OpenPartner Network ----
-
-export type NetworkVendorStatus = 'pending' | 'active' | 'suspended';
-export type NetworkCreatorStatus = 'pending' | 'active' | 'suspended';
-export type PartnershipRequestStatus = 'pending' | 'approving' | 'approved' | 'rejected' | 'cancelled';
-export type PartnershipRequestDirection = 'creator_to_vendor' | 'vendor_to_creator';
-export type PartnershipStatus = 'active' | 'ended';
-
-export interface CreatorPlatform {
-  platform: 'youtube' | 'twitter' | 'instagram' | 'tiktok' | 'blog' | 'podcast' | 'other';
-  url: string;
-  followers?: number;
-}
-
-export type OfferingPayout =
-  | { type: 'recurring_percent'; percent: number; durationMonths: number | null } // null = lifetime
-  | { type: 'one_time_fee'; amount: number; currency?: string }
-  | { type: 'tiered_percent'; tiers: Array<{ minRevenueUsd: number; percent: number }> };
-
-export interface OfferingBonus {
-  description: string;
-  triggerRevenueUsd: number;
-  bonusUsd: number;
-}
-
-export interface OfferingTerms {
-  payout: OfferingPayout;
-  bonuses?: OfferingBonus[];
-  cookieWindowDays: number;
-  exclusions?: string[];
-}
-
-export interface NetworkVendorRow {
-  id: string;
-  name: string;
-  slug: string;
-  email: string;
-  websiteUrl: string | null;
-  logoUrl: string | null;
-  description: string | null;
-  instanceUrl: string;
-  instanceKeyCiphertext: string;
-  instanceKeyPrefix: string;
-  routerUrl: string | null;
-  status: NetworkVendorStatus;
-  createdAt: Date;
-  activatedAt: Date | null;
-}
-
-export interface NetworkCreatorRow {
-  id: string;
-  name: string;
-  handle: string;
-  email: string;
-  bio: string | null;
-  avatarUrl: string | null;
-  platforms: CreatorPlatform[];
-  defaultPromoCode: string | null;
-  status: NetworkCreatorStatus;
-  createdAt: Date;
-  activatedAt: Date | null;
-}
-
-export interface OfferingRow {
-  id: string;
-  vendorId: string;
-  title: string;
-  productUrl: string;
-  description: string | null;
-  heroImageUrl: string | null;
-  vendorCampaignId: string;
-  terms: OfferingTerms;
-  published: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface PartnershipRequestRow {
-  id: string;
-  offeringId: string;
-  vendorId: string;
-  creatorId: string;
-  direction: PartnershipRequestDirection;
-  message: string | null;
-  promoCode: string | null;
-  status: PartnershipRequestStatus;
-  createdAt: Date;
-  decidedAt: Date | null;
-  decisionNote: string | null;
-}
-
-// ---- Human auth (magic-link + sessions) ----
-
-export type MagicLinkPurpose =
-  | 'creator_signup'
-  | 'creator_signin'
-  | 'vendor_signup'
-  | 'vendor_signin';
-
-export interface MagicLinkCreatorClaim {
-  kind: 'creator';
-  handle: string;
-  name: string;
-}
-
-export interface MagicLinkVendorClaim {
-  kind: 'vendor';
-  name: string;
-  slug: string;
-  instanceUrl: string;
-  // AES-256-GCM envelope of the vendor's instance API key. We only have
-  // the plaintext transiently during /auth/vendor/signup; the token sits
-  // in MagicLinkToken.claim (jsonb) for up to 15 minutes until consumed,
-  // and it must not store federation credentials in the clear.
-  instanceKeyCiphertext: string;
-  instanceKeyPrefix: string;
-  routerUrl?: string;
-  description?: string;
-  websiteUrl?: string;
-  logoUrl?: string;
-}
-
-export type MagicLinkClaim = MagicLinkCreatorClaim | MagicLinkVendorClaim;
-
-export interface MagicLinkTokenRow {
-  id: string;
-  prefix: string;
-  tokenHash: string;
-  email: string;
-  purpose: MagicLinkPurpose;
-  claim: MagicLinkClaim | null;
-  expiresAt: Date;
-  consumedAt: Date | null;
-  createdAt: Date;
-}
-
-export type SessionPrincipalKind = 'network_creator' | 'network_vendor' | 'partner' | 'admin';
-
-export interface SessionRow {
-  id: string;
-  prefix: string;
-  tokenHash: string;
-  principalKind: SessionPrincipalKind;
-  principalId: string;
-  expiresAt: Date;
-  createdAt: Date;
-  lastSeenAt: Date | null;
-  revokedAt: Date | null;
-}
-
-export interface DevMessageRow {
-  id: string;
-  to: string;
-  subject: string;
-  body: string;
-  html: string | null;
-  metadata: Record<string, unknown>;
-  createdAt: Date;
 }
 
 // ---- Outbound webhooks ----
@@ -305,7 +143,6 @@ export type WebhookEventType =
   | 'commission.paid'
   | 'commission.reversed'
   | 'payout.created'
-  | 'partnership.approved'
   | (string & {});
 
 export interface WebhookEndpointRow {
@@ -335,20 +172,6 @@ export interface WebhookDeliveryRow {
   createdAt: Date;
   deliveredAt: Date | null;
   lastAttemptAt: Date | null;
-}
-
-export interface PartnershipRow {
-  id: string;
-  requestId: string;
-  offeringId: string;
-  vendorId: string;
-  creatorId: string;
-  vendorPartnerId: string;
-  vendorLinkKey: string;
-  publicShareUrl: string;
-  status: PartnershipStatus;
-  createdAt: Date;
-  endedAt: Date | null;
 }
 
 export interface PayoutRow {

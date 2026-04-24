@@ -1,6 +1,6 @@
 # OpenPartner
 
-**Open-source partner attribution and payouts.** Full attribution from click to revenue, three-tier pricing, your data stays yours.
+**Open-source partner attribution and payouts.** Run your own partner program: track every click through to revenue, pay partners out via Stripe Connect, export everything whenever you want.
 
 > The open alternative to Dub Partners, Rewardful, and Impact.
 
@@ -8,7 +8,7 @@
 
 Existing partner platforms have two problems:
 
-1. **They stop at the click.** Most tools track who clicked a link. Few reliably track which creator drove which dollar of revenue, 60 days later, across devices, through Safari's cookie blocks.
+1. **They stop at the click.** Most tools track who clicked a link. Few reliably track which partner drove which dollar of revenue, 60 days later, across devices, through Safari's cookie blocks.
 2. **They lock your data in.** Once two years of attribution history are baked into Impact or Partnerize, switching means starting over.
 
 OpenPartner fixes both.
@@ -91,12 +91,14 @@ v1. End-to-end attribution, payouts, and export are working; API surface is stab
 - Commission accrual + review queue (approve / reverse) + Stripe Connect Standard payouts with idempotent transfers
 - Three deployment modes gated by `OPENPARTNER_MODE`: `selfhost`, `flat` (Stripe subscription), `revshare` (3% platform fee)
 - Click velocity limits with an admin fraud-review queue that replays skipped attributions on unflag
-- Scoped API keys (admin and partner tokens with granular `partners:write`, `links:write`, etc.) + magic-link auth for the portal
-- Two-sided OpenPartner Network — vendors publish offerings, creators apply, federation provisions partner records on vendor instances with AES-256-GCM encrypted keys
-- Creator-chosen share-link slugs (`go.yourdomain.com/r/<slug>`)
+- Scoped API keys (`partners:write`, `links:write`, `commissions:read`, …) — the federation contract that lets an external creator-network service provision Partner + Link rows on this instance over REST
 - Outbound webhooks with HMAC-SHA256 signing and per-event redelivery
-- Portable JSON + CSV export per table; full bundle export round-trippable into self-hosted via `POST /import`
+- Portable JSON + CSV export per table; full bundle export round-trippable into another instance via `POST /import`
 - Partner dashboard + admin overview + fraud review + partner funnel analytics in the portal
 - `@openpartner/sdk` on npm with browser and server entries
-- Transactional email via Postmark (magic links, vendor approval, creator signups)
+- Prometheus `/metrics` + X-Request-Id correlation
 - Deployment: DigitalOcean App Platform spec + single-host `docker-compose.prod.yml` behind Caddy
+
+### Not in this repo
+
+A creator-discovery / two-sided network layer (vendors publish offerings, creators apply, federation provisions partnerships into vendor instances) is available as a separate hosted service. OpenPartner OSS instances integrate with it via scoped API keys.

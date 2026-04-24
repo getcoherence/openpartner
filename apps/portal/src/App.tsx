@@ -11,14 +11,6 @@ import {
   ShieldCheck,
   Download,
   LogOut,
-  Compass,
-  Package2,
-  Inbox,
-  Handshake,
-  Store,
-  Megaphone,
-  Mail,
-  UserCog,
   Webhook,
 } from 'lucide-react';
 import { clearApiKey, api, type Principal } from './api.js';
@@ -32,22 +24,9 @@ import { AdminPartners } from './pages/AdminPartners.js';
 import { AdminCampaigns } from './pages/AdminCampaigns.js';
 import { AdminReview } from './pages/AdminReview.js';
 import { AdminExport } from './pages/AdminExport.js';
-import { DiscoverPage } from './pages/network/Discover.js';
-import { MyRequestsPage } from './pages/network/MyRequests.js';
-import { MyPartnershipsPage } from './pages/network/MyPartnerships.js';
-import { VendorOfferingsPage } from './pages/network/VendorOfferings.js';
-import { VendorRequestsPage } from './pages/network/VendorRequests.js';
-import { AdminNetworkVendors } from './pages/network/AdminNetworkVendors.js';
-import { AdminNetworkCreators } from './pages/network/AdminNetworkCreators.js';
 import { LoginPage } from './pages/auth/Login.js';
-import { SignupPage } from './pages/auth/Signup.js';
-import { VendorSignupPage } from './pages/auth/VendorSignup.js';
-import { MagicLandingPage } from './pages/auth/MagicLanding.js';
-import { DevMailboxPage } from './pages/admin/DevMailbox.js';
 import { WebhooksPage } from './pages/admin/Webhooks.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
-import { OfferingDetailPage } from './pages/network/OfferingDetail.js';
-import { CreatorProfilePage } from './pages/network/CreatorProfile.js';
 
 interface AuthState {
   loading: boolean;
@@ -59,9 +38,6 @@ export function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
-        <Route path="/signup" element={<SignupPage />} />
-        <Route path="/signup/vendor" element={<VendorSignupPage />} />
-        <Route path="/auth/magic" element={<MagicLandingPage />} />
         <Route path="/*" element={<Shell />} />
       </Routes>
     </BrowserRouter>
@@ -73,9 +49,6 @@ function Shell() {
   const location = useLocation();
 
   useEffect(() => {
-    // Always attempt /auth/whoami — it'll accept either the API-key
-    // Bearer token (if present in localStorage) or the op_session cookie
-    // from a magic-link sign-in.
     api<Principal>('/auth/whoami')
       .then((p) => setAuth({ loading: false, principal: p }))
       .catch(() => setAuth({ loading: false, principal: null }));
@@ -91,7 +64,6 @@ function Shell() {
         <Routes>
           <Route index element={<Dashboard principal={auth.principal} />} />
 
-          {/* Vendor-side OpenPartner (core attribution) */}
           <Route path="links" element={<LinksPage principal={auth.principal} />} />
           <Route path="commissions" element={<CommissionsPage principal={auth.principal} />} />
           <Route path="payouts" element={<PayoutsPage principal={auth.principal} />} />
@@ -103,24 +75,10 @@ function Shell() {
               <Route path="admin/campaigns" element={<AdminCampaigns />} />
               <Route path="admin/review" element={<AdminReview />} />
               <Route path="admin/export" element={<AdminExport />} />
-              <Route path="admin/dev-mailbox" element={<DevMailboxPage />} />
               <Route path="admin/fraud-review" element={<FraudReviewPage />} />
               <Route path="admin/webhooks" element={<WebhooksPage />} />
-              <Route path="network/vendors" element={<AdminNetworkVendors />} />
-              <Route path="network/creators" element={<AdminNetworkCreators />} />
             </>
           )}
-
-          {/* OpenPartner Network — creator-side */}
-          <Route path="network/discover" element={<DiscoverPage principal={auth.principal} />} />
-          <Route path="network/offerings/:id" element={<OfferingDetailPage principal={auth.principal} />} />
-          <Route path="network/requests" element={<MyRequestsPage principal={auth.principal} />} />
-          <Route path="network/partnerships" element={<MyPartnershipsPage principal={auth.principal} />} />
-          <Route path="network/profile" element={<CreatorProfilePage />} />
-
-          {/* OpenPartner Network — vendor-side */}
-          <Route path="network/offerings" element={<VendorOfferingsPage />} />
-          <Route path="network/incoming" element={<VendorRequestsPage />} />
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
@@ -142,7 +100,6 @@ function Sidebar({ principal }: { principal: Principal }) {
         padding: '20px 14px',
       }}
     >
-      {/* Brand */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 8px', marginBottom: 20 }}>
         <Logo />
         <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>OpenPartner</div>
@@ -151,66 +108,29 @@ function Sidebar({ principal }: { principal: Principal }) {
       <PrincipalChip principal={principal} />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 14, overflow: 'auto' }}>
-        {/* Core attribution nav — shown to admin + partner */}
-        {(principal.role === 'admin' || principal.role === 'partner') && (
-          <NavSection title="Yours">
-            <NavItem to="/" icon={<LayoutDashboard size={16} />}>Dashboard</NavItem>
-            <NavItem to="/links" icon={<Link2 size={16} />}>Links</NavItem>
-            <NavItem to="/commissions" icon={<Receipt size={16} />}>Commissions</NavItem>
-            <NavItem to="/payouts" icon={<Banknote size={16} />}>Payouts</NavItem>
-            {principal.role === 'partner' && <NavItem to="/connect" icon={<CreditCard size={16} />}>Stripe Connect</NavItem>}
-          </NavSection>
-        )}
+        <NavSection title="Yours">
+          <NavItem to="/" icon={<LayoutDashboard size={16} />}>Dashboard</NavItem>
+          <NavItem to="/links" icon={<Link2 size={16} />}>Links</NavItem>
+          <NavItem to="/commissions" icon={<Receipt size={16} />}>Commissions</NavItem>
+          <NavItem to="/payouts" icon={<Banknote size={16} />}>Payouts</NavItem>
+          {principal.role === 'partner' && <NavItem to="/connect" icon={<CreditCard size={16} />}>Stripe Connect</NavItem>}
+        </NavSection>
 
         {principal.role === 'admin' && (
-          <>
-            <NavSection title="Admin">
-              <NavItem to="/admin/partners" icon={<Users size={16} />}>Partners</NavItem>
-              <NavItem to="/admin/campaigns" icon={<Tag size={16} />}>Campaigns</NavItem>
-              <NavItem to="/admin/review" icon={<ShieldCheck size={16} />}>Review queue</NavItem>
-              <NavItem to="/admin/export" icon={<Download size={16} />}>Export / import</NavItem>
-              <NavItem to="/admin/fraud-review" icon={<ShieldCheck size={16} />}>Fraud review</NavItem>
-              <NavItem to="/admin/webhooks" icon={<Webhook size={16} />}>Webhooks</NavItem>
-              <NavItem to="/admin/dev-mailbox" icon={<Mail size={16} />}>Dev mailbox</NavItem>
-            </NavSection>
-            <NavSection title="Network">
-              <NavItem to="/network/vendors" icon={<Store size={16} />}>Vendors</NavItem>
-              <NavItem to="/network/creators" icon={<Megaphone size={16} />}>Creators</NavItem>
-              <NavItem to="/network/discover" icon={<Compass size={16} />}>Discover</NavItem>
-            </NavSection>
-          </>
-        )}
-
-        {principal.role === 'network_vendor' && (
-          <NavSection title="Vendor">
-            <NavItem to="/network/offerings" icon={<Package2 size={16} />}>Offerings</NavItem>
-            <NavItem to="/network/incoming" icon={<Inbox size={16} />}>Incoming requests</NavItem>
-            <NavItem to="/network/partnerships" icon={<Handshake size={16} />}>Partnerships</NavItem>
-            <NavItem to="/network/discover" icon={<Compass size={16} />}>Discover creators</NavItem>
-          </NavSection>
-        )}
-
-        {principal.role === 'network_creator' && (
-          <NavSection title="Creator">
-            <NavItem to="/network/discover" icon={<Compass size={16} />}>Discover</NavItem>
-            <NavItem to="/network/requests" icon={<Inbox size={16} />}>My requests</NavItem>
-            <NavItem to="/network/partnerships" icon={<Handshake size={16} />}>Partnerships</NavItem>
-            <NavItem to="/network/profile" icon={<UserCog size={16} />}>Profile</NavItem>
+          <NavSection title="Admin">
+            <NavItem to="/admin/partners" icon={<Users size={16} />}>Partners</NavItem>
+            <NavItem to="/admin/campaigns" icon={<Tag size={16} />}>Campaigns</NavItem>
+            <NavItem to="/admin/review" icon={<ShieldCheck size={16} />}>Review queue</NavItem>
+            <NavItem to="/admin/export" icon={<Download size={16} />}>Export / import</NavItem>
+            <NavItem to="/admin/fraud-review" icon={<ShieldCheck size={16} />}>Fraud review</NavItem>
+            <NavItem to="/admin/webhooks" icon={<Webhook size={16} />}>Webhooks</NavItem>
           </NavSection>
         )}
       </div>
 
       <button
-        onClick={async () => {
+        onClick={() => {
           clearApiKey();
-          // Fire-and-forget — server-side revokes the session if we have
-          // one; if we're only signing out of an API-key session, the
-          // server ignores the missing cookie and responds 200.
-          try {
-            await api('/auth/signout', { method: 'POST' });
-          } catch {
-            /* ignore */
-          }
           nav('/login');
         }}
         style={{
@@ -287,27 +207,11 @@ function describePrincipal(p: Principal): { label: string; sublabel: string; ini
   if (p.role === 'admin') {
     return { label: 'Admin', sublabel: 'admin', initial: 'A', hue: { bg: theme.accentSoft, fg: theme.accent } };
   }
-  if (p.role === 'partner') {
-    return {
-      label: p.partner?.name ?? 'Partner',
-      sublabel: 'partner',
-      initial: p.partner?.name?.[0]?.toUpperCase() ?? 'P',
-      hue: { bg: '#1e2a3d', fg: theme.info },
-    };
-  }
-  if (p.role === 'network_vendor') {
-    return {
-      label: p.vendor?.name ?? 'Vendor',
-      sublabel: 'vendor',
-      initial: p.vendor?.name?.[0]?.toUpperCase() ?? 'V',
-      hue: { bg: '#2a2018', fg: theme.warn },
-    };
-  }
   return {
-    label: p.creator?.name ?? 'Creator',
-    sublabel: 'creator',
-    initial: p.creator?.name?.[0]?.toUpperCase() ?? 'C',
-    hue: { bg: '#2a1a2a', fg: '#e879f9' },
+    label: p.partner?.name ?? 'Partner',
+    sublabel: 'partner',
+    initial: p.partner?.name?.[0]?.toUpperCase() ?? 'P',
+    hue: { bg: '#1e2a3d', fg: theme.info },
   };
 }
 

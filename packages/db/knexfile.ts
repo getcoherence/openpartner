@@ -14,6 +14,12 @@ const common: Knex.Config = {
     directory: './migrations',
     extension: isProd ? 'js' : 'ts',
     loadExtensions: isProd ? ['.js'] : ['.ts'],
+    // We occasionally remove migrations that have already run against
+    // existing databases (e.g. the Network carve-out). Knex's default
+    // "corrupt directory" check refuses to boot in that case; instead
+    // we ship a targeted tear-down migration and let old applied rows
+    // live on in knex_migrations as history.
+    disableMigrationsListValidation: true,
   },
 };
 

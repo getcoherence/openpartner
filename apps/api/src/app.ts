@@ -22,15 +22,9 @@ import { exportRouter } from './routes/export.js';
 import { billingRouter } from './routes/billing.js';
 import { authRouter } from './routes/auth.js';
 import { adminOverviewRouter } from './routes/admin-overview.js';
-import { magicLinkRouter } from './routes/magic-link.js';
 import { funnelRouter } from './routes/funnel.js';
 import { fraudReviewRouter } from './routes/fraud-review.js';
 import { webhooksRouter } from './routes/webhooks.js';
-import { networkVendorsRouter } from './routes/network-vendors.js';
-import { networkCreatorsRouter } from './routes/network-creators.js';
-import { networkOfferingsRouter } from './routes/network-offerings.js';
-import { networkRequestsRouter } from './routes/network-requests.js';
-import { networkEarningsRouter } from './routes/network-earnings.js';
 import { metricsRouter } from './routes/metrics.js';
 
 export function createApp(options: { enableLogger?: boolean } = {}) {
@@ -107,7 +101,6 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   });
 
   app.use(authRouter);
-  app.use(magicLinkRouter);
   app.use(funnelRouter);
   app.use(fraudReviewRouter);
   app.use(webhooksRouter);
@@ -124,11 +117,6 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(exportRouter);
   app.use(billingRouter);
   app.use(adminOverviewRouter);
-  app.use(networkVendorsRouter);
-  app.use(networkCreatorsRouter);
-  app.use(networkOfferingsRouter);
-  app.use(networkRequestsRouter);
-  app.use(networkEarningsRouter);
   app.use(metricsRouter);
 
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {

@@ -86,13 +86,13 @@ One codebase, three behaviors, flipped by `OPENPARTNER_MODE`:
 
 The core product — attribution, events, commissions — is identical across modes. Only the billing + payout layer changes.
 
-## The Network
+## Federating with an external creator network
 
-OpenPartner has a built-in two-sided marketplace (`NetworkVendor`, `NetworkCreator`, `NetworkOffering`, `NetworkRequest`). Vendors publish offerings (commission terms, assets, description). Creators apply. On acceptance, the vendor instance provisions a `Partner` row via federation — the creator gets a share link like `go.vendor.com/r/<their-slug>`.
+OpenPartner OSS is vendor-direct — the admin creates Partner rows, issues share links, and manages their own partner program. A separate hosted service (outside this repo) implements a two-sided creator network: vendors publish offerings, creators apply, and approved partnerships federate back into each vendor's OpenPartner instance as Partner + Link rows.
 
-Federation credentials are scoped API keys (vendor's key for vendor → hosted network, hosted network's key for network → vendor on provisioning). Keys at rest are AES-256-GCM encrypted with `NETWORK_ENCRYPTION_KEY`.
+The federation contract is thin: the vendor mints a scoped API key (`partners:write`, `links:write`, `partners:read`, `commissions:read`) and hands it to the network. The network calls the vendor's public API as an authenticated client — no shared schema, no inbound connections into the vendor. Data stays on the vendor's instance. Revoke the key and federation stops.
 
-Self-hosted instances opt in by publishing their instance URL + scoped key. Skipping the Network entirely is supported — the vendor-direct flow (manually create Partners through the admin portal) is the original path.
+Not participating in any network is the default. Everything in this repo works standalone.
 
 ## Data portability
 

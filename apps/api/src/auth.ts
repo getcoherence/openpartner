@@ -3,11 +3,13 @@
  *
  * Two shapes of credential:
  *   - ADMIN_API_KEY env var — bootstrap admin key, valid in all modes.
- *   - ApiKey rows in the database — either admin (partnerId null) or partner-scoped.
+ *   - ApiKey rows in the database — either admin (partnerId null),
+ *     partner-scoped, or a scoped key used by a federating client like
+ *     an OpenPartner Network hub.
  *
- * We never store plaintext. Keys look like `op_<24 hex>` and are identified by
- * an 8-char prefix so lookups are indexed rather than table scans. The hash is
- * sha256 over the whole key.
+ * We never store plaintext. Keys look like `op_<24 hex>` and are identified
+ * by an 8-char prefix so lookups are indexed rather than table scans. The
+ * hash is sha256 over the whole key.
  */
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -20,8 +22,6 @@ export type ApiKeyPrincipal =
   | { role: 'admin'; source: 'env' }
   | { role: 'admin'; source: 'db'; apiKeyId: string }
   | { role: 'partner'; source: 'db'; apiKeyId: string; partnerId: string }
-  | { role: 'network_vendor'; source: 'db' | 'session'; apiKeyId?: string; sessionId?: string; networkVendorId: string }
-  | { role: 'network_creator'; source: 'db' | 'session'; apiKeyId?: string; sessionId?: string; networkCreatorId: string }
   | { role: 'scoped'; source: 'db'; apiKeyId: string; scopes: string[] };
 
 declare global {
@@ -78,33 +78,8 @@ export function requirePartnerOrAdmin(paramName: string = 'id') {
 
 async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
   const header = req.header('authorization');
-  if (!header) {
-    // No Bearer — try the session cookie instead. This is what the
-    // portal uses after a creator signs in via magic link.
-    const cookie = (req as unknown as { cookies?: Record<string, string> }).cookies?.op_session;
-    if (!cookie) return null;
-    const { resolveSession } = await import('./auth-sessions.js');
-    const session = await resolveSession(cookie);
-    if (!session) return null;
-    if (session.principalKind === 'network_creator') {
-      return {
-        role: 'network_creator',
-        source: 'session',
-        sessionId: session.id,
-        networkCreatorId: session.principalId,
-      };
-    }
-    if (session.principalKind === 'network_vendor') {
-      return {
-        role: 'network_vendor',
-        source: 'session',
-        sessionId: session.id,
-        networkVendorId: session.principalId,
-      };
-    }
-    // Future: partner / admin session kinds if we add human auth for them.
-    return null;
-  }
+  if (!header) return null;
+
   const match = /^Bearer\s+(\S+)$/i.exec(header);
   if (!match) return null;
   const token = match[1]!;
@@ -126,16 +101,10 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
   // Non-blocking last-used bump.
   void db<ApiKeyRow>(TABLES.ApiKey).where({ id: match2.id }).update({ lastUsedAt: new Date() });
 
-  // Scoped keys take precedence over any FK role. The FK columns are
-  // only meaningful for non-scoped keys (admin / partner / vendor / creator).
+  // Scoped keys take precedence — they're used by Network-style federation
+  // where the caller has a narrow permission set rather than a role.
   if (Array.isArray(match2.scopes)) {
     return { role: 'scoped', source: 'db', apiKeyId: match2.id, scopes: match2.scopes };
-  }
-  if (match2.networkVendorId) {
-    return { role: 'network_vendor', source: 'db', apiKeyId: match2.id, networkVendorId: match2.networkVendorId };
-  }
-  if (match2.networkCreatorId) {
-    return { role: 'network_creator', source: 'db', apiKeyId: match2.id, networkCreatorId: match2.networkCreatorId };
   }
   if (match2.partnerId) {
     return { role: 'partner', source: 'db', apiKeyId: match2.id, partnerId: match2.partnerId };
@@ -178,8 +147,6 @@ function constantTimeEqual(a: string, b: string): boolean {
 
 export async function createApiKeyRow(params: {
   partnerId?: string | null;
-  networkVendorId?: string | null;
-  networkCreatorId?: string | null;
   scopes?: string[] | null;
   label?: string;
 }): Promise<{ id: string; plaintext: string }> {
@@ -190,8 +157,6 @@ export async function createApiKeyRow(params: {
     prefix,
     keyHash: hash,
     partnerId: params.partnerId ?? null,
-    networkVendorId: params.networkVendorId ?? null,
-    networkCreatorId: params.networkCreatorId ?? null,
     // pg jsonb: arrays need stringification; null stays null
     scopes: params.scopes != null
       ? (JSON.stringify(params.scopes) as unknown as never)
@@ -199,18 +164,4 @@ export async function createApiKeyRow(params: {
     label: params.label ?? null,
   });
   return { id, plaintext };
-}
-
-export function requireNetworkVendor(req: Request, res: Response, next: NextFunction): void {
-  const p = req.principal;
-  if (!p) return void res.status(401).json({ error: 'unauthorized' });
-  if (p.role === 'admin' || p.role === 'network_vendor') return next();
-  res.status(403).json({ error: 'forbidden' });
-}
-
-export function requireNetworkCreator(req: Request, res: Response, next: NextFunction): void {
-  const p = req.principal;
-  if (!p) return void res.status(401).json({ error: 'unauthorized' });
-  if (p.role === 'admin' || p.role === 'network_creator') return next();
-  res.status(403).json({ error: 'forbidden' });
 }
