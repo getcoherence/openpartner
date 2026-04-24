@@ -47,7 +47,7 @@ describe('OpenPartnerServer', () => {
   });
 
   it('identify forwards cref + userId to /attribution/identify', async () => {
-    const fetchMock = vi.fn(async () =>
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
       new Response(JSON.stringify({ ok: true, identityId: 'id_1', firstStitch: false }), { status: 200 }),
     );
     const op = new OpenPartnerServer({ apiUrl: 'https://op.test', apiKey: 'k', fetch: fetchMock });
@@ -62,7 +62,9 @@ describe('OpenPartnerServer', () => {
   });
 
   it('strips a trailing slash on apiUrl', async () => {
-    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+      new Response('{}', { status: 200 }),
+    );
     const op = new OpenPartnerServer({ apiUrl: 'https://op.test/', apiKey: 'k', fetch: fetchMock });
     await op.trackEvent({ userId: 'u', type: 'signup' });
     expect(fetchMock.mock.calls[0]![0]).toBe('https://op.test/attribution/events');

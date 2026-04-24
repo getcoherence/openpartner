@@ -342,6 +342,137 @@ describe.skipIf(skipIntegration)('api integration', () => {
     expect(scopedIntro.body.scopes).toEqual(['partners:write', 'links:write']);
   });
 
+  it('partner funnel reports stages + rates correctly', async () => {
+    // Setup: partner, campaign, link, two fraud-clean clicks, one
+    // fraud-flagged click (must be excluded), one signup event + one
+    // paid event on one of the users.
+    const partner = (
+      await request(app)
+        .post('/partners')
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ email: 'funnel@e.com', name: 'FunnelCo' })
+    ).body;
+    const campaign = (
+      await request(app)
+        .post('/campaigns')
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ name: 'F', commissionRule: { type: 'percent', value: 10 } })
+    ).body;
+    const link = (
+      await request(app)
+        .post(`/partners/${partner.id}/links`)
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ linkKey: `fk_${Date.now()}`, campaignId: campaign.id, destinationUrl: 'https://e.com' })
+    ).body;
+
+    // 3 clicks, one flagged.
+    const click1 = ulid();
+    const click2 = ulid();
+    const click3 = ulid();
+    await db(TABLES.Click).insert([
+      { id: click1, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'a', userAgent: 'x', referer: null, fraudFlag: null },
+      { id: click2, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'b', userAgent: 'x', referer: null, fraudFlag: null },
+      { id: click3, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'c', userAgent: 'x', referer: null, fraudFlag: 'velocity' },
+    ]);
+
+    // User 1 stitches, signs up, pays.
+    const u1 = `u1_${Date.now()}`;
+    await request(app).post('/attribution/identify').send({ cref: click1, userId: u1 });
+    await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId: u1, type: 'signup' });
+    await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId: u1, type: 'invoice_paid', value: 100 });
+
+    // User 2 stitches but only signs up, no payment.
+    const u2 = `u2_${Date.now()}`;
+    await request(app).post('/attribution/identify').send({ cref: click2, userId: u2 });
+    await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId: u2, type: 'signup' });
+
+    const funnel = await request(app)
+      .get(`/partners/${partner.id}/funnel`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(funnel.status).toBe(200);
+    expect(funnel.body.stages.clicks).toBe(2); // fraud-flagged excluded
+    expect(funnel.body.stages.identities).toBe(2);
+    expect(funnel.body.stages.signups).toBe(2);
+    expect(funnel.body.stages.paid).toBe(1);
+    expect(funnel.body.rates.stitchRate).toBeCloseTo(1, 3);
+    expect(funnel.body.rates.signupRate).toBeCloseTo(1, 3);
+    expect(funnel.body.rates.paidRate).toBeCloseTo(0.5, 3);
+    expect(funnel.body.rates.overall).toBeCloseTo(0.5, 3);
+    expect(funnel.body.revenue).toBe(100);
+  });
+
+  it('fraud review: unflag re-attributes events that arrived while the click was skipped', async () => {
+    const partner = (
+      await request(app)
+        .post('/partners')
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ email: 'fraud@e.com', name: 'FraudCo' })
+    ).body;
+    const campaign = (
+      await request(app)
+        .post('/campaigns')
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ name: 'Fr', commissionRule: { type: 'percent', value: 20 } })
+    ).body;
+    const link = (
+      await request(app)
+        .post(`/partners/${partner.id}/links`)
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ linkKey: `fr_${Date.now()}`, campaignId: campaign.id, destinationUrl: 'https://e.com' })
+    ).body;
+
+    // Click comes in flagged as velocity.
+    const clickId = ulid();
+    await db(TABLES.Click).insert({
+      id: clickId,
+      linkId: link.id,
+      partnerId: partner.id,
+      campaignId: campaign.id,
+      landingUrl: 'x',
+      ipHash: 'x',
+      userAgent: 'x',
+      referer: null,
+      fraudFlag: 'velocity',
+    });
+
+    // User stitches, pays. Attribution should SKIP because flagged.
+    const uid = `fraud_${Date.now()}`;
+    await request(app).post('/attribution/identify').send({ cref: clickId, userId: uid });
+    const event = await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId: uid, type: 'invoice_paid', value: 250 });
+    expect(event.body.attribution.status).toBe('no_click'); // fraud-flagged filters it
+
+    // No Attribution rows for this partner yet.
+    let attrs = await db(TABLES.Attribution).where({ partnerId: partner.id });
+    expect(attrs).toHaveLength(0);
+
+    // Show up in the flagged list.
+    const flagged = await request(app).get('/admin/clicks/flagged').set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(flagged.body.clicks.find((c: { id: string }) => c.id === clickId)).toBeDefined();
+
+    // Un-flag. Should re-run attribution and earn the missed $50.
+    const unflag = await request(app).post(`/clicks/${clickId}/unflag`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(unflag.status).toBe(200);
+    expect(unflag.body.reattributedEvents).toBe(1);
+
+    attrs = await db(TABLES.Attribution).where({ partnerId: partner.id });
+    expect(attrs).toHaveLength(1);
+    const commissions = await db(TABLES.Commission).where({ partnerId: partner.id });
+    expect(commissions).toHaveLength(1);
+    expect(Number(commissions[0]!.amount)).toBe(50); // 20% of 250
+  });
+
   it('/auth/whoami reports role correctly', async () => {
     const adminWhoami = await request(app).get('/auth/whoami').set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(adminWhoami.status).toBe(200);

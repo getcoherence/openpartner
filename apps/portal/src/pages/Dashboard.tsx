@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Navigate } from 'react-router-dom';
-import { MousePointerClick, Receipt, Wallet, Users } from 'lucide-react';
+import { MousePointerClick, Receipt, Wallet, Users, UserCheck, CreditCard } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { theme } from '../theme.js';
 import { Avatar, Card, EmptyState, ErrorBanner, Page, SectionHeading, Stat, StatusPill, money } from '../ui.js';
@@ -30,10 +30,20 @@ export function Dashboard({ principal }: { principal: Principal }) {
   return null;
 }
 
+interface Funnel {
+  stages: { clicks: number; identities: number; signups: number; paid: number };
+  rates: { stitchRate: number; signupRate: number; paidRate: number; overall: number };
+  revenue: number;
+}
+
 function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string }) {
   const { data, error, isLoading } = useQuery({
     queryKey: ['dashboard', partnerId],
     queryFn: () => api<PartnerDashboard>(`/partners/${partnerId}/dashboard`),
+  });
+  const funnel = useQuery({
+    queryKey: ['funnel', partnerId],
+    queryFn: () => api<Funnel>(`/partners/${partnerId}/funnel`),
   });
 
   return (
@@ -52,6 +62,8 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
             <Stat label="Attributed revenue" value={money(data.attributedRevenue)} icon={<Wallet size={16} />} />
             <Stat label="Earned (paid)" value={money(data.commissionByStatus.paid ?? 0)} icon={<Wallet size={16} />} />
           </div>
+
+          {funnel.data && <FunnelChart funnel={funnel.data} />}
 
           <SectionHeading>Commissions</SectionHeading>
           <Card>
@@ -79,6 +91,65 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
         </>
       )}
     </Page>
+  );
+}
+
+function FunnelChart({ funnel }: { funnel: Funnel }) {
+  const stages = [
+    { key: 'clicks', label: 'Clicks', value: funnel.stages.clicks, icon: <MousePointerClick size={14} />, rate: null },
+    { key: 'identities', label: 'Stitched', value: funnel.stages.identities, icon: <UserCheck size={14} />, rate: funnel.rates.stitchRate },
+    { key: 'signups', label: 'Signups', value: funnel.stages.signups, icon: <Receipt size={14} />, rate: funnel.rates.signupRate },
+    { key: 'paid', label: 'Paid', value: funnel.stages.paid, icon: <CreditCard size={14} />, rate: funnel.rates.paidRate },
+  ];
+  const max = Math.max(1, ...stages.map((s) => s.value));
+  const pct = (n: number | null | undefined) => (n == null ? '' : `${Math.round(n * 100)}%`);
+
+  return (
+    <>
+      <SectionHeading>Funnel</SectionHeading>
+      <Card>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {stages.map((s, i) => {
+            const width = `${Math.max(6, (s.value / max) * 100)}%`;
+            return (
+              <div key={s.key} style={{ display: 'grid', gridTemplateColumns: '120px 1fr 140px', gap: 12, alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: theme.textMuted }}>
+                  <span style={{ color: theme.accent, display: 'inline-flex' }}>{s.icon}</span>
+                  {s.label}
+                </div>
+                <div style={{ background: theme.bg, border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm, height: 28, position: 'relative', overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      width,
+                      height: '100%',
+                      background: `linear-gradient(90deg, ${theme.accent}, ${theme.accentHover})`,
+                      opacity: 0.85,
+                    }}
+                  />
+                  <div style={{ position: 'absolute', left: 12, top: 0, bottom: 0, display: 'flex', alignItems: 'center', fontSize: 13, fontWeight: 600, color: theme.accentInk, mixBlendMode: 'multiply' }}>
+                    {s.value.toLocaleString()}
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, color: theme.textMuted, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                  {i > 0 && (
+                    <>
+                      <span style={{ color: theme.textDim }}>from prev</span>{' '}
+                      <span style={{ color: theme.text, fontWeight: 500 }}>{pct(s.rate)}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${theme.borderSubtle}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: 13, color: theme.textMuted }}>Click → paid</span>
+          <span style={{ fontSize: 14, fontWeight: 600, color: theme.accent, fontVariantNumeric: 'tabular-nums' }}>
+            {pct(funnel.rates.overall)}
+          </span>
+        </div>
+      </Card>
+    </>
   );
 }
 

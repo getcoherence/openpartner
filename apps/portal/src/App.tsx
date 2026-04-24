@@ -43,6 +43,7 @@ import { SignupPage } from './pages/auth/Signup.js';
 import { VendorSignupPage } from './pages/auth/VendorSignup.js';
 import { MagicLandingPage } from './pages/auth/MagicLanding.js';
 import { DevMailboxPage } from './pages/admin/DevMailbox.js';
+import { FraudReviewPage } from './pages/FraudReview.js';
 import { OfferingDetailPage } from './pages/network/OfferingDetail.js';
 import { CreatorProfilePage } from './pages/network/CreatorProfile.js';
 
@@ -101,6 +102,7 @@ function Shell() {
               <Route path="admin/review" element={<AdminReview />} />
               <Route path="admin/export" element={<AdminExport />} />
               <Route path="admin/dev-mailbox" element={<DevMailboxPage />} />
+              <Route path="admin/fraud-review" element={<FraudReviewPage />} />
               <Route path="network/vendors" element={<AdminNetworkVendors />} />
               <Route path="network/creators" element={<AdminNetworkCreators />} />
             </>
@@ -164,6 +166,7 @@ function Sidebar({ principal }: { principal: Principal }) {
               <NavItem to="/admin/campaigns" icon={<Tag size={16} />}>Campaigns</NavItem>
               <NavItem to="/admin/review" icon={<ShieldCheck size={16} />}>Review queue</NavItem>
               <NavItem to="/admin/export" icon={<Download size={16} />}>Export / import</NavItem>
+              <NavItem to="/admin/fraud-review" icon={<ShieldCheck size={16} />}>Fraud review</NavItem>
               <NavItem to="/admin/dev-mailbox" icon={<Mail size={16} />}>Dev mailbox</NavItem>
             </NavSection>
             <NavSection title="Network">
