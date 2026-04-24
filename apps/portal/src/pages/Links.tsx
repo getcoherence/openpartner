@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link2, Plus, ArrowRight } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { theme } from '../theme.js';
-import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, SectionHeading, Select, Table, formatDate } from '../ui.js';
+import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 
 interface LinkRow {
   id: string;

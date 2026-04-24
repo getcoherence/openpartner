@@ -21,7 +21,7 @@ import {
   UserCog,
   Webhook,
 } from 'lucide-react';
-import { clearApiKey, getApiKey, api, type Principal } from './api.js';
+import { clearApiKey, api, type Principal } from './api.js';
 import { theme } from './theme.js';
 import { Dashboard } from './pages/Dashboard.js';
 import { LinksPage } from './pages/Links.js';

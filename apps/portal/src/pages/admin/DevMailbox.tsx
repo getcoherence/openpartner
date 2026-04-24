@@ -16,7 +16,7 @@ interface DevMessage {
 }
 
 export function DevMailboxPage() {
-  const { data, error, isLoading, refetch } = useQuery({
+  const { data, error, isLoading } = useQuery({
     queryKey: ['dev-mailbox'],
     queryFn: () => api<{ messages: DevMessage[] }>('/dev/mailbox'),
     refetchInterval: 5000,

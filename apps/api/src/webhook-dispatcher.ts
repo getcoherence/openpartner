@@ -57,7 +57,6 @@ export function signPayload(secret: string, timestamp: string, rawBody: string):
  */
 export function dispatchEvent(event: WebhookEventType, data: unknown): void {
   void runDispatch(event, data).catch((err) => {
-    // eslint-disable-next-line no-console
     console.error(`[webhook] dispatch failed: ${err instanceof Error ? err.message : String(err)}`);
   });
 }

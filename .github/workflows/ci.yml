@@ -54,11 +54,21 @@ jobs:
       - name: Migrate
         run: pnpm migrate
 
+      - name: Lint
+        run: pnpm lint
+
       - name: Typecheck
         run: pnpm typecheck
 
       - name: Test
         run: pnpm test
+
+      - name: Audit
+        # Fails on any high-severity CVE in the resolved workspace.
+        # Moderate/low are tolerated — too many false-positive patterns
+        # in transitive deps to block on them at v1.
+        run: pnpm audit --audit-level=high --prod
+        continue-on-error: false
 
   docker:
     name: docker ${{ matrix.service }}

@@ -1,0 +1,49 @@
+version: 2
+updates:
+  # npm deps across the workspace. Root manifest is the entry point;
+  # Dependabot follows workspace:* resolution into apps/* and packages/*.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+    groups:
+      typescript:
+        patterns:
+          - typescript
+          - "@types/*"
+          - typescript-eslint
+          - "@typescript-eslint/*"
+      eslint:
+        patterns:
+          - eslint
+          - eslint-*
+          - "@eslint/*"
+      vitest:
+        patterns:
+          - vitest
+          - "@vitest/*"
+      react:
+        patterns:
+          - react
+          - react-dom
+          - react-router-dom
+          - "@tanstack/react-query"
+      knex:
+        patterns:
+          - knex
+          - pg
+          - "@types/pg"
+
+  # Pin our GitHub Actions via SHA? No — we accept the maintenance churn
+  # for the paper-trail clarity of SemVer tags. Weekly PRs keep us close
+  # to the action authors' security fixes.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels: [dependencies, ci]

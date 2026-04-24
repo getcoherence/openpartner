@@ -33,13 +33,17 @@ import { CreatorDirectoryPage } from './CreatorDirectory.js';
 
 export function DiscoverPage({ principal }: { principal: Principal }) {
   // Vendors browsing the directory are looking for creators; creators and
-  // admins browsing are looking for offerings to promote.
-  if (principal.role === 'network_vendor') return <CreatorDirectoryPage />;
+  // admins browsing are looking for offerings to promote. We render the
+  // creator-directory variant via early return AFTER all hooks run.
+  const isVendor = principal.role === 'network_vendor';
 
   const { data, error, isLoading } = useQuery({
     queryKey: ['network-directory-offerings'],
     queryFn: () => api<{ offerings: DirOffering[] }>('/network/directory/offerings'),
+    enabled: !isVendor,
   });
+
+  if (isVendor) return <CreatorDirectoryPage />;
 
   const defaultCode = principal.creator?.defaultPromoCode ?? principal.creator?.handle ?? '';
 

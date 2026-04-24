@@ -41,7 +41,6 @@ const DEFAULTS = {
   queryParam: 'cref',
   storageKey: 'openpartner:cref',
   onError: (err: unknown) => {
-    // eslint-disable-next-line no-console
     console.warn('[openpartner] identify failed', err);
   },
 };

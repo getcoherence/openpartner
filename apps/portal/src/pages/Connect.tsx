@@ -13,19 +13,13 @@ interface ConnectStatus {
 }
 
 export function ConnectPage({ principal }: { principal: Principal }) {
-  if (principal.role !== 'partner' || !principal.partnerId) {
-    return (
-      <Page title="Stripe Connect">
-        <EmptyState title="Partners only" hint="Stripe Connect onboarding is a partner-side flow." icon={<CreditCard size={28} strokeWidth={1.25} />} />
-      </Page>
-    );
-  }
+  const partnerId = principal.role === 'partner' ? principal.partnerId : null;
 
-  const partnerId = principal.partnerId;
   const status = useQuery({
     queryKey: ['connect-status', partnerId],
     queryFn: () => api<ConnectStatus>(`/partners/${partnerId}/connect/status`),
     retry: false,
+    enabled: !!partnerId,
   });
 
   const start = useMutation({
@@ -41,6 +35,14 @@ export function ConnectPage({ principal }: { principal: Principal }) {
       window.location.href = data.url;
     },
   });
+
+  if (!partnerId) {
+    return (
+      <Page title="Stripe Connect">
+        <EmptyState title="Partners only" hint="Stripe Connect onboarding is a partner-side flow." icon={<CreditCard size={28} strokeWidth={1.25} />} />
+      </Page>
+    );
+  }
 
   const s = status.data;
 
