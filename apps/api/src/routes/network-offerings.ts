@@ -119,6 +119,8 @@ networkOfferingsRouter.get('/network/directory/offerings/:id', async (req, res) 
       `${TABLES.NetworkVendor}.logoUrl as vendorLogoUrl`,
       `${TABLES.NetworkVendor}.description as vendorDescription`,
       `${TABLES.NetworkVendor}.websiteUrl as vendorWebsiteUrl`,
+      `${TABLES.NetworkVendor}.routerUrl as vendorRouterUrl`,
+      `${TABLES.NetworkVendor}.instanceUrl as vendorInstanceUrl`,
     )) as Record<string, unknown> | undefined;
 
   if (!row) return res.status(404).json({ error: 'not_found' });

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Compass, ExternalLink, ArrowRight } from 'lucide-react';
 import { api, type Principal } from '../../api.js';
@@ -28,7 +29,13 @@ interface DirOffering {
   };
 }
 
+import { CreatorDirectoryPage } from './CreatorDirectory.js';
+
 export function DiscoverPage({ principal }: { principal: Principal }) {
+  // Vendors browsing the directory are looking for creators; creators and
+  // admins browsing are looking for offerings to promote.
+  if (principal.role === 'network_vendor') return <CreatorDirectoryPage />;
+
   const { data, error, isLoading } = useQuery({
     queryKey: ['network-directory-offerings'],
     queryFn: () => api<{ offerings: DirOffering[] }>('/network/directory/offerings'),
@@ -79,7 +86,12 @@ function OfferingCard({
         <Avatar name={offering.vendorName} size={28} />
         <div style={{ fontSize: 12, color: theme.textMuted }}>{offering.vendorName}</div>
       </div>
-      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>{offering.title}</div>
+      <Link
+        to={`/network/offerings/${offering.id}`}
+        style={{ fontSize: 16, fontWeight: 600, marginBottom: 6, display: 'block', color: 'inherit' }}
+      >
+        {offering.title}
+      </Link>
       {offering.description && (
         <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 12, lineHeight: 1.5 }}>
           {offering.description}

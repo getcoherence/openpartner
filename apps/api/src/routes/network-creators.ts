@@ -3,7 +3,7 @@ import { ulid } from 'ulid';
 import { TABLES, type NetworkCreatorRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApiKeyRow, requireAdmin, requireAuth, requireNetworkCreator } from '../auth.js';
-import { creatorCreateSchema } from '../network/validation.js';
+import { creatorCreateSchema, creatorUpdateSchema } from '../network/validation.js';
 
 export const networkCreatorsRouter = Router();
 
@@ -60,4 +60,43 @@ networkCreatorsRouter.get('/network/creators/me', requireAuth, requireNetworkCre
   const creator = await db<NetworkCreatorRow>(TABLES.NetworkCreator).where({ id: p.networkCreatorId }).first();
   if (!creator) return res.status(404).json({ error: 'creator_not_found' });
   res.json({ creator });
+});
+
+// Creator self-edit. Handle + email are intentionally NOT patchable:
+// changing handle breaks share-URL references on vendor instances, and
+// email is the magic-link identity.
+networkCreatorsRouter.patch('/network/creators/me', requireAuth, requireNetworkCreator, async (req, res) => {
+  const p = req.principal!;
+  if (p.role !== 'network_creator') return res.status(403).json({ error: 'forbidden' });
+
+  const body = creatorUpdateSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  const patch: Record<string, unknown> = {};
+  if (body.data.name !== undefined) patch.name = body.data.name;
+  if (body.data.bio !== undefined) patch.bio = body.data.bio;
+  if (body.data.avatarUrl !== undefined) patch.avatarUrl = body.data.avatarUrl;
+  if (body.data.defaultPromoCode !== undefined) patch.defaultPromoCode = body.data.defaultPromoCode;
+  if (body.data.platforms !== undefined) patch.platforms = JSON.stringify(body.data.platforms);
+
+  if (Object.keys(patch).length === 0) {
+    const current = await db<NetworkCreatorRow>(TABLES.NetworkCreator).where({ id: p.networkCreatorId }).first();
+    return res.json({ creator: current });
+  }
+
+  const [updated] = await db<NetworkCreatorRow>(TABLES.NetworkCreator)
+    .where({ id: p.networkCreatorId })
+    .update(patch)
+    .returning('*');
+  res.json({ creator: updated });
+});
+
+// -------- Public directory: active creators (for vendors to browse) --------
+
+networkCreatorsRouter.get('/network/directory/creators', async (_req, res) => {
+  const creators = await db<NetworkCreatorRow>(TABLES.NetworkCreator)
+    .where({ status: 'active' })
+    .orderBy('createdAt', 'desc')
+    .select('id', 'name', 'handle', 'bio', 'avatarUrl', 'platforms', 'createdAt');
+  res.json({ creators });
 });

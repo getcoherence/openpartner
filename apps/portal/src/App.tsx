@@ -18,6 +18,7 @@ import {
   Store,
   Megaphone,
   Mail,
+  UserCog,
 } from 'lucide-react';
 import { clearApiKey, getApiKey, api, type Principal } from './api.js';
 import { theme } from './theme.js';
@@ -41,6 +42,8 @@ import { LoginPage } from './pages/auth/Login.js';
 import { SignupPage } from './pages/auth/Signup.js';
 import { MagicLandingPage } from './pages/auth/MagicLanding.js';
 import { DevMailboxPage } from './pages/admin/DevMailbox.js';
+import { OfferingDetailPage } from './pages/network/OfferingDetail.js';
+import { CreatorProfilePage } from './pages/network/CreatorProfile.js';
 
 interface AuthState {
   loading: boolean;
@@ -103,8 +106,10 @@ function Shell() {
 
           {/* OpenPartner Network — creator-side */}
           <Route path="network/discover" element={<DiscoverPage principal={auth.principal} />} />
+          <Route path="network/offerings/:id" element={<OfferingDetailPage principal={auth.principal} />} />
           <Route path="network/requests" element={<MyRequestsPage principal={auth.principal} />} />
           <Route path="network/partnerships" element={<MyPartnershipsPage principal={auth.principal} />} />
+          <Route path="network/profile" element={<CreatorProfilePage />} />
 
           {/* OpenPartner Network — vendor-side */}
           <Route path="network/offerings" element={<VendorOfferingsPage />} />
@@ -181,6 +186,7 @@ function Sidebar({ principal }: { principal: Principal }) {
             <NavItem to="/network/discover" icon={<Compass size={16} />}>Discover</NavItem>
             <NavItem to="/network/requests" icon={<Inbox size={16} />}>My requests</NavItem>
             <NavItem to="/network/partnerships" icon={<Handshake size={16} />}>Partnerships</NavItem>
+            <NavItem to="/network/profile" icon={<UserCog size={16} />}>Profile</NavItem>
           </NavSection>
         )}
       </div>

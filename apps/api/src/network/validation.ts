@@ -77,6 +77,18 @@ export const creatorCreateSchema = z.object({
   defaultPromoCode: promoCodeSchema.optional(),
 });
 
+// PATCH — every field optional; empty string clears the value, missing
+// keys mean "leave unchanged." Handle + email NOT editable: handle change
+// invalidates partnership linkKeys on every vendor instance simultaneously
+// and email is the magic-link identity.
+export const creatorUpdateSchema = z.object({
+  name: z.string().min(2).max(80).optional(),
+  bio: z.string().max(2000).nullable().optional(),
+  avatarUrl: z.string().url().nullable().optional(),
+  platforms: z.array(platformSchema).optional(),
+  defaultPromoCode: promoCodeSchema.nullable().optional(),
+});
+
 export const offeringCreateSchema = z.object({
   title: z.string().min(2).max(120),
   productUrl: z.string().url(),

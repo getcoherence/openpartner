@@ -617,6 +617,92 @@ describe.skipIf(skipIntegration)('openpartner network', () => {
     expect(missCheck.body.acceptable).toBe(false);
   });
 
+  it('creator profile patch + directory visibility', async () => {
+    const creatorRes = await request(app)
+      .post('/network/creators')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Start', handle: `start_${Date.now()}`, email: `start${Date.now()}@e.com` });
+    const creatorKey = creatorRes.body.apiKey;
+    const creatorId = creatorRes.body.creator.id;
+
+    // Inactive creators don't appear in the public directory.
+    let dir = await request(app).get('/network/directory/creators');
+    expect(dir.body.creators.find((c: { id: string }) => c.id === creatorId)).toBeUndefined();
+
+    await request(app).post(`/network/creators/${creatorId}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    dir = await request(app).get('/network/directory/creators');
+    expect(dir.body.creators.find((c: { id: string }) => c.id === creatorId)).toBeDefined();
+
+    // Self-edit persists.
+    const patch = await request(app)
+      .patch('/network/creators/me')
+      .set('Authorization', `Bearer ${creatorKey}`)
+      .send({
+        name: 'Patched',
+        bio: 'I publish on YouTube.',
+        defaultPromoCode: 'patchedcode',
+        platforms: [{ platform: 'youtube', url: 'https://youtube.com/@patched', followers: 50000 }],
+      });
+    expect(patch.status).toBe(200);
+    expect(patch.body.creator.name).toBe('Patched');
+    expect(patch.body.creator.bio).toBe('I publish on YouTube.');
+    expect(patch.body.creator.defaultPromoCode).toBe('patchedcode');
+    expect(patch.body.creator.platforms).toHaveLength(1);
+
+    // Handle is not in the PATCH schema — it stays pinned.
+    const handleAttempt = await request(app)
+      .patch('/network/creators/me')
+      .set('Authorization', `Bearer ${creatorKey}`)
+      .send({ handle: 'renamed' });
+    expect(handleAttempt.status).toBe(200);
+    expect(handleAttempt.body.creator.handle).not.toBe('renamed');
+  });
+
+  it('vendor invite via /network/invites creates a pending request', async () => {
+    const campaign = (await request(app)
+      .post('/campaigns')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Inv', commissionRule: { type: 'percent', value: 10 } })).body;
+
+    const vendorRes = await request(app)
+      .post('/network/vendors')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'InviteVendor', slug: `inv-${Date.now()}`, instanceUrl, instanceKey: ADMIN_KEY });
+    const vendorKey = vendorRes.body.apiKey;
+    await request(app).post(`/network/vendors/${vendorRes.body.vendor.id}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    const offering = (await request(app)
+      .post('/network/offerings')
+      .set('Authorization', `Bearer ${vendorKey}`)
+      .send({
+        title: 'Invite offering',
+        productUrl: 'https://example.com',
+        vendorCampaignId: campaign.id,
+        terms: { payout: { type: 'one_time_fee', amount: 1 }, cookieWindowDays: 30 },
+        published: true,
+      })).body.offering;
+
+    const creator = (await request(app)
+      .post('/network/creators')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Targ', handle: `targ_${Date.now()}`, email: `targ${Date.now()}@e.com` })).body;
+    await request(app).post(`/network/creators/${creator.creator.id}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    const invite = await request(app)
+      .post('/network/invites')
+      .set('Authorization', `Bearer ${vendorKey}`)
+      .send({
+        offeringId: offering.id,
+        creatorId: creator.creator.id,
+        message: 'Want to be part of this?',
+        promoCode: 'targshare',
+      });
+    expect(invite.status).toBe(201);
+    expect(invite.body.request.direction).toBe('vendor_to_creator');
+    expect(invite.body.request.promoCode).toBe('targshare');
+  });
+
   it('encryption round-trips', async () => {
     const { encryptKey, decryptKey } = await import('../network/crypto.js');
     const enc = encryptKey('hello-secret-key');
