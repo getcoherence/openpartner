@@ -52,8 +52,13 @@ async function assertPublicHost(host: string): Promise<void> {
   // knob a deployed instance can flip accidentally.
   if (process.env.NODE_ENV === 'test') return;
 
-  if (isIP(host) !== 0) {
-    if (isPrivateAddress(host)) {
+  // WHATWG URL hostname for IPv6 keeps the [brackets] — strip before
+  // the isIP / private-address check, otherwise "[::1]" falls through
+  // to DNS and the guard misses loopback.
+  const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+
+  if (isIP(bare) !== 0) {
+    if (isPrivateAddress(bare)) {
       throw Object.assign(new Error('private_host_blocked'), { code: 'private_host_blocked' });
     }
     return;

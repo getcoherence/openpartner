@@ -133,6 +133,11 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
 
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
     req.log?.error({ err }, 'request_failed');
+    // Echo message + stack to stderr so CI logs surface 500s that the
+    // test harness would otherwise swallow. Safe — these are
+    // unauthenticated server-side error paths; we're logging them
+    // anyway via pino when the logger's on.
+    console.error(`[500] ${req.method} ${req.url} ${err?.message}\n${err?.stack ?? ''}`);
     res.status(500).json({ error: 'internal_error' });
   });
 
