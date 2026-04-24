@@ -16,7 +16,6 @@
  * (generated up front) so a retry after a crash does not double-transfer.
  */
 
-import type { Knex } from 'knex';
 import { ulid } from 'ulid';
 import {
   TABLES,
@@ -68,6 +67,27 @@ export async function runPayouts(): Promise<PayoutRunResult> {
     const payoutId = ulid();
     const method: PayoutMethod = partner.stripeConnectAccountId ? 'stripe_connect' : 'manual';
 
+    // Preflight: a linked Connect account that hasn't finished onboarding
+    // will 400 on transfers.create. Decide up front and take a path that
+    // doesn't optimistically mark commissions paid — the previous design
+    // rolled commissions back on failure but the Payout row was already
+    // committed, and webhooks fired before the outcome was known.
+    const stripeMeta = (partner.metadata as { stripe?: { payoutsEnabled?: boolean } }).stripe;
+    const payoutsReady = stripeMeta?.payoutsEnabled === true;
+    const canTransfer = method === 'stripe_connect' && partner.stripeConnectAccountId && payoutsReady;
+    const onboardingIncomplete =
+      method === 'stripe_connect' && partner.stripeConnectAccountId && !payoutsReady;
+
+    // Commissions move to 'paid' ONLY when we have a terminal success
+    // signal: either Stripe transfer succeeded, or method=manual (the
+    // operator accepts responsibility out-of-band). Onboarding-incomplete
+    // and Stripe failures leave commissions 'approved' so the next run
+    // picks them up.
+    const finalStatus: 'paid' | 'pending' | 'failed' =
+      canTransfer ? 'pending' /* flipped to 'paid' after transfer */ :
+      onboardingIncomplete ? 'failed' :
+      /* manual */ 'pending';
+
     await db.transaction(async (trx) => {
       await trx(TABLES.Payout).insert({
         id: payoutId,
@@ -75,48 +95,24 @@ export async function runPayouts(): Promise<PayoutRunResult> {
         amount: amount.toFixed(2),
         currency: group.currency,
         method,
-        status: 'pending',
-        metadata: { runId, platformFee, commissionCount: commissions.length },
+        status: finalStatus,
+        metadata: {
+          runId,
+          platformFee,
+          commissionCount: commissions.length,
+          ...(onboardingIncomplete ? { error: 'stripe_onboarding_incomplete' } : {}),
+        },
       });
-
-      await trx(TABLES.Commission)
-        .whereIn(
-          'id',
-          commissions.map((c) => c.id),
-        )
-        .update({ status: 'paid', paidAt: new Date(), payoutId });
+      // Only mark commissions paid on the manual-commit path. Connect
+      // path defers until after the transfer succeeds.
+      if (method === 'manual') {
+        await trx(TABLES.Commission)
+          .whereIn('id', commissions.map((c) => c.id))
+          .update({ status: 'paid', paidAt: new Date(), payoutId });
+      }
     });
 
-    // Fire webhook events AFTER the transaction commits. One
-    // commission.paid per commission (subscribers often want per-row
-    // granularity for accounting) + one payout.created for the batch.
-    dispatchEvent('payout.created', {
-      payoutId,
-      partnerId: partner.id,
-      amount: amount.toFixed(2),
-      currency: group.currency,
-      method,
-      commissionIds: commissions.map((c) => c.id),
-      platformFee: platformFee || undefined,
-    });
-    for (const c of commissions) {
-      dispatchEvent('commission.paid', {
-        commissionId: c.id,
-        partnerId: c.partnerId,
-        amount: c.amount,
-        currency: c.currency,
-        payoutId,
-      });
-    }
-
-    // Preflight: a linked Connect account that hasn't finished onboarding
-    // will return an error on transfers.create. Skip gracefully — the
-    // Payout stays 'pending' so the next run picks it up once onboarding
-    // completes (tracked via the account.updated webhook).
-    const stripeMeta = (partner.metadata as { stripe?: { payoutsEnabled?: boolean } }).stripe;
-    const payoutsReady = stripeMeta?.payoutsEnabled === true;
-
-    if (method === 'stripe_connect' && partner.stripeConnectAccountId && !payoutsReady) {
+    if (onboardingIncomplete) {
       results.push({
         payoutId,
         partnerId: partner.id,
@@ -127,24 +123,52 @@ export async function runPayouts(): Promise<PayoutRunResult> {
         platformFee: platformFee || undefined,
         error: 'stripe_onboarding_incomplete',
       });
-    } else if (method === 'stripe_connect' && partner.stripeConnectAccountId) {
+      continue;
+    }
+
+    if (canTransfer) {
       try {
         const stripe = requireStripe();
         const transfer = await stripe.transfers.create(
           {
             amount: Math.round(amount * 100),
             currency: group.currency.toLowerCase(),
-            destination: partner.stripeConnectAccountId,
+            destination: partner.stripeConnectAccountId!,
             metadata: { openpartner_payout_id: payoutId, mode },
           },
           { idempotencyKey: `payout_${payoutId}` },
         );
 
-        await db(TABLES.Payout).where({ id: payoutId }).update({
-          stripeTransferId: transfer.id,
-          status: 'paid',
-          completedAt: new Date(),
+        await db.transaction(async (trx) => {
+          await trx(TABLES.Payout).where({ id: payoutId }).update({
+            stripeTransferId: transfer.id,
+            status: 'paid',
+            completedAt: new Date(),
+          });
+          await trx(TABLES.Commission)
+            .whereIn('id', commissions.map((c) => c.id))
+            .update({ status: 'paid', paidAt: new Date(), payoutId });
         });
+
+        // Webhooks fire only after the success is durable.
+        dispatchEvent('payout.created', {
+          payoutId,
+          partnerId: partner.id,
+          amount: amount.toFixed(2),
+          currency: group.currency,
+          method,
+          commissionIds: commissions.map((c) => c.id),
+          platformFee: platformFee || undefined,
+        });
+        for (const c of commissions) {
+          dispatchEvent('commission.paid', {
+            commissionId: c.id,
+            partnerId: c.partnerId,
+            amount: c.amount,
+            currency: c.currency,
+            payoutId,
+          });
+        }
 
         results.push({
           payoutId,
@@ -157,7 +181,10 @@ export async function runPayouts(): Promise<PayoutRunResult> {
         });
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        await markPayoutFailed(db, payoutId, commissions.map((c) => c.id));
+        await db(TABLES.Payout).where({ id: payoutId }).update({ status: 'failed' });
+        // Commissions were never flipped to paid in the Connect path, so
+        // no rollback is needed — they're still 'approved' and will be
+        // retried on the next runPayouts().
         results.push({
           payoutId,
           partnerId: partner.id,
@@ -169,8 +196,26 @@ export async function runPayouts(): Promise<PayoutRunResult> {
         });
       }
     } else {
-      // Manual / external: the Payout row exists in 'pending' state; operator
-      // marks it paid once the transfer clears out-of-band.
+      // Manual path: commissions are already marked paid in the tx above.
+      // Fire webhooks now — the operator owns the out-of-band transfer.
+      dispatchEvent('payout.created', {
+        payoutId,
+        partnerId: partner.id,
+        amount: amount.toFixed(2),
+        currency: group.currency,
+        method,
+        commissionIds: commissions.map((c) => c.id),
+        platformFee: platformFee || undefined,
+      });
+      for (const c of commissions) {
+        dispatchEvent('commission.paid', {
+          commissionId: c.id,
+          partnerId: c.partnerId,
+          amount: c.amount,
+          currency: c.currency,
+          payoutId,
+        });
+      }
       results.push({
         payoutId,
         partnerId: partner.id,
@@ -186,16 +231,3 @@ export async function runPayouts(): Promise<PayoutRunResult> {
   return { runId, mode, payouts: results };
 }
 
-async function markPayoutFailed(
-  knex: Knex,
-  payoutId: string,
-  commissionIds: string[],
-): Promise<void> {
-  await knex.transaction(async (trx) => {
-    await trx(TABLES.Payout).where({ id: payoutId }).update({ status: 'failed' });
-    // Roll commissions back to approved so the next run can retry.
-    await trx(TABLES.Commission)
-      .whereIn('id', commissionIds)
-      .update({ status: 'approved', paidAt: null, payoutId: null });
-  });
-}

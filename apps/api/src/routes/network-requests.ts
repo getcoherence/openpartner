@@ -130,17 +130,31 @@ networkRequestsRouter.post('/network/requests/:id/approve', requireAuth, require
   if (reqRow.vendorId !== p.networkVendorId) return res.status(403).json({ error: 'not_yours' });
   if (reqRow.status !== 'pending') return res.status(409).json({ error: 'not_pending' });
 
+  // Claim the request atomically before federating. Two concurrent
+  // approves would both see status='pending' above; the conditional
+  // update below only succeeds for the first — the loser returns 409.
+  // The intermediate 'approving' status is never returned from vendor
+  // APIs (the loser never sees it), but it keeps the ledger honest.
+  const claimed = await db<PartnershipRequestRow>(TABLES.PartnershipRequest)
+    .where({ id: reqRow.id, status: 'pending' })
+    .update({ status: 'approving' });
+  if (claimed === 0) {
+    return res.status(409).json({ error: 'not_pending' });
+  }
+
   const [vendor, creator, offering] = await Promise.all([
     db<NetworkVendorRow>(TABLES.NetworkVendor).where({ id: reqRow.vendorId }).first(),
     db<NetworkCreatorRow>(TABLES.NetworkCreator).where({ id: reqRow.creatorId }).first(),
     db<OfferingRow>(TABLES.Offering).where({ id: reqRow.offeringId }).first(),
   ]);
   if (!vendor || !creator || !offering) {
+    // Release the claim so a fix-up can retry.
+    await db<PartnershipRequestRow>(TABLES.PartnershipRequest)
+      .where({ id: reqRow.id, status: 'approving' })
+      .update({ status: 'pending' });
     return res.status(500).json({ error: 'missing_related_rows' });
   }
 
-  // Federate FIRST, then commit the status change. If federation fails, the
-  // request stays pending and the error propagates — the vendor can retry.
   let federated;
   try {
     federated = await provisionPartnerOnVendor({
@@ -154,6 +168,10 @@ networkRequestsRouter.post('/network/requests/:id/approve', requireAuth, require
       },
     });
   } catch (err: unknown) {
+    // Federation failed — release the claim so the vendor can retry.
+    await db<PartnershipRequestRow>(TABLES.PartnershipRequest)
+      .where({ id: reqRow.id, status: 'approving' })
+      .update({ status: 'pending' });
     const msg = err instanceof Error ? err.message : String(err);
     return res.status(502).json({ error: 'federation_failed', detail: msg });
   }

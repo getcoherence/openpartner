@@ -72,18 +72,52 @@ fraudReviewRouter.post('/clicks/:id/unflag', requireAuth, requireAdmin, async (r
   if (!click) return res.status(404).json({ error: 'click_not_found' });
   if (!click.fraudFlag) return res.status(409).json({ error: 'not_flagged' });
 
-  await db<ClickRow>(TABLES.Click).where({ id: clickId }).update({ fraudFlag: null });
-
-  // Re-run attribution for any user that stitched to this click — their
-  // events didn't earn while the click was flagged, but they should now.
-  // We use the existing backlog helper so all the usual window + model
-  // logic applies.
   const identities = await db<IdentityRow>(TABLES.Identity).where({ clickId });
   let reattributed = 0;
-  for (const identity of identities) {
-    const n = await attributeBacklogForUser(db, identity.userId);
-    reattributed += n;
-  }
+
+  await db.transaction(async (trx) => {
+    await trx<ClickRow>(TABLES.Click).where({ id: clickId }).update({ fraudFlag: null });
+
+    // Re-run attribution for any user that stitched to this click. If we
+    // just called the backlog helper directly, events already attributed
+    // under a different click-set (e.g. linear with two clicks, weight
+    // 0.5 each) would gain a third row for the newly-unflagged click
+    // without adjusting the existing weights — the partner would add up
+    // to > 1x the event's revenue. Before re-running, drop any
+    // non-finalized attribution rows for this user's events and their
+    // accrued commissions, so the backlog recomputes clean. We leave
+    // approved / paid commissions alone — you don't retroactively
+    // rewrite the ledger.
+    for (const identity of identities) {
+      const eventIds = (
+        await trx(TABLES.Event).where({ userId: identity.userId }).select('id')
+      ).map((r) => (r as { id: string }).id);
+      if (eventIds.length === 0) continue;
+
+      const accruedCommissions = await trx(TABLES.Commission)
+        .whereIn('attributionId', function () {
+          this.select('id').from(TABLES.Attribution).whereIn('eventId', eventIds);
+        })
+        .where({ status: 'accrued' })
+        .select('id', 'attributionId');
+
+      const attributionsToDelete = accruedCommissions
+        .map((c) => (c as { attributionId: string }).attributionId)
+        .filter(Boolean);
+
+      if (accruedCommissions.length > 0) {
+        await trx(TABLES.Commission)
+          .whereIn('id', accruedCommissions.map((c) => (c as { id: string }).id))
+          .del();
+      }
+      if (attributionsToDelete.length > 0) {
+        await trx(TABLES.Attribution).whereIn('id', attributionsToDelete).del();
+      }
+
+      const n = await attributeBacklogForUser(trx, identity.userId);
+      reattributed += n;
+    }
+  });
 
   res.json({ ok: true, clickId, reattributedEvents: reattributed });
 });

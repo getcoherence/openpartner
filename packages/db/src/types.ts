@@ -141,7 +141,7 @@ export interface ApiKeyRow {
 
 export type NetworkVendorStatus = 'pending' | 'active' | 'suspended';
 export type NetworkCreatorStatus = 'pending' | 'active' | 'suspended';
-export type PartnershipRequestStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
+export type PartnershipRequestStatus = 'pending' | 'approving' | 'approved' | 'rejected' | 'cancelled';
 export type PartnershipRequestDirection = 'creator_to_vendor' | 'vendor_to_creator';
 export type PartnershipStatus = 'active' | 'ended';
 

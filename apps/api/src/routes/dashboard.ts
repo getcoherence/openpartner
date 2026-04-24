@@ -18,13 +18,17 @@ dashboardRouter.get('/partners/:id/dashboard', requireAuth, grantScope('partners
     .andWhere('ts', '>=', since)
     .count<{ count: string }[]>({ count: '*' });
 
+  // Multi-touch: an event may produce N attribution rows with fractional
+  // weights. The partner's share of revenue is Σ(value × weight), and
+  // the event count is distinct eventIds (one partner can't "earn" an
+  // event twice within the same model).
   const attributedRow = await db(TABLES.Attribution)
     .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
     .where(`${TABLES.Attribution}.partnerId`, partnerId)
     .andWhere(`${TABLES.Attribution}.computedAt`, '>=', since)
     .select(
-      db.raw('COUNT(*) as events'),
-      db.raw('COALESCE(SUM("Event".value), 0) as revenue'),
+      db.raw(`COUNT(DISTINCT "Attribution"."eventId") as events`),
+      db.raw(`COALESCE(SUM("Event".value * "Attribution".weight), 0) as revenue`),
     )
     .first<{ events: string; revenue: string }>();
 

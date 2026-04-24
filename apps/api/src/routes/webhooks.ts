@@ -108,9 +108,19 @@ webhooksRouter.get('/webhooks/:id/deliveries', requireAuth, requireAdmin, async 
 });
 
 webhooksRouter.post('/webhooks/:id/deliveries/:deliveryId/retry', requireAuth, requireAdmin, async (req, res) => {
+  // Verify the delivery actually belongs to this endpoint BEFORE firing
+  // — the previous order re-delivered and only then checked, which
+  // meant hitting /webhooks/A/.../retry with a delivery id that belonged
+  // to endpoint B would silently re-fire B's webhook before surfacing
+  // the mismatch.
+  const existing = await db<WebhookDeliveryRow>(TABLES.WebhookDelivery)
+    .where({ id: req.params.deliveryId! })
+    .first();
+  if (!existing) return res.status(404).json({ error: 'not_found' });
+  if (existing.endpointId !== req.params.id) return res.status(400).json({ error: 'endpoint_mismatch' });
+
   const delivery = await redeliver(req.params.deliveryId!);
   if (!delivery) return res.status(404).json({ error: 'not_found' });
-  if (delivery.endpointId !== req.params.id) return res.status(400).json({ error: 'endpoint_mismatch' });
   res.json({ delivery });
 });
 

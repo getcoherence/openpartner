@@ -67,8 +67,16 @@ function formatCell(v: unknown): string {
 }
 
 function csvEscape(v: string): string {
-  if (/[",\n\r]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
-  return v;
+  // Formula-injection guard: Excel / Google Sheets / Numbers will
+  // evaluate a cell that starts with =, +, -, or @ as a formula, which
+  // can exfiltrate data or run external calls (=HYPERLINK, =IMPORTXML).
+  // Prefix with a single quote, which all three strip on display. We
+  // do this before the quote-wrap test so the final cell is still a
+  // valid CSV value.
+  const needsFormulaGuard = /^[=+\-@\t\r]/.test(v);
+  const safe = needsFormulaGuard ? `'${v}` : v;
+  if (/[",\n\r]/.test(safe)) return `"${safe.replace(/"/g, '""')}"`;
+  return safe;
 }
 
 export interface ImportBundle {

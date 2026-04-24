@@ -15,17 +15,33 @@
  */
 
 import { Router } from 'express';
+import { timingSafeEqual } from 'node:crypto';
 import { TABLES } from '@openpartner/db';
 import { db } from '../db.js';
 
 export const metricsRouter = Router();
+
+function safeEqual(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+  // timingSafeEqual requires equal lengths; pad to the longer buffer so
+  // the mismatching-length branch still runs in ~constant time.
+  if (aBuf.length !== bBuf.length) {
+    // Still consume a fixed-size comparison so length alone isn't a
+    // timing signal. The return is always false when lengths differ.
+    const fixed = Buffer.alloc(32);
+    timingSafeEqual(fixed, Buffer.alloc(32));
+    return false;
+  }
+  return timingSafeEqual(aBuf, bBuf);
+}
 
 metricsRouter.get('/metrics', async (req, res) => {
   const expected = process.env.METRICS_TOKEN;
   if (expected) {
     const header = req.header('authorization') ?? '';
     const presented = header.startsWith('Bearer ') ? header.slice(7) : '';
-    if (presented !== expected) {
+    if (!safeEqual(presented, expected)) {
       return res.status(401).json({ error: 'unauthorized' });
     }
   }

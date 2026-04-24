@@ -95,6 +95,11 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   // BEFORE express.json() so its own raw-body parser takes effect.
   app.use(stripeWebhookRouter);
 
+  // /import is a full-database bundle; 1 MB caps out around a few
+  // hundred Click rows. Give it its own parser before the global one
+  // kicks in. Everything else stays at 1 MB so a random public endpoint
+  // can't tie up the process with a 500 MB JSON blob.
+  app.use('/import', express.json({ limit: '256mb' }));
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/health', (_req, res) => {

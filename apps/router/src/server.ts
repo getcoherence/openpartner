@@ -7,7 +7,7 @@ import { checkIpCap, checkVelocity } from './velocity.js';
 import './env.js';
 
 const app = new Hono();
-const PORT = Number(process.env.ROUTER_PORT ?? 4000);
+const PORT = Number(process.env.ROUTER_PORT ?? 4701);
 const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN ?? 'localhost';
 const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 90; // 90 days
 
@@ -28,8 +28,17 @@ app.get('/r/:linkKey', async (c) => {
   const destination = new URL(link.destinationUrl);
   destination.searchParams.set('cref', clickId);
 
+  // Prefer proxy headers when they're present (we run behind Caddy /
+  // DO's edge), but fall back to the node socket so an attacker who
+  // reaches the router directly and omits headers doesn't land on
+  // ipHash=null and bypass the cap.
+  const socketIp =
+    (c.env as { incoming?: { socket?: { remoteAddress?: string | null } } }).incoming?.socket
+      ?.remoteAddress ?? '';
   const ipHash = hashIp(
-    c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? c.req.header('x-real-ip') ?? '',
+    c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ??
+      c.req.header('x-real-ip') ??
+      socketIp,
   );
 
   // Hard per-IP cap — refuse before we hit the DB. Unlike velocity this
