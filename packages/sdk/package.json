@@ -33,10 +33,10 @@
     "partner",
     "sdk"
   ],
-  "homepage": "https://github.com/openpartner/openpartner/tree/main/packages/sdk",
+  "homepage": "https://github.com/getcoherence/openpartner/tree/main/packages/sdk",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/openpartner/openpartner.git",
+    "url": "git+https://github.com/getcoherence/openpartner.git",
     "directory": "packages/sdk"
   },
   "license": "MIT",

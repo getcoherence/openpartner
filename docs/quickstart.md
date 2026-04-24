@@ -5,7 +5,7 @@ End-to-end walkthrough: spin up the stack, create a partner + campaign + link, s
 ## 1. Spin up
 
 ```bash
-git clone https://github.com/openpartner/openpartner
+git clone https://github.com/getcoherence/openpartner
 cd openpartner
 cp .env.example .env
 # edit .env: set ADMIN_API_KEY to a strong random value

@@ -41,7 +41,7 @@ Pick the model that fits your business — at signup, not at year-three renewal:
 ## Quickstart (self-hosted)
 
 ```bash
-git clone https://github.com/openpartner/openpartner
+git clone https://github.com/getcoherence/openpartner
 cd openpartner
 pnpm install
 docker compose up -d postgres

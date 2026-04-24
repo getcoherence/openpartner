@@ -1,6 +1,6 @@
 # @openpartner/sdk
 
-Client + server SDK for [OpenPartner](https://github.com/openpartner/openpartner).
+Client + server SDK for [OpenPartner](https://github.com/getcoherence/openpartner).
 
 - **Browser** — captures the `cref` attribution token from landing URLs and the first-party cookie, survives Safari / ITP cookie expiry via localStorage, and stitches to a logged-in user on auth.
 - **Server** — posts conversion events, stitches server-side where needed, with typed errors.
