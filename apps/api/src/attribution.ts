@@ -58,13 +58,22 @@ export async function attributeEvent(
   const cleanClicks = clicks.filter((c) => !c.fraudFlag);
   if (cleanClicks.length === 0) return { status: 'no_click' };
 
-  const campaignIds = Array.from(new Set(cleanClicks.map((c) => c.campaignId)));
+  // Revoked partners don't earn new attribution. We don't delete their
+  // historical commissions — admin reverses individually — but any event
+  // landing AFTER revokedAt no longer generates new rows for them.
+  const partnerIds = Array.from(new Set(cleanClicks.map((c) => c.partnerId)));
+  const revokedPartners = await db('Partner').whereIn('id', partnerIds).whereNotNull('revokedAt').pluck('id');
+  const revokedSet = new Set(revokedPartners as string[]);
+  const eligibleByPartner = cleanClicks.filter((c) => !revokedSet.has(c.partnerId));
+  if (eligibleByPartner.length === 0) return { status: 'no_click' };
+
+  const campaignIds = Array.from(new Set(eligibleByPartner.map((c) => c.campaignId)));
   const campaigns = await db<CampaignRow>(TABLES.Campaign).whereIn('id', campaignIds);
   const campaignsById = new Map(campaigns.map((c) => [c.id, c]));
 
   // Clicks in-window relative to this event, with their campaign attached.
   const eligible: ClickWithCampaign[] = [];
-  for (const click of cleanClicks) {
+  for (const click of eligibleByPartner) {
     const campaign = campaignsById.get(click.campaignId);
     if (!campaign) continue;
     const windowMs = campaign.attributionWindowDays * 24 * 60 * 60 * 1000;

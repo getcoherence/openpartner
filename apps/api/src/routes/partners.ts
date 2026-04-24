@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
-import { TABLES, type PartnerRow } from '@openpartner/db';
+import { TABLES, type PartnerRow, type SessionRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { issueMagicLink } from '../auth-sessions.js';
@@ -81,6 +81,40 @@ partnersRouter.post('/partners/:id/invite', requireAuth, requireAdmin, async (re
     tag: 'partner_invite',
     metadata: { purpose: 'partner_invite', partnerId: partner.id, resend: true },
   });
+  res.json({ ok: true });
+});
+
+/**
+ * Suspend a partner. Flips revokedAt, revokes all of their sessions so
+ * they're kicked out mid-request, and leaves historical commissions
+ * untouched. Future attribution skips them; router flags clicks on their
+ * links as 'revoked'.
+ */
+partnersRouter.post('/partners/:id/revoke', requireAuth, requireAdmin, async (req, res) => {
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  if (!partner) return res.status(404).json({ error: 'not_found' });
+  if (partner.revokedAt) return res.status(409).json({ error: 'already_revoked' });
+
+  const now = new Date();
+  await db.transaction(async (trx) => {
+    await trx<PartnerRow>(TABLES.Partner).where({ id: partner.id }).update({ revokedAt: now, updatedAt: now });
+    await trx<SessionRow>(TABLES.Session)
+      .where({ partnerId: partner.id })
+      .whereNull('revokedAt')
+      .update({ revokedAt: now });
+  });
+  res.json({ ok: true, revokedAt: now });
+});
+
+/** Undo revoke — partner regains dashboard access and future attribution. */
+partnersRouter.post('/partners/:id/reinstate', requireAuth, requireAdmin, async (req, res) => {
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  if (!partner) return res.status(404).json({ error: 'not_found' });
+  if (!partner.revokedAt) return res.status(409).json({ error: 'not_revoked' });
+
+  await db<PartnerRow>(TABLES.Partner)
+    .where({ id: partner.id })
+    .update({ revokedAt: null, updatedAt: new Date() });
   res.json({ ok: true });
 });
 

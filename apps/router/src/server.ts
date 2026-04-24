@@ -24,6 +24,14 @@ app.get('/r/:linkKey', async (c) => {
     return c.text('Link not found', 404);
   }
 
+  // If the partner's been revoked by the admin, we still redirect to
+  // keep end-user UX intact (no broken links from a pulled partner)
+  // but flag the click so attribution silently skips it.
+  const partner = (await db('Partner').where({ id: link.partnerId }).first()) as
+    | { revokedAt: Date | null }
+    | undefined;
+  const partnerRevoked = !!partner?.revokedAt;
+
   const clickId = ulid();
   const destination = new URL(link.destinationUrl);
   destination.searchParams.set('cref', clickId);
@@ -51,6 +59,10 @@ app.get('/r/:linkKey', async (c) => {
 
   const velocityFlagged = checkVelocity(ipHash, linkKey);
 
+  // Precedence: revoked beats velocity — a click on a pulled partner's
+  // link is not a velocity signal, it's a revoked signal.
+  const fraudFlag = partnerRevoked ? 'revoked' : velocityFlagged ? 'velocity' : null;
+
   await db(TABLES.Click).insert({
     id: clickId,
     linkId: link.id,
@@ -60,7 +72,7 @@ app.get('/r/:linkKey', async (c) => {
     ipHash,
     userAgent: c.req.header('user-agent') ?? null,
     referer: c.req.header('referer') ?? null,
-    fraudFlag: velocityFlagged ? 'velocity' : null,
+    fraudFlag,
   });
 
   c.header(

@@ -116,6 +116,15 @@ export async function resolveSession(plaintext: string): Promise<SessionRow | nu
     .andWhere('expiresAt', '>', now)
     .first();
   if (!row) return null;
+
+  // Extra belt-and-braces: if the partner was revoked but somehow a
+  // session slipped through (e.g. revoke transaction failed mid-flight),
+  // reject here too.
+  const partner = (await db('Partner').where({ id: row.partnerId }).first()) as
+    | { revokedAt: Date | null }
+    | undefined;
+  if (!partner || partner.revokedAt) return null;
+
   void db<SessionRow>(TABLES.Session).where({ id: row.id }).update({ lastSeenAt: now });
   return row;
 }

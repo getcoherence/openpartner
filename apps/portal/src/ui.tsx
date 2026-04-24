@@ -311,6 +311,7 @@ export function StatusPill({ status }: { status: string }) {
     connected: { bg: theme.successSoft, fg: theme.success },
     invited: { bg: theme.warnSoft, fg: theme.warn },
     active: { bg: theme.successSoft, fg: theme.success },
+    revoked: { bg: theme.dangerSoft, fg: theme.danger },
   };
   const c = palette[status] ?? { bg: theme.surface2, fg: theme.textMuted };
   return (

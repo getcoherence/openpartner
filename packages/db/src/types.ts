@@ -28,6 +28,9 @@ export interface PartnerRow {
   updatedAt: Date;
   // null until the partner accepts their invite magic link
   activatedAt: Date | null;
+  // non-null = admin has suspended the partner; sessions + future
+  // attribution stop, historical commissions untouched
+  revokedAt: Date | null;
 }
 
 export type MagicLinkPurpose = 'partner_invite' | 'partner_signin';
@@ -73,7 +76,7 @@ export interface LinkRow {
   createdAt: Date;
 }
 
-export type ClickFraudFlag = 'velocity' | 'manual' | null;
+export type ClickFraudFlag = 'velocity' | 'manual' | 'revoked' | null;
 
 export interface ClickRow {
   id: string;

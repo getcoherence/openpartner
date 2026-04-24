@@ -13,6 +13,7 @@ interface Partner {
   stripeConnectAccountId: string | null;
   createdAt: string;
   activatedAt: string | null;
+  revokedAt: string | null;
 }
 
 export function AdminPartners() {
@@ -56,19 +57,25 @@ export function AdminPartners() {
               <span style={{ fontWeight: 500 }}>{p.name}</span>
             </div>,
             <span style={{ color: theme.textMuted }}>{p.email}</span>,
-            p.activatedAt ? <StatusPill status="active" /> : <StatusPill status="invited" />,
+            p.revokedAt
+              ? <StatusPill status="revoked" />
+              : p.activatedAt
+                ? <StatusPill status="active" />
+                : <StatusPill status="invited" />,
             p.stripeConnectAccountId ? <StatusPill status="connected" /> : <span style={{ color: theme.textDim }}>—</span>,
             <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
             <div style={{ display: 'flex', gap: 6 }}>
               <Link to={`/links?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Links</Link>
               <span style={{ color: theme.border }}>·</span>
               <Link to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Payouts</Link>
-              {!p.activatedAt && (
+              {!p.activatedAt && !p.revokedAt && (
                 <>
                   <span style={{ color: theme.border }}>·</span>
                   <ResendInvite partnerId={p.id} />
                 </>
               )}
+              <span style={{ color: theme.border }}>·</span>
+              <RevokeAction partner={p} />
             </div>,
           ])}
         />
@@ -109,6 +116,45 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
       </div>
     </Card>
+  );
+}
+
+function RevokeAction({ partner }: { partner: Partner }) {
+  const qc = useQueryClient();
+  const isRevoked = !!partner.revokedAt;
+  const mut = useMutation({
+    mutationFn: () => api(`/partners/${partner.id}/${isRevoked ? 'reinstate' : 'revoke'}`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['partners'] });
+      qc.invalidateQueries({ queryKey: ['admin-overview'] });
+    },
+  });
+
+  function onClick() {
+    if (!isRevoked) {
+      const ok = window.confirm(
+        `Revoke ${partner.name}?\n\nThey'll be signed out immediately and new clicks to their links will be flagged. Historical commissions are kept. You can reinstate later.`,
+      );
+      if (!ok) return;
+    }
+    mut.mutate();
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      disabled={mut.isPending}
+      style={{
+        background: 'none',
+        border: 'none',
+        padding: 0,
+        fontSize: 13,
+        color: isRevoked ? theme.accent : theme.danger,
+        cursor: 'pointer',
+      }}
+    >
+      {mut.isPending ? '…' : isRevoked ? 'Reinstate' : 'Revoke'}
+    </button>
   );
 }
 

@@ -149,6 +149,50 @@ describe.skipIf(skipIntegration)('partner invite + signin', () => {
     expect(mailer.sent.length).toBe(0);
   });
 
+  it('admin can revoke an active partner — sessions die, reinstate undoes it', async () => {
+    // Invite + activate.
+    const created = await request(app)
+      .post('/partners')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ email: 'rev@example.com', name: 'Rev' });
+    const partnerId = created.body.id;
+    const token = extractToken(mailer.findFor('rev@example.com', 'partner_invite')!.text);
+    const verify = await request(app).post('/auth/magic/verify').send({ token });
+    const cookie = (verify.headers['set-cookie'] as unknown as string[])[0]!.split(';')[0]!;
+
+    // Partner's session works before revoke.
+    const before = await request(app).get('/auth/whoami').set('Cookie', cookie);
+    expect(before.status).toBe(200);
+
+    // Revoke.
+    const revoke = await request(app)
+      .post(`/partners/${partnerId}/revoke`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(revoke.status).toBe(200);
+
+    // Session is now invalid — the same cookie should no longer whoami.
+    const after = await request(app).get('/auth/whoami').set('Cookie', cookie);
+    expect(after.status).toBe(401);
+
+    // Second revoke is a 409.
+    const dupe = await request(app)
+      .post(`/partners/${partnerId}/revoke`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(dupe.status).toBe(409);
+
+    // Reinstate clears revokedAt. Session remains dead (we killed it),
+    // but partner could sign in fresh.
+    const reinstate = await request(app)
+      .post(`/partners/${partnerId}/reinstate`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(reinstate.status).toBe(200);
+
+    mailer.sent.length = 0;
+    const signin = await request(app).post('/auth/signin').send({ email: 'rev@example.com' });
+    expect(signin.status).toBe(200);
+    expect(mailer.findFor('rev@example.com', 'partner_signin')).toBeDefined();
+  });
+
   it('resend invite generates a fresh token and 409s once the partner is already activated', async () => {
     const created = await request(app)
       .post('/partners')
