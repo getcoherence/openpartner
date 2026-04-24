@@ -50,20 +50,33 @@ stripeWebhookRouter.post(
     const mapped = await mapStripeEvent(stripe, event);
     if (!mapped) return res.json({ ok: true, skipped: event.type });
 
+    // Idempotency: a Stripe retry (5xx, timeout) re-delivers the same
+    // event.id. Insert with ON CONFLICT DO NOTHING on the unique
+    // partial index over externalEventId, then handle the dedupe path.
     const eventId = ulid();
-    const [inserted] = await db<EventRow>(TABLES.Event)
+    const inserted = await db<EventRow>(TABLES.Event)
       .insert({
         id: eventId,
         userId: mapped.userId,
         type: mapped.type,
         value: mapped.value != null ? mapped.value.toFixed(2) : null,
         currency: mapped.currency ?? 'USD',
+        externalEventId: event.id,
         metadata: { stripeEventId: event.id, stripeType: event.type },
         ts: new Date(event.created * 1000),
       })
+      .onConflict('externalEventId')
+      .ignore()
       .returning('*');
 
-    const result = await attributeEvent(db, inserted as EventRow);
+    if (inserted.length === 0) {
+      // Retry of a previously-processed event — the first delivery
+      // already attributed it. Return 2xx so Stripe stops retrying.
+      const existing = await db<EventRow>(TABLES.Event).where({ externalEventId: event.id }).first();
+      return res.json({ ok: true, idempotent: true, eventId: existing?.id });
+    }
+
+    const result = await attributeEvent(db, inserted[0] as EventRow);
     res.json({ ok: true, eventId, attribution: result });
   },
 );

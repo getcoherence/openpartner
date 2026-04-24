@@ -5,6 +5,7 @@ import { TABLES, type NetworkVendorRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApiKeyRow, requireAdmin, requireAuth, requireNetworkVendor } from '../auth.js';
 import { encryptKey } from '../network/crypto.js';
+import { safeFetch } from '../network/safe-fetch.js';
 import { vendorCreateSchema } from '../network/validation.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
 
@@ -25,11 +26,11 @@ const verifyKeySchema = z.object({
  * partners:read, commissions:read). If they paste a full admin key we
  * want to warn them so they can go mint a scoped one instead.
  */
-// Intentionally open (no auth) — useful during the unauthenticated vendor
-// signup flow so the prospective vendor can sanity-check the key they're
-// about to hand over. The caller must already know the key + instance
-// URL, so this grants nothing they don't already have. We only proxy
-// GET /auth/introspect (narrow surface), not arbitrary URLs.
+// Intentionally open (no auth) — the vendor is pre-signup and doesn't
+// have an account yet. SSRF surface is closed via safeFetch: URL must
+// be http(s), hostname must resolve to a public IP (unless the operator
+// opts in with NETWORK_ALLOW_PRIVATE_HOSTS=1). We only proxy GET
+// /auth/introspect (narrow path), not arbitrary URLs.
 networkVendorsRouter.post('/network/vendors/verify-key', async (req, res) => {
   const body = verifyKeySchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
@@ -37,7 +38,7 @@ networkVendorsRouter.post('/network/vendors/verify-key', async (req, res) => {
   const { instanceUrl, instanceKey } = body.data;
   const url = `${instanceUrl.replace(/\/$/, '')}/auth/introspect`;
   try {
-    const response = await fetch(url, { headers: { authorization: `Bearer ${instanceKey}` } });
+    const response = await safeFetch(url, { headers: { authorization: `Bearer ${instanceKey}` } });
     const text = await response.text();
     if (!response.ok) {
       return res.status(502).json({
@@ -93,6 +94,9 @@ networkVendorsRouter.post('/network/vendors', requireAuth, requireAdmin, async (
       id,
       name: body.data.name,
       slug: body.data.slug,
+      // Admin-created vendors are pre-verified, so email isn't load-bearing;
+      // the magic-link signin path still works once the admin sets one.
+      email: (body.data.email ?? `admin+${body.data.slug}@${new URL(body.data.instanceUrl).hostname}`).toLowerCase(),
       websiteUrl: body.data.websiteUrl ?? null,
       logoUrl: body.data.logoUrl ?? null,
       description: body.data.description ?? null,

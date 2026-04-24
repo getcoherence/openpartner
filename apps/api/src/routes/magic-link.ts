@@ -41,6 +41,7 @@ import {
   sessionCookieOptions,
 } from '../auth-sessions.js';
 import { encryptKey } from '../network/crypto.js';
+import { safeFetch } from '../network/safe-fetch.js';
 import {
   creatorSigninEmail,
   creatorSignupEmail,
@@ -151,7 +152,7 @@ magicLinkRouter.post('/auth/vendor/signup', mailAuthLimit, async (req, res) => {
   // scopes (unrestricted admin keys are accepted but flagged in the UI).
   const introspectUrl = `${body.data.instanceUrl.replace(/\/$/, '')}/auth/introspect`;
   try {
-    const response = await fetch(introspectUrl, {
+    const response = await safeFetch(introspectUrl, {
       headers: { authorization: `Bearer ${body.data.instanceKey}` },
     });
     if (!response.ok) {
@@ -188,7 +189,8 @@ magicLinkRouter.post('/auth/vendor/signup', mailAuthLimit, async (req, res) => {
     name: body.data.name,
     slug: body.data.slug,
     instanceUrl: body.data.instanceUrl.replace(/\/$/, ''),
-    instanceKey: body.data.instanceKey,
+    instanceKeyCiphertext: encryptKey(body.data.instanceKey),
+    instanceKeyPrefix: body.data.instanceKey.slice(0, 8),
     ...(body.data.routerUrl ? { routerUrl: body.data.routerUrl } : {}),
     ...(body.data.description ? { description: body.data.description } : {}),
     ...(body.data.websiteUrl ? { websiteUrl: body.data.websiteUrl } : {}),
@@ -384,17 +386,18 @@ async function verifyVendorSignup(token: MagicLinkTokenRow, res: Parameters<Para
   if (collision) return res.status(409).json({ error: 'slug_taken' });
 
   const id = ulid();
-  const ciphertext = encryptKey(claim.instanceKey);
   await db<NetworkVendorRow>(TABLES.NetworkVendor).insert({
     id,
     name: claim.name,
     slug: claim.slug,
+    email: token.email,
     websiteUrl: claim.websiteUrl ?? null,
     logoUrl: claim.logoUrl ?? null,
     description: claim.description ?? null,
     instanceUrl: claim.instanceUrl,
-    instanceKeyCiphertext: ciphertext,
-    instanceKeyPrefix: claim.instanceKey.slice(0, 8),
+    // claim carries the ciphertext already — no round-trip through plaintext
+    instanceKeyCiphertext: claim.instanceKeyCiphertext,
+    instanceKeyPrefix: claim.instanceKeyPrefix,
     routerUrl: claim.routerUrl ?? null,
     status: 'pending', // admin still reviews the federation relationship
   });
@@ -431,19 +434,17 @@ async function verifyVendorSignin(token: MagicLinkTokenRow, res: Parameters<Para
 }
 
 /**
- * Map a vendor back to the email that signed them up. We don't store
- * email directly on NetworkVendor today (it's carried on the MagicLink
- * claim), so we look up the most recent consumed vendor_signup token for
- * this email and locate the vendor by the slug it held.
+ * Look up the vendor tied to a signup email. One email can theoretically
+ * own multiple vendors — we pick the most recently created active one
+ * and fall through to `vendor_not_active` if nothing is active. Callers
+ * that need to disambiguate between several active vendors should
+ * collect the slug from the user first.
  */
 async function findVendorByEmail(email: string): Promise<NetworkVendorRow | undefined> {
-  const token = await db<MagicLinkTokenRow>(TABLES.MagicLinkToken)
-    .where({ email, purpose: 'vendor_signup' })
-    .whereNotNull('consumedAt')
-    .orderBy('consumedAt', 'desc')
-    .first();
-  if (!token?.claim || token.claim.kind !== 'vendor') return undefined;
-  return db<NetworkVendorRow>(TABLES.NetworkVendor).where({ slug: token.claim.slug }).first();
+  const vendors = await db<NetworkVendorRow>(TABLES.NetworkVendor)
+    .where({ email: email.toLowerCase() })
+    .orderBy('createdAt', 'desc');
+  return vendors.find((v) => v.status === 'active') ?? vendors[0];
 }
 
 // -------- Signout --------

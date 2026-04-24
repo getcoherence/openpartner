@@ -45,11 +45,27 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
 
   app.use(helmet());
   // CORS: credentials: true so the portal can send the op_session cookie
-  // cross-origin in dev (portal on :5173, api on :4601). In prod the
-  // portal proxy makes this same-origin anyway.
+  // cross-origin in dev (portal on :5673, api on :4601). In prod the
+  // portal proxy serves /api same-origin so this is a no-op. We must
+  // not fall through to origin:true with credentials — that reflects
+  // any requesting origin back in Access-Control-Allow-Origin, turning
+  // the browser's session cookie into a CSRF payload. Require an
+  // explicit allowlist; error in production if unset.
+  const corsOrigins = [
+    ...(process.env.PORTAL_URL ? [process.env.PORTAL_URL.replace(/\/$/, '')] : []),
+    ...(process.env.CORS_EXTRA_ORIGINS
+      ? process.env.CORS_EXTRA_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
+      : []),
+    ...(process.env.NODE_ENV !== 'production'
+      ? ['http://localhost:5673', 'http://127.0.0.1:5673']
+      : []),
+  ];
+  if (corsOrigins.length === 0 && process.env.NODE_ENV === 'production') {
+    throw new Error('PORTAL_URL must be set in production so CORS has an origin allowlist');
+  }
   app.use(
     cors({
-      origin: process.env.PORTAL_URL ?? true,
+      origin: corsOrigins,
       credentials: true,
     }),
   );

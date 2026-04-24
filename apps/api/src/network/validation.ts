@@ -53,6 +53,7 @@ export const vendorCreateSchema = z.object({
     .min(2)
     .max(40)
     .regex(/^[a-z0-9][a-z0-9-]*$/),
+  email: z.string().email().optional(),
   websiteUrl: z.string().url().optional(),
   logoUrl: z.string().url().optional(),
   description: z.string().max(1000).optional(),

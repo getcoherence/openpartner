@@ -81,6 +81,7 @@ export interface EventRow {
   type: EventType;
   value: string | null; // decimal comes back as string from pg
   currency: string | null;
+  externalEventId: string | null;
   metadata: Record<string, unknown>;
   ts: Date;
 }
@@ -172,6 +173,7 @@ export interface NetworkVendorRow {
   id: string;
   name: string;
   slug: string;
+  email: string;
   websiteUrl: string | null;
   logoUrl: string | null;
   description: string | null;
@@ -245,7 +247,12 @@ export interface MagicLinkVendorClaim {
   name: string;
   slug: string;
   instanceUrl: string;
-  instanceKey: string;
+  // AES-256-GCM envelope of the vendor's instance API key. We only have
+  // the plaintext transiently during /auth/vendor/signup; the token sits
+  // in MagicLinkToken.claim (jsonb) for up to 15 minutes until consumed,
+  // and it must not store federation credentials in the clear.
+  instanceKeyCiphertext: string;
+  instanceKeyPrefix: string;
   routerUrl?: string;
   description?: string;
   websiteUrl?: string;
