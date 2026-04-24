@@ -21,6 +21,34 @@ export interface FederationCreator {
   promoCode?: string | null;
 }
 
+export interface PartnerDashboardStats {
+  partnerId: string;
+  since: string;
+  clicks: number;
+  attributedEvents: number;
+  attributedRevenue: number;
+  commissionByStatus: Record<string, number>;
+}
+
+/**
+ * Read-side federation: pull a partner's dashboard off their vendor's
+ * OpenPartner instance. Used by the Network to surface per-partnership
+ * earnings to creators (and to vendors, inverted — "how much has this
+ * creator earned you?"). Attribution never leaves the vendor's instance;
+ * we just project it into the Network UI.
+ */
+export async function fetchPartnerDashboard(
+  vendor: NetworkVendorRow,
+  partnerId: string,
+): Promise<PartnerDashboardStats> {
+  const key = decryptKey(vendor.instanceKeyCiphertext);
+  const res = await fetchJson(`${vendor.instanceUrl}/partners/${partnerId}/dashboard`, {
+    method: 'GET',
+    key,
+  });
+  return res as unknown as PartnerDashboardStats;
+}
+
 export interface FederatedPartner {
   partnerId: string;
   linkKey: string;

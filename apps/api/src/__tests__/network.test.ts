@@ -16,6 +16,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import request from 'supertest';
+import { ulid } from 'ulid';
 import { TABLES } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApp } from '../app.js';
@@ -347,6 +348,165 @@ describe.skipIf(skipIntegration)('openpartner network', () => {
       .set('Authorization', `Bearer ${c2key}`)
       .send({ offeringId: o2.id });
     expect(req2.body.request.promoCode).toBe(handle2);
+  });
+
+  it('earnings endpoint federates a read and surfaces per-partnership stats', async () => {
+    // Campaign with a 20% recurring rule on the vendor's instance
+    const campaign = (await request(app)
+      .post('/campaigns')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Earn test', commissionRule: { type: 'percent', value: 20 } })).body;
+
+    const vendorRes = await request(app)
+      .post('/network/vendors')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'EarnVendor', slug: `earn-${Date.now()}`, instanceUrl, instanceKey: ADMIN_KEY, routerUrl: instanceUrl });
+    const vendorKey = vendorRes.body.apiKey;
+    await request(app).post(`/network/vendors/${vendorRes.body.vendor.id}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    const offeringId = (await request(app)
+      .post('/network/offerings')
+      .set('Authorization', `Bearer ${vendorKey}`)
+      .send({
+        title: 'Earning offering',
+        productUrl: 'https://example.com/pro',
+        vendorCampaignId: campaign.id,
+        terms: { payout: { type: 'recurring_percent', percent: 20, durationMonths: 6 }, cookieWindowDays: 60 },
+        published: true,
+      })).body.offering.id;
+
+    const creatorRes = await request(app)
+      .post('/network/creators')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Earner', handle: `earner_${Date.now()}`, email: `earner${Date.now()}@e.com` });
+    const creatorKey = creatorRes.body.apiKey;
+    await request(app).post(`/network/creators/${creatorRes.body.creator.id}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    const reqRes = await request(app)
+      .post('/network/requests')
+      .set('Authorization', `Bearer ${creatorKey}`)
+      .send({ offeringId, promoCode: 'earntest' });
+    await request(app)
+      .post(`/network/requests/${reqRes.body.request.id}/approve`)
+      .set('Authorization', `Bearer ${vendorKey}`)
+      .send({});
+
+    // Simulate traffic on the vendor's side: click → identify → event.
+    // (We write Click directly because the router is a separate server in
+    // prod; the dashboard endpoint doesn't care how Clicks got there.)
+    const link = await db(TABLES.Link).where({ linkKey: 'earntest' }).first();
+    expect(link).toBeDefined();
+    const clickId = ulid();
+    await db(TABLES.Click).insert({
+      id: clickId,
+      linkId: link!.id,
+      partnerId: link!.partnerId,
+      campaignId: link!.campaignId,
+      landingUrl: 'https://example.com/pro',
+      ipHash: 'x',
+      userAgent: 'x',
+      referer: null,
+      fraudFlag: null,
+    });
+
+    const userId = `viewer_${Date.now()}`;
+    await request(app).post('/attribution/identify').send({ cref: clickId, userId });
+    await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId, type: 'invoice_paid', value: 250 });
+
+    // Creator pulls their earnings via the Network's federated read.
+    const earnings = await request(app)
+      .get('/network/partnerships/earnings')
+      .set('Authorization', `Bearer ${creatorKey}`);
+    expect(earnings.status).toBe(200);
+    expect(earnings.body.partnerships).toHaveLength(1);
+    const row = earnings.body.partnerships[0];
+    expect(row.status).toBe('ok');
+    expect(row.stats.clicks).toBe(1);
+    expect(row.stats.attributedEvents).toBe(1);
+    expect(row.stats.attributedRevenue).toBe(250);
+    expect(row.stats.commissionByStatus.accrued).toBe(50); // 20% of 250
+
+    expect(earnings.body.totals.clicks).toBe(1);
+    expect(earnings.body.totals.attributedRevenue).toBe(250);
+    expect(earnings.body.totals.commission.accrued).toBe(50);
+    expect(earnings.body.totals.unreachable).toBe(0);
+    expect(earnings.body.totals.healthy).toBe(1);
+  });
+
+  it('earnings endpoint surfaces unreachable vendors without blacking out', async () => {
+    const campaign = (await request(app)
+      .post('/campaigns')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Unreach', commissionRule: { type: 'percent', value: 10 } })).body;
+
+    // Register the vendor against a dead URL so federation will fail.
+    const vendorRes = await request(app)
+      .post('/network/vendors')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({
+        name: 'DeadVendor',
+        slug: `dead-${Date.now()}`,
+        instanceUrl: 'http://127.0.0.1:1', // port 1 — nothing listens here
+        instanceKey: ADMIN_KEY,
+      });
+    const vendorKey = vendorRes.body.apiKey;
+    await request(app).post(`/network/vendors/${vendorRes.body.vendor.id}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    // Insert a Partnership directly so we don't have to federate-create
+    // one against the dead instance.
+    const creatorRes = await request(app)
+      .post('/network/creators')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Drift', handle: `drift_${Date.now()}`, email: `drift${Date.now()}@e.com` });
+    const creatorKey = creatorRes.body.apiKey;
+    await request(app).post(`/network/creators/${creatorRes.body.creator.id}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    const offeringId = (await request(app)
+      .post('/network/offerings')
+      .set('Authorization', `Bearer ${vendorKey}`)
+      .send({
+        title: 'Offline offering',
+        productUrl: 'https://example.com',
+        vendorCampaignId: campaign.id,
+        terms: { payout: { type: 'one_time_fee', amount: 10 }, cookieWindowDays: 30 },
+        published: true,
+      })).body.offering.id;
+
+    await db(TABLES.PartnershipRequest).insert({
+      id: ulid(),
+      offeringId,
+      vendorId: vendorRes.body.vendor.id,
+      creatorId: creatorRes.body.creator.id,
+      direction: 'creator_to_vendor',
+      status: 'approved',
+      promoCode: 'drift',
+      decidedAt: new Date(),
+    });
+    const partnershipId = ulid();
+    const lastReq = await db(TABLES.PartnershipRequest).where({ creatorId: creatorRes.body.creator.id }).first();
+    await db(TABLES.Partnership).insert({
+      id: partnershipId,
+      requestId: lastReq!.id,
+      offeringId,
+      vendorId: vendorRes.body.vendor.id,
+      creatorId: creatorRes.body.creator.id,
+      vendorPartnerId: 'phantom',
+      vendorLinkKey: 'drift',
+      publicShareUrl: 'http://127.0.0.1:1/r/drift',
+      status: 'active',
+    });
+
+    const earnings = await request(app)
+      .get('/network/partnerships/earnings')
+      .set('Authorization', `Bearer ${creatorKey}`);
+    expect(earnings.status).toBe(200);
+    expect(earnings.body.partnerships).toHaveLength(1);
+    expect(earnings.body.partnerships[0].status).toBe('error');
+    expect(earnings.body.totals.unreachable).toBe(1);
+    expect(earnings.body.totals.clicks).toBe(0);
   });
 
   it('encryption round-trips', async () => {

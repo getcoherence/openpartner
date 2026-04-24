@@ -24,6 +24,7 @@ import { networkVendorsRouter } from './routes/network-vendors.js';
 import { networkCreatorsRouter } from './routes/network-creators.js';
 import { networkOfferingsRouter } from './routes/network-offerings.js';
 import { networkRequestsRouter } from './routes/network-requests.js';
+import { networkEarningsRouter } from './routes/network-earnings.js';
 
 export function createApp(options: { enableLogger?: boolean } = {}) {
   const app = express();
@@ -61,6 +62,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(networkCreatorsRouter);
   app.use(networkOfferingsRouter);
   app.use(networkRequestsRouter);
+  app.use(networkEarningsRouter);
 
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
     req.log?.error({ err }, 'request_failed');
