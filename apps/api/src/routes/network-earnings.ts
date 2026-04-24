@@ -24,7 +24,7 @@ import {
 } from '@openpartner/db';
 import { db } from '../db.js';
 import { requireAuth } from '../auth.js';
-import { fetchPartnerDashboard, type PartnerDashboardStats } from '../network/federation.js';
+import { fetchPartnerCommissions, fetchPartnerDashboard, type PartnerDashboardStats } from '../network/federation.js';
 
 export const networkEarningsRouter = Router();
 
@@ -101,6 +101,33 @@ networkEarningsRouter.get('/network/partnerships/earnings', requireAuth, async (
     partnerships: results,
     totals: computeTotals(results),
   });
+});
+
+// -------- Per-partnership commission drilldown --------
+
+networkEarningsRouter.get('/network/partnerships/:id/commissions', requireAuth, async (req, res) => {
+  const p = req.principal!;
+  const partnership = await db<PartnershipRow>(TABLES.Partnership).where({ id: req.params.id }).first();
+  if (!partnership) return res.status(404).json({ error: 'not_found' });
+
+  const allowed =
+    p.role === 'admin' ||
+    (p.role === 'network_creator' && partnership.creatorId === p.networkCreatorId) ||
+    (p.role === 'network_vendor' && partnership.vendorId === p.networkVendorId);
+  if (!allowed) return res.status(403).json({ error: 'forbidden' });
+
+  const vendor = await db<NetworkVendorRow>(TABLES.NetworkVendor).where({ id: partnership.vendorId }).first();
+  if (!vendor) return res.status(404).json({ error: 'vendor_missing' });
+
+  try {
+    const commissions = await fetchPartnerCommissions(vendor, partnership.vendorPartnerId);
+    res.json({ commissions });
+  } catch (err: unknown) {
+    res.status(502).json({
+      error: 'vendor_unreachable',
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 function emptyTotals() {

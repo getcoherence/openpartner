@@ -49,6 +49,28 @@ export async function fetchPartnerDashboard(
   return res as unknown as PartnerDashboardStats;
 }
 
+export interface PartnerCommission {
+  id: string;
+  partnerId: string;
+  amount: string;
+  currency: string;
+  status: 'accrued' | 'approved' | 'paid' | 'reversed' | (string & {});
+  accruedAt: string;
+  paidAt: string | null;
+}
+
+export async function fetchPartnerCommissions(
+  vendor: NetworkVendorRow,
+  partnerId: string,
+): Promise<PartnerCommission[]> {
+  const key = decryptKey(vendor.instanceKeyCiphertext);
+  const res = (await fetchJson(`${vendor.instanceUrl}/partners/${partnerId}/commissions?limit=500`, {
+    method: 'GET',
+    key,
+  })) as { commissions?: PartnerCommission[] };
+  return res.commissions ?? [];
+}
+
 export interface FederatedPartner {
   partnerId: string;
   linkKey: string;
