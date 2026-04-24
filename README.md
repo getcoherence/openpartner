@@ -51,7 +51,7 @@ pnpm dev:router    # terminal 2 — click router
 pnpm dev:portal    # terminal 3 — partner dashboard
 ```
 
-See [docs/quickstart.md](./docs/quickstart.md) for full setup including Stripe Connect.
+See [docs/quickstart.md](./docs/quickstart.md) for full local setup, or [docs/deploy.md](./docs/deploy.md) for DigitalOcean App Platform and single-host Docker deployments.
 
 ## Architecture
 
@@ -83,17 +83,16 @@ v1. End-to-end attribution, payouts, and export are working; API surface is stab
 - Edge click router with first-party cookie and SHA-256-hashed IP
 - Identity stitching (`POST /attribution/identify`) with late-binding backlog attribution
 - Event ingest (`POST /attribution/events`) and Stripe webhook mapping
-- Last-click attribution within configurable window, re-derivable from raw tables
+- Four attribution models — `last_click`, `first_click`, `linear`, `position` — with per-campaign selection, re-derivable from raw tables
 - Commission accrual + review queue (approve / reverse) + Stripe Connect Standard payouts with idempotent transfers
 - Three deployment modes gated by `OPENPARTNER_MODE`: `selfhost`, `flat` (Stripe subscription), `revshare` (3% platform fee)
-- Click velocity limits (flagged clicks are kept as audit, excluded from attribution)
-- API-key auth with admin and partner-scoped tokens
+- Click velocity limits with an admin fraud-review queue that replays skipped attributions on unflag
+- Scoped API keys (admin and partner tokens with granular `partners:write`, `links:write`, etc.) + magic-link auth for the portal
+- Two-sided OpenPartner Network — vendors publish offerings, creators apply, federation provisions partner records on vendor instances with AES-256-GCM encrypted keys
+- Creator-chosen share-link slugs (`go.yourdomain.com/r/<slug>`)
+- Outbound webhooks with HMAC-SHA256 signing and per-event redelivery
 - Portable JSON + CSV export per table; full bundle export round-trippable into self-hosted via `POST /import`
-- Partner dashboard in the portal (clicks, attributed revenue, commission by status, links)
-
-### Deferred
-
-- Multi-touch attribution models (scaffolded in the schema; only `last_click` wired)
-- Fraud detection beyond velocity
-- Historical merchant billing reconciliation for revshare mode
-- OAuth-based partner portal login (currently API-key only)
+- Partner dashboard + admin overview + fraud review + partner funnel analytics in the portal
+- `@openpartner/sdk` on npm with browser and server entries
+- Transactional email via Postmark (magic links, vendor approval, creator signups)
+- Deployment: DigitalOcean App Platform spec + single-host `docker-compose.prod.yml` behind Caddy
