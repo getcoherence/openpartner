@@ -15,7 +15,7 @@ import { createApp } from '../app.js';
 const ADMIN_KEY = 'op_test_magic_admin_0123456789abcdef0123';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
 process.env.MAIL_TRANSPORT = 'dev';
-process.env.PORTAL_URL = 'http://localhost:5173';
+process.env.PORTAL_URL = 'http://localhost:5673';
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const TABLES_TO_CLEAN = [

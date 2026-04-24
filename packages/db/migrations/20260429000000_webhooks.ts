@@ -6,8 +6,9 @@ import type { Knex } from 'knex';
  * Two tables:
  *
  *   WebhookEndpoint  — a URL the operator wants us to POST events to.
- *                      Holds the sha256 hash of the signing secret (never
- *                      plaintext), the list of subscribed event types as
+ *                      Holds the signing secret in plaintext (same pattern
+ *                      Stripe uses — we need it back at dispatch time
+ *                      to HMAC each payload), the list of subscribed event types as
  *                      jsonb, and an active flag so endpoints can be
  *                      soft-disabled without losing their history.
  *

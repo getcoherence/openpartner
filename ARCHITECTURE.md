@@ -69,7 +69,6 @@ Commission = attribution + pricing rule. Rules live on the Campaign:
 
 - **percent** — percentage of the event's `value`. `recurring: true` means every recurring invoice counts, not just the first.
 - **fixed** — flat amount per event (signup bounties).
-- **tiered** — bands by volume or time (e.g. 10% months 1-3, 20% after).
 
 Commissions enter `accrued` state. An admin (or approval webhook flow) moves them to `approved`. The payouts runner groups approved commissions by `(partnerId, currency)` and writes a Payout row plus a Stripe transfer (Connect mode) or leaves it `pending` for the operator to clear out-of-band (manual mode).
 

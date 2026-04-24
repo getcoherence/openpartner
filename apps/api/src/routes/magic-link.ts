@@ -94,7 +94,7 @@ const signinSchema = z.object({ email: z.string().email() });
 const verifySchema = z.object({ token: z.string().min(8) });
 
 function portalOrigin(): string {
-  return (process.env.PORTAL_URL ?? 'http://localhost:5173').replace(/\/$/, '');
+  return (process.env.PORTAL_URL ?? 'http://localhost:5673').replace(/\/$/, '');
 }
 
 function magicUrl(token: string, purpose: string): string {
