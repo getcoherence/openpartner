@@ -14,6 +14,7 @@ import {
   Webhook,
   Settings,
   Mail,
+  UserCog,
 } from 'lucide-react';
 import { clearApiKey, api, type Principal } from './api.js';
 import { theme } from './theme.js';
@@ -30,6 +31,8 @@ import { LoginPage } from './pages/auth/Login.js';
 import { MagicLandingPage } from './pages/auth/MagicLanding.js';
 import { WebhooksPage } from './pages/admin/Webhooks.js';
 import { AdminSettings } from './pages/admin/Settings.js';
+import { AdminAdmins } from './pages/admin/Admins.js';
+import { InstallPage } from './pages/Install.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
 import { useQuery } from '@tanstack/react-query';
 
@@ -38,13 +41,45 @@ interface AuthState {
   principal: Principal | null;
 }
 
+interface InstallStatus {
+  needsSetup: boolean;
+}
+
 export function App() {
+  // First-run gate: hit the install-status probe once at app boot. While
+  // zero admins are activated we route everything (except the magic
+  // landing, which is how the installer's own link works) to /install.
+  const install = useQuery({
+    queryKey: ['install-status'],
+    // Public endpoint — no auth required. Hand-rolled fetch so we don't
+    // drag the api() function through auth-cleanup on 401.
+    queryFn: async () => {
+      const r = await fetch('/api/install/status');
+      return (await r.json()) as InstallStatus;
+    },
+    staleTime: Infinity,
+  });
+
+  if (install.isLoading) return null;
+  const needsSetup = install.data?.needsSetup ?? false;
+
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/auth/magic" element={<MagicLandingPage />} />
-        <Route path="/*" element={<Shell />} />
+        {needsSetup ? (
+          <>
+            <Route path="/install" element={<InstallPage />} />
+            <Route path="/auth/magic" element={<MagicLandingPage />} />
+            <Route path="*" element={<Navigate to="/install" replace />} />
+          </>
+        ) : (
+          <>
+            <Route path="/install" element={<Navigate to="/" replace />} />
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/auth/magic" element={<MagicLandingPage />} />
+            <Route path="/*" element={<Shell />} />
+          </>
+        )}
       </Routes>
     </BrowserRouter>
   );
@@ -83,6 +118,7 @@ function Shell() {
               <Route path="admin/export" element={<AdminExport />} />
               <Route path="admin/fraud-review" element={<FraudReviewPage />} />
               <Route path="admin/webhooks" element={<WebhooksPage />} />
+              <Route path="admin/admins" element={<AdminAdmins />} />
               <Route path="admin/settings" element={<AdminSettings />} />
             </>
           )}
@@ -145,6 +181,7 @@ function Sidebar({ principal }: { principal: Principal }) {
             <NavItem to="/admin/export" icon={<Download size={16} />}>Export / import</NavItem>
             <NavItem to="/admin/fraud-review" icon={<ShieldCheck size={16} />}>Fraud review</NavItem>
             <NavItem to="/admin/webhooks" icon={<Webhook size={16} />}>Webhooks</NavItem>
+            <NavItem to="/admin/admins" icon={<UserCog size={16} />}>Admins</NavItem>
             <NavItem to="/admin/settings" icon={<Settings size={16} />}>Settings</NavItem>
           </NavSection>
         )}
@@ -254,7 +291,13 @@ function PrincipalChip({ principal }: { principal: Principal }) {
 
 function describePrincipal(p: Principal): { label: string; sublabel: string; initial: string; hue: { bg: string; fg: string } } {
   if (p.role === 'admin') {
-    return { label: 'Admin', sublabel: 'admin', initial: 'A', hue: { bg: theme.accentSoft, fg: theme.accent } };
+    const name = p.admin?.name ?? 'Admin';
+    return {
+      label: name,
+      sublabel: p.source === 'env' ? 'admin (env)' : 'admin',
+      initial: name[0]?.toUpperCase() ?? 'A',
+      hue: { bg: theme.accentSoft, fg: theme.accent },
+    };
   }
   return {
     label: p.partner?.name ?? 'Partner',

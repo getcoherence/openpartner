@@ -1,10 +1,12 @@
 /**
- * Magic-link token + session primitives — partner auth only.
+ * Magic-link token + session primitives. Generic over principal kind:
+ * both admins and partners use the same magic-link verify + session
+ * cookie flow, differing only in which table we check + activate on
+ * verify.
  *
  * Tokens look like `opml_<hex>` and sessions look like `ops_<hex>`. Both
- * use the same pattern as ApiKey: store a sha256 hash + an 8-char prefix
- * so lookups are indexed and plaintext is only ever held for the
- * moment we generate / verify.
+ * use the same prefix+hash lookup as ApiKey — plaintext is only ever
+ * held at generation + verify time.
  */
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -14,6 +16,7 @@ import {
   TABLES,
   type MagicLinkTokenRow,
   type MagicLinkPurpose,
+  type PrincipalKind,
   type SessionRow,
 } from '@openpartner/db';
 import { db } from './db.js';
@@ -41,7 +44,8 @@ export interface IssuedMagicLink {
 export async function issueMagicLink(params: {
   email: string;
   purpose: MagicLinkPurpose;
-  partnerId: string;
+  principalKind: PrincipalKind;
+  principalId: string;
 }): Promise<IssuedMagicLink> {
   const { plaintext, prefix, tokenHash } = generate('opml');
   const expiresAt = new Date(Date.now() + MAGIC_TTL_MS);
@@ -51,7 +55,8 @@ export async function issueMagicLink(params: {
     tokenHash,
     email: params.email.toLowerCase(),
     purpose: params.purpose,
-    partnerId: params.partnerId,
+    principalKind: params.principalKind,
+    principalId: params.principalId,
     expiresAt,
   });
   return { plaintext, expiresAt };
@@ -61,19 +66,12 @@ export interface ConsumedMagicLink {
   token: MagicLinkTokenRow;
 }
 
-/**
- * Consume a magic-link token atomically. Rejects expired, already-consumed,
- * and unknown tokens. Returns the full token row on success so callers can
- * branch on purpose + partnerId.
- */
 export async function consumeMagicLink(plaintext: string): Promise<ConsumedMagicLink | null> {
   if (plaintext.length < TOKEN_PREFIX_LEN) return null;
   const prefix = plaintext.slice(0, TOKEN_PREFIX_LEN);
   const tokenHash = hash(plaintext);
   const now = new Date();
 
-  // Conditional UPDATE: only marks the row consumed if it's still
-  // consumable — race-safe against duplicate clicks.
   const updated = await db<MagicLinkTokenRow>(TABLES.MagicLinkToken)
     .where({ prefix, tokenHash })
     .whereNull('consumedAt')
@@ -91,7 +89,10 @@ export interface IssuedSession {
   expiresAt: Date;
 }
 
-export async function createSession(partnerId: string): Promise<IssuedSession> {
+export async function createSession(params: {
+  principalKind: PrincipalKind;
+  principalId: string;
+}): Promise<IssuedSession> {
   const { plaintext, prefix, tokenHash } = generate('ops');
   const id = ulid();
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
@@ -99,7 +100,8 @@ export async function createSession(partnerId: string): Promise<IssuedSession> {
     id,
     prefix,
     tokenHash,
-    partnerId,
+    principalKind: params.principalKind,
+    principalId: params.principalId,
     expiresAt,
   });
   return { plaintext, id, expiresAt };
@@ -117,13 +119,19 @@ export async function resolveSession(plaintext: string): Promise<SessionRow | nu
     .first();
   if (!row) return null;
 
-  // Extra belt-and-braces: if the partner was revoked but somehow a
-  // session slipped through (e.g. revoke transaction failed mid-flight),
-  // reject here too.
-  const partner = (await db('Partner').where({ id: row.partnerId }).first()) as
-    | { revokedAt: Date | null }
-    | undefined;
-  if (!partner || partner.revokedAt) return null;
+  // Defense-in-depth: if the principal was revoked but somehow a session
+  // slipped through, reject here too.
+  if (row.principalKind === 'partner') {
+    const partner = (await db('Partner').where({ id: row.principalId }).first()) as
+      | { revokedAt: Date | null }
+      | undefined;
+    if (!partner || partner.revokedAt) return null;
+  } else if (row.principalKind === 'admin') {
+    const admin = (await db('Admin').where({ id: row.principalId }).first()) as
+      | { revokedAt: Date | null; activatedAt: Date | null }
+      | undefined;
+    if (!admin || admin.revokedAt || !admin.activatedAt) return null;
+  }
 
   void db<SessionRow>(TABLES.Session).where({ id: row.id }).update({ lastSeenAt: now });
   return row;

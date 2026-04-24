@@ -59,4 +59,5 @@ export interface Principal {
   source?: string;
   partnerId?: string;
   partner?: { id: string; name: string; email: string; stripeConnected: boolean };
+  admin?: { id: string; name: string; email: string };
 }

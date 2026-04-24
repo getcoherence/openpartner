@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { TABLES, type PartnerRow } from '@openpartner/db';
+import { TABLES, type AdminRow, type PartnerRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { requireAuth } from '../auth.js';
 
@@ -30,6 +30,14 @@ authRouter.get('/auth/introspect', requireAuth, async (req, res) => {
 authRouter.get('/auth/whoami', requireAuth, async (req, res) => {
   const p = req.principal!;
   if (p.role === 'admin') {
+    if (p.source === 'session') {
+      const admin = await db<AdminRow>(TABLES.Admin).where({ id: p.adminId }).first();
+      return res.json({
+        role: 'admin',
+        source: 'session',
+        admin: admin ? { id: admin.id, email: admin.email, name: admin.name } : null,
+      });
+    }
     return res.json({ role: 'admin', source: p.source });
   }
   if (p.role === 'partner') {

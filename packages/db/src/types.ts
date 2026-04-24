@@ -36,7 +36,13 @@ export interface PartnerRow {
   revokeReason: string | null;
 }
 
-export type MagicLinkPurpose = 'partner_invite' | 'partner_signin';
+export type MagicLinkPurpose =
+  | 'partner_invite'
+  | 'partner_signin'
+  | 'admin_invite'
+  | 'admin_signin';
+
+export type PrincipalKind = 'partner' | 'admin';
 
 export interface MagicLinkTokenRow {
   id: string;
@@ -44,7 +50,8 @@ export interface MagicLinkTokenRow {
   tokenHash: string;
   email: string;
   purpose: MagicLinkPurpose;
-  partnerId: string;
+  principalKind: PrincipalKind;
+  principalId: string;
   expiresAt: Date;
   consumedAt: Date | null;
   createdAt: Date;
@@ -54,11 +61,24 @@ export interface SessionRow {
   id: string;
   prefix: string;
   tokenHash: string;
-  partnerId: string;
+  principalKind: PrincipalKind;
+  principalId: string;
   expiresAt: Date;
   createdAt: Date;
   lastSeenAt: Date | null;
   revokedAt: Date | null;
+}
+
+export interface AdminRow {
+  id: string;
+  email: string;
+  name: string;
+  activatedAt: Date | null;
+  revokedAt: Date | null;
+  revokeReason: string | null;
+  lastSignInAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface CampaignRow {

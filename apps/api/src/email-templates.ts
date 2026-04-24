@@ -45,6 +45,36 @@ export function partnerSigninEmail(name: string, link: string): EmailTemplate {
   return { subject, text, html: wrap(text, link, 'Sign in') };
 }
 
+export function adminInviteEmail(name: string, link: string, programName: string | null): EmailTemplate {
+  const brand = programName || 'your partner program';
+  const subject = `You've been invited to administer ${brand}`;
+  const text = [
+    `Hi ${name},`,
+    ``,
+    `You've been invited as an administrator for ${brand}. Click the link below`,
+    `to accept the invitation and sign in:`,
+    ``,
+    link,
+    ``,
+    `This link is good for 15 minutes.`,
+  ].join('\n');
+  return { subject, text, html: wrap(text, link, 'Accept invite') };
+}
+
+export function adminSigninEmail(name: string, link: string): EmailTemplate {
+  const subject = `Your admin dashboard sign-in link`;
+  const text = [
+    `Hi ${name},`,
+    ``,
+    `Click the link below to sign in:`,
+    ``,
+    link,
+    ``,
+    `This link is good for 15 minutes. If you didn't ask for it, ignore this email.`,
+  ].join('\n');
+  return { subject, text, html: wrap(text, link, 'Sign in') };
+}
+
 export function partnerRevokedEmail(name: string, reason: string | null): EmailTemplate {
   const subject = `Your partner account has been suspended`;
   const text = [

@@ -46,7 +46,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
     .returning('*');
 
   if (sendInvite) {
-    const issued = await issueMagicLink({ email, purpose: 'partner_invite', partnerId: id });
+    const issued = await issueMagicLink({ email, purpose: 'partner_invite', principalKind: 'partner', principalId: id });
     const tmpl = partnerInviteEmail(body.data.name, buildMagicLinkUrl(issued.plaintext));
     await getMailer().send({
       to: email,
@@ -71,7 +71,7 @@ partnersRouter.post('/partners/:id/invite', requireAuth, requireAdmin, async (re
   if (!partner) return res.status(404).json({ error: 'not_found' });
   if (partner.activatedAt) return res.status(409).json({ error: 'already_activated' });
 
-  const issued = await issueMagicLink({ email: partner.email, purpose: 'partner_invite', partnerId: partner.id });
+  const issued = await issueMagicLink({ email: partner.email, purpose: 'partner_invite', principalKind: 'partner', principalId: partner.id });
   const tmpl = partnerInviteEmail(partner.name, buildMagicLinkUrl(issued.plaintext));
   await getMailer().send({
     to: partner.email,
@@ -113,7 +113,7 @@ partnersRouter.post('/partners/:id/revoke', requireAuth, requireAdmin, async (re
       .where({ id: partner.id })
       .update({ revokedAt: now, revokeReason: reason, updatedAt: now });
     await trx<SessionRow>(TABLES.Session)
-      .where({ partnerId: partner.id })
+      .where({ principalKind: 'partner', principalId: partner.id })
       .whereNull('revokedAt')
       .update({ revokedAt: now });
   });
