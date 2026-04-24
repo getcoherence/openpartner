@@ -246,6 +246,55 @@ describe.skipIf(skipIntegration)('magic-link auth', () => {
     expect(after.body.messages).toHaveLength(0);
   });
 
+  it('vendor signin with an email tied to multiple vendors prefers the active one', async () => {
+    // Regression for ultrareview #20: before the email column existed,
+    // findVendorByEmail walked magic-link history and returned the most
+    // recent vendor_signup's slug — wrong when two vendors shared an
+    // email. Now it reads NetworkVendor.email directly, preferring
+    // active status over pending.
+    const { ulid } = await import('ulid');
+    const sharedEmail = 'dup@vendor.test';
+    // Seed two vendors directly — save the cost of the full signup flow.
+    const older = ulid();
+    const newer = ulid();
+    await db(TABLES.NetworkVendor).insert([
+      {
+        id: older,
+        name: 'Older',
+        slug: `dup-older-${older}`,
+        email: sharedEmail,
+        instanceUrl: 'https://older.example',
+        instanceKeyCiphertext: 'ct',
+        instanceKeyPrefix: 'prefix__',
+        status: 'pending',
+        createdAt: new Date(Date.now() - 10_000),
+      },
+      {
+        id: newer,
+        name: 'Newer',
+        slug: `dup-newer-${newer}`,
+        email: sharedEmail,
+        instanceUrl: 'https://newer.example',
+        instanceKeyCiphertext: 'ct',
+        instanceKeyPrefix: 'prefix__',
+        status: 'active',
+        createdAt: new Date(),
+      },
+    ]);
+
+    await db(TABLES.DevMessage).del();
+    await request(app).post('/auth/signin').send({ email: sharedEmail });
+    const msgs = (await request(app).get('/dev/mailbox').set('Authorization', `Bearer ${ADMIN_KEY}`)).body
+      .messages as Array<{ metadata?: Record<string, unknown>; body: string }>;
+    const signinMsg = msgs.find((m) => m.metadata?.purpose === 'vendor_signin');
+    expect(signinMsg).toBeDefined();
+
+    const verify = await request(app).post('/auth/magic/verify').send({ token: extractToken(signinMsg!.body) });
+    expect(verify.status).toBe(200);
+    // The ACTIVE vendor should win, not the older pending one.
+    expect(verify.body.vendor.id).toBe(newer);
+  });
+
   it('signout clears the session cookie', async () => {
     await request(app)
       .post('/auth/creator/signup')

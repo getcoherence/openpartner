@@ -228,6 +228,61 @@ describe.skipIf(skipIntegration)('openpartner network', () => {
     expect(second.status).toBe(409);
   });
 
+  it('concurrent /approve calls do not both federate — one wins, the other 409s', async () => {
+    // Regression for the ultrareview race. Both calls see status='pending'
+    // on the SELECT; the conditional UPDATE pending→approving admits one.
+    const campaignRes = await request(app)
+      .post('/campaigns')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Race', commissionRule: { type: 'percent', value: 15 } });
+    const vendorCampaignId = campaignRes.body.id;
+
+    const vendorRes = await request(app)
+      .post('/network/vendors')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'RaceVendor', slug: `race-${Date.now()}`, instanceUrl, instanceKey: ADMIN_KEY });
+    const vendorApiKey = vendorRes.body.apiKey;
+    await request(app).post(`/network/vendors/${vendorRes.body.vendor.id}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    const offeringRes = await request(app)
+      .post('/network/offerings')
+      .set('Authorization', `Bearer ${vendorApiKey}`)
+      .send({
+        title: 'RaceOffer',
+        productUrl: 'https://race.example',
+        vendorCampaignId,
+        terms: { payout: { type: 'one_time_fee', amount: 25 }, cookieWindowDays: 30 },
+        published: true,
+      });
+    const offeringId = offeringRes.body.offering.id;
+
+    const creatorRes = await request(app)
+      .post('/network/creators')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Rico', handle: `rico_${Date.now()}`, email: `rico${Date.now()}@e.com` });
+    const creatorKey = creatorRes.body.apiKey;
+    await request(app).post(`/network/creators/${creatorRes.body.creator.id}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    const reqRes = await request(app)
+      .post('/network/requests')
+      .set('Authorization', `Bearer ${creatorKey}`)
+      .send({ offeringId });
+    const reqId = reqRes.body.request.id;
+
+    // Fire two approvals simultaneously.
+    const [a, b] = await Promise.all([
+      request(app).post(`/network/requests/${reqId}/approve`).set('Authorization', `Bearer ${vendorApiKey}`),
+      request(app).post(`/network/requests/${reqId}/approve`).set('Authorization', `Bearer ${vendorApiKey}`),
+    ]);
+    const statuses = [a.status, b.status].sort();
+    // One succeeds (200), the other loses the CAS race (409).
+    expect(statuses).toEqual([200, 409]);
+
+    // And we only federated ONE Partnership for this request.
+    const partnerships = await db(TABLES.Partnership).where({ requestId: reqId });
+    expect(partnerships).toHaveLength(1);
+  });
+
   it('creator-chosen promo code becomes the share-link slug', async () => {
     const campaign = (await request(app)
       .post('/campaigns')
