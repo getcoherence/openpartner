@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Users, KeyRound, Copy, Check } from 'lucide-react';
+import { Plus, Users } from 'lucide-react';
 import { api } from '../api.js';
 import { theme } from '../theme.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, StatusPill, Table, formatDate } from '../ui.js';
@@ -18,7 +18,6 @@ interface Partner {
 export function AdminPartners() {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
-  const [issueKeyFor, setIssueKeyFor] = useState<Partner | null>(null);
 
   const partners = useQuery({ queryKey: ['partners'], queryFn: () => api<{ partners: Partner[] }>('/partners') });
 
@@ -43,7 +42,6 @@ export function AdminPartners() {
           }}
         />
       )}
-      {issueKeyFor && <IssueKey partner={issueKeyFor} onClose={() => setIssueKeyFor(null)} />}
 
       {partners.isLoading ? (
         <Card>Loading…</Card>
@@ -71,13 +69,6 @@ export function AdminPartners() {
                   <ResendInvite partnerId={p.id} />
                 </>
               )}
-              <span style={{ color: theme.border }}>·</span>
-              <button
-                onClick={() => setIssueKeyFor(p)}
-                style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accent, cursor: 'pointer' }}
-              >
-                Issue key
-              </button>
             </div>,
           ])}
         />
@@ -141,69 +132,3 @@ function ResendInvite({ partnerId }: { partnerId: string }) {
   );
 }
 
-function IssueKey({ partner, onClose }: { partner: Partner; onClose: () => void }) {
-  const [label, setLabel] = useState('');
-  const [copied, setCopied] = useState(false);
-  const mut = useMutation({
-    mutationFn: () =>
-      api<{ id: string; plaintext: string }>(`/partners/${partner.id}/api-keys`, {
-        method: 'POST',
-        body: { label },
-      }),
-  });
-
-  return (
-    <Card style={{ marginBottom: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-        <KeyRound size={18} color={theme.accent} />
-        <div style={{ fontSize: 15, fontWeight: 500 }}>Issue API key for {partner.name}</div>
-      </div>
-      <ErrorBanner error={mut.error} />
-      {mut.data ? (
-        <>
-          <div style={{ marginBottom: 10, color: theme.textMuted, fontSize: 13 }}>
-            Copy this key now — it won't be shown again.
-          </div>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              background: theme.warnSoft,
-              border: `1px solid ${theme.warn}55`,
-              padding: '10px 12px',
-              borderRadius: theme.radiusSm,
-              marginBottom: 12,
-            }}
-          >
-            <code style={{ flex: 1, fontSize: 13, color: theme.text, wordBreak: 'break-all' }}>{mut.data.plaintext}</code>
-            <Button
-              size="sm"
-              variant="secondary"
-              icon={copied ? <Check size={14} /> : <Copy size={14} />}
-              onClick={() => {
-                navigator.clipboard.writeText(mut.data!.plaintext);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1500);
-              }}
-            >
-              {copied ? 'Copied' : 'Copy'}
-            </Button>
-          </div>
-          <Button onClick={onClose}>Done</Button>
-        </>
-      ) : (
-        <>
-          <Label>Label (optional)</Label>
-          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. production server" />
-          <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-            <Button onClick={() => mut.mutate()} disabled={mut.isPending}>
-              {mut.isPending ? 'Issuing…' : 'Issue key'}
-            </Button>
-            <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          </div>
-        </>
-      )}
-    </Card>
-  );
-}

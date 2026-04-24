@@ -23,11 +23,12 @@ interface Campaign {
 export function LinksPage({ principal }: { principal: Principal }) {
   const queryPartnerId = new URLSearchParams(window.location.search).get('partnerId');
   const partnerId = principal.partnerId ?? queryPartnerId;
+  const isAdmin = principal.role === 'admin';
 
-  if (principal.role === 'admin' && !partnerId) {
+  if (isAdmin && !partnerId) {
     return <AdminLinksHub />;
   }
-  return <PartnerLinks partnerId={partnerId!} />;
+  return <PartnerLinks partnerId={partnerId!} readOnly={isAdmin} />;
 }
 
 function AdminLinksHub() {
@@ -37,12 +38,12 @@ function AdminLinksHub() {
   });
 
   return (
-    <Page title="Links" subtitle="Pick a partner to see or create their links.">
+    <Page title="Links" subtitle="Pick a partner to see the links they've created.">
       <ErrorBanner error={error} />
       {isLoading ? (
         <Card>Loading…</Card>
       ) : data?.partners.length === 0 ? (
-        <EmptyState title="No partners yet" hint="Add a partner to start issuing links." icon={<Link2 size={28} strokeWidth={1.25} />} />
+        <EmptyState title="No partners yet" hint="Invite a partner — they create their own links." icon={<Link2 size={28} strokeWidth={1.25} />} />
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
           {data?.partners.map((p) => (
@@ -76,7 +77,7 @@ function AdminLinksHub() {
   );
 }
 
-function PartnerLinks({ partnerId }: { partnerId: string }) {
+function PartnerLinks({ partnerId, readOnly }: { partnerId: string; readOnly: boolean }) {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
 
@@ -88,20 +89,27 @@ function PartnerLinks({ partnerId }: { partnerId: string }) {
   const campaigns = useQuery({
     queryKey: ['campaigns'],
     queryFn: () => api<{ campaigns: Campaign[] }>('/campaigns').catch(() => ({ campaigns: [] })),
+    enabled: !readOnly,
   });
 
   return (
     <Page
       title="Links"
-      subtitle="Short links the router resolves into attributed clicks."
+      subtitle={
+        readOnly
+          ? "Links this partner has created. Partners manage their own; admins view only."
+          : "Your share links — the router turns /r/<key> into an attributed click."
+      }
       actions={
-        <Button icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
-          New link
-        </Button>
+        readOnly ? undefined : (
+          <Button icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
+            New link
+          </Button>
+        )
       }
     >
       <ErrorBanner error={links.error} />
-      {showCreate && (
+      {showCreate && !readOnly && (
         <CreateLink
           partnerId={partnerId}
           campaigns={campaigns.data?.campaigns ?? []}
@@ -115,7 +123,11 @@ function PartnerLinks({ partnerId }: { partnerId: string }) {
       {links.isLoading ? (
         <Card>Loading…</Card>
       ) : (links.data?.links ?? []).length === 0 ? (
-        <EmptyState title="No links yet" hint="Create one to start capturing clicks." icon={<Link2 size={28} strokeWidth={1.25} />} />
+        <EmptyState
+          title="No links yet"
+          hint={readOnly ? "This partner hasn't created any links yet." : 'Create one to start capturing clicks.'}
+          icon={<Link2 size={28} strokeWidth={1.25} />}
+        />
       ) : (
         <Table
           columns={['Key', 'Destination', 'Campaign', 'Created']}
