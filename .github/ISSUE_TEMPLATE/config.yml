@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: mailto:security@getcoherence.io
+    about: Please do not file public issues for security problems — email us instead.
+  - name: Question / discussion
+    url: https://github.com/getcoherence/openpartner/discussions
+    about: General questions and design discussions go in Discussions, not Issues.

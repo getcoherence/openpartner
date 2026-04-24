@@ -70,6 +70,10 @@ Event-sourced by design. Raw data is immutable, attribution is a view — so you
 - `packages/sdk` — customer-embedded client SDK (`@openpartner/sdk`)
 - `packages/db` — shared Knex migrations and TypeScript types
 
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for dev setup, PR expectations, and the short list of things that don't get merged. Code of conduct is the standard Contributor Covenant — [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).
+
 ## License
 
 MIT. See [LICENSE](./LICENSE).

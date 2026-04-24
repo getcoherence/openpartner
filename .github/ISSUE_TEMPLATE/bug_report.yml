@@ -1,0 +1,61 @@
+name: Bug report
+description: Something broken or behaving wrong
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, what actually happened?
+      placeholder: |
+        Steps to reproduce…
+        Expected…
+        Actual…
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: API / router logs, browser console, stack traces. Redact anything sensitive.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Git SHA or release tag you're running.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Self-hosted (docker-compose)
+        - Self-hosted (DO App Platform)
+        - Self-hosted (other)
+        - Hosted (flat)
+        - Hosted (revshare)
+        - Local dev
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where does this happen?
+      multiple: true
+      options:
+        - apps/api
+        - apps/router
+        - apps/portal
+        - packages/sdk
+        - packages/db
+        - docs
+        - other
+    validations:
+      required: true
