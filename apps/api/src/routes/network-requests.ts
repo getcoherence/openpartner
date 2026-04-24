@@ -10,6 +10,7 @@ import {
 } from '@openpartner/db';
 import { db } from '../db.js';
 import { requireAuth, requireNetworkCreator, requireNetworkVendor } from '../auth.js';
+import { dispatchEvent } from '../webhook-dispatcher.js';
 import { z } from 'zod';
 import { promoCodeSchema, requestCreateSchema, requestDecideSchema } from '../network/validation.js';
 
@@ -180,6 +181,18 @@ networkRequestsRouter.post('/network/requests/:id/approve', requireAuth, require
   });
 
   const partnership = await db<PartnershipRow>(TABLES.Partnership).where({ id: partnershipId }).first();
+  if (partnership) {
+    dispatchEvent('partnership.approved', {
+      partnershipId: partnership.id,
+      requestId: reqRow.id,
+      offeringId: partnership.offeringId,
+      vendorId: partnership.vendorId,
+      creatorId: partnership.creatorId,
+      vendorPartnerId: partnership.vendorPartnerId,
+      vendorLinkKey: partnership.vendorLinkKey,
+      publicShareUrl: partnership.publicShareUrl,
+    });
+  }
   res.json({ partnership, federated });
 });
 

@@ -290,6 +290,46 @@ export interface DevMessageRow {
   createdAt: Date;
 }
 
+// ---- Outbound webhooks ----
+
+export type WebhookEventType =
+  | 'attribution.created'
+  | 'commission.approved'
+  | 'commission.paid'
+  | 'commission.reversed'
+  | 'payout.created'
+  | 'partnership.approved'
+  | (string & {});
+
+export interface WebhookEndpointRow {
+  id: string;
+  url: string;
+  secretPrefix: string;
+  secret: string;
+  events: WebhookEventType[];
+  active: boolean;
+  label: string | null;
+  createdAt: Date;
+  lastUsedAt: Date | null;
+}
+
+export type WebhookDeliveryStatus = 'pending' | 'delivered' | 'failed';
+
+export interface WebhookDeliveryRow {
+  id: string;
+  endpointId: string;
+  eventId: string;
+  eventType: WebhookEventType;
+  payload: unknown;
+  status: WebhookDeliveryStatus;
+  httpStatus: number | null;
+  error: string | null;
+  attempts: number;
+  createdAt: Date;
+  deliveredAt: Date | null;
+  lastAttemptAt: Date | null;
+}
+
 export interface PartnershipRow {
   id: string;
   requestId: string;

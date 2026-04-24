@@ -19,6 +19,7 @@ import {
   Megaphone,
   Mail,
   UserCog,
+  Webhook,
 } from 'lucide-react';
 import { clearApiKey, getApiKey, api, type Principal } from './api.js';
 import { theme } from './theme.js';
@@ -43,6 +44,7 @@ import { SignupPage } from './pages/auth/Signup.js';
 import { VendorSignupPage } from './pages/auth/VendorSignup.js';
 import { MagicLandingPage } from './pages/auth/MagicLanding.js';
 import { DevMailboxPage } from './pages/admin/DevMailbox.js';
+import { WebhooksPage } from './pages/admin/Webhooks.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
 import { OfferingDetailPage } from './pages/network/OfferingDetail.js';
 import { CreatorProfilePage } from './pages/network/CreatorProfile.js';
@@ -103,6 +105,7 @@ function Shell() {
               <Route path="admin/export" element={<AdminExport />} />
               <Route path="admin/dev-mailbox" element={<DevMailboxPage />} />
               <Route path="admin/fraud-review" element={<FraudReviewPage />} />
+              <Route path="admin/webhooks" element={<WebhooksPage />} />
               <Route path="network/vendors" element={<AdminNetworkVendors />} />
               <Route path="network/creators" element={<AdminNetworkCreators />} />
             </>
@@ -167,6 +170,7 @@ function Sidebar({ principal }: { principal: Principal }) {
               <NavItem to="/admin/review" icon={<ShieldCheck size={16} />}>Review queue</NavItem>
               <NavItem to="/admin/export" icon={<Download size={16} />}>Export / import</NavItem>
               <NavItem to="/admin/fraud-review" icon={<ShieldCheck size={16} />}>Fraud review</NavItem>
+              <NavItem to="/admin/webhooks" icon={<Webhook size={16} />}>Webhooks</NavItem>
               <NavItem to="/admin/dev-mailbox" icon={<Mail size={16} />}>Dev mailbox</NavItem>
             </NavSection>
             <NavSection title="Network">

@@ -26,6 +26,7 @@ import {
 } from '@openpartner/db';
 import { db } from './db.js';
 import { REVSHARE_FEE_BPS, getMode, requireStripe, type OpenPartnerMode } from './stripe.js';
+import { dispatchEvent } from './webhook-dispatcher.js';
 
 export interface PayoutRunResult {
   runId: string;
@@ -85,6 +86,28 @@ export async function runPayouts(): Promise<PayoutRunResult> {
         )
         .update({ status: 'paid', paidAt: new Date(), payoutId });
     });
+
+    // Fire webhook events AFTER the transaction commits. One
+    // commission.paid per commission (subscribers often want per-row
+    // granularity for accounting) + one payout.created for the batch.
+    dispatchEvent('payout.created', {
+      payoutId,
+      partnerId: partner.id,
+      amount: amount.toFixed(2),
+      currency: group.currency,
+      method,
+      commissionIds: commissions.map((c) => c.id),
+      platformFee: platformFee || undefined,
+    });
+    for (const c of commissions) {
+      dispatchEvent('commission.paid', {
+        commissionId: c.id,
+        partnerId: c.partnerId,
+        amount: c.amount,
+        currency: c.currency,
+        payoutId,
+      });
+    }
 
     if (method === 'stripe_connect' && partner.stripeConnectAccountId) {
       try {

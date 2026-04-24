@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { TABLES, type CommissionRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
+import { dispatchEvent } from '../webhook-dispatcher.js';
 
 const listQuerySchema = z.object({
   status: z.enum(['accrued', 'approved', 'paid', 'reversed']).optional(),
@@ -62,7 +63,15 @@ commissionsRouter.post('/commissions/:id/approve', requireAuth, requireAdmin, as
   if (updated.length === 0) {
     return res.status(409).json({ error: 'not_approvable', detail: 'must be in accrued state' });
   }
-  res.json({ commission: updated[0] });
+  const c = updated[0]!;
+  dispatchEvent('commission.approved', {
+    commissionId: c.id,
+    partnerId: c.partnerId,
+    amount: c.amount,
+    currency: c.currency,
+    attributionId: c.attributionId,
+  });
+  res.json({ commission: c });
 });
 
 commissionsRouter.post('/commissions/:id/reverse', requireAuth, requireAdmin, async (req, res) => {
@@ -74,5 +83,12 @@ commissionsRouter.post('/commissions/:id/reverse', requireAuth, requireAdmin, as
   if (updated.length === 0) {
     return res.status(409).json({ error: 'not_reversible', detail: 'only accrued or approved commissions' });
   }
-  res.json({ commission: updated[0] });
+  const c = updated[0]!;
+  dispatchEvent('commission.reversed', {
+    commissionId: c.id,
+    partnerId: c.partnerId,
+    amount: c.amount,
+    currency: c.currency,
+  });
+  res.json({ commission: c });
 });

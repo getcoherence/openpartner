@@ -33,6 +33,7 @@ import {
   type EventRow,
   type IdentityRow,
 } from '@openpartner/db';
+import { dispatchEvent } from './webhook-dispatcher.js';
 
 export interface AttributeResult {
   status: 'attributed' | 'no_identity' | 'no_click' | 'outside_window' | 'already_attributed';
@@ -116,6 +117,20 @@ export async function attributeEvent(
       status: 'accrued',
     });
     results.push({ clickId: click.id, partnerId: click.partnerId, weight, attributionId, commissionId });
+    dispatchEvent('attribution.created', {
+      attributionId,
+      eventId: event.id,
+      partnerId: click.partnerId,
+      campaignId: click.campaignId,
+      clickId: click.id,
+      model,
+      weight,
+      eventType: event.type,
+      eventValue: event.value,
+      commissionId,
+      commissionAmount: amount.toFixed(2),
+      commissionCurrency: event.currency ?? 'USD',
+    });
   }
 
   if (allDup) return { status: 'already_attributed', model };

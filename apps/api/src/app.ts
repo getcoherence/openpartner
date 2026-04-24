@@ -24,6 +24,7 @@ import { adminOverviewRouter } from './routes/admin-overview.js';
 import { magicLinkRouter } from './routes/magic-link.js';
 import { funnelRouter } from './routes/funnel.js';
 import { fraudReviewRouter } from './routes/fraud-review.js';
+import { webhooksRouter } from './routes/webhooks.js';
 import { networkVendorsRouter } from './routes/network-vendors.js';
 import { networkCreatorsRouter } from './routes/network-creators.js';
 import { networkOfferingsRouter } from './routes/network-offerings.js';
@@ -61,6 +62,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(magicLinkRouter);
   app.use(funnelRouter);
   app.use(fraudReviewRouter);
+  app.use(webhooksRouter);
   app.use(identifyRouter);
   app.use(eventsRouter);
   app.use(partnersRouter);

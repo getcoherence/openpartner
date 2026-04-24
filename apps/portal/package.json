@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Partner dashboard. Links, clicks, attributed revenue, commissions, payouts.",
   "scripts": {
-    "dev": "vite --port 5173",
+    "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
