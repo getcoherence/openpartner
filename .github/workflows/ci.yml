@@ -51,6 +51,12 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # @openpartner/db is consumed via its "types": "dist/index.d.ts"
+      # field, so downstream typechecks need its build output to exist.
+      # Also produces the migration bundle the Migrate step runs.
+      - name: Build @openpartner/db
+        run: pnpm --filter @openpartner/db build
+
       - name: Migrate
         run: pnpm migrate
 
