@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import helmet from 'helmet';
 import pinoHttp from 'pino-http';
+import { ulid } from 'ulid';
 
 import { stripeWebhookRouter } from './routes/stripe-webhook.js';
 import { identifyRouter } from './routes/identify.js';
@@ -30,6 +31,7 @@ import { networkCreatorsRouter } from './routes/network-creators.js';
 import { networkOfferingsRouter } from './routes/network-offerings.js';
 import { networkRequestsRouter } from './routes/network-requests.js';
 import { networkEarningsRouter } from './routes/network-earnings.js';
+import { metricsRouter } from './routes/metrics.js';
 
 export function createApp(options: { enableLogger?: boolean } = {}) {
   const app = express();
@@ -52,7 +54,26 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
     }),
   );
   app.use(cookieParser());
-  if (options.enableLogger !== false) app.use(pinoHttp());
+
+  // Request correlation: accept an inbound X-Request-Id for callers that
+  // want to correlate across services, generate a ULID otherwise, and
+  // echo it back as X-Request-Id so a client can paste it into a support
+  // ticket. pino-http picks up req.id automatically.
+  app.use((req, res, next) => {
+    const inbound = req.header('x-request-id');
+    const reqId = inbound && inbound.length <= 128 ? inbound : ulid();
+    (req as Request & { id?: string }).id = reqId;
+    res.setHeader('X-Request-Id', reqId);
+    next();
+  });
+
+  if (options.enableLogger !== false) {
+    app.use(
+      pinoHttp({
+        genReqId: (req) => (req as Request & { id?: string }).id ?? ulid(),
+      }),
+    );
+  }
 
   // Stripe webhook must see the raw body for signature verification — mount it
   // BEFORE express.json() so its own raw-body parser takes effect.
@@ -87,6 +108,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(networkOfferingsRouter);
   app.use(networkRequestsRouter);
   app.use(networkEarningsRouter);
+  app.use(metricsRouter);
 
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
     req.log?.error({ err }, 'request_failed');
