@@ -7,7 +7,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.migrate.json && node -e \"require('fs').writeFileSync('dist-migrate/package.json', JSON.stringify({type:'commonjs'}))\"",
     "migrate": "tsx scripts/migrate.ts latest",
     "migrate:rollback": "tsx scripts/migrate.ts rollback",
     "migrate:make": "tsx scripts/migrate.ts make",

@@ -1,5 +1,6 @@
 node_modules
 dist
+dist-migrate
 build
 .turbo
 .cache

@@ -1,0 +1,164 @@
+# DigitalOcean App Platform spec for OpenPartner.
+#
+# Three deployable components + a managed Postgres, stitched together by
+# App Platform's ingress rules so the whole app lives on one domain:
+#
+#   https://<your-app>.ondigitalocean.app/         → portal (static SPA)
+#   https://<your-app>.ondigitalocean.app/api/...  → api   (Node/Express)
+#   router runs on a separate component; wire a subdomain (e.g.
+#   go.yourdomain.com) to it via the domains section below.
+#
+# First-time setup:
+#   1. Fork / push this repo to GitHub.
+#   2. In DO App Platform: Create App → import from GitHub → point at
+#      this repo. App Platform will auto-detect .do/app.yaml.
+#   3. Set app-level secrets (see `envs` with type: SECRET below).
+#   4. Deploy. The API's entrypoint runs migrations on first boot.
+#
+# Or via doctl:
+#   doctl apps create --spec .do/app.yaml
+#   doctl apps update <APP_ID> --spec .do/app.yaml    # subsequent updates
+
+name: openpartner
+region: nyc
+
+# Managed Postgres. For production, bump to a paid plan and upgrade the
+# `production` flag. The connection string is injected into services
+# that reference ${openpartner-db.DATABASE_URL}.
+databases:
+  - name: openpartner-db
+    engine: PG
+    version: '16'
+    production: false
+    cluster_name: openpartner-db
+    db_name: openpartner
+    db_user: openpartner
+
+services:
+  # Core API. Runs migrations on first boot via docker-entrypoint.sh.
+  - name: api
+    dockerfile_path: apps/api/Dockerfile
+    source_dir: /
+    http_port: 4601
+    instance_count: 1
+    instance_size_slug: basic-xs
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 30
+      period_seconds: 30
+      timeout_seconds: 5
+      failure_threshold: 3
+    envs:
+      - key: NODE_ENV
+        value: production
+      - key: API_PORT
+        value: '4601'
+      - key: DATABASE_URL
+        value: ${openpartner-db.DATABASE_URL}
+      - key: OPENPARTNER_MODE
+        value: flat
+      - key: MAIL_TRANSPORT
+        value: postmark
+      - key: POSTMARK_MESSAGE_STREAM
+        value: outbound
+      - key: ADMIN_API_KEY
+        type: SECRET
+        scope: RUN_TIME
+      - key: NETWORK_ENCRYPTION_KEY
+        type: SECRET
+        scope: RUN_TIME
+      - key: POSTMARK_SERVER_TOKEN
+        type: SECRET
+        scope: RUN_TIME
+      - key: MAIL_FROM
+        type: SECRET
+        scope: RUN_TIME
+      - key: PORTAL_URL
+        type: SECRET
+        scope: RUN_TIME
+      - key: STRIPE_SECRET_KEY
+        type: SECRET
+        scope: RUN_TIME
+      - key: STRIPE_WEBHOOK_SECRET
+        type: SECRET
+        scope: RUN_TIME
+      - key: STRIPE_FLAT_PRICE_ID
+        type: SECRET
+        scope: RUN_TIME
+
+  # Click router. Separate component so we can point a marketing apex
+  # (go.yourdomain.com) at it without routing through the portal's
+  # ingress.
+  - name: router
+    dockerfile_path: apps/router/Dockerfile
+    source_dir: /
+    http_port: 4701
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 15
+      period_seconds: 30
+      timeout_seconds: 5
+      failure_threshold: 3
+    envs:
+      - key: NODE_ENV
+        value: production
+      - key: ROUTER_PORT
+        value: '4701'
+      - key: DATABASE_URL
+        value: ${openpartner-db.DATABASE_URL}
+      - key: COOKIE_DOMAIN
+        type: SECRET
+        scope: RUN_TIME
+      - key: VELOCITY_MAX
+        value: '20'
+      - key: VELOCITY_WINDOW_MS
+        value: '60000'
+
+# SPA, served by App Platform's CDN. The build runs with the monorepo's
+# pnpm install; we only need to produce apps/portal/dist. /api proxying
+# is handled by the ingress rules below, not by the portal container.
+static_sites:
+  - name: portal
+    source_dir: /
+    build_command: |
+      corepack enable
+      corepack prepare pnpm@9.11.0 --activate
+      pnpm install --frozen-lockfile
+      pnpm --filter @openpartner/db build
+      pnpm --filter @openpartner/portal build
+    output_dir: apps/portal/dist
+    catchall_document: index.html
+    envs:
+      - key: NODE_ENV
+        value: production
+
+# App-level routing. /api/* goes to the api service; everything else
+# falls through to the static portal. The router is addressed by its
+# own subdomain — see `domains` below.
+ingress:
+  rules:
+    - match:
+        path:
+          prefix: /api
+      component:
+        name: api
+        preserve_path_prefix: false
+    - match:
+        path:
+          prefix: /
+      component:
+        name: portal
+
+# Wire custom domains once the app is up. Set these in the App Platform
+# UI, or uncomment + fill below and `doctl apps update`.
+#
+# domains:
+#   - domain: partners.yourdomain.com
+#     type: PRIMARY
+#   - domain: go.yourdomain.com
+#     type: ALIAS
+#     minimum_tls_version: '1.2'
+#     # route go.yourdomain.com at the router component:
+#     zone: yourdomain.com

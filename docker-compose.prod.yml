@@ -1,0 +1,123 @@
+# OpenPartner production docker-compose.
+#
+# Spins up the full stack behind Caddy, which terminates TLS via Let's
+# Encrypt automatically. Three public hostnames — one each for the
+# portal, API, and router — plus an internal Postgres. Intended for
+# small self-hosted deployments; larger deployments should use managed
+# Postgres (RDS / Neon / Fly Postgres) and point DATABASE_URL at it.
+#
+# Required env on the host:
+#   OPENPARTNER_DOMAIN       e.g. example.com
+#   PORTAL_HOST              e.g. partners.example.com   (default: portal.$DOMAIN)
+#   API_HOST                 e.g. api.example.com        (default: api.$DOMAIN)
+#   ROUTER_HOST              e.g. go.example.com         (default: go.$DOMAIN)
+#   CADDY_EMAIL              for Let's Encrypt registration
+#   ADMIN_API_KEY            bootstrap admin key
+#   NETWORK_ENCRYPTION_KEY   64 hex chars (AES-256-GCM)
+#   POSTMARK_SERVER_TOKEN    if MAIL_TRANSPORT=postmark
+#   MAIL_FROM                if MAIL_TRANSPORT=postmark
+#
+# Usage:
+#   cp .env.example .env     # fill in the above
+#   docker compose -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.prod.yml logs -f api
+#
+# The first-boot API container runs migrations automatically.
+
+name: openpartner
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-openpartner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openpartner}
+      POSTGRES_DB: ${POSTGRES_DB:-openpartner}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER:-openpartner}']
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-openpartner}:${POSTGRES_PASSWORD:-openpartner}@postgres:5432/${POSTGRES_DB:-openpartner}
+      API_PORT: 4601
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
+      NETWORK_ENCRYPTION_KEY: ${NETWORK_ENCRYPTION_KEY}
+      OPENPARTNER_MODE: ${OPENPARTNER_MODE:-selfhost}
+      MAIL_TRANSPORT: ${MAIL_TRANSPORT:-dev}
+      POSTMARK_SERVER_TOKEN: ${POSTMARK_SERVER_TOKEN:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      POSTMARK_MESSAGE_STREAM: ${POSTMARK_MESSAGE_STREAM:-outbound}
+      PORTAL_URL: https://${PORTAL_HOST:-portal.${OPENPARTNER_DOMAIN}}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_FLAT_PRICE_ID: ${STRIPE_FLAT_PRICE_ID:-}
+    expose:
+      - '4601'
+
+  router:
+    build:
+      context: .
+      dockerfile: apps/router/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-openpartner}:${POSTGRES_PASSWORD:-openpartner}@postgres:5432/${POSTGRES_DB:-openpartner}
+      ROUTER_PORT: 4701
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-.${OPENPARTNER_DOMAIN}}
+      VELOCITY_MAX: ${VELOCITY_MAX:-20}
+      VELOCITY_WINDOW_MS: ${VELOCITY_WINDOW_MS:-60000}
+    expose:
+      - '4701'
+
+  portal:
+    build:
+      context: .
+      dockerfile: apps/portal/Dockerfile
+    restart: unless-stopped
+    environment:
+      API_UPSTREAM: api:4601
+    expose:
+      - '8080'
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+      - router
+      - portal
+    environment:
+      CADDY_EMAIL: ${CADDY_EMAIL}
+      PORTAL_HOST: ${PORTAL_HOST:-portal.${OPENPARTNER_DOMAIN}}
+      API_HOST: ${API_HOST:-api.${OPENPARTNER_DOMAIN}}
+      ROUTER_HOST: ${ROUTER_HOST:-go.${OPENPARTNER_DOMAIN}}
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp' # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

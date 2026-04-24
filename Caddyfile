@@ -1,0 +1,26 @@
+# Global: email used for Let's Encrypt registration.
+{
+    email {$CADDY_EMAIL}
+}
+
+# Partner portal — the UI.
+{$PORTAL_HOST} {
+    reverse_proxy portal:8080
+    encode zstd gzip
+}
+
+# API — JSON-over-HTTP. CORS handled in the app.
+{$API_HOST} {
+    reverse_proxy api:4601 {
+        header_up X-Real-IP {remote_host}
+    }
+    encode zstd gzip
+}
+
+# Router — the click redirect hot path. Short keepalives, no compression
+# on 302 responses (waste of cycles for ~0-byte bodies).
+{$ROUTER_HOST} {
+    reverse_proxy router:4701 {
+        header_up X-Real-IP {remote_host}
+    }
+}

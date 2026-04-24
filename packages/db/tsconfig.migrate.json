@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist-migrate",
+    "rootDir": ".",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "declaration": false,
+    "declarationMap": false
+  },
+  "include": [
+    "migrations/**/*.ts",
+    "scripts/migrate.ts",
+    "knexfile.ts"
+  ]
+}
