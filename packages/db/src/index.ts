@@ -41,4 +41,7 @@ export const TABLES = {
   Offering: 'Offering',
   PartnershipRequest: 'PartnershipRequest',
   Partnership: 'Partnership',
+  MagicLinkToken: 'MagicLinkToken',
+  Session: 'Session',
+  DevMessage: 'DevMessage',
 } as const;

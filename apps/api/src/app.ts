@@ -1,6 +1,7 @@
 import 'express-async-errors';
 import './env.js';
 import express, { type NextFunction, type Request, type Response } from 'express';
+import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import helmet from 'helmet';
 import pinoHttp from 'pino-http';
@@ -20,6 +21,7 @@ import { exportRouter } from './routes/export.js';
 import { billingRouter } from './routes/billing.js';
 import { authRouter } from './routes/auth.js';
 import { adminOverviewRouter } from './routes/admin-overview.js';
+import { magicLinkRouter } from './routes/magic-link.js';
 import { networkVendorsRouter } from './routes/network-vendors.js';
 import { networkCreatorsRouter } from './routes/network-creators.js';
 import { networkOfferingsRouter } from './routes/network-offerings.js';
@@ -31,7 +33,16 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   const MODE = process.env.OPENPARTNER_MODE ?? 'selfhost';
 
   app.use(helmet());
-  app.use(cors());
+  // CORS: credentials: true so the portal can send the op_session cookie
+  // cross-origin in dev (portal on :5173, api on :4601). In prod the
+  // portal proxy makes this same-origin anyway.
+  app.use(
+    cors({
+      origin: process.env.PORTAL_URL ?? true,
+      credentials: true,
+    }),
+  );
+  app.use(cookieParser());
   if (options.enableLogger !== false) app.use(pinoHttp());
 
   // Stripe webhook must see the raw body for signature verification — mount it
@@ -45,6 +56,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   });
 
   app.use(authRouter);
+  app.use(magicLinkRouter);
   app.use(identifyRouter);
   app.use(eventsRouter);
   app.use(partnersRouter);

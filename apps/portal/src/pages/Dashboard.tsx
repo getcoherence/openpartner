@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { Navigate } from 'react-router-dom';
 import { MousePointerClick, Receipt, Wallet, Users } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { theme } from '../theme.js';
@@ -17,7 +18,16 @@ interface PartnerDashboard {
 
 export function Dashboard({ principal }: { principal: Principal }) {
   if (principal.role === 'admin') return <AdminDashboard />;
-  return <PartnerDashboard partnerId={principal.partnerId!} name={principal.partner?.name ?? ''} />;
+  if (principal.role === 'partner') {
+    return <PartnerDashboard partnerId={principal.partnerId!} name={principal.partner?.name ?? ''} />;
+  }
+  // Network roles don't have a "dashboard" in the vendor-partner sense —
+  // their useful landing page is their Partnerships view, which already
+  // renders the earnings projection.
+  if (principal.role === 'network_creator' || principal.role === 'network_vendor') {
+    return <Navigate to="/network/partnerships" replace />;
+  }
+  return null;
 }
 
 function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string }) {

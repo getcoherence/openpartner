@@ -25,6 +25,7 @@ export async function api<T = unknown>(
   const res = await fetch(`/api${path}`, {
     ...init,
     headers,
+    credentials: 'include', // send op_session cookie on magic-link flow
     body: init.body === undefined
       ? undefined
       : typeof init.body === 'string'

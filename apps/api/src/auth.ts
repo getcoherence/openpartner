@@ -21,7 +21,7 @@ export type ApiKeyPrincipal =
   | { role: 'admin'; source: 'db'; apiKeyId: string }
   | { role: 'partner'; source: 'db'; apiKeyId: string; partnerId: string }
   | { role: 'network_vendor'; source: 'db'; apiKeyId: string; networkVendorId: string }
-  | { role: 'network_creator'; source: 'db'; apiKeyId: string; networkCreatorId: string }
+  | { role: 'network_creator'; source: 'db' | 'session'; apiKeyId?: string; sessionId?: string; networkCreatorId: string }
   | { role: 'scoped'; source: 'db'; apiKeyId: string; scopes: string[] };
 
 declare global {
@@ -78,7 +78,25 @@ export function requirePartnerOrAdmin(paramName: string = 'id') {
 
 async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
   const header = req.header('authorization');
-  if (!header) return null;
+  if (!header) {
+    // No Bearer — try the session cookie instead. This is what the
+    // portal uses after a creator signs in via magic link.
+    const cookie = (req as unknown as { cookies?: Record<string, string> }).cookies?.op_session;
+    if (!cookie) return null;
+    const { resolveSession } = await import('./auth-sessions.js');
+    const session = await resolveSession(cookie);
+    if (!session) return null;
+    if (session.principalKind === 'network_creator') {
+      return {
+        role: 'network_creator',
+        source: 'session',
+        sessionId: session.id,
+        networkCreatorId: session.principalId,
+      };
+    }
+    // Future: other session principal kinds. None implemented yet.
+    return null;
+  }
   const match = /^Bearer\s+(\S+)$/i.exec(header);
   if (!match) return null;
   const token = match[1]!;

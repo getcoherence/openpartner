@@ -11,15 +11,15 @@ import {
   ShieldCheck,
   Download,
   LogOut,
-  KeyRound,
   Compass,
   Package2,
   Inbox,
   Handshake,
   Store,
   Megaphone,
+  Mail,
 } from 'lucide-react';
-import { clearApiKey, getApiKey, setApiKey, api, type Principal, ApiError } from './api.js';
+import { clearApiKey, getApiKey, api, type Principal } from './api.js';
 import { theme } from './theme.js';
 import { Dashboard } from './pages/Dashboard.js';
 import { LinksPage } from './pages/Links.js';
@@ -37,6 +37,10 @@ import { VendorOfferingsPage } from './pages/network/VendorOfferings.js';
 import { VendorRequestsPage } from './pages/network/VendorRequests.js';
 import { AdminNetworkVendors } from './pages/network/AdminNetworkVendors.js';
 import { AdminNetworkCreators } from './pages/network/AdminNetworkCreators.js';
+import { LoginPage } from './pages/auth/Login.js';
+import { SignupPage } from './pages/auth/Signup.js';
+import { MagicLandingPage } from './pages/auth/MagicLanding.js';
+import { DevMailboxPage } from './pages/admin/DevMailbox.js';
 
 interface AuthState {
   loading: boolean;
@@ -48,6 +52,8 @@ export function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignupPage />} />
+        <Route path="/auth/magic" element={<MagicLandingPage />} />
         <Route path="/*" element={<Shell />} />
       </Routes>
     </BrowserRouter>
@@ -59,10 +65,9 @@ function Shell() {
   const location = useLocation();
 
   useEffect(() => {
-    if (!getApiKey()) {
-      setAuth({ loading: false, principal: null });
-      return;
-    }
+    // Always attempt /auth/whoami — it'll accept either the API-key
+    // Bearer token (if present in localStorage) or the op_session cookie
+    // from a magic-link sign-in.
     api<Principal>('/auth/whoami')
       .then((p) => setAuth({ loading: false, principal: p }))
       .catch(() => setAuth({ loading: false, principal: null }));
@@ -90,6 +95,7 @@ function Shell() {
               <Route path="admin/campaigns" element={<AdminCampaigns />} />
               <Route path="admin/review" element={<AdminReview />} />
               <Route path="admin/export" element={<AdminExport />} />
+              <Route path="admin/dev-mailbox" element={<DevMailboxPage />} />
               <Route path="network/vendors" element={<AdminNetworkVendors />} />
               <Route path="network/creators" element={<AdminNetworkCreators />} />
             </>
@@ -151,6 +157,7 @@ function Sidebar({ principal }: { principal: Principal }) {
               <NavItem to="/admin/campaigns" icon={<Tag size={16} />}>Campaigns</NavItem>
               <NavItem to="/admin/review" icon={<ShieldCheck size={16} />}>Review queue</NavItem>
               <NavItem to="/admin/export" icon={<Download size={16} />}>Export / import</NavItem>
+              <NavItem to="/admin/dev-mailbox" icon={<Mail size={16} />}>Dev mailbox</NavItem>
             </NavSection>
             <NavSection title="Network">
               <NavItem to="/network/vendors" icon={<Store size={16} />}>Vendors</NavItem>
@@ -179,8 +186,16 @@ function Sidebar({ principal }: { principal: Principal }) {
       </div>
 
       <button
-        onClick={() => {
+        onClick={async () => {
           clearApiKey();
+          // Fire-and-forget — server-side revokes the session if we have
+          // one; if we're only signing out of an API-key session, the
+          // server ignores the missing cookie and responds 200.
+          try {
+            await api('/auth/signout', { method: 'POST' });
+          } catch {
+            /* ignore */
+          }
           nav('/login');
         }}
         style={{
@@ -355,114 +370,6 @@ function Logo() {
       }}
     >
       O
-    </div>
-  );
-}
-
-function LoginPage() {
-  const nav = useNavigate();
-  const [token, setToken] = useState('');
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setErr(null);
-    setApiKey(token.trim());
-    try {
-      await api<Principal>('/auth/whoami');
-      nav('/');
-    } catch (e) {
-      clearApiKey();
-      setErr(e instanceof ApiError && e.status === 401 ? "That key didn't work." : 'Could not reach the API.');
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        minHeight: '100vh',
-        background: `radial-gradient(1200px 800px at 50% -20%, ${theme.accentSoft}40, transparent), ${theme.bg}`,
-        padding: 24,
-      }}
-    >
-      <form
-        onSubmit={submit}
-        style={{
-          background: theme.surface,
-          border: `1px solid ${theme.border}`,
-          padding: 32,
-          borderRadius: theme.radiusLg,
-          width: 400,
-          boxShadow: '0 30px 80px -30px rgba(0,0,0,0.6)',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
-          <Logo />
-          <div style={{ fontSize: 18, fontWeight: 600 }}>OpenPartner</div>
-        </div>
-        <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: 6 }}>Sign in</div>
-        <div style={{ color: theme.textMuted, fontSize: 13, marginBottom: 24 }}>Paste your API key to continue.</div>
-        <div style={{ position: 'relative' }}>
-          <KeyRound size={15} style={{ position: 'absolute', left: 12, top: 12, color: theme.textDim, pointerEvents: 'none' }} />
-          <input
-            type="password"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="op_..."
-            autoFocus
-            style={{
-              width: '100%',
-              padding: '10px 12px 10px 34px',
-              fontSize: 14,
-              background: theme.surface2,
-              border: `1px solid ${theme.border}`,
-              borderRadius: theme.radiusSm,
-              color: theme.text,
-              fontFamily: theme.fontMono,
-            }}
-          />
-        </div>
-        {err && <div style={{ color: theme.danger, fontSize: 13, marginTop: 10 }}>{err}</div>}
-        <button
-          type="submit"
-          disabled={busy || !token}
-          style={{
-            marginTop: 16,
-            width: '100%',
-            padding: '10px 14px',
-            background: theme.accent,
-            color: theme.accentInk,
-            border: 'none',
-            borderRadius: theme.radiusSm,
-            fontSize: 14,
-            fontWeight: 600,
-            cursor: busy || !token ? 'not-allowed' : 'pointer',
-            opacity: busy || !token ? 0.5 : 1,
-          }}
-        >
-          {busy ? 'Checking…' : 'Sign in'}
-        </button>
-        <div
-          style={{
-            marginTop: 20,
-            paddingTop: 20,
-            borderTop: `1px solid ${theme.borderSubtle}`,
-            color: theme.textDim,
-            fontSize: 12,
-            lineHeight: 1.6,
-          }}
-        >
-          Admin keys come from <code style={{ color: theme.textMuted }}>ADMIN_API_KEY</code>.
-          <br />
-          Partner, vendor, and creator keys are issued from the relevant admin view.
-        </div>
-      </form>
     </div>
   );
 }

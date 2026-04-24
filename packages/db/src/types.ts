@@ -226,6 +226,46 @@ export interface PartnershipRequestRow {
   decisionNote: string | null;
 }
 
+// ---- Human auth (magic-link + sessions) ----
+
+export type MagicLinkPurpose = 'signup' | 'signin';
+
+export interface MagicLinkTokenRow {
+  id: string;
+  prefix: string;
+  tokenHash: string;
+  email: string;
+  purpose: MagicLinkPurpose;
+  claim: { handle?: string; name?: string } | null;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  createdAt: Date;
+}
+
+export type SessionPrincipalKind = 'network_creator' | 'network_vendor' | 'partner' | 'admin';
+
+export interface SessionRow {
+  id: string;
+  prefix: string;
+  tokenHash: string;
+  principalKind: SessionPrincipalKind;
+  principalId: string;
+  expiresAt: Date;
+  createdAt: Date;
+  lastSeenAt: Date | null;
+  revokedAt: Date | null;
+}
+
+export interface DevMessageRow {
+  id: string;
+  to: string;
+  subject: string;
+  body: string;
+  html: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+}
+
 export interface PartnershipRow {
   id: string;
   requestId: string;
