@@ -24,6 +24,7 @@ import { authRouter } from './routes/auth.js';
 import { partnerAuthRouter } from './routes/partner-auth.js';
 import { adminOverviewRouter } from './routes/admin-overview.js';
 import { funnelRouter } from './routes/funnel.js';
+import { settingsRouter } from './routes/settings.js';
 import { fraudReviewRouter } from './routes/fraud-review.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { metricsRouter } from './routes/metrics.js';
@@ -103,6 +104,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
 
   app.use(authRouter);
   app.use(partnerAuthRouter);
+  app.use(settingsRouter);
   app.use(funnelRouter);
   app.use(fraudReviewRouter);
   app.use(webhooksRouter);

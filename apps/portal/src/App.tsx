@@ -12,6 +12,8 @@ import {
   Download,
   LogOut,
   Webhook,
+  Settings,
+  Mail,
 } from 'lucide-react';
 import { clearApiKey, api, type Principal } from './api.js';
 import { theme } from './theme.js';
@@ -27,7 +29,9 @@ import { AdminExport } from './pages/AdminExport.js';
 import { LoginPage } from './pages/auth/Login.js';
 import { MagicLandingPage } from './pages/auth/MagicLanding.js';
 import { WebhooksPage } from './pages/admin/Webhooks.js';
+import { AdminSettings } from './pages/admin/Settings.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
+import { useQuery } from '@tanstack/react-query';
 
 interface AuthState {
   loading: boolean;
@@ -79,6 +83,7 @@ function Shell() {
               <Route path="admin/export" element={<AdminExport />} />
               <Route path="admin/fraud-review" element={<FraudReviewPage />} />
               <Route path="admin/webhooks" element={<WebhooksPage />} />
+              <Route path="admin/settings" element={<AdminSettings />} />
             </>
           )}
 
@@ -89,8 +94,22 @@ function Shell() {
   );
 }
 
+interface ProgramSettings {
+  programName: string | null;
+  supportEmail: string | null;
+}
+
 function Sidebar({ principal }: { principal: Principal }) {
   const nav = useNavigate();
+  const settings = useQuery({
+    queryKey: ['program-settings'],
+    queryFn: () => api<ProgramSettings>('/config/program'),
+    // Refetch infrequently — admin rarely changes this.
+    staleTime: 60_000,
+  });
+  const programName = settings.data?.programName || 'OpenPartner';
+  const supportEmail = settings.data?.supportEmail || null;
+
   return (
     <aside
       style={{
@@ -104,7 +123,7 @@ function Sidebar({ principal }: { principal: Principal }) {
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 8px', marginBottom: 20 }}>
         <Logo />
-        <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>OpenPartner</div>
+        <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>{programName}</div>
       </div>
 
       <PrincipalChip principal={principal} />
@@ -126,6 +145,7 @@ function Sidebar({ principal }: { principal: Principal }) {
             <NavItem to="/admin/export" icon={<Download size={16} />}>Export / import</NavItem>
             <NavItem to="/admin/fraud-review" icon={<ShieldCheck size={16} />}>Fraud review</NavItem>
             <NavItem to="/admin/webhooks" icon={<Webhook size={16} />}>Webhooks</NavItem>
+            <NavItem to="/admin/settings" icon={<Settings size={16} />}>Settings</NavItem>
           </NavSection>
         )}
       </div>
@@ -170,6 +190,25 @@ function Sidebar({ principal }: { principal: Principal }) {
         <LogOut size={14} />
         Sign out
       </button>
+
+      {supportEmail && (
+        <a
+          href={`mailto:${supportEmail}`}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            justifyContent: 'center',
+            marginTop: 10,
+            color: theme.textDim,
+            fontSize: 12,
+            textDecoration: 'none',
+          }}
+        >
+          <Mail size={11} />
+          {supportEmail}
+        </a>
+      )}
     </aside>
   );
 }

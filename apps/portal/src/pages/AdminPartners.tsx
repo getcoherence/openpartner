@@ -67,7 +67,9 @@ export function AdminPartners() {
               <Avatar name={p.name} size={28} />
               <span style={{ fontWeight: 500 }}>{p.name}</span>
             </div>,
-            <span style={{ color: theme.textMuted }}>{p.email}</span>,
+            <a href={`mailto:${p.email}`} style={{ color: theme.textMuted, textDecoration: 'none' }}>
+              {p.email}
+            </a>,
             p.revokedAt
               ? <StatusPill status="revoked" />
               : p.activatedAt
