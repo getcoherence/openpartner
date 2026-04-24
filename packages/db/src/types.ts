@@ -114,6 +114,14 @@ export interface ConfigRow {
   updatedAt: Date;
 }
 
+export type ApiScope =
+  | 'partners:read'
+  | 'partners:write'
+  | 'links:read'
+  | 'links:write'
+  | 'commissions:read'
+  | (string & {}); // permit future additions without a migration
+
 export interface ApiKeyRow {
   id: string;
   prefix: string;
@@ -121,6 +129,7 @@ export interface ApiKeyRow {
   partnerId: string | null;
   networkVendorId: string | null;
   networkCreatorId: string | null;
+  scopes: ApiScope[] | null;
   label: string | null;
   createdAt: Date;
   lastUsedAt: Date | null;

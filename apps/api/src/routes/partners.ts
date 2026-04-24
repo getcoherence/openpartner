@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { ulid } from 'ulid';
 import { TABLES, type PartnerRow } from '@openpartner/db';
 import { db } from '../db.js';
-import { requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
+import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 
 const createSchema = z.object({
   email: z.string().email(),
@@ -13,7 +13,7 @@ const createSchema = z.object({
 
 export const partnersRouter = Router();
 
-partnersRouter.post('/partners', requireAuth, requireAdmin, async (req, res) => {
+partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requireAdmin, async (req, res) => {
   const body = createSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 

@@ -1,13 +1,13 @@
 import { Router } from 'express';
 import { TABLES } from '@openpartner/db';
 import { db } from '../db.js';
-import { requireAuth, requirePartnerOrAdmin } from '../auth.js';
+import { grantScope, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 
 export const dashboardRouter = Router();
 
 // Partner dashboard — top-line counts, attributed revenue, commission by status.
 // Read-optimized via denormalized partnerId on Click/Attribution/Commission.
-dashboardRouter.get('/partners/:id/dashboard', requireAuth, requirePartnerOrAdmin('id'), async (req, res) => {
+dashboardRouter.get('/partners/:id/dashboard', requireAuth, grantScope('partners:read'), requirePartnerOrAdmin('id'), async (req, res) => {
   const partnerId = req.params.id;
   const since = req.query.since
     ? new Date(String(req.query.since))

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Store, Check, Copy } from 'lucide-react';
+import { Plus, Store, Check, Copy, ShieldCheck, ShieldAlert, ShieldX, Loader2 } from 'lucide-react';
 import { api } from '../../api.js';
 import { theme } from '../../theme.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, StatusPill, Table, formatDate } from '../../ui.js';
@@ -120,6 +120,17 @@ export function AdminNetworkVendors() {
   );
 }
 
+interface VerifyResult {
+  ok: boolean;
+  introspect?: { role?: string; scopes?: string[]; unrestricted?: boolean };
+  recommended?: string[];
+  missing?: string[];
+  unrestricted?: boolean;
+  acceptable?: boolean;
+  error?: string;
+  detail?: string;
+}
+
 function CreateVendor({ onClose, onCreated }: { onClose: () => void; onCreated: (vendorKey: string) => void }) {
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
@@ -128,6 +139,14 @@ function CreateVendor({ onClose, onCreated }: { onClose: () => void; onCreated: 
   const [routerUrl, setRouterUrl] = useState('');
   const [websiteUrl, setWebsiteUrl] = useState('');
   const [description, setDescription] = useState('');
+
+  const verify = useMutation<VerifyResult, unknown, void>({
+    mutationFn: () =>
+      api<VerifyResult>('/network/vendors/verify-key', {
+        method: 'POST',
+        body: { instanceUrl, instanceKey },
+      }),
+  });
 
   const mut = useMutation({
     mutationFn: () =>
@@ -166,10 +185,22 @@ function CreateVendor({ onClose, onCreated }: { onClose: () => void; onCreated: 
           <Input value={instanceUrl} onChange={(e) => setInstanceUrl(e.target.value)} placeholder="https://acme.example.com/api" />
         </div>
         <div>
-          <Label>Instance admin API key</Label>
+          <Label>Instance scoped API key</Label>
           <Input type="password" value={instanceKey} onChange={(e) => setInstanceKey(e.target.value)} placeholder="op_…" />
         </div>
       </div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <Button
+          variant="secondary"
+          size="sm"
+          icon={verify.isPending ? <Loader2 size={12} /> : <ShieldCheck size={12} />}
+          onClick={() => verify.mutate()}
+          disabled={!instanceUrl || !instanceKey || verify.isPending}
+        >
+          {verify.isPending ? 'Verifying…' : 'Verify key'}
+        </Button>
+      </div>
+      <KeyVerification result={verify.data} error={verify.error} />
       <div style={{ marginBottom: 12 }}>
         <Label>Router URL (where share links resolve)</Label>
         <Input value={routerUrl} onChange={(e) => setRouterUrl(e.target.value)} placeholder="https://getcoherence.io" />
@@ -193,5 +224,119 @@ function CreateVendor({ onClose, onCreated }: { onClose: () => void; onCreated: 
         </Button>
       </div>
     </Card>
+  );
+}
+
+function KeyVerification({ result, error }: { result?: VerifyResult; error: unknown }) {
+  if (error) {
+    const detail = error instanceof Error ? error.message : 'Could not verify the key.';
+    return (
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          background: theme.dangerSoft,
+          border: `1px solid ${theme.danger}55`,
+          padding: '10px 12px',
+          borderRadius: theme.radiusSm,
+          marginBottom: 12,
+          fontSize: 13,
+          color: theme.danger,
+        }}
+      >
+        <ShieldX size={16} />
+        <div>{detail}</div>
+      </div>
+    );
+  }
+  if (!result) return null;
+
+  if (result.unrestricted) {
+    return (
+      <div
+        style={{
+          background: theme.warnSoft,
+          border: `1px solid ${theme.warn}55`,
+          padding: '10px 12px',
+          borderRadius: theme.radiusSm,
+          marginBottom: 12,
+          fontSize: 13,
+          color: theme.warn,
+          display: 'flex',
+          gap: 10,
+          alignItems: 'flex-start',
+        }}
+      >
+        <ShieldAlert size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+        <div>
+          <div style={{ fontWeight: 500, marginBottom: 4 }}>This is a full admin key</div>
+          <div style={{ color: `${theme.warn}cc` }}>
+            The Network would have unrestricted power over the vendor's instance. Strongly prefer a{' '}
+            <strong>scoped</strong> key. On the vendor's instance run:{' '}
+            <code style={{ fontSize: 12 }}>
+              POST /api-keys/scoped {`{"scopes": ${JSON.stringify(result.recommended ?? [])}}`}
+            </code>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const scopes = result.introspect?.scopes ?? [];
+  const missing = result.missing ?? [];
+
+  if (missing.length > 0) {
+    return (
+      <div
+        style={{
+          background: theme.dangerSoft,
+          border: `1px solid ${theme.danger}55`,
+          padding: '10px 12px',
+          borderRadius: theme.radiusSm,
+          marginBottom: 12,
+          fontSize: 13,
+          color: theme.danger,
+          display: 'flex',
+          gap: 10,
+          alignItems: 'flex-start',
+        }}
+      >
+        <ShieldX size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+        <div>
+          <div style={{ fontWeight: 500, marginBottom: 4 }}>
+            Missing required scopes: {missing.join(', ')}
+          </div>
+          <div style={{ color: `${theme.danger}cc` }}>
+            Key has: {scopes.length === 0 ? <em>none</em> : scopes.map((s) => <code key={s} style={{ marginRight: 6 }}>{s}</code>)}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        background: theme.successSoft,
+        border: `1px solid ${theme.success}55`,
+        padding: '10px 12px',
+        borderRadius: theme.radiusSm,
+        marginBottom: 12,
+        fontSize: 13,
+        color: theme.success,
+        display: 'flex',
+        gap: 10,
+        alignItems: 'flex-start',
+      }}
+    >
+      <ShieldCheck size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+      <div>
+        <div style={{ fontWeight: 500, marginBottom: 4 }}>Scoped key looks good</div>
+        <div style={{ color: `${theme.success}cc` }}>
+          Scopes: {scopes.map((s) => <code key={s} style={{ marginRight: 6 }}>{s}</code>)}
+        </div>
+      </div>
+    </div>
   );
 }

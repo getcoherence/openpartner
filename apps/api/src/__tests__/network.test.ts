@@ -509,6 +509,111 @@ describe.skipIf(skipIntegration)('openpartner network', () => {
     expect(earnings.body.totals.clicks).toBe(0);
   });
 
+  it('full network federation works with a scoped key (not admin)', async () => {
+    // Mint a scoped key on the "vendor instance" with exactly the
+    // federation permission set. Register the vendor with THAT key.
+    const scopedMint = await request(app)
+      .post('/api-keys/scoped')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ scopes: ['partners:write', 'partners:read', 'links:write', 'commissions:read'] });
+    const scopedKey = scopedMint.body.plaintext as string;
+
+    const campaign = (await request(app)
+      .post('/campaigns')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Scoped test', commissionRule: { type: 'percent', value: 15 } })).body;
+
+    const vendorRes = await request(app)
+      .post('/network/vendors')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({
+        name: 'ScopedCo',
+        slug: `scoped-${Date.now()}`,
+        instanceUrl,
+        instanceKey: scopedKey, // <-- scoped, not ADMIN_KEY
+        routerUrl: instanceUrl,
+      });
+    const vendorKey = vendorRes.body.apiKey;
+    await request(app).post(`/network/vendors/${vendorRes.body.vendor.id}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    const offeringId = (await request(app)
+      .post('/network/offerings')
+      .set('Authorization', `Bearer ${vendorKey}`)
+      .send({
+        title: 'Scoped offering',
+        productUrl: 'https://example.com',
+        vendorCampaignId: campaign.id,
+        terms: { payout: { type: 'recurring_percent', percent: 15, durationMonths: null }, cookieWindowDays: 45 },
+        published: true,
+      })).body.offering.id;
+
+    const creatorRes = await request(app)
+      .post('/network/creators')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Scopy', handle: `scopy_${Date.now()}`, email: `scopy${Date.now()}@e.com` });
+    const creatorKey = creatorRes.body.apiKey;
+    await request(app).post(`/network/creators/${creatorRes.body.creator.id}/activate`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+    const applyRes = await request(app)
+      .post('/network/requests')
+      .set('Authorization', `Bearer ${creatorKey}`)
+      .send({ offeringId, promoCode: 'scopyshares' });
+
+    const approveRes = await request(app)
+      .post(`/network/requests/${applyRes.body.request.id}/approve`)
+      .set('Authorization', `Bearer ${vendorKey}`)
+      .send({});
+    expect(approveRes.status).toBe(200);
+    expect(approveRes.body.federated.linkKey).toBe('scopyshares');
+
+    // Federated read (commissions:read) works too.
+    const earnings = await request(app)
+      .get('/network/partnerships/earnings')
+      .set('Authorization', `Bearer ${creatorKey}`);
+    expect(earnings.status).toBe(200);
+    expect(earnings.body.partnerships[0].status).toBe('ok');
+  });
+
+  it('verify-key endpoint flags unrestricted admin keys and accepts proper scoped keys', async () => {
+    // Unrestricted admin → warn.
+    const adminCheck = await request(app)
+      .post('/network/vendors/verify-key')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ instanceUrl, instanceKey: ADMIN_KEY });
+    expect(adminCheck.status).toBe(200);
+    expect(adminCheck.body.unrestricted).toBe(true);
+    expect(adminCheck.body.acceptable).toBe(true);
+
+    // Scoped with all required → acceptable, missing=[].
+    const fullyScoped = await request(app)
+      .post('/api-keys/scoped')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ scopes: ['partners:write', 'partners:read', 'links:write', 'commissions:read'] });
+    const okCheck = await request(app)
+      .post('/network/vendors/verify-key')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ instanceUrl, instanceKey: fullyScoped.body.plaintext });
+    expect(okCheck.status).toBe(200);
+    expect(okCheck.body.unrestricted).toBe(false);
+    expect(okCheck.body.missing).toEqual([]);
+    expect(okCheck.body.acceptable).toBe(true);
+
+    // Scoped with only some → missing listed.
+    const partial = await request(app)
+      .post('/api-keys/scoped')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ scopes: ['partners:write'] });
+    const missCheck = await request(app)
+      .post('/network/vendors/verify-key')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ instanceUrl, instanceKey: partial.body.plaintext });
+    expect(missCheck.status).toBe(200);
+    expect(missCheck.body.missing).toEqual(
+      expect.arrayContaining(['partners:read', 'links:write', 'commissions:read']),
+    );
+    expect(missCheck.body.acceptable).toBe(false);
+  });
+
   it('encryption round-trips', async () => {
     const { encryptKey, decryptKey } = await import('../network/crypto.js');
     const enc = encryptKey('hello-secret-key');

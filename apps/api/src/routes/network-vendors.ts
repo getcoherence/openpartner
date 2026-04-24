@@ -1,12 +1,70 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { ulid } from 'ulid';
 import { TABLES, type NetworkVendorRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApiKeyRow, requireAdmin, requireAuth, requireNetworkVendor } from '../auth.js';
 import { encryptKey } from '../network/crypto.js';
 import { vendorCreateSchema } from '../network/validation.js';
+import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
 
 export const networkVendorsRouter = Router();
+
+const verifyKeySchema = z.object({
+  instanceUrl: z.string().url(),
+  instanceKey: z.string().min(8),
+});
+
+/**
+ * Server-side introspection helper. Before an admin registers a vendor,
+ * the onboarding UI calls this to check the key the vendor pasted. We
+ * hit the vendor's own /auth/introspect with that key and report back.
+ *
+ * Why this exists: we strongly prefer vendors hand us a SCOPED key with
+ * only the federation permissions (partners:write, links:write,
+ * partners:read, commissions:read). If they paste a full admin key we
+ * want to warn them so they can go mint a scoped one instead.
+ */
+networkVendorsRouter.post('/network/vendors/verify-key', requireAuth, requireAdmin, async (req, res) => {
+  const body = verifyKeySchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  const { instanceUrl, instanceKey } = body.data;
+  const url = `${instanceUrl.replace(/\/$/, '')}/auth/introspect`;
+  try {
+    const response = await fetch(url, { headers: { authorization: `Bearer ${instanceKey}` } });
+    const text = await response.text();
+    if (!response.ok) {
+      return res.status(502).json({
+        error: 'instance_rejected_key',
+        status: response.status,
+        detail: text.slice(0, 300),
+      });
+    }
+    const introspect = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+
+    const required = [...NETWORK_FEDERATION_SCOPES] as string[];
+    const scopes = Array.isArray(introspect.scopes) ? (introspect.scopes as string[]) : null;
+    const missing = scopes ? required.filter((s) => !scopes.includes(s)) : [];
+    const unrestricted = introspect.role === 'admin' && introspect.unrestricted === true;
+
+    res.json({
+      ok: true,
+      instanceUrl,
+      introspect,
+      recommended: required,
+      missing,
+      unrestricted,
+      // Green — "good to register":
+      acceptable: (scopes != null && missing.length === 0) || unrestricted,
+    });
+  } catch (err: unknown) {
+    res.status(502).json({
+      error: 'instance_unreachable',
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
 
 // -------- Admin: list + create + activate --------
 

@@ -21,7 +21,8 @@ export type ApiKeyPrincipal =
   | { role: 'admin'; source: 'db'; apiKeyId: string }
   | { role: 'partner'; source: 'db'; apiKeyId: string; partnerId: string }
   | { role: 'network_vendor'; source: 'db'; apiKeyId: string; networkVendorId: string }
-  | { role: 'network_creator'; source: 'db'; apiKeyId: string; networkCreatorId: string };
+  | { role: 'network_creator'; source: 'db'; apiKeyId: string; networkCreatorId: string }
+  | { role: 'scoped'; source: 'db'; apiKeyId: string; scopes: string[] };
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -99,6 +100,11 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
   // Non-blocking last-used bump.
   void db<ApiKeyRow>(TABLES.ApiKey).where({ id: match2.id }).update({ lastUsedAt: new Date() });
 
+  // Scoped keys take precedence over any FK role. The FK columns are
+  // only meaningful for non-scoped keys (admin / partner / vendor / creator).
+  if (Array.isArray(match2.scopes)) {
+    return { role: 'scoped', source: 'db', apiKeyId: match2.id, scopes: match2.scopes };
+  }
   if (match2.networkVendorId) {
     return { role: 'network_vendor', source: 'db', apiKeyId: match2.id, networkVendorId: match2.networkVendorId };
   }
@@ -109,6 +115,32 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
     return { role: 'partner', source: 'db', apiKeyId: match2.id, partnerId: match2.partnerId };
   }
   return { role: 'admin', source: 'db', apiKeyId: match2.id };
+}
+
+/**
+ * Scope-granting middleware.
+ *
+ * Chain it BEFORE the normal role-based guards (requireAdmin /
+ * requirePartnerOrAdmin / etc). It's a no-op for any non-scoped principal
+ * — they fall through unchanged. If the request is carrying a scoped key,
+ * we verify the key's scopes include the required one; on match, we
+ * rewrite the principal to `admin` so every downstream auth check
+ * transparently accepts it. On miss, we 403 immediately.
+ *
+ * This design means we didn't have to teach every existing endpoint about
+ * scopes — just add `grantScope('x:y')` to the routes federation reaches.
+ */
+export function grantScope(scope: string) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const p = req.principal;
+    if (!p || p.role !== 'scoped') return next();
+    if (!p.scopes.includes(scope)) {
+      res.status(403).json({ error: 'forbidden_scope', required: scope });
+      return;
+    }
+    req.principal = { role: 'admin', source: 'db', apiKeyId: p.apiKeyId };
+    next();
+  };
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -122,6 +154,7 @@ export async function createApiKeyRow(params: {
   partnerId?: string | null;
   networkVendorId?: string | null;
   networkCreatorId?: string | null;
+  scopes?: string[] | null;
   label?: string;
 }): Promise<{ id: string; plaintext: string }> {
   const { plaintext, prefix, hash } = generateApiKey();
@@ -133,6 +166,10 @@ export async function createApiKeyRow(params: {
     partnerId: params.partnerId ?? null,
     networkVendorId: params.networkVendorId ?? null,
     networkCreatorId: params.networkCreatorId ?? null,
+    // pg jsonb: arrays need stringification; null stays null
+    scopes: params.scopes != null
+      ? (JSON.stringify(params.scopes) as unknown as never)
+      : null,
     label: params.label ?? null,
   });
   return { id, plaintext };

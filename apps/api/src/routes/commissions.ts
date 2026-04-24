@@ -14,7 +14,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { TABLES, type CommissionRow } from '@openpartner/db';
 import { db } from '../db.js';
-import { requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
+import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 
 const listQuerySchema = z.object({
   status: z.enum(['accrued', 'approved', 'paid', 'reversed']).optional(),
@@ -26,6 +26,7 @@ export const commissionsRouter = Router();
 commissionsRouter.get(
   '/partners/:id/commissions',
   requireAuth,
+  grantScope('commissions:read'),
   requirePartnerOrAdmin('id'),
   async (req, res) => {
     const q = listQuerySchema.safeParse(req.query);

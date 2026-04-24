@@ -295,6 +295,50 @@ describe.skipIf(skipIntegration)('api integration', () => {
     expect(Number(c2!.amount)).toBeCloseTo(10, 2);
   });
 
+  it('scoped key: partners:write allows POST /partners; missing scope denies', async () => {
+    // Issue a scoped key with ONLY partners:write.
+    const mintRes = await request(app)
+      .post('/api-keys/scoped')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ scopes: ['partners:write'], label: 'integration-test' });
+    expect(mintRes.status).toBe(201);
+    const scopedKey = mintRes.body.plaintext as string;
+
+    // Allowed: POST /partners (requires partners:write)
+    const createRes = await request(app)
+      .post('/partners')
+      .set('Authorization', `Bearer ${scopedKey}`)
+      .send({ email: 'scoped@e.com', name: 'Scoped' });
+    expect(createRes.status).toBe(201);
+    const partnerId = createRes.body.id;
+
+    // Denied: GET /partners/:id/commissions (requires commissions:read)
+    const deniedRes = await request(app)
+      .get(`/partners/${partnerId}/commissions`)
+      .set('Authorization', `Bearer ${scopedKey}`);
+    expect(deniedRes.status).toBe(403);
+    expect(deniedRes.body.error).toBe('forbidden_scope');
+  });
+
+  it('/auth/introspect surfaces scopes; admin reports unrestricted', async () => {
+    const adminIntro = await request(app)
+      .get('/auth/introspect')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(adminIntro.status).toBe(200);
+    expect(adminIntro.body).toEqual({ role: 'admin', unrestricted: true });
+
+    const scopedMint = await request(app)
+      .post('/api-keys/scoped')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ scopes: ['partners:write', 'links:write'] });
+    const scopedIntro = await request(app)
+      .get('/auth/introspect')
+      .set('Authorization', `Bearer ${scopedMint.body.plaintext}`);
+    expect(scopedIntro.status).toBe(200);
+    expect(scopedIntro.body.role).toBe('scoped');
+    expect(scopedIntro.body.scopes).toEqual(['partners:write', 'links:write']);
+  });
+
   it('/auth/whoami reports role correctly', async () => {
     const adminWhoami = await request(app).get('/auth/whoami').set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(adminWhoami.status).toBe(200);

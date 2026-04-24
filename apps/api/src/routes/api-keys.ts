@@ -6,6 +6,20 @@ import { createApiKeyRow, requireAdmin, requireAuth, requirePartnerOrAdmin } fro
 
 const createSchema = z.object({ label: z.string().optional() });
 
+const scopedCreateSchema = z.object({
+  scopes: z.array(z.string().min(3).max(64)).min(1),
+  label: z.string().optional(),
+});
+
+// Canonical minimum scope set for joining the OpenPartner Network.
+// Kept here so the federation code and the portal's docs agree.
+export const NETWORK_FEDERATION_SCOPES = [
+  'partners:write',
+  'partners:read',
+  'links:write',
+  'commissions:read',
+] as const;
+
 export const apiKeysRouter = Router();
 
 // Admin: create admin key (ADMIN_API_KEY env is the first-class bootstrap; this is for rotation).
@@ -14,6 +28,16 @@ apiKeysRouter.post('/api-keys', requireAuth, requireAdmin, async (req, res) => {
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
   const key = await createApiKeyRow({ partnerId: null, label: body.data.label ?? undefined });
   res.status(201).json({ id: key.id, plaintext: key.plaintext });
+});
+
+// Admin: create a SCOPED key. Recommended for server-to-server
+// integrations (OpenPartner Network federation is the canonical example)
+// so a leak of the stored credential can't escalate to full admin.
+apiKeysRouter.post('/api-keys/scoped', requireAuth, requireAdmin, async (req, res) => {
+  const body = scopedCreateSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const key = await createApiKeyRow({ scopes: body.data.scopes, label: body.data.label ?? 'scoped' });
+  res.status(201).json({ id: key.id, plaintext: key.plaintext, scopes: body.data.scopes });
 });
 
 // Admin or the partner themselves: create a partner-scoped key.

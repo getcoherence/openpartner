@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { ulid } from 'ulid';
 import { TABLES, type LinkRow } from '@openpartner/db';
 import { db } from '../db.js';
-import { requireAuth, requirePartnerOrAdmin } from '../auth.js';
+import { grantScope, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 
 const createSchema = z.object({
   linkKey: z
@@ -24,7 +24,7 @@ linksRouter.get('/partners/:id/links', requireAuth, requirePartnerOrAdmin('id'),
   res.json({ links });
 });
 
-linksRouter.post('/partners/:id/links', requireAuth, requirePartnerOrAdmin('id'), async (req, res) => {
+linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), requirePartnerOrAdmin('id'), async (req, res) => {
   const body = createSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 

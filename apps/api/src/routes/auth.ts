@@ -6,6 +6,34 @@ import { requireAuth } from '../auth.js';
 export const authRouter = Router();
 
 /**
+ * Reports the calling key's permission set so upstream integrations (like
+ * the OpenPartner Network) can verify the key they've been handed actually
+ * has the scopes they need — and loudly warn if it's unrestricted.
+ *
+ *   scoped key       → { role: 'scoped', scopes: [...] }
+ *   admin / env      → { role: 'admin', unrestricted: true }
+ *   partner / vendor → { role, restrictedTo: ... }
+ */
+authRouter.get('/auth/introspect', requireAuth, async (req, res) => {
+  const p = req.principal!;
+  if (p.role === 'scoped') {
+    return res.json({ role: 'scoped', scopes: p.scopes });
+  }
+  if (p.role === 'admin') {
+    return res.json({ role: 'admin', unrestricted: true });
+  }
+  if (p.role === 'partner') {
+    return res.json({ role: 'partner', restrictedTo: { partnerId: p.partnerId } });
+  }
+  if (p.role === 'network_vendor') {
+    return res.json({ role: 'network_vendor', restrictedTo: { networkVendorId: p.networkVendorId } });
+  }
+  if (p.role === 'network_creator') {
+    return res.json({ role: 'network_creator', restrictedTo: { networkCreatorId: p.networkCreatorId } });
+  }
+});
+
+/**
  * Returns the caller's principal shape — used by the portal to decide what
  * to render after login. Surfaces the Network role when the key belongs to
  * a vendor or creator so the portal can route to /network views.
