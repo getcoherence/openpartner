@@ -43,4 +43,17 @@ describe.skipIf(skipIntegration)('observability', () => {
     expect(res.text).toContain('openpartner_events_total ');
     expect(res.text).toContain('openpartner_attributions_total ');
   });
+
+  it('/metrics requires Bearer token when METRICS_TOKEN is set', async () => {
+    const before = process.env.METRICS_TOKEN;
+    process.env.METRICS_TOKEN = 'metrics-secret-abc';
+    try {
+      await request(app).get('/metrics').expect(401);
+      await request(app).get('/metrics').set('Authorization', 'Bearer wrong').expect(401);
+      await request(app).get('/metrics').set('Authorization', 'Bearer metrics-secret-abc').expect(200);
+    } finally {
+      if (before === undefined) delete process.env.METRICS_TOKEN;
+      else process.env.METRICS_TOKEN = before;
+    }
+  });
 });

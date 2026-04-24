@@ -1,16 +1,17 @@
 /**
  * Prometheus metrics endpoint.
  *
- * Plain text exposition, unauthenticated, safe to point a scraper at.
- * The numbers here are row counts — attribution volume, commission +
- * payout status distribution, fraud rate. Nothing sensitive (no IDs,
- * no PII), so a self-hoster can scrape it from an internal Prometheus
- * without extra auth plumbing.
+ * Plain text exposition. Numbers are row counts — attribution volume,
+ * commission + payout status distribution, fraud rate. No IDs, no PII,
+ * so a self-hoster can scrape from an internal Prometheus without
+ * auth. If METRICS_TOKEN is set, scrapes must include
+ * `Authorization: Bearer $METRICS_TOKEN` — use this when /metrics is
+ * reachable from the public internet.
  *
  * Intentionally DB-backed rather than in-process counters so that
- * restarts don't zero the gauges and multi-instance deploys don't
- * disagree. A scrape runs a handful of count queries — cheap even at
- * millions of clicks.
+ * restarts don't zero the gauges and multi-instance deploys agree.
+ * A scrape runs a handful of count queries — cheap even at millions
+ * of clicks.
  */
 
 import { Router } from 'express';
@@ -19,7 +20,16 @@ import { db } from '../db.js';
 
 export const metricsRouter = Router();
 
-metricsRouter.get('/metrics', async (_req, res) => {
+metricsRouter.get('/metrics', async (req, res) => {
+  const expected = process.env.METRICS_TOKEN;
+  if (expected) {
+    const header = req.header('authorization') ?? '';
+    const presented = header.startsWith('Bearer ') ? header.slice(7) : '';
+    if (presented !== expected) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+  }
+
   const [
     clicks,
     clicksFlagged,

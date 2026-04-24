@@ -60,7 +60,7 @@ clicks  →  identities  →  events  →  attributions  →  payouts
 (raw)     (stitched)     (raw)      (derived)        (derived)
 ```
 
-Event-sourced by design. Raw data is immutable, attribution is a view — so you can change attribution models without re-collecting history. See [CLAUDE.md](./CLAUDE.md) for the architectural decisions behind this.
+Event-sourced by design. Raw data is immutable, attribution is a view — so you can change attribution models without re-collecting history. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full picture.
 
 ## Repository
 
