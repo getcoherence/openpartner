@@ -1,6 +1,17 @@
 import { useQuery } from '@tanstack/react-query';
-import { Link, Navigate } from 'react-router-dom';
-import { MousePointerClick, Receipt, Wallet, Users, UserCheck, CreditCard, AlertCircle } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import {
+  MousePointerClick,
+  Receipt,
+  Wallet,
+  Users,
+  UserCheck,
+  CreditCard,
+  AlertCircle,
+  Link2,
+  CheckCircle2,
+  Circle,
+} from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { theme } from '../theme.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, SectionHeading, Stat, StatusPill, money } from '../ui.js';
@@ -20,12 +31,6 @@ export function Dashboard({ principal }: { principal: Principal }) {
   if (principal.role === 'admin') return <AdminDashboard />;
   if (principal.role === 'partner') {
     return <PartnerDashboard partnerId={principal.partnerId!} name={principal.partner?.name ?? ''} />;
-  }
-  // Network roles don't have a "dashboard" in the vendor-partner sense —
-  // their useful landing page is their Partnerships view, which already
-  // renders the earnings projection.
-  if (principal.role === 'network_creator' || principal.role === 'network_vendor') {
-    return <Navigate to="/network/partnerships" replace />;
   }
   return null;
 }
@@ -57,6 +62,14 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
     queryFn: () => api<ConnectStatus>(`/partners/${partnerId}/connect/status`),
     retry: false,
   });
+  const links = useQuery({
+    queryKey: ['links', partnerId],
+    queryFn: () => api<{ links: unknown[] }>(`/partners/${partnerId}/links`),
+  });
+
+  const linkCount = links.data?.links.length ?? 0;
+  const hasLink = linkCount > 0;
+  const hasActiveConnect = !!connect.data?.connected && !!connect.data?.payoutsEnabled;
 
   const owedAmount = (data?.commissionByStatus.approved ?? 0) + (data?.commissionByStatus.accrued ?? 0);
   const needsConnect =
@@ -65,13 +78,24 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
     connect.data != null &&
     (!connect.data.connected || !connect.data.payoutsEnabled);
 
+  // Getting-started card shows while EITHER onboarding task is outstanding.
+  // We only render it once we know the state of both (connect + links),
+  // otherwise the card can flash during initial load.
+  const showGettingStarted =
+    !links.isLoading && !connect.isLoading && (!hasLink || !hasActiveConnect);
+
   return (
     <Page
       title={`Hi ${name.split(' ')[0] || 'there'}`}
       subtitle="Last 30 days"
     >
       <ErrorBanner error={error} />
-      {needsConnect && <ConnectNudge owed={owedAmount} connected={connect.data!.connected} />}
+      {showGettingStarted && (
+        <GettingStarted hasLink={hasLink} connectReady={hasActiveConnect} />
+      )}
+      {needsConnect && !showGettingStarted && (
+        <ConnectNudge owed={owedAmount} connected={connect.data!.connected} />
+      )}
       {isLoading || !data ? (
         <Card>Loading…</Card>
       ) : (
@@ -111,6 +135,81 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
         </>
       )}
     </Page>
+  );
+}
+
+function GettingStarted({ hasLink, connectReady }: { hasLink: boolean; connectReady: boolean }) {
+  return (
+    <Card>
+      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Getting started</div>
+      <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 16 }}>
+        Two quick steps and you're earning. This card goes away once both are done.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <ChecklistRow
+          done={hasLink}
+          icon={<Link2 size={16} />}
+          title="Create your first share link"
+          hint="Pick a short slug; anyone who clicks it gets attributed back to you."
+          cta="Create link"
+          to="/links"
+        />
+        <ChecklistRow
+          done={connectReady}
+          icon={<CreditCard size={16} />}
+          title="Connect Stripe to get paid"
+          hint="Commissions you earn land directly in your Stripe balance."
+          cta={connectReady ? 'Manage' : 'Connect Stripe'}
+          to="/connect"
+        />
+      </div>
+    </Card>
+  );
+}
+
+function ChecklistRow({
+  done,
+  icon,
+  title,
+  hint,
+  cta,
+  to,
+}: {
+  done: boolean;
+  icon: React.ReactNode;
+  title: string;
+  hint: string;
+  cta: string;
+  to: string;
+}) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        padding: '12px 14px',
+        background: done ? theme.successSoft : theme.surface2,
+        border: `1px solid ${done ? `${theme.success}44` : theme.borderSubtle}`,
+        borderRadius: theme.radiusSm,
+      }}
+    >
+      <div style={{ color: done ? theme.success : theme.textDim, display: 'inline-flex' }}>
+        {done ? <CheckCircle2 size={18} /> : <Circle size={18} />}
+      </div>
+      <div style={{ color: theme.textMuted, display: 'inline-flex' }}>{icon}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, color: theme.text, textDecoration: done ? 'line-through' : 'none' }}>
+          {title}
+        </div>
+        <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>{hint}</div>
+      </div>
+      {!done && (
+        <Link to={to} style={{ textDecoration: 'none' }}>
+          <Button size="sm">{cta}</Button>
+        </Link>
+      )}
+    </div>
   );
 }
 
