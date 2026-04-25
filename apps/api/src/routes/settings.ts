@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { TABLES, type ConfigRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
+import { getPublicMailSettings, saveMailSettings, type MailTransportKind } from '../mail-settings.js';
 
 export const settingsRouter = Router();
 
@@ -59,4 +60,45 @@ settingsRouter.post('/config/program', requireAuth, requireAdmin, async (req, re
     .onConflict('key')
     .merge({ value: next as unknown as never, updatedAt: now });
   res.json(next);
+});
+
+// ---------- Mail settings ----------
+
+const mailSettingsSchema = z.object({
+  kind: z.enum(['smtp', 'postmark', 'none']),
+  from: z.string().trim().max(254).optional().or(z.literal('')),
+  smtp: z
+    .object({
+      host: z.string().trim().max(253).optional(),
+      port: z.number().int().min(1).max(65535).optional(),
+      secure: z.boolean().optional(),
+      user: z.string().trim().max(320).optional(),
+      // Password / token are write-only from the client. Undefined =
+      // "keep existing"; empty string = "clear"; set = rotate.
+      password: z.string().max(500).optional(),
+    })
+    .optional(),
+  postmark: z
+    .object({
+      serverToken: z.string().max(500).optional(),
+      messageStream: z.string().trim().max(120).optional(),
+    })
+    .optional(),
+});
+
+settingsRouter.get('/config/mail', requireAuth, requireAdmin, async (_req, res) => {
+  res.json(await getPublicMailSettings());
+});
+
+settingsRouter.post('/config/mail', requireAuth, requireAdmin, async (req, res) => {
+  const body = mailSettingsSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  await saveMailSettings({
+    kind: body.data.kind as MailTransportKind,
+    from: body.data.from === '' ? null : body.data.from ?? undefined,
+    smtp: body.data.smtp,
+    postmark: body.data.postmark,
+  });
+  res.json(await getPublicMailSettings());
 });

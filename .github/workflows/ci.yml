@@ -34,6 +34,7 @@ jobs:
       DATABASE_URL: postgres://openpartner:openpartner@localhost:5432/openpartner
       # Quoted so YAML doesn't parse these as integers or booleans.
       ADMIN_API_KEY: "op_ci_0000000000000000000000000000000000000000000000000000000000"
+      SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
 
     steps:
       - uses: actions/checkout@v4

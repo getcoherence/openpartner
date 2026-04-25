@@ -18,6 +18,7 @@ import { ipRateLimit } from '../middleware/rate-limit.js';
 import { issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
 import { adminInviteEmail, buildMagicLinkUrl } from '../email-templates.js';
+import { saveMailSettings } from '../mail-settings.js';
 
 export const installRouter = Router();
 
@@ -28,6 +29,27 @@ const installSchema = z.object({
   adminEmail: z.string().trim().email().max(254),
   programName: z.string().trim().min(1).max(120),
   supportEmail: z.string().trim().email().max(254).optional().or(z.literal('')),
+  mail: z
+    .object({
+      kind: z.enum(['smtp', 'postmark', 'none']),
+      from: z.string().trim().max(254).optional(),
+      smtp: z
+        .object({
+          host: z.string().trim().min(1).max(253),
+          port: z.number().int().min(1).max(65535).default(587),
+          secure: z.boolean().default(false),
+          user: z.string().trim().max(320).optional(),
+          password: z.string().max(500).optional(),
+        })
+        .optional(),
+      postmark: z
+        .object({
+          serverToken: z.string().min(1).max(500),
+          messageStream: z.string().trim().max(120).default('outbound'),
+        })
+        .optional(),
+    })
+    .optional(),
 });
 
 /**
@@ -80,6 +102,18 @@ installRouter.post('/install', installLimit, async (req, res) => {
       activatedAt: null,
     });
   });
+
+  // Mail config is saved outside the tx because saveMailSettings opens
+  // its own upsert. A failure here doesn't roll back admin creation —
+  // admin can fix from Settings → Mail after installing.
+  if (body.data.mail) {
+    await saveMailSettings({
+      kind: body.data.mail.kind,
+      from: body.data.mail.from,
+      smtp: body.data.mail.smtp,
+      postmark: body.data.mail.postmark,
+    });
+  }
 
   // Send invite outside the transaction so mail failures don't roll back.
   const admin = await db<AdminRow>(TABLES.Admin).where({ email: adminEmail }).first();

@@ -1,7 +1,17 @@
 import type { ReactNode } from 'react';
 import { theme } from '../../theme.js';
 
-export function AuthFrame({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
+export function AuthFrame({
+  title,
+  subtitle,
+  brand,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  brand?: string;
+  children: ReactNode;
+}) {
   return (
     <div
       style={{
@@ -25,7 +35,7 @@ export function AuthFrame({ title, subtitle, children }: { title: string; subtit
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
           <Logo />
-          <div style={{ fontSize: 18, fontWeight: 600 }}>OpenPartner</div>
+          <div style={{ fontSize: 18, fontWeight: 600 }}>{brand ?? 'OpenPartner'}</div>
         </div>
         <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: 4 }}>{title}</div>
         {subtitle && <div style={{ color: theme.textMuted, fontSize: 13, marginBottom: 20 }}>{subtitle}</div>}
