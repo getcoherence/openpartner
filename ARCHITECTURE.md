@@ -86,6 +86,28 @@ One codebase, three behaviors, flipped by `OPENPARTNER_MODE`:
 
 The core product — attribution, events, commissions — is identical across modes. Only the billing + payout layer changes.
 
+## Install + auth
+
+First-run is a three-step wizard at `/install` — admin account (name + email), program name + support email, and mail transport. On submit the first admin gets an emailed magic link; clicking it activates them with a session cookie. `/install` 409s once any admin is activated so a second party can't take over.
+
+**Personas** are first-class — neither admins nor partners authenticate with a shared token:
+
+- **Admin** — invited by another admin (or created during install), verifies a magic link, gets a `Session` cookie keyed `(principalKind='admin', principalId)`. Can invite / revoke / reinstate other admins, edit program + mail settings. `ADMIN_API_KEY` env stays valid as a bootstrap / headless / CI bearer; think `doctl`, migrations, or emergency access.
+- **Partner** — invited by an admin, same magic-link flow, separate `Partner` table. Creates their own Links + API keys from their dashboard; admin never sees partner credentials. Revocation kills sessions in-transaction and stamps clicks `fraudFlag='revoked'` so future attribution skips them without breaking the end-user click experience.
+
+Magic-link tokens and sessions share one generalized schema (`MagicLinkToken`, `Session`) keyed by `(principalKind, principalId)`. The verify endpoint branches on `principalKind` — invites for partners stamp `Partner.activatedAt`, invites for admins stamp `Admin.activatedAt`.
+
+## Settings + secret encryption
+
+Anything user-facing and runtime-adjustable lives in the `Config` table, editable from the admin Settings UI — not env. This covers:
+
+- **Program settings** — program name + support email (plaintext, identifiers not secrets)
+- **Mail settings** — SMTP or Postmark selection + credentials
+
+Credentials inside `Config` (SMTP password, Postmark server token) are AES-256-GCM encrypted at rest using `SECRETS_ENCRYPTION_KEY` — the one env-level secret required in production. Public readers of the Settings API get a sanitized view (`hasPassword: true/false`) so the UI can show "saved ✓" without ever exposing plaintext.
+
+Env vars like `SMTP_HOST` / `POSTMARK_SERVER_TOKEN` / `MAIL_FROM` remain as **fallbacks** — the mailer resolves UI config first, env second, console stdout last (dev only). Hosted deployments can force a transport via env; self-hosters who want to rotate credentials without a redeploy do so from the Settings page.
+
 ## Federating with an external creator network
 
 OpenPartner OSS is vendor-direct — the admin creates Partner rows, issues share links, and manages their own partner program. A separate hosted service (outside this repo) implements a two-sided creator network: vendors publish offerings, creators apply, and approved partnerships federate back into each vendor's OpenPartner instance as Partner + Link rows.

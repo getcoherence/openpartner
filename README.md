@@ -51,7 +51,9 @@ pnpm dev:router    # terminal 2 — click router
 pnpm dev:portal    # terminal 3 — partner dashboard
 ```
 
-See [docs/quickstart.md](./docs/quickstart.md) for full local setup, or [docs/deploy.md](./docs/deploy.md) for DigitalOcean App Platform and single-host Docker deployments.
+Open `http://localhost:5673/install` — a three-step wizard collects your admin account, program name + support email, and mail transport (SMTP or Postmark). Accept the magic-link email and you're signed in as the first admin.
+
+See [docs/quickstart.md](./docs/quickstart.md) for the end-to-end walkthrough, or [docs/deploy.md](./docs/deploy.md) for DigitalOcean App Platform and single-host Docker deployments.
 
 ## Architecture
 
@@ -84,21 +86,43 @@ v1. End-to-end attribution, payouts, and export are working; API surface is stab
 
 ### What's implemented
 
+**Attribution + payouts**
+
 - Edge click router with first-party cookie and SHA-256-hashed IP
 - Identity stitching (`POST /attribution/identify`) with late-binding backlog attribution
-- Event ingest (`POST /attribution/events`) and Stripe webhook mapping
-- Four attribution models — `last_click`, `first_click`, `linear`, `position` — with per-campaign selection, re-derivable from raw tables
+- Event ingest (`POST /attribution/events`) and Stripe webhook mapping (idempotent on retries)
+- Four attribution models — `last_click`, `first_click`, `linear`, `position` — per-campaign, re-derivable from raw tables
 - Commission accrual + review queue (approve / reverse) + Stripe Connect Standard payouts with idempotent transfers
-- Three deployment modes gated by `OPENPARTNER_MODE`: `selfhost`, `flat` (Stripe subscription), `revshare` (3% platform fee)
 - Click velocity limits with an admin fraud-review queue that replays skipped attributions on unflag
-- Scoped API keys (`partners:write`, `links:write`, `commissions:read`, …) — the federation contract that lets an external creator-network service provision Partner + Link rows on this instance over REST
 - Outbound webhooks with HMAC-SHA256 signing and per-event redelivery
-- Portable JSON + CSV export per table; full bundle export round-trippable into another instance via `POST /import`
-- Partner dashboard + admin overview + fraud review + partner funnel analytics in the portal
+
+**Auth + personas**
+
+- WordPress-style first-run `/install` wizard — admin account, program name, mail transport in one flow
+- Admin accounts as first-class personas (not a shared token) — magic-link signin, invite/revoke/reinstate, last-active-admin guard
+- Partner accounts via admin-invited magic-link — no admin-visible credentials, partners create their own API keys
+- `ADMIN_API_KEY` env stays as bootstrap / headless / CI path
+- Revoke flow for both admins and partners: sessions killed, reason stored, optional email notification
+
+**Configuration**
+
+- Program name + support email editable from the admin Settings UI (not env)
+- Mail transport (SMTP / Postmark / console) editable from the UI, SMTP passwords + Postmark tokens encrypted at rest with `SECRETS_ENCRYPTION_KEY`
+- Env vars (`SMTP_*`, `POSTMARK_*`, `MAIL_FROM`) remain as deploy-time fallbacks
+- Three deployment modes gated by `OPENPARTNER_MODE`: `selfhost`, `flat` (Stripe subscription), `revshare` (3% platform fee)
+
+**Integration surface**
+
+- Scoped API keys (`partners:write`, `links:write`, `commissions:read`, …) — the federation contract that lets an external creator-network service provision Partner + Link rows on this instance over REST
 - `@openpartner/sdk` on npm with browser and server entries
+- Portable JSON + CSV export per table; full bundle round-trippable via `POST /import`
+
+**Operations**
+
+- Partner dashboard + admin overview + fraud review + partner funnel analytics in the portal
 - Prometheus `/metrics` + X-Request-Id correlation
 - Deployment: DigitalOcean App Platform spec + single-host `docker-compose.prod.yml` behind Caddy
 
 ### Not in this repo
 
-A creator-discovery / two-sided network layer (vendors publish offerings, creators apply, federation provisions partnerships into vendor instances) is available as a separate hosted service. OpenPartner OSS instances integrate with it via scoped API keys.
+A creator-discovery / two-sided network layer (vendors publish offerings, creators apply, federation provisions partnerships into vendor instances) lives in a separate private repo. OpenPartner OSS instances integrate with it via the scoped-API-key federation contract described above.
