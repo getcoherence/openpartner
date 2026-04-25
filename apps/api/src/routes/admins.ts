@@ -37,14 +37,6 @@ async function getProgramName(): Promise<string | null> {
   return value.programName ?? null;
 }
 
-async function activeAdminCount(trx?: typeof db): Promise<number> {
-  const [row] = await (trx ?? db)<AdminRow>(TABLES.Admin)
-    .whereNotNull('activatedAt')
-    .whereNull('revokedAt')
-    .count<{ count: string }[]>({ count: '*' });
-  return Number(row?.count ?? 0);
-}
-
 async function sendInvite(admin: AdminRow): Promise<void> {
   const issued = await issueMagicLink({
     email: admin.email,
@@ -93,6 +85,7 @@ adminsRouter.post('/admins', requireAuth, requireAdmin, async (req, res) => {
 adminsRouter.post('/admins/:id/invite', requireAuth, requireAdmin, async (req, res) => {
   const admin = await db<AdminRow>(TABLES.Admin).where({ id: req.params.id }).first();
   if (!admin) return res.status(404).json({ error: 'not_found' });
+  if (admin.revokedAt) return res.status(409).json({ error: 'admin_revoked' });
   if (admin.activatedAt) return res.status(409).json({ error: 'already_activated' });
   await sendInvite(admin);
   res.json({ ok: true });
@@ -100,40 +93,63 @@ adminsRouter.post('/admins/:id/invite', requireAuth, requireAdmin, async (req, r
 
 // -------- Revoke --------
 
+class RevokeGuardError extends Error {
+  constructor(public code: string) {
+    super(code);
+  }
+}
+
 adminsRouter.post('/admins/:id/revoke', requireAuth, requireAdmin, async (req, res) => {
   const body = revokeSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const admin = await db<AdminRow>(TABLES.Admin).where({ id: req.params.id }).first();
-  if (!admin) return res.status(404).json({ error: 'not_found' });
-  if (admin.revokedAt) return res.status(409).json({ error: 'already_revoked' });
-
-  // Guard: can't revoke yourself when you're a session-sourced admin.
-  // Env-sourced admins (ADMIN_API_KEY) don't have an adminId — they can.
   const caller = req.principal;
-  if (caller?.role === 'admin' && caller.source === 'session' && caller.adminId === admin.id) {
-    return res.status(409).json({ error: 'cannot_revoke_self' });
-  }
-
-  // Guard: never drop the count of active admins to zero via revoke.
-  // If only one active admin remains and they're the one being revoked,
-  // refuse unless ADMIN_API_KEY was used (env-admin can still get in).
-  const count = await activeAdminCount();
-  if (count <= 1 && admin.activatedAt && !admin.revokedAt) {
-    return res.status(409).json({ error: 'cannot_revoke_last_active_admin' });
-  }
-
   const now = new Date();
-  await db.transaction(async (trx) => {
-    await trx<AdminRow>(TABLES.Admin)
-      .where({ id: admin.id })
-      .update({ revokedAt: now, revokeReason: body.data.reason ?? null, updatedAt: now });
-    // Kill admin sessions like we do for partners.
-    await trx<SessionRow>(TABLES.Session)
-      .where({ principalKind: 'admin', principalId: admin.id })
-      .whereNull('revokedAt')
-      .update({ revokedAt: now });
-  });
+
+  try {
+    await db.transaction(async (trx) => {
+      // Lock the target admin + all active admins FOR UPDATE so
+      // concurrent revoke calls serialize. Without this, two simultaneous
+      // revokes of the only two active admins both pass the "count > 1"
+      // check and lock everyone out.
+      const admin = await trx<AdminRow>(TABLES.Admin).where({ id: req.params.id }).forUpdate().first();
+      if (!admin) throw new RevokeGuardError('not_found');
+      if (admin.revokedAt) throw new RevokeGuardError('already_revoked');
+
+      // Can't revoke yourself (session-sourced admins only — env-bearer
+      // callers are a headless / emergency path and can revoke anyone).
+      if (caller?.role === 'admin' && caller.source === 'session' && caller.adminId === admin.id) {
+        throw new RevokeGuardError('cannot_revoke_self');
+      }
+
+      // Last-active-admin guard inside the same tx. Count active admins
+      // under FOR UPDATE so the count is stable through commit.
+      const actives = await trx<AdminRow>(TABLES.Admin)
+        .whereNotNull('activatedAt')
+        .whereNull('revokedAt')
+        .forUpdate();
+      const willRemove = admin.activatedAt && !admin.revokedAt;
+      if (willRemove && actives.length <= 1) {
+        throw new RevokeGuardError('cannot_revoke_last_active_admin');
+      }
+
+      await trx<AdminRow>(TABLES.Admin)
+        .where({ id: admin.id })
+        .update({ revokedAt: now, revokeReason: body.data.reason ?? null, updatedAt: now });
+      // Kill admin sessions.
+      await trx<SessionRow>(TABLES.Session)
+        .where({ principalKind: 'admin', principalId: admin.id })
+        .whereNull('revokedAt')
+        .update({ revokedAt: now });
+    });
+  } catch (err) {
+    if (err instanceof RevokeGuardError) {
+      const status = err.code === 'not_found' ? 404 : 409;
+      return res.status(status).json({ error: err.code });
+    }
+    throw err;
+  }
+
   res.json({ ok: true, revokedAt: now });
 });
 

@@ -25,12 +25,7 @@ import {
 } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
-import {
-  adminSigninEmail,
-  buildMagicLinkUrl,
-  partnerRevokedEmail,
-  partnerSigninEmail,
-} from '../email-templates.js';
+import { adminSigninEmail, buildMagicLinkUrl, partnerSigninEmail } from '../email-templates.js';
 
 export const partnerAuthRouter = Router();
 
@@ -71,36 +66,29 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
   }
 
   const partner = await db<PartnerRow>(TABLES.Partner).where({ email }).first();
-  if (partner?.activatedAt) {
-    if (partner.revokedAt) {
-      const tmpl = partnerRevokedEmail(partner.name, partner.revokeReason);
-      await getMailer().send({
-        to: email,
-        subject: tmpl.subject,
-        text: tmpl.text,
-        html: tmpl.html,
-        tag: 'partner_revoked',
-        metadata: { purpose: 'partner_revoked_signin_attempt', partnerId: partner.id },
-      });
-    } else {
-      const issued = await issueMagicLink({
-        email,
-        purpose: 'partner_signin',
-        principalKind: 'partner',
-        principalId: partner.id,
-      });
-      const tmpl = partnerSigninEmail(partner.name, buildMagicLinkUrl(issued.plaintext));
-      await getMailer().send({
-        to: email,
-        subject: tmpl.subject,
-        text: tmpl.text,
-        html: tmpl.html,
-        tag: 'partner_signin',
-        metadata: { purpose: 'partner_signin', partnerId: partner.id },
-      });
-    }
+  // Revoked partners fall through silently — they were notified at
+  // revoke time (if admin opted in) and emailing on every signin
+  // attempt turns /auth/signin into a harassment vector: anyone can
+  // cause arbitrary emails to the victim by POSTing their address
+  // here repeatedly.
+  if (partner?.activatedAt && !partner.revokedAt) {
+    const issued = await issueMagicLink({
+      email,
+      purpose: 'partner_signin',
+      principalKind: 'partner',
+      principalId: partner.id,
+    });
+    const tmpl = partnerSigninEmail(partner.name, buildMagicLinkUrl(issued.plaintext));
+    await getMailer().send({
+      to: email,
+      subject: tmpl.subject,
+      text: tmpl.text,
+      html: tmpl.html,
+      tag: 'partner_signin',
+      metadata: { purpose: 'partner_signin', partnerId: partner.id },
+    });
   }
-  // Unknown / pending / revoked-admin → silent 200. No email sent.
+  // Unknown / pending / revoked → silent 200. No email sent.
   res.json({ ok: true });
 });
 

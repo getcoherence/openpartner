@@ -22,6 +22,10 @@ import { saveMailSettings } from '../mail-settings.js';
 
 export const installRouter = Router();
 
+class AlreadyInstalledError extends Error {
+  readonly name = 'AlreadyInstalledError';
+}
+
 const installLimit = ipRateLimit({ name: 'install', max: 5, windowMs: 60_000 });
 
 const installSchema = z.object({
@@ -65,43 +69,63 @@ installRouter.get('/install/status', async (_req, res) => {
   res.json({ needsSetup: Number(row?.count ?? 0) === 0 });
 });
 
+/** Deterministic pg advisory-lock key — any 64-bit int, as long as this
+ *  is the only caller. Different from 0 to avoid collision with the
+ *  naive "no lock" sentinel some libraries use. */
+const INSTALL_ADVISORY_LOCK = 49_1092_4719;
+
 installRouter.post('/install', installLimit, async (req, res) => {
   const body = installSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
-
-  const [existing] = await db<AdminRow>(TABLES.Admin)
-    .whereNotNull('activatedAt')
-    .whereNull('revokedAt')
-    .count<{ count: string }[]>({ count: '*' });
-  if (Number(existing?.count ?? 0) > 0) {
-    return res.status(409).json({ error: 'already_installed' });
-  }
 
   const adminEmail = body.data.adminEmail.toLowerCase();
   const programName = body.data.programName.trim();
   const supportEmail = body.data.supportEmail?.trim() || null;
   const now = new Date();
 
-  await db.transaction(async (trx) => {
-    // Program settings first so the admin-invite email can brand the subject.
-    await trx<ConfigRow>(TABLES.Config)
-      .insert({
-        key: 'program_settings',
-        value: { programName, supportEmail } as unknown as never,
-        updatedAt: now,
-      })
-      .onConflict('key')
-      .merge({ value: { programName, supportEmail } as unknown as never, updatedAt: now });
+  let adminId: string | null = null;
+  try {
+    await db.transaction(async (trx) => {
+      // Serialize concurrent installers. The advisory lock is auto-
+      // released when the transaction commits / rolls back. Inside
+      // the lock, re-check the "no admin exists yet" invariant — a
+      // check outside the lock (TOCTOU) would let two concurrent
+      // installers both think they're first.
+      await trx.raw('SELECT pg_advisory_xact_lock(?)', [INSTALL_ADVISORY_LOCK]);
 
-    // Create the admin row; activation happens on magic-link verify.
-    const id = ulid();
-    await trx<AdminRow>(TABLES.Admin).insert({
-      id,
-      email: adminEmail,
-      name: body.data.adminName.trim(),
-      activatedAt: null,
+      // Block on ANY admin row (activated or not): while a first-run
+      // magic-link is outstanding, a second installer shouldn't be
+      // able to sneak their own pending admin in.
+      const [existing] = await trx<AdminRow>(TABLES.Admin).count<{ count: string }[]>({ count: '*' });
+      if (Number(existing?.count ?? 0) > 0) {
+        throw new AlreadyInstalledError();
+      }
+
+      await trx<ConfigRow>(TABLES.Config)
+        .insert({
+          key: 'program_settings',
+          value: { programName, supportEmail } as unknown as never,
+          updatedAt: now,
+        })
+        .onConflict('key')
+        .merge({ value: { programName, supportEmail } as unknown as never, updatedAt: now });
+
+      const id = ulid();
+      await trx<AdminRow>(TABLES.Admin).insert({
+        id,
+        email: adminEmail,
+        name: body.data.adminName.trim(),
+        activatedAt: null,
+      });
+      adminId = id;
     });
-  });
+  } catch (err) {
+    if (err instanceof AlreadyInstalledError) {
+      return res.status(409).json({ error: 'already_installed' });
+    }
+    throw err;
+  }
+  if (!adminId) return res.status(500).json({ error: 'install_failed' });
 
   // Mail config is saved outside the tx because saveMailSettings opens
   // its own upsert. A failure here doesn't roll back admin creation —

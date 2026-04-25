@@ -223,8 +223,9 @@ describe.skipIf(skipIntegration)('partner invite + signin', () => {
     expect(mailer.sent.length).toBe(0);
   });
 
-  it('signin for a revoked partner sends the suspension notice, not a magic link', async () => {
-    // Invite + activate + revoke.
+  it('signin for a revoked partner is silent — no email, no enumeration leak', async () => {
+    // Invite + activate + revoke (notify=false so there's no inbox noise
+    // from the revoke itself — we want to observe the signin path).
     const created = await request(app)
       .post('/partners')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
@@ -241,11 +242,9 @@ describe.skipIf(skipIntegration)('partner invite + signin', () => {
     expect(signin.status).toBe(200);
     expect(signin.body.ok).toBe(true);
 
-    // Partner gets the suspension notice (with reason), not a signin link.
-    const notice = mailer.findFor('after@example.com', 'partner_revoked');
-    expect(notice).toBeDefined();
-    expect(notice!.text).toContain('Program closed');
-    expect(mailer.findFor('after@example.com', 'partner_signin')).toBeUndefined();
+    // No email should be sent — earlier behavior let an attacker spam
+    // the victim by repeatedly hitting /auth/signin with their address.
+    expect(mailer.sent.length).toBe(0);
   });
 
   it('resend invite generates a fresh token and 409s once the partner is already activated', async () => {
