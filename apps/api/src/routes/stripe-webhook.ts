@@ -7,7 +7,16 @@ import { attributeEvent } from '../attribution.js';
 import { persistMerchantSubscription } from './billing.js';
 
 const stripeKey = process.env.STRIPE_SECRET_KEY;
-const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+// STRIPE_WEBHOOK_SECRET accepts either a single secret or a comma-separated
+// list. Stripe's new "Event destinations" UI splits platform-account events
+// (checkout.*, invoice.*, customer.*) and connected-account events
+// (account.updated, transfer.*) into separate destinations, each with its own
+// signing secret. Both destinations point at the same /webhooks/stripe URL —
+// we just need to verify against any configured secret.
+const webhookSecrets = (process.env.STRIPE_WEBHOOK_SECRET ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 const stripe = stripeKey ? new Stripe(stripeKey) : null;
 
@@ -30,19 +39,23 @@ stripeWebhookRouter.post(
   '/webhooks/stripe',
   raw({ type: 'application/json' }),
   async (req, res) => {
-    if (!stripe || !webhookSecret) {
+    if (!stripe || webhookSecrets.length === 0) {
       return res.status(503).json({ error: 'stripe_not_configured' });
     }
 
     const sig = req.header('stripe-signature');
     if (!sig) return res.status(400).json({ error: 'missing_signature' });
 
-    let event: Stripe.Event;
-    try {
-      event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
-    } catch {
-      return res.status(400).json({ error: 'invalid_signature' });
+    let event: Stripe.Event | null = null;
+    for (const secret of webhookSecrets) {
+      try {
+        event = stripe.webhooks.constructEvent(req.body, sig, secret);
+        break;
+      } catch {
+        // Try the next secret. If none match we'll fall through to 400.
+      }
     }
+    if (!event) return res.status(400).json({ error: 'invalid_signature' });
 
     const connectResult = await handleConnectEvent(event);
     if (connectResult) return res.json({ ok: true, connect: connectResult });
