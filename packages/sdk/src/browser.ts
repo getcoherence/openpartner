@@ -63,6 +63,22 @@ export class OpenPartner {
     return localStorage.getItem(this.config.storageKey);
   }
 
+  /**
+   * Captured referral token for this visitor. Pass to Stripe Checkout
+   * as `client_reference_id` to enable webhook-based attribution
+   * without an explicit identify() call:
+   *
+   *   stripe.checkout.sessions.create({
+   *     client_reference_id: op.getReferral() ?? undefined,
+   *     // ...
+   *   });
+   *
+   * Returns null if the visitor didn't arrive via a partner link.
+   */
+  getReferral(): string | null {
+    return this.getCref();
+  }
+
   /** Explicitly discard the captured cref. */
   clear(): void {
     if (typeof localStorage === 'undefined') return;

@@ -1,7 +1,7 @@
 import { Router, raw } from 'express';
 import Stripe from 'stripe';
 import { ulid } from 'ulid';
-import { TABLES, type EventRow, type PartnerRow, type PayoutRow } from '@openpartner/db';
+import { TABLES, type ClickRow, type EventRow, type IdentityRow, type PartnerRow, type PayoutRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { attributeEvent } from '../attribution.js';
 import { persistMerchantSubscription } from './billing.js';
@@ -110,6 +110,12 @@ async function handleConnectEvent(event: Stripe.Event): Promise<string | null> {
     }
     case 'checkout.session.completed': {
       const session = event.data.object as Stripe.Checkout.Session;
+      // Disambiguator: a Rewardful-style merchant→customer checkout carries
+      // client_reference_id (the cref). Our merchant→OpenPartner subscription
+      // checkout (created in billing.ts) doesn't. So presence of
+      // client_reference_id means "skip the merchant-subscription path and
+      // let mapStripeEvent do attribution."
+      if (session.client_reference_id) return null;
       if (session.mode === 'subscription' && typeof session.customer === 'string' && typeof session.subscription === 'string') {
         await persistMerchantSubscription(session.customer, session.subscription);
         return 'merchant_subscription_persisted';
@@ -142,6 +148,40 @@ interface MappedEvent {
 
 async function mapStripeEvent(stripe: Stripe, event: Stripe.Event): Promise<MappedEvent | null> {
   switch (event.type) {
+    case 'checkout.session.completed': {
+      // Rewardful-style flow: merchant adds client_reference_id (the cref)
+      // to Stripe Checkout. We stitch the resulting Stripe customer to that
+      // click here, so subsequent invoice.paid / subscription events resolve
+      // without an explicit op.identify() call from the merchant's app.
+      const session = event.data.object as Stripe.Checkout.Session;
+      const cref = session.client_reference_id;
+      const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
+      if (!cref || !customerId) return null;
+
+      // Validate the cref points at a real Click — silently drop unknowns
+      // so a bad client_reference_id can't inflate a partner's numbers.
+      const click = await db<ClickRow>(TABLES.Click).where({ id: cref }).first();
+      if (!click) return null;
+
+      await db<IdentityRow>(TABLES.Identity)
+        .insert({ id: ulid(), clickId: cref, userId: customerId })
+        .onConflict(['clickId', 'userId'])
+        .ignore();
+
+      // Backfill metadata so the cheaper resolve path (metadata lookup)
+      // works for downstream invoice.paid / subscription events. Best-
+      // effort: if the API call fails (deleted customer, network blip),
+      // resolveUserIdFromCustomer will fall back to the Identity table.
+      try {
+        await stripe.customers.update(customerId, {
+          metadata: { openpartner_user_id: customerId },
+        });
+      } catch {
+        // Non-fatal.
+      }
+
+      return { userId: customerId, type: 'signup' };
+    }
     case 'customer.created': {
       const customer = event.data.object as Stripe.Customer;
       const userId = customer.metadata?.openpartner_user_id;
@@ -175,11 +215,25 @@ async function resolveUserIdFromCustomer(
   customer: string | Stripe.Customer | Stripe.DeletedCustomer | null,
 ): Promise<string | null> {
   if (!customer) return null;
+  let customerId: string | null = null;
+  let metadataUserId: string | null = null;
+
   if (typeof customer === 'string') {
+    customerId = customer;
     const fetched = await stripe.customers.retrieve(customer);
-    if (fetched.deleted) return null;
-    return fetched.metadata?.openpartner_user_id ?? null;
+    if (!fetched.deleted) metadataUserId = fetched.metadata?.openpartner_user_id ?? null;
+  } else {
+    if ('deleted' in customer && customer.deleted) return null;
+    customerId = (customer as Stripe.Customer).id;
+    metadataUserId = (customer as Stripe.Customer).metadata?.openpartner_user_id ?? null;
   }
-  if ('deleted' in customer && customer.deleted) return null;
-  return (customer as Stripe.Customer).metadata?.openpartner_user_id ?? null;
+
+  if (metadataUserId) return metadataUserId;
+  if (!customerId) return null;
+
+  // Fallback: Stripe Billing flow stitches Identity rows with userId =
+  // customer.id. This covers the race where invoice.paid arrives before our
+  // metadata-backfill on checkout.session.completed lands on Stripe's side.
+  const identity = await db<IdentityRow>(TABLES.Identity).where({ userId: customerId }).first();
+  return identity ? customerId : null;
 }
