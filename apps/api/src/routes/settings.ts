@@ -14,7 +14,12 @@ import { z } from 'zod';
 import { TABLES, type ConfigRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
-import { getPublicMailSettings, saveMailSettings, type MailTransportKind } from '../mail-settings.js';
+import {
+  MailSettingsValidationError,
+  getPublicMailSettings,
+  saveMailSettings,
+  type MailTransportKind,
+} from '../mail-settings.js';
 
 export const settingsRouter = Router();
 
@@ -94,11 +99,18 @@ settingsRouter.post('/config/mail', requireAuth, requireAdmin, async (req, res) 
   const body = mailSettingsSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  await saveMailSettings({
-    kind: body.data.kind as MailTransportKind,
-    from: body.data.from === '' ? null : body.data.from ?? undefined,
-    smtp: body.data.smtp,
-    postmark: body.data.postmark,
-  });
+  try {
+    await saveMailSettings({
+      kind: body.data.kind as MailTransportKind,
+      from: body.data.from === '' ? null : body.data.from ?? undefined,
+      smtp: body.data.smtp,
+      postmark: body.data.postmark,
+    });
+  } catch (err) {
+    if (err instanceof MailSettingsValidationError) {
+      return res.status(400).json({ error: err.code, field: err.field });
+    }
+    throw err;
+  }
   res.json(await getPublicMailSettings());
 });

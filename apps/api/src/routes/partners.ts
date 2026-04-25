@@ -33,17 +33,36 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
   const sendInvite = body.data.sendInvite !== false;
   const email = body.data.email.toLowerCase();
   const id = ulid();
-  const [partner] = await db<PartnerRow>(TABLES.Partner)
-    .insert({
-      id,
-      email,
-      name: body.data.name,
-      metadata: body.data.metadata ?? {},
-      // sendInvite=false means the caller is responsible for activating
-      // (federation client, admin seeding, etc); skip the pending state.
-      activatedAt: sendInvite ? null : new Date(),
-    })
-    .returning('*');
+
+  // Duplicate-email pre-check — we'd rather 409 with a clean error than
+  // let Postgres throw a unique-constraint violation that would surface
+  // to the admin as a generic 500. Race between the check + insert is
+  // caught below via the unique-violation path.
+  const existing = await db<PartnerRow>(TABLES.Partner).where({ email }).first();
+  if (existing) return res.status(409).json({ error: 'email_taken' });
+
+  let partner;
+  try {
+    [partner] = await db<PartnerRow>(TABLES.Partner)
+      .insert({
+        id,
+        email,
+        name: body.data.name,
+        metadata: body.data.metadata ?? {},
+        // sendInvite=false means the caller is responsible for activating
+        // (federation client, admin seeding, etc); skip the pending state.
+        activatedAt: sendInvite ? null : new Date(),
+      })
+      .returning('*');
+  } catch (err) {
+    // Race: two concurrent POSTs with the same email both pass the
+    // pre-check and try to insert. The second one hits the unique
+    // constraint on Partner.email.
+    if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505') {
+      return res.status(409).json({ error: 'email_taken' });
+    }
+    throw err;
+  }
 
   if (sendInvite) {
     const issued = await issueMagicLink({ email, purpose: 'partner_invite', principalKind: 'partner', principalId: id });

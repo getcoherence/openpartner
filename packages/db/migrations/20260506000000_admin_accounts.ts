@@ -88,7 +88,9 @@ export async function down(knex: Knex): Promise<void> {
     where "principalKind" = 'partner'
   `);
   await knex.schema.alterTable('MagicLinkToken', (t) => {
-    t.dropIndex(['principalKind', 'principalId']);
+    // (No dropIndex here — up() never added an index on
+    // MagicLinkToken's (principalKind, principalId); the index is
+    // only on Session.)
     t.dropColumn('principalKind');
     t.dropColumn('principalId');
     t.foreign('partnerId').references('id').inTable('Partner').onDelete('CASCADE');

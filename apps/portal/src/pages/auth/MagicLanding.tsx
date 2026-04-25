@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { api, clearApiKey } from '../../api.js';
 import { theme } from '../../theme.js';
 import { AuthFrame } from './Shared.js';
@@ -13,6 +14,7 @@ import { AuthFrame } from './Shared.js';
 export function MagicLandingPage() {
   const [params] = useSearchParams();
   const nav = useNavigate();
+  const qc = useQueryClient();
   const [state, setState] = useState<'verifying' | 'ok' | 'failed'>('verifying');
   const [detail, setDetail] = useState<string | null>(null);
 
@@ -26,6 +28,12 @@ export function MagicLandingPage() {
     clearApiKey();
     api<{ ok: boolean }>('/auth/magic/verify', { method: 'POST', body: { token } })
       .then(() => {
+        // After a successful first-run activation the install-status
+        // probe was cached (staleTime: Infinity) with needsSetup=true
+        // from app boot, so / would redirect right back to /install.
+        // Invalidate so the Shell re-reads and admits the newly
+        // activated admin into the dashboard.
+        qc.invalidateQueries({ queryKey: ['install-status'] });
         setState('ok');
         setTimeout(() => nav('/', { replace: true }), 400);
       })
@@ -35,7 +43,7 @@ export function MagicLandingPage() {
           err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : 'Link is invalid or expired.',
         );
       });
-  }, [nav, params]);
+  }, [nav, params, qc]);
 
   return (
     <AuthFrame title="Signing you in" subtitle="One moment…">

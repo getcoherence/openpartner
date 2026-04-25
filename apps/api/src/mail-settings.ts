@@ -186,6 +186,12 @@ export interface MailSettingsInput {
   } | null;
 }
 
+export class MailSettingsValidationError extends Error {
+  constructor(public readonly code: string, public readonly field?: string) {
+    super(code);
+  }
+}
+
 export async function saveMailSettings(input: MailSettingsInput): Promise<void> {
   const current = (await readStored()) ?? ({ kind: null, from: null } as StoredMailSettings);
 
@@ -197,9 +203,14 @@ export async function saveMailSettings(input: MailSettingsInput): Promise<void> 
   if (next.kind === 'smtp') {
     const prevSmtp = current.smtp ?? null;
     const s = input.smtp ?? null;
+    const host = s?.host ?? prevSmtp?.host ?? '';
+    // Saving kind='smtp' without a host would succeed silently and
+    // then blow up at first email. Reject at the boundary.
+    if (!host.trim()) throw new MailSettingsValidationError('smtp_host_required', 'smtp.host');
+    if (!next.from) throw new MailSettingsValidationError('from_required', 'from');
     const rotated = s?.password !== undefined && s.password !== '';
     next.smtp = {
-      host: s?.host ?? prevSmtp?.host ?? '',
+      host,
       port: s?.port ?? prevSmtp?.port ?? 587,
       secure: s?.secure ?? prevSmtp?.secure ?? false,
       user: s?.user ?? prevSmtp?.user ?? null,
@@ -213,7 +224,8 @@ export async function saveMailSettings(input: MailSettingsInput): Promise<void> 
     const p = input.postmark ?? null;
     const rotated = p?.serverToken !== undefined && p.serverToken !== '';
     const token = rotated ? encryptSecret(p!.serverToken as string) : prevPm?.serverTokenCiphertext;
-    if (!token) throw new Error('postmark serverToken required');
+    if (!token) throw new MailSettingsValidationError('postmark_server_token_required', 'postmark.serverToken');
+    if (!next.from) throw new MailSettingsValidationError('from_required', 'from');
     next.postmark = {
       serverTokenCiphertext: token,
       messageStream: p?.messageStream ?? prevPm?.messageStream ?? 'outbound',
