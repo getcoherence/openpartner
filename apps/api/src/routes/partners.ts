@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
-import { TABLES, type PartnerRow, type SessionRow } from '@openpartner/db';
+import { TABLES, type ApiKeyRow, type PartnerRow, type SessionRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { issueMagicLink } from '../auth-sessions.js';
@@ -112,8 +112,16 @@ partnersRouter.post('/partners/:id/revoke', requireAuth, requireAdmin, async (re
     await trx<PartnerRow>(TABLES.Partner)
       .where({ id: partner.id })
       .update({ revokedAt: now, revokeReason: reason, updatedAt: now });
+    // Kill every authentication channel they hold: web sessions AND
+    // their partner-scoped API keys. Leaving ApiKey rows live meant a
+    // revoked partner retained programmatic access even though their
+    // dashboard cookie was killed.
     await trx<SessionRow>(TABLES.Session)
       .where({ principalKind: 'partner', principalId: partner.id })
+      .whereNull('revokedAt')
+      .update({ revokedAt: now });
+    await trx<ApiKeyRow>(TABLES.ApiKey)
+      .where({ partnerId: partner.id })
       .whereNull('revokedAt')
       .update({ revokedAt: now });
   });

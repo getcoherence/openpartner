@@ -28,33 +28,51 @@ class AlreadyInstalledError extends Error {
 
 const installLimit = ipRateLimit({ name: 'install', max: 5, windowMs: 60_000 });
 
-const installSchema = z.object({
-  adminName: z.string().trim().min(1).max(120),
-  adminEmail: z.string().trim().email().max(254),
-  programName: z.string().trim().min(1).max(120),
-  supportEmail: z.string().trim().email().max(254).optional().or(z.literal('')),
-  mail: z
-    .object({
-      kind: z.enum(['smtp', 'postmark', 'none']),
-      from: z.string().trim().max(254).optional(),
-      smtp: z
-        .object({
-          host: z.string().trim().min(1).max(253),
-          port: z.number().int().min(1).max(65535).default(587),
-          secure: z.boolean().default(false),
-          user: z.string().trim().max(320).optional(),
-          password: z.string().max(500).optional(),
-        })
-        .optional(),
-      postmark: z
-        .object({
-          serverToken: z.string().min(1).max(500),
-          messageStream: z.string().trim().max(120).default('outbound'),
-        })
-        .optional(),
-    })
-    .optional(),
-});
+const installSchema = z
+  .object({
+    adminName: z.string().trim().min(1).max(120),
+    adminEmail: z.string().trim().email().max(254),
+    programName: z.string().trim().min(1).max(120),
+    supportEmail: z.string().trim().email().max(254).optional().or(z.literal('')),
+    mail: z
+      .object({
+        kind: z.enum(['smtp', 'postmark', 'none']),
+        from: z.string().trim().max(254).optional(),
+        smtp: z
+          .object({
+            host: z.string().trim().min(1).max(253),
+            port: z.number().int().min(1).max(65535).default(587),
+            secure: z.boolean().default(false),
+            user: z.string().trim().max(320).optional(),
+            password: z.string().max(500).optional(),
+          })
+          .optional(),
+        postmark: z
+          .object({
+            serverToken: z.string().min(1).max(500),
+            messageStream: z.string().trim().max(120).default('outbound'),
+          })
+          .optional(),
+      })
+      .optional(),
+  })
+  // Cross-field invariants: picking smtp/postmark without the minimum
+  // required fields would let the install "succeed" only to then
+  // silently drop the activation email (wrong From header, no host, no
+  // token). Reject at the boundary instead.
+  .superRefine((val, ctx) => {
+    const m = val.mail;
+    if (!m || m.kind === 'none') return;
+    if (!m.from || !m.from.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mail', 'from'], message: 'required when kind is smtp or postmark' });
+    }
+    if (m.kind === 'smtp' && !m.smtp?.host) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mail', 'smtp', 'host'], message: 'required when kind is smtp' });
+    }
+    if (m.kind === 'postmark' && !m.postmark?.serverToken) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mail', 'postmark', 'serverToken'], message: 'required when kind is postmark' });
+    }
+  });
 
 /**
  * Public status probe used by the portal to decide whether to route to
@@ -127,36 +145,47 @@ installRouter.post('/install', installLimit, async (req, res) => {
   }
   if (!adminId) return res.status(500).json({ error: 'install_failed' });
 
-  // Mail config is saved outside the tx because saveMailSettings opens
-  // its own upsert. A failure here doesn't roll back admin creation —
-  // admin can fix from Settings → Mail after installing.
-  if (body.data.mail) {
-    await saveMailSettings({
-      kind: body.data.mail.kind,
-      from: body.data.mail.from,
-      smtp: body.data.mail.smtp,
-      postmark: body.data.mail.postmark,
-    });
-  }
+  // Finish the install in a compensating try/catch: if mail config OR
+  // the invite send fails, roll back the Admin row we just created so
+  // /install can be retried. Without this, a partial failure here
+  // would leave an unactivated admin in the table and /install's
+  // "any admin exists" guard would 409 every subsequent attempt — the
+  // only escape being manual DB surgery or env-key intervention.
+  try {
+    if (body.data.mail) {
+      await saveMailSettings({
+        kind: body.data.mail.kind,
+        from: body.data.mail.from,
+        smtp: body.data.mail.smtp,
+        postmark: body.data.mail.postmark,
+      });
+    }
 
-  // Send invite outside the transaction so mail failures don't roll back.
-  const admin = await db<AdminRow>(TABLES.Admin).where({ email: adminEmail }).first();
-  if (admin) {
     const issued = await issueMagicLink({
       email: adminEmail,
       purpose: 'admin_invite',
       principalKind: 'admin',
-      principalId: admin.id,
+      principalId: adminId,
     });
-    const tmpl = adminInviteEmail(admin.name, buildMagicLinkUrl(issued.plaintext), programName);
+    const tmpl = adminInviteEmail(body.data.adminName.trim(), buildMagicLinkUrl(issued.plaintext), programName);
     await getMailer().send({
       to: adminEmail,
       subject: tmpl.subject,
       text: tmpl.text,
       html: tmpl.html,
       tag: 'admin_invite',
-      metadata: { purpose: 'admin_invite', adminId: admin.id, firstRun: true },
+      metadata: { purpose: 'admin_invite', adminId, firstRun: true },
     });
+  } catch (err) {
+    // Remove the admin row + any magic-link token we issued before the
+    // failure. MagicLinkToken has no FK to Admin since the schema was
+    // generalized, so clean it up explicitly.
+    await db.transaction(async (trx) => {
+      await trx('MagicLinkToken').where({ principalKind: 'admin', principalId: adminId }).del();
+      await trx<AdminRow>(TABLES.Admin).where({ id: adminId }).del();
+    });
+    const message = err instanceof Error ? err.message : 'install failed';
+    return res.status(502).json({ error: 'install_mail_failed', detail: message });
   }
 
   res.json({ ok: true });

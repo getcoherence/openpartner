@@ -58,9 +58,15 @@ export async function attributeEvent(
   const cleanClicks = clicks.filter((c) => !c.fraudFlag);
   if (cleanClicks.length === 0) return { status: 'no_click' };
 
-  // Revoked partners don't earn new attribution. We don't delete their
-  // historical commissions — admin reverses individually — but any event
-  // landing AFTER revokedAt no longer generates new rows for them.
+  // Revoked partners are excluded from attribution — any call landing
+  // here (whether a live event webhook or a replay via
+  // attributeBacklogForUser) skips them regardless of whether the event
+  // timestamp predates the revoke. This matches the admin-intent of
+  // "stop all earning for this partner going forward" and keeps backlog
+  // re-runs from retroactively shifting weight around a revoked
+  // partner. Historical attribution rows already in the table for the
+  // partner aren't deleted on revoke — admin reverses those manually
+  // via the commissions review queue if needed.
   const partnerIds = Array.from(new Set(cleanClicks.map((c) => c.partnerId)));
   const revokedPartners = await db('Partner').whereIn('id', partnerIds).whereNotNull('revokedAt').pluck('id');
   const revokedSet = new Set(revokedPartners as string[]);
