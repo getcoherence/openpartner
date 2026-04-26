@@ -3,8 +3,10 @@
  */
 
 import knex, { type Knex } from 'knex';
+import { sslFromConnectionString } from './ssl.js';
 
 export * from './types.js';
+export { sslFromConnectionString } from './ssl.js';
 
 export interface DbConfig {
   connectionString: string;
@@ -13,9 +15,12 @@ export interface DbConfig {
 }
 
 export function createDb(config: DbConfig): Knex {
+  const ssl = sslFromConnectionString(config.connectionString);
   return knex({
     client: 'pg',
-    connection: config.connectionString,
+    connection: ssl
+      ? { connectionString: config.connectionString, ssl }
+      : config.connectionString,
     pool: {
       min: config.poolMin ?? 2,
       max: config.poolMax ?? 10,

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import type { Knex } from 'knex';
+import { sslFromConnectionString } from './src/ssl.js';
 
 // In dev we run .ts migrations via tsx; in prod the package ships
 // compiled .js alongside this (also-compiled) knexfile, so the same
@@ -23,14 +24,22 @@ const common: Knex.Config = {
   },
 };
 
+function buildConnection(url: string | undefined): Knex.PgConnectionConfig | string | undefined {
+  if (!url) return undefined;
+  const ssl = sslFromConnectionString(url);
+  return ssl ? { connectionString: url, ssl } : url;
+}
+
+const devUrl = process.env.DATABASE_URL ?? 'postgres://openpartner:openpartner@localhost:5433/openpartner';
+
 const config: { [env: string]: Knex.Config } = {
   development: {
     ...common,
-    connection: process.env.DATABASE_URL ?? 'postgres://openpartner:openpartner@localhost:5433/openpartner',
+    connection: buildConnection(devUrl)!,
   },
   production: {
     ...common,
-    connection: process.env.DATABASE_URL,
+    connection: buildConnection(process.env.DATABASE_URL)!,
     pool: { min: 2, max: 10 },
   },
 };
