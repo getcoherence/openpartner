@@ -28,6 +28,8 @@ export function createDb(config: DbConfig): Knex {
 
 // Table name constants — import these instead of hardcoding strings.
 export const TABLES = {
+  Tenant: 'Tenant',
+  PlatformAdmin: 'PlatformAdmin',
   Partner: 'Partner',
   Campaign: 'Campaign',
   Link: 'Link',

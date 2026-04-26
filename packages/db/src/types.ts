@@ -6,6 +6,28 @@
  * between hosted and self-hosted tractable. If you add a column, update both.
  */
 
+/**
+ * Tenant: the top-level isolation boundary in multi-tenant deployments.
+ * In single-tenant (self-host) mode, every row's tenantId is the seeded
+ * 'default' tenant, so the same code paths work without changes.
+ */
+export interface TenantRow {
+  id: string;
+  slug: string;
+  displayName: string;
+  status: 'active' | 'suspended' | 'cancelled';
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  customDomain: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+  suspendedAt: Date | null;
+}
+
+/** ID of the seeded default tenant — used in single-host mode and during migration backfills. */
+export const DEFAULT_TENANT_ID = '01J0000000DEFAULTTENANT0000';
+
 export type CommissionRule =
   | { type: 'percent'; value: number; recurring?: boolean }
   | { type: 'fixed'; value: number; currency?: string; recurring?: boolean };
@@ -20,6 +42,7 @@ export type PayoutMethod = 'stripe_connect' | 'manual' | 'external';
 
 export interface PartnerRow {
   id: string;
+  tenantId: string;
   email: string;
   name: string;
   stripeConnectAccountId: string | null;
@@ -46,6 +69,7 @@ export type PrincipalKind = 'partner' | 'admin';
 
 export interface MagicLinkTokenRow {
   id: string;
+  tenantId: string;
   prefix: string;
   tokenHash: string;
   email: string;
@@ -59,6 +83,7 @@ export interface MagicLinkTokenRow {
 
 export interface SessionRow {
   id: string;
+  tenantId: string;
   prefix: string;
   tokenHash: string;
   principalKind: PrincipalKind;
@@ -71,6 +96,7 @@ export interface SessionRow {
 
 export interface AdminRow {
   id: string;
+  tenantId: string;
   email: string;
   name: string;
   activatedAt: Date | null;
@@ -81,8 +107,25 @@ export interface AdminRow {
   updatedAt: Date;
 }
 
+/**
+ * Platform admins are Coherence support staff who can read across all
+ * tenants for triage / debugging. Stored separately from tenant-scoped
+ * Admins. Their requests set `app.platform_admin = 'on'`, which RLS
+ * policies treat as a wildcard match.
+ */
+export interface PlatformAdminRow {
+  id: string;
+  email: string;
+  name: string;
+  /** Restrict scope: 'support' = read-only, 'admin' = read+write across tenants. */
+  role: 'support' | 'admin';
+  createdAt: Date;
+  revokedAt: Date | null;
+}
+
 export interface CampaignRow {
   id: string;
+  tenantId: string;
   name: string;
   commissionRule: CommissionRule;
   attributionWindowDays: number;
@@ -92,6 +135,7 @@ export interface CampaignRow {
 
 export interface LinkRow {
   id: string;
+  tenantId: string;
   linkKey: string;
   partnerId: string;
   campaignId: string;
@@ -103,6 +147,7 @@ export type ClickFraudFlag = 'velocity' | 'manual' | 'revoked' | null;
 
 export interface ClickRow {
   id: string;
+  tenantId: string;
   linkId: string;
   partnerId: string;
   campaignId: string;
@@ -116,6 +161,7 @@ export interface ClickRow {
 
 export interface IdentityRow {
   id: string;
+  tenantId: string;
   clickId: string;
   userId: string;
   stitchedAt: Date;
@@ -130,6 +176,7 @@ export type EventType =
 
 export interface EventRow {
   id: string;
+  tenantId: string;
   userId: string;
   type: EventType;
   value: string | null; // decimal comes back as string from pg
@@ -141,6 +188,7 @@ export interface EventRow {
 
 export interface AttributionRow {
   id: string;
+  tenantId: string;
   eventId: string;
   partnerId: string;
   campaignId: string;
@@ -152,6 +200,7 @@ export interface AttributionRow {
 
 export interface CommissionRow {
   id: string;
+  tenantId: string;
   attributionId: string;
   partnerId: string;
   amount: string; // decimal as string
@@ -163,6 +212,7 @@ export interface CommissionRow {
 }
 
 export interface ConfigRow {
+  tenantId: string;
   key: string;
   value: unknown;
   updatedAt: Date;
@@ -178,6 +228,7 @@ export type ApiScope =
 
 export interface ApiKeyRow {
   id: string;
+  tenantId: string;
   prefix: string;
   keyHash: string;
   partnerId: string | null;
@@ -200,6 +251,7 @@ export type WebhookEventType =
 
 export interface WebhookEndpointRow {
   id: string;
+  tenantId: string;
   url: string;
   secretPrefix: string;
   secret: string;
@@ -214,6 +266,7 @@ export type WebhookDeliveryStatus = 'pending' | 'delivered' | 'failed';
 
 export interface WebhookDeliveryRow {
   id: string;
+  tenantId: string;
   endpointId: string;
   eventId: string;
   eventType: WebhookEventType;
@@ -229,6 +282,7 @@ export interface WebhookDeliveryRow {
 
 export interface PayoutRow {
   id: string;
+  tenantId: string;
   partnerId: string;
   amount: string;
   currency: string;
