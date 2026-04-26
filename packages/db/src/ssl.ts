@@ -5,19 +5,37 @@
  * chain isn't in Node's default trust store. We map sslmode params to the
  * matching node-pg `ssl` shape:
  *
- *   sslmode=require | no-verify  → encrypted, no chain check
- *   sslmode=verify-ca | verify-full → encrypted, full chain check (deployment must
- *                                     have the CA in its trust store)
+ *   sslmode=require | no-verify   → encrypted, no chain check
+ *   sslmode=verify-ca | verify-full → encrypted, full chain check (deployment
+ *                                     must have the CA in its trust store)
  *   anything else → no ssl
  *
  * Used by both the runtime db factory (createDb) and the knex migration
  * runner (knexfile) so behavior is identical for app calls and migrations.
+ *
+ * Returns both the ssl config and a stripped URL: pg-connection-string
+ * (>= v2.7) treats sslmode=require as verify-full and overrides our
+ * explicit ssl object, so we strip the sslmode param from the URL when
+ * we're managing ssl ourselves.
  */
-export function sslFromConnectionString(url: string): true | { rejectUnauthorized: false } | undefined {
-  const lower = url.toLowerCase();
-  if (lower.includes('sslmode=verify-ca') || lower.includes('sslmode=verify-full')) return true;
-  if (lower.includes('sslmode=require') || lower.includes('sslmode=no-verify')) {
-    return { rejectUnauthorized: false };
+export interface SslResolution {
+  ssl: true | { rejectUnauthorized: false } | undefined;
+  url: string;
+}
+
+export function sslFromConnectionString(originalUrl: string): SslResolution {
+  const lower = originalUrl.toLowerCase();
+  let ssl: SslResolution['ssl'] = undefined;
+  if (lower.includes('sslmode=verify-ca') || lower.includes('sslmode=verify-full')) {
+    ssl = true;
+  } else if (lower.includes('sslmode=require') || lower.includes('sslmode=no-verify')) {
+    ssl = { rejectUnauthorized: false };
   }
-  return undefined;
+  // Strip sslmode + any leftover separator so pg doesn't re-derive ssl.
+  const url = originalUrl
+    .replace(/([?&])sslmode=[^&]*/gi, '$1')
+    .replace(/\?&/, '?')
+    .replace(/&&/g, '&')
+    .replace(/[?&]$/, '');
+  return { ssl, url };
 }

@@ -15,12 +15,10 @@ export interface DbConfig {
 }
 
 export function createDb(config: DbConfig): Knex {
-  const ssl = sslFromConnectionString(config.connectionString);
+  const { ssl, url } = sslFromConnectionString(config.connectionString);
   return knex({
     client: 'pg',
-    connection: ssl
-      ? { connectionString: config.connectionString, ssl }
-      : config.connectionString,
+    connection: ssl ? { connectionString: url, ssl } : url,
     pool: {
       min: config.poolMin ?? 2,
       max: config.poolMax ?? 10,

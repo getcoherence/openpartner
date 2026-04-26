@@ -24,9 +24,9 @@ const common: Knex.Config = {
   },
 };
 
-function buildConnection(url: string | undefined): Knex.PgConnectionConfig | string | undefined {
-  if (!url) return undefined;
-  const ssl = sslFromConnectionString(url);
+function buildConnection(originalUrl: string | undefined): Knex.PgConnectionConfig | string | undefined {
+  if (!originalUrl) return undefined;
+  const { ssl, url } = sslFromConnectionString(originalUrl);
   return ssl ? { connectionString: url, ssl } : url;
 }
 
