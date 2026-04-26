@@ -72,6 +72,23 @@ declare global {
 }
 
 /**
+ * Convenience helper for tenant-scoped route handlers. Throws if the
+ * request didn't pass through the tenant middleware (which would be a
+ * routing bug — the handler shouldn't be there).
+ *
+ *   const { db, tenantId } = tenantOf(req);
+ *   await db('Partner').insert({ tenantId, ... });
+ */
+export function tenantOf(req: Request): { db: Knex; tenantId: string } {
+  if (!req.db || !req.tenantId) {
+    throw new Error(
+      'tenantOf called on a request without tenant context — mount tenantMiddleware before this route',
+    );
+  }
+  return { db: req.db, tenantId: req.tenantId };
+}
+
+/**
  * Express middleware that:
  *   1. Resolves the tenantId for the request
  *   2. Opens a transaction on the appDb pool
