@@ -132,45 +132,96 @@ export async function tenantMiddleware(
   req.tenantId = tenantId;
   if (tenantSlug) req.tenantSlug = tenantSlug;
 
-  // Wrap the rest of the request in a transaction with app.tenant_id set.
-  // Resolving the transaction promise on response finish ensures the
-  // commit happens once handlers have written the response. Errors in
-  // handlers reject and roll back.
-  await new Promise<void>((resolveOuter, rejectOuter) => {
-    appDb
-      .transaction(async (trx) => {
-        await trx.raw(`set local app.tenant_id = '${tenantId.replace(/'/g, "''")}'`);
-        if (req.platformAdmin) {
-          await trx.raw(`set local app.platform_admin = 'on'`);
-        }
-        req.db = trx;
+  // Open the transaction outside any callback so we can finalize it
+  // synchronously when a handler calls res.json/send/end. Committing on
+  // response 'finish' (the previous design) released the trx AFTER the
+  // client got its response, which raced any caller doing direct DB
+  // reads immediately after `await fetch(...)` — including every
+  // integration test that follows POST /partners with db('Click').insert().
+  let trx: Knex.Transaction;
+  try {
+    trx = await appDb.transaction();
+    await trx.raw(`set local app.tenant_id = '${tenantId.replace(/'/g, "''")}'`);
+    if (req.platformAdmin) {
+      await trx.raw(`set local app.platform_admin = 'on'`);
+    }
+  } catch (err) {
+    return next(err);
+  }
+  req.db = trx;
 
-        // Wait for the response to finish before resolving the transaction
-        // callback. `finish` fires on a successful response; `close` fires
-        // if the client disconnected. Either way the transaction body has
-        // run to completion.
-        await new Promise<void>((resolveInner) => {
-          let settled = false;
-          const settle = () => {
-            if (!settled) {
-              settled = true;
-              resolveInner();
-            }
-          };
-          res.on('finish', settle);
-          res.on('close', settle);
-          // Pass through to the next handler now that req.db is set.
-          next();
-        });
-      })
-      .then(resolveOuter, rejectOuter);
-  }).catch((err) => {
-    // Transaction rollback already happened. Surface the error to Express's
-    // error handler if the response hasn't been sent yet.
-    if (!res.headersSent) {
-      next(err);
+  // Patch res.send/json/end so they commit (or rollback on 5xx) before
+  // any byte goes to the client. If commit fails the request becomes a
+  // 500; if it succeeds the original response is sent unchanged.
+  const origJson = res.json.bind(res);
+  const origSend = res.send.bind(res);
+  const origEnd = res.end.bind(res);
+  let finalized = false;
+
+  async function finalize(success: boolean): Promise<void> {
+    if (finalized) return;
+    finalized = true;
+    if (success) {
+      try {
+        await trx.commit();
+      } catch (err) {
+        // Commit failed after the handler succeeded — the response we're
+        // about to send is a lie. Mutate to a 500 if we still can.
+        if (!res.headersSent) {
+          res.status(500);
+          throw err;
+        }
+        // Headers already out; nothing safe to do but log.
+        console.error('[tenancy] commit failed after headers sent', err);
+      }
+    } else {
+      try {
+        await trx.rollback();
+      } catch {
+        // Best-effort rollback; ignore secondary failures.
+      }
+    }
+  }
+
+  res.json = function (body: unknown) {
+    const success = res.statusCode < 500;
+    finalize(success).then(
+      () => origJson(body),
+      (err) => {
+        if (!res.headersSent) origJson({ error: 'commit_failed', detail: err instanceof Error ? err.message : String(err) });
+      },
+    );
+    return res;
+  };
+  res.send = function (body?: unknown) {
+    const success = res.statusCode < 500;
+    finalize(success).then(
+      () => origSend(body),
+      (err) => {
+        if (!res.headersSent) origSend(`commit_failed: ${err instanceof Error ? err.message : String(err)}`);
+      },
+    );
+    return res;
+  };
+  res.end = function (chunk?: unknown, encoding?: BufferEncoding | (() => void), cb?: () => void) {
+    const success = res.statusCode < 500;
+    finalize(success).then(
+      () => (origEnd as unknown as (...a: unknown[]) => Response)(chunk, encoding, cb),
+      () => (origEnd as unknown as (...a: unknown[]) => Response)(chunk, encoding, cb),
+    );
+    return res;
+  };
+
+  // Belt and suspenders: if the client disconnects before any res.* call
+  // ran (or if Express's error path bypasses our patched methods), still
+  // release the trx so it doesn't leak.
+  res.on('close', () => {
+    if (!finalized) {
+      finalize(false).catch(() => {});
     }
   });
+
+  next();
 }
 
 /**

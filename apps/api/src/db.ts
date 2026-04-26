@@ -34,14 +34,24 @@ if (!adminUrl) {
  *   - signup flow (creates Tenant rows; the request has no tenantId yet)
  *   - platform-admin tooling
  *   - background jobs that genuinely need cross-tenant access
+ *   - stripe webhook tenant resolution (looks up by partnerId/payoutId
+ *     across tenants before opening a per-tenant trx for processing)
+ *   - the in-process scheduler enumerating active tenants
+ *   - /metrics scrape (platform-wide counts)
+ *
+ * `bypassRls: true` sets `row_security = off` on every pooled connection
+ * so cross-tenant queries actually return rows. Without this, FORCE RLS
+ * would silently zero out every query on this pool — even for the table
+ * owner. The role used here must be the table owner or have BYPASSRLS.
  *
  * Day-to-day API request handling should use req.db (the transaction-bound
  * appDb instance) instead, so RLS is the second line of defense.
  */
-export const db = createDb({ connectionString: adminUrl });
+export const db = createDb({ connectionString: adminUrl, bypassRls: true });
 
 /**
  * Per-tenant pool. Tenant scope is set on each transaction via SET LOCAL
- * app.tenant_id; see tenancy.ts withTenantTransaction.
+ * app.tenant_id; see tenancy.ts withTenantTransaction. RLS is *not*
+ * bypassed on this pool — that's the whole point.
  */
 export const appDb = createDb({ connectionString: appUrl! });

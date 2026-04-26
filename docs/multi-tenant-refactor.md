@@ -324,27 +324,35 @@ inside the handler from event metadata:
 For events with no resolvable tenant (genuinely platform-level events),
 process them with the privileged `db` and tag accordingly.
 
-### F. Update existing tests ⚠️ DONE BUT NOT VALIDATED
+### F. Update existing tests ✅ DONE & VALIDATED
 
-The mechanical update is committed: every `db(TABLES.X).insert({...})`
-in `integration.test.ts`, `regressions.test.ts`, `stripe-webhook.test.ts`,
-and `webhooks.test.ts` now stamps `tenantId: DEFAULT_TENANT_ID`, and
-every test file sets `OPENPARTNER_TENANCY = 'single'` in its env block.
+Every `db(TABLES.X).insert({...})` in `integration.test.ts`,
+`regressions.test.ts`, `stripe-webhook.test.ts`, and `webhooks.test.ts`
+stamps `tenantId: DEFAULT_TENANT_ID`. Every test file sets
+`OPENPARTNER_TENANCY = 'single'`. Validated against the docker-compose
+postgres: 64/64 pre-existing tests pass.
 
-**Next step on resume**: run the suite against a live Postgres
-(`DATABASE_URL=postgres://... pnpm test --filter @openpartner/api`) and
-confirm previously-failing tests now pass. If any still fail, the
-likely cause is either:
+Two real bugs surfaced during validation and were fixed in the same pass:
 
-  - A direct insert that was missed (search `\.insert(` to audit)
-  - Helper-route assumptions that assumed cross-tenant queries
-  - The Tenant table getting truncated by a `db('Tenant').del()` in
-    test cleanup (shouldn't happen — Tenant isn't in TABLES_TO_CLEAN —
-    but worth confirming if "default tenant not found" surfaces)
+  - **Privileged db was subject to FORCE RLS** (silently zeroed every
+    cross-tenant query because `app.tenant_id` was unset). Fixed by
+    adding `bypassRls: true` support to `createDb()` (sets
+    `row_security = off` per pooled connection) and turning it on for
+    the privileged `db` in `apps/api/src/db.ts`.
+  - **`tenantMiddleware` committed the trx on `res.on('finish')`** —
+    *after* the response was sent. Tests doing `await request(...)`
+    then `await db(...)` raced the commit and saw FK violations. Fixed
+    by patching `res.json/send/end` so the trx commits/rolls back
+    *before* any byte is sent. The new flow rolls back on `res.statusCode
+    >= 500` and on `res.on('close')` if no res.* method ran.
 
-### G. New tests for multi-tenant isolation (~2 hours)
+### G. New tests for multi-tenant isolation ✅ DONE
 
-In a new `apps/api/src/__tests__/multi-tenant.test.ts`:
+`apps/api/src/__tests__/multi-tenant.test.ts` — 9 tests, all passing.
+Connects as `openpartner_app` (no BYPASSRLS) via `SET ROLE` inside the
+privileged db's transaction, then exercises the policy layer directly.
+
+Original spec preserved below for reference:
 
 - Spin up 2 tenants (`acme`, `globex`) via direct DB seed (privileged db).
 - Verify, connecting as `openpartner_app` with `app.tenant_id` set to

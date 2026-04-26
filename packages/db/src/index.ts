@@ -12,6 +12,17 @@ export interface DbConfig {
   connectionString: string;
   poolMin?: number;
   poolMax?: number;
+  /**
+   * If true, every connection in the pool sets `row_security = off` on
+   * acquire. Use for the privileged "admin" pool (cross-tenant work:
+   * signup, stripe webhook tenant resolution, metrics, scheduler,
+   * platform tooling, migrations). The role must be the table owner
+   * or have BYPASSRLS for this to work.
+   *
+   * Leave false for the app pool (`appDb`); RLS engagement is the
+   * whole point of that connection.
+   */
+  bypassRls?: boolean;
 }
 
 export function createDb(config: DbConfig): Knex {
@@ -22,6 +33,19 @@ export function createDb(config: DbConfig): Knex {
     pool: {
       min: config.poolMin ?? 2,
       max: config.poolMax ?? 10,
+      ...(config.bypassRls
+        ? {
+            // afterCreate runs once per pooled connection. We disable
+            // row_security so cross-tenant queries on this pool aren't
+            // silently filtered to zero rows by FORCE RLS policies.
+            afterCreate: (
+              conn: { query: (sql: string, cb: (err: Error | null) => void) => void },
+              done: (err: Error | null, conn: unknown) => void,
+            ) => {
+              conn.query('set session row_security = off', (err) => done(err, conn));
+            },
+          }
+        : {}),
     },
   });
 }

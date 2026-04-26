@@ -201,14 +201,39 @@ async function resolveTenantForEvent(event: Stripe.Event): Promise<string | null
     case 'invoice.paid':
     case 'invoice.payment_failed':
     case 'charge.refunded':
-    case 'charge.dispute.created':
-      // Customer/invoice/subscription/charge events: tenant should be
-      // stamped on the Customer's metadata. Without it, we can't safely
-      // resolve cross-tenant — return null and let the caller skip.
-      return null;
+    case 'charge.dispute.created': {
+      // Customer/invoice/subscription/charge events: prefer the
+      // openpartner_tenant_id stamped on the Customer's metadata. As a
+      // fallback, look the customer up locally via the Identity → Click
+      // chain — this covers Customers stitched at checkout.session.completed
+      // before the metadata-backfill API call lands.
+      const customerId = extractCustomerId(event.data.object as { customer?: unknown; id?: string });
+      if (!customerId) return null;
+      const identity = await db(TABLES.Identity)
+        .join(TABLES.Click, `${TABLES.Click}.id`, `${TABLES.Identity}.clickId`)
+        .where(`${TABLES.Identity}.userId`, customerId)
+        .first<{ tenantId: string }>(`${TABLES.Click}.tenantId as tenantId`);
+      return identity?.tenantId ?? null;
+    }
     default:
       return null;
   }
+}
+
+/**
+ * Pull a customer id out of an arbitrary Stripe event object — handles the
+ * `customer` field being either a string id, an embedded Customer object,
+ * a deleted-customer marker, or absent. For customer.* events the id is on
+ * the object itself.
+ */
+function extractCustomerId(obj: { customer?: unknown; id?: string; object?: string }): string | null {
+  if (obj.object === 'customer' && obj.id) return obj.id;
+  const c = obj.customer;
+  if (typeof c === 'string') return c;
+  if (c && typeof c === 'object' && 'id' in c && typeof (c as { id: unknown }).id === 'string') {
+    return (c as { id: string }).id;
+  }
+  return null;
 }
 
 // Connect-side events. These don't produce attribution Events — they update
