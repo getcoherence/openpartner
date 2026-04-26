@@ -167,17 +167,17 @@ static_sites:
       repo: getcoherence/openpartner
       branch: main
       deploy_on_push: true
+    # Force devDependencies (tsc, vite) during build — App Platform sets
+    # NODE_ENV=production by default which would have pnpm skip them.
+    # NODE_ENV stays unset on this static site at runtime; nothing executes.
     build_command: |
       corepack enable
       corepack prepare pnpm@9.11.0 --activate
-      pnpm install --frozen-lockfile
+      NPM_CONFIG_PRODUCTION=false pnpm install --frozen-lockfile
       pnpm --filter @openpartner/db build
       pnpm --filter @openpartner/portal build
     output_dir: apps/portal/dist
     catchall_document: index.html
-    envs:
-      - key: NODE_ENV
-        value: production
 
 # App-level routing.
 #   /api/* → api (path stripped before forward)
