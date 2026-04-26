@@ -14,6 +14,7 @@ import { __setMailerForTests, type Mailer, type Message } from '../mailer.js';
 const ADMIN_KEY = 'op_test_admin_persona_0123456789abcdef0123';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
 process.env.PORTAL_URL = 'http://localhost:5673';
+process.env.OPENPARTNER_TENANCY = 'single';
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 

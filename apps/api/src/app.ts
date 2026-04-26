@@ -30,6 +30,7 @@ import { installRouter } from './routes/install.js';
 import { fraudReviewRouter } from './routes/fraud-review.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { metricsRouter } from './routes/metrics.js';
+import { signupRouter } from './routes/signup.js';
 import { tenantMiddleware } from './tenancy.js';
 
 export function createApp(options: { enableLogger?: boolean } = {}) {
@@ -110,6 +111,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   // wide (metrics scraped by Prometheus). They use the privileged db
   // directly and are responsible for their own access control.
   app.use(installRouter);
+  app.use(signupRouter);
   app.use(metricsRouter);
 
   // ----- Tenant scope -----

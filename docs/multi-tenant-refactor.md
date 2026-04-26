@@ -1,11 +1,15 @@
 # Multi-tenant refactor — handoff
 
 This document is the resumption point for the multi-tenant refactor in
-progress on the `multi-tenant` branch. The foundation is committed; the
-route refactor is the remaining mechanical work.
+progress on the `multi-tenant` branch. The foundation, the route
+refactor, helper updates, the public signup flow, and a first pass at
+test seed updates are committed. The remaining work is verifying the
+test suite end-to-end against a live Postgres, adding multi-tenant
+isolation tests, and ops/env config for hosted deploys.
 
 If you're picking this up fresh: read this whole doc, scan the commits
-on `multi-tenant`, then start on the **Route refactor** section.
+on `multi-tenant`, then start with section G (new isolation tests) and
+H (env + ops). Verify tests pass against a real DB first.
 
 ## TL;DR
 
@@ -25,6 +29,9 @@ on `multi-tenant`, then start on the **Route refactor** section.
 
 ```
 multi-tenant
+  HEAD     feat(api): public /signup + test seed tenantId fixes
+  095fc89  feat(api): route + helper refactor for tenant-scoped req.db
+  92f570a  docs(multi-tenant): handoff guide for the in-progress refactor
   e560b3f  feat(tenancy): add tenantOf(req) helper for route handler ergonomics
   44f5311  feat(api): tenancy middleware + connection split (admin vs app pools)
   b2c69ac  feat(db): multi-tenant foundation + RLS
@@ -172,9 +179,44 @@ new top-level URL spaces.
 - Express `Request` interface augmentation: `tenantId`, `tenantSlug`,
   `db`, `platformAdmin`.
 
+## What's done since the original handoff
+
+- **Route refactor (section A)** — every route file under
+  `apps/api/src/routes/` uses `tenantOf(req)` and `req.db`. Inserts stamp
+  `tenantId`. Public, non-tenant routes (`install`, `metrics`, `signup`,
+  `stripe-webhook`) are mounted before `tenantMiddleware` and use the
+  privileged `db` directly.
+- **Helper refactor (section B)** — `auth-sessions`, `auth.resolvePrincipal`,
+  `attribution`, `payouts`, `usage-billing`, `webhook-dispatcher`,
+  `mailer`, `mail-settings`, `config` all take `(db, tenantId, ...)`
+  parameters. `dispatchEvent` takes `tenantId` as the first arg and uses
+  the privileged `db` (since it's fire-and-forget after the request
+  transaction commits).
+- **Mount middleware (section C)** — `tenantMiddleware` mounted in
+  `app.ts` between public mounts and tenant-scoped routes.
+- **Public signup (section D)** — `apps/api/src/routes/signup.ts` is
+  done. POST /signup creates Tenant + first Admin + magic link.
+- **Stripe webhook tenant routing (section E)** — events resolve their
+  tenant from object metadata (every Stripe object we create is now
+  stamped with `openpartner_tenant_id`); fallback resolution via
+  partnerId / payoutId / clickId for events without metadata. The
+  handler runs in `appDb.transaction(...)` with `app.tenant_id` pinned
+  so RLS catches cross-tenant mistakes.
+- **Test seed inserts (section F, partial)** — every
+  `db(TABLES.X).insert({ ... })` in `integration.test.ts`,
+  `regressions.test.ts`, `stripe-webhook.test.ts`, `webhooks.test.ts`
+  now stamps `tenantId: DEFAULT_TENANT_ID`. `OPENPARTNER_TENANCY=single`
+  added to the test env. **Not yet validated against a live DB** — do
+  this first when resuming.
+- **Scheduler tenant iteration** — `scheduler.ts` iterates
+  `forEachActiveTenant(...)` for usage-report and payouts; each tenant
+  runs in its own appDb transaction with `app.tenant_id` pinned.
+
+`pnpm typecheck` passes across the workspace.
+
 ## What's left
 
-### A. Route refactor (~4–6 hours, mostly mechanical)
+### A. Route refactor (~4–6 hours, mostly mechanical) ✅ DONE
 
 Every route file under `apps/api/src/routes/` that uses the
 module-level `db` needs:
@@ -212,7 +254,7 @@ Files (alphabetical, per `apps/api/src/routes/`):
 - [ ] stripe-webhook.ts (special case — see "Stripe webhook tenant routing" below)
 - [ ] webhooks.ts
 
-### B. Shared helper refactor (do alongside route refactor)
+### B. Shared helper refactor ✅ DONE
 
 These modules use the module-level `db` and need to accept it as a
 parameter so they can be called with `req.db`:
@@ -232,7 +274,7 @@ parameter so they can be called with `req.db`:
 - `apps/api/src/mailer.ts`, `email-templates.ts` — likely no DB access;
   verify and skip if so.
 
-### C. Mount `tenantMiddleware` in `app.ts`
+### C. Mount `tenantMiddleware` in `app.ts` ✅ DONE
 
 After the route refactor lands. The line `app.use(tenantMiddleware);`
 goes BEFORE the tenant-scoped routes and AFTER the public-route mounts
@@ -242,7 +284,7 @@ The current `app.ts` doesn't mount the middleware at all on this branch
 — intentional, so the existing behavior keeps working until the routes
 are ready for it.
 
-### D. Public signup flow (~2 hours)
+### D. Public signup flow ✅ DONE
 
 New router (`apps/api/src/routes/signup.ts`):
 
@@ -258,7 +300,7 @@ New router (`apps/api/src/routes/signup.ts`):
 
 Mount BEFORE `tenantMiddleware` in `app.ts`.
 
-### E. Stripe webhook tenant routing (~1 hour)
+### E. Stripe webhook tenant routing ✅ DONE
 
 `apps/api/src/routes/stripe-webhook.ts` doesn't go through
 `tenantMiddleware` — Stripe events have no URL tenant. Resolve tenant
@@ -282,29 +324,23 @@ inside the handler from event metadata:
 For events with no resolvable tenant (genuinely platform-level events),
 process them with the privileged `db` and tag accordingly.
 
-### F. Update existing tests (~2 hours)
+### F. Update existing tests ⚠️ DONE BUT NOT VALIDATED
 
-35 of 64 tests currently fail because seed inserts don't include
-`tenantId`. Most failures look like:
+The mechanical update is committed: every `db(TABLES.X).insert({...})`
+in `integration.test.ts`, `regressions.test.ts`, `stripe-webhook.test.ts`,
+and `webhooks.test.ts` now stamps `tenantId: DEFAULT_TENANT_ID`, and
+every test file sets `OPENPARTNER_TENANCY = 'single'` in its env block.
 
-```
-NOT NULL violation: column "tenantId" of relation "Partner"
-```
+**Next step on resume**: run the suite against a live Postgres
+(`DATABASE_URL=postgres://... pnpm test --filter @openpartner/api`) and
+confirm previously-failing tests now pass. If any still fail, the
+likely cause is either:
 
-Fix per test file:
-- Add `tenantId: DEFAULT_TENANT_ID` (import from `@openpartner/db`) to
-  every `db(TABLES.X).insert({ ... })` in test helpers and setup code.
-- The integration tests already force `OPENPARTNER_MODE=selfhost`; add
-  `OPENPARTNER_TENANCY = 'single'` (already the default but explicit
-  is clearer).
-
-Mechanical change. Write a small helper if it makes the diff smaller:
-
-```typescript
-function seed<T>(db: Knex, table: string, row: T) {
-  return db(table).insert({ tenantId: DEFAULT_TENANT_ID, ...row });
-}
-```
+  - A direct insert that was missed (search `\.insert(` to audit)
+  - Helper-route assumptions that assumed cross-tenant queries
+  - The Tenant table getting truncated by a `db('Tenant').del()` in
+    test cleanup (shouldn't happen — Tenant isn't in TABLES_TO_CLEAN —
+    but worth confirming if "default tenant not found" surfaces)
 
 ### G. New tests for multi-tenant isolation (~2 hours)
 

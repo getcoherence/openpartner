@@ -11,7 +11,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { ulid } from 'ulid';
-import { TABLES } from '@openpartner/db';
+import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApp } from '../app.js';
 
@@ -20,6 +20,9 @@ process.env.ADMIN_API_KEY = ADMIN_KEY;
 // Force selfhost — vitest auto-loads .env, so the ?? form would let a
 // developer's local .env mode bleed into the suite.
 process.env.OPENPARTNER_MODE = 'selfhost';
+// Force single tenancy — every direct insert below gets stamped with the
+// default tenant; routes go through tenantMiddleware which sets the same.
+process.env.OPENPARTNER_TENANCY = 'single';
 
 const TABLES_TO_CLEAN = [
   TABLES.Commission,
@@ -86,6 +89,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId: linkRes.body.id,
       partnerId,
       campaignId,
@@ -175,6 +179,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId: linkRes.body.id,
       partnerId,
       campaignId,
@@ -270,12 +275,12 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const click1 = ulid();
     const click2 = ulid();
     await db(TABLES.Click).insert({
-      id: click1, linkId: link1.id, partnerId: p1, campaignId: linearCampaign,
+      id: click1, tenantId: DEFAULT_TENANT_ID, linkId: link1.id, partnerId: p1, campaignId: linearCampaign,
       landingUrl: 'x', ipHash: 'x', userAgent: 'x', referer: null, fraudFlag: null,
       ts: new Date(Date.now() - 10_000),
     });
     await db(TABLES.Click).insert({
-      id: click2, linkId: link2.id, partnerId: p2, campaignId: linearCampaign,
+      id: click2, tenantId: DEFAULT_TENANT_ID, linkId: link2.id, partnerId: p2, campaignId: linearCampaign,
       landingUrl: 'x', ipHash: 'x', userAgent: 'x', referer: null, fraudFlag: null,
       ts: new Date(Date.now() - 5_000),
     });
@@ -369,9 +374,9 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const click2 = ulid();
     const click3 = ulid();
     await db(TABLES.Click).insert([
-      { id: click1, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'a', userAgent: 'x', referer: null, fraudFlag: null },
-      { id: click2, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'b', userAgent: 'x', referer: null, fraudFlag: null },
-      { id: click3, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'c', userAgent: 'x', referer: null, fraudFlag: 'velocity' },
+      { id: click1, tenantId: DEFAULT_TENANT_ID, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'a', userAgent: 'x', referer: null, fraudFlag: null },
+      { id: click2, tenantId: DEFAULT_TENANT_ID, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'b', userAgent: 'x', referer: null, fraudFlag: null },
+      { id: click3, tenantId: DEFAULT_TENANT_ID, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'c', userAgent: 'x', referer: null, fraudFlag: 'velocity' },
     ]);
 
     // User 1 stitches, signs up, pays.
@@ -433,6 +438,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
       campaignId: campaign.id,

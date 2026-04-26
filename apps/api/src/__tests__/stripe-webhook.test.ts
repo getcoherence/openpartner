@@ -20,6 +20,7 @@ process.env.STRIPE_WEBHOOK_SECRET = WEBHOOK_SECRET;
 // Force selfhost so tests don't pick up whatever's in .env (vitest auto-loads
 // it). The merchant-subscription persistence path runs in any mode anyway.
 process.env.OPENPARTNER_MODE = 'selfhost';
+process.env.OPENPARTNER_TENANCY = 'single';
 
 // Mock the Stripe constructor so customer ops are inert. We keep the real
 // webhooks helper (used inside the route for signature verification) by
@@ -41,7 +42,7 @@ vi.mock('stripe', async () => {
 });
 
 // Imports must follow the env + mock setup so they pick up the right config.
-const { TABLES } = await import('@openpartner/db');
+const { DEFAULT_TENANT_ID, TABLES } = await import('@openpartner/db');
 const { db } = await import('../db.js');
 const { createApp } = await import('../app.js');
 
@@ -90,9 +91,10 @@ async function seedClick(): Promise<Ids> {
   const campaignId = ulid();
   const linkId = ulid();
   const clickId = ulid();
-  await db(TABLES.Partner).insert({ id: partnerId, name: 'Test partner', email: `p-${partnerId}@example.com` });
+  await db(TABLES.Partner).insert({ id: partnerId, tenantId: DEFAULT_TENANT_ID, name: 'Test partner', email: `p-${partnerId}@example.com` });
   await db(TABLES.Campaign).insert({
     id: campaignId,
+    tenantId: DEFAULT_TENANT_ID,
     name: 'Default',
     attributionModel: 'last_click',
     attributionWindowDays: 60,
@@ -100,6 +102,7 @@ async function seedClick(): Promise<Ids> {
   });
   await db(TABLES.Link).insert({
     id: linkId,
+    tenantId: DEFAULT_TENANT_ID,
     partnerId,
     campaignId,
     linkKey: `lk-${linkId}`,
@@ -107,6 +110,7 @@ async function seedClick(): Promise<Ids> {
   });
   await db(TABLES.Click).insert({
     id: clickId,
+    tenantId: DEFAULT_TENANT_ID,
     linkId,
     partnerId,
     campaignId,
@@ -455,7 +459,7 @@ describe.skipIf(skipIntegration)('stripe webhook — refund + reversal flow', ()
     const stripeInvoiceId = `in_${ulid()}`;
 
     // Set up an Identity for the customer so attribution would normally fire.
-    await db(TABLES.Identity).insert({ id: ulid(), clickId, userId: customerId });
+    await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId, userId: customerId });
 
     const refundRes = await postWebhook({
       id: `evt_${ulid()}`,

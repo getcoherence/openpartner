@@ -10,13 +10,14 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { ulid } from 'ulid';
-import { TABLES } from '@openpartner/db';
+import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApp } from '../app.js';
 
 const ADMIN_KEY = 'op_test_webhook_admin_0123456789abcdef0123';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
 process.env.OPENPARTNER_MODE = 'selfhost';
+process.env.OPENPARTNER_TENANCY = 'single';
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 
@@ -147,6 +148,7 @@ describe.skipIf(skipIntegration)('webhooks', () => {
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId,
       partnerId,
       campaignId,
@@ -231,6 +233,7 @@ describe.skipIf(skipIntegration)('webhooks', () => {
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
       campaignId: campaign.id,
@@ -311,6 +314,7 @@ describe.skipIf(skipIntegration)('webhooks', () => {
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
       campaignId: campaign.id,
