@@ -47,6 +47,10 @@ services:
   - name: api
     dockerfile_path: apps/api/Dockerfile
     source_dir: /
+    github:
+      repo: getcoherence/openpartner
+      branch: main
+      deploy_on_push: true
     http_port: 4601
     instance_count: 1
     instance_size_slug: basic-xs
@@ -124,6 +128,10 @@ services:
   - name: router
     dockerfile_path: apps/router/Dockerfile
     source_dir: /
+    github:
+      repo: getcoherence/openpartner
+      branch: main
+      deploy_on_push: true
     http_port: 4701
     instance_count: 1
     instance_size_slug: basic-xxs
@@ -155,6 +163,10 @@ services:
 static_sites:
   - name: portal
     source_dir: /
+    github:
+      repo: getcoherence/openpartner
+      branch: main
+      deploy_on_push: true
     build_command: |
       corepack enable
       corepack prepare pnpm@9.11.0 --activate
@@ -167,9 +179,13 @@ static_sites:
       - key: NODE_ENV
         value: production
 
-# App-level routing. /api/* goes to the api service; everything else
-# falls through to the static portal. The router is addressed by its
-# own subdomain — see `domains` below.
+# App-level routing.
+#   /api/* → api (path stripped before forward)
+#   /r/*   → router (path preserved — router serves /r/:linkKey directly)
+#   /      → portal (App Platform's static-site default)
+#
+# Once you wire `r.openpartner.dev` to the router component via the
+# `domains` block, you can remove the /r rule — the subdomain handles it.
 ingress:
   rules:
     - match:
@@ -180,9 +196,9 @@ ingress:
         preserve_path_prefix: false
     - match:
         path:
-          prefix: /
+          prefix: /r
       component:
-        name: portal
+        name: router
 
 # Wire custom domains once the app is up. Set these in the App Platform
 # UI, or uncomment + fill below and `doctl apps update`.
