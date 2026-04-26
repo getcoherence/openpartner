@@ -1,7 +1,7 @@
 import { Router, raw } from 'express';
 import Stripe from 'stripe';
 import { ulid } from 'ulid';
-import { TABLES, type ClickRow, type EventRow, type IdentityRow, type PartnerRow, type PayoutRow } from '@openpartner/db';
+import { TABLES, type AttributionRow, type ClickRow, type CommissionRow, type EventRow, type IdentityRow, type PartnerRow, type PayoutRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { attributeEvent } from '../attribution.js';
 import { persistMerchantSubscription } from './billing.js';
@@ -75,7 +75,7 @@ stripeWebhookRouter.post(
         value: mapped.value != null ? mapped.value.toFixed(2) : null,
         currency: mapped.currency ?? 'USD',
         externalEventId: event.id,
-        metadata: { stripeEventId: event.id, stripeType: event.type },
+        metadata: { stripeEventId: event.id, stripeType: event.type, ...(mapped.metadata ?? {}) },
         ts: new Date(event.created * 1000),
       })
       .onConflict('externalEventId')
@@ -89,10 +89,20 @@ stripeWebhookRouter.post(
       return res.json({ ok: true, idempotent: true, eventId: existing?.id });
     }
 
+    // Corrective events (refund, dispute, payment_failed) are recorded for
+    // the audit trail but don't drive new attribution rows — handling those
+    // is done in mapStripeEvent before insertion (e.g. flipping the source
+    // commissions to 'reversed').
+    if (CORRECTIVE_EVENT_TYPES.has(mapped.type)) {
+      return res.json({ ok: true, eventId, corrective: mapped.type });
+    }
+
     const result = await attributeEvent(db, inserted[0] as EventRow);
     res.json({ ok: true, eventId, attribution: result });
   },
 );
+
+const CORRECTIVE_EVENT_TYPES = new Set(['refund', 'dispute_created', 'invoice_payment_failed']);
 
 // Connect-side events. These don't produce attribution Events — they update
 // Partner (onboarding progress) and Payout (transfer resolution) rows.
@@ -157,6 +167,7 @@ interface MappedEvent {
   type: string;
   value?: number;
   currency?: string;
+  metadata?: Record<string, unknown>;
 }
 
 async function mapStripeEvent(stripe: Stripe, event: Stripe.Event): Promise<MappedEvent | null> {
@@ -211,16 +222,137 @@ async function mapStripeEvent(stripe: Stripe, event: Stripe.Event): Promise<Mapp
       const invoice = event.data.object as Stripe.Invoice;
       const userId = await resolveUserIdFromCustomer(stripe, invoice.customer);
       if (!userId) return null;
+      // `charge` was moved off the Invoice type in recent SDK versions, but the
+      // webhook payload still carries it on older API versions and is useful
+      // for refund lookups. Read it tolerantly.
+      const rawCharge = (invoice as unknown as { charge?: string | { id: string } | null }).charge;
+      const chargeId = typeof rawCharge === 'string' ? rawCharge : rawCharge?.id ?? null;
       return {
         userId,
         type: 'invoice_paid',
         value: invoice.amount_paid / 100,
         currency: invoice.currency?.toUpperCase() ?? 'USD',
+        // Captured for refund/dispute lookup. Without these, charge.refunded
+        // can't find the original Event to walk back to its Commissions.
+        metadata: {
+          stripeInvoiceId: invoice.id,
+          ...(chargeId ? { stripeChargeId: chargeId } : {}),
+        },
+      };
+    }
+    case 'charge.refunded': {
+      const charge = event.data.object as Stripe.Charge;
+      const userId = await resolveUserIdFromCustomer(stripe, charge.customer);
+      if (!userId) return null;
+      const rawInvoice = (charge as unknown as { invoice?: string | { id: string } | null }).invoice;
+      const invoiceId = typeof rawInvoice === 'string' ? rawInvoice : rawInvoice?.id ?? null;
+
+      // Auto-reverse non-paid Commissions linked to the original invoice.
+      // Commissions already in 'paid' status are flagged for admin review —
+      // we don't claw back funds that have already left the platform.
+      const reversal = invoiceId
+        ? await reverseCommissionsForInvoice(invoiceId)
+        : { reversed: 0, alreadyPaid: 0 };
+
+      return {
+        userId,
+        type: 'refund',
+        value: -(charge.amount_refunded / 100),
+        currency: charge.currency?.toUpperCase() ?? 'USD',
+        metadata: {
+          stripeChargeId: charge.id,
+          ...(invoiceId ? { stripeInvoiceId: invoiceId } : {}),
+          amountRefunded: charge.amount_refunded,
+          reversedCommissions: reversal.reversed,
+          alreadyPaidCommissions: reversal.alreadyPaid,
+        },
+      };
+    }
+    case 'charge.dispute.created': {
+      // Disputes are flagged for admin review rather than auto-reversed —
+      // disputes can be won, and clawing back commissions on every chargeback
+      // would create a worse experience than the rare manual reversal.
+      const dispute = event.data.object as Stripe.Dispute;
+      const chargeId = typeof dispute.charge === 'string' ? dispute.charge : dispute.charge?.id;
+      let userId: string | null = null;
+      if (chargeId) {
+        try {
+          const charge = await stripe.charges.retrieve(chargeId);
+          userId = await resolveUserIdFromCustomer(stripe, charge.customer);
+        } catch {
+          // Charge might be deleted or inaccessible — log without attribution.
+        }
+      }
+      if (!userId) return null;
+      return {
+        userId,
+        type: 'dispute_created',
+        value: -(dispute.amount / 100),
+        currency: dispute.currency?.toUpperCase() ?? 'USD',
+        metadata: {
+          stripeDisputeId: dispute.id,
+          ...(chargeId ? { stripeChargeId: chargeId } : {}),
+          reason: dispute.reason,
+          status: dispute.status,
+        },
+      };
+    }
+    case 'invoice.payment_failed': {
+      // Recorded for audit but no commission reversal — invoice.paid wouldn't
+      // have fired for this invoice in the first place, so there's nothing to
+      // reverse. Useful when an admin is debugging "why didn't this convert?"
+      const invoice = event.data.object as Stripe.Invoice;
+      const userId = await resolveUserIdFromCustomer(stripe, invoice.customer);
+      if (!userId) return null;
+      return {
+        userId,
+        type: 'invoice_payment_failed',
+        value: -(invoice.amount_due / 100),
+        currency: invoice.currency?.toUpperCase() ?? 'USD',
+        metadata: {
+          stripeInvoiceId: invoice.id,
+          attemptCount: invoice.attempt_count,
+        },
       };
     }
     default:
       return null;
   }
+}
+
+/**
+ * Mark Commissions linked to a refunded invoice as 'reversed'. Walks
+ * Event(metadata.stripeInvoiceId) → Attribution → Commission. Only flips
+ * Commissions in 'accrued' or 'approved' status; 'paid' Commissions stay
+ * paid (the partner has the money) and the count is returned so the
+ * refund Event can record that admin attention is needed.
+ */
+async function reverseCommissionsForInvoice(
+  invoiceId: string,
+): Promise<{ reversed: number; alreadyPaid: number }> {
+  const sourceEvents = await db<EventRow>(TABLES.Event)
+    .whereRaw(`"metadata"->>'stripeInvoiceId' = ?`, [invoiceId])
+    .where('type', 'invoice_paid');
+  if (sourceEvents.length === 0) return { reversed: 0, alreadyPaid: 0 };
+
+  const eventIds = sourceEvents.map((e) => e.id);
+  const attributions = await db<AttributionRow>(TABLES.Attribution).whereIn('eventId', eventIds);
+  if (attributions.length === 0) return { reversed: 0, alreadyPaid: 0 };
+  const attributionIds = attributions.map((a) => a.id);
+
+  const reversed = await db<CommissionRow>(TABLES.Commission)
+    .whereIn('attributionId', attributionIds)
+    .whereIn('status', ['accrued', 'approved'])
+    .update({ status: 'reversed' });
+
+  const alreadyPaidRow = (await db<CommissionRow>(TABLES.Commission)
+    .whereIn('attributionId', attributionIds)
+    .where('status', 'paid')
+    .count('id as c')
+    .first()) as { c: string | number } | undefined;
+  const alreadyPaid = Number(alreadyPaidRow?.c ?? 0);
+
+  return { reversed, alreadyPaid };
 }
 
 async function resolveUserIdFromCustomer(

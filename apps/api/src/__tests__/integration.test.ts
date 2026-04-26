@@ -17,7 +17,9 @@ import { createApp } from '../app.js';
 
 const ADMIN_KEY = 'op_test_admin_key_0123456789abcdef0123';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
-process.env.OPENPARTNER_MODE = process.env.OPENPARTNER_MODE ?? 'selfhost';
+// Force selfhost — vitest auto-loads .env, so the ?? form would let a
+// developer's local .env mode bleed into the suite.
+process.env.OPENPARTNER_MODE = 'selfhost';
 
 const TABLES_TO_CLEAN = [
   TABLES.Commission,

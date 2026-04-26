@@ -17,7 +17,9 @@ const WEBHOOK_SECRET = 'whsec_test_secret_for_webhook_tests';
 
 process.env.STRIPE_SECRET_KEY = STRIPE_SECRET;
 process.env.STRIPE_WEBHOOK_SECRET = WEBHOOK_SECRET;
-process.env.OPENPARTNER_MODE = process.env.OPENPARTNER_MODE ?? 'selfhost';
+// Force selfhost so tests don't pick up whatever's in .env (vitest auto-loads
+// it). The merchant-subscription persistence path runs in any mode anyway.
+process.env.OPENPARTNER_MODE = 'selfhost';
 
 // Mock the Stripe constructor so customer ops are inert. We keep the real
 // webhooks helper (used inside the route for signature verification) by
@@ -280,5 +282,204 @@ describe.skipIf(skipIntegration)('stripe webhook — merchant billing flow', () 
     expect(events).toHaveLength(0);
     const identities = await db(TABLES.Identity);
     expect(identities).toHaveLength(0);
+  });
+});
+
+describe.skipIf(skipIntegration)('stripe webhook — refund + reversal flow', () => {
+  it('charge.refunded reverses non-paid Commissions linked to the original invoice', async () => {
+    const { clickId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    const stripeInvoiceId = `in_${ulid()}`;
+    const stripeChargeId = `ch_${ulid()}`;
+
+    // 1. Stitch the Identity via checkout, then drive an invoice.paid
+    //    (with the Stripe customer as an embedded object so no API retrieve
+    //    happens). The mapper records stripeInvoiceId in metadata.
+    await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: `cs_${ulid()}`,
+          mode: 'subscription',
+          client_reference_id: clickId,
+          customer: customerId,
+          subscription: `sub_${ulid()}`,
+        },
+      },
+    });
+
+    await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'invoice.paid',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: stripeInvoiceId,
+          customer: { id: customerId, metadata: {}, object: 'customer' },
+          amount_paid: 4900,
+          currency: 'usd',
+          charge: stripeChargeId,
+        },
+      },
+    });
+
+    // Pre-condition: a Commission was accrued for the invoice_paid event.
+    // (Note: the signup Event also runs through attribution and produces a
+    // $0 commission, but we only care about the invoice-derived ones here.)
+    const invoicePaidEvent = await db(TABLES.Event).where({ type: 'invoice_paid' }).first();
+    expect(invoicePaidEvent).toBeTruthy();
+    const invoiceAttributions = await db(TABLES.Attribution).where({ eventId: invoicePaidEvent!.id });
+    const invoiceAttributionIds = invoiceAttributions.map((a) => a.id);
+    const accruedBefore = await db(TABLES.Commission)
+      .whereIn('attributionId', invoiceAttributionIds)
+      .where({ status: 'accrued' });
+    expect(accruedBefore.length).toBeGreaterThan(0);
+
+    // 2. The refund: charge.refunded with .invoice pointing at our stored
+    //    stripeInvoiceId. Customer is embedded so no real API call.
+    const refundRes = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'charge.refunded',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: stripeChargeId,
+          customer: { id: customerId, metadata: {}, object: 'customer' },
+          invoice: stripeInvoiceId,
+          amount_refunded: 4900,
+          currency: 'usd',
+        },
+      },
+    });
+
+    expect(refundRes.status).toBe(200);
+
+    // Post-condition: invoice-derived Commissions are now reversed; other
+    // commissions (e.g. the signup $0) are untouched.
+    const invoiceCommissionsAfter = await db(TABLES.Commission)
+      .whereIn('attributionId', invoiceAttributionIds);
+    expect(invoiceCommissionsAfter.every((c) => c.status === 'reversed')).toBe(true);
+    expect(invoiceCommissionsAfter.length).toBe(accruedBefore.length);
+
+    // The corrective Event was inserted and its metadata records the
+    // reversal count for downstream observability.
+    const refundEvent = await db(TABLES.Event).where({ type: 'refund' }).first();
+    expect(refundEvent).toBeTruthy();
+    expect((refundEvent!.metadata as { reversedCommissions?: number }).reversedCommissions)
+      .toBe(accruedBefore.length);
+  });
+
+  it('charge.refunded leaves already-paid Commissions paid and surfaces the count', async () => {
+    const { clickId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    const stripeInvoiceId = `in_${ulid()}`;
+    const stripeChargeId = `ch_${ulid()}`;
+
+    await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: `cs_${ulid()}`,
+          mode: 'subscription',
+          client_reference_id: clickId,
+          customer: customerId,
+          subscription: `sub_${ulid()}`,
+        },
+      },
+    });
+
+    await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'invoice.paid',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: stripeInvoiceId,
+          customer: { id: customerId, metadata: {}, object: 'customer' },
+          amount_paid: 4900,
+          currency: 'usd',
+          charge: stripeChargeId,
+        },
+      },
+    });
+
+    // Simulate the partner having already been paid by flipping the
+    // invoice-derived commissions to 'paid'.
+    const invoicePaidEvent = await db(TABLES.Event).where({ type: 'invoice_paid' }).first();
+    const invoiceAttributions = await db(TABLES.Attribution).where({ eventId: invoicePaidEvent!.id });
+    const invoiceAttributionIds = invoiceAttributions.map((a) => a.id);
+    await db(TABLES.Commission)
+      .whereIn('attributionId', invoiceAttributionIds)
+      .update({ status: 'paid', paidAt: new Date() });
+
+    const refundRes = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'charge.refunded',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: stripeChargeId,
+          customer: { id: customerId, metadata: {}, object: 'customer' },
+          invoice: stripeInvoiceId,
+          amount_refunded: 4900,
+          currency: 'usd',
+        },
+      },
+    });
+
+    expect(refundRes.status).toBe(200);
+
+    // No invoice-derived commissions were flipped — partner already has the money.
+    const stillPaid = await db(TABLES.Commission)
+      .whereIn('attributionId', invoiceAttributionIds)
+      .where({ status: 'paid' });
+    expect(stillPaid.length).toBeGreaterThan(0);
+    const reversedFromInvoice = await db(TABLES.Commission)
+      .whereIn('attributionId', invoiceAttributionIds)
+      .where({ status: 'reversed' });
+    expect(reversedFromInvoice).toHaveLength(0);
+
+    // The refund Event's metadata flags the count for admin attention.
+    const refundEvent = await db(TABLES.Event).where({ type: 'refund' }).first();
+    expect((refundEvent!.metadata as { alreadyPaidCommissions?: number }).alreadyPaidCommissions)
+      .toBe(stillPaid.length);
+  });
+
+  it('charge.refunded does not run attribution on the corrective Event', async () => {
+    const { clickId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    const stripeInvoiceId = `in_${ulid()}`;
+
+    // Set up an Identity for the customer so attribution would normally fire.
+    await db(TABLES.Identity).insert({ id: ulid(), clickId, userId: customerId });
+
+    const refundRes = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'charge.refunded',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: `ch_${ulid()}`,
+          customer: { id: customerId, metadata: {}, object: 'customer' },
+          invoice: stripeInvoiceId,
+          amount_refunded: 1900,
+          currency: 'usd',
+        },
+      },
+    });
+
+    expect(refundRes.status).toBe(200);
+    expect(refundRes.body.corrective).toBe('refund');
+
+    // No Attribution rows for the refund Event — corrective events skip
+    // attribution to avoid creating phantom negative commissions.
+    const refundEvent = await db(TABLES.Event).where({ type: 'refund' }).first();
+    expect(refundEvent).toBeTruthy();
+    const attributions = await db(TABLES.Attribution).where({ eventId: refundEvent!.id });
+    expect(attributions).toHaveLength(0);
   });
 });

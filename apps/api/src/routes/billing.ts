@@ -15,6 +15,7 @@ import { db } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { REVSHARE_FEE_BPS, getMode, requireStripe } from '../stripe.js';
 import { CONFIG_KEYS, getConfig, setConfig } from '../config.js';
+import { reportUsageToStripe } from '../usage-billing.js';
 
 export const billingRouter = Router();
 
@@ -66,22 +67,71 @@ const checkoutSchema = z.object({
 });
 
 billingRouter.post('/billing/checkout', requireAuth, requireAdmin, async (req, res) => {
-  if (getMode() !== 'flat') return res.status(400).json({ error: 'only_flat_mode' });
+  const mode = getMode();
+  if (mode !== 'flat' && mode !== 'revshare') {
+    return res.status(400).json({ error: 'only_flat_or_revshare_mode' });
+  }
   const body = checkoutSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const priceId = body.data.priceId ?? process.env.STRIPE_FLAT_PRICE_ID;
-  if (!priceId) return res.status(500).json({ error: 'no_flat_price_configured' });
+  // Build line items per mode:
+  //   flat     → $49 base + 1.5% metered
+  //   revshare → 3% metered only (no monthly)
+  const lineItems: Array<{ price: string; quantity?: number }> = [];
+  if (mode === 'flat') {
+    const basePriceId = body.data.priceId ?? process.env.STRIPE_FLAT_PRICE_ID;
+    if (!basePriceId) return res.status(500).json({ error: 'no_flat_price_configured' });
+    lineItems.push({ price: basePriceId, quantity: 1 });
+    const usagePriceId = process.env.STRIPE_FLAT_USAGE_PRICE_ID;
+    if (usagePriceId) lineItems.push({ price: usagePriceId });
+  } else {
+    const usagePriceId = body.data.priceId ?? process.env.STRIPE_REVSHARE_USAGE_PRICE_ID;
+    if (!usagePriceId) return res.status(500).json({ error: 'no_revshare_price_configured' });
+    lineItems.push({ price: usagePriceId });
+  }
 
   const stripe = requireStripe();
+
+  // Stripe Accounts V2 requires `customer` (not just `customer_email`) on
+  // Checkout in test mode. Create or reuse a Customer for this merchant up
+  // front so we can pass it to the Checkout session and so the Customer
+  // Portal works on the same record after subscription completes.
+  let customerId = await getConfig<string>(CONFIG_KEYS.StripeMerchantCustomerId);
+  if (!customerId) {
+    const customer = await stripe.customers.create({
+      email: body.data.customerEmail,
+      metadata: { openpartner_role: 'merchant_self_subscription' },
+    });
+    customerId = customer.id;
+    await setConfig(CONFIG_KEYS.StripeMerchantCustomerId, customerId);
+  }
+
   const session = await stripe.checkout.sessions.create({
     mode: 'subscription',
-    line_items: [{ price: priceId, quantity: 1 }],
+    customer: customerId,
+    line_items: lineItems,
     success_url: body.data.successUrl,
     cancel_url: body.data.cancelUrl,
-    customer_email: body.data.customerEmail,
   });
   res.json({ url: session.url });
+});
+
+billingRouter.post('/billing/report-usage', requireAuth, requireAdmin, async (_req, res) => {
+  // Self-host has no platform billing; revshare and flat both report to the
+  // shared meter (different metered prices on the merchant subscription
+  // determine the rate).
+  if (getMode() === 'selfhost') {
+    return res.status(400).json({ error: 'no_billing_in_selfhost' });
+  }
+  try {
+    const result = await reportUsageToStripe();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({
+      error: 'usage_report_failed',
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 billingRouter.post('/billing/portal', requireAuth, requireAdmin, async (req, res) => {
