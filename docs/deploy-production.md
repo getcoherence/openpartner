@@ -102,6 +102,8 @@ Set each value with **Encrypt** checked:
 | `POSTMARK_SERVER_TOKEN` | from your Postmark dashboard |
 | `PORTAL_URL` | `https://app.openpartner.dev` (or your chosen domain) |
 | `METRICS_TOKEN` | random token if you want to gate /metrics; otherwise generate one |
+| `OPENPARTNER_APP_DB_PASSWORD` | random 32+ char string — provisions the openpartner_app role |
+| `DATABASE_URL_APP` | same host/db as DATABASE_URL but `user=openpartner_app` and `password=` the value above |
 
 For the **router** component, set:
 
@@ -185,6 +187,51 @@ Once all six pass, you're live.
 ---
 
 ## Operational notes
+
+### Multi-tenant rollout
+
+`OPENPARTNER_TENANCY=multi` switches the api from single-tenant
+self-host mode to hosted multi-tenant mode:
+
+- **URL routing.** Tenant-scoped routes live under `/t/<slug>/...`.
+  Set `app.openpartner.dev` to the api component and the portal SPA
+  reads the slug from `location.pathname`. The catch-all rewrite in
+  `static_sites.catchall_document` keeps SPA routing working under any
+  `/t/<slug>/...` path.
+- **Tenant provisioning.** Public `POST /signup` creates a tenant +
+  first admin and emails the magic link. No payment gate at v1; add
+  one downstream of `/signup` if you want to require a card on file
+  before activation.
+- **RLS engagement.** With `DATABASE_URL_APP` set to the
+  openpartner_app role, every tenant-scoped request runs in a
+  transaction with `app.tenant_id` pinned, and Row-Level Security
+  policies (see migration `20260507010000_rls_policies.ts`) drop any
+  query that crosses tenants. Without `DATABASE_URL_APP`, tenant
+  isolation falls back to app-level filtering only — fine for
+  bootstrap, not safe for production multi-tenant.
+- **Stripe webhooks.** A single `/webhooks/stripe` endpoint covers all
+  tenants. Each event resolves its tenant from `metadata.openpartner_tenant_id`
+  (every Stripe object we create is stamped with this); the handler
+  then runs in an `appDb.transaction` with `app.tenant_id` pinned. No
+  per-tenant webhook destinations needed.
+- **Reserved slugs.** `default`, `www`, `api`, `app`, `admin`,
+  `signup`, `login`, `auth`, `docs`, `help`, `support`, `status`,
+  `network`, `static`, `public`, `platform` cannot be claimed.
+  `apps/api/src/tenancy.ts` has the full list — extend it before
+  introducing any new top-level URL space.
+- **Scheduler.** `usage-report` and `payouts` iterate active tenants
+  per tick; each tenant runs in its own transaction with
+  `app.tenant_id` pinned. A single failing tenant doesn't stop the
+  others.
+
+To migrate an existing single-tenant deploy to multi:
+
+1. Run the multi-tenant migrations (already part of `pnpm migrate` —
+   they backfill every existing row to `tenantId='default'`).
+2. Set `OPENPARTNER_APP_DB_PASSWORD`, `DATABASE_URL_APP`, and flip
+   `OPENPARTNER_TENANCY=multi`.
+3. Redeploy. The default tenant remains accessible at `/t/default/`;
+   new tenants come in via `/signup`.
 
 ### Scheduled jobs
 

@@ -360,7 +360,7 @@ In a new `apps/api/src/__tests__/multi-tenant.test.ts`:
 - Verify session cookies don't cross tenants: a session for tenant A
   used on a `/t/globex/...` URL → 401.
 
-### H. Env config + ops (~1 hour)
+### H. Env config + ops ✅ DONE
 
 - `.env.example` add: `OPENPARTNER_TENANCY=single|multi`,
   `OPENPARTNER_APP_DB_PASSWORD=...`, `DATABASE_URL_APP=...`.
