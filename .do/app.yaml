@@ -22,18 +22,25 @@
 name: openpartner
 region: nyc
 
-# Managed Postgres. `production: true` provisions a paid plan with
-# automated daily backups; flip to false during pre-launch dev to use
-# the dev tier and save money. The connection string is injected into
-# services that reference ${openpartner-db.DATABASE_URL}.
-databases:
-  - name: openpartner-db
-    engine: PG
-    version: '16'
-    production: true
-    cluster_name: openpartner-db
-    db_name: openpartner
-    db_user: openpartner
+# Database is provisioned externally (e.g., a separate Coherence cluster
+# with a dedicated `openpartner` database inside it). DATABASE_URL is set
+# as an encrypted secret on each service below. Add this app to the
+# cluster's Trusted Sources after the first deploy so it can reach pg.
+#
+# If you'd rather have App Platform provision a dedicated cluster, paste
+# this block back in:
+#
+#   databases:
+#     - name: openpartner-db
+#       engine: PG
+#       version: '16'
+#       production: true
+#       cluster_name: openpartner-db
+#       db_name: openpartner
+#       db_user: openpartner
+#
+# and change the DATABASE_URL env vars below to:
+#   value: ${openpartner-db.DATABASE_URL}
 
 services:
   # Core API. Runs migrations on first boot via docker-entrypoint.sh.
@@ -55,7 +62,8 @@ services:
       - key: API_PORT
         value: '4601'
       - key: DATABASE_URL
-        value: ${openpartner-db.DATABASE_URL}
+        type: SECRET
+        scope: RUN_TIME
       - key: OPENPARTNER_MODE
         value: flat
       - key: POSTMARK_MESSAGE_STREAM
@@ -131,7 +139,8 @@ services:
       - key: ROUTER_PORT
         value: '4701'
       - key: DATABASE_URL
-        value: ${openpartner-db.DATABASE_URL}
+        type: SECRET
+        scope: RUN_TIME
       - key: COOKIE_DOMAIN
         type: SECRET
         scope: RUN_TIME
