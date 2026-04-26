@@ -22,14 +22,15 @@
 name: openpartner
 region: nyc
 
-# Managed Postgres. For production, bump to a paid plan and upgrade the
-# `production` flag. The connection string is injected into services
-# that reference ${openpartner-db.DATABASE_URL}.
+# Managed Postgres. `production: true` provisions a paid plan with
+# automated daily backups; flip to false during pre-launch dev to use
+# the dev tier and save money. The connection string is injected into
+# services that reference ${openpartner-db.DATABASE_URL}.
 databases:
   - name: openpartner-db
     engine: PG
     version: '16'
-    production: false
+    production: true
     cluster_name: openpartner-db
     db_name: openpartner
     db_user: openpartner
@@ -59,6 +60,11 @@ services:
         value: flat
       - key: POSTMARK_MESSAGE_STREAM
         value: outbound
+      # Enables the in-process scheduler (usage reporting + payouts).
+      # DO App Platform has no native cron, so the api process runs them
+      # itself. Set to '0' on replica nodes if you ever scale to instance_count > 1.
+      - key: OPENPARTNER_ENABLE_SCHEDULER
+        value: '1'
       - key: ADMIN_API_KEY
         type: SECRET
         scope: RUN_TIME
@@ -74,6 +80,8 @@ services:
       - key: PORTAL_URL
         type: SECRET
         scope: RUN_TIME
+      # Stripe — set as live values when ready to launch. STRIPE_WEBHOOK_SECRET
+      # accepts a comma-separated list (one per Event destination).
       - key: STRIPE_SECRET_KEY
         type: SECRET
         scope: RUN_TIME
@@ -81,6 +89,21 @@ services:
         type: SECRET
         scope: RUN_TIME
       - key: STRIPE_FLAT_PRICE_ID
+        type: SECRET
+        scope: RUN_TIME
+      # Metered usage prices — created by `setup-stripe.mjs` against the
+      # live key. Optional in self-host but required for the percentage
+      # portion of Flex/Revshare/Network billing to actually fire.
+      - key: STRIPE_FLAT_USAGE_PRICE_ID
+        type: SECRET
+        scope: RUN_TIME
+      - key: STRIPE_REVSHARE_USAGE_PRICE_ID
+        type: SECRET
+        scope: RUN_TIME
+      - key: STRIPE_NETWORK_PRICE_ID
+        type: SECRET
+        scope: RUN_TIME
+      - key: STRIPE_NETWORK_USAGE_PRICE_ID
         type: SECRET
         scope: RUN_TIME
       - key: METRICS_TOKEN
