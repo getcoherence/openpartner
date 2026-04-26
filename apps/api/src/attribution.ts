@@ -106,6 +106,7 @@ export async function attributeEvent(
     const insertRes = await db<AttributionRow>(TABLES.Attribution)
       .insert({
         id: attributionId,
+        tenantId: event.tenantId,
         eventId: event.id,
         partnerId: click.partnerId,
         campaignId: click.campaignId,
@@ -125,6 +126,7 @@ export async function attributeEvent(
     const commissionId = ulid();
     await db(TABLES.Commission).insert({
       id: commissionId,
+      tenantId: event.tenantId,
       attributionId,
       partnerId: click.partnerId,
       amount: amount.toFixed(2),
@@ -132,7 +134,7 @@ export async function attributeEvent(
       status: 'accrued',
     });
     results.push({ clickId: click.id, partnerId: click.partnerId, weight, attributionId, commissionId });
-    dispatchEvent('attribution.created', {
+    dispatchEvent(event.tenantId, 'attribution.created', {
       attributionId,
       eventId: event.id,
       partnerId: click.partnerId,

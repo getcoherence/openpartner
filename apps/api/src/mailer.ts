@@ -1,12 +1,12 @@
 /**
  * Transactional mailer. Transport comes from resolveMailConfig():
  *
- *   UI-configured settings (Config table) take precedence — stored
- *   encrypted at rest; SMTP password / Postmark token decrypted at
+ *   UI-configured settings (Config table, per-tenant) take precedence —
+ *   stored encrypted at rest; SMTP password / Postmark token decrypted at
  *   dispatch time.
  *
  *   Env fallback if UI is empty (SMTP_HOST / POSTMARK_SERVER_TOKEN +
- *   MAIL_FROM).
+ *   MAIL_FROM). Env is shared platform-wide.
  *
  *   Console fallback if neither — dev only; the magic link prints
  *   to the `pnpm dev:api` terminal.
@@ -15,9 +15,14 @@
  * the next email without a restart. A cached mailer would be a stale-
  * creds footgun after rotation.
  *
+ * Multi-tenant: every send takes a `{ db, tenantId }` context so we look
+ * up the right tenant's UI overrides. Pass through the request's `req.db`
+ * (transaction with app.tenant_id pinned).
+ *
  * Tests override via __setMailerForTests with an in-memory capturer.
  */
 
+import type { Knex } from 'knex';
 import nodemailer from 'nodemailer';
 import { resolveMailConfig } from './mail-settings.js';
 
@@ -30,13 +35,18 @@ export interface Message {
   metadata?: Record<string, unknown>;
 }
 
+export interface SendContext {
+  db: Knex;
+  tenantId: string;
+}
+
 export interface Mailer {
-  send(msg: Message): Promise<void>;
+  send(ctx: SendContext, msg: Message): Promise<void>;
 }
 
 class RoutingMailer implements Mailer {
-  async send(msg: Message): Promise<void> {
-    const cfg = await resolveMailConfig();
+  async send(ctx: SendContext, msg: Message): Promise<void> {
+    const cfg = await resolveMailConfig(ctx.db, ctx.tenantId);
     if (cfg.kind === 'smtp' && cfg.smtp && cfg.from) {
       const transporter = nodemailer.createTransport({
         host: cfg.smtp.host,

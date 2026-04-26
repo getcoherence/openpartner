@@ -14,18 +14,19 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { TABLES, type AdminRow, type PartnerRow } from '@openpartner/db';
-import { db } from '../db.js';
 import {
   SESSION_COOKIE_NAME,
   consumeMagicLink,
   createSession,
   issueMagicLink,
+  resolveSession,
   revokeSession,
   sessionCookieOptions,
 } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { adminSigninEmail, buildMagicLinkUrl, partnerSigninEmail } from '../email-templates.js';
+import { tenantOf } from '../tenancy.js';
 
 export const partnerAuthRouter = Router();
 
@@ -38,6 +39,7 @@ const verifySchema = z.object({ token: z.string().min(8) });
 // -------- Signin --------
 
 partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   const body = signinSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
@@ -47,14 +49,15 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
   // partner (unusual but possible on single-operator setups), admin wins.
   const admin = await db<AdminRow>(TABLES.Admin).where({ email }).first();
   if (admin?.activatedAt && !admin.revokedAt) {
-    const issued = await issueMagicLink({
+    const issued = await issueMagicLink(db, {
+      tenantId,
       email,
       purpose: 'admin_signin',
       principalKind: 'admin',
       principalId: admin.id,
     });
     const tmpl = adminSigninEmail(admin.name, buildMagicLinkUrl(issued.plaintext));
-    await getMailer().send({
+    await getMailer().send({ db, tenantId }, {
       to: email,
       subject: tmpl.subject,
       text: tmpl.text,
@@ -72,14 +75,15 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
   // cause arbitrary emails to the victim by POSTing their address
   // here repeatedly.
   if (partner?.activatedAt && !partner.revokedAt) {
-    const issued = await issueMagicLink({
+    const issued = await issueMagicLink(db, {
+      tenantId,
       email,
       purpose: 'partner_signin',
       principalKind: 'partner',
       principalId: partner.id,
     });
     const tmpl = partnerSigninEmail(partner.name, buildMagicLinkUrl(issued.plaintext));
-    await getMailer().send({
+    await getMailer().send({ db, tenantId }, {
       to: email,
       subject: tmpl.subject,
       text: tmpl.text,
@@ -95,10 +99,11 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
 // -------- Verify --------
 
 partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   const body = verifySchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const consumed = await consumeMagicLink(body.data.token);
+  const consumed = await consumeMagicLink(db, body.data.token);
   if (!consumed) return res.status(400).json({ error: 'invalid_or_expired_token' });
   const token = consumed.token;
 
@@ -114,7 +119,7 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
     }
     await db<AdminRow>(TABLES.Admin).where({ id: admin.id }).update({ lastSignInAt: new Date() });
 
-    const session = await createSession({ principalKind: 'admin', principalId: admin.id });
+    const session = await createSession(db, { tenantId, principalKind: 'admin', principalId: admin.id });
     res.cookie(SESSION_COOKIE_NAME, session.plaintext, sessionCookieOptions());
     return res.json({
       ok: true,
@@ -134,7 +139,7 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
       .update({ activatedAt: new Date(), updatedAt: new Date() });
   }
 
-  const session = await createSession({ principalKind: 'partner', principalId: partner.id });
+  const session = await createSession(db, { tenantId, principalKind: 'partner', principalId: partner.id });
   res.cookie(SESSION_COOKIE_NAME, session.plaintext, sessionCookieOptions());
   res.json({
     ok: true,
@@ -151,11 +156,11 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
 // -------- Signout --------
 
 partnerAuthRouter.post('/auth/signout', async (req, res) => {
+  const { db } = tenantOf(req);
   const cookie = (req as unknown as { cookies?: Record<string, string> }).cookies?.[SESSION_COOKIE_NAME];
   if (cookie) {
-    const { resolveSession } = await import('../auth-sessions.js');
-    const session = await resolveSession(cookie);
-    if (session) await revokeSession(session.id);
+    const session = await resolveSession(db, cookie);
+    if (session) await revokeSession(db, session.id);
   }
   res.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
   res.json({ ok: true });

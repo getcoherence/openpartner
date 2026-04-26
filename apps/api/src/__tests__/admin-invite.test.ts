@@ -30,7 +30,7 @@ const app = createApp({ enableLogger: false });
 
 class CapturingMailer implements Mailer {
   readonly sent: Message[] = [];
-  async send(msg: Message): Promise<void> {
+  async send(_ctx: unknown, msg: Message): Promise<void> {
     this.sent.push(msg);
   }
   findFor(to: string, purpose?: string): Message | undefined {

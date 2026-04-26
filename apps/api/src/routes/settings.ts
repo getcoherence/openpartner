@@ -10,9 +10,9 @@
  */
 
 import { Router } from 'express';
+import type { Knex } from 'knex';
 import { z } from 'zod';
 import { TABLES, type ConfigRow } from '@openpartner/db';
-import { db } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import {
   MailSettingsValidationError,
@@ -20,6 +20,7 @@ import {
   saveMailSettings,
   type MailTransportKind,
 } from '../mail-settings.js';
+import { tenantOf } from '../tenancy.js';
 
 export const settingsRouter = Router();
 
@@ -35,8 +36,8 @@ export interface ProgramSettings {
   supportEmail: string | null;
 }
 
-async function readSettings(): Promise<ProgramSettings> {
-  const row = await db<ConfigRow>(TABLES.Config).where({ key: CONFIG_KEY }).first();
+async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings> {
+  const row = await db<ConfigRow>(TABLES.Config).where({ tenantId, key: CONFIG_KEY }).first();
   const value = (row?.value ?? {}) as Partial<ProgramSettings>;
   return {
     programName: value.programName ?? null,
@@ -45,12 +46,14 @@ async function readSettings(): Promise<ProgramSettings> {
 }
 
 /** Any authenticated caller (admin OR partner) can read — not secret. */
-settingsRouter.get('/config/program', requireAuth, async (_req, res) => {
-  res.json(await readSettings());
+settingsRouter.get('/config/program', requireAuth, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  res.json(await readSettings(db, tenantId));
 });
 
 /** Only admins write. Empty strings clear fields. */
 settingsRouter.post('/config/program', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   const body = settingsSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
@@ -61,8 +64,8 @@ settingsRouter.post('/config/program', requireAuth, requireAdmin, async (req, re
   const now = new Date();
   // Upsert: preserves updatedAt semantics without a separate read.
   await db<ConfigRow>(TABLES.Config)
-    .insert({ key: CONFIG_KEY, value: next as unknown as never, updatedAt: now })
-    .onConflict('key')
+    .insert({ tenantId, key: CONFIG_KEY, value: next as unknown as never, updatedAt: now })
+    .onConflict(['tenantId', 'key'])
     .merge({ value: next as unknown as never, updatedAt: now });
   res.json(next);
 });
@@ -91,16 +94,18 @@ const mailSettingsSchema = z.object({
     .optional(),
 });
 
-settingsRouter.get('/config/mail', requireAuth, requireAdmin, async (_req, res) => {
-  res.json(await getPublicMailSettings());
+settingsRouter.get('/config/mail', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  res.json(await getPublicMailSettings(db, tenantId));
 });
 
 settingsRouter.post('/config/mail', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   const body = mailSettingsSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
   try {
-    await saveMailSettings({
+    await saveMailSettings(db, tenantId, {
       kind: body.data.kind as MailTransportKind,
       from: body.data.from === '' ? null : body.data.from ?? undefined,
       smtp: body.data.smtp,
@@ -112,5 +117,5 @@ settingsRouter.post('/config/mail', requireAuth, requireAdmin, async (req, res) 
     }
     throw err;
   }
-  res.json(await getPublicMailSettings());
+  res.json(await getPublicMailSettings(db, tenantId));
 });

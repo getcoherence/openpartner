@@ -1,10 +1,10 @@
 /**
  * Outbound webhook dispatcher.
  *
- * dispatchEvent(type, data) fans out to every active endpoint subscribed
- * to `type`, writes a WebhookDelivery row per recipient, and fires the
- * HTTP POST asynchronously so the inbound request that triggered the
- * event isn't blocked on webhook RTT.
+ * dispatchEvent(tenantId, type, data) fans out to every active endpoint
+ * in `tenantId` subscribed to `type`, writes a WebhookDelivery row per
+ * recipient, and fires the HTTP POST asynchronously so the inbound
+ * request that triggered the event isn't blocked on webhook RTT.
  *
  * Signature: HMAC-SHA256 of `${timestamp}.${rawBody}` keyed on the
  * endpoint's signing secret — the same pattern Stripe uses. Receivers
@@ -16,6 +16,11 @@
  * with attempts + error, and admins can hit POST /webhooks/:id/
  * deliveries/:deliveryId/retry from the UI. A background retry cron
  * with exponential backoff is an obvious future extension.
+ *
+ * Multi-tenant: dispatch runs asynchronously after the request that
+ * triggered it has responded — so the per-request transaction is gone
+ * by the time we run. We use the privileged `db` directly and filter
+ * every query by `tenantId` explicitly.
  */
 
 import { createHmac, randomBytes } from 'node:crypto';
@@ -55,14 +60,14 @@ export function signPayload(secret: string, timestamp: string, rawBody: string):
  * AFTER their DB writes have committed, so a subscriber receiving an
  * event can safely fetch the related rows via the API.
  */
-export function dispatchEvent(event: WebhookEventType, data: unknown): void {
-  void runDispatch(event, data).catch((err) => {
+export function dispatchEvent(tenantId: string, event: WebhookEventType, data: unknown): void {
+  void runDispatch(tenantId, event, data).catch((err) => {
     console.error(`[webhook] dispatch failed: ${err instanceof Error ? err.message : String(err)}`);
   });
 }
 
-async function runDispatch(event: WebhookEventType, data: unknown): Promise<void> {
-  const endpoints = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ active: true });
+async function runDispatch(tenantId: string, event: WebhookEventType, data: unknown): Promise<void> {
+  const endpoints = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ tenantId, active: true });
   const matching = endpoints.filter((e) => {
     const events = Array.isArray(e.events) ? e.events : [];
     return events.includes(event) || events.includes('*');
@@ -76,15 +81,16 @@ async function runDispatch(event: WebhookEventType, data: unknown): Promise<void
     data,
   };
 
-  await Promise.all(matching.map((endpoint) => deliverOne(endpoint, envelope)));
+  await Promise.all(matching.map((endpoint) => deliverOne(tenantId, endpoint, envelope)));
 }
 
-async function deliverOne(endpoint: WebhookEndpointRow, envelope: WebhookEnvelope): Promise<void> {
+async function deliverOne(tenantId: string, endpoint: WebhookEndpointRow, envelope: WebhookEnvelope): Promise<void> {
   const deliveryId = ulid();
   const body = JSON.stringify(envelope);
 
   await db<WebhookDeliveryRow>(TABLES.WebhookDelivery).insert({
     id: deliveryId,
+    tenantId,
     endpointId: endpoint.id,
     eventId: envelope.id,
     eventType: envelope.event,
@@ -143,13 +149,19 @@ async function attemptDelivery(deliveryId: string, endpoint: WebhookEndpointRow,
   }
 }
 
-export async function redeliver(deliveryId: string): Promise<WebhookDeliveryRow | null> {
-  const delivery = await db<WebhookDeliveryRow>(TABLES.WebhookDelivery).where({ id: deliveryId }).first();
+export async function redeliver(tenantId: string, deliveryId: string): Promise<WebhookDeliveryRow | null> {
+  const delivery = await db<WebhookDeliveryRow>(TABLES.WebhookDelivery)
+    .where({ id: deliveryId, tenantId })
+    .first();
   if (!delivery) return null;
-  const endpoint = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: delivery.endpointId }).first();
+  const endpoint = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint)
+    .where({ id: delivery.endpointId, tenantId })
+    .first();
   if (!endpoint) return null;
 
   const body = typeof delivery.payload === 'string' ? delivery.payload : JSON.stringify(delivery.payload);
   await attemptDelivery(deliveryId, endpoint, body);
-  return (await db<WebhookDeliveryRow>(TABLES.WebhookDelivery).where({ id: deliveryId }).first()) ?? null;
+  return (
+    (await db<WebhookDeliveryRow>(TABLES.WebhookDelivery).where({ id: deliveryId, tenantId }).first()) ?? null
+  );
 }

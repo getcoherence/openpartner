@@ -2,8 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
 import { TABLES, type CampaignRow } from '@openpartner/db';
-import { db } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
+import { tenantOf } from '../tenancy.js';
 
 const commissionRuleSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('percent'), value: z.number().positive(), recurring: z.boolean().optional() }),
@@ -24,12 +24,14 @@ const createSchema = z.object({
 
 export const campaignsRouter = Router();
 
-campaignsRouter.get('/campaigns', requireAuth, requireAdmin, async (_req, res) => {
+campaignsRouter.get('/campaigns', requireAuth, requireAdmin, async (req, res) => {
+  const { db } = tenantOf(req);
   const campaigns = await db<CampaignRow>(TABLES.Campaign).orderBy('createdAt', 'desc');
   res.json({ campaigns });
 });
 
 campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   const body = createSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
@@ -37,6 +39,7 @@ campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) =
   const [campaign] = await db<CampaignRow>(TABLES.Campaign)
     .insert({
       id,
+      tenantId,
       name: body.data.name,
       commissionRule: body.data.commissionRule,
       attributionWindowDays: body.data.attributionWindowDays ?? 60,

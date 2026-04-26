@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { TABLES, type PartnerRow } from '@openpartner/db';
-import { db } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
+import { tenantOf } from '../tenancy.js';
 
 export const adminOverviewRouter = Router();
 
@@ -12,7 +12,8 @@ export const adminOverviewRouter = Router();
  * Window defaults to 30 days; the Dub-style partner cards don't need more
  * granularity than that for the high-level view.
  */
-adminOverviewRouter.get('/admin/overview', requireAuth, requireAdmin, async (_req, res) => {
+adminOverviewRouter.get('/admin/overview', requireAuth, requireAdmin, async (req, res) => {
+  const { db } = tenantOf(req);
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
   const partners = await db<PartnerRow>(TABLES.Partner).orderBy('createdAt', 'desc').limit(200);

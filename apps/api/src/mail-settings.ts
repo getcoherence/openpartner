@@ -6,17 +6,20 @@
  * username) is stored plaintext — they're identifiers, not secrets.
  *
  * Resolution order at dispatch time:
- *   1. UI-configured settings (if any, and not partially blank)
+ *   1. UI-configured settings for the calling tenant (if any, and not partially blank)
  *   2. Env vars (SMTP_HOST / POSTMARK_SERVER_TOKEN + MAIL_FROM)
  *   3. Console fallback
  *
  * The UI always wins over env, so an admin editing from the portal can
  * rotate creds without a redeploy. Hosted deployments that want to
  * force env can simply leave the UI empty.
+ *
+ * Multi-tenant: every read/write is scoped to a tenantId. Each tenant has
+ * its own (encrypted) UI mail config; env fallback is shared platform-wide.
  */
 
+import type { Knex } from 'knex';
 import { TABLES, type ConfigRow } from '@openpartner/db';
-import { db } from './db.js';
 import { decryptSecret, encryptSecret } from './crypto.js';
 
 export type MailTransportKind = 'smtp' | 'postmark' | 'none';
@@ -65,8 +68,8 @@ const CONFIG_KEY = 'mail_settings';
 
 // ---------- read ----------
 
-async function readStored(): Promise<StoredMailSettings | null> {
-  const row = await db<ConfigRow>(TABLES.Config).where({ key: CONFIG_KEY }).first();
+async function readStored(db: Knex, tenantId: string): Promise<StoredMailSettings | null> {
+  const row = await db<ConfigRow>(TABLES.Config).where({ tenantId, key: CONFIG_KEY }).first();
   return (row?.value as StoredMailSettings | undefined) ?? null;
 }
 
@@ -78,8 +81,8 @@ export interface PublicMailSettings {
   postmark: { hasToken: boolean; messageStream: string } | null;
 }
 
-export async function getPublicMailSettings(): Promise<PublicMailSettings> {
-  const stored = await readStored();
+export async function getPublicMailSettings(db: Knex, tenantId: string): Promise<PublicMailSettings> {
+  const stored = await readStored(db, tenantId);
   if (!stored) return { kind: null, from: null, smtp: null, postmark: null };
   return {
     kind: stored.kind,
@@ -100,8 +103,8 @@ export async function getPublicMailSettings(): Promise<PublicMailSettings> {
 }
 
 /** Decrypted + usable by the mailer. Never hand to an HTTP client. */
-export async function resolveMailConfig(): Promise<ResolvedMailConfig> {
-  const stored = await readStored();
+export async function resolveMailConfig(db: Knex, tenantId: string): Promise<ResolvedMailConfig> {
+  const stored = await readStored(db, tenantId);
   if (stored?.kind === 'smtp' && stored.from && stored.smtp) {
     return {
       kind: 'smtp',
@@ -192,8 +195,12 @@ export class MailSettingsValidationError extends Error {
   }
 }
 
-export async function saveMailSettings(input: MailSettingsInput): Promise<void> {
-  const current = (await readStored()) ?? ({ kind: null, from: null } as StoredMailSettings);
+export async function saveMailSettings(
+  db: Knex,
+  tenantId: string,
+  input: MailSettingsInput,
+): Promise<void> {
+  const current = (await readStored(db, tenantId)) ?? ({ kind: null, from: null } as StoredMailSettings);
 
   const next: StoredMailSettings = {
     kind: input.kind ?? current.kind,
@@ -239,7 +246,7 @@ export async function saveMailSettings(input: MailSettingsInput): Promise<void> 
 
   const now = new Date();
   await db<ConfigRow>(TABLES.Config)
-    .insert({ key: CONFIG_KEY, value: next as unknown as never, updatedAt: now })
-    .onConflict('key')
+    .insert({ tenantId, key: CONFIG_KEY, value: next as unknown as never, updatedAt: now })
+    .onConflict(['tenantId', 'key'])
     .merge({ value: next as unknown as never, updatedAt: now });
 }

@@ -1,13 +1,14 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { db } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { exportAll, exportTable, importBundle, isExportable, rowsToCsv } from '../export.js';
 import { getMode } from '../stripe.js';
+import { tenantOf } from '../tenancy.js';
 
 export const exportRouter = Router();
 
 exportRouter.get('/export/:table.:format', requireAuth, requireAdmin, async (req, res) => {
+  const { db } = tenantOf(req);
   const table = req.params.table ?? '';
   const format = req.params.format ?? '';
   if (!isExportable(table)) return res.status(404).json({ error: 'table_not_exportable' });
@@ -27,7 +28,8 @@ exportRouter.get('/export/:table.:format', requireAuth, requireAdmin, async (req
   res.status(400).json({ error: 'unsupported_format', detail: 'use json or csv' });
 });
 
-exportRouter.get('/export.json', requireAuth, requireAdmin, async (_req, res) => {
+exportRouter.get('/export.json', requireAuth, requireAdmin, async (req, res) => {
+  const { db } = tenantOf(req);
   const bundle = await exportAll(db);
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Content-Disposition', 'attachment; filename="openpartner-export.json"');
@@ -44,6 +46,7 @@ const importSchema = z.object({
 });
 
 exportRouter.post('/import', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   // Safety rail: re-importing someone else's export into a shared hosted DB
   // would collide primary keys and leak cross-tenant data. Gate it to selfhost.
   if (getMode() !== 'selfhost') {
@@ -54,6 +57,6 @@ exportRouter.post('/import', requireAuth, requireAdmin, async (req, res) => {
   if (body.data.schemaVersion !== 1) {
     return res.status(400).json({ error: 'unsupported_schema_version' });
   }
-  const report = await importBundle(db, body.data.tables);
+  const report = await importBundle(db, tenantId, body.data.tables);
   res.json({ ok: true, report });
 });

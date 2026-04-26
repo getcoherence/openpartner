@@ -1,12 +1,12 @@
+import type { Knex } from 'knex';
 import { TABLES, type ConfigRow } from '@openpartner/db';
-import { db } from './db.js';
 
-export async function getConfig<T>(key: string): Promise<T | null> {
-  const row = await db<ConfigRow>(TABLES.Config).where({ key }).first();
+export async function getConfig<T>(db: Knex, tenantId: string, key: string): Promise<T | null> {
+  const row = await db<ConfigRow>(TABLES.Config).where({ tenantId, key }).first();
   return row ? (row.value as T) : null;
 }
 
-export async function setConfig<T>(key: string, value: T): Promise<void> {
+export async function setConfig<T>(db: Knex, tenantId: string, key: string, value: T): Promise<void> {
   // Config.value is jsonb. Knex/pg auto-serialize objects, but a plain
   // primitive (string, number, boolean) is sent as raw text and rejected
   // because "foo" is not valid JSON without quotes. Stringify + cast so
@@ -14,8 +14,8 @@ export async function setConfig<T>(key: string, value: T): Promise<void> {
   const json = JSON.stringify(value);
   const jsonbValue = db.raw('?::jsonb', [json]);
   await db<ConfigRow>(TABLES.Config)
-    .insert({ key, value: jsonbValue as unknown as object, updatedAt: new Date() })
-    .onConflict('key')
+    .insert({ tenantId, key, value: jsonbValue as unknown as object, updatedAt: new Date() })
+    .onConflict(['tenantId', 'key'])
     .merge({ value: jsonbValue as unknown as object, updatedAt: new Date() });
 }
 

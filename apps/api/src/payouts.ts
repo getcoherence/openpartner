@@ -14,8 +14,13 @@
  *
  * Idempotency: we stamp the transfer's idempotency key with the Payout id
  * (generated up front) so a retry after a crash does not double-transfer.
+ *
+ * Multi-tenant: takes (db, tenantId). Pass req.db from a route handler, or
+ * the privileged db with app.tenant_id pinned in the calling transaction
+ * from the scheduler.
  */
 
+import type { Knex } from 'knex';
 import { ulid } from 'ulid';
 import {
   TABLES,
@@ -23,7 +28,6 @@ import {
   type PartnerRow,
   type PayoutMethod,
 } from '@openpartner/db';
-import { db } from './db.js';
 import { REVSHARE_FEE_BPS, getMode, requireStripe, type OpenPartnerMode } from './stripe.js';
 import { dispatchEvent } from './webhook-dispatcher.js';
 
@@ -42,7 +46,7 @@ export interface PayoutRunResult {
   }>;
 }
 
-export async function runPayouts(): Promise<PayoutRunResult> {
+export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunResult> {
   const mode = getMode();
   const runId = ulid();
 
@@ -88,29 +92,28 @@ export async function runPayouts(): Promise<PayoutRunResult> {
       onboardingIncomplete ? 'failed' :
       /* manual */ 'pending';
 
-    await db.transaction(async (trx) => {
-      await trx(TABLES.Payout).insert({
-        id: payoutId,
-        partnerId: partner.id,
-        amount: amount.toFixed(2),
-        currency: group.currency,
-        method,
-        status: finalStatus,
-        metadata: {
-          runId,
-          platformFee,
-          commissionCount: commissions.length,
-          ...(onboardingIncomplete ? { error: 'stripe_onboarding_incomplete' } : {}),
-        },
-      });
-      // Only mark commissions paid on the manual-commit path. Connect
-      // path defers until after the transfer succeeds.
-      if (method === 'manual') {
-        await trx(TABLES.Commission)
-          .whereIn('id', commissions.map((c) => c.id))
-          .update({ status: 'paid', paidAt: new Date(), payoutId });
-      }
+    await db(TABLES.Payout).insert({
+      id: payoutId,
+      tenantId,
+      partnerId: partner.id,
+      amount: amount.toFixed(2),
+      currency: group.currency,
+      method,
+      status: finalStatus,
+      metadata: {
+        runId,
+        platformFee,
+        commissionCount: commissions.length,
+        ...(onboardingIncomplete ? { error: 'stripe_onboarding_incomplete' } : {}),
+      },
     });
+    // Only mark commissions paid on the manual-commit path. Connect
+    // path defers until after the transfer succeeds.
+    if (method === 'manual') {
+      await db(TABLES.Commission)
+        .whereIn('id', commissions.map((c) => c.id))
+        .update({ status: 'paid', paidAt: new Date(), payoutId });
+    }
 
     if (onboardingIncomplete) {
       results.push({
@@ -134,24 +137,22 @@ export async function runPayouts(): Promise<PayoutRunResult> {
             amount: Math.round(amount * 100),
             currency: group.currency.toLowerCase(),
             destination: partner.stripeConnectAccountId!,
-            metadata: { openpartner_payout_id: payoutId, mode },
+            metadata: { openpartner_payout_id: payoutId, openpartner_tenant_id: tenantId, mode },
           },
           { idempotencyKey: `payout_${payoutId}` },
         );
 
-        await db.transaction(async (trx) => {
-          await trx(TABLES.Payout).where({ id: payoutId }).update({
-            stripeTransferId: transfer.id,
-            status: 'paid',
-            completedAt: new Date(),
-          });
-          await trx(TABLES.Commission)
-            .whereIn('id', commissions.map((c) => c.id))
-            .update({ status: 'paid', paidAt: new Date(), payoutId });
+        await db(TABLES.Payout).where({ id: payoutId }).update({
+          stripeTransferId: transfer.id,
+          status: 'paid',
+          completedAt: new Date(),
         });
+        await db(TABLES.Commission)
+          .whereIn('id', commissions.map((c) => c.id))
+          .update({ status: 'paid', paidAt: new Date(), payoutId });
 
         // Webhooks fire only after the success is durable.
-        dispatchEvent('payout.created', {
+        dispatchEvent(tenantId, 'payout.created', {
           payoutId,
           partnerId: partner.id,
           amount: amount.toFixed(2),
@@ -161,7 +162,7 @@ export async function runPayouts(): Promise<PayoutRunResult> {
           platformFee: platformFee || undefined,
         });
         for (const c of commissions) {
-          dispatchEvent('commission.paid', {
+          dispatchEvent(tenantId, 'commission.paid', {
             commissionId: c.id,
             partnerId: c.partnerId,
             amount: c.amount,
@@ -198,7 +199,7 @@ export async function runPayouts(): Promise<PayoutRunResult> {
     } else {
       // Manual path: commissions are already marked paid in the tx above.
       // Fire webhooks now — the operator owns the out-of-band transfer.
-      dispatchEvent('payout.created', {
+      dispatchEvent(tenantId, 'payout.created', {
         payoutId,
         partnerId: partner.id,
         amount: amount.toFixed(2),
@@ -208,7 +209,7 @@ export async function runPayouts(): Promise<PayoutRunResult> {
         platformFee: platformFee || undefined,
       });
       for (const c of commissions) {
-        dispatchEvent('commission.paid', {
+        dispatchEvent(tenantId, 'commission.paid', {
           commissionId: c.id,
           partnerId: c.partnerId,
           amount: c.amount,
@@ -230,4 +231,3 @@ export async function runPayouts(): Promise<PayoutRunResult> {
 
   return { runId, mode, payouts: results };
 }
-
