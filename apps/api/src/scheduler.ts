@@ -33,7 +33,7 @@ import { TABLES, type TenantRow } from '@openpartner/db';
 import { appDb, db } from './db.js';
 import { reportUsageToStripe } from './usage-billing.js';
 import { runPayouts } from './payouts.js';
-import { drainOutbox } from './network-client.js';
+import { drainOutbox, reportNetworkPayoutsToNetwork } from './network-client.js';
 import { getMode } from './stripe.js';
 
 interface ScheduledJob {
@@ -88,6 +88,13 @@ const JOBS: ScheduledJob[] = [
     cronExpr: '*/5 * * * *',
     description: 'Per tenant: retry failed Network pushes from NetworkOutbox (every 5 minutes)',
     handler: async () => forEachActiveTenant((trx, tenantId) => drainOutbox(trx, tenantId)),
+  },
+  {
+    name: 'network-payouts-report',
+    cronExpr: '30 3 * * *',
+    description: 'Per tenant: aggregate Network-originated payout volume + report to the Network for Stripe metering (daily 03:30 UTC)',
+    handler: async () =>
+      forEachActiveTenant((trx, tenantId) => reportNetworkPayoutsToNetwork(trx, tenantId)),
   },
 ];
 
