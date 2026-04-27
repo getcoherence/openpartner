@@ -451,6 +451,89 @@ export const networkProxy = {
     ),
 };
 
+// ---------- Network-originated payouts reporting ----------
+//
+// The Network bills self-hosted vendors 3% on payouts whose Partner
+// came from the marketplace. Vendor side aggregates the period's
+// Network-originated payout total and POSTs to /vendors/me/report-
+// payouts; the Network turns it into a Stripe meter event.
+//
+// Cadence: piggyback on the openpartner scheduler (daily), keyed
+// against a Config high-water mark. Hosted-tier vendors get 204'd by
+// the Network (their billing is bundled), so this is a no-op cost
+// from their perspective.
+
+export interface NetworkPayoutsReportResult {
+  rangeStart: Date | null;
+  rangeEnd: Date;
+  amountUsd: number;
+  reported: boolean;
+  reason?: string;
+}
+
+export async function reportNetworkPayoutsToNetwork(
+  db: Knex,
+  tenantId: string,
+): Promise<NetworkPayoutsReportResult> {
+  const m = await getNetworkMembership(db, tenantId);
+  const rangeEnd = new Date();
+  if (!m || !m.enabled || !m.networkUrl || !m.vendorTokenCiphertext) {
+    return { rangeStart: null, rangeEnd, amountUsd: 0, reported: false, reason: 'network_not_configured' };
+  }
+  let token: string;
+  try {
+    token = decryptSecret(m.vendorTokenCiphertext);
+  } catch {
+    return { rangeStart: null, rangeEnd, amountUsd: 0, reported: false, reason: 'token_undecryptable' };
+  }
+
+  const { CONFIG_KEYS, getConfig, setConfig } = await import('./config.js');
+  const { aggregateNetworkOriginatedPayouts } = await import('./usage-billing.js');
+
+  const lastIso = await getConfig<string>(db, tenantId, CONFIG_KEYS.LastNetworkPayoutsReportedAt);
+  const rangeStart = lastIso ? new Date(lastIso) : null;
+  const amountUsd = await aggregateNetworkOriginatedPayouts(db, rangeStart, rangeEnd);
+
+  if (amountUsd <= 0) {
+    // Advance the high-water mark anyway so we don't re-scan the
+    // same window. The Network endpoint short-circuits on 0 too,
+    // but skipping the round-trip is cheaper.
+    await setConfig(db, tenantId, CONFIG_KEYS.LastNetworkPayoutsReportedAt, rangeEnd.toISOString());
+    return { rangeStart, rangeEnd, amountUsd: 0, reported: false, reason: 'no_network_payouts_in_range' };
+  }
+
+  const url = `${m.networkUrl.replace(/\/$/, '')}/vendors/me/report-payouts`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${token}`,
+      'user-agent': 'OpenPartner-Vendor/1',
+    },
+    body: JSON.stringify({
+      amountUsd,
+      sinceIso: rangeStart ? rangeStart.toISOString() : null,
+      untilIso: rangeEnd.toISOString(),
+    }),
+    signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '<no body>');
+    // DON'T advance the high-water mark on Network failures — next
+    // tick re-includes this period's payouts. Same idempotency model
+    // as the meter event: the Network's identifier dedups at Stripe.
+    return {
+      rangeStart,
+      rangeEnd,
+      amountUsd,
+      reported: false,
+      reason: `network ${res.status}: ${text.slice(0, 200)}`,
+    };
+  }
+  await setConfig(db, tenantId, CONFIG_KEYS.LastNetworkPayoutsReportedAt, rangeEnd.toISOString());
+  return { rangeStart, rangeEnd, amountUsd, reported: true };
+}
+
 // ---------- outbox drain (called from scheduler.ts) ----------
 
 export async function drainOutbox(db: Knex, tenantId: string): Promise<{ drained: number; succeeded: number; dead: number }> {

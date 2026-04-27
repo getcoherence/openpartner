@@ -51,6 +51,33 @@ export interface UsageReportResult {
 }
 
 /**
+ * Sum payout amounts (in dollars) for payouts whose Partner came from
+ * the OpenPartner Network — i.e., Partner.metadata.network.creatorId
+ * is set, which is stamped by network-client.ts when a partner is
+ * upserted to the Network.
+ *
+ * This is what the Network bills the vendor on (3% metered). Only
+ * 'paid' payouts count — pending / failed don't generate Network fee
+ * because no money actually moved to the partner.
+ *
+ * Tenant scope: caller provides db + GUC.
+ */
+export async function aggregateNetworkOriginatedPayouts(
+  db: Knex,
+  since: Date | null,
+  until: Date,
+): Promise<number> {
+  const q = db(TABLES.Payout)
+    .join(TABLES.Partner, `${TABLES.Partner}.id`, `${TABLES.Payout}.partnerId`)
+    .where(`${TABLES.Payout}.status`, 'paid')
+    .andWhere(`${TABLES.Payout}.completedAt`, '<=', until)
+    .andWhereRaw(`"${TABLES.Partner}"."metadata"->'network'->>'creatorId' is not null`);
+  if (since) q.andWhere(`${TABLES.Payout}.completedAt`, '>', since);
+  const rows = (await q.sum({ total: `${TABLES.Payout}.amount` })) as Array<{ total: string | null }>;
+  return Number(rows[0]?.total ?? 0);
+}
+
+/**
  * Sum attributed GMV (in dollars) for events with `ts > since` and `ts <= until`.
  * Only counts events that have at least one Attribution row (i.e. a partner
  * was credited). Refund/dispute events are excluded by event-type filter.

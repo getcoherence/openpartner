@@ -26,4 +26,8 @@ export const CONFIG_KEYS = {
   // High-water mark for usage reporting. Stored as ISO string. The next
   // run aggregates Events with ts > this value, then advances the mark.
   LastUsageReportedAt: 'stripe.merchant.lastUsageReportedAt',
+  // High-water mark for Network-originated payout reporting (separate
+  // from usage reporting because the cadence + trigger are different
+  // — payouts are weekly, usage is daily).
+  LastNetworkPayoutsReportedAt: 'network.lastPayoutsReportedAt',
 } as const;
