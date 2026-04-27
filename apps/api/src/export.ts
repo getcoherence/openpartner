@@ -92,8 +92,17 @@ export interface ImportReport {
  * Re-import a bundle. We use onConflict(pk).ignore so the operation is
  * idempotent: running the same export twice won't create duplicates, and
  * partial-then-resumed imports work.
+ *
+ * Multi-tenant: every row's tenantId is rewritten to the importing tenant.
+ * This is what lets a hosted-tier export ("acme" tenantId throughout)
+ * round-trip into a self-host installation (default tenantId), satisfying
+ * the data-portability commitment in CLAUDE.md.
  */
-export async function importBundle(db: Knex, bundle: ImportBundle): Promise<ImportReport> {
+export async function importBundle(
+  db: Knex,
+  tenantId: string,
+  bundle: ImportBundle,
+): Promise<ImportReport> {
   const inserted: Record<string, number> = {};
   const skipped: Record<string, number> = {};
 
@@ -101,7 +110,10 @@ export async function importBundle(db: Knex, bundle: ImportBundle): Promise<Impo
     const rows = bundle[table];
     if (!Array.isArray(rows) || rows.length === 0) continue;
 
-    const normalized = rows.map((r) => normalizeRow(r as Record<string, unknown>));
+    const normalized = rows.map((r) => ({
+      ...normalizeRow(r as Record<string, unknown>),
+      tenantId,
+    }));
 
     const result = await db(table)
       .insert(normalized)

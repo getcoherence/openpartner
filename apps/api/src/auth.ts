@@ -10,13 +10,18 @@
  * We never store plaintext. Keys look like `op_<24 hex>` and are identified
  * by an 8-char prefix so lookups are indexed rather than table scans. The
  * hash is sha256 over the whole key.
+ *
+ * Multi-tenant: principal lookups go through `req.db` (the per-request
+ * transaction with `app.tenant_id` set), so RLS scopes ApiKey + Session
+ * lookups to the current tenant. `requireAuth` therefore must run after
+ * `tenantMiddleware`.
  */
 
 import { createHash, randomBytes } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
+import type { Knex } from 'knex';
 import { ulid } from 'ulid';
 import { TABLES, type ApiKeyRow } from '@openpartner/db';
-import { db } from './db.js';
 
 export type ApiKeyPrincipal =
   | { role: 'admin'; source: 'env' }
@@ -79,12 +84,19 @@ export function requirePartnerOrAdmin(paramName: string = 'id') {
 }
 
 async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
+  const db = req.db;
+  if (!db) {
+    // requireAuth was mounted on a route that didn't pass through
+    // tenantMiddleware. That's a routing bug — fail loudly.
+    throw new Error('requireAuth invoked without a tenant-scoped req.db');
+  }
+
   const header = req.header('authorization');
   if (!header) {
     const cookie = (req as unknown as { cookies?: Record<string, string> }).cookies?.op_session;
     if (!cookie) return null;
     const { resolveSession } = await import('./auth-sessions.js');
-    const session = await resolveSession(cookie);
+    const session = await resolveSession(db, cookie);
     if (!session) return null;
     if (session.principalKind === 'admin') {
       return { role: 'admin', source: 'session', sessionId: session.id, adminId: session.principalId };
@@ -157,15 +169,20 @@ function constantTimeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-export async function createApiKeyRow(params: {
-  partnerId?: string | null;
-  scopes?: string[] | null;
-  label?: string;
-}): Promise<{ id: string; plaintext: string }> {
+export async function createApiKeyRow(
+  db: Knex,
+  params: {
+    tenantId: string;
+    partnerId?: string | null;
+    scopes?: string[] | null;
+    label?: string;
+  },
+): Promise<{ id: string; plaintext: string }> {
   const { plaintext, prefix, hash } = generateApiKey();
   const id = ulid();
   await db<ApiKeyRow>(TABLES.ApiKey).insert({
     id,
+    tenantId: params.tenantId,
     prefix,
     keyHash: hash,
     partnerId: params.partnerId ?? null,

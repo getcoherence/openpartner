@@ -15,10 +15,14 @@
  * timestamp to define a closed period and stamp identifier accordingly. If
  * the report fails we DO NOT advance the high-water mark, so the next run
  * picks up from the same point.
+ *
+ * Multi-tenant: each tenant has its own Stripe customer + high-water mark
+ * (Config rows are tenant-scoped). The scheduler iterates tenants and calls
+ * this once per tenant; the billing route passes the request's tenant.
  */
 
+import type { Knex } from 'knex';
 import { TABLES, type EventRow } from '@openpartner/db';
-import { db } from './db.js';
 import { CONFIG_KEYS, getConfig, setConfig } from './config.js';
 import { getMode, requireStripe } from './stripe.js';
 
@@ -50,8 +54,15 @@ export interface UsageReportResult {
  * Sum attributed GMV (in dollars) for events with `ts > since` and `ts <= until`.
  * Only counts events that have at least one Attribution row (i.e. a partner
  * was credited). Refund/dispute events are excluded by event-type filter.
+ *
+ * Tenant scope is provided by the caller (req.db with app.tenant_id set, or
+ * a transaction the scheduler opened with the GUC pinned).
  */
-export async function aggregateAttributedGmv(since: Date | null, until: Date): Promise<number> {
+export async function aggregateAttributedGmv(
+  db: Knex,
+  since: Date | null,
+  until: Date,
+): Promise<number> {
   const q = db<EventRow>(TABLES.Event)
     .whereIn('type', REVENUE_EVENT_TYPES)
     .where('ts', '<=', until)
@@ -69,7 +80,7 @@ export async function aggregateAttributedGmv(since: Date | null, until: Date): P
  * and the merchant's subscription must include the metered price tied to
  * the same meter. Both are provisioned by `scripts/setup-stripe.mjs`.
  */
-export async function reportUsageToStripe(): Promise<UsageReportResult> {
+export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<UsageReportResult> {
   const mode = getMode();
   const meterEventName = MODE_TO_METER[mode];
   if (!meterEventName) {
@@ -85,7 +96,7 @@ export async function reportUsageToStripe(): Promise<UsageReportResult> {
     };
   }
 
-  const customerId = await getConfig<string>(CONFIG_KEYS.StripeMerchantCustomerId);
+  const customerId = await getConfig<string>(db, tenantId, CONFIG_KEYS.StripeMerchantCustomerId);
   if (!customerId) {
     return {
       mode,
@@ -99,15 +110,15 @@ export async function reportUsageToStripe(): Promise<UsageReportResult> {
     };
   }
 
-  const lastReportedAtIso = await getConfig<string>(CONFIG_KEYS.LastUsageReportedAt);
+  const lastReportedAtIso = await getConfig<string>(db, tenantId, CONFIG_KEYS.LastUsageReportedAt);
   const rangeStart = lastReportedAtIso ? new Date(lastReportedAtIso) : null;
   const rangeEnd = new Date();
-  const amount = await aggregateAttributedGmv(rangeStart, rangeEnd);
+  const amount = await aggregateAttributedGmv(db, rangeStart, rangeEnd);
 
   if (amount <= 0) {
     // Still advance the high-water mark — we've "reported" zero usage for
     // the period and don't want to re-scan the same window forever.
-    await setConfig(CONFIG_KEYS.LastUsageReportedAt, rangeEnd.toISOString());
+    await setConfig(db, tenantId, CONFIG_KEYS.LastUsageReportedAt, rangeEnd.toISOString());
     return {
       mode,
       meterEventName,
@@ -124,8 +135,9 @@ export async function reportUsageToStripe(): Promise<UsageReportResult> {
   // identifier is Stripe's idempotency key for meter events. Tying it to the
   // window end means a re-run within the same second is deduped on Stripe's
   // side, which is what we want when an admin double-clicks the report
-  // button or a cron job retries on transient failure.
-  const identifier = `op-usage-${mode}-${rangeEnd.toISOString()}`;
+  // button or a cron job retries on transient failure. Include tenantId so
+  // two tenants reporting in the same second don't collide.
+  const identifier = `op-usage-${mode}-${tenantId}-${rangeEnd.toISOString()}`;
   await stripe.billing.meterEvents.create({
     event_name: meterEventName,
     payload: {
@@ -136,7 +148,7 @@ export async function reportUsageToStripe(): Promise<UsageReportResult> {
     timestamp: Math.floor(rangeEnd.getTime() / 1000),
   });
 
-  await setConfig(CONFIG_KEYS.LastUsageReportedAt, rangeEnd.toISOString());
+  await setConfig(db, tenantId, CONFIG_KEYS.LastUsageReportedAt, rangeEnd.toISOString());
   return {
     mode,
     meterEventName,

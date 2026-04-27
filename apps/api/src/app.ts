@@ -30,6 +30,9 @@ import { installRouter } from './routes/install.js';
 import { fraudReviewRouter } from './routes/fraud-review.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { metricsRouter } from './routes/metrics.js';
+import { signupRouter } from './routes/signup.js';
+import { partnerSignupRouter } from './routes/partner-signup.js';
+import { tenantMiddleware } from './tenancy.js';
 
 export function createApp(options: { enableLogger?: boolean } = {}) {
   const app = express();
@@ -104,9 +107,24 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
     res.json({ ok: true, service: 'api', mode: MODE });
   });
 
+  // ----- Public, non-tenant routes (mounted BEFORE tenantMiddleware) -----
+  // These either run before any tenant exists (install), or are platform-
+  // wide (metrics scraped by Prometheus). They use the privileged db
+  // directly and are responsible for their own access control.
+  app.use(installRouter);
+  app.use(signupRouter);
+  app.use(metricsRouter);
+
+  // ----- Tenant scope -----
+  // Everything below runs inside a per-request transaction with
+  // app.tenant_id set, so RLS scopes every query to the current tenant.
+  // In single-tenancy mode, tenantId is always 'default'. In multi-tenancy
+  // mode, it's resolved from /t/<slug>/... in the URL.
+  app.use(tenantMiddleware);
+
   app.use(authRouter);
   app.use(partnerAuthRouter);
-  app.use(installRouter);
+  app.use(partnerSignupRouter);
   app.use(adminsRouter);
   app.use(settingsRouter);
   app.use(funnelRouter);
@@ -125,7 +143,6 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(exportRouter);
   app.use(billingRouter);
   app.use(adminOverviewRouter);
-  app.use(metricsRouter);
 
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
     req.log?.error({ err }, 'request_failed');

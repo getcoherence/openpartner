@@ -6,27 +6,33 @@
  *               monthly subscription.
  *   revshare  → /billing/status surfaces accrued platform fees; collection is
  *               handled out-of-band against the 3% retained on payouts.
+ *
+ * Multi-tenant: every Stripe object created here is stamped with
+ * openpartner_tenant_id in metadata so the webhook handler can resolve the
+ * tenant on inbound events without hitting the path router.
  */
 
 import { Router } from 'express';
+import type { Knex } from 'knex';
 import { z } from 'zod';
 import { TABLES } from '@openpartner/db';
-import { db } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { REVSHARE_FEE_BPS, getMode, requireStripe } from '../stripe.js';
 import { CONFIG_KEYS, getConfig, setConfig } from '../config.js';
 import { reportUsageToStripe } from '../usage-billing.js';
+import { tenantOf } from '../tenancy.js';
 
 export const billingRouter = Router();
 
-billingRouter.get('/billing/status', requireAuth, requireAdmin, async (_req, res) => {
+billingRouter.get('/billing/status', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   const mode = getMode();
   if (mode === 'selfhost') {
     return res.json({ mode, billed: false });
   }
 
   if (mode === 'flat') {
-    const subscriptionId = await getConfig<string>(CONFIG_KEYS.StripeMerchantSubscriptionId);
+    const subscriptionId = await getConfig<string>(db, tenantId, CONFIG_KEYS.StripeMerchantSubscriptionId);
     if (!subscriptionId) return res.json({ mode, subscribed: false });
     const stripe = requireStripe();
     const sub = await stripe.subscriptions.retrieve(subscriptionId);
@@ -67,6 +73,7 @@ const checkoutSchema = z.object({
 });
 
 billingRouter.post('/billing/checkout', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   const mode = getMode();
   if (mode !== 'flat' && mode !== 'revshare') {
     return res.status(400).json({ error: 'only_flat_or_revshare_mode' });
@@ -96,14 +103,17 @@ billingRouter.post('/billing/checkout', requireAuth, requireAdmin, async (req, r
   // Checkout in test mode. Create or reuse a Customer for this merchant up
   // front so we can pass it to the Checkout session and so the Customer
   // Portal works on the same record after subscription completes.
-  let customerId = await getConfig<string>(CONFIG_KEYS.StripeMerchantCustomerId);
+  let customerId = await getConfig<string>(db, tenantId, CONFIG_KEYS.StripeMerchantCustomerId);
   if (!customerId) {
     const customer = await stripe.customers.create({
       email: body.data.customerEmail,
-      metadata: { openpartner_role: 'merchant_self_subscription' },
+      metadata: {
+        openpartner_role: 'merchant_self_subscription',
+        openpartner_tenant_id: tenantId,
+      },
     });
     customerId = customer.id;
-    await setConfig(CONFIG_KEYS.StripeMerchantCustomerId, customerId);
+    await setConfig(db, tenantId, CONFIG_KEYS.StripeMerchantCustomerId, customerId);
   }
 
   const session = await stripe.checkout.sessions.create({
@@ -112,11 +122,13 @@ billingRouter.post('/billing/checkout', requireAuth, requireAdmin, async (req, r
     line_items: lineItems,
     success_url: body.data.successUrl,
     cancel_url: body.data.cancelUrl,
+    metadata: { openpartner_tenant_id: tenantId },
   });
   res.json({ url: session.url });
 });
 
-billingRouter.post('/billing/report-usage', requireAuth, requireAdmin, async (_req, res) => {
+billingRouter.post('/billing/report-usage', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   // Self-host has no platform billing; revshare and flat both report to the
   // shared meter (different metered prices on the merchant subscription
   // determine the rate).
@@ -124,7 +136,7 @@ billingRouter.post('/billing/report-usage', requireAuth, requireAdmin, async (_r
     return res.status(400).json({ error: 'no_billing_in_selfhost' });
   }
   try {
-    const result = await reportUsageToStripe();
+    const result = await reportUsageToStripe(db, tenantId);
     res.json(result);
   } catch (err) {
     res.status(500).json({
@@ -135,11 +147,12 @@ billingRouter.post('/billing/report-usage', requireAuth, requireAdmin, async (_r
 });
 
 billingRouter.post('/billing/portal', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   if (getMode() !== 'flat') return res.status(400).json({ error: 'only_flat_mode' });
   const body = z.object({ returnUrl: z.string().url() }).safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const customerId = await getConfig<string>(CONFIG_KEYS.StripeMerchantCustomerId);
+  const customerId = await getConfig<string>(db, tenantId, CONFIG_KEYS.StripeMerchantCustomerId);
   if (!customerId) return res.status(404).json({ error: 'no_customer_on_file' });
 
   const stripe = requireStripe();
@@ -151,7 +164,14 @@ billingRouter.post('/billing/portal', requireAuth, requireAdmin, async (req, res
 });
 
 // Exposed for the stripe webhook to call on checkout.session.completed.
-export async function persistMerchantSubscription(customerId: string, subscriptionId: string): Promise<void> {
-  await setConfig(CONFIG_KEYS.StripeMerchantCustomerId, customerId);
-  await setConfig(CONFIG_KEYS.StripeMerchantSubscriptionId, subscriptionId);
+// Webhook resolves tenantId from event metadata and passes its own db handle
+// (a transaction with app.tenant_id pinned).
+export async function persistMerchantSubscription(
+  db: Knex,
+  tenantId: string,
+  customerId: string,
+  subscriptionId: string,
+): Promise<void> {
+  await setConfig(db, tenantId, CONFIG_KEYS.StripeMerchantCustomerId, customerId);
+  await setConfig(db, tenantId, CONFIG_KEYS.StripeMerchantSubscriptionId, subscriptionId);
 }

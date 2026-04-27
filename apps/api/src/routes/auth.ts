@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { TABLES, type AdminRow, type PartnerRow } from '@openpartner/db';
-import { db } from '../db.js';
 import { requireAuth } from '../auth.js';
+import { tenantOf } from '../tenancy.js';
 
 export const authRouter = Router();
 
@@ -28,6 +28,7 @@ authRouter.get('/auth/introspect', requireAuth, async (req, res) => {
  * to render after login.
  */
 authRouter.get('/auth/whoami', requireAuth, async (req, res) => {
+  const { db } = tenantOf(req);
   const p = req.principal!;
   if (p.role === 'admin') {
     if (p.source === 'session') {

@@ -68,8 +68,26 @@ services:
       - key: DATABASE_URL
         type: SECRET
         scope: RUN_TIME
+      # App-pool connection — connects as openpartner_app (a NOLOGIN-by-
+      # default role provisioned by migration 20260507020000_app_role.ts).
+      # Required in multi-tenant deploys for RLS to actually engage at
+      # runtime; in single-tenant self-host you can leave it unset and
+      # let everything run as the migration role.
+      - key: DATABASE_URL_APP
+        type: SECRET
+        scope: RUN_TIME
+      # Password used to provision openpartner_app on migrate. Pair with
+      # DATABASE_URL_APP. Rotation: change here, redeploy to re-run the
+      # idempotent role migration which alters the password in place.
+      - key: OPENPARTNER_APP_DB_PASSWORD
+        type: SECRET
+        scope: RUN_TIME
       - key: OPENPARTNER_MODE
         value: flat
+      # single | multi. Hosted deploys default to multi; flip to single
+      # if running a single-tenant fork on App Platform.
+      - key: OPENPARTNER_TENANCY
+        value: multi
       - key: POSTMARK_MESSAGE_STREAM
         value: outbound
       # Enables the in-process scheduler (usage reporting + payouts).

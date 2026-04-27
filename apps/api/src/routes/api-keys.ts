@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { TABLES, type ApiKeyRow } from '@openpartner/db';
-import { db } from '../db.js';
 import { createApiKeyRow, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
+import { tenantOf } from '../tenancy.js';
 
 const createSchema = z.object({ label: z.string().optional() });
 
@@ -24,9 +24,10 @@ export const apiKeysRouter = Router();
 
 // Admin: create admin key (ADMIN_API_KEY env is the first-class bootstrap; this is for rotation).
 apiKeysRouter.post('/api-keys', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   const body = createSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
-  const key = await createApiKeyRow({ partnerId: null, label: body.data.label ?? undefined });
+  const key = await createApiKeyRow(db, { tenantId, partnerId: null, label: body.data.label ?? undefined });
   res.status(201).json({ id: key.id, plaintext: key.plaintext });
 });
 
@@ -34,9 +35,10 @@ apiKeysRouter.post('/api-keys', requireAuth, requireAdmin, async (req, res) => {
 // integrations (OpenPartner Network federation is the canonical example)
 // so a leak of the stored credential can't escalate to full admin.
 apiKeysRouter.post('/api-keys/scoped', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   const body = scopedCreateSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
-  const key = await createApiKeyRow({ scopes: body.data.scopes, label: body.data.label ?? 'scoped' });
+  const key = await createApiKeyRow(db, { tenantId, scopes: body.data.scopes, label: body.data.label ?? 'scoped' });
   res.status(201).json({ id: key.id, plaintext: key.plaintext, scopes: body.data.scopes });
 });
 
@@ -46,12 +48,13 @@ apiKeysRouter.post(
   requireAuth,
   requirePartnerOrAdmin('id'),
   async (req, res) => {
+    const { db, tenantId } = tenantOf(req);
     const body = createSchema.safeParse(req.body);
     if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
     const partnerId = req.params.id!;
     const partner = await db(TABLES.Partner).where({ id: partnerId }).first();
     if (!partner) return res.status(404).json({ error: 'partner_not_found' });
-    const key = await createApiKeyRow({ partnerId, label: body.data.label });
+    const key = await createApiKeyRow(db, { tenantId, partnerId, label: body.data.label });
     res.status(201).json({ id: key.id, plaintext: key.plaintext });
   },
 );
@@ -61,6 +64,7 @@ apiKeysRouter.get(
   requireAuth,
   requirePartnerOrAdmin('id'),
   async (req, res) => {
+    const { db } = tenantOf(req);
     const keys = await db<ApiKeyRow>(TABLES.ApiKey)
       .where({ partnerId: req.params.id })
       .select('id', 'prefix', 'label', 'createdAt', 'lastUsedAt', 'revokedAt')
@@ -71,6 +75,7 @@ apiKeysRouter.get(
 
 // Revoke. Admin can revoke any key; partner can only revoke their own.
 apiKeysRouter.delete('/api-keys/:keyId', requireAuth, async (req, res) => {
+  const { db } = tenantOf(req);
   const key = await db<ApiKeyRow>(TABLES.ApiKey).where({ id: req.params.keyId }).first();
   if (!key) return res.status(404).json({ error: 'not_found' });
 

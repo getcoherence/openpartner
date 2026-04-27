@@ -2,8 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
 import { TABLES, type LinkRow } from '@openpartner/db';
-import { db } from '../db.js';
 import { grantScope, requireAuth, requirePartnerOrAdmin } from '../auth.js';
+import { tenantOf } from '../tenancy.js';
 
 const createSchema = z.object({
   linkKey: z
@@ -18,6 +18,7 @@ const createSchema = z.object({
 export const linksRouter = Router();
 
 linksRouter.get('/partners/:id/links', requireAuth, requirePartnerOrAdmin('id'), async (req, res) => {
+  const { db } = tenantOf(req);
   const links = await db<LinkRow>(TABLES.Link)
     .where({ partnerId: req.params.id })
     .orderBy('createdAt', 'desc');
@@ -25,6 +26,7 @@ linksRouter.get('/partners/:id/links', requireAuth, requirePartnerOrAdmin('id'),
 });
 
 linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), requirePartnerOrAdmin('id'), async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   const body = createSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
@@ -39,6 +41,7 @@ linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), 
     const [link] = await db<LinkRow>(TABLES.Link)
       .insert({
         id,
+        tenantId,
         linkKey: body.data.linkKey,
         partnerId: req.params.id,
         campaignId: body.data.campaignId,

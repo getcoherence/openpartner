@@ -15,12 +15,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { ulid } from 'ulid';
-import { TABLES } from '@openpartner/db';
+import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApp } from '../app.js';
 
 const ADMIN_KEY = 'op_test_regressions_0123456789abcdef0123';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
+process.env.OPENPARTNER_TENANCY = 'single';
 
 const TABLES_TO_CLEAN = [
   TABLES.Commission,
@@ -71,6 +72,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
       campaignId: campaign.id,
@@ -78,7 +80,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
       ts: new Date(),
     });
     const userId = `u-${Date.now()}`;
-    await db(TABLES.Identity).insert({ id: ulid(), clickId, userId });
+    await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId, userId });
 
     // Directly insert two rows with the same externalEventId — emulates
     // what the Stripe handler would try on a retry. The partial unique
@@ -86,6 +88,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
     const externalEventId = `evt_${ulid()}`;
     await db(TABLES.Event).insert({
       id: ulid(),
+      tenantId: DEFAULT_TENANT_ID,
       userId,
       type: 'invoice_paid',
       value: '100.00',
@@ -98,6 +101,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
     const inserted = await db(TABLES.Event)
       .insert({
         id: ulid(),
+        tenantId: DEFAULT_TENANT_ID,
         userId,
         type: 'invoice_paid',
         value: '100.00',
@@ -129,16 +133,18 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
     for (const cid of clickIds) {
       await db(TABLES.Click).insert({
         id: cid,
+        tenantId: DEFAULT_TENANT_ID,
         linkId: link.id,
         partnerId: partner.id,
         campaignId: campaign.id,
         landingUrl: 'https://example.com/',
         ts: new Date(),
       });
-      await db(TABLES.Identity).insert({ id: ulid(), clickId: cid, userId });
+      await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId: cid, userId });
     }
     await db(TABLES.Event).insert({
       id: eventId,
+      tenantId: DEFAULT_TENANT_ID,
       userId,
       type: 'invoice_paid',
       value: '300.00',
@@ -148,6 +154,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
     for (const cid of clickIds) {
       await db(TABLES.Attribution).insert({
         id: ulid(),
+        tenantId: DEFAULT_TENANT_ID,
         eventId,
         clickId: cid,
         partnerId: partner.id,
@@ -183,6 +190,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
     await db(TABLES.Click).insert([
       {
         id: flaggedClick,
+        tenantId: DEFAULT_TENANT_ID,
         linkId: link.id,
         partnerId: partner.id,
         campaignId: campaign.id,
@@ -192,6 +200,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
       },
       {
         id: okClick,
+        tenantId: DEFAULT_TENANT_ID,
         linkId: link.id,
         partnerId: partner.id,
         campaignId: campaign.id,
@@ -200,8 +209,8 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
       },
     ]);
     await db(TABLES.Identity).insert([
-      { id: ulid(), clickId: flaggedClick, userId },
-      { id: ulid(), clickId: okClick, userId },
+      { id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId: flaggedClick, userId },
+      { id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId: okClick, userId },
     ]);
 
     // Post an event — only the ok click earns; there's one attribution row.
@@ -244,6 +253,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
     const deliveryId = ulid();
     await db(TABLES.WebhookDelivery).insert({
       id: deliveryId,
+      tenantId: DEFAULT_TENANT_ID,
       endpointId: epA.id,
       eventId: `evt_${ulid()}`,
       eventType: 'commission.paid',

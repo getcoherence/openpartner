@@ -13,9 +13,9 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { TABLES, type CommissionRow } from '@openpartner/db';
-import { db } from '../db.js';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
+import { tenantOf } from '../tenancy.js';
 
 const listQuerySchema = z.object({
   status: z.enum(['accrued', 'approved', 'paid', 'reversed']).optional(),
@@ -30,6 +30,7 @@ commissionsRouter.get(
   grantScope('commissions:read'),
   requirePartnerOrAdmin('id'),
   async (req, res) => {
+    const { db } = tenantOf(req);
     const q = listQuerySchema.safeParse(req.query);
     if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
 
@@ -45,6 +46,7 @@ commissionsRouter.get(
 );
 
 commissionsRouter.get('/commissions', requireAuth, requireAdmin, async (req, res) => {
+  const { db } = tenantOf(req);
   const q = listQuerySchema.safeParse(req.query);
   if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
 
@@ -56,6 +58,7 @@ commissionsRouter.get('/commissions', requireAuth, requireAdmin, async (req, res
 });
 
 commissionsRouter.post('/commissions/:id/approve', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   const updated = await db<CommissionRow>(TABLES.Commission)
     .where({ id: req.params.id, status: 'accrued' })
     .update({ status: 'approved' })
@@ -64,7 +67,7 @@ commissionsRouter.post('/commissions/:id/approve', requireAuth, requireAdmin, as
     return res.status(409).json({ error: 'not_approvable', detail: 'must be in accrued state' });
   }
   const c = updated[0]!;
-  dispatchEvent('commission.approved', {
+  dispatchEvent(tenantId, 'commission.approved', {
     commissionId: c.id,
     partnerId: c.partnerId,
     amount: c.amount,
@@ -75,6 +78,7 @@ commissionsRouter.post('/commissions/:id/approve', requireAuth, requireAdmin, as
 });
 
 commissionsRouter.post('/commissions/:id/reverse', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   const updated = await db<CommissionRow>(TABLES.Commission)
     .where({ id: req.params.id })
     .whereIn('status', ['accrued', 'approved'])
@@ -84,7 +88,7 @@ commissionsRouter.post('/commissions/:id/reverse', requireAuth, requireAdmin, as
     return res.status(409).json({ error: 'not_reversible', detail: 'only accrued or approved commissions' });
   }
   const c = updated[0]!;
-  dispatchEvent('commission.reversed', {
+  dispatchEvent(tenantId, 'commission.reversed', {
     commissionId: c.id,
     partnerId: c.partnerId,
     amount: c.amount,

@@ -7,10 +7,17 @@
  * Tokens look like `opml_<hex>` and sessions look like `ops_<hex>`. Both
  * use the same prefix+hash lookup as ApiKey — plaintext is only ever
  * held at generation + verify time.
+ *
+ * Multi-tenant: every function takes a `Knex` (typically `req.db`, the
+ * per-request transaction with `app.tenant_id` set). issueMagicLink and
+ * createSession also take `tenantId` because RLS WITH CHECK rejects
+ * inserts that don't match the GUC, and the tenantId is needed to stamp
+ * the row.
  */
 
 import { createHash, randomBytes } from 'node:crypto';
 import type { CookieOptions } from 'express';
+import type { Knex } from 'knex';
 import { ulid } from 'ulid';
 import {
   TABLES,
@@ -19,7 +26,6 @@ import {
   type PrincipalKind,
   type SessionRow,
 } from '@openpartner/db';
-import { db } from './db.js';
 
 export const SESSION_COOKIE_NAME = 'op_session';
 const TOKEN_PREFIX_LEN = 8;
@@ -41,16 +47,21 @@ export interface IssuedMagicLink {
   expiresAt: Date;
 }
 
-export async function issueMagicLink(params: {
-  email: string;
-  purpose: MagicLinkPurpose;
-  principalKind: PrincipalKind;
-  principalId: string;
-}): Promise<IssuedMagicLink> {
+export async function issueMagicLink(
+  db: Knex,
+  params: {
+    tenantId: string;
+    email: string;
+    purpose: MagicLinkPurpose;
+    principalKind: PrincipalKind;
+    principalId: string;
+  },
+): Promise<IssuedMagicLink> {
   const { plaintext, prefix, tokenHash } = generate('opml');
   const expiresAt = new Date(Date.now() + MAGIC_TTL_MS);
   await db<MagicLinkTokenRow>(TABLES.MagicLinkToken).insert({
     id: ulid(),
+    tenantId: params.tenantId,
     prefix,
     tokenHash,
     email: params.email.toLowerCase(),
@@ -66,7 +77,7 @@ export interface ConsumedMagicLink {
   token: MagicLinkTokenRow;
 }
 
-export async function consumeMagicLink(plaintext: string): Promise<ConsumedMagicLink | null> {
+export async function consumeMagicLink(db: Knex, plaintext: string): Promise<ConsumedMagicLink | null> {
   if (plaintext.length < TOKEN_PREFIX_LEN) return null;
   const prefix = plaintext.slice(0, TOKEN_PREFIX_LEN);
   const tokenHash = hash(plaintext);
@@ -89,15 +100,20 @@ export interface IssuedSession {
   expiresAt: Date;
 }
 
-export async function createSession(params: {
-  principalKind: PrincipalKind;
-  principalId: string;
-}): Promise<IssuedSession> {
+export async function createSession(
+  db: Knex,
+  params: {
+    tenantId: string;
+    principalKind: PrincipalKind;
+    principalId: string;
+  },
+): Promise<IssuedSession> {
   const { plaintext, prefix, tokenHash } = generate('ops');
   const id = ulid();
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
   await db<SessionRow>(TABLES.Session).insert({
     id,
+    tenantId: params.tenantId,
     prefix,
     tokenHash,
     principalKind: params.principalKind,
@@ -107,7 +123,7 @@ export async function createSession(params: {
   return { plaintext, id, expiresAt };
 }
 
-export async function resolveSession(plaintext: string): Promise<SessionRow | null> {
+export async function resolveSession(db: Knex, plaintext: string): Promise<SessionRow | null> {
   if (!plaintext || plaintext.length < TOKEN_PREFIX_LEN) return null;
   const prefix = plaintext.slice(0, TOKEN_PREFIX_LEN);
   const tokenHash = hash(plaintext);
@@ -137,7 +153,7 @@ export async function resolveSession(plaintext: string): Promise<SessionRow | nu
   return row;
 }
 
-export async function revokeSession(id: string): Promise<void> {
+export async function revokeSession(db: Knex, id: string): Promise<void> {
   await db<SessionRow>(TABLES.Session).where({ id }).update({ revokedAt: new Date() });
 }
 

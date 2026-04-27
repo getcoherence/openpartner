@@ -6,9 +6,9 @@ import {
   type WebhookDeliveryRow,
   type WebhookEndpointRow,
 } from '@openpartner/db';
-import { db } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { makeSecret, redeliver } from '../webhook-dispatcher.js';
+import { tenantOf } from '../tenancy.js';
 
 export const webhooksRouter = Router();
 
@@ -38,6 +38,7 @@ const updateSchema = z.object({
 // -------- Endpoints CRUD --------
 
 webhooksRouter.post('/webhooks', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   const body = createSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
@@ -45,6 +46,7 @@ webhooksRouter.post('/webhooks', requireAuth, requireAdmin, async (req, res) => 
   const id = ulid();
   await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).insert({
     id,
+    tenantId,
     url: body.data.url,
     secretPrefix: secret.prefix,
     secret: secret.plaintext,
@@ -56,18 +58,21 @@ webhooksRouter.post('/webhooks', requireAuth, requireAdmin, async (req, res) => 
   res.status(201).json({ endpoint: strip(endpoint!), secret: secret.plaintext });
 });
 
-webhooksRouter.get('/webhooks', requireAuth, requireAdmin, async (_req, res) => {
+webhooksRouter.get('/webhooks', requireAuth, requireAdmin, async (req, res) => {
+  const { db } = tenantOf(req);
   const endpoints = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).orderBy('createdAt', 'desc');
   res.json({ endpoints: endpoints.map(strip) });
 });
 
 webhooksRouter.get('/webhooks/:id', requireAuth, requireAdmin, async (req, res) => {
+  const { db } = tenantOf(req);
   const endpoint = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: req.params.id }).first();
   if (!endpoint) return res.status(404).json({ error: 'not_found' });
   res.json({ endpoint: strip(endpoint) });
 });
 
 webhooksRouter.patch('/webhooks/:id', requireAuth, requireAdmin, async (req, res) => {
+  const { db } = tenantOf(req);
   const body = updateSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
   const existing = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: req.params.id }).first();
@@ -85,6 +90,7 @@ webhooksRouter.patch('/webhooks/:id', requireAuth, requireAdmin, async (req, res
 });
 
 webhooksRouter.delete('/webhooks/:id', requireAuth, requireAdmin, async (req, res) => {
+  const { db } = tenantOf(req);
   // Soft-delete via active=false keeps the delivery history intact for
   // forensics. We also allow hard-delete via ?hard=1 in case an operator
   // explicitly wants the row gone.
@@ -100,6 +106,7 @@ webhooksRouter.delete('/webhooks/:id', requireAuth, requireAdmin, async (req, re
 // -------- Delivery log + retry --------
 
 webhooksRouter.get('/webhooks/:id/deliveries', requireAuth, requireAdmin, async (req, res) => {
+  const { db } = tenantOf(req);
   const deliveries = await db<WebhookDeliveryRow>(TABLES.WebhookDelivery)
     .where({ endpointId: req.params.id })
     .orderBy('createdAt', 'desc')
@@ -108,6 +115,7 @@ webhooksRouter.get('/webhooks/:id/deliveries', requireAuth, requireAdmin, async 
 });
 
 webhooksRouter.post('/webhooks/:id/deliveries/:deliveryId/retry', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
   // Verify the delivery actually belongs to this endpoint BEFORE firing
   // — the previous order re-delivered and only then checked, which
   // meant hitting /webhooks/A/.../retry with a delivery id that belonged
@@ -119,7 +127,7 @@ webhooksRouter.post('/webhooks/:id/deliveries/:deliveryId/retry', requireAuth, r
   if (!existing) return res.status(404).json({ error: 'not_found' });
   if (existing.endpointId !== req.params.id) return res.status(400).json({ error: 'endpoint_mismatch' });
 
-  const delivery = await redeliver(req.params.deliveryId!);
+  const delivery = await redeliver(tenantId, req.params.deliveryId!);
   if (!delivery) return res.status(404).json({ error: 'not_found' });
   res.json({ delivery });
 });

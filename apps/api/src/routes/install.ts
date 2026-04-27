@@ -7,18 +7,25 @@
  * settings (name + support email) and emails them a magic-link to
  * activate. After they verify, they're the first admin and can invite
  * others + rotate ADMIN_API_KEY.
+ *
+ * Multi-tenant: install is the self-host bootstrap. In multi-tenant mode
+ * it rejects — hosted operators provision tenants via /signup, and the
+ * platform is never "uninstalled". The endpoint stays mounted as a
+ * public route (no tenantMiddleware) and uses the privileged `db` to
+ * stamp rows with the seeded default tenant.
  */
 
 import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
-import { TABLES, type AdminRow, type ConfigRow } from '@openpartner/db';
+import { DEFAULT_TENANT_ID, TABLES, type AdminRow, type ConfigRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
 import { adminInviteEmail, buildMagicLinkUrl } from '../email-templates.js';
 import { saveMailSettings } from '../mail-settings.js';
+import { getTenancyMode } from '../tenancy.js';
 
 export const installRouter = Router();
 
@@ -80,7 +87,11 @@ const installSchema = z
  * system is uninitialized).
  */
 installRouter.get('/install/status', async (_req, res) => {
+  if (getTenancyMode() === 'multi') {
+    return res.json({ needsSetup: false, reason: 'multi_tenant' });
+  }
   const [row] = await db<AdminRow>(TABLES.Admin)
+    .where({ tenantId: DEFAULT_TENANT_ID })
     .whereNotNull('activatedAt')
     .whereNull('revokedAt')
     .count<{ count: string }[]>({ count: '*' });
@@ -93,6 +104,10 @@ installRouter.get('/install/status', async (_req, res) => {
 const INSTALL_ADVISORY_LOCK = 49_1092_4719;
 
 installRouter.post('/install', installLimit, async (req, res) => {
+  if (getTenancyMode() === 'multi') {
+    return res.status(400).json({ error: 'install_not_available_in_multi_tenant' });
+  }
+
   const body = installSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
@@ -111,26 +126,30 @@ installRouter.post('/install', installLimit, async (req, res) => {
       // installers both think they're first.
       await trx.raw('SELECT pg_advisory_xact_lock(?)', [INSTALL_ADVISORY_LOCK]);
 
-      // Block on ANY admin row (activated or not): while a first-run
-      // magic-link is outstanding, a second installer shouldn't be
-      // able to sneak their own pending admin in.
-      const [existing] = await trx<AdminRow>(TABLES.Admin).count<{ count: string }[]>({ count: '*' });
+      // Block on ANY admin row (activated or not) in the default tenant:
+      // while a first-run magic-link is outstanding, a second installer
+      // shouldn't be able to sneak their own pending admin in.
+      const [existing] = await trx<AdminRow>(TABLES.Admin)
+        .where({ tenantId: DEFAULT_TENANT_ID })
+        .count<{ count: string }[]>({ count: '*' });
       if (Number(existing?.count ?? 0) > 0) {
         throw new AlreadyInstalledError();
       }
 
       await trx<ConfigRow>(TABLES.Config)
         .insert({
+          tenantId: DEFAULT_TENANT_ID,
           key: 'program_settings',
           value: { programName, supportEmail } as unknown as never,
           updatedAt: now,
         })
-        .onConflict('key')
+        .onConflict(['tenantId', 'key'])
         .merge({ value: { programName, supportEmail } as unknown as never, updatedAt: now });
 
       const id = ulid();
       await trx<AdminRow>(TABLES.Admin).insert({
         id,
+        tenantId: DEFAULT_TENANT_ID,
         email: adminEmail,
         name: body.data.adminName.trim(),
         activatedAt: null,
@@ -153,7 +172,7 @@ installRouter.post('/install', installLimit, async (req, res) => {
   // only escape being manual DB surgery or env-key intervention.
   try {
     if (body.data.mail) {
-      await saveMailSettings({
+      await saveMailSettings(db, DEFAULT_TENANT_ID, {
         kind: body.data.mail.kind,
         from: body.data.mail.from,
         smtp: body.data.mail.smtp,
@@ -161,14 +180,15 @@ installRouter.post('/install', installLimit, async (req, res) => {
       });
     }
 
-    const issued = await issueMagicLink({
+    const issued = await issueMagicLink(db, {
+      tenantId: DEFAULT_TENANT_ID,
       email: adminEmail,
       purpose: 'admin_invite',
       principalKind: 'admin',
       principalId: adminId,
     });
     const tmpl = adminInviteEmail(body.data.adminName.trim(), buildMagicLinkUrl(issued.plaintext), programName);
-    await getMailer().send({
+    await getMailer().send({ db, tenantId: DEFAULT_TENANT_ID }, {
       to: adminEmail,
       subject: tmpl.subject,
       text: tmpl.text,
