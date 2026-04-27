@@ -39,6 +39,7 @@ import { AdminNetwork } from './pages/admin/Network.js';
 import { AdminNetworkComplete } from './pages/admin/NetworkComplete.js';
 import { AdminNetworkOfferings } from './pages/admin/NetworkOfferings.js';
 import { AdminNetworkRequests } from './pages/admin/NetworkRequests.js';
+import { AdminNetworkBilling } from './pages/admin/NetworkBilling.js';
 import { InstallPage } from './pages/Install.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
 import { useQuery } from '@tanstack/react-query';
@@ -131,6 +132,7 @@ function Shell() {
               <Route path="admin/network/complete" element={<AdminNetworkComplete />} />
               <Route path="admin/network/offerings" element={<AdminNetworkOfferings />} />
               <Route path="admin/network/requests" element={<AdminNetworkRequests />} />
+              <Route path="admin/network/billing" element={<AdminNetworkBilling />} />
             </>
           )}
 
@@ -202,6 +204,7 @@ function Sidebar({ principal }: { principal: Principal }) {
             <NavItem to="/admin/network" icon={<Globe size={16} />}>Connection</NavItem>
             <NavItem to="/admin/network/offerings" icon={<Megaphone size={16} />}>Offerings</NavItem>
             <NavItem to="/admin/network/requests" icon={<Inbox size={16} />}>Requests</NavItem>
+            <NavItem to="/admin/network/billing" icon={<CreditCard size={16} />}>Billing</NavItem>
           </NavSection>
         )}
       </div>

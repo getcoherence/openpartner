@@ -449,6 +449,28 @@ export const networkProxy = {
       'GET',
       '/vendors/me',
     ),
+
+  // Billing — same pattern (vendor token held server-side, portal can't
+  // hit Stripe directly). Forwards body straight through; the Network's
+  // route does all validation.
+  getBilling: (db: Knex, tenantId: string) =>
+    callNetwork<{
+      billingRequired: boolean;
+      bundledWithMainPlan: boolean;
+      subscriptionStatus: string | null;
+      stripeCustomerId: string | null;
+      stripeSubscriptionId: string | null;
+      currentPeriodEnd: string | null;
+      networkPriceConfigured: boolean;
+      networkUsagePriceConfigured: boolean;
+      billingEnabled: boolean;
+    }>(db, tenantId, 'GET', '/vendors/me/billing'),
+
+  createCheckout: (db: Knex, tenantId: string, body: { successUrl: string; cancelUrl: string }) =>
+    callNetwork<{ url: string }>(db, tenantId, 'POST', '/vendors/me/billing/checkout', body),
+
+  openPortal: (db: Knex, tenantId: string, body: { returnUrl: string }) =>
+    callNetwork<{ url: string }>(db, tenantId, 'POST', '/vendors/me/billing/portal', body),
 };
 
 // ---------- Network-originated payouts reporting ----------

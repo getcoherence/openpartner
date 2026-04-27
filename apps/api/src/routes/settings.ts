@@ -383,3 +383,28 @@ settingsRouter.post('/admin/network/requests/:id/approve', requireAuth, requireA
 settingsRouter.post('/admin/network/requests/:id/reject', requireAuth, requireAdmin, async (req, res) =>
   proxy(req, res, (db, tenantId) => networkProxy.rejectRequest(db, tenantId, req.params.id!, req.body ?? {})),
 );
+
+// ---------- Network billing proxy ----------
+// Self-hosted vendors subscribe to Network access ($29/mo + 3% metered)
+// from this admin surface. Hosted vendors get bundled with their main
+// Flex/Revshare subscription — the Network endpoint handles that gate
+// and we just pass the response through.
+
+settingsRouter.get('/admin/network/billing', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.getBilling(db, tenantId)),
+);
+
+settingsRouter.post('/admin/network/billing/checkout', requireAuth, requireAdmin, async (req, res) => {
+  const body = z.object({
+    successUrl: z.string().url(),
+    cancelUrl: z.string().url(),
+  }).safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  return proxy(req, res, (db, tenantId) => networkProxy.createCheckout(db, tenantId, body.data));
+});
+
+settingsRouter.post('/admin/network/billing/portal', requireAuth, requireAdmin, async (req, res) => {
+  const body = z.object({ returnUrl: z.string().url() }).safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  return proxy(req, res, (db, tenantId) => networkProxy.openPortal(db, tenantId, body.data));
+});
