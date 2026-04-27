@@ -375,6 +375,82 @@ export async function completeNetworkConnect(networkUrl: string, ntoken: string)
   return JSON.parse(text) as VerifyResult;
 }
 
+// ---------- Direct Network proxy calls (used by /admin/network/* routes) ----------
+//
+// The vendor admin's portal needs to manage offerings + review
+// partnership requests against the Network. Both require the
+// vendorToken (server-side secret in network_membership). The portal
+// can't hold it, so the openpartner backend proxies on behalf of the
+// admin: load membership → use vendorToken → call Network → return.
+
+async function callNetwork<T>(
+  db: Knex,
+  tenantId: string,
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const m = await getNetworkMembership(db, tenantId);
+  if (!m || !m.enabled || !m.networkUrl || !m.vendorTokenCiphertext) {
+    throw new NetworkProxyError(503, 'network_not_configured');
+  }
+  let token: string;
+  try {
+    token = decryptSecret(m.vendorTokenCiphertext);
+  } catch (err) {
+    throw new NetworkProxyError(500, `vendor_token_undecryptable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const url = `${m.networkUrl.replace(/\/$/, '')}${path}`;
+  const res = await fetch(url, {
+    method,
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${token}`,
+      'user-agent': 'OpenPartner-Vendor/1',
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new NetworkProxyError(res.status, text.slice(0, 500) || `http_${res.status}`);
+  }
+  return text ? (JSON.parse(text) as T) : (null as unknown as T);
+}
+
+export class NetworkProxyError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+    this.name = 'NetworkProxyError';
+  }
+}
+
+// Thin wrappers — they're a 1:1 with Network endpoints. Kept here so
+// the route handlers stay declarative.
+export const networkProxy = {
+  listOfferings: (db: Knex, tenantId: string) =>
+    callNetwork<{ offerings: unknown[] }>(db, tenantId, 'GET', '/vendors/me/offerings'),
+  createOffering: (db: Knex, tenantId: string, body: unknown) =>
+    callNetwork<unknown>(db, tenantId, 'POST', '/vendors/me/offerings', body),
+  updateOffering: (db: Knex, tenantId: string, id: string, body: unknown) =>
+    callNetwork<unknown>(db, tenantId, 'PATCH', `/vendors/me/offerings/${encodeURIComponent(id)}`, body),
+  deleteOffering: (db: Knex, tenantId: string, id: string) =>
+    callNetwork<{ ok: boolean }>(db, tenantId, 'DELETE', `/vendors/me/offerings/${encodeURIComponent(id)}`),
+  listRequests: (db: Knex, tenantId: string, status?: string) =>
+    callNetwork<{ requests: unknown[] }>(db, tenantId, 'GET', `/vendors/me/requests${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+  approveRequest: (db: Knex, tenantId: string, id: string, body: unknown) =>
+    callNetwork<unknown>(db, tenantId, 'POST', `/vendors/me/requests/${encodeURIComponent(id)}/approve`, body),
+  rejectRequest: (db: Knex, tenantId: string, id: string, body: unknown) =>
+    callNetwork<unknown>(db, tenantId, 'POST', `/vendors/me/requests/${encodeURIComponent(id)}/reject`, body),
+  whoami: (db: Knex, tenantId: string) =>
+    callNetwork<{ id: string; displayName: string; status: string; partnerCount: number }>(
+      db,
+      tenantId,
+      'GET',
+      '/vendors/me',
+    ),
+};
+
 // ---------- outbox drain (called from scheduler.ts) ----------
 
 export async function drainOutbox(db: Knex, tenantId: string): Promise<{ drained: number; succeeded: number; dead: number }> {

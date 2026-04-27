@@ -24,6 +24,8 @@ import {
   backfillPartners,
   completeNetworkConnect,
   getPublicNetworkMembership,
+  NetworkProxyError,
+  networkProxy,
   saveNetworkMembership,
   signupWithNetwork,
 } from '../network-client.js';
@@ -327,3 +329,57 @@ settingsRouter.post('/config/network/complete-connect', requireAuth, requireAdmi
 
   res.json({ ok: true, vendorId: result.vendorId, displayName: result.displayName });
 });
+
+// ---------- Network proxy: offerings + partnership requests ----------
+// Admin manages their Network presence through these. Backend is the
+// only thing that can hold the vendorToken (encrypted in network_membership
+// Config), so the portal calls these routes which proxy to the Network.
+
+import type { Request, Response } from 'express';
+
+async function proxy(req: Request, res: Response, fn: (db: Knex, tenantId: string) => Promise<unknown>, successStatus = 200): Promise<void> {
+  const { db, tenantId } = tenantOf(req);
+  try {
+    const out = await fn(db, tenantId);
+    res.status(successStatus).json(out);
+  } catch (err) {
+    if (err instanceof NetworkProxyError) {
+      res.status(err.status).json({ error: 'network_call_failed', detail: err.message });
+      return;
+    }
+    throw err;
+  }
+}
+
+settingsRouter.get('/admin/network/me', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.whoami(db, tenantId)),
+);
+
+settingsRouter.get('/admin/network/offerings', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.listOfferings(db, tenantId)),
+);
+
+settingsRouter.post('/admin/network/offerings', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.createOffering(db, tenantId, req.body), 201),
+);
+
+settingsRouter.patch('/admin/network/offerings/:id', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.updateOffering(db, tenantId, req.params.id!, req.body)),
+);
+
+settingsRouter.delete('/admin/network/offerings/:id', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.deleteOffering(db, tenantId, req.params.id!)),
+);
+
+settingsRouter.get('/admin/network/requests', requireAuth, requireAdmin, async (req, res) => {
+  const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  return proxy(req, res, (db, tenantId) => networkProxy.listRequests(db, tenantId, status));
+});
+
+settingsRouter.post('/admin/network/requests/:id/approve', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.approveRequest(db, tenantId, req.params.id!, req.body ?? {})),
+);
+
+settingsRouter.post('/admin/network/requests/:id/reject', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.rejectRequest(db, tenantId, req.params.id!, req.body ?? {})),
+);

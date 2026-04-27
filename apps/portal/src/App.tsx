@@ -15,6 +15,9 @@ import {
   Settings,
   Mail,
   UserCog,
+  Globe,
+  Megaphone,
+  Inbox,
 } from 'lucide-react';
 import { clearApiKey, api, type Principal } from './api.js';
 import { theme } from './theme.js';
@@ -32,6 +35,10 @@ import { MagicLandingPage } from './pages/auth/MagicLanding.js';
 import { WebhooksPage } from './pages/admin/Webhooks.js';
 import { AdminSettings } from './pages/admin/Settings.js';
 import { AdminAdmins } from './pages/admin/Admins.js';
+import { AdminNetwork } from './pages/admin/Network.js';
+import { AdminNetworkComplete } from './pages/admin/NetworkComplete.js';
+import { AdminNetworkOfferings } from './pages/admin/NetworkOfferings.js';
+import { AdminNetworkRequests } from './pages/admin/NetworkRequests.js';
 import { InstallPage } from './pages/Install.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
 import { useQuery } from '@tanstack/react-query';
@@ -120,6 +127,10 @@ function Shell() {
               <Route path="admin/webhooks" element={<WebhooksPage />} />
               <Route path="admin/admins" element={<AdminAdmins />} />
               <Route path="admin/settings" element={<AdminSettings />} />
+              <Route path="admin/network" element={<AdminNetwork />} />
+              <Route path="admin/network/complete" element={<AdminNetworkComplete />} />
+              <Route path="admin/network/offerings" element={<AdminNetworkOfferings />} />
+              <Route path="admin/network/requests" element={<AdminNetworkRequests />} />
             </>
           )}
 
@@ -183,6 +194,14 @@ function Sidebar({ principal }: { principal: Principal }) {
             <NavItem to="/admin/webhooks" icon={<Webhook size={16} />}>Webhooks</NavItem>
             <NavItem to="/admin/admins" icon={<UserCog size={16} />}>Admins</NavItem>
             <NavItem to="/admin/settings" icon={<Settings size={16} />}>Settings</NavItem>
+          </NavSection>
+        )}
+
+        {principal.role === 'admin' && (
+          <NavSection title="Network">
+            <NavItem to="/admin/network" icon={<Globe size={16} />}>Connection</NavItem>
+            <NavItem to="/admin/network/offerings" icon={<Megaphone size={16} />}>Offerings</NavItem>
+            <NavItem to="/admin/network/requests" icon={<Inbox size={16} />}>Requests</NavItem>
           </NavSection>
         )}
       </div>
