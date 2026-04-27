@@ -22,10 +22,14 @@ import {
 } from '../mail-settings.js';
 import {
   backfillPartners,
+  completeNetworkConnect,
   getPublicNetworkMembership,
   saveNetworkMembership,
+  signupWithNetwork,
 } from '../network-client.js';
+import { createApiKeyRow } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
+import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
 
 export const settingsRouter = Router();
 
@@ -222,4 +226,104 @@ settingsRouter.post('/config/network/backfill', requireAuth, requireAdmin, async
     );
   const result = await backfillPartners(db, tenantId, partners);
   res.json(result);
+});
+
+// ---------- Network connect (self-serve onboarding) ----------
+
+const startConnectSchema = z.object({
+  /** Where the magic-link should send the admin back to. Defaults to
+   *  the request's origin + tenant path + /admin/network/complete. */
+  portalCallbackUrl: z.string().url().optional(),
+  /** Email to receive the confirmation link. Defaults to the calling
+   *  admin's email if a session-derived admin is calling; required for
+   *  env-bearer admins. */
+  contactEmail: z.string().email().optional(),
+  contactName: z.string().max(120).optional(),
+  /** Display name shown to creators. Defaults to tenantId on multi
+   *  hosted; on self-host the admin should pass their brand. */
+  displayName: z.string().min(1).max(120).optional(),
+  /** Where the Network can reach this instance's API. Defaults to
+   *  inferring from the request hostname + /api. */
+  instanceUrl: z.string().url().optional(),
+});
+
+settingsRouter.post('/config/network/start-connect', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId, tenantSlug } = (() => {
+    const t = tenantOf(req);
+    return { ...t, tenantSlug: req.tenantSlug ?? null };
+  })();
+  const body = startConnectSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  const networkUrl = process.env.NETWORK_URL;
+  if (!networkUrl) {
+    return res.status(503).json({ error: 'network_url_not_configured', detail: 'set NETWORK_URL env to your network endpoint, e.g. https://network.openpartner.dev' });
+  }
+
+  // Resolve defaults from the request + tenant context.
+  const protoHost = `${req.protocol}://${req.get('host') ?? ''}`;
+  const tenantPath = tenantSlug ? `/t/${tenantSlug}` : '';
+  const inferredInstanceUrl = `${protoHost}${tenantPath}/api`;
+  const inferredCallback = `${protoHost}${tenantPath}/admin/network/complete`;
+
+  // Mint a fresh scoped key with the federation scope set; store the
+  // ApiKey id in network_membership so we can identify which key the
+  // Network is using and rotate it later via /vendors/me/rotate-callback-key.
+  const scoped = await createApiKeyRow(db, {
+    tenantId,
+    scopes: [...NETWORK_FEDERATION_SCOPES],
+    label: 'network_federation',
+  });
+
+  let signup;
+  try {
+    signup = await signupWithNetwork({
+      networkUrl,
+      instanceUrl: body.data.instanceUrl ?? inferredInstanceUrl,
+      scopedKey: scoped.plaintext,
+      displayName: body.data.displayName ?? (tenantSlug ? tenantSlug : 'OpenPartner instance'),
+      contactEmail: body.data.contactEmail ?? '',
+      contactName: body.data.contactName,
+      tier: process.env.OPENPARTNER_TENANCY === 'multi' ? 'hosted' : 'self_hosted',
+      portalCallbackUrl: body.data.portalCallbackUrl ?? inferredCallback,
+    });
+  } catch (err) {
+    return res.status(502).json({ error: 'network_signup_failed', detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // Stash the partial state — networkUrl + scopedKeyId + autoEnroll
+  // default true. The vendorToken comes back from completeConnect.
+  await saveNetworkMembership(db, tenantId, {
+    enabled: false, // not active until verify lands
+    networkUrl,
+    scopedKeyId: scoped.id,
+    autoEnroll: true,
+  });
+
+  res.status(202).json({ vendorId: signup.vendorId, status: 'pending', emailSent: signup.emailSent });
+});
+
+const completeConnectSchema = z.object({ ntoken: z.string().min(20) });
+
+settingsRouter.post('/config/network/complete-connect', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = completeConnectSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  const networkUrl = process.env.NETWORK_URL;
+  if (!networkUrl) return res.status(503).json({ error: 'network_url_not_configured' });
+
+  let result;
+  try {
+    result = await completeNetworkConnect(networkUrl, body.data.ntoken);
+  } catch (err) {
+    return res.status(502).json({ error: 'network_verify_failed', detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  await saveNetworkMembership(db, tenantId, {
+    enabled: true,
+    vendorToken: result.vendorToken,
+  });
+
+  res.json({ ok: true, vendorId: result.vendorId, displayName: result.displayName });
 });

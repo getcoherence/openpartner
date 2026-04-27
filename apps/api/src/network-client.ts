@@ -309,6 +309,72 @@ export async function backfillPartners(
   return { total: partners.length, pushed, queued };
 }
 
+// ---------- Self-serve onboarding helpers ----------
+// These talk to Network /vendors/signup + /vendors/verify-and-issue-token.
+// Unlike the upsert path, failures here surface to the admin immediately
+// (no outbox); a failed signup is something the admin will retry by hand.
+
+export interface SignupInput {
+  networkUrl: string;
+  instanceUrl: string;
+  scopedKey: string;
+  displayName: string;
+  contactEmail: string;
+  contactName?: string;
+  tier: 'hosted' | 'self_hosted';
+  portalCallbackUrl: string;
+}
+
+export interface SignupResult {
+  vendorId: string;
+  status: 'pending';
+  emailSent: boolean;
+}
+
+export async function signupWithNetwork(input: SignupInput): Promise<SignupResult> {
+  const url = `${input.networkUrl.replace(/\/$/, '')}/vendors/signup`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'user-agent': 'OpenPartner-Vendor/1' },
+    body: JSON.stringify({
+      instanceUrl: input.instanceUrl,
+      scopedKey: input.scopedKey,
+      displayName: input.displayName,
+      tier: input.tier,
+      contact: { email: input.contactEmail, name: input.contactName },
+      portalCallbackUrl: input.portalCallbackUrl,
+    }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`network signup failed (${res.status}): ${text.slice(0, 300)}`);
+  }
+  return JSON.parse(text) as SignupResult;
+}
+
+export interface VerifyResult {
+  vendorId: string;
+  vendorToken: string;
+  displayName: string;
+  issuedAt: string;
+}
+
+export async function completeNetworkConnect(networkUrl: string, ntoken: string): Promise<VerifyResult> {
+  const url = `${networkUrl.replace(/\/$/, '')}/vendors/verify-and-issue-token`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'user-agent': 'OpenPartner-Vendor/1' },
+    body: JSON.stringify({ token: ntoken }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`network verify failed (${res.status}): ${text.slice(0, 300)}`);
+  }
+  return JSON.parse(text) as VerifyResult;
+}
+
 // ---------- outbox drain (called from scheduler.ts) ----------
 
 export async function drainOutbox(db: Knex, tenantId: string): Promise<{ drained: number; succeeded: number; dead: number }> {

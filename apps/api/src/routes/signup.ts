@@ -141,10 +141,55 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
     });
   }
 
+  // Auto-register hosted tenant with the Network. Best-effort: a
+  // network-side outage doesn't fail the signup. The admin can finish
+  // connecting later via Settings → Network → "Connect to Network".
+  let networkStatus: 'pending' | 'skipped' | 'failed' = 'skipped';
+  let networkVendorId: string | null = null;
+  const networkUrl = process.env.NETWORK_URL;
+  if (networkUrl) {
+    try {
+      const { signupWithNetwork } = await import('../network-client.js');
+      const { createApiKeyRow } = await import('../auth.js');
+      const { NETWORK_FEDERATION_SCOPES } = await import('./api-keys.js');
+      const { saveNetworkMembership } = await import('../network-client.js');
+
+      const scoped = await createApiKeyRow(db, {
+        tenantId,
+        scopes: [...NETWORK_FEDERATION_SCOPES],
+        label: 'network_federation',
+      });
+      const protoHost = `${req.protocol}://${req.get('host') ?? ''}`;
+      const signup = await signupWithNetwork({
+        networkUrl,
+        instanceUrl: `${protoHost}/t/${slug}/api`,
+        scopedKey: scoped.plaintext,
+        displayName: body.data.displayName,
+        contactEmail: adminEmail,
+        contactName: body.data.adminName,
+        tier: 'hosted',
+        portalCallbackUrl: `${protoHost}/t/${slug}/admin/network/complete`,
+      });
+      // Stash the partial state — vendorToken comes back at complete-connect.
+      await saveNetworkMembership(db, tenantId, {
+        enabled: false,
+        networkUrl,
+        scopedKeyId: scoped.id,
+        autoEnroll: true,
+      });
+      networkStatus = 'pending';
+      networkVendorId = signup.vendorId;
+    } catch (err) {
+      console.error('[signup] auto-network-register failed', err);
+      networkStatus = 'failed';
+    }
+  }
+
   res.status(201).json({
     ok: true,
     tenant: { id: tenantId, slug },
     mailDelivered: true,
     createdAt: now,
+    network: { status: networkStatus, vendorId: networkVendorId },
   });
 });
