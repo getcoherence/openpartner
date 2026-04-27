@@ -70,4 +70,5 @@ export const TABLES = {
   Session: 'Session',
   WebhookEndpoint: 'WebhookEndpoint',
   WebhookDelivery: 'WebhookDelivery',
+  NetworkOutbox: 'NetworkOutbox',
 } as const;

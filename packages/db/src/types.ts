@@ -293,3 +293,19 @@ export interface PayoutRow {
   createdAt: Date;
   completedAt: Date | null;
 }
+
+export type NetworkOutboxOp = 'partner_upsert' | 'partner_revoke' | 'backfill_partner';
+export type NetworkOutboxStatus = 'pending' | 'dead';
+
+export interface NetworkOutboxRow {
+  id: string;
+  tenantId: string;
+  op: NetworkOutboxOp;
+  payload: Record<string, unknown>;
+  attempts: number;
+  nextAttemptAt: Date;
+  createdAt: Date;
+  lastAttemptAt: Date | null;
+  lastError: string | null;
+  status: NetworkOutboxStatus;
+}

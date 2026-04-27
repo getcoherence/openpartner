@@ -31,6 +31,7 @@ import { fraudReviewRouter } from './routes/fraud-review.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { metricsRouter } from './routes/metrics.js';
 import { signupRouter } from './routes/signup.js';
+import { partnerSignupRouter } from './routes/partner-signup.js';
 import { tenantMiddleware } from './tenancy.js';
 
 export function createApp(options: { enableLogger?: boolean } = {}) {
@@ -123,6 +124,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
 
   app.use(authRouter);
   app.use(partnerAuthRouter);
+  app.use(partnerSignupRouter);
   app.use(adminsRouter);
   app.use(settingsRouter);
   app.use(funnelRouter);

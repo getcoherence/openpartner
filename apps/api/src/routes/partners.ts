@@ -7,6 +7,7 @@ import { issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
 import { buildMagicLinkUrl, partnerInviteEmail, partnerRevokedEmail } from '../email-templates.js';
 import { tenantOf } from '../tenancy.js';
+import { getNetworkMembership, pushPartnerRevoke, pushPartnerUpsert } from '../network-client.js';
 
 const createSchema = z.object({
   email: z.string().email(),
@@ -83,6 +84,41 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
       tag: 'partner_invite',
       metadata: { purpose: 'partner_invite', partnerId: id },
     });
+  }
+
+  // Push to Network if configured + autoEnroll. Same fire-and-forget
+  // semantics as /partner-signup: a Network outage doesn't fail this
+  // request; failures land in NetworkOutbox for the scheduler to retry.
+  const network = await getNetworkMembership(db, tenantId);
+  if (network?.enabled && network.autoEnroll) {
+    const partnerRow = partner as PartnerRow;
+    const result = await pushPartnerUpsert(db, tenantId, {
+      vendorPartnerId: id,
+      email,
+      name: body.data.name,
+      profile: body.data.metadata,
+      joinedVendorAt: partnerRow.createdAt.toISOString(),
+      status: partnerRow.activatedAt ? 'active' : 'pending',
+      metadata: { source: 'admin_invite' },
+    });
+    if (result) {
+      await db<PartnerRow>(TABLES.Partner)
+        .where({ id })
+        .update({
+          metadata: db.raw(
+            `jsonb_set(coalesce("metadata", '{}'::jsonb), '{network}', ?::jsonb, true)`,
+            [
+              JSON.stringify({
+                creatorId: result.networkCreatorId,
+                preExisting: result.alreadyExisted,
+                affiliations: result.affiliations.length,
+                syncedAt: new Date().toISOString(),
+              }),
+            ],
+          ),
+          updatedAt: new Date(),
+        });
+    }
   }
 
   res.status(201).json({ ...partner, invited: sendInvite });
@@ -171,6 +207,16 @@ partnersRouter.post('/partners/:id/revoke', requireAuth, requireAdmin, async (re
       tag: 'partner_revoked',
       metadata: { purpose: 'partner_revoked', partnerId: partner.id },
     });
+  }
+
+  // Network gets the revoke too — but unconditionally if Network is
+  // enabled (not gated on autoEnroll). The reasoning: autoEnroll
+  // controls whether NEW partners flow into the Network; revokes need
+  // to mirror regardless so a creator the Network thinks is active
+  // doesn't keep getting matched after the vendor cuts them off.
+  const network = await getNetworkMembership(db, tenantId);
+  if (network?.enabled) {
+    await pushPartnerRevoke(db, tenantId, partner.id);
   }
 
   res.json({ ok: true, revokedAt: now, notified: body.data.notify });

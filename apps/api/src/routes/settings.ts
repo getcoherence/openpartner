@@ -20,6 +20,11 @@ import {
   saveMailSettings,
   type MailTransportKind,
 } from '../mail-settings.js';
+import {
+  backfillPartners,
+  getPublicNetworkMembership,
+  saveNetworkMembership,
+} from '../network-client.js';
 import { tenantOf } from '../tenancy.js';
 
 export const settingsRouter = Router();
@@ -118,4 +123,103 @@ settingsRouter.post('/config/mail', requireAuth, requireAdmin, async (req, res) 
     throw err;
   }
   res.json(await getPublicMailSettings(db, tenantId));
+});
+
+// ---------- Partner signup policy ----------
+
+const partnerSignupSchema = z.object({
+  policy: z.enum(['auto_approve', 'require_review']).optional(),
+  disabled: z.boolean().optional(),
+});
+
+settingsRouter.get('/config/partner-signup', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const row = await db<ConfigRow>(TABLES.Config)
+    .where({ tenantId, key: 'partner_signup' })
+    .first();
+  const value = (row?.value ?? {}) as { policy?: string; disabled?: boolean };
+  res.json({
+    policy: value.policy === 'require_review' ? 'require_review' : 'auto_approve',
+    disabled: value.disabled === true,
+  });
+});
+
+settingsRouter.post('/config/partner-signup', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = partnerSignupSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  const current = await db<ConfigRow>(TABLES.Config).where({ tenantId, key: 'partner_signup' }).first();
+  const currentValue = (current?.value ?? {}) as { policy?: string; disabled?: boolean };
+  const next = {
+    policy: body.data.policy ?? currentValue.policy ?? 'auto_approve',
+    disabled: body.data.disabled ?? currentValue.disabled ?? false,
+  };
+  const now = new Date();
+  await db<ConfigRow>(TABLES.Config)
+    .insert({ tenantId, key: 'partner_signup', value: next as unknown as never, updatedAt: now })
+    .onConflict(['tenantId', 'key'])
+    .merge({ value: next as unknown as never, updatedAt: now });
+  res.json(next);
+});
+
+// ---------- Network membership ----------
+
+const networkMembershipSchema = z.object({
+  enabled: z.boolean().optional(),
+  networkUrl: z.string().url().optional().or(z.literal('')),
+  /** Plaintext bearer issued by the Network on /vendors/register. Undefined keeps existing. */
+  vendorToken: z.string().max(500).optional(),
+  /** ApiKey.id of the scoped key the Network should call back with. */
+  scopedKeyId: z.string().nullable().optional(),
+  autoEnroll: z.boolean().optional(),
+});
+
+settingsRouter.get('/config/network', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  res.json(await getPublicNetworkMembership(db, tenantId));
+});
+
+settingsRouter.post('/config/network', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = networkMembershipSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  await saveNetworkMembership(db, tenantId, {
+    enabled: body.data.enabled,
+    networkUrl: body.data.networkUrl === '' ? '' : body.data.networkUrl,
+    vendorToken: body.data.vendorToken,
+    scopedKeyId: body.data.scopedKeyId,
+    autoEnroll: body.data.autoEnroll,
+  });
+  res.json(await getPublicNetworkMembership(db, tenantId));
+});
+
+/**
+ * Reconcile existing partners with the Network. Called when an admin
+ * enables Network membership after already having a partner roster.
+ *
+ * Pushes every Partner row through /partners/upsert. The Network dedups
+ * on email — so a creator who's already on the Network from another
+ * vendor returns the existing networkCreatorId, and we stamp
+ * Partner.metadata.network.preExisting=true so the admin sees who was
+ * already known.
+ *
+ * Synchronous (returns counts when done). For very large rosters the
+ * outbox + scheduler-drained retries handle Network-side timeouts so a
+ * single backfill failure doesn't lose the work.
+ */
+settingsRouter.post('/config/network/backfill', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const partners = await db('Partner')
+    .select<Array<{ id: string; email: string; name: string; createdAt: Date; activatedAt: Date | null; revokedAt: Date | null }>>(
+      'id',
+      'email',
+      'name',
+      'createdAt',
+      'activatedAt',
+      'revokedAt',
+    );
+  const result = await backfillPartners(db, tenantId, partners);
+  res.json(result);
 });
