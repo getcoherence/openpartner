@@ -1,19 +1,24 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { api, clearApiKey } from '../../api.js';
 import { theme } from '../../theme.js';
 import { AuthFrame } from './Shared.js';
 
 /**
- * Terminal page for an emailed magic link. URL is `/auth/magic?token=...`.
- * We POST the token to /auth/magic/verify — server sets the op_session
- * cookie on success — then redirect to the dashboard. Any leftover API
- * key in localStorage is cleared so the new session takes precedence.
+ * Terminal page for an emailed magic link. URL shapes:
+ *   single-tenant: /auth/magic?token=...
+ *   multi-tenant brand: /t/<slug>/auth/magic?token=...
+ *
+ * After verify we redirect to the right home: /t/<slug>/ for a brand
+ * link (slug pulled from the URL we landed on), or / for single-tenant.
+ * Without this, multi-tenant brand admins were getting bounced back to
+ * the public Landing because / is the Landing in multi-tenant mode.
  */
 export function MagicLandingPage() {
   const [params] = useSearchParams();
   const nav = useNavigate();
+  const location = useLocation();
   const qc = useQueryClient();
   const [state, setState] = useState<'verifying' | 'ok' | 'failed'>('verifying');
   const [detail, setDetail] = useState<string | null>(null);
@@ -25,6 +30,9 @@ export function MagicLandingPage() {
       setDetail('No token in URL.');
       return;
     }
+    const slugMatch = location.pathname.match(/^\/t\/([a-z0-9-]+)\/auth\/magic$/);
+    const home = slugMatch ? `/t/${slugMatch[1]}/` : '/';
+
     clearApiKey();
     api<{ ok: boolean }>('/auth/magic/verify', { method: 'POST', body: { token } })
       .then(() => {
@@ -35,7 +43,7 @@ export function MagicLandingPage() {
         // activated admin into the dashboard.
         qc.invalidateQueries({ queryKey: ['install-status'] });
         setState('ok');
-        setTimeout(() => nav('/', { replace: true }), 400);
+        setTimeout(() => nav(home, { replace: true }), 400);
       })
       .catch((err) => {
         setState('failed');
@@ -43,7 +51,7 @@ export function MagicLandingPage() {
           err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : 'Link is invalid or expired.',
         );
       });
-  }, [nav, params, qc]);
+  }, [nav, params, qc, location.pathname]);
 
   return (
     <AuthFrame title="Signing you in" subtitle="One moment…">
