@@ -68,6 +68,7 @@ export const TABLES = {
   Admin: 'Admin',
   MagicLinkToken: 'MagicLinkToken',
   Session: 'Session',
+  PlatformSession: 'PlatformSession',
   WebhookEndpoint: 'WebhookEndpoint',
   WebhookDelivery: 'WebhookDelivery',
   NetworkOutbox: 'NetworkOutbox',

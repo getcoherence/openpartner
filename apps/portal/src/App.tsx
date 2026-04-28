@@ -50,6 +50,8 @@ import { InstallPage } from './pages/Install.js';
 import { LandingPage } from './pages/Landing.js';
 import { SignupPage } from './pages/Signup.js';
 import { SigninPage } from './pages/Signin.js';
+import { WorkspacesPage } from './pages/Workspaces.js';
+import { PlatformMagicLandingPage } from './pages/auth/PlatformMagicLanding.js';
 import { CreatorSignupPage } from './pages/creator/CreatorSignup.js';
 import { CreatorSigninPage } from './pages/creator/CreatorSignin.js';
 import { CreatorMagicLandingPage } from './pages/creator/CreatorMagicLanding.js';
@@ -96,7 +98,9 @@ export function App() {
             <Route path="/" element={<LandingPage />} />
             <Route path="/signup" element={<SignupPage />} />
             <Route path="/signin" element={<SigninPage />} />
-            <Route path="/auth/magic" element={<MagicLandingPage />} />
+            <Route path="/workspaces" element={<WorkspacesPage />} />
+            {/* Platform-identity magic link (one email regardless of how many brands you admin). */}
+            <Route path="/auth/magic" element={<PlatformMagicLandingPage />} />
             {/* Platform-level Creator surfaces — separate auth from vendor admins. */}
             <Route path="/creator/signup" element={<CreatorSignupPage />} />
             <Route path="/creator/login" element={<CreatorSigninPage />} />

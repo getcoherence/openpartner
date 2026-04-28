@@ -16,22 +16,37 @@ import { Router } from 'express';
 import { TABLES, type TenantRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { resolveSession, SESSION_COOKIE_NAME } from '../auth-sessions.js';
+import { PLATFORM_SESSION_COOKIE, resolvePlatformSession } from '../platform-sessions.js';
 
 export const sessionHomeRouter = Router();
 
 sessionHomeRouter.get('/session/home', async (req, res) => {
-  const cookie = (req as unknown as { cookies?: Record<string, string> }).cookies?.[SESSION_COOKIE_NAME];
-  if (!cookie) return res.json({ home: null });
+  const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies ?? {};
 
-  const session = await resolveSession(db, cookie);
-  if (!session) return res.json({ home: null });
+  // Tenant session takes precedence — they've already picked a workspace.
+  const tenantCookie = cookies[SESSION_COOKIE_NAME];
+  if (tenantCookie) {
+    const session = await resolveSession(db, tenantCookie);
+    if (session) {
+      const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: session.tenantId, status: 'active' }).first();
+      if (tenant) {
+        return res.json({
+          home: `/t/${tenant.slug}/`,
+          kind: session.principalKind,
+          tenantSlug: tenant.slug,
+        });
+      }
+    }
+  }
 
-  const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: session.tenantId, status: 'active' }).first();
-  if (!tenant) return res.json({ home: null });
+  // Platform session = identity verified, no workspace picked yet.
+  const platformCookie = cookies[PLATFORM_SESSION_COOKIE];
+  if (platformCookie) {
+    const platform = await resolvePlatformSession(db, platformCookie);
+    if (platform) {
+      return res.json({ home: '/workspaces', kind: 'platform', email: platform.email });
+    }
+  }
 
-  res.json({
-    home: `/t/${tenant.slug}/`,
-    kind: session.principalKind,
-    tenantSlug: tenant.slug,
-  });
+  res.json({ home: null });
 });

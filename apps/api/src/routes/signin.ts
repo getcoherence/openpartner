@@ -2,11 +2,14 @@
  * Unified email-only signin for the multi-tenant deployment.
  *
  * The Landing on app.openpartner.dev offers a single Sign-in entry — we
- * don't make the user pick "brand vs creator" up front. The user enters
- * their email; we look up which accounts they have (Admin rows across
- * tenants for the brand side; Network Creator for the creator side) and
- * email magic links for whichever apply. Always 200 silently to avoid
- * email enumeration.
+ * don't make the user pick "brand vs creator" up front. Email goes in,
+ * a platform-identity magic link goes out (one email regardless of how
+ * many brands the user admins). Verifying the link issues a
+ * PlatformSession; the SPA reads /api/me/workspaces and the user picks
+ * which brand to enter. Creator signin is forwarded to the Network in
+ * parallel — same email, separate flow, separate cookie.
+ *
+ * Always 200 silently to avoid email enumeration.
  *
  * Multi-tenant only — single-tenant deployments use the existing
  * per-tenant /auth/signin which already knows its tenant.
@@ -14,7 +17,7 @@
 
 import { Router } from 'express';
 import { z } from 'zod';
-import { TABLES, type AdminRow, type TenantRow } from '@openpartner/db';
+import { TABLES, type AdminRow, DEFAULT_TENANT_ID } from '@openpartner/db';
 import { db } from '../db.js';
 import { issueMagicLink } from '../auth-sessions.js';
 import { adminSigninEmail, buildMagicLinkUrl } from '../email-templates.js';
@@ -35,46 +38,43 @@ signinRouter.post('/signin', async (req, res) => {
 
   const email = body.data.email.toLowerCase();
 
-  // 1) Brand admins. One person can be the admin of more than one tenant
-  // (rare, but possible) — email a link for each so they can pick which
-  // brand to sign into. We include unactivated admins so a brand whose
-  // initial activation email got lost (e.g. mailer misconfigured at
-  // signup time) can self-recover here: an admin_invite token activates
-  // the admin on consume, so signin doubles as a resend-activation flow.
-  const admins = await db<AdminRow>(TABLES.Admin)
+  // Brand admin path. We don't care here which tenants — only whether ANY
+  // non-revoked admin row matches. The picker after verify enumerates the
+  // workspaces and lets the user choose. Mailer best-effort; per-tenant
+  // log on failure.
+  const anyAdmin = await db<AdminRow>(TABLES.Admin)
     .where({ email })
-    .whereNull('revokedAt');
+    .whereNull('revokedAt')
+    .first();
 
-  for (const admin of admins) {
+  if (anyAdmin) {
     try {
-      const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: admin.tenantId, status: 'active' }).first();
-      if (!tenant) continue;
-      const purpose = admin.activatedAt ? 'admin_signin' : 'admin_invite';
       const issued = await issueMagicLink(db, {
-        tenantId: admin.tenantId,
+        tenantId: DEFAULT_TENANT_ID, // placeholder — platform tokens aren't tenant-scoped
         email,
-        purpose,
-        principalKind: 'admin',
-        principalId: admin.id,
+        purpose: 'platform_signin',
+        principalKind: 'platform',
+        principalId: email,
       });
-      const tmpl = adminSigninEmail(admin.name, buildMagicLinkUrl(issued.plaintext, tenant.slug));
-      await getMailer().send({ db, tenantId: tenant.id }, {
+      // Tenant-less link — verify will issue a PlatformSession, the SPA
+      // routes through /workspaces to let the user pick which brand to
+      // enter.
+      const link = buildMagicLinkUrl(issued.plaintext);
+      const tmpl = adminSigninEmail(anyAdmin.name, link);
+      await getMailer().send({ db, tenantId: anyAdmin.tenantId }, {
         to: email,
         subject: tmpl.subject,
         text: tmpl.text,
         html: tmpl.html,
-        tag: purpose,
-        metadata: { purpose, adminId: admin.id, source: 'unified_signin' },
+        tag: 'platform_signin',
+        metadata: { purpose: 'platform_signin', email, source: 'unified_signin' },
       });
     } catch (err) {
-      // Don't fail the whole signin on one mail send issue. Log and move on.
-      console.error('[signin] admin mail failed', { tenantId: admin.tenantId, err });
+      console.error('[signin] platform mail failed', { email, err });
     }
   }
 
-  // 2) Network creator. Forward to the Network's /creators/signin which
-  // does its own existence-check + magic-link mail. Best-effort — if the
-  // Network is down the user just gets the brand-side link (if any).
+  // Creator side — same email, separate cookie, parallel flow. Best-effort.
   const networkUrl = process.env.NETWORK_URL;
   if (networkUrl) {
     try {

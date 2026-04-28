@@ -63,9 +63,10 @@ export type MagicLinkPurpose =
   | 'partner_invite'
   | 'partner_signin'
   | 'admin_invite'
-  | 'admin_signin';
+  | 'admin_signin'
+  | 'platform_signin';
 
-export type PrincipalKind = 'partner' | 'admin';
+export type PrincipalKind = 'partner' | 'admin' | 'platform';
 
 export interface MagicLinkTokenRow {
   id: string;
@@ -88,6 +89,17 @@ export interface SessionRow {
   tokenHash: string;
   principalKind: PrincipalKind;
   principalId: string;
+  expiresAt: Date;
+  createdAt: Date;
+  lastSeenAt: Date | null;
+  revokedAt: Date | null;
+}
+
+export interface PlatformSessionRow {
+  id: string;
+  prefix: string;
+  tokenHash: string;
+  email: string;
   expiresAt: Date;
   createdAt: Date;
   lastSeenAt: Date | null;
