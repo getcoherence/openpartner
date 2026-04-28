@@ -49,6 +49,7 @@ import { MyProfilePage } from './pages/partner/MyProfile.js';
 import { InstallPage } from './pages/Install.js';
 import { LandingPage } from './pages/Landing.js';
 import { SignupPage } from './pages/Signup.js';
+import { SigninPage } from './pages/Signin.js';
 import { CreatorSignupPage } from './pages/creator/CreatorSignup.js';
 import { CreatorSigninPage } from './pages/creator/CreatorSignin.js';
 import { CreatorMagicLandingPage } from './pages/creator/CreatorMagicLanding.js';
@@ -94,6 +95,7 @@ export function App() {
           <>
             <Route path="/" element={<LandingPage />} />
             <Route path="/signup" element={<SignupPage />} />
+            <Route path="/signin" element={<SigninPage />} />
             <Route path="/auth/magic" element={<MagicLandingPage />} />
             {/* Platform-level Creator surfaces — separate auth from vendor admins. */}
             <Route path="/creator/signup" element={<CreatorSignupPage />} />

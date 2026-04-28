@@ -34,6 +34,7 @@ import { signupRouter } from './routes/signup.js';
 import { partnerSignupRouter } from './routes/partner-signup.js';
 import { networkPartnerRouter } from './routes/network-partner.js';
 import { creatorPortalRouter } from './routes/creator-portal.js';
+import { signinRouter } from './routes/signin.js';
 import { tenantMiddleware } from './tenancy.js';
 
 export function createApp(options: { enableLogger?: boolean } = {}) {
@@ -115,6 +116,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   // directly and are responsible for their own access control.
   app.use(installRouter);
   app.use(signupRouter);
+  app.use(signinRouter);
   app.use(metricsRouter);
   // Creator portal is platform-level (no tenant), proxies to Network.
   // Mount before tenantMiddleware so it's reachable from app.openpartner.dev/*

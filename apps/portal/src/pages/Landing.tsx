@@ -1,14 +1,12 @@
 import { Link } from 'react-router-dom';
-import { ArrowRight, Globe, Receipt, ShieldCheck } from 'lucide-react';
 import { theme } from '../theme.js';
 import { Logo } from './auth/Shared.js';
 
 /**
- * Public landing for multi-tenant deployments. The single-tenant build
- * never mounts this — its root goes straight to the Shell. Two CTAs:
- * create a program (signup) or sign in (you'll need a tenant slug, but
- * if the link the operator emailed you was the magic link, you went to
- * /t/<slug>/auth/magic and never see this page).
+ * Public landing for the multi-tenant deployment. Voice mirrors the
+ * marketing site at openpartner.dev — plain English, brand+creator
+ * parity, no engineering jargon. The marketing site sells; this
+ * landing is the door into the app.
  */
 export function LandingPage() {
   return (
@@ -26,99 +24,100 @@ export function LandingPage() {
           <Logo />
           <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em' }}>OpenPartner</div>
         </div>
-        <div style={{ display: 'flex', gap: 14, alignItems: 'center', fontSize: 13 }}>
+        <div style={{ display: 'flex', gap: 18, alignItems: 'center', fontSize: 13 }}>
           <a href="https://openpartner.dev" style={{ color: theme.textMuted }}>About</a>
-          <Link to="/creator/login" style={{ color: theme.textMuted }}>Creator sign in</Link>
+          <a href="https://openpartner.dev/pricing" style={{ color: theme.textMuted }}>Pricing</a>
+          <Link to="/signin" style={{ color: theme.textMuted }}>Sign in</Link>
         </div>
       </header>
 
-      <main style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 24px' }}>
-        <div style={{ maxWidth: 720, textAlign: 'center' }}>
-          <h1 style={{ fontSize: 44, lineHeight: 1.1, margin: 0, letterSpacing: '-0.02em' }}>
-            The partner program your data outlives.
+      <main style={{ flex: 1, padding: '64px 24px 32px' }}>
+        <div style={{ maxWidth: 880, margin: '0 auto', textAlign: 'center' }}>
+          <div style={{ fontSize: 12, color: theme.accent, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 16 }}>
+            Partner program software with a built-in network
+          </div>
+          <h1 style={{ fontSize: 48, lineHeight: 1.1, margin: 0, letterSpacing: '-0.02em', fontWeight: 700 }}>
+            Launch a partner program.<br />Grow it with the Network.
           </h1>
-          <p style={{ marginTop: 20, fontSize: 17, color: theme.textMuted, lineHeight: 1.5 }}>
-            Click → identity → revenue, surviving Safari ITP and 30-day cookie windows.
-            Your raw attribution log is exportable to CSV/JSON/SQL — leave anytime, your history comes with you.
+          <p style={{ marginTop: 24, fontSize: 17, color: theme.textMuted, lineHeight: 1.55, maxWidth: 720, marginInline: 'auto' }}>
+            Brands launch affiliate, referral, and creator programs with visible commission terms and
+            direct Stripe payouts. Creators browse real offers and keep what they earn.
           </p>
+        </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, marginTop: 32, textAlign: 'left' }}>
-            <CtaCard
-              eyebrow="For brands"
-              title="Run your own partner program"
-              body="Create a tenant, invite partners, track every click → signup → revenue, run payouts via Stripe Connect."
-              ctaLabel="Sign up as a brand"
-              to="/signup"
-            />
-            <CtaCard
-              eyebrow="For creators"
-              title="Browse and apply to programs"
-              body="One profile, many programs. Discover vendors across the OpenPartner Network and apply with one click."
-              ctaLabel="Sign up as a creator"
-              to="/creator/signup"
-            />
-          </div>
+        <div style={{ maxWidth: 1040, margin: '56px auto 0', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 20 }}>
+          <AudienceCard
+            eyebrow="For brands"
+            title="Partner program software for brands that want more than tracking."
+            bullets={[
+              'Track every conversion back to the partner who drove it',
+              'Set flat, percentage, or recurring commission terms',
+              'Recruit creators from the Network when you want more reach',
+              'Pay partners directly through Stripe without a middleman cut',
+            ]}
+            ctaLabel="Sign up as a brand"
+            to="/signup"
+          />
+          <AudienceCard
+            eyebrow="For creators"
+            title="A creator marketplace with real terms and direct payouts."
+            bullets={[
+              'See commission rates before you apply to any program',
+              'Browse partner offers across affiliate, referral, and creator programs',
+              'Get paid directly by brands through Stripe',
+              'No exclusivity and no platform cut on your earnings',
+            ]}
+            ctaLabel="Sign up as a creator"
+            to="/creator/signup"
+          />
+        </div>
 
-          <div style={{ marginTop: 24, fontSize: 13, color: theme.textDim }}>
-            Already have an account? <Link to="/creator/login" style={{ color: theme.accent }}>Creator sign in</Link>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16, marginTop: 56, textAlign: 'left' }}>
-            <Pill icon={<Globe size={16} />} title="Federation built in">
-              List on the OpenPartner Network and creators across other vendors can discover and apply to your program.
-            </Pill>
-            <Pill icon={<Receipt size={16} />} title="Three-tier pricing">
-              Self-host (free), flat fee, or 3% rev share. Pick at signup. No cookie-cutter contracts.
-            </Pill>
-            <Pill icon={<ShieldCheck size={16} />} title="Your data, exportable">
-              CSV/JSON/SQL export of every raw row. The self-hosted build re-imports it cleanly.
-            </Pill>
-          </div>
+        <div style={{ marginTop: 48, textAlign: 'center', color: theme.textDim, fontSize: 13 }}>
+          Already have an account? <Link to="/signin" style={{ color: theme.accent }}>Sign in</Link>
         </div>
       </main>
 
       <footer style={{ padding: '20px 32px', borderTop: `1px solid ${theme.borderSubtle}`, color: theme.textDim, fontSize: 12, textAlign: 'center' }}>
-        Already have a program? Open the link the operator emailed you, or visit <code>/t/&lt;your-slug&gt;/login</code>.
+        OpenPartner is open source. <a href="https://openpartner.dev" style={{ color: theme.textMuted }}>Learn more</a>
       </footer>
     </div>
   );
 }
 
-function CtaCard({ eyebrow, title, body, ctaLabel, to }: { eyebrow: string; title: string; body: string; ctaLabel: string; to: string }) {
+function AudienceCard({ eyebrow, title, bullets, ctaLabel, to }: { eyebrow: string; title: string; bullets: string[]; ctaLabel: string; to: string }) {
   return (
-    <div style={{ background: theme.surface, border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm, padding: 20 }}>
-      <div style={{ fontSize: 11, color: theme.accent, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>{eyebrow}</div>
-      <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>{title}</div>
-      <p style={{ color: theme.textMuted, fontSize: 14, lineHeight: 1.5, marginBottom: 16 }}>{body}</p>
-      <Link to={to}>
-        <span
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            background: theme.accent,
-            color: theme.accentInk,
-            padding: '10px 14px',
-            borderRadius: theme.radiusSm,
-            fontSize: 13,
-            fontWeight: 600,
-          }}
-        >
-          {ctaLabel} <ArrowRight size={14} />
-        </span>
-      </Link>
-    </div>
-  );
-}
-
-function Pill({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
-  return (
-    <div style={{ background: theme.surface, border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm, padding: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: theme.accent, fontSize: 13, marginBottom: 6 }}>
-        {icon}
-        <span style={{ color: theme.text, fontWeight: 600 }}>{title}</span>
-      </div>
-      <div style={{ color: theme.textMuted, fontSize: 13, lineHeight: 1.5 }}>{children}</div>
-    </div>
+    <Link
+      to={to}
+      style={{
+        display: 'block',
+        background: theme.surface,
+        border: `1px solid ${theme.borderSubtle}`,
+        borderRadius: 18,
+        padding: 28,
+        color: theme.text,
+        transition: 'border-color 0.18s, transform 0.18s',
+        textDecoration: 'none',
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.borderColor = theme.accent;
+        e.currentTarget.style.transform = 'translateY(-2px)';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = theme.borderSubtle;
+        e.currentTarget.style.transform = 'translateY(0)';
+      }}
+    >
+      <div style={{ fontSize: 11, color: theme.accent, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>{eyebrow}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.3, marginBottom: 16, letterSpacing: '-0.01em' }}>{title}</div>
+      <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 24px' }}>
+        {bullets.map((b) => (
+          <li key={b} style={{ color: theme.textMuted, fontSize: 14, padding: '6px 0 6px 20px', position: 'relative', lineHeight: 1.55 }}>
+            <span style={{ position: 'absolute', left: 0, color: theme.accent, fontWeight: 700 }}>›</span>
+            {b}
+          </li>
+        ))}
+      </ul>
+      <span style={{ color: theme.accent, fontWeight: 600, fontSize: 14 }}>{ctaLabel} →</span>
+    </Link>
   );
 }
