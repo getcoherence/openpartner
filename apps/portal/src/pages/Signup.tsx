@@ -71,7 +71,7 @@ export function SignupPage() {
   }
 
   return (
-    <AuthFrame title="Create your program" subtitle="One minute to provision. We'll email you a sign-in link.">
+    <AuthFrame title="Sign up as a brand" subtitle="One minute to provision your partner program. We'll email you a sign-in link.">
       <form onSubmit={submit}>
         <Field label="Program name" hint="What partners see in your portal — e.g. Acme Affiliates.">
           <input

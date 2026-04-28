@@ -69,7 +69,7 @@ export function CreatorSignupPage() {
           Already have an account? <Link to="/creator/login" style={{ color: theme.accent }}>Sign in</Link> · <Link to="/" style={{ color: theme.accent }}>Home</Link>
         </div>
         <div style={{ marginTop: 6, fontSize: 12, color: theme.textDim, textAlign: 'center' }}>
-          Running a program instead? <button type="button" onClick={() => nav('/signup')} style={linkBtnStyle}>Vendor signup →</button>
+          Are you a brand? <button type="button" onClick={() => nav('/signup')} style={linkBtnStyle}>Sign up as a brand →</button>
         </div>
       </form>
     </AuthFrame>

@@ -44,10 +44,10 @@ export function LandingPage() {
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, marginTop: 32, textAlign: 'left' }}>
             <CtaCard
-              eyebrow="For vendors"
+              eyebrow="For brands"
               title="Run your own partner program"
               body="Create a tenant, invite partners, track every click → signup → revenue, run payouts via Stripe Connect."
-              ctaLabel="Create your program"
+              ctaLabel="Sign up as a brand"
               to="/signup"
             />
             <CtaCard
