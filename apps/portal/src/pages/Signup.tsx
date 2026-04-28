@@ -87,7 +87,7 @@ export function SignupPage() {
             value={slug}
             onChange={(e) => setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
             placeholder="acme"
-            pattern="[a-z0-9-]{3,40}"
+            pattern="[a-z0-9\-]{3,40}"
             minLength={3}
             maxLength={40}
             required

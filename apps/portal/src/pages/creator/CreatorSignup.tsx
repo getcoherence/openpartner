@@ -57,7 +57,7 @@ export function CreatorSignupPage() {
             value={handle}
             onChange={(e) => setHandle(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
             placeholder="ada"
-            pattern="[a-zA-Z0-9_-]{2,40}"
+            pattern="[a-zA-Z0-9_\-]{2,40}"
             style={{ ...inputStyle, fontFamily: theme.fontMono }}
           />
         </Field>
