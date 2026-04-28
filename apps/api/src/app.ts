@@ -33,6 +33,7 @@ import { metricsRouter } from './routes/metrics.js';
 import { signupRouter } from './routes/signup.js';
 import { partnerSignupRouter } from './routes/partner-signup.js';
 import { networkPartnerRouter } from './routes/network-partner.js';
+import { creatorPortalRouter } from './routes/creator-portal.js';
 import { tenantMiddleware } from './tenancy.js';
 
 export function createApp(options: { enableLogger?: boolean } = {}) {
@@ -115,6 +116,10 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(installRouter);
   app.use(signupRouter);
   app.use(metricsRouter);
+  // Creator portal is platform-level (no tenant), proxies to Network.
+  // Mount before tenantMiddleware so it's reachable from app.openpartner.dev/*
+  // without a /t/<slug>/ prefix.
+  app.use(creatorPortalRouter);
 
   // ----- Tenant scope -----
   // Everything below runs inside a per-request transaction with

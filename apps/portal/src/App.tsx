@@ -49,6 +49,10 @@ import { MyProfilePage } from './pages/partner/MyProfile.js';
 import { InstallPage } from './pages/Install.js';
 import { LandingPage } from './pages/Landing.js';
 import { SignupPage } from './pages/Signup.js';
+import { CreatorSignupPage } from './pages/creator/CreatorSignup.js';
+import { CreatorSigninPage } from './pages/creator/CreatorSignin.js';
+import { CreatorMagicLandingPage } from './pages/creator/CreatorMagicLanding.js';
+import { CreatorShell } from './pages/creator/CreatorShell.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
 import { useQuery } from '@tanstack/react-query';
 
@@ -91,6 +95,11 @@ export function App() {
             <Route path="/" element={<LandingPage />} />
             <Route path="/signup" element={<SignupPage />} />
             <Route path="/auth/magic" element={<MagicLandingPage />} />
+            {/* Platform-level Creator surfaces — separate auth from vendor admins. */}
+            <Route path="/creator/signup" element={<CreatorSignupPage />} />
+            <Route path="/creator/login" element={<CreatorSigninPage />} />
+            <Route path="/creator/auth/magic" element={<CreatorMagicLandingPage />} />
+            <Route path="/creator/*" element={<CreatorShell />} />
             <Route path="/t/:slug/login" element={<LoginPage />} />
             <Route path="/t/:slug/auth/magic" element={<MagicLandingPage />} />
             <Route path="/t/:slug/*" element={<Shell />} />

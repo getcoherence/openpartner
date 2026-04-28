@@ -28,20 +28,7 @@ export function LandingPage() {
         </div>
         <div style={{ display: 'flex', gap: 14, alignItems: 'center', fontSize: 13 }}>
           <a href="https://openpartner.dev" style={{ color: theme.textMuted }}>About</a>
-          <Link to="/signup">
-            <span
-              style={{
-                background: theme.accent,
-                color: theme.accentInk,
-                padding: '8px 14px',
-                borderRadius: theme.radiusSm,
-                fontSize: 13,
-                fontWeight: 600,
-              }}
-            >
-              Create a program
-            </span>
-          </Link>
+          <Link to="/creator/login" style={{ color: theme.textMuted }}>Creator sign in</Link>
         </div>
       </header>
 
@@ -55,27 +42,25 @@ export function LandingPage() {
             Your raw attribution log is exportable to CSV/JSON/SQL — leave anytime, your history comes with you.
           </p>
 
-          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: 28, flexWrap: 'wrap' }}>
-            <Link to="/signup">
-              <span
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  background: theme.accent,
-                  color: theme.accentInk,
-                  padding: '12px 18px',
-                  borderRadius: theme.radiusSm,
-                  fontSize: 14,
-                  fontWeight: 600,
-                }}
-              >
-                Create your program <ArrowRight size={15} />
-              </span>
-            </Link>
-            <a href="https://openpartner.dev/docs" style={{ display: 'inline-flex', alignItems: 'center', padding: '12px 18px', color: theme.textMuted, fontSize: 14 }}>
-              Read the docs →
-            </a>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, marginTop: 32, textAlign: 'left' }}>
+            <CtaCard
+              eyebrow="For vendors"
+              title="Run your own partner program"
+              body="Create a tenant, invite partners, track every click → signup → revenue, run payouts via Stripe Connect."
+              ctaLabel="Create your program"
+              to="/signup"
+            />
+            <CtaCard
+              eyebrow="For creators"
+              title="Browse and apply to programs"
+              body="One profile, many programs. Discover vendors across the OpenPartner Network and apply with one click."
+              ctaLabel="Sign up as a creator"
+              to="/creator/signup"
+            />
+          </div>
+
+          <div style={{ marginTop: 24, fontSize: 13, color: theme.textDim }}>
+            Already have an account? <Link to="/creator/login" style={{ color: theme.accent }}>Creator sign in</Link>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16, marginTop: 56, textAlign: 'left' }}>
@@ -95,6 +80,33 @@ export function LandingPage() {
       <footer style={{ padding: '20px 32px', borderTop: `1px solid ${theme.borderSubtle}`, color: theme.textDim, fontSize: 12, textAlign: 'center' }}>
         Already have a program? Open the link the operator emailed you, or visit <code>/t/&lt;your-slug&gt;/login</code>.
       </footer>
+    </div>
+  );
+}
+
+function CtaCard({ eyebrow, title, body, ctaLabel, to }: { eyebrow: string; title: string; body: string; ctaLabel: string; to: string }) {
+  return (
+    <div style={{ background: theme.surface, border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm, padding: 20 }}>
+      <div style={{ fontSize: 11, color: theme.accent, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>{eyebrow}</div>
+      <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>{title}</div>
+      <p style={{ color: theme.textMuted, fontSize: 14, lineHeight: 1.5, marginBottom: 16 }}>{body}</p>
+      <Link to={to}>
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            background: theme.accent,
+            color: theme.accentInk,
+            padding: '10px 14px',
+            borderRadius: theme.radiusSm,
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          {ctaLabel} <ArrowRight size={14} />
+        </span>
+      </Link>
     </div>
   );
 }
