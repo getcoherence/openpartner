@@ -37,20 +37,23 @@ signinRouter.post('/signin', async (req, res) => {
 
   // 1) Brand admins. One person can be the admin of more than one tenant
   // (rare, but possible) — email a link for each so they can pick which
-  // brand to sign into. Activated + non-revoked only.
+  // brand to sign into. We include unactivated admins so a brand whose
+  // initial activation email got lost (e.g. mailer misconfigured at
+  // signup time) can self-recover here: an admin_invite token activates
+  // the admin on consume, so signin doubles as a resend-activation flow.
   const admins = await db<AdminRow>(TABLES.Admin)
     .where({ email })
-    .whereNotNull('activatedAt')
     .whereNull('revokedAt');
 
   for (const admin of admins) {
     try {
       const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: admin.tenantId, status: 'active' }).first();
       if (!tenant) continue;
+      const purpose = admin.activatedAt ? 'admin_signin' : 'admin_invite';
       const issued = await issueMagicLink(db, {
         tenantId: admin.tenantId,
         email,
-        purpose: 'admin_signin',
+        purpose,
         principalKind: 'admin',
         principalId: admin.id,
       });
@@ -60,8 +63,8 @@ signinRouter.post('/signin', async (req, res) => {
         subject: tmpl.subject,
         text: tmpl.text,
         html: tmpl.html,
-        tag: 'admin_signin',
-        metadata: { purpose: 'admin_signin', adminId: admin.id, source: 'unified_signin' },
+        tag: purpose,
+        metadata: { purpose, adminId: admin.id, source: 'unified_signin' },
       });
     } catch (err) {
       // Don't fail the whole signin on one mail send issue. Log and move on.
