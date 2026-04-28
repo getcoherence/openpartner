@@ -56,7 +56,7 @@ export function SignupPage() {
     return (
       <AuthFrame title="Check your inbox" subtitle={`We just emailed ${adminEmail} a sign-in link.`}>
         <div style={{ background: theme.successSoft, border: `1px solid ${theme.success}55`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
-          <div style={{ fontWeight: 500, marginBottom: 6 }}>Program created.</div>
+          <div style={{ fontWeight: 500, marginBottom: 6 }}>Account created.</div>
           <div style={{ color: `${theme.success}cc` }}>
             Your slug is <code>{result.tenant.slug}</code>. The activation link is good for 15 minutes.
           </div>
@@ -71,13 +71,13 @@ export function SignupPage() {
   }
 
   return (
-    <AuthFrame title="Sign up as a brand" subtitle="One minute to provision your partner program. We'll email you a sign-in link.">
+    <AuthFrame title="Sign up as a brand" subtitle="Create your brand account. We'll email you a sign-in link.">
       <form onSubmit={submit}>
-        <Field label="Program name" hint="What partners see in your portal — e.g. Acme Affiliates.">
+        <Field label="Brand name" hint="What partners see — e.g. Acme.">
           <input
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
-            placeholder="Acme Affiliates"
+            placeholder="Acme"
             required
             style={inputStyle}
           />
@@ -115,7 +115,7 @@ export function SignupPage() {
         </Field>
         {err && <div style={{ color: theme.danger, fontSize: 13, marginTop: 4, marginBottom: 8 }}>{err}</div>}
         <button type="submit" disabled={busy} style={primaryBtnStyle(busy)}>
-          {busy ? 'Creating…' : 'Create program'}
+          {busy ? 'Creating…' : 'Create account'}
         </button>
         <div style={{ marginTop: 12, fontSize: 12, color: theme.textDim, textAlign: 'center' }}>
           Already have a program? <Link to="/" style={{ color: theme.accent }}>Back to landing</Link>
