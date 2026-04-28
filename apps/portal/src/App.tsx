@@ -40,6 +40,12 @@ import { AdminNetworkComplete } from './pages/admin/NetworkComplete.js';
 import { AdminNetworkOfferings } from './pages/admin/NetworkOfferings.js';
 import { AdminNetworkRequests } from './pages/admin/NetworkRequests.js';
 import { AdminNetworkBilling } from './pages/admin/NetworkBilling.js';
+import { DiscoverPage } from './pages/partner/Discover.js';
+import { OfferingDetailPage } from './pages/partner/OfferingDetail.js';
+import { VendorDetailPage } from './pages/partner/VendorDetail.js';
+import { MyAffiliationsPage } from './pages/partner/MyAffiliations.js';
+import { MyRequestsPage } from './pages/partner/MyRequests.js';
+import { MyProfilePage } from './pages/partner/MyProfile.js';
 import { InstallPage } from './pages/Install.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
 import { useQuery } from '@tanstack/react-query';
@@ -118,6 +124,20 @@ function Shell() {
           <Route path="payouts" element={<PayoutsPage principal={auth.principal} />} />
           <Route path="connect" element={<ConnectPage principal={auth.principal} />} />
 
+          {/* Network discovery — open to anyone signed in (vendor admin can browse too). */}
+          <Route path="network/discover" element={<DiscoverPage />} />
+          <Route path="network/offerings/:id" element={<OfferingDetailPage principal={auth.principal} />} />
+          <Route path="network/vendors/:id" element={<VendorDetailPage />} />
+
+          {/* Partner-only Network surfaces. */}
+          {auth.principal.role === 'partner' && (
+            <>
+              <Route path="network/affiliations" element={<MyAffiliationsPage />} />
+              <Route path="network/requests" element={<MyRequestsPage />} />
+              <Route path="network/profile" element={<MyProfilePage />} />
+            </>
+          )}
+
           {auth.principal.role === 'admin' && (
             <>
               <Route path="admin/partners" element={<AdminPartners />} />
@@ -185,6 +205,15 @@ function Sidebar({ principal }: { principal: Principal }) {
           <NavItem to="/payouts" icon={<Banknote size={16} />}>Payouts</NavItem>
           {principal.role === 'partner' && <NavItem to="/connect" icon={<CreditCard size={16} />}>Stripe Connect</NavItem>}
         </NavSection>
+
+        {principal.role === 'partner' && (
+          <NavSection title="Network">
+            <NavItem to="/network/discover" icon={<Globe size={16} />}>Discover programs</NavItem>
+            <NavItem to="/network/affiliations" icon={<Megaphone size={16} />}>My partnerships</NavItem>
+            <NavItem to="/network/requests" icon={<Inbox size={16} />}>My applications</NavItem>
+            <NavItem to="/network/profile" icon={<UserCog size={16} />}>Network profile</NavItem>
+          </NavSection>
+        )}
 
         {principal.role === 'admin' && (
           <NavSection title="Admin">

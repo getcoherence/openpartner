@@ -32,6 +32,7 @@ import { webhooksRouter } from './routes/webhooks.js';
 import { metricsRouter } from './routes/metrics.js';
 import { signupRouter } from './routes/signup.js';
 import { partnerSignupRouter } from './routes/partner-signup.js';
+import { networkPartnerRouter } from './routes/network-partner.js';
 import { tenantMiddleware } from './tenancy.js';
 
 export function createApp(options: { enableLogger?: boolean } = {}) {
@@ -143,6 +144,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(exportRouter);
   app.use(billingRouter);
   app.use(adminOverviewRouter);
+  app.use(networkPartnerRouter);
 
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
     req.log?.error({ err }, 'request_failed');

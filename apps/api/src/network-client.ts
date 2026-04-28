@@ -389,6 +389,7 @@ async function callNetwork<T>(
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   path: string,
   body?: unknown,
+  opts?: { actingVendorPartnerId?: string },
 ): Promise<T> {
   const m = await getNetworkMembership(db, tenantId);
   if (!m || !m.enabled || !m.networkUrl || !m.vendorTokenCiphertext) {
@@ -401,13 +402,20 @@ async function callNetwork<T>(
     throw new NetworkProxyError(500, `vendor_token_undecryptable: ${err instanceof Error ? err.message : String(err)}`);
   }
   const url = `${m.networkUrl.replace(/\/$/, '')}${path}`;
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    authorization: `Bearer ${token}`,
+    'user-agent': 'OpenPartner-Vendor/1',
+  };
+  if (opts?.actingVendorPartnerId) {
+    // Tells the Network: this call is the vendor proxying on behalf of one
+    // of its own partners. The Network resolves the Creator via
+    // VendorAffiliation(vendorId, vendorPartnerId).
+    headers['x-act-as-vendor-partner'] = opts.actingVendorPartnerId;
+  }
   const res = await fetch(url, {
     method,
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${token}`,
-      'user-agent': 'OpenPartner-Vendor/1',
-    },
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
   });
@@ -471,6 +479,63 @@ export const networkProxy = {
 
   openPortal: (db: Knex, tenantId: string, body: { returnUrl: string }) =>
     callNetwork<{ url: string }>(db, tenantId, 'POST', '/vendors/me/billing/portal', body),
+};
+
+// ---------- Partner-acting Network proxy ----------
+// Used by openpartner partner-role routes (/api/network/partner/*) to
+// forward calls to Network's existing /creators/me/* + /offerings + /vendors/:id
+// endpoints. Auth is the vendor bearer plus an x-act-as-vendor-partner
+// header carrying the partner's vendor-local id; Network's requireCreator
+// resolves the creator from VendorAffiliation(vendorId, vendorPartnerId).
+
+export const partnerProxy = {
+  // Discovery (public on Network — no acting header needed)
+  listOfferings: (db: Knex, tenantId: string, qs: string) =>
+    callNetwork<{ offerings: unknown[] }>(db, tenantId, 'GET', `/offerings${qs ? `?${qs}` : ''}`),
+  getOffering: (db: Knex, tenantId: string, id: string) =>
+    callNetwork<unknown>(db, tenantId, 'GET', `/offerings/${encodeURIComponent(id)}`),
+  getVendor: (db: Knex, tenantId: string, id: string) =>
+    callNetwork<unknown>(db, tenantId, 'GET', `/vendors/${encodeURIComponent(id)}`),
+
+  // Acting-as-creator (need the header)
+  applyToOffering: (db: Knex, tenantId: string, vendorPartnerId: string, id: string, body: unknown) =>
+    callNetwork<unknown>(db, tenantId, 'POST', `/offerings/${encodeURIComponent(id)}/apply`, body, {
+      actingVendorPartnerId: vendorPartnerId,
+    }),
+  listMyAffiliations: (db: Knex, tenantId: string, vendorPartnerId: string) =>
+    callNetwork<{ affiliations: unknown[] }>(db, tenantId, 'GET', '/creators/me/affiliations', undefined, {
+      actingVendorPartnerId: vendorPartnerId,
+    }),
+  getAffiliationEarnings: (db: Knex, tenantId: string, vendorPartnerId: string, affId: string) =>
+    callNetwork<unknown>(
+      db,
+      tenantId,
+      'GET',
+      `/creators/me/affiliations/${encodeURIComponent(affId)}/earnings`,
+      undefined,
+      { actingVendorPartnerId: vendorPartnerId },
+    ),
+  listMyRequests: (db: Knex, tenantId: string, vendorPartnerId: string) =>
+    callNetwork<{ requests: unknown[] }>(db, tenantId, 'GET', '/creators/me/requests', undefined, {
+      actingVendorPartnerId: vendorPartnerId,
+    }),
+  cancelRequest: (db: Knex, tenantId: string, vendorPartnerId: string, reqId: string) =>
+    callNetwork<{ ok: boolean }>(
+      db,
+      tenantId,
+      'POST',
+      `/creators/me/requests/${encodeURIComponent(reqId)}/cancel`,
+      undefined,
+      { actingVendorPartnerId: vendorPartnerId },
+    ),
+  getMyProfile: (db: Knex, tenantId: string, vendorPartnerId: string) =>
+    callNetwork<unknown>(db, tenantId, 'GET', '/creators/me', undefined, {
+      actingVendorPartnerId: vendorPartnerId,
+    }),
+  updateMyProfile: (db: Knex, tenantId: string, vendorPartnerId: string, body: unknown) =>
+    callNetwork<unknown>(db, tenantId, 'PATCH', '/creators/me', body, {
+      actingVendorPartnerId: vendorPartnerId,
+    }),
 };
 
 // ---------- Network-originated payouts reporting ----------
