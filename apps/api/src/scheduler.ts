@@ -166,11 +166,30 @@ export function startScheduler(): void {
       { name: job.name, timezone: 'UTC', protect: true },
       async () => {
         const start = Date.now();
-        console.log(`[scheduler] ${job.name} starting`);
+        // pg advisory lock keyed off the job name — guarantees only one
+        // process across the whole cluster runs the body, even if the
+        // app scales to multiple instances. Two-int form to match the
+        // 64-bit signature; use a stable hash of the name so the same
+        // job always lands on the same key.
+        const [classId, objId] = lockKeyForJob(job.name);
+        const trx = await db.transaction();
+        let acquired = false;
         try {
+          const r = (await trx.raw('select pg_try_advisory_xact_lock(?, ?) as locked', [classId, objId])) as {
+            rows: Array<{ locked: boolean }>;
+          };
+          acquired = !!r.rows[0]?.locked;
+          if (!acquired) {
+            console.log(`[scheduler] ${job.name} skipped — another instance holds the lock`);
+            await trx.rollback();
+            return;
+          }
+          console.log(`[scheduler] ${job.name} starting`);
           const result = await job.handler();
+          await trx.commit();
           console.log(`[scheduler] ${job.name} finished in ${Date.now() - start}ms`, result);
         } catch (err) {
+          await trx.rollback().catch(() => {});
           console.error(`[scheduler] ${job.name} failed`, err);
         }
       },
@@ -179,6 +198,18 @@ export function startScheduler(): void {
     console.log(`[scheduler] registered ${job.name} (${job.cronExpr}) — ${job.description}`);
   }
   started = true;
+}
+
+/** Stable two-int advisory-lock key for a job name. The xact-scoped
+ *  variant releases on commit/rollback, so we don't need explicit
+ *  unlock. Class id is fixed so all our scheduler locks share a
+ *  namespace. */
+function lockKeyForJob(name: string): [number, number] {
+  let h = 0;
+  for (let i = 0; i < name.length; i += 1) h = ((h << 5) - h + name.charCodeAt(i)) | 0;
+  // 0x534F503F = 'SCHED' magic-ish — any constant works as long as it
+  // doesn't collide with another locker on the same DB.
+  return [0x534f503f, h];
 }
 
 export function stopScheduler(): void {

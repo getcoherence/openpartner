@@ -168,7 +168,7 @@ const revokeSchema = z.object({
  * untouched. Future attribution skips them; router flags clicks on their
  * links as 'revoked'. Sends a notification email unless notify=false.
  */
-partnersRouter.post('/partners/:id/revoke', requireAuth, requireAdmin, async (req, res) => {
+partnersRouter.post('/partners/:id/revoke', requireAuth, grantScope('partners:write'), requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = revokeSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
