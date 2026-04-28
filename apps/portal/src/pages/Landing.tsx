@@ -1,4 +1,5 @@
-import { Link } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { theme } from '../theme.js';
 import { Logo } from './auth/Shared.js';
 
@@ -7,8 +8,45 @@ import { Logo } from './auth/Shared.js';
  * marketing site at openpartner.dev — plain English, brand+creator
  * parity, no engineering jargon. The marketing site sells; this
  * landing is the door into the app.
+ *
+ * Auto-redirect: on mount, probe the brand session (op_session) and the
+ * creator session (op_network_creator_session via the proxy) in parallel.
+ * If either matches, navigate the visitor straight into their portal —
+ * no point showing them the marketing splash if they're already signed in.
  */
 export function LandingPage() {
+  const nav = useNavigate();
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function go(home: string) {
+      if (!cancelled) nav(home, { replace: true });
+    }
+    Promise.all([
+      fetch('/api/session/home', { credentials: 'include' })
+        .then((r) => (r.ok ? r.json() : { home: null }))
+        .catch(() => ({ home: null })),
+      fetch('/api/creator-api/creators/whoami', { credentials: 'include' })
+        .then((r) => (r.ok ? r.json() : { creator: null }))
+        .catch(() => ({ creator: null })),
+    ]).then(([brand, creator]: [{ home?: string | null }, { creator: unknown }]) => {
+      if (cancelled) return;
+      if (brand?.home) return go(brand.home);
+      if (creator?.creator) return go('/creator');
+      setChecking(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [nav]);
+
+  if (checking) {
+    return (
+      <div style={{ minHeight: '100vh', background: theme.bg }} />
+    );
+  }
+
   return (
     <div style={{ minHeight: '100vh', background: theme.bg, color: theme.text, display: 'flex', flexDirection: 'column' }}>
       <header
