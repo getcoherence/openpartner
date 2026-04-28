@@ -21,7 +21,7 @@ interface PublicMailSettings {
 
 export function AdminSettings() {
   return (
-    <Page title="Settings" subtitle="How the partner portal identifies your program and how it sends mail.">
+    <Page title="Settings" subtitle="How the partner portal identifies your brand and how it sends mail.">
       <ProgramSection />
       <div style={{ height: 18 }} />
       <MailSection />
@@ -66,12 +66,12 @@ function ProgramSection() {
     <Card>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
         <SettingsIcon size={18} color={theme.accent} />
-        <div style={{ fontSize: 15, fontWeight: 500 }}>Program info</div>
+        <div style={{ fontSize: 15, fontWeight: 500 }}>Brand info</div>
       </div>
       <ErrorBanner error={error ?? mut.error} />
       <div style={{ marginBottom: 16 }}>
-        <Label>Program name</Label>
-        <Input value={programName} onChange={(e) => setProgramName(e.target.value)} placeholder="e.g. Acme Partners" maxLength={120} />
+        <Label>Brand name</Label>
+        <Input value={programName} onChange={(e) => setProgramName(e.target.value)} placeholder="e.g. Acme" maxLength={120} />
         <Hint>Shown to partners in the portal. Leave blank to fall back to "OpenPartner".</Hint>
       </div>
       <div style={{ marginBottom: 18 }}>

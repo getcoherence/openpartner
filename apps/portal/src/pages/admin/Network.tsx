@@ -28,7 +28,7 @@ export function AdminNetwork() {
   return (
     <Page
       title="Network"
-      subtitle="Connect this instance to the OpenPartner Network so creators can find your program."
+      subtitle="List your brand on the OpenPartner Network so creators can find and apply to your programs."
     >
       <NetworkConnection />
     </Page>
@@ -65,8 +65,24 @@ function ConnectForm({ membership }: { membership: NetworkMembership }) {
   const [contactEmail, setContactEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [showManual, setShowManual] = useState(false);
 
-  const m = useMutation({
+  // One-click path: backend uses NETWORK_ADMIN_API_KEY to skip the
+  // email-verify round trip. Available on the hosted deployment; not
+  // on self-host (where the operator doesn't have the Network's admin
+  // key).
+  const auto = useMutation({
+    mutationFn: () => api('/config/network/auto-enroll', { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['network-membership'] }),
+    onError: (err) => {
+      const msg = err instanceof ApiError ? err.message : 'failed';
+      // If admin token isn't configured, fall back to the manual form.
+      if (msg.includes('admin_token_not_configured')) setShowManual(true);
+      setError(msg);
+    },
+  });
+
+  const manual = useMutation({
     mutationFn: () => api('/config/network/start-connect', {
       method: 'POST',
       body: { contactEmail: contactEmail || undefined, displayName: displayName || undefined },
@@ -79,30 +95,48 @@ function ConnectForm({ membership }: { membership: NetworkMembership }) {
     <Card>
       <h3 style={{ marginTop: 0 }}>Not connected</h3>
       <p>
-        Get matched with creators on the OpenPartner Network. We'll mint a scoped federation key for the
-        Network to call back with, then email a confirmation link to your contact address.
+        Get matched with creators on the OpenPartner Network. Once connected, your published offerings
+        show up in creator discovery and applications come into your Requests queue.
       </p>
       {membership.networkUrl && (
         <p style={{ fontSize: 13, color: '#6b7280' }}>
           Network: <code>{membership.networkUrl}</code>
         </p>
       )}
-      {error && <ErrorBanner error={error === 'network_url_not_configured' ? 'NETWORK_URL env not set on this instance.' : error} />}
-      <div style={{ marginBottom: 12 }}>
-        <Label>Contact email (where the confirmation link goes)</Label>
-        <Input value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="admin@yourbrand.com" />
-      </div>
-      <div style={{ marginBottom: 12 }}>
-        <Label>Display name (shown to creators)</Label>
-        <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Your brand" />
-      </div>
-      <Button onClick={() => m.mutate()} disabled={m.isPending || !contactEmail}>
-        {m.isPending ? 'Sending…' : 'Connect to Network'}
-      </Button>
-      {m.isSuccess && (
-        <p style={{ marginTop: 12, color: '#1a6b1a' }}>
-          Confirmation email sent. Click the link to finish connecting.
-        </p>
+      {error && (
+        <ErrorBanner error={error === 'network_url_not_configured' ? 'NETWORK_URL env not set on this instance.' : error} />
+      )}
+      {!showManual ? (
+        <>
+          <Button onClick={() => auto.mutate()} disabled={auto.isPending}>
+            {auto.isPending ? 'Connecting…' : 'List my brand on the Network'}
+          </Button>
+          <p style={{ marginTop: 10, fontSize: 12, color: '#6b7280' }}>
+            Self-host?{' '}
+            <button type="button" onClick={() => setShowManual(true)} style={{ background: 'transparent', border: 'none', color: '#0d9488', cursor: 'pointer', padding: 0 }}>
+              Use the email-verify flow instead
+            </button>
+          </p>
+        </>
+      ) : (
+        <>
+          <div style={{ marginBottom: 12 }}>
+            <Label>Contact email (where the confirmation link goes)</Label>
+            <Input value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="admin@yourbrand.com" />
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <Label>Display name (shown to creators)</Label>
+            <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Your brand" />
+          </div>
+          <Button onClick={() => manual.mutate()} disabled={manual.isPending || !contactEmail}>
+            {manual.isPending ? 'Sending…' : 'Send verification email'}
+          </Button>
+          {manual.isSuccess && (
+            <p style={{ marginTop: 12, color: '#1a6b1a' }}>
+              Confirmation email sent. Click the link to finish connecting.
+            </p>
+          )}
+        </>
       )}
     </Card>
   );

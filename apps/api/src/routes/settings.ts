@@ -12,7 +12,7 @@
 import { Router } from 'express';
 import type { Knex } from 'knex';
 import { z } from 'zod';
-import { TABLES, type ConfigRow } from '@openpartner/db';
+import { TABLES, type AdminRow, type ConfigRow, type TenantRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import {
   MailSettingsValidationError,
@@ -307,6 +307,80 @@ settingsRouter.post('/config/network/start-connect', requireAuth, requireAdmin, 
   // pending shape.
   const emailSent = signup.status === 'pending' ? signup.emailSent : true;
   res.status(202).json({ vendorId: signup.vendorId, status: 'pending', emailSent });
+});
+
+// One-click enroll for tenants that pre-date the auto-enroll-on-signup
+// flow. Uses NETWORK_ADMIN_API_KEY to skip the email-verify round trip
+// — the brand admin is already signed in here, no point re-confirming.
+// Self-host deployments without NETWORK_ADMIN_API_KEY still use the
+// /start-connect email-verify path.
+settingsRouter.post('/config/network/auto-enroll', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId, tenantSlug } = (() => {
+    const t = tenantOf(req);
+    return { ...t, tenantSlug: req.tenantSlug ?? null };
+  })();
+
+  const networkUrl = process.env.NETWORK_URL;
+  const adminToken = process.env.NETWORK_ADMIN_API_KEY;
+  if (!networkUrl) return res.status(503).json({ error: 'network_url_not_configured' });
+  if (!adminToken) return res.status(503).json({ error: 'admin_token_not_configured', detail: 'NETWORK_ADMIN_API_KEY required for auto-enroll' });
+
+  const tenantRow = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first();
+  if (!tenantRow) return res.status(404).json({ error: 'tenant_not_found' });
+
+  // Need a session-derived admin so we have a real Admin row + email.
+  // Env-bearer / scoped-key admins lack that, so they should use the
+  // manual /start-connect flow which takes contactEmail explicitly.
+  const principal = req.principal;
+  const adminId = principal?.role === 'admin' && principal.source === 'session' ? principal.adminId : null;
+  if (!adminId) return res.status(400).json({ error: 'session_admin_required', detail: 'Auto-enroll needs a logged-in admin; env/scoped admins should use start-connect with contactEmail.' });
+  const adminRow = await db<AdminRow>(TABLES.Admin).where({ id: adminId }).first();
+  const adminEmail = adminRow?.email;
+  if (!adminEmail) return res.status(400).json({ error: 'admin_email_unresolvable' });
+
+  const protoHost = `${req.protocol}://${req.get('host') ?? ''}`;
+  const tenantPath = tenantSlug ? `/t/${tenantSlug}` : '';
+  const inferredInstanceUrl = `${protoHost}${tenantPath}/api`;
+  const inferredCallback = `${protoHost}${tenantPath}/admin/network/complete`;
+
+  const scoped = await createApiKeyRow(db, {
+    tenantId,
+    scopes: [...NETWORK_FEDERATION_SCOPES],
+    label: 'network_federation',
+  });
+
+  let signup;
+  try {
+    signup = await signupWithNetwork({
+      networkUrl,
+      instanceUrl: inferredInstanceUrl,
+      scopedKey: scoped.plaintext,
+      displayName: tenantRow.displayName,
+      contactEmail: adminEmail,
+      tier: 'hosted',
+      portalCallbackUrl: inferredCallback,
+      adminAuthToken: adminToken,
+    });
+  } catch (err) {
+    return res.status(502).json({ error: 'network_signup_failed', detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  if (signup.status !== 'active') {
+    // Network refused the admin auth — fall back state. Shouldn't happen
+    // in practice but surface clearly so the operator knows the env is wrong.
+    return res.status(502).json({ error: 'admin_path_rejected', detail: 'Network signup did not return active; check NETWORK_ADMIN_API_KEY' });
+  }
+
+  await saveNetworkMembership(db, tenantId, {
+    enabled: true,
+    networkUrl,
+    vendorToken: signup.vendorToken,
+    scopedKeyId: scoped.id,
+    autoEnroll: true,
+    vendorId: signup.vendorId,
+  });
+
+  res.json({ ok: true, vendorId: signup.vendorId });
 });
 
 const completeConnectSchema = z.object({ ntoken: z.string().min(20) });
