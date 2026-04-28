@@ -344,9 +344,26 @@ function DangerZone() {
           <Hint>
             Deleting permanently removes your brand workspace, partners, links, commissions,
             and payouts after a 30-day grace period. You&rsquo;ll be locked out immediately;
-            inside the grace window you can recover.
+            inside the grace window you can recover. Stripe billing cancels at the end of
+            the current period.
           </Hint>
-          <div style={{ marginTop: 14 }}>
+          <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
+            <a
+              href="/api/export.json"
+              style={{
+                background: 'transparent',
+                color: theme.text,
+                border: `1px solid ${theme.borderSubtle}`,
+                borderRadius: theme.radiusSm,
+                padding: '8px 14px',
+                fontSize: 13,
+                textDecoration: 'none',
+                display: 'inline-flex',
+                alignItems: 'center',
+              }}
+            >
+              Download workspace data
+            </a>
             <Button variant="secondary" onClick={() => setShowForm(true)}>Delete this account</Button>
           </div>
         </>

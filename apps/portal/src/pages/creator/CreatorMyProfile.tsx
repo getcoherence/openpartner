@@ -165,7 +165,23 @@ function CreatorDangerZone({ email, pendingDeletionAt }: { email: string; pendin
             Deleting permanently removes your Network profile and revokes all your vendor partnerships
             after a 30-day grace period. Past commissions on each brand stay with that brand&rsquo;s books.
           </p>
-          <Button variant="secondary" onClick={() => setShowForm(true)}>Delete my account</Button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <a
+              href="/api/creator-api/creators/me/export"
+              style={{
+                background: 'transparent',
+                color: theme.text,
+                border: `1px solid ${theme.borderSubtle}`,
+                borderRadius: theme.radiusSm,
+                padding: '8px 14px',
+                fontSize: 13,
+                textDecoration: 'none',
+              }}
+            >
+              Download my data
+            </a>
+            <Button variant="secondary" onClick={() => setShowForm(true)}>Delete my account</Button>
+          </div>
         </>
       ) : (
         <>

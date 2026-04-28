@@ -189,6 +189,7 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
           vendorToken: signupResult.vendorToken,
           scopedKeyId: scoped.id,
           autoEnroll: true,
+          vendorId: signupResult.vendorId,
         });
         networkStatus = 'active';
       } else {
@@ -198,6 +199,7 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
           networkUrl,
           scopedKeyId: scoped.id,
           autoEnroll: true,
+          vendorId: signupResult.vendorId,
         });
         networkStatus = 'pending';
       }

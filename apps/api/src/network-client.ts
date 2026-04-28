@@ -37,6 +37,11 @@ export interface NetworkMembership {
   vendorTokenCiphertext: string; // encrypted bearer for vendor → Network
   scopedKeyId: string | null; // ApiKey.id of the scoped key Network calls back with
   autoEnroll: boolean;
+  /** Network's id for our vendor row. Persisted at signup so account
+   *  restore can call /vendors/admin-restore (which needs the id —
+   *  by then the vendorToken is gone). Optional for backward compat
+   *  with rows written before this field existed. */
+  vendorId?: string;
 }
 
 interface PublicNetworkMembership {
@@ -79,6 +84,7 @@ export interface SaveNetworkMembershipInput {
   vendorToken?: string;
   scopedKeyId?: string | null;
   autoEnroll?: boolean;
+  vendorId?: string;
 }
 
 export async function saveNetworkMembership(
@@ -105,6 +111,7 @@ export async function saveNetworkMembership(
           : encryptSecret(input.vendorToken),
     scopedKeyId: input.scopedKeyId === undefined ? current.scopedKeyId : input.scopedKeyId,
     autoEnroll: input.autoEnroll ?? current.autoEnroll,
+    vendorId: input.vendorId ?? current.vendorId,
   };
 
   const now = new Date();
@@ -489,7 +496,32 @@ export const networkProxy = {
 
   openPortal: (db: Knex, tenantId: string, body: { returnUrl: string }) =>
     callNetwork<{ url: string }>(db, tenantId, 'POST', '/vendors/me/billing/portal', body),
+
+  // Account deletion lifecycle. delete uses the tenant's vendorToken so
+  // the call is naturally scoped to "this vendor"; restore goes through
+  // the admin endpoint because by that point the vendorToken is gone.
+  deleteVendor: (db: Knex, tenantId: string) =>
+    callNetwork<{ ok: boolean }>(db, tenantId, 'POST', '/vendors/me/delete'),
 };
+
+export async function adminRestoreVendor(networkUrl: string, vendorId: string): Promise<{ vendorId: string; vendorToken: string }> {
+  const adminKey = process.env.NETWORK_ADMIN_API_KEY;
+  if (!adminKey) throw new Error('NETWORK_ADMIN_API_KEY not set — cannot restore vendor');
+  const url = `${networkUrl.replace(/\/$/, '')}/vendors/admin-restore`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${adminKey}`,
+      'user-agent': 'OpenPartner-Vendor/1',
+    },
+    body: JSON.stringify({ vendorId }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`network restore failed (${res.status}): ${text.slice(0, 300)}`);
+  return JSON.parse(text) as { vendorId: string; vendorToken: string };
+}
 
 // ---------- Partner-acting Network proxy ----------
 // Used by openpartner partner-role routes (/api/network/partner/*) to

@@ -96,7 +96,59 @@ const JOBS: ScheduledJob[] = [
     handler: async () =>
       forEachActiveTenant((trx, tenantId) => reportNetworkPayoutsToNetwork(trx, tenantId)),
   },
+  {
+    name: 'tenant-hard-delete',
+    cronExpr: '0 4 * * *',
+    description: 'Hard-delete tenants whose 30-day deletion grace window has lapsed (daily 04:00 UTC)',
+    handler: async () => hardDeleteExpiredTenants(),
+  },
 ];
+
+/** Cascade-delete tenants whose pendingDeletionAt is older than the
+ *  grace window. Runs in the privileged db (we need to bypass RLS to
+ *  drop child rows in any tenant's slice). */
+async function hardDeleteExpiredTenants(): Promise<{ purged: number; tenantIds: string[] }> {
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const expired = await db<TenantRow>(TABLES.Tenant)
+    .where('pendingDeletionAt', '<', cutoff)
+    .select('id');
+  const tenantIds: string[] = [];
+  // Tenanted tables to wipe — order doesn't matter because they're
+  // all tagged with tenantId. Tenant row is dropped last.
+  const TENANTED_TABLES = [
+    TABLES.NetworkOutbox,
+    TABLES.WebhookDelivery,
+    TABLES.WebhookEndpoint,
+    TABLES.Session,
+    TABLES.MagicLinkToken,
+    TABLES.ApiKey,
+    TABLES.Config,
+    TABLES.Payout,
+    TABLES.Commission,
+    TABLES.Attribution,
+    TABLES.Event,
+    TABLES.Identity,
+    TABLES.Click,
+    TABLES.Link,
+    TABLES.Campaign,
+    TABLES.Partner,
+    TABLES.Admin,
+  ];
+  for (const t of expired) {
+    try {
+      await db.transaction(async (trx) => {
+        for (const tbl of TENANTED_TABLES) {
+          await trx(tbl).where({ tenantId: t.id }).del();
+        }
+        await trx<TenantRow>(TABLES.Tenant).where({ id: t.id }).del();
+      });
+      tenantIds.push(t.id);
+    } catch (err) {
+      console.error('[scheduler] hard-delete failed', { tenantId: t.id, err });
+    }
+  }
+  return { purged: tenantIds.length, tenantIds };
+}
 
 let started = false;
 const handles: Cron[] = [];

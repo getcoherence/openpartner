@@ -27,22 +27,44 @@ import { TABLES, type TenantRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
+import { stripe } from '../stripe.js';
+import { adminRestoreVendor, getNetworkMembership, networkProxy, saveNetworkMembership, NetworkProxyError } from '../network-client.js';
 
 export const accountDeletionRouter = Router();
+
+interface PendingObligations {
+  unpaidCommissionCents: number;
+  pendingPayoutCount: number;
+}
+
+async function checkPendingObligations(tenantId: string): Promise<PendingObligations> {
+  // Commissions in 'approved' or 'pending' state are owed but unpaid.
+  const [c] = await db(TABLES.Commission)
+    .where({ tenantId })
+    .whereIn('status', ['pending', 'approved'])
+    .sum<Array<{ sum: string | null }>>({ sum: 'amountCents' });
+  // Payouts in 'pending' or 'processing' state are mid-flight and can't
+  // be rolled back without intervention.
+  const [p] = await db(TABLES.Payout)
+    .where({ tenantId })
+    .whereIn('status', ['pending', 'processing'])
+    .count<Array<{ count: string }>>({ count: '*' });
+  return {
+    unpaidCommissionCents: Number(c?.sum ?? 0),
+    pendingPayoutCount: Number(p?.count ?? 0),
+  };
+}
 
 const deleteSchema = z.object({
   confirmSlug: z.string().min(1),
   reason: z.string().max(2000).optional(),
+  /** When set, ignore the pending-payouts/unpaid-commissions guard. */
+  forceDespiteObligations: z.boolean().optional(),
 });
 
 accountDeletionRouter.post('/account/delete', requireAuth, requireAdmin, async (req, res) => {
   const { tenantId } = tenantOf(req);
 
-  // Privileged db: we're about to write to Tenant + revoke Sessions
-  // across the tenant. RLS on Tenant only allows the row's own tenant
-  // to read/write its row, so this works through req.db too — but we
-  // use the privileged pool so the Session revoke (which spans many
-  // sessions for this tenant) doesn't trip per-row policies.
   const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first();
   if (!tenant) return res.status(404).json({ error: 'tenant_not_found' });
   if (tenant.pendingDeletionAt) {
@@ -56,9 +78,57 @@ accountDeletionRouter.post('/account/delete', requireAuth, requireAdmin, async (
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
   // Defensive: require the admin to type their own slug to confirm.
-  // Stops accidental DELETE clicks from wiping a brand.
   if (body.data.confirmSlug !== tenant.slug) {
     return res.status(400).json({ error: 'confirm_slug_mismatch' });
+  }
+
+  // Financial obligations gate. The brand can override with
+  // forceDespiteObligations after they've seen the warning surface in
+  // the UI; without that flag, refuse so we don't strand creators.
+  const obligations = await checkPendingObligations(tenantId);
+  const hasObligations = obligations.unpaidCommissionCents > 0 || obligations.pendingPayoutCount > 0;
+  if (hasObligations && !body.data.forceDespiteObligations) {
+    return res.status(409).json({
+      error: 'pending_obligations',
+      detail: obligations,
+      hint: 'Settle these or pass forceDespiteObligations=true to delete anyway.',
+    });
+  }
+
+  // Stripe: cancel-at-period-end (not immediate) so the brand isn't
+  // charged again at renewal. They keep access for the rest of the
+  // current billing period — which is fine, because soft-delete
+  // immediately locks them out of the app anyway. The Stripe sub
+  // closing on its own is the cleanest thing for refunds + accounting.
+  if (tenant.stripeSubscriptionId && stripe) {
+    try {
+      await stripe.subscriptions.update(tenant.stripeSubscriptionId, {
+        cancel_at_period_end: true,
+        metadata: { openpartner_deletion_reason: body.data.reason ?? '' },
+      });
+    } catch (err) {
+      console.error('[account-deletion] stripe cancel failed', { tenantId, err });
+      // Don't block deletion on Stripe errors — operator can clean up
+      // billing manually if needed. Log loudly.
+    }
+  }
+
+  // Network: tell the federation hub this brand is going away. The
+  // Network marks the vendor cancelled + revokes affiliations so the
+  // creator UI hides the brand. Membership stays in our Config (with
+  // enabled=false) so a restore can re-mint a vendorToken.
+  const membership = await getNetworkMembership(db, tenantId);
+  if (membership && membership.enabled && membership.networkUrl) {
+    try {
+      await networkProxy.deleteVendor(db, tenantId);
+      await saveNetworkMembership(db, tenantId, { enabled: false });
+    } catch (err) {
+      const detail = err instanceof NetworkProxyError ? err.message : String(err);
+      console.error('[account-deletion] network delete failed', { tenantId, detail });
+      // Same reasoning as Stripe — don't block. The vendor row stays
+      // alive on Network until either the operator cleans it up or
+      // the scheduler hard-delete pass eventually purges it.
+    }
   }
 
   await db.transaction(async (trx) => {
@@ -67,9 +137,6 @@ accountDeletionRouter.post('/account/delete', requireAuth, requireAdmin, async (
       deletionReason: body.data.reason ?? null,
       updatedAt: new Date(),
     });
-    // Revoke every active session for this tenant — admins + partners.
-    // The next request will 401 and have to start over (or recover via
-    // /account/restore inside the grace window).
     await trx(TABLES.Session)
       .where({ tenantId })
       .whereNull('revokedAt')
@@ -80,13 +147,13 @@ accountDeletionRouter.post('/account/delete', requireAuth, requireAdmin, async (
     ok: true,
     pendingDeletionAt: new Date(),
     graceWindowDays: 30,
+    obligationsAtDelete: obligations,
   });
 });
 
 accountDeletionRouter.post('/account/restore', requireAuth, requireAdmin, async (req, res) => {
-  // Note: restore is reachable because tenantMiddleware DOES let the
-  // request through during the grace window — see the explicit
-  // exemption added there. Without it, the lockout would be permanent.
+  // Reachable inside the grace window because tenantMiddleware lets
+  // recovery routes through (see TenantPendingDeletionError exemption).
   const { tenantId } = tenantOf(req);
 
   const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first();
@@ -95,11 +162,40 @@ accountDeletionRouter.post('/account/restore', requireAuth, requireAdmin, async 
     return res.status(409).json({ error: 'not_pending_deletion' });
   }
 
+  // Restore Network vendor row + grab a fresh vendorToken (the original
+  // was burned when delete fired). Needs NETWORK_ADMIN_API_KEY + the
+  // vendorId we persisted at signup. If either is missing the local
+  // restore still works; the operator can manually re-onboard the
+  // brand to the Network.
+  const membership = await getNetworkMembership(db, tenantId);
+  if (membership && membership.networkUrl && membership.vendorId && process.env.NETWORK_ADMIN_API_KEY) {
+    try {
+      const restored = await adminRestoreVendor(membership.networkUrl, membership.vendorId);
+      await saveNetworkMembership(db, tenantId, {
+        enabled: true,
+        vendorToken: restored.vendorToken,
+      });
+    } catch (err) {
+      console.error('[account-deletion] network restore failed', { tenantId, err });
+    }
+  }
+
   await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).update({
     pendingDeletionAt: null,
     deletionReason: null,
     updatedAt: new Date(),
   });
+
+  // Stripe: clear cancel_at_period_end so the brand keeps billing.
+  if (tenant.stripeSubscriptionId && stripe) {
+    try {
+      await stripe.subscriptions.update(tenant.stripeSubscriptionId, {
+        cancel_at_period_end: false,
+      });
+    } catch (err) {
+      console.error('[account-deletion] stripe uncancel failed', { tenantId, err });
+    }
+  }
 
   res.json({ ok: true });
 });
