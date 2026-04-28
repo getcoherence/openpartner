@@ -121,7 +121,7 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
       principalKind: 'admin',
       principalId: adminId,
     });
-    const tmpl = adminInviteEmail(body.data.adminName, buildMagicLinkUrl(issued.plaintext), body.data.displayName);
+    const tmpl = adminInviteEmail(body.data.adminName, buildMagicLinkUrl(issued.plaintext, slug), body.data.displayName);
     await getMailer().send({ db, tenantId }, {
       to: adminEmail,
       subject: tmpl.subject,

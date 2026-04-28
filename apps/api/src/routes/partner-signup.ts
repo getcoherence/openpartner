@@ -161,7 +161,7 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
     principalKind: 'partner',
     principalId: partner.id,
   });
-  const tmpl = partnerInviteEmail(partner.name, buildMagicLinkUrl(issued.plaintext));
+  const tmpl = partnerInviteEmail(partner.name, buildMagicLinkUrl(issued.plaintext, req.tenantSlug));
   try {
     await getMailer().send({ db, tenantId }, {
       to: email,

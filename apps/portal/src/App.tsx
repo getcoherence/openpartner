@@ -47,6 +47,8 @@ import { MyAffiliationsPage } from './pages/partner/MyAffiliations.js';
 import { MyRequestsPage } from './pages/partner/MyRequests.js';
 import { MyProfilePage } from './pages/partner/MyProfile.js';
 import { InstallPage } from './pages/Install.js';
+import { LandingPage } from './pages/Landing.js';
+import { SignupPage } from './pages/Signup.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
 import { useQuery } from '@tanstack/react-query';
 
@@ -57,16 +59,19 @@ interface AuthState {
 
 interface InstallStatus {
   needsSetup: boolean;
+  reason?: 'multi_tenant';
 }
 
 export function App() {
-  // First-run gate: hit the install-status probe once at app boot. While
-  // zero admins are activated we route everything (except the magic
-  // landing, which is how the installer's own link works) to /install.
+  // First-run gate. Three modes the probe can return:
+  //   { needsSetup: true }                     — single-tenant, no admin yet
+  //   { needsSetup: false }                    — single-tenant, ready
+  //   { needsSetup: false, reason: 'multi_tenant' } — multi-tenant deploy
+  //
+  // Multi-tenant flips the routing entirely: root is the public landing,
+  // /signup creates a tenant, and the Shell only mounts under /t/<slug>/.
   const install = useQuery({
     queryKey: ['install-status'],
-    // Public endpoint — no auth required. Hand-rolled fetch so we don't
-    // drag the api() function through auth-cleanup on 401.
     queryFn: async () => {
       const r = await fetch('/api/install/status');
       return (await r.json()) as InstallStatus;
@@ -76,11 +81,22 @@ export function App() {
 
   if (install.isLoading) return null;
   const needsSetup = install.data?.needsSetup ?? false;
+  const isMultiTenant = install.data?.reason === 'multi_tenant';
 
   return (
     <BrowserRouter>
       <Routes>
-        {needsSetup ? (
+        {isMultiTenant ? (
+          <>
+            <Route path="/" element={<LandingPage />} />
+            <Route path="/signup" element={<SignupPage />} />
+            <Route path="/auth/magic" element={<MagicLandingPage />} />
+            <Route path="/t/:slug/login" element={<LoginPage />} />
+            <Route path="/t/:slug/auth/magic" element={<MagicLandingPage />} />
+            <Route path="/t/:slug/*" element={<Shell />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </>
+        ) : needsSetup ? (
           <>
             <Route path="/install" element={<InstallPage />} />
             <Route path="/auth/magic" element={<MagicLandingPage />} />
@@ -102,6 +118,7 @@ export function App() {
 function Shell() {
   const [auth, setAuth] = useState<AuthState>({ loading: true, principal: null });
   const location = useLocation();
+  const tenantBase = useTenantBase();
 
   useEffect(() => {
     api<Principal>('/auth/whoami')
@@ -110,7 +127,7 @@ function Shell() {
   }, []);
 
   if (auth.loading) return <CenteredMessage>Loading…</CenteredMessage>;
-  if (!auth.principal) return <Navigate to="/login" state={{ from: location }} replace />;
+  if (!auth.principal) return <Navigate to={`${tenantBase}/login`} state={{ from: location }} replace />;
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: theme.bg }}>
@@ -170,6 +187,7 @@ interface ProgramSettings {
 
 function Sidebar({ principal }: { principal: Principal }) {
   const nav = useNavigate();
+  const tenantBase = useTenantBase();
   const settings = useQuery({
     queryKey: ['program-settings'],
     queryFn: () => api<ProgramSettings>('/config/program'),
@@ -249,7 +267,7 @@ function Sidebar({ principal }: { principal: Principal }) {
           } catch {
             /* ignore */
           }
-          nav('/login');
+          nav(`${tenantBase}/login`);
         }}
         style={{
           display: 'flex',
@@ -378,12 +396,23 @@ function NavSection({ title, children }: { title: string; children: ReactNode })
   );
 }
 
+function useTenantBase(): string {
+  // In multi-tenant mode the Shell mounts under /t/<slug>/*. NavItem and
+  // friends pass absolute paths like "/links" — we prepend the tenant
+  // base so navigation stays scoped. Falls back to "" in single-tenant.
+  const { pathname } = useLocation();
+  const m = pathname.match(/^\/t\/([a-z0-9-]+)/);
+  return m ? `/t/${m[1]}` : '';
+}
+
 function NavItem({ to, icon, children }: { to: string; icon: ReactNode; children: ReactNode }) {
   const location = useLocation();
-  const active = location.pathname === to || (to !== '/' && location.pathname.startsWith(to));
+  const tenantBase = useTenantBase();
+  const href = to.startsWith('/') ? `${tenantBase}${to === '/' ? '' : to}` || '/' : to;
+  const active = location.pathname === href || (href !== '/' && location.pathname.startsWith(href));
   return (
     <Link
-      to={to}
+      to={href}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -415,24 +444,15 @@ function NavItem({ to, icon, children }: { to: string; icon: ReactNode; children
   );
 }
 
-function Logo() {
+function Logo({ size = 26 }: { size?: number } = {}) {
   return (
-    <div
-      style={{
-        width: 26,
-        height: 26,
-        borderRadius: 8,
-        background: `linear-gradient(135deg, ${theme.accent}, #0891b2)`,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        color: theme.accentInk,
-        fontWeight: 700,
-        fontSize: 14,
-      }}
-    >
-      O
-    </div>
+    <img
+      src="/logo-mark-green.svg"
+      alt="OpenPartner"
+      width={size}
+      height={size}
+      style={{ display: 'block' }}
+    />
   );
 }
 

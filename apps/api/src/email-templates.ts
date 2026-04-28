@@ -5,9 +5,13 @@
  * templating engine.
  */
 
-export function buildMagicLinkUrl(token: string): string {
+export function buildMagicLinkUrl(token: string, tenantSlug?: string | null): string {
   const base = (process.env.PORTAL_URL ?? 'http://localhost:5673').replace(/\/$/, '');
-  return `${base}/auth/magic?token=${encodeURIComponent(token)}`;
+  // In multi-tenant mode the SPA's auth endpoints live under /t/<slug>/.
+  // Pass the slug so the link drops the recipient on the right tenant
+  // path; the SPA's api client uses the URL prefix to scope its calls.
+  const tenantPath = tenantSlug ? `/t/${tenantSlug}` : '';
+  return `${base}${tenantPath}/auth/magic?token=${encodeURIComponent(token)}`;
 }
 
 export interface EmailTemplate {

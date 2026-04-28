@@ -45,23 +45,14 @@ export function AuthFrame({
   );
 }
 
-export function Logo() {
+export function Logo({ size = 26 }: { size?: number } = {}) {
   return (
-    <div
-      style={{
-        width: 26,
-        height: 26,
-        borderRadius: 8,
-        background: `linear-gradient(135deg, ${theme.accent}, #0891b2)`,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        color: theme.accentInk,
-        fontWeight: 700,
-        fontSize: 14,
-      }}
-    >
-      O
-    </div>
+    <img
+      src="/logo-mark-green.svg"
+      alt="OpenPartner"
+      width={size}
+      height={size}
+      style={{ display: 'block' }}
+    />
   );
 }

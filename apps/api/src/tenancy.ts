@@ -120,6 +120,10 @@ export async function tenantMiddleware(
     if (resolved) {
       tenantId = resolved.id;
       tenantSlug = resolved.slug;
+      // Strip the /t/<slug> (or /api/t/<slug>) prefix so the downstream
+      // routers — all mounted at root — match. Express respects req.url
+      // updates; req.originalUrl stays intact for logging.
+      req.url = resolved.remainder;
     }
   }
 
@@ -232,14 +236,18 @@ export async function tenantMiddleware(
  */
 async function resolveTenantFromPath(
   req: Request,
-): Promise<{ id: string; slug: string } | null> {
+): Promise<{ id: string; slug: string; remainder: string } | null> {
   // Path patterns:
   //   /t/<slug>/...    — portal under a tenant
   //   /api/t/<slug>/...— api under a tenant (note: ingress strips /api)
   //   anything else    — no tenant
-  const match = req.path.match(/^\/(?:t|api\/t)\/([a-z0-9-]+)(?:\/|$)/);
+  // We capture the prefix length so the middleware can rewrite req.url
+  // to just the post-prefix path; downstream routers — all mounted at
+  // root — then match cleanly.
+  const match = req.url.match(/^(\/(?:t|api\/t)\/[a-z0-9-]+)(\/.*)?$/);
   if (!match) return null;
-  const slug = match[1]!;
+  const prefix = match[1]!;
+  const slug = prefix.split('/').pop()!;
 
   if (RESERVED_SLUGS.has(slug)) return null;
 
@@ -248,5 +256,10 @@ async function resolveTenantFromPath(
   // on the appDb pool.
   const { db } = await import('./db.js');
   const row = await db('Tenant').where({ slug, status: 'active' }).first(['id', 'slug']);
-  return row ? { id: row.id as string, slug: row.slug as string } : null;
+  if (!row) return null;
+  return {
+    id: row.id as string,
+    slug: row.slug as string,
+    remainder: match[2] || '/',
+  };
 }

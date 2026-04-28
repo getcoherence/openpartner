@@ -56,7 +56,7 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
       principalKind: 'admin',
       principalId: admin.id,
     });
-    const tmpl = adminSigninEmail(admin.name, buildMagicLinkUrl(issued.plaintext));
+    const tmpl = adminSigninEmail(admin.name, buildMagicLinkUrl(issued.plaintext, req.tenantSlug));
     await getMailer().send({ db, tenantId }, {
       to: email,
       subject: tmpl.subject,
@@ -82,7 +82,7 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
       principalKind: 'partner',
       principalId: partner.id,
     });
-    const tmpl = partnerSigninEmail(partner.name, buildMagicLinkUrl(issued.plaintext));
+    const tmpl = partnerSigninEmail(partner.name, buildMagicLinkUrl(issued.plaintext, req.tenantSlug));
     await getMailer().send({ db, tenantId }, {
       to: email,
       subject: tmpl.subject,

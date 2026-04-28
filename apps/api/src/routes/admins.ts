@@ -38,7 +38,7 @@ async function getProgramName(db: Knex): Promise<string | null> {
   return value.programName ?? null;
 }
 
-async function sendInvite(db: Knex, tenantId: string, admin: AdminRow): Promise<void> {
+async function sendInvite(db: Knex, tenantId: string, admin: AdminRow, tenantSlug?: string | null): Promise<void> {
   const issued = await issueMagicLink(db, {
     tenantId,
     email: admin.email,
@@ -46,7 +46,7 @@ async function sendInvite(db: Knex, tenantId: string, admin: AdminRow): Promise<
     principalKind: 'admin',
     principalId: admin.id,
   });
-  const tmpl = adminInviteEmail(admin.name, buildMagicLinkUrl(issued.plaintext), await getProgramName(db));
+  const tmpl = adminInviteEmail(admin.name, buildMagicLinkUrl(issued.plaintext, tenantSlug), await getProgramName(db));
   await getMailer().send({ db, tenantId }, {
     to: admin.email,
     subject: tmpl.subject,
@@ -80,7 +80,7 @@ adminsRouter.post('/admins', requireAuth, requireAdmin, async (req, res) => {
   const [admin] = await db<AdminRow>(TABLES.Admin)
     .insert({ id, tenantId, email, name: body.data.name, activatedAt: null })
     .returning('*');
-  await sendInvite(db, tenantId, admin as AdminRow);
+  await sendInvite(db, tenantId, admin as AdminRow, req.tenantSlug);
   res.status(201).json(admin);
 });
 
@@ -92,7 +92,7 @@ adminsRouter.post('/admins/:id/invite', requireAuth, requireAdmin, async (req, r
   if (!admin) return res.status(404).json({ error: 'not_found' });
   if (admin.revokedAt) return res.status(409).json({ error: 'admin_revoked' });
   if (admin.activatedAt) return res.status(409).json({ error: 'already_activated' });
-  await sendInvite(db, tenantId, admin);
+  await sendInvite(db, tenantId, admin, req.tenantSlug);
   res.json({ ok: true });
 });
 
