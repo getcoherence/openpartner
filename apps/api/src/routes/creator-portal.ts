@@ -96,10 +96,23 @@ creatorPortalRouter.all(/^\/creator-api(\/.*)?$/, async (req: Request, res: Resp
     });
   }
 
-  // Relay Set-Cookie verbatim. The cookie has no Domain attribute, so the
-  // browser scopes it to app.openpartner.dev (which is what we want).
-  const setCookie = upstream.headers.get('set-cookie');
-  if (setCookie) res.setHeader('set-cookie', setCookie);
+  // Set-Cookie handling has two gotchas:
+  //   1. Node fetch returns multiple Set-Cookie headers comma-joined when
+  //      you call .get('set-cookie'); the browser then can't parse them.
+  //      Use getSetCookie() (Node 19.7+) to get each one separately.
+  //   2. Cloudflare in front of network.openpartner.dev injects its own
+  //      __cf_bm cookie with Domain=network.openpartner.dev — relaying
+  //      that to app.openpartner.dev confuses the browser. Filter it out.
+  // We also strip any Domain attribute on the cookies we DO forward so
+  // they scope to app.openpartner.dev (the host that responded).
+  const cookies = upstream.headers.getSetCookie?.() ?? [];
+  const forward: string[] = [];
+  for (const c of cookies) {
+    const name = c.split('=', 1)[0]?.trim() ?? '';
+    if (!name || name.startsWith('__cf') || name.startsWith('_cf')) continue;
+    forward.push(c.replace(/;\s*Domain=[^;]+/i, ''));
+  }
+  if (forward.length > 0) res.setHeader('set-cookie', forward);
 
   const upstreamCt = upstream.headers.get('content-type') ?? '';
   res.status(upstream.status);
