@@ -323,19 +323,29 @@ export interface SignupInput {
   contactName?: string;
   tier: 'hosted' | 'self_hosted';
   portalCallbackUrl: string;
+  /** When set, send as admin bearer for the fast-path signup (skips
+   *  email verify, returns vendorToken inline). Only set on hosted
+   *  tenants where the brand admin's email was already verified by
+   *  openpartner's signup. */
+  adminAuthToken?: string;
 }
 
-export interface SignupResult {
-  vendorId: string;
-  status: 'pending';
-  emailSent: boolean;
-}
+export type SignupResult =
+  | { vendorId: string; status: 'pending'; emailSent: boolean }
+  | { vendorId: string; vendorToken: string; status: 'active'; displayName: string };
 
 export async function signupWithNetwork(input: SignupInput): Promise<SignupResult> {
   const url = `${input.networkUrl.replace(/\/$/, '')}/vendors/signup`;
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    'user-agent': 'OpenPartner-Vendor/1',
+  };
+  if (input.adminAuthToken) {
+    headers.authorization = `Bearer ${input.adminAuthToken}`;
+  }
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'user-agent': 'OpenPartner-Vendor/1' },
+    headers,
     body: JSON.stringify({
       instanceUrl: input.instanceUrl,
       scopedKey: input.scopedKey,

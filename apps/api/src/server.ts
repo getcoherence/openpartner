@@ -29,6 +29,7 @@ console.log(JSON.stringify({
   secretsEncryptionKeyLen: (process.env.SECRETS_ENCRYPTION_KEY ?? '').length,
   metricsTokenLen: (process.env.METRICS_TOKEN ?? '').length,
   networkUrlLen: (process.env.NETWORK_URL ?? '').length,
+  networkAdminKeyLen: (process.env.NETWORK_ADMIN_API_KEY ?? '').length,
   databaseUrlLen: (process.env.DATABASE_URL ?? '').length,
   databaseUrlAppLen: (process.env.DATABASE_URL_APP ?? '').length,
   portalUrlLen: (process.env.PORTAL_URL ?? '').length,

@@ -302,7 +302,11 @@ settingsRouter.post('/config/network/start-connect', requireAuth, requireAdmin, 
     autoEnroll: true,
   });
 
-  res.status(202).json({ vendorId: signup.vendorId, status: 'pending', emailSent: signup.emailSent });
+  // This is the manual "Connect to Network" button on the Settings page —
+  // never uses adminAuthToken, so the result is always the email-verify
+  // pending shape.
+  const emailSent = signup.status === 'pending' ? signup.emailSent : true;
+  res.status(202).json({ vendorId: signup.vendorId, status: 'pending', emailSent });
 });
 
 const completeConnectSchema = z.object({ ntoken: z.string().min(20) });

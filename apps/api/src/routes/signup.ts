@@ -141,12 +141,22 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
     });
   }
 
-  // Auto-register hosted tenant with the Network. Best-effort: a
-  // network-side outage doesn't fail the signup. The admin can finish
-  // connecting later via Settings → Network → "Connect to Network".
-  let networkStatus: 'pending' | 'skipped' | 'failed' = 'skipped';
+  // Auto-enroll hosted brand on the Network. The hosted value prop
+  // INCLUDES partner discovery; new brands shouldn't have to find a
+  // "connect" button to use what they signed up for. Visibility is
+  // controlled by whether they publish offerings, not by membership.
+  //
+  // If NETWORK_ADMIN_API_KEY is set we take the admin fast path — Network
+  // skips its email verify (we just verified the brand admin via our own
+  // magic link in the next step) and returns the vendorToken inline so
+  // membership is `enabled: true` from t=0.
+  //
+  // Otherwise we fall back to the email-verify flow (used by self-host
+  // and any operator who didn't wire the admin key).
+  let networkStatus: 'active' | 'pending' | 'skipped' | 'failed' = 'skipped';
   let networkVendorId: string | null = null;
   const networkUrl = process.env.NETWORK_URL;
+  const networkAdminKey = process.env.NETWORK_ADMIN_API_KEY;
   if (networkUrl) {
     try {
       const { signupWithNetwork } = await import('../network-client.js');
@@ -160,7 +170,7 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
         label: 'network_federation',
       });
       const protoHost = `${req.protocol}://${req.get('host') ?? ''}`;
-      const signup = await signupWithNetwork({
+      const signupResult = await signupWithNetwork({
         networkUrl,
         instanceUrl: `${protoHost}/t/${slug}/api`,
         scopedKey: scoped.plaintext,
@@ -169,16 +179,28 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
         contactName: body.data.adminName,
         tier: 'hosted',
         portalCallbackUrl: `${protoHost}/t/${slug}/admin/network/complete`,
+        adminAuthToken: networkAdminKey,
       });
-      // Stash the partial state — vendorToken comes back at complete-connect.
-      await saveNetworkMembership(db, tenantId, {
-        enabled: false,
-        networkUrl,
-        scopedKeyId: scoped.id,
-        autoEnroll: true,
-      });
-      networkStatus = 'pending';
-      networkVendorId = signup.vendorId;
+      networkVendorId = signupResult.vendorId;
+      if (signupResult.status === 'active') {
+        await saveNetworkMembership(db, tenantId, {
+          enabled: true,
+          networkUrl,
+          vendorToken: signupResult.vendorToken,
+          scopedKeyId: scoped.id,
+          autoEnroll: true,
+        });
+        networkStatus = 'active';
+      } else {
+        // Email-verify path — vendorToken comes back at complete-connect.
+        await saveNetworkMembership(db, tenantId, {
+          enabled: false,
+          networkUrl,
+          scopedKeyId: scoped.id,
+          autoEnroll: true,
+        });
+        networkStatus = 'pending';
+      }
     } catch (err) {
       console.error('[signup] auto-network-register failed', err);
       networkStatus = 'failed';
