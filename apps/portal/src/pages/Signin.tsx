@@ -58,6 +58,8 @@ export function SigninPage() {
           <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 4 }}>Email</div>
           <input
             type="email"
+            name="email"
+            autoComplete="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@example.com"

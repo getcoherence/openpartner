@@ -96,6 +96,8 @@ export function SignupPage() {
         </Field>
         <Field label="Your name">
           <input
+            name="name"
+            autoComplete="name"
             value={adminName}
             onChange={(e) => setAdminName(e.target.value)}
             placeholder="Ada Lovelace"
@@ -106,6 +108,8 @@ export function SignupPage() {
         <Field label="Your email" hint="We'll send the activation link here.">
           <input
             type="email"
+            name="email"
+            autoComplete="email"
             value={adminEmail}
             onChange={(e) => setAdminEmail(e.target.value)}
             placeholder="ada@example.com"

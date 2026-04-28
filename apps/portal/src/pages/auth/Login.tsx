@@ -88,6 +88,8 @@ function EmailTab() {
         <Mail size={15} style={{ position: 'absolute', left: 12, top: 12, color: theme.textDim, pointerEvents: 'none' }} />
         <input
           type="email"
+          name="email"
+          autoComplete="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="you@example.com"
@@ -131,6 +133,8 @@ function KeyTab() {
         <KeyRound size={15} style={{ position: 'absolute', left: 12, top: 12, color: theme.textDim, pointerEvents: 'none' }} />
         <input
           type="password"
+          name="apiKey"
+          autoComplete="off"
           value={token}
           onChange={(e) => setToken(e.target.value)}
           placeholder="op_..."

@@ -42,7 +42,7 @@ export function CreatorSigninPage() {
       <form onSubmit={submit}>
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 4 }}>Email</div>
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ada@example.com" required autoFocus style={inputStyle} />
+          <input type="email" name="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ada@example.com" required autoFocus style={inputStyle} />
         </div>
         {err && <div style={{ color: theme.danger, fontSize: 13, marginBottom: 8 }}>{err}</div>}
         <button type="submit" disabled={busy} style={primaryBtnStyle(busy)}>
