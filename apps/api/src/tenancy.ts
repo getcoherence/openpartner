@@ -28,6 +28,17 @@ import { appDb } from './db.js';
 
 export type TenancyMode = 'single' | 'multi';
 
+/** Thrown when a tenant request hits a brand inside its deletion grace
+ *  window (and isn't on the recovery path). The middleware catches and
+ *  surfaces a 410 Gone — explicit so the SPA can show "this brand was
+ *  deleted; sign in again". */
+export class TenantPendingDeletionError extends Error {
+  constructor(public slug: string) {
+    super(`tenant_pending_deletion:${slug}`);
+    this.name = 'TenantPendingDeletionError';
+  }
+}
+
 export function getTenancyMode(): TenancyMode {
   const m = process.env.OPENPARTNER_TENANCY ?? 'single';
   if (m !== 'single' && m !== 'multi') {
@@ -116,7 +127,16 @@ export async function tenantMiddleware(
     tenantId = DEFAULT_TENANT_ID;
     tenantSlug = 'default';
   } else {
-    const resolved = await resolveTenantFromPath(req);
+    let resolved: Awaited<ReturnType<typeof resolveTenantFromPath>>;
+    try {
+      resolved = await resolveTenantFromPath(req);
+    } catch (err) {
+      if (err instanceof TenantPendingDeletionError) {
+        res.status(410).json({ error: 'tenant_pending_deletion', slug: err.slug });
+        return;
+      }
+      throw err;
+    }
     if (resolved) {
       tenantId = resolved.id;
       tenantSlug = resolved.slug;
@@ -255,8 +275,21 @@ async function resolveTenantFromPath(
   // any tenant by slug, not just the current one. RLS would block this
   // on the appDb pool.
   const { db } = await import('./db.js');
-  const row = await db('Tenant').where({ slug, status: 'active' }).first(['id', 'slug']);
+  const row = await db('Tenant').where({ slug, status: 'active' }).first(['id', 'slug', 'pendingDeletionAt']);
   if (!row) return null;
+  // Tenants in the deletion grace window are accessible only via the
+  // explicit recovery routes — anything else 410s on the way out so a
+  // browser cookie hanging around can't keep working against a deleted
+  // brand. The recovery routes use the `?recover=1` query flag the
+  // restore page sets.
+  if (row.pendingDeletionAt) {
+    const isRecoveryPath =
+      req.url.includes('/account/restore') ||
+      req.url.includes('/account/deletion-status');
+    if (!isRecoveryPath) {
+      throw new TenantPendingDeletionError(slug);
+    }
+  }
   return {
     id: row.id as string,
     slug: row.slug as string,

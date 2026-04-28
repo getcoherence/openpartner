@@ -106,6 +106,85 @@ export function CreatorMyProfilePage() {
           </div>
         </Card>
       ) : null}
+      <div style={{ height: 18 }} />
+      <CreatorDangerZone email={data?.email ?? ''} pendingDeletionAt={(data as Profile & { pendingDeletionAt?: string | null })?.pendingDeletionAt ?? null} />
     </Page>
+  );
+}
+
+function CreatorDangerZone({ email, pendingDeletionAt }: { email: string; pendingDeletionAt: string | null }) {
+  const qc = useQueryClient();
+  const [confirmEmail, setConfirmEmail] = useState('');
+  const [showForm, setShowForm] = useState(false);
+
+  const del = useMutation({
+    mutationFn: () => creatorApi('/creators/me/delete', { method: 'POST', body: { confirmEmail } }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['network-my-profile'] });
+      setShowForm(false);
+      setConfirmEmail('');
+    },
+  });
+
+  const restore = useMutation({
+    mutationFn: () => creatorApi('/creators/me/restore', { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['network-my-profile'] }),
+  });
+
+  const pending = !!pendingDeletionAt;
+  const hardDeleteAt = pendingDeletionAt
+    ? new Date(new Date(pendingDeletionAt).getTime() + 30 * 24 * 60 * 60 * 1000)
+    : null;
+
+  return (
+    <Card>
+      <div style={{ fontSize: 15, fontWeight: 500, color: theme.danger, marginBottom: 12 }}>
+        Danger zone
+      </div>
+
+      {pending ? (
+        <>
+          <div style={{ background: `${theme.danger}15`, border: `1px solid ${theme.danger}55`, padding: 14, borderRadius: 6, marginBottom: 14 }}>
+            <div style={{ fontSize: 14, fontWeight: 500, color: theme.danger }}>
+              Account scheduled for deletion
+            </div>
+            <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 6 }}>
+              Permanent deletion on{' '}
+              <strong>{hardDeleteAt ? hardDeleteAt.toLocaleDateString() : '—'}</strong>.
+              You can recover any time before then.
+            </div>
+          </div>
+          <ErrorBanner error={restore.error} />
+          <Button onClick={() => restore.mutate()} disabled={restore.isPending}>
+            {restore.isPending ? 'Restoring…' : 'Recover account'}
+          </Button>
+        </>
+      ) : !showForm ? (
+        <>
+          <p style={{ color: theme.textMuted, fontSize: 13, margin: '0 0 14px' }}>
+            Deleting permanently removes your Network profile and revokes all your vendor partnerships
+            after a 30-day grace period. Past commissions on each brand stay with that brand&rsquo;s books.
+          </p>
+          <Button variant="secondary" onClick={() => setShowForm(true)}>Delete my account</Button>
+        </>
+      ) : (
+        <>
+          <p style={{ color: theme.textMuted, fontSize: 13, margin: '0 0 12px' }}>
+            Type your email to confirm. This locks you out immediately.
+          </p>
+          <div style={{ marginBottom: 14 }}>
+            <Label>Confirm email</Label>
+            <Input type="email" name="confirmEmail" value={confirmEmail} onChange={(e) => setConfirmEmail(e.target.value)} placeholder={email} />
+          </div>
+          <ErrorBanner error={del.error} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button onClick={() => del.mutate()} disabled={del.isPending || !confirmEmail}>
+              {del.isPending ? 'Deleting…' : 'Permanently delete'}
+            </Button>
+            <Button variant="secondary" onClick={() => setShowForm(false)}>Cancel</Button>
+          </div>
+        </>
+      )}
+    </Card>
   );
 }

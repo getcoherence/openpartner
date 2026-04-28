@@ -25,6 +25,8 @@ export function AdminSettings() {
       <ProgramSection />
       <div style={{ height: 18 }} />
       <MailSection />
+      <div style={{ height: 18 }} />
+      <DangerZone />
     </Page>
   );
 }
@@ -269,3 +271,107 @@ function Row({ children }: { children: ReactNode }) {
 function Hint({ children }: { children: ReactNode }) {
   return <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>{children}</div>;
 }
+
+// ---------- danger zone ----------
+
+interface DeletionStatus {
+  pendingDeletionAt: string | null;
+  deletionReason: string | null;
+  graceWindowDays: number;
+  hardDeleteAt: string | null;
+}
+
+function DangerZone() {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ['account-deletion-status'],
+    queryFn: () => api<DeletionStatus>('/account/deletion-status'),
+  });
+
+  const [confirmSlug, setConfirmSlug] = useState('');
+  const [reason, setReason] = useState('');
+  const [showForm, setShowForm] = useState(false);
+
+  const del = useMutation({
+    mutationFn: () => api('/account/delete', { method: 'POST', body: { confirmSlug, reason: reason || undefined } }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['account-deletion-status'] });
+      setShowForm(false);
+      setConfirmSlug('');
+      setReason('');
+    },
+  });
+
+  const restore = useMutation({
+    mutationFn: () => api('/account/restore', { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['account-deletion-status'] }),
+  });
+
+  if (isLoading) return null;
+
+  const pending = !!data?.pendingDeletionAt;
+
+  return (
+    <Card>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <div style={{ fontSize: 15, fontWeight: 500, color: theme.danger }}>Danger zone</div>
+      </div>
+
+      {pending ? (
+        <>
+          <div style={{ background: `${theme.danger}15`, border: `1px solid ${theme.danger}55`, padding: 14, borderRadius: 6, marginBottom: 14 }}>
+            <div style={{ fontSize: 14, fontWeight: 500, color: theme.danger }}>
+              Account scheduled for deletion
+            </div>
+            <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 6 }}>
+              All data will be permanently deleted on{' '}
+              <strong>{data?.hardDeleteAt ? new Date(data.hardDeleteAt).toLocaleDateString() : '—'}</strong>.
+              You can recover any time before then.
+            </div>
+            {data?.deletionReason && (
+              <div style={{ fontSize: 12, color: theme.textDim, marginTop: 8 }}>
+                Reason on file: {data.deletionReason}
+              </div>
+            )}
+          </div>
+          <ErrorBanner error={restore.error} />
+          <Button onClick={() => restore.mutate()} disabled={restore.isPending}>
+            {restore.isPending ? 'Restoring…' : 'Recover account'}
+          </Button>
+        </>
+      ) : !showForm ? (
+        <>
+          <Hint>
+            Deleting permanently removes your brand workspace, partners, links, commissions,
+            and payouts after a 30-day grace period. You&rsquo;ll be locked out immediately;
+            inside the grace window you can recover.
+          </Hint>
+          <div style={{ marginTop: 14 }}>
+            <Button variant="secondary" onClick={() => setShowForm(true)}>Delete this account</Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <Hint>Type your URL slug to confirm. This locks you out immediately.</Hint>
+          <div style={{ marginTop: 12, marginBottom: 12 }}>
+            <Label>Confirm slug</Label>
+            <Input value={confirmSlug} onChange={(e) => setConfirmSlug(e.target.value)} placeholder="your-slug" />
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <Label>Reason (optional, helps us improve)</Label>
+            <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Switching platforms, project ended, …" />
+          </div>
+          <ErrorBanner error={del.error} />
+          <Row>
+            <Button onClick={() => del.mutate()} disabled={del.isPending || !confirmSlug}>
+              {del.isPending ? 'Deleting…' : 'Permanently delete'}
+            </Button>
+            <Button variant="secondary" onClick={() => setShowForm(false)}>Cancel</Button>
+          </Row>
+        </>
+      )}
+    </Card>
+  );
+}
+
+

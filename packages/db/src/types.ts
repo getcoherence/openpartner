@@ -23,6 +23,8 @@ export interface TenantRow {
   createdAt: Date;
   updatedAt: Date;
   suspendedAt: Date | null;
+  pendingDeletionAt: Date | null;
+  deletionReason: string | null;
 }
 
 /** ID of the seeded default tenant — used in single-host mode and during migration backfills. */

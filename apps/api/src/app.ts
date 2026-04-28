@@ -33,6 +33,7 @@ import { metricsRouter } from './routes/metrics.js';
 import { signupRouter } from './routes/signup.js';
 import { partnerSignupRouter } from './routes/partner-signup.js';
 import { networkPartnerRouter } from './routes/network-partner.js';
+import { accountDeletionRouter } from './routes/account-deletion.js';
 import { creatorPortalRouter } from './routes/creator-portal.js';
 import { signinRouter } from './routes/signin.js';
 import { sessionHomeRouter } from './routes/session-home.js';
@@ -156,6 +157,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(billingRouter);
   app.use(adminOverviewRouter);
   app.use(networkPartnerRouter);
+  app.use(accountDeletionRouter);
 
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
     req.log?.error({ err }, 'request_failed');
