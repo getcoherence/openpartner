@@ -42,6 +42,12 @@ async function proxy(
   res: Response,
   fn: (db: Knex, tenantId: string) => Promise<unknown>,
   successStatus = 200,
+  /** Shape returned when the partner has no Network identity yet
+   *  (Network 403 invalid_acting_context). Lets the SPA show an empty
+   *  state instead of an error banner for the common case where the
+   *  brand exists on the Network but auto-enroll never pushed this
+   *  particular partner. */
+  notFederatedFallback?: () => unknown,
 ): Promise<void> {
   const { db, tenantId } = tenantOf(req);
   try {
@@ -49,6 +55,10 @@ async function proxy(
     res.status(successStatus).json(out);
   } catch (err) {
     if (err instanceof NetworkProxyError) {
+      if (notFederatedFallback && (err.status === 403 || err.status === 404) && err.message.includes('invalid_acting_context')) {
+        res.json(notFederatedFallback());
+        return;
+      }
       res.status(err.status).json({ error: 'network_call_failed', detail: err.message });
       return;
     }
@@ -106,7 +116,13 @@ networkPartnerRouter.post('/network/offerings/:id/apply', requireAuth, async (re
 networkPartnerRouter.get('/network/me/affiliations', requireAuth, async (req, res) => {
   const partnerId = requirePartnerPrincipal(req, res);
   if (!partnerId) return;
-  return proxy(req, res, (db, tenantId) => partnerProxy.listMyAffiliations(db, tenantId, partnerId));
+  return proxy(
+    req,
+    res,
+    (db, tenantId) => partnerProxy.listMyAffiliations(db, tenantId, partnerId),
+    200,
+    () => ({ affiliations: [] }),
+  );
 });
 
 networkPartnerRouter.get('/network/me/affiliations/:id/earnings', requireAuth, async (req, res) => {
@@ -120,7 +136,13 @@ networkPartnerRouter.get('/network/me/affiliations/:id/earnings', requireAuth, a
 networkPartnerRouter.get('/network/me/requests', requireAuth, async (req, res) => {
   const partnerId = requirePartnerPrincipal(req, res);
   if (!partnerId) return;
-  return proxy(req, res, (db, tenantId) => partnerProxy.listMyRequests(db, tenantId, partnerId));
+  return proxy(
+    req,
+    res,
+    (db, tenantId) => partnerProxy.listMyRequests(db, tenantId, partnerId),
+    200,
+    () => ({ requests: [] }),
+  );
 });
 
 networkPartnerRouter.post('/network/me/requests/:id/cancel', requireAuth, async (req, res) => {
@@ -132,7 +154,16 @@ networkPartnerRouter.post('/network/me/requests/:id/cancel', requireAuth, async 
 networkPartnerRouter.get('/network/me/profile', requireAuth, async (req, res) => {
   const partnerId = requirePartnerPrincipal(req, res);
   if (!partnerId) return;
-  return proxy(req, res, (db, tenantId) => partnerProxy.getMyProfile(db, tenantId, partnerId));
+  // Profile fallback returns null instead of an empty object so the
+  // SPA can show a "not on the Network yet" message rather than a
+  // half-rendered editable form.
+  return proxy(
+    req,
+    res,
+    (db, tenantId) => partnerProxy.getMyProfile(db, tenantId, partnerId),
+    200,
+    () => ({ notFederated: true }),
+  );
 });
 
 const updateProfileSchema = z.object({

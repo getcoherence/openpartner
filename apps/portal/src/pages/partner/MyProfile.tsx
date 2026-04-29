@@ -15,11 +15,15 @@ interface Profile {
   createdAt: string;
 }
 
+interface ProfileResponse extends Partial<Profile> {
+  notFederated?: boolean;
+}
+
 export function MyProfilePage() {
   const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({
     queryKey: ['network-my-profile'],
-    queryFn: () => api<Profile>(`/network/me/profile`),
+    queryFn: () => api<ProfileResponse>(`/network/me/profile`),
     retry: false,
   });
 
@@ -29,7 +33,7 @@ export function MyProfilePage() {
   const [bio, setBio] = useState('');
 
   useEffect(() => {
-    if (data) {
+    if (data && !data.notFederated) {
       setName(data.name ?? '');
       setHandle(data.handle ?? '');
       setAvatarUrl(data.avatarUrl ?? '');
@@ -57,6 +61,14 @@ export function MyProfilePage() {
       <ErrorBanner error={save.error} />
       {isLoading ? (
         <Card>Loading…</Card>
+      ) : data?.notFederated ? (
+        <Card>
+          <div style={{ fontSize: 14 }}>
+            Your brand hasn&rsquo;t pushed you to the Network yet. Ask the brand admin to enable
+            <strong> auto-enroll</strong> on Settings → Network and run <strong>Backfill</strong>;
+            once that&rsquo;s done your Network profile will appear here.
+          </div>
+        </Card>
       ) : data ? (
         <Card>
           <div style={{ display: 'grid', gap: 12, maxWidth: 520 }}>
