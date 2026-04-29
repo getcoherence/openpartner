@@ -75,7 +75,9 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
       principalKind: 'partner',
       principalId: id,
     });
-    const tmpl = partnerInviteEmail(body.data.name, buildMagicLinkUrl(issued.plaintext));
+    const { resolveBrandName } = await import('../brand-name.js');
+    const brandName = await resolveBrandName(db, tenantId);
+    const tmpl = partnerInviteEmail(body.data.name, buildMagicLinkUrl(issued.plaintext, req.tenantSlug), brandName);
     await getMailer().send({ db, tenantId }, {
       to: email,
       subject: tmpl.subject,
@@ -142,7 +144,9 @@ partnersRouter.post('/partners/:id/invite', requireAuth, requireAdmin, async (re
     principalKind: 'partner',
     principalId: partner.id,
   });
-  const tmpl = partnerInviteEmail(partner.name, buildMagicLinkUrl(issued.plaintext));
+  const { resolveBrandName } = await import('../brand-name.js');
+  const brandName = await resolveBrandName(db, tenantId);
+  const tmpl = partnerInviteEmail(partner.name, buildMagicLinkUrl(issued.plaintext, req.tenantSlug), brandName);
   await getMailer().send({ db, tenantId }, {
     to: partner.email,
     subject: tmpl.subject,

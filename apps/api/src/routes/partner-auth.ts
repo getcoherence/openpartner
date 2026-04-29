@@ -82,7 +82,9 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
       principalKind: 'partner',
       principalId: partner.id,
     });
-    const tmpl = partnerSigninEmail(partner.name, buildMagicLinkUrl(issued.plaintext, req.tenantSlug));
+    const { resolveBrandName } = await import('../brand-name.js');
+    const brandName = await resolveBrandName(db, tenantId);
+    const tmpl = partnerSigninEmail(partner.name, buildMagicLinkUrl(issued.plaintext, req.tenantSlug), brandName);
     await getMailer().send({ db, tenantId }, {
       to: email,
       subject: tmpl.subject,

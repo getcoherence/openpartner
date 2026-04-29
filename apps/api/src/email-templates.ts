@@ -20,13 +20,14 @@ export interface EmailTemplate {
   html: string;
 }
 
-export function partnerInviteEmail(name: string, link: string): EmailTemplate {
-  const subject = `You're invited to the partner program`;
+export function partnerInviteEmail(name: string, link: string, brandName: string | null = null): EmailTemplate {
+  const brand = brandName || 'the partner program';
+  const subject = brandName ? `You're invited to ${brandName}'s partner program` : `You're invited to the partner program`;
   const text = [
     `Hi ${name},`,
     ``,
-    `You've been invited to join the partner program. Click the link below`,
-    `to accept and set up your dashboard:`,
+    `You've been invited to join ${brand}. Click the link below to accept`,
+    `and set up your dashboard:`,
     ``,
     link,
     ``,
@@ -35,12 +36,14 @@ export function partnerInviteEmail(name: string, link: string): EmailTemplate {
   return { subject, text, html: wrap(text, link, 'Accept invite') };
 }
 
-export function partnerSigninEmail(name: string, link: string): EmailTemplate {
-  const subject = `Your partner dashboard sign-in link`;
+export function partnerSigninEmail(name: string, link: string, brandName: string | null = null): EmailTemplate {
+  const subject = brandName ? `Sign in to ${brandName}` : `Your partner dashboard sign-in link`;
   const text = [
     `Hi ${name},`,
     ``,
-    `Click the link below to sign in to your partner dashboard:`,
+    brandName
+      ? `Click the link below to sign in to ${brandName}:`
+      : `Click the link below to sign in to your partner dashboard:`,
     ``,
     link,
     ``,
