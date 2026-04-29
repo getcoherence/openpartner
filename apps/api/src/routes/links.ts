@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
-import { TABLES, type LinkRow } from '@openpartner/db';
+import { TABLES, type CampaignRow, type LinkRow } from '@openpartner/db';
 import { grantScope, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 
@@ -12,7 +12,11 @@ const createSchema = z.object({
     .max(64)
     .regex(/^[a-zA-Z0-9_-]+$/, 'linkKey must be url-safe'),
   campaignId: z.string().min(1),
-  destinationUrl: z.string().url(),
+  /** Optional override of Campaign.destinationUrl. Allowed only when
+   *  the Campaign has deepLinkAllowedDomains set AND the override host
+   *  matches one of those domains. Otherwise rejected with
+   *  destination_override_not_allowed. */
+  destinationUrl: z.string().url().optional(),
 });
 
 export const linksRouter = Router();
@@ -33,8 +37,25 @@ linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), 
   const partner = await db(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
 
-  const campaign = await db(TABLES.Campaign).where({ id: body.data.campaignId }).first();
+  const campaign = await db<CampaignRow>(TABLES.Campaign).where({ id: body.data.campaignId }).first();
   if (!campaign) return res.status(404).json({ error: 'campaign_not_found' });
+
+  // Destination resolution: if the partner supplied an override, the
+  // Campaign must allow deep-linking AND the override host must match
+  // the allowlist. Otherwise the Link inherits Campaign.destinationUrl
+  // (stored as null on the row → router resolves at click time).
+  let destinationOverride: string | null = null;
+  if (body.data.destinationUrl) {
+    if (!isDeepLinkAllowed(campaign, body.data.destinationUrl)) {
+      return res.status(400).json({
+        error: 'destination_override_not_allowed',
+        detail: campaign.deepLinkAllowedDomains
+          ? `Override must be on one of: ${campaign.deepLinkAllowedDomains}`
+          : 'This program does not allow custom destinations.',
+      });
+    }
+    destinationOverride = body.data.destinationUrl;
+  }
 
   const id = ulid();
   try {
@@ -45,7 +66,7 @@ linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), 
         linkKey: body.data.linkKey,
         partnerId: req.params.id,
         campaignId: body.data.campaignId,
-        destinationUrl: body.data.destinationUrl,
+        destinationUrl: destinationOverride,
       })
       .returning('*');
     res.status(201).json(link);
@@ -56,6 +77,21 @@ linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), 
     throw err;
   }
 });
+
+function isDeepLinkAllowed(campaign: CampaignRow, url: string): boolean {
+  if (!campaign.deepLinkAllowedDomains) return false;
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return campaign.deepLinkAllowedDomains
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+    .some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+}
 
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505';

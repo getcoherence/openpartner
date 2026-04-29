@@ -11,6 +11,8 @@ interface Campaign {
   commissionRule: { type: string; value: number; recurring?: boolean };
   attributionWindowDays: number;
   attributionModel: string;
+  destinationUrl: string;
+  deepLinkAllowedDomains: string | null;
   createdAt: string;
 }
 
@@ -48,9 +50,15 @@ export function AdminCampaigns() {
         <EmptyState title="No campaigns yet" hint="A campaign holds the commission rule and attribution settings." icon={<Tag size={28} strokeWidth={1.25} />} />
       ) : (
         <Table
-          columns={['Name', 'Commission', 'Window', 'Model', 'Created']}
+          columns={['Name', 'Destination', 'Commission', 'Window', 'Model', 'Created']}
           rows={(campaigns.data?.campaigns ?? []).map((c) => [
             <span style={{ fontWeight: 500 }}>{c.name}</span>,
+            <span style={{ color: theme.textMuted, fontSize: 12, fontFamily: theme.fontMono }}>
+              {c.destinationUrl ? new URL(c.destinationUrl).hostname + new URL(c.destinationUrl).pathname.replace(/\/$/, '') : '—'}
+              {c.deepLinkAllowedDomains && (
+                <span style={{ color: theme.accent, fontSize: 11, marginLeft: 8 }}>+ deep links</span>
+              )}
+            </span>,
             <span>
               {c.commissionRule.type === 'percent' ? `${c.commissionRule.value}%` : `$${c.commissionRule.value} fixed`}
               {c.commissionRule.recurring && <span style={{ color: theme.textDim, fontSize: 12, marginLeft: 6 }}>(recurring)</span>}
@@ -67,6 +75,8 @@ export function AdminCampaigns() {
 
 function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState('');
+  const [destinationUrl, setDestinationUrl] = useState('');
+  const [deepLinkDomains, setDeepLinkDomains] = useState('');
   const [ruleType, setRuleType] = useState<'percent' | 'fixed'>('percent');
   const [ruleValue, setRuleValue] = useState('20');
   const [recurring, setRecurring] = useState(true);
@@ -79,6 +89,8 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
         method: 'POST',
         body: {
           name,
+          destinationUrl,
+          deepLinkAllowedDomains: deepLinkDomains.trim() || undefined,
           commissionRule: { type: ruleType, value: Number(ruleValue), recurring },
           attributionWindowDays: Number(windowDays),
           attributionModel: model,
@@ -94,6 +106,29 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
       <div style={{ marginBottom: 14 }}>
         <Label>Name</Label>
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Default" />
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <Label>Destination URL</Label>
+        <Input
+          type="url"
+          value={destinationUrl}
+          onChange={(e) => setDestinationUrl(e.target.value)}
+          placeholder="https://yourbrand.com/landing-page"
+        />
+        <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+          Where partner share-links for this campaign land. Partners can&rsquo;t change this unless you allow deep links below.
+        </div>
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <Label>Allowed deep-link domains (optional)</Label>
+        <Input
+          value={deepLinkDomains}
+          onChange={(e) => setDeepLinkDomains(e.target.value)}
+          placeholder="yourbrand.com,docs.yourbrand.com"
+        />
+        <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+          Comma-separated host list. Partners can override the destination on share-links as long as their override matches one of these. Leave blank to lock destinations.
+        </div>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr auto', gap: 12, marginBottom: 14, alignItems: 'end' }}>
         <div>
@@ -128,7 +163,7 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
         </div>
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={() => mut.mutate()} disabled={!name || !ruleValue || mut.isPending}>
+        <Button onClick={() => mut.mutate()} disabled={!name || !ruleValue || !destinationUrl || mut.isPending}>
           {mut.isPending ? 'Creating…' : 'Create campaign'}
         </Button>
         <Button variant="secondary" onClick={onClose}>Cancel</Button>

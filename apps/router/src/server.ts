@@ -32,8 +32,21 @@ app.get('/r/:linkKey', async (c) => {
     | undefined;
   const partnerRevoked = !!partner?.revokedAt;
 
+  // Destination resolution: per-Link override (deep link) wins; otherwise
+  // inherit from the Campaign. This is the source-of-truth flip — brands
+  // own the destination via Campaign.destinationUrl, partners only get
+  // an override when the Campaign explicitly allows deep-linking.
+  let destinationUrl = link.destinationUrl;
+  if (!destinationUrl) {
+    const campaign = (await db('Campaign').where({ id: link.campaignId }).first()) as
+      | { destinationUrl: string }
+      | undefined;
+    if (!campaign) return c.text('Campaign not found', 410);
+    destinationUrl = campaign.destinationUrl;
+  }
+
   const clickId = ulid();
-  const destination = new URL(link.destinationUrl);
+  const destination = new URL(destinationUrl);
   destination.searchParams.set('cref', clickId);
 
   // Prefer proxy headers when they're present (we run behind Caddy /

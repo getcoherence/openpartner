@@ -144,6 +144,14 @@ export interface CampaignRow {
   commissionRule: CommissionRule;
   attributionWindowDays: number;
   attributionModel: AttributionModel;
+  /** Where partner share-links for this Campaign land by default. Brand
+   *  controls this; partners can only override if deepLinkAllowedDomains
+   *  is set and their override matches. */
+  destinationUrl: string;
+  /** Comma-separated host allowlist enabling per-Link destination
+   *  overrides (deep-linking to product pages). Null = partners can't
+   *  override the Campaign default. */
+  deepLinkAllowedDomains: string | null;
   createdAt: Date;
 }
 
@@ -153,7 +161,10 @@ export interface LinkRow {
   linkKey: string;
   partnerId: string;
   campaignId: string;
-  destinationUrl: string;
+  /** Override of Campaign.destinationUrl. Null = inherit. Set only when
+   *  the Campaign allows deep-linking and the partner picked a custom
+   *  destination on an allowed host. */
+  destinationUrl: string | null;
   createdAt: Date;
 }
 

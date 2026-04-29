@@ -9,7 +9,7 @@ import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Sele
 interface LinkRow {
   id: string;
   linkKey: string;
-  destinationUrl: string;
+  destinationUrl: string | null;
   campaignId: string;
   partnerId: string;
   createdAt: string;
@@ -18,6 +18,8 @@ interface LinkRow {
 interface Campaign {
   id: string;
   name: string;
+  destinationUrl: string;
+  deepLinkAllowedDomains: string | null;
 }
 
 export function LinksPage({ principal }: { principal: Principal }) {
@@ -86,10 +88,12 @@ function PartnerLinks({ partnerId, readOnly }: { partnerId: string; readOnly: bo
     queryFn: () => api<{ links: LinkRow[] }>(`/partners/${partnerId}/links`),
   });
 
+  // Partners need this too — they pick a Program when creating a link
+  // and we surface the inherited destination. /me/campaigns is the
+  // partner-friendly read-only slice (no commission rules etc.).
   const campaigns = useQuery({
-    queryKey: ['campaigns'],
-    queryFn: () => api<{ campaigns: Campaign[] }>('/campaigns').catch(() => ({ campaigns: [] })),
-    enabled: !readOnly,
+    queryKey: ['me-campaigns'],
+    queryFn: () => api<{ campaigns: Campaign[] }>('/me/campaigns').catch(() => ({ campaigns: [] })),
   });
 
   return (
@@ -130,13 +134,22 @@ function PartnerLinks({ partnerId, readOnly }: { partnerId: string; readOnly: bo
         />
       ) : (
         <Table
-          columns={['Key', 'Destination', 'Campaign', 'Created']}
-          rows={(links.data?.links ?? []).map((l) => [
-            <code style={{ color: theme.accent }}>/r/{l.linkKey}</code>,
-            <span style={{ color: theme.textMuted }}>{l.destinationUrl}</span>,
-            <code style={{ color: theme.textDim, fontSize: 12 }}>{l.campaignId.slice(0, 8)}…</code>,
-            <span style={{ color: theme.textMuted }}>{formatDate(l.createdAt, { relative: true })}</span>,
-          ])}
+          columns={['Key', 'Destination', 'Program', 'Created']}
+          rows={(links.data?.links ?? []).map((l) => {
+            const campaign = campaigns.data?.campaigns.find((c) => c.id === l.campaignId);
+            const dest = l.destinationUrl ?? campaign?.destinationUrl ?? '—';
+            return [
+              <code style={{ color: theme.accent }}>/r/{l.linkKey}</code>,
+              <span style={{ color: theme.textMuted, fontSize: 13 }}>
+                {dest}
+                {l.destinationUrl && (
+                  <span style={{ color: theme.accent, fontSize: 11, marginLeft: 8 }}>(deep link)</span>
+                )}
+              </span>,
+              <span>{campaign?.name ?? <code style={{ color: theme.textDim, fontSize: 12 }}>{l.campaignId.slice(0, 8)}…</code>}</span>,
+              <span style={{ color: theme.textMuted }}>{formatDate(l.createdAt, { relative: true })}</span>,
+            ];
+          })}
         />
       )}
     </Page>
@@ -155,14 +168,24 @@ function CreateLink({
   onCreated: () => void;
 }) {
   const [linkKey, setLinkKey] = useState('');
-  const [destinationUrl, setDestinationUrl] = useState('');
   const [campaignId, setCampaignId] = useState(campaigns[0]?.id ?? '');
+  const [useDeepLink, setUseDeepLink] = useState(false);
+  const [destinationOverride, setDestinationOverride] = useState('');
+
+  const selectedCampaign = campaigns.find((c) => c.id === campaignId);
+  const deepLinkAllowed = !!selectedCampaign?.deepLinkAllowedDomains;
 
   const mut = useMutation({
     mutationFn: () =>
       api(`/partners/${partnerId}/links`, {
         method: 'POST',
-        body: { linkKey, destinationUrl, campaignId },
+        body: {
+          linkKey,
+          campaignId,
+          // Only send destinationUrl when the partner has explicitly
+          // opted into a deep-link override on a Campaign that allows it.
+          destinationUrl: useDeepLink && destinationOverride ? destinationOverride : undefined,
+        },
       }),
     onSuccess: onCreated,
   });
@@ -171,18 +194,8 @@ function CreateLink({
     <Card style={{ marginBottom: 16 }}>
       <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 16 }}>New link</div>
       <ErrorBanner error={mut.error} />
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 14, marginBottom: 14 }}>
-        <div>
-          <Label>Link key</Label>
-          <Input value={linkKey} onChange={(e) => setLinkKey(e.target.value)} placeholder="ada" />
-        </div>
-        <div>
-          <Label>Destination URL</Label>
-          <Input value={destinationUrl} onChange={(e) => setDestinationUrl(e.target.value)} placeholder="https://…" />
-        </div>
-      </div>
-      <div style={{ marginBottom: 16 }}>
-        <Label>Campaign</Label>
+      <div style={{ marginBottom: 14 }}>
+        <Label>Program</Label>
         {campaigns.length === 0 ? (
           <Input value={campaignId} onChange={(e) => setCampaignId(e.target.value)} placeholder="campaign id (ULID)" />
         ) : (
@@ -194,9 +207,42 @@ function CreateLink({
             ))}
           </Select>
         )}
+        {selectedCampaign && (
+          <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>
+            Lands at <code style={{ color: theme.textMuted }}>{selectedCampaign.destinationUrl}</code>
+          </div>
+        )}
       </div>
+      <div style={{ marginBottom: 14 }}>
+        <Label>Link key</Label>
+        <Input value={linkKey} onChange={(e) => setLinkKey(e.target.value)} placeholder="ada" />
+        <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
+          Becomes <code style={{ color: theme.textDim }}>/r/{linkKey || 'your-key'}</code>.
+        </div>
+      </div>
+      {deepLinkAllowed && (
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: theme.text, marginBottom: 8 }}>
+            <input type="checkbox" checked={useDeepLink} onChange={(e) => setUseDeepLink(e.target.checked)} />
+            Deep-link to a specific page on the brand&rsquo;s site
+          </label>
+          {useDeepLink && (
+            <>
+              <Input
+                type="url"
+                value={destinationOverride}
+                onChange={(e) => setDestinationOverride(e.target.value)}
+                placeholder={`https://${selectedCampaign?.deepLinkAllowedDomains?.split(',')[0]?.trim() ?? 'yourbrand.com'}/some/page`}
+              />
+              <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
+                Must be on: {selectedCampaign?.deepLinkAllowedDomains}
+              </div>
+            </>
+          )}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={() => mut.mutate()} disabled={!linkKey || !destinationUrl || !campaignId || mut.isPending}>
+        <Button onClick={() => mut.mutate()} disabled={!linkKey || !campaignId || mut.isPending}>
           {mut.isPending ? 'Creating…' : 'Create link'}
         </Button>
         <Button variant="secondary" onClick={onClose}>
