@@ -25,6 +25,8 @@
 import type { Knex } from 'knex';
 import nodemailer from 'nodemailer';
 import { resolveMailConfig } from './mail-settings.js';
+import { resolveBrandName } from './brand-name.js';
+import { TABLES, type ConfigRow } from '@openpartner/db';
 
 export interface Message {
   to: string;
@@ -44,10 +46,43 @@ export interface Mailer {
   send(ctx: SendContext, msg: Message): Promise<void>;
 }
 
+/** Strip and quote pieces of a name for safe use in an RFC 5322 display
+ *  name. Drops control chars and double-quotes; trims to 80 chars. */
+function safeDisplayName(name: string): string {
+  return name.replace(/[\x00-\x1f"\\]/g, '').trim().slice(0, 80);
+}
+
+/** Pull the bare email address out of `"Name" <addr@host>` or `addr@host`. */
+function extractAddress(from: string): string {
+  const m = from.match(/<([^>]+)>/);
+  return (m?.[1] ?? from).trim();
+}
+
 class RoutingMailer implements Mailer {
   async send(ctx: SendContext, msg: Message): Promise<void> {
     const cfg = await resolveMailConfig(ctx.db, ctx.tenantId);
-    if (cfg.kind === 'smtp' && cfg.smtp && cfg.from) {
+
+    // Brand-aware From + Reply-To when we're using the platform fallback
+    // (source='env'). Pattern: `"Acme via OpenPartner" <noreply@openpartner.dev>`,
+    // Reply-To = the brand's support email if set. Means hosted brands
+    // get brand identity in the inbox without configuring email at all.
+    // For source='ui' (brand wired up their own provider) we trust their
+    // From and don't second-guess it.
+    let from = cfg.from ?? null;
+    let replyTo: string | undefined;
+    if (cfg.source === 'env' && from) {
+      const brandName = await resolveBrandName(ctx.db, ctx.tenantId);
+      if (brandName) {
+        from = `"${safeDisplayName(brandName)} via OpenPartner" <${extractAddress(from)}>`;
+      }
+      const supportRow = await ctx.db<ConfigRow>(TABLES.Config)
+        .where({ tenantId: ctx.tenantId, key: 'program_settings' })
+        .first();
+      const supportEmail = ((supportRow?.value as { supportEmail?: string } | undefined)?.supportEmail ?? '').trim();
+      if (supportEmail) replyTo = supportEmail;
+    }
+
+    if (cfg.kind === 'smtp' && cfg.smtp && from) {
       const transporter = nodemailer.createTransport({
         host: cfg.smtp.host,
         port: cfg.smtp.port,
@@ -58,8 +93,9 @@ class RoutingMailer implements Mailer {
             : undefined,
       });
       await transporter.sendMail({
-        from: cfg.from,
+        from,
         to: msg.to,
+        replyTo,
         subject: msg.subject,
         text: msg.text,
         html: msg.html,
@@ -67,7 +103,7 @@ class RoutingMailer implements Mailer {
       });
       return;
     }
-    if (cfg.kind === 'postmark' && cfg.postmark && cfg.from) {
+    if (cfg.kind === 'postmark' && cfg.postmark && from) {
       const res = await fetch('https://api.postmarkapp.com/email', {
         method: 'POST',
         headers: {
@@ -76,8 +112,9 @@ class RoutingMailer implements Mailer {
           'X-Postmark-Server-Token': cfg.postmark.serverToken,
         },
         body: JSON.stringify({
-          From: cfg.from,
+          From: from,
           To: msg.to,
+          ReplyTo: replyTo,
           Subject: msg.subject,
           TextBody: msg.text,
           HtmlBody: msg.html,

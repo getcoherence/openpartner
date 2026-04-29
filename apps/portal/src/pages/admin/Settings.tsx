@@ -174,11 +174,26 @@ function MailSection() {
         <div style={{ fontSize: 15, fontWeight: 500 }}>Email delivery</div>
       </div>
       <ErrorBanner error={error ?? mut.error} />
-      <Hint>
-        Used for partner invite / sign-in emails and admin magic-links. Credentials are
-        encrypted at rest with <code>SECRETS_ENCRYPTION_KEY</code>. Leaving the UI empty
-        falls back to <code>SMTP_*</code> / <code>POSTMARK_SERVER_TOKEN</code> env vars.
-      </Hint>
+      <div
+        style={{
+          background: theme.successSoft,
+          border: `1px solid ${theme.success}55`,
+          borderRadius: theme.radiusSm,
+          padding: 12,
+          marginBottom: 14,
+        }}
+      >
+        <div style={{ fontSize: 14, fontWeight: 500, color: theme.success, marginBottom: 4 }}>
+          Email is set up by default
+        </div>
+        <div style={{ fontSize: 13, color: theme.textMuted, lineHeight: 1.55 }}>
+          Partner invites, sign-in links, and notifications send through OpenPartner&rsquo;s
+          email infrastructure as <code>&ldquo;Your brand via OpenPartner&rdquo; &lt;noreply@openpartner.dev&gt;</code>.
+          Replies go to your support email if you&rsquo;ve set one. This section is optional —
+          configure your own SMTP or Postmark only if you want emails to come from your
+          own domain.
+        </div>
+      </div>
 
       <div style={{ marginTop: 14, marginBottom: 12 }}>
         <Label>Provider</Label>
