@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Globe, Inbox, LogOut, Megaphone, UserCog } from 'lucide-react';
+import { Globe, Inbox, Link2, LogOut, Megaphone, Network, UserCog } from 'lucide-react';
 import { theme } from '../../theme.js';
 import { Logo } from '../auth/Shared.js';
 import { creatorApi } from './creator-api.js';
@@ -11,6 +11,8 @@ import { CreatorVendorDetailPage } from './CreatorVendorDetail.js';
 import { CreatorMyAffiliationsPage } from './CreatorMyAffiliations.js';
 import { CreatorMyRequestsPage } from './CreatorMyRequests.js';
 import { CreatorMyProfilePage } from './CreatorMyProfile.js';
+import { CreatorShareLinksPage } from './CreatorShareLinks.js';
+import { CreatorDomainsPage } from './CreatorDomains.js';
 
 interface Whoami {
   creator: { id: string; name: string; email: string; handle: string | null; avatarUrl: string | null; bio: string | null } | null;
@@ -43,6 +45,8 @@ export function CreatorShell() {
           <Route path="offerings/:id" element={<CreatorOfferingDetailPage />} />
           <Route path="vendors/:id" element={<CreatorVendorDetailPage />} />
           <Route path="affiliations" element={<CreatorMyAffiliationsPage />} />
+          <Route path="links" element={<CreatorShareLinksPage />} />
+          <Route path="domains" element={<CreatorDomainsPage />} />
           <Route path="requests" element={<CreatorMyRequestsPage />} />
           <Route path="profile" element={<CreatorMyProfilePage />} />
           <Route path="*" element={<Navigate to="discover" replace />} />
@@ -76,7 +80,11 @@ function CreatorSidebar({ creator }: { creator: NonNullable<Whoami['creator']> }
         <NavSection title="Network">
           <CreatorNavItem to="/creator/discover" icon={<Globe size={16} />}>Discover programs</CreatorNavItem>
           <CreatorNavItem to="/creator/affiliations" icon={<Megaphone size={16} />}>My partnerships</CreatorNavItem>
+          <CreatorNavItem to="/creator/links" icon={<Link2 size={16} />}>Share links</CreatorNavItem>
           <CreatorNavItem to="/creator/requests" icon={<Inbox size={16} />}>My applications</CreatorNavItem>
+        </NavSection>
+        <NavSection title="Settings">
+          <CreatorNavItem to="/creator/domains" icon={<Network size={16} />}>Custom domains</CreatorNavItem>
           <CreatorNavItem to="/creator/profile" icon={<UserCog size={16} />}>Profile</CreatorNavItem>
         </NavSection>
       </div>

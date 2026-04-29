@@ -38,6 +38,8 @@ const ALLOWED_EXACT = new Set([
   '/creators/me/delete',
   '/creators/me/restore',
   '/creators/handle-available',
+  '/creators/me/domains',
+  '/creators/me/partnerships',
   '/offerings',
 ]);
 
@@ -46,6 +48,10 @@ const ALLOWED_PREFIX: Array<{ prefix: string; methods: Set<string> }> = [
   { prefix: '/vendors/', methods: new Set(['GET']) },                // /vendors/:id (public profile)
   { prefix: '/creators/me/affiliations/', methods: new Set(['GET']) },
   { prefix: '/creators/me/requests/', methods: new Set(['POST']) },
+  // Custom share-domain management — POST /verify, DELETE the domain.
+  { prefix: '/creators/me/domains/', methods: new Set(['POST', 'DELETE']) },
+  // Per-partnership slug edit (creatorSlug — the path under custom domain).
+  { prefix: '/creators/me/partnerships/', methods: new Set(['PATCH']) },
 ];
 
 function isAllowed(method: string, subpath: string): boolean {
