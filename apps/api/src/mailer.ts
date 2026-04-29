@@ -79,7 +79,20 @@ class RoutingMailer implements Mailer {
         .where({ tenantId: ctx.tenantId, key: 'program_settings' })
         .first();
       const supportEmail = ((supportRow?.value as { supportEmail?: string } | undefined)?.supportEmail ?? '').trim();
-      if (supportEmail) replyTo = supportEmail;
+      if (supportEmail) {
+        replyTo = supportEmail;
+      } else {
+        // Fallback: oldest active admin on the tenant. Means a partner
+        // hitting Reply on a sign-in email always lands on a human at
+        // the brand, even before Settings → Brand info is filled in.
+        const fallbackAdmin = await ctx.db(TABLES.Admin)
+          .where({ tenantId: ctx.tenantId })
+          .whereNotNull('activatedAt')
+          .whereNull('revokedAt')
+          .orderBy('activatedAt', 'asc')
+          .first(['email']);
+        if (fallbackAdmin?.email) replyTo = fallbackAdmin.email as string;
+      }
     }
 
     if (cfg.kind === 'smtp' && cfg.smtp && from) {
