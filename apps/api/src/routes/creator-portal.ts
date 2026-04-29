@@ -40,6 +40,7 @@ const ALLOWED_EXACT = new Set([
   '/creators/handle-available',
   '/creators/me/domains',
   '/creators/me/partnerships',
+  '/creators/me/platforms',
   '/offerings',
 ]);
 
@@ -52,6 +53,11 @@ const ALLOWED_PREFIX: Array<{ prefix: string; methods: Set<string> }> = [
   { prefix: '/creators/me/domains/', methods: new Set(['POST', 'DELETE']) },
   // Per-partnership slug edit (creatorSlug — the path under custom domain).
   { prefix: '/creators/me/partnerships/', methods: new Set(['PATCH']) },
+  // Per-platform handle upsert (PUT) + delete.
+  { prefix: '/creators/me/platforms/', methods: new Set(['PUT', 'DELETE']) },
+  // Public profile lookup — no creator session required, lets brands
+  // and the open web hit /creators/by-handle/<handle> on the portal.
+  { prefix: '/creators/by-handle/', methods: new Set(['GET']) },
 ];
 
 function isAllowed(method: string, subpath: string): boolean {
