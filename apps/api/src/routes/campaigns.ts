@@ -27,6 +27,12 @@ const createSchema = z.object({
   deepLinkAllowedDomains: z.string().max(1000).optional(),
   startsAt: z.string().datetime().nullable().optional(),
   endsAt: z.string().datetime().nullable().optional(),
+  /** When true, after creating the campaign, also grant every existing
+   *  non-revoked partner access to it (source='admin'). Defaults to
+   *  false so VIP / scoped campaigns stay private unless the brand opts
+   *  in. New partners invited later still need to be granted explicitly
+   *  at invite time — this only covers the existing roster. */
+  grantToAllPartners: z.boolean().optional(),
 });
 
 const updateSchema = z.object({
@@ -124,6 +130,30 @@ campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) =
       endsAt: body.data.endsAt ? new Date(body.data.endsAt) : null,
     })
     .returning('*');
+
+  // Optional bulk-grant to existing non-revoked partners. Mirrors the
+  // invite-time snapshot semantics (revokedAt is the only filter — we
+  // include not-yet-activated invitees so a freshly-sent invite still
+  // gets the new program).
+  if (body.data.grantToAllPartners) {
+    const partners = (await db(TABLES.Partner)
+      .whereNull('revokedAt')
+      .select('id')) as Array<{ id: string }>;
+    if (partners.length > 0) {
+      await db(TABLES.PartnerCampaign)
+        .insert(
+          partners.map((p) => ({
+            id: `pc_${ulid()}`,
+            tenantId,
+            partnerId: p.id,
+            campaignId: id,
+            source: 'admin',
+          })),
+        )
+        .onConflict(['tenantId', 'partnerId', 'campaignId'])
+        .ignore();
+    }
+  }
 
   res.status(201).json(campaign);
 });

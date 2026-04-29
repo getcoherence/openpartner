@@ -94,6 +94,7 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
   const [model, setModel] = useState<'last_click' | 'first_click' | 'linear' | 'position'>('last_click');
   const [startsAt, setStartsAt] = useState('');
   const [endsAt, setEndsAt] = useState('');
+  const [grantToAllPartners, setGrantToAllPartners] = useState(false);
 
   const mut = useMutation({
     mutationFn: () =>
@@ -108,6 +109,7 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
           attributionModel: model,
           startsAt: startsAt ? new Date(startsAt).toISOString() : null,
           endsAt: endsAt ? new Date(endsAt).toISOString() : null,
+          grantToAllPartners: grantToAllPartners || undefined,
         },
       }),
     onSuccess: onCreated,
@@ -200,6 +202,20 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
           <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
             Leave blank to run indefinitely. Past this date existing share-links keep redirecting but no new commissions accrue.
           </div>
+        </div>
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text }}>
+          <input
+            type="checkbox"
+            checked={grantToAllPartners}
+            onChange={(e) => setGrantToAllPartners(e.target.checked)}
+          />
+          Also grant access to all existing partners
+        </label>
+        <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4, marginLeft: 24 }}>
+          Off by default so VIP / scoped campaigns stay private. Only affects the current
+          partner roster &mdash; new invitees still need to be granted explicitly.
         </div>
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
