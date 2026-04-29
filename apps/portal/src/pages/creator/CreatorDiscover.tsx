@@ -6,6 +6,8 @@ import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select } fro
 import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
 
+type MyStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'cancelled';
+
 interface OfferingListItem {
   id: string;
   title: string;
@@ -16,6 +18,7 @@ interface OfferingListItem {
   vendorPartnerCount: number;
   terms: { commissionDescription?: string };
   createdAt: string;
+  myStatus: MyStatus;
 }
 
 export function CreatorDiscoverPage() {
@@ -86,10 +89,17 @@ export function CreatorDiscoverPage() {
                   {o.description.slice(0, 180)}{o.description.length > 180 ? '…' : ''}
                 </p>
               )}
-              <div style={{ marginTop: 12 }}>
+              <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Link to={`/creator/offerings/${o.id}`}>
-                  <Button>View &amp; apply</Button>
+                  <Button variant={o.myStatus === 'approved' || o.myStatus === 'pending' ? 'secondary' : 'primary'}>
+                    {ctaForStatus(o.myStatus)}
+                  </Button>
                 </Link>
+                {o.myStatus !== 'none' && o.myStatus !== 'rejected' && (
+                  <span style={{ fontSize: 12, color: o.myStatus === 'approved' ? theme.success : theme.textMuted }}>
+                    {o.myStatus === 'approved' ? '✓ Active' : o.myStatus === 'pending' ? 'Awaiting brand review' : null}
+                  </span>
+                )}
               </div>
             </Card>
           ))}
@@ -97,6 +107,21 @@ export function CreatorDiscoverPage() {
       )}
     </Page>
   );
+}
+
+function ctaForStatus(s: MyStatus): string {
+  switch (s) {
+    case 'approved':
+      return 'View link';
+    case 'pending':
+      return 'View application';
+    case 'rejected':
+      return 'View & reapply';
+    case 'cancelled':
+    case 'none':
+    default:
+      return 'View & apply';
+  }
 }
 
 interface CreatorProfile {
