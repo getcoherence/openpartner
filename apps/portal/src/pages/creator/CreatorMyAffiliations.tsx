@@ -13,6 +13,7 @@ interface Affiliation {
   joinedVendorAt: string;
   vendorName: string;
   vendorInstanceUrl: string;
+  approvedOfferings: Array<{ id: string; title: string }>;
 }
 
 interface Earnings {
@@ -81,6 +82,17 @@ export function CreatorMyAffiliationsPage() {
               <StatusPill status={a.status} />
             </div>
             <p style={{ color: theme.textMuted, fontSize: 13 }}>Joined {formatDate(a.joinedVendorAt, { relative: true })}</p>
+            {a.approvedOfferings.length > 0 && (
+              <p style={{ color: theme.textMuted, fontSize: 13, marginTop: 4 }}>
+                Approved for:{' '}
+                {a.approvedOfferings.map((o, i) => (
+                  <span key={o.id}>
+                    {i > 0 && ', '}
+                    <Link to={`/creator/offerings/${o.id}`}>{o.title}</Link>
+                  </span>
+                ))}
+              </p>
+            )}
             <EarningsBlock aff={a} />
           </Card>
         ))

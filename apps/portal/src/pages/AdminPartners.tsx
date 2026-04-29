@@ -20,6 +20,7 @@ export function AdminPartners() {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [revoking, setRevoking] = useState<Partner | null>(null);
+  const [managingPrograms, setManagingPrograms] = useState<Partner | null>(null);
 
   const partners = useQuery({ queryKey: ['partners'], queryFn: () => api<{ partners: Partner[] }>('/partners') });
 
@@ -54,6 +55,12 @@ export function AdminPartners() {
           }}
         />
       )}
+      {managingPrograms && (
+        <ProgramsDialog
+          partner={managingPrograms}
+          onClose={() => setManagingPrograms(null)}
+        />
+      )}
 
       {partners.isLoading ? (
         <Card>Loading…</Card>
@@ -79,6 +86,13 @@ export function AdminPartners() {
             <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
             <div style={{ display: 'flex', gap: 6 }}>
               <Link to={`/links?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Links</Link>
+              <span style={{ color: theme.border }}>·</span>
+              <button
+                onClick={() => setManagingPrograms(p)}
+                style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accent, cursor: 'pointer' }}
+              >
+                Programs
+              </button>
               <span style={{ color: theme.border }}>·</span>
               <Link to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Payouts</Link>
               {!p.activatedAt && !p.revokedAt && (
@@ -212,6 +226,94 @@ function RevokeDialog({
         </Button>
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
       </div>
+    </Card>
+  );
+}
+
+interface CampaignGrant {
+  id: string;
+  name: string;
+  destinationUrl: string;
+  granted: boolean;
+  grantSource: 'admin' | 'offering' | null;
+}
+
+function ProgramsDialog({ partner, onClose }: { partner: Partner; onClose: () => void }) {
+  const qc = useQueryClient();
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['partner-campaigns', partner.id],
+    queryFn: () => api<{ campaigns: CampaignGrant[] }>(`/partners/${partner.id}/campaigns`),
+  });
+
+  const add = useMutation({
+    mutationFn: (campaignId: string) =>
+      api(`/partners/${partner.id}/campaigns`, { method: 'POST', body: { campaignIds: [campaignId] } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['partner-campaigns', partner.id] }),
+  });
+  const remove = useMutation({
+    mutationFn: (campaignId: string) =>
+      api(`/partners/${partner.id}/campaigns/${campaignId}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['partner-campaigns', partner.id] }),
+  });
+
+  const busyId = add.isPending ? add.variables : remove.isPending ? remove.variables : null;
+
+  return (
+    <Card style={{ marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 6 }}>
+        <div style={{ fontSize: 15, fontWeight: 500, flex: 1 }}>Programs for {partner.name}</div>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', color: theme.textMuted, cursor: 'pointer', fontSize: 13 }}>
+          Close
+        </button>
+      </div>
+      <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
+        Toggle which programs this partner can create share-links for. Revoking a program doesn&rsquo;t remove
+        existing links — those keep working until the partner deletes them.
+      </div>
+      <ErrorBanner error={error ?? add.error ?? remove.error} />
+      {isLoading ? (
+        <div style={{ color: theme.textMuted }}>Loading…</div>
+      ) : !data || data.campaigns.length === 0 ? (
+        <div style={{ color: theme.textMuted }}>No campaigns exist yet — create one in Campaigns.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {data.campaigns.map((c) => {
+            const busy = busyId === c.id;
+            return (
+              <label
+                key={c.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: '10px 12px',
+                  background: c.granted ? `${theme.success}10` : theme.surface2,
+                  border: `1px solid ${c.granted ? `${theme.success}44` : theme.borderSubtle}`,
+                  borderRadius: theme.radiusSm,
+                  cursor: busy ? 'wait' : 'pointer',
+                  opacity: busy ? 0.6 : 1,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={c.granted}
+                  disabled={busy}
+                  onChange={(e) => (e.target.checked ? add.mutate(c.id) : remove.mutate(c.id))}
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 500 }}>{c.name}</div>
+                  <div style={{ fontSize: 12, color: theme.textMuted, fontFamily: theme.fontMono }}>{c.destinationUrl}</div>
+                </div>
+                {c.grantSource === 'offering' && (
+                  <span style={{ fontSize: 11, color: theme.accent, padding: '3px 8px', background: `${theme.accent}15`, borderRadius: 12 }}>
+                    via Network
+                  </span>
+                )}
+              </label>
+            );
+          })}
+        </div>
+      )}
     </Card>
   );
 }
