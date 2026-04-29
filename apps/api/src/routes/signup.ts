@@ -193,7 +193,11 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
       const protoHost = `${req.protocol}://${req.get('host') ?? ''}`;
       const signupResult = await signupWithNetwork({
         networkUrl,
-        instanceUrl: `${protoHost}/t/${slug}/api`,
+        // /api comes BEFORE /t/<slug> so the DO App Platform ingress
+        // (/api → api component) actually routes to us. The tenant
+        // middleware accepts both /t/<slug>/* and /api/t/<slug>/* via
+        // its regex, so the api still resolves the tenant correctly.
+        instanceUrl: `${protoHost}/api/t/${slug}`,
         scopedKey: scoped.plaintext,
         displayName: body.data.displayName,
         contactEmail: adminEmail,

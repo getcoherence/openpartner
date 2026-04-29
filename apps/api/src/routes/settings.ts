@@ -275,7 +275,11 @@ settingsRouter.post('/config/network/start-connect', requireAuth, requireAdmin, 
   // Resolve defaults from the request + tenant context.
   const protoHost = `${req.protocol}://${req.get('host') ?? ''}`;
   const tenantPath = tenantSlug ? `/t/${tenantSlug}` : '';
-  const inferredInstanceUrl = `${protoHost}${tenantPath}/api`;
+  // /api goes BEFORE /t/<slug> so the DO App Platform ingress
+  // (/api → api component) actually routes to us. The tenant middleware
+  // accepts both /t/<slug>/* and /api/t/<slug>/* in its regex, so the
+  // api still resolves the tenant correctly.
+  const inferredInstanceUrl = `${protoHost}${tenantSlug ? `/api/t/${tenantSlug}` : '/api'}`;
   const inferredCallback = `${protoHost}${tenantPath}/admin/network/complete`;
 
   // Mint a fresh scoped key with the federation scope set; store the
@@ -350,7 +354,11 @@ settingsRouter.post('/config/network/auto-enroll', requireAuth, requireAdmin, as
 
   const protoHost = `${req.protocol}://${req.get('host') ?? ''}`;
   const tenantPath = tenantSlug ? `/t/${tenantSlug}` : '';
-  const inferredInstanceUrl = `${protoHost}${tenantPath}/api`;
+  // /api goes BEFORE /t/<slug> so the DO App Platform ingress
+  // (/api → api component) actually routes to us. The tenant middleware
+  // accepts both /t/<slug>/* and /api/t/<slug>/* in its regex, so the
+  // api still resolves the tenant correctly.
+  const inferredInstanceUrl = `${protoHost}${tenantSlug ? `/api/t/${tenantSlug}` : '/api'}`;
   const inferredCallback = `${protoHost}${tenantPath}/admin/network/complete`;
 
   const scoped = await createApiKeyRow(db, {
