@@ -18,6 +18,7 @@ import {
   Globe,
   Megaphone,
   Inbox,
+  ChevronRight,
 } from 'lucide-react';
 import { clearApiKey, api, type Principal } from './api.js';
 import { useTenantBase } from './tenant-base.js';
@@ -237,16 +238,17 @@ function Sidebar({ principal }: { principal: Principal }) {
       <PrincipalChip principal={principal} />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 14, overflow: 'auto' }}>
-        <NavSection title="Yours">
+        {/* Top-level nav — no header, always visible. */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
           <NavItem to="/" icon={<LayoutDashboard size={16} />}>Dashboard</NavItem>
           <NavItem to="/links" icon={<Link2 size={16} />}>Links</NavItem>
           <NavItem to="/commissions" icon={<Receipt size={16} />}>Commissions</NavItem>
           <NavItem to="/payouts" icon={<Banknote size={16} />}>Payouts</NavItem>
           {principal.role === 'partner' && <NavItem to="/connect" icon={<CreditCard size={16} />}>Stripe Connect</NavItem>}
-        </NavSection>
+        </div>
 
         {principal.role === 'partner' && (
-          <NavSection title="Network">
+          <NavSection title="Network" collapsible storageKey="partner-network">
             <NavItem to="/network/discover" icon={<Globe size={16} />}>Discover programs</NavItem>
             <NavItem to="/network/affiliations" icon={<Megaphone size={16} />}>My partnerships</NavItem>
             <NavItem to="/network/requests" icon={<Inbox size={16} />}>My applications</NavItem>
@@ -255,7 +257,7 @@ function Sidebar({ principal }: { principal: Principal }) {
         )}
 
         {principal.role === 'admin' && (
-          <NavSection title="Admin">
+          <NavSection title="Admin" collapsible storageKey="admin-admin">
             <NavItem to="/admin/partners" icon={<Users size={16} />}>Partners</NavItem>
             <NavItem to="/admin/campaigns" icon={<Tag size={16} />}>Campaigns</NavItem>
             <NavItem to="/admin/review" icon={<ShieldCheck size={16} />}>Review queue</NavItem>
@@ -390,22 +392,84 @@ function describePrincipal(p: Principal): { label: string; sublabel: string; ini
   };
 }
 
-function NavSection({ title, children }: { title: string; children: ReactNode }) {
+function NavSection({
+  title,
+  collapsible,
+  storageKey,
+  children,
+}: {
+  title: string;
+  collapsible?: boolean;
+  /** Required when collapsible — disambiguates sections that share a
+   *  title (e.g. partner-side vs brand-side "Network"). Persists the
+   *  open/closed state across page reloads. */
+  storageKey?: string;
+  children: ReactNode;
+}) {
+  // Default closed when collapsible — matches the user's stated
+  // preference. localStorage persists per storageKey across reloads.
+  const lsKey = storageKey ? `op:nav-collapsed:${storageKey}` : null;
+  const [collapsed, setCollapsed] = useState(() => {
+    if (!collapsible) return false;
+    if (typeof window === 'undefined' || !lsKey) return true;
+    const raw = window.localStorage.getItem(lsKey);
+    if (raw === '0') return false;
+    if (raw === '1') return true;
+    return true; // default-collapsed when no preference yet
+  });
+  function toggle() {
+    setCollapsed((prev) => {
+      const next = !prev;
+      if (lsKey && typeof window !== 'undefined') {
+        window.localStorage.setItem(lsKey, next ? '1' : '0');
+      }
+      return next;
+    });
+  }
+
+  const headerCommonStyle: React.CSSProperties = {
+    fontSize: 11,
+    color: theme.textDim,
+    textTransform: 'uppercase',
+    letterSpacing: '0.08em',
+    fontWeight: 600,
+    padding: '0 8px 8px',
+  };
+
   return (
     <div>
-      <div
-        style={{
-          fontSize: 11,
-          color: theme.textDim,
-          textTransform: 'uppercase',
-          letterSpacing: '0.08em',
-          fontWeight: 600,
-          padding: '0 8px 8px',
-        }}
-      >
-        {title}
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>{children}</div>
+      {collapsible ? (
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={!collapsed}
+          style={{
+            ...headerCommonStyle,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            width: '100%',
+            background: 'transparent',
+            border: 'none',
+            cursor: 'pointer',
+            font: 'inherit',
+          }}
+        >
+          <ChevronRight
+            size={11}
+            style={{
+              transform: collapsed ? 'rotate(0deg)' : 'rotate(90deg)',
+              transition: 'transform 100ms ease',
+            }}
+          />
+          {title}
+        </button>
+      ) : (
+        <div style={headerCommonStyle}>{title}</div>
+      )}
+      {!collapsed && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>{children}</div>
+      )}
     </div>
   );
 }
@@ -424,7 +488,7 @@ function NetworkNav() {
   });
   const connected = !!(data?.enabled && data.hasVendorToken);
   return (
-    <NavSection title="Network">
+    <NavSection title="Network" collapsible storageKey="admin-network">
       <NavItem to="/admin/network" icon={<Globe size={16} />}>{connected ? 'Connection' : 'Get connected'}</NavItem>
       {connected && (
         <>
