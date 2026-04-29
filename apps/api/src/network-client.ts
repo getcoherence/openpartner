@@ -420,8 +420,17 @@ async function callNetwork<T>(
   opts?: { actingVendorPartnerId?: string },
 ): Promise<T> {
   const m = await getNetworkMembership(db, tenantId);
-  if (!m || !m.enabled || !m.networkUrl || !m.vendorTokenCiphertext) {
+  if (!m || !m.enabled || !m.vendorTokenCiphertext) {
     throw new NetworkProxyError(503, 'network_not_configured');
+  }
+  // Fall back to process.env.NETWORK_URL when the membership row has
+  // an empty networkUrl. Some tenants ended up in this state when the
+  // email-verify path ran without a prior /start-connect to seed the
+  // row — they still have a vendorToken but no URL. Heal silently
+  // here; the next saveNetworkMembership write persists the env value.
+  const networkUrl = m.networkUrl || process.env.NETWORK_URL;
+  if (!networkUrl) {
+    throw new NetworkProxyError(503, 'network_url_unresolvable');
   }
   let token: string;
   try {
@@ -429,7 +438,7 @@ async function callNetwork<T>(
   } catch (err) {
     throw new NetworkProxyError(500, `vendor_token_undecryptable: ${err instanceof Error ? err.message : String(err)}`);
   }
-  const url = `${m.networkUrl.replace(/\/$/, '')}${path}`;
+  const url = `${networkUrl.replace(/\/$/, '')}${path}`;
   const headers: Record<string, string> = {
     'content-type': 'application/json',
     authorization: `Bearer ${token}`,

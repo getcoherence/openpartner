@@ -400,9 +400,17 @@ settingsRouter.post('/config/network/complete-connect', requireAuth, requireAdmi
     return res.status(502).json({ error: 'network_verify_failed', detail: err instanceof Error ? err.message : String(err) });
   }
 
+  // Stamp networkUrl + vendorId explicitly on every complete-connect.
+  // Without it, brands that hit the email-verify path *before* any
+  // /start-connect call (e.g. auto-enroll fell back, then they
+  // verified directly) ended up with networkUrl='' on their membership
+  // row — and every subsequent proxy call 503'd with
+  // network_not_configured.
   await saveNetworkMembership(db, tenantId, {
     enabled: true,
+    networkUrl,
     vendorToken: result.vendorToken,
+    vendorId: result.vendorId,
   });
 
   res.json({ ok: true, vendorId: result.vendorId, displayName: result.displayName });
