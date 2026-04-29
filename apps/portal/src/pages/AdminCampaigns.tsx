@@ -13,7 +13,16 @@ interface Campaign {
   attributionModel: string;
   destinationUrl: string;
   deepLinkAllowedDomains: string | null;
+  startsAt: string | null;
+  endsAt: string | null;
   createdAt: string;
+}
+
+type CampaignStatus = 'scheduled' | 'active' | 'ended';
+function statusOf(c: Pick<Campaign, 'startsAt' | 'endsAt'>, at: Date = new Date()): CampaignStatus {
+  if (c.startsAt && at < new Date(c.startsAt)) return 'scheduled';
+  if (c.endsAt && at >= new Date(c.endsAt)) return 'ended';
+  return 'active';
 }
 
 export function AdminCampaigns() {
@@ -50,9 +59,10 @@ export function AdminCampaigns() {
         <EmptyState title="No campaigns yet" hint="A campaign holds the commission rule and attribution settings." icon={<Tag size={28} strokeWidth={1.25} />} />
       ) : (
         <Table
-          columns={['Name', 'Destination', 'Commission', 'Window', 'Model', 'Created']}
+          columns={['Name', 'Status', 'Destination', 'Commission', 'Window', 'Model', 'Created']}
           rows={(campaigns.data?.campaigns ?? []).map((c) => [
             <span style={{ fontWeight: 500 }}>{c.name}</span>,
+            <CampaignStatusPill campaign={c} />,
             <span style={{ color: theme.textMuted, fontSize: 12, fontFamily: theme.fontMono }}>
               {c.destinationUrl ? new URL(c.destinationUrl).hostname + new URL(c.destinationUrl).pathname.replace(/\/$/, '') : '—'}
               {c.deepLinkAllowedDomains && (
@@ -82,6 +92,8 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
   const [recurring, setRecurring] = useState(true);
   const [windowDays, setWindowDays] = useState('60');
   const [model, setModel] = useState<'last_click' | 'first_click' | 'linear' | 'position'>('last_click');
+  const [startsAt, setStartsAt] = useState('');
+  const [endsAt, setEndsAt] = useState('');
 
   const mut = useMutation({
     mutationFn: () =>
@@ -94,6 +106,8 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
           commissionRule: { type: ruleType, value: Number(ruleValue), recurring },
           attributionWindowDays: Number(windowDays),
           attributionModel: model,
+          startsAt: startsAt ? new Date(startsAt).toISOString() : null,
+          endsAt: endsAt ? new Date(endsAt).toISOString() : null,
         },
       }),
     onSuccess: onCreated,
@@ -162,6 +176,22 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
           </Select>
         </div>
       </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 16 }}>
+        <div>
+          <Label>Starts (optional)</Label>
+          <Input type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} />
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+            Leave blank to start immediately. Before this date the campaign is hidden from creators.
+          </div>
+        </div>
+        <div>
+          <Label>Ends (optional)</Label>
+          <Input type="datetime-local" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} />
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+            Leave blank to run indefinitely. Past this date existing share-links keep redirecting but no new commissions accrue.
+          </div>
+        </div>
+      </div>
       <div style={{ display: 'flex', gap: 8 }}>
         <Button onClick={() => mut.mutate()} disabled={!name || !ruleValue || !destinationUrl || mut.isPending}>
           {mut.isPending ? 'Creating…' : 'Create campaign'}
@@ -169,5 +199,20 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
       </div>
     </Card>
+  );
+}
+
+function CampaignStatusPill({ campaign }: { campaign: Pick<Campaign, 'startsAt' | 'endsAt'> }) {
+  const status = statusOf(campaign);
+  const palette: Record<CampaignStatus, { bg: string; fg: string; label: string }> = {
+    active: { bg: theme.successSoft, fg: theme.success, label: 'Active' },
+    scheduled: { bg: `${theme.accent}15`, fg: theme.accent, label: 'Scheduled' },
+    ended: { bg: theme.surface2, fg: theme.textMuted, label: 'Ended' },
+  };
+  const { bg, fg, label } = palette[status];
+  return (
+    <span style={{ background: bg, color: fg, fontSize: 11, padding: '2px 8px', borderRadius: 12, fontWeight: 600 }}>
+      {label}
+    </span>
   );
 }

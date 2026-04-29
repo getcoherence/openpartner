@@ -152,6 +152,12 @@ export interface CampaignRow {
    *  overrides (deep-linking to product pages). Null = partners can't
    *  override the Campaign default. */
   deepLinkAllowedDomains: string | null;
+  /** Optional scheduled start. Null = no start gate (active immediately). */
+  startsAt: Date | null;
+  /** Optional scheduled end. Null = runs forever. After this date the
+   *  campaign is "ended" — links keep redirecting, but no new
+   *  applications + no commission accrual on later events. */
+  endsAt: Date | null;
   createdAt: Date;
 }
 

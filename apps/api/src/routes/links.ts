@@ -40,6 +40,19 @@ linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), 
   const campaign = await db<CampaignRow>(TABLES.Campaign).where({ id: body.data.campaignId }).first();
   if (!campaign) return res.status(404).json({ error: 'campaign_not_found' });
 
+  // Lifecycle gate: scheduled or ended campaigns refuse new Link
+  // creation. Existing Links keep redirecting (URLs intact); only the
+  // create path is gated. Admins are subject to the same rule — if
+  // they want to make Links for an ended campaign they extend the
+  // endsAt first.
+  const { campaignAcceptsNewActivity, campaignStatus } = await import('../campaign-lifecycle.js');
+  if (!campaignAcceptsNewActivity(campaign)) {
+    return res.status(409).json({
+      error: 'campaign_not_active',
+      detail: `Campaign is ${campaignStatus(campaign)} — Links can be created only while the campaign is active.`,
+    });
+  }
+
   // Partner-side: must be granted access to this Campaign via
   // PartnerCampaign. Admins acting on a partner's behalf bypass this
   // check (they're the ones who'd grant it anyway).

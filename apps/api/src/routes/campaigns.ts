@@ -4,6 +4,7 @@ import { ulid } from 'ulid';
 import { TABLES, type CampaignRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
+import { campaignAcceptsNewActivity } from '../campaign-lifecycle.js';
 
 const commissionRuleSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('percent'), value: z.number().positive(), recurring: z.boolean().optional() }),
@@ -24,6 +25,8 @@ const createSchema = z.object({
   /** Comma-separated host allowlist for partner deep-linking. Null/omitted
    *  means partners can't override the destination. */
   deepLinkAllowedDomains: z.string().max(1000).optional(),
+  startsAt: z.string().datetime().nullable().optional(),
+  endsAt: z.string().datetime().nullable().optional(),
 });
 
 const updateSchema = z.object({
@@ -33,6 +36,8 @@ const updateSchema = z.object({
   attributionModel: z.enum(['last_click', 'first_click', 'linear', 'position']).optional(),
   destinationUrl: z.string().url().optional(),
   deepLinkAllowedDomains: z.string().max(1000).nullable().optional(),
+  startsAt: z.string().datetime().nullable().optional(),
+  endsAt: z.string().datetime().nullable().optional(),
 });
 
 export const campaignsRouter = Router();
@@ -63,13 +68,18 @@ campaignsRouter.get('/me/campaigns', requireAuth, async (req, res) => {
 
   if (p.role === 'admin') {
     const campaigns = (await db<CampaignRow>(TABLES.Campaign)
-      .select('id', 'name', 'destinationUrl', 'deepLinkAllowedDomains')
-      .orderBy('createdAt', 'desc')) as Array<Pick<CampaignRow, 'id' | 'name' | 'destinationUrl' | 'deepLinkAllowedDomains'>>;
+      .select('id', 'name', 'destinationUrl', 'deepLinkAllowedDomains', 'startsAt', 'endsAt')
+      .orderBy('createdAt', 'desc')) as Array<
+        Pick<CampaignRow, 'id' | 'name' | 'destinationUrl' | 'deepLinkAllowedDomains' | 'startsAt' | 'endsAt'>
+      >;
     return res.json({ campaigns });
   }
 
-  // Partner: filter through PartnerCampaign join.
-  const campaigns = (await db(TABLES.Campaign)
+  // Partner: filter through PartnerCampaign join. Hide scheduled (not
+  // yet started) and ended campaigns — partners shouldn't be picking
+  // those when they create a Link. Admins see them all so they can
+  // edit dates.
+  const rows = (await db(TABLES.Campaign)
     .join(TABLES.PartnerCampaign, `${TABLES.PartnerCampaign}.campaignId`, `${TABLES.Campaign}.id`)
     .where(`${TABLES.PartnerCampaign}.partnerId`, p.partnerId!)
     .select(
@@ -77,6 +87,8 @@ campaignsRouter.get('/me/campaigns', requireAuth, async (req, res) => {
       `${TABLES.Campaign}.name`,
       `${TABLES.Campaign}.destinationUrl`,
       `${TABLES.Campaign}.deepLinkAllowedDomains`,
+      `${TABLES.Campaign}.startsAt as startsAt`,
+      `${TABLES.Campaign}.endsAt as endsAt`,
       `${TABLES.PartnerCampaign}.source as source`,
     )
     .orderBy(`${TABLES.Campaign}.createdAt`, 'desc')) as Array<{
@@ -84,8 +96,11 @@ campaignsRouter.get('/me/campaigns', requireAuth, async (req, res) => {
       name: string;
       destinationUrl: string;
       deepLinkAllowedDomains: string | null;
+      startsAt: Date | null;
+      endsAt: Date | null;
       source: 'admin' | 'offering';
     }>;
+  const campaigns = rows.filter((r) => campaignAcceptsNewActivity(r));
   res.json({ campaigns });
 });
 
@@ -105,6 +120,8 @@ campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) =
       attributionModel: body.data.attributionModel ?? 'last_click',
       destinationUrl: body.data.destinationUrl,
       deepLinkAllowedDomains: body.data.deepLinkAllowedDomains ?? null,
+      startsAt: body.data.startsAt ? new Date(body.data.startsAt) : null,
+      endsAt: body.data.endsAt ? new Date(body.data.endsAt) : null,
     })
     .returning('*');
 
@@ -126,6 +143,8 @@ campaignsRouter.patch('/campaigns/:id', requireAuth, requireAdmin, async (req, r
   if (body.data.attributionModel !== undefined) patch.attributionModel = body.data.attributionModel;
   if (body.data.destinationUrl !== undefined) patch.destinationUrl = body.data.destinationUrl;
   if (body.data.deepLinkAllowedDomains !== undefined) patch.deepLinkAllowedDomains = body.data.deepLinkAllowedDomains;
+  if (body.data.startsAt !== undefined) patch.startsAt = body.data.startsAt ? new Date(body.data.startsAt) : null;
+  if (body.data.endsAt !== undefined) patch.endsAt = body.data.endsAt ? new Date(body.data.endsAt) : null;
 
   await db<CampaignRow>(TABLES.Campaign).where({ id: req.params.id }).update(patch);
   const updated = await db<CampaignRow>(TABLES.Campaign).where({ id: req.params.id }).first();

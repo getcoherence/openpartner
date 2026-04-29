@@ -121,6 +121,16 @@ export async function attributeEvent(
     if (insertRes.length === 0) continue; // dup — already attributed
     allDup = false;
 
+    // Commission lifecycle gate: events dated after the campaign's
+    // endsAt don't accrue. Attribution row stays for analytics — we
+    // still want to know the click → conversion path was real — just
+    // no payout. Pre-startsAt is similarly skipped (defensive; clicks
+    // shouldn't exist for a not-yet-started campaign).
+    const { commissionEarnable } = await import('./campaign-lifecycle.js');
+    if (!commissionEarnable(click.campaign, new Date(event.ts))) {
+      continue;
+    }
+
     const rule = parseCommissionRule(click.campaign.commissionRule);
     const amount = computeCommissionAmount(rule, event) * weight;
     const commissionId = ulid();
