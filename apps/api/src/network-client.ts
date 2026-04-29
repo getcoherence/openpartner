@@ -514,6 +514,19 @@ export const networkProxy = {
       '/vendors/me',
     ),
 
+  /** Brand-side creator discovery — search the Network's creator
+   *  directory with full-text + filter params. The querystring is
+   *  forwarded verbatim, so the brand UI can pass whatever Network's
+   *  schema accepts (q, categories, locations, platforms, minFollowers,
+   *  maxFollowers, minRevenue90d, sort, limit). */
+  discoverCreators: (db: Knex, tenantId: string, querystring: string) =>
+    callNetwork<{ creators: unknown[] }>(
+      db,
+      tenantId,
+      'GET',
+      `/vendors/me/discover/creators${querystring ? `?${querystring}` : ''}`,
+    ),
+
   // Billing — same pattern (vendor token held server-side, portal can't
   // hit Stripe directly). Forwards body straight through; the Network's
   // route does all validation.

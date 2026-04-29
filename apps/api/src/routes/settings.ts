@@ -488,6 +488,13 @@ settingsRouter.post('/admin/network/requests/:id/reject', requireAuth, requireAd
   proxy(req, res, (db, tenantId) => networkProxy.rejectRequest(db, tenantId, req.params.id!, req.body ?? {})),
 );
 
+// Brand-side creator discovery — vendor-authenticated proxy passes the
+// browser's querystring straight through to Network's directory endpoint.
+settingsRouter.get('/admin/network/discover/creators', requireAuth, requireAdmin, async (req, res) => {
+  const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?') + 1) : '';
+  return proxy(req, res, (db, tenantId) => networkProxy.discoverCreators(db, tenantId, qs));
+});
+
 // ---------- Network billing proxy ----------
 // Self-hosted vendors subscribe to Network access ($29/mo + 3% metered)
 // from this admin surface. Hosted vendors get bundled with their main
