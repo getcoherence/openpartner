@@ -114,6 +114,57 @@ export function partnerRevokedEmail(name: string, reason: string | null): EmailT
   return { subject, text, html };
 }
 
+/** Brand admin: 7-day notice that a Campaign is about to end. */
+export function campaignEndingBrandEmail(
+  brandName: string | null,
+  campaignName: string,
+  endsAt: Date,
+  manageUrl: string,
+): EmailTemplate {
+  const dateStr = endsAt.toUTCString().replace(/ \d\d:\d\d:\d\d GMT$/, '');
+  const subject = `"${campaignName}" ends in 7 days`;
+  const text = [
+    `Hi${brandName ? ` from ${brandName}` : ''},`,
+    ``,
+    `Your campaign "${campaignName}" is scheduled to end ${dateStr}.`,
+    ``,
+    `Existing share-links will keep redirecting after that date — your`,
+    `partners' posted content stays alive — but no new commissions will`,
+    `accrue on conversions dated past the end.`,
+    ``,
+    `If you'd like to keep it running, edit the end date in your admin:`,
+    ``,
+    manageUrl,
+  ].join('\n');
+  return { subject, text, html: wrap(text, manageUrl, 'Manage campaign') };
+}
+
+/** Partner: 7-day notice that a Campaign they have at least one Link
+ *  in is about to end. */
+export function campaignEndingPartnerEmail(
+  partnerName: string,
+  brandName: string | null,
+  campaignName: string,
+  endsAt: Date,
+  programUrl: string,
+): EmailTemplate {
+  const dateStr = endsAt.toUTCString().replace(/ \d\d:\d\d:\d\d GMT$/, '');
+  const fromBrand = brandName ?? 'the brand';
+  const subject = `Heads up — "${campaignName}" ends in 7 days`;
+  const text = [
+    `Hi ${partnerName},`,
+    ``,
+    `The "${campaignName}" program from ${fromBrand} ends ${dateStr}.`,
+    ``,
+    `Your existing share-links keep working past that date, but clicks`,
+    `that come in afterward won't earn commission. Worth squeezing in any`,
+    `last promotion before then.`,
+    ``,
+    programUrl,
+  ].join('\n');
+  return { subject, text, html: wrap(text, programUrl, 'View program') };
+}
+
 function wrap(text: string, cta: string, ctaLabel: string): string {
   const escaped = text
     .split('\n')

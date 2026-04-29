@@ -35,6 +35,7 @@ import { reportUsageToStripe } from './usage-billing.js';
 import { runPayouts } from './payouts.js';
 import { drainOutbox, reportNetworkPayoutsToNetwork } from './network-client.js';
 import { getMode } from './stripe.js';
+import { sweepCampaignEndNotifications } from './campaign-end-notifications.js';
 
 interface ScheduledJob {
   name: string;
@@ -101,6 +102,12 @@ const JOBS: ScheduledJob[] = [
     cronExpr: '0 4 * * *',
     description: 'Hard-delete tenants whose 30-day deletion grace window has lapsed (daily 04:00 UTC)',
     handler: async () => hardDeleteExpiredTenants(),
+  },
+  {
+    name: 'campaign-end-notifications',
+    cronExpr: '0 9 * * *',
+    description: 'Email brand admins + participating partners ~7 days before a campaign ends (daily 09:00 UTC)',
+    handler: async () => sweepCampaignEndNotifications(),
   },
 ];
 

@@ -158,6 +158,11 @@ export interface CampaignRow {
    *  campaign is "ended" — links keep redirecting, but no new
    *  applications + no commission accrual on later events. */
   endsAt: Date | null;
+  /** When the "ends in 7 days" reminder was sent to brand admin +
+   *  participating partners. Null = not sent yet (or endsAt was
+   *  pushed back past the window and the flag was cleared so a fresh
+   *  reminder fires before the new end). */
+  endNotificationSentAt: Date | null;
   createdAt: Date;
 }
 
