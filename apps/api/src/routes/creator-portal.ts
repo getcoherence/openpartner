@@ -66,62 +66,88 @@ creatorPortalRouter.all(/^\/creator-api(\/.*)?$/, async (req: Request, res: Resp
     return res.status(404).json({ error: 'not_found' });
   }
 
-  const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
-  const upstreamUrl = `${networkUrl.replace(/\/$/, '')}${subpath}${qs}`;
-
-  // Forward only the bits the upstream cares about. We strip Authorization
-  // (no openpartner bearer should leak to Network) and Host (let fetch set it).
-  const headers: Record<string, string> = {};
-  const ct = req.header('content-type');
-  if (ct) headers['content-type'] = ct;
-  const cookie = req.header('cookie');
-  if (cookie) headers['cookie'] = cookie;
-  headers['user-agent'] = 'OpenPartner-CreatorPortal/1';
-  headers['x-forwarded-for'] = req.ip ?? '';
-
-  const init: RequestInit = {
-    method: req.method,
-    headers,
-    signal: AbortSignal.timeout(10_000),
-  };
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    init.body = req.body !== undefined ? JSON.stringify(req.body) : undefined;
-  }
-
-  let upstream: globalThis.Response;
+  // Outer try/catch returns proxy_error instead of letting the global
+  // 500 handler swallow the cause as opaque "internal_error". Anything
+  // that throws past the fetch (header parsing, body decode, cookie
+  // splitting) lands here with the upstream subpath in the log line.
   try {
-    upstream = await fetch(upstreamUrl, init);
+    const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+    const upstreamUrl = `${networkUrl.replace(/\/$/, '')}${subpath}${qs}`;
+
+    // Forward only the bits the upstream cares about. We strip Authorization
+    // (no openpartner bearer should leak to Network) and Host (let fetch set it).
+    const headers: Record<string, string> = {};
+    const ct = req.header('content-type');
+    if (ct) headers['content-type'] = ct;
+    const cookie = req.header('cookie');
+    if (cookie) headers['cookie'] = cookie;
+    headers['user-agent'] = 'OpenPartner-CreatorPortal/1';
+    headers['x-forwarded-for'] = req.ip ?? '';
+
+    const init: RequestInit = {
+      method: req.method,
+      headers,
+      signal: AbortSignal.timeout(10_000),
+    };
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      init.body = req.body !== undefined ? JSON.stringify(req.body) : undefined;
+    }
+
+    let upstream: globalThis.Response;
+    try {
+      upstream = await fetch(upstreamUrl, init);
+    } catch (err) {
+      console.error('[creator-portal] fetch failed', { subpath, err });
+      return res.status(502).json({
+        error: 'network_unreachable',
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // Set-Cookie handling has two gotchas:
+    //   1. Node fetch returns multiple Set-Cookie headers comma-joined when
+    //      you call .get('set-cookie'); the browser then can't parse them.
+    //      Use getSetCookie() (Node 19.7+) to get each one separately.
+    //   2. Cloudflare in front of network.openpartner.dev injects its own
+    //      __cf_bm cookie with Domain=network.openpartner.dev — relaying
+    //      that to app.openpartner.dev confuses the browser. Filter it out.
+    // We also strip any Domain attribute on the cookies we DO forward so
+    // they scope to app.openpartner.dev (the host that responded).
+    const cookies = upstream.headers.getSetCookie?.() ?? [];
+    const forward: string[] = [];
+    for (const c of cookies) {
+      const name = c.split('=', 1)[0]?.trim() ?? '';
+      if (!name || name.startsWith('__cf') || name.startsWith('_cf')) continue;
+      forward.push(c.replace(/;\s*Domain=[^;]+/i, ''));
+    }
+    if (forward.length > 0) res.setHeader('set-cookie', forward);
+
+    const upstreamCt = upstream.headers.get('content-type') ?? '';
+    const body = await upstream.text();
+
+    // Log non-2xx upstream responses with body so we can debug Network-side
+    // failures from API logs without needing to wire client-side telemetry.
+    // Truncate at 500 chars in case Network returns a large HTML error page.
+    if (upstream.status >= 400) {
+      console.error('[creator-portal] upstream error', {
+        method: req.method,
+        subpath,
+        status: upstream.status,
+        body: body.length > 500 ? `${body.slice(0, 500)}…(truncated)` : body,
+      });
+    }
+
+    res.status(upstream.status);
+    if (upstreamCt.includes('application/json')) {
+      res.type('application/json').send(body);
+    } else {
+      res.send(body);
+    }
   } catch (err) {
-    return res.status(502).json({
-      error: 'network_unreachable',
+    console.error('[creator-portal] proxy failed', { subpath, method: req.method, err });
+    res.status(502).json({
+      error: 'proxy_error',
       detail: err instanceof Error ? err.message : String(err),
     });
-  }
-
-  // Set-Cookie handling has two gotchas:
-  //   1. Node fetch returns multiple Set-Cookie headers comma-joined when
-  //      you call .get('set-cookie'); the browser then can't parse them.
-  //      Use getSetCookie() (Node 19.7+) to get each one separately.
-  //   2. Cloudflare in front of network.openpartner.dev injects its own
-  //      __cf_bm cookie with Domain=network.openpartner.dev — relaying
-  //      that to app.openpartner.dev confuses the browser. Filter it out.
-  // We also strip any Domain attribute on the cookies we DO forward so
-  // they scope to app.openpartner.dev (the host that responded).
-  const cookies = upstream.headers.getSetCookie?.() ?? [];
-  const forward: string[] = [];
-  for (const c of cookies) {
-    const name = c.split('=', 1)[0]?.trim() ?? '';
-    if (!name || name.startsWith('__cf') || name.startsWith('_cf')) continue;
-    forward.push(c.replace(/;\s*Domain=[^;]+/i, ''));
-  }
-  if (forward.length > 0) res.setHeader('set-cookie', forward);
-
-  const upstreamCt = upstream.headers.get('content-type') ?? '';
-  res.status(upstream.status);
-  if (upstreamCt.includes('application/json')) {
-    const body = await upstream.text();
-    res.type('application/json').send(body);
-  } else {
-    res.send(await upstream.text());
   }
 });
