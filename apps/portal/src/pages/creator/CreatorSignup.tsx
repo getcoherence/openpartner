@@ -1,17 +1,48 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { theme } from '../../theme.js';
 import { AuthFrame } from '../auth/Shared.js';
 import { creatorApi, ApiError } from './creator-api.js';
+
+type HandleStatus = 'idle' | 'checking' | 'available' | 'taken';
 
 export function CreatorSignupPage() {
   const nav = useNavigate();
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [handle, setHandle] = useState('');
+  const [handleStatus, setHandleStatus] = useState<HandleStatus>('idle');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
+
+  // Debounced handle availability lookup. Fires 350ms after the last
+  // keystroke; bails if handle is empty (it's optional) or too short.
+  // Network 404 / proxy error → silent idle so the form still works
+  // when the upstream endpoint isn't deployed yet.
+  useEffect(() => {
+    if (handle.length < 2) {
+      setHandleStatus('idle');
+      return;
+    }
+    setHandleStatus('checking');
+    const ctrl = new AbortController();
+    const t = setTimeout(async () => {
+      try {
+        const r = await creatorApi<{ available: boolean }>(
+          `/creators/handle-available?handle=${encodeURIComponent(handle)}`,
+          { signal: ctrl.signal },
+        );
+        setHandleStatus(r.available ? 'available' : 'taken');
+      } catch {
+        setHandleStatus('idle');
+      }
+    }, 350);
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
+  }, [handle]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -52,7 +83,15 @@ export function CreatorSignupPage() {
         <Field label="Email" hint="We'll send your sign-in link here.">
           <input type="email" name="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ada@example.com" required style={inputStyle} />
         </Field>
-        <Field label="Handle (optional)" hint="Letters, numbers, hyphens. Used as your default share-link slug.">
+        <Field
+          label="Handle (optional)"
+          hint={
+            handleStatus === 'checking' ? <span style={{ color: theme.textMuted }}>Checking…</span>
+            : handleStatus === 'available' ? <span style={{ color: theme.success }}>✓ Available</span>
+            : handleStatus === 'taken' ? <span style={{ color: theme.danger }}>✗ Already taken — pick another</span>
+            : 'Letters, numbers, hyphens. Used as your default share-link slug.'
+          }
+        >
           <input
             name="handle"
             autoComplete="username"
@@ -64,7 +103,11 @@ export function CreatorSignupPage() {
           />
         </Field>
         {err && <div style={{ color: theme.danger, fontSize: 13, marginTop: 4, marginBottom: 8 }}>{err}</div>}
-        <button type="submit" disabled={busy} style={primaryBtnStyle(busy)}>
+        <button
+          type="submit"
+          disabled={busy || handleStatus === 'taken' || handleStatus === 'checking'}
+          style={primaryBtnStyle(busy || handleStatus === 'taken' || handleStatus === 'checking')}
+        >
           {busy ? 'Sending…' : 'Send me a sign-in link'}
         </button>
         <div style={{ marginTop: 12, fontSize: 12, color: theme.textDim, textAlign: 'center' }}>
@@ -78,7 +121,7 @@ export function CreatorSignupPage() {
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, children }: { label: string; hint?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div style={{ marginBottom: 12 }}>
       <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 4 }}>{label}</div>
