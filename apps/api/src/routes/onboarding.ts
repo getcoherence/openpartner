@@ -31,13 +31,15 @@ interface BrandOnboardingStatus {
 onboardingRouter.get('/admin/onboarding-status', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
 
-  // Brand info is "complete" if program_settings.programName is set OR
-  // Tenant.displayName isn't a placeholder. Today displayName is set at
-  // signup so this is effectively always true for hosted brands; we
-  // keep the field so the checkist renders the row anyway.
+  // Brand info is "complete" if either program_settings.programName is
+  // explicitly set OR the Tenant has a displayName from signup. We
+  // accept the signup value because re-typing it in Settings just to
+  // satisfy a checkbox is dumb.
   const programRow = await db(TABLES.Config).where({ key: 'program_settings' }).first();
   const programName = ((programRow?.value as { programName?: string })?.programName ?? '').trim();
-  const brandInfoComplete = programName.length > 0;
+  const tenant = await db('Tenant').where({ id: tenantId }).first(['displayName']);
+  const displayName = ((tenant?.displayName as string | undefined) ?? '').trim();
+  const brandInfoComplete = programName.length > 0 || displayName.length > 0;
 
   const campaignRows = await db<CampaignRow>(TABLES.Campaign).count<Array<{ count: string }>>({ count: '*' });
   const campaignCount = Number(campaignRows[0]?.count ?? 0);

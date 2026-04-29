@@ -50,8 +50,18 @@ export interface ProgramSettings {
 async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings> {
   const row = await db<ConfigRow>(TABLES.Config).where({ tenantId, key: CONFIG_KEY }).first();
   const value = (row?.value ?? {}) as Partial<ProgramSettings>;
+  // Fall back to Tenant.displayName so brand admins don't have to re-type
+  // the brand name they set at signup. Saving this page promotes the
+  // value into program_settings; until then we just surface the signup
+  // value so the UI is pre-populated and the onboarding checklist
+  // doesn't keep nagging about a thing that's effectively already set.
+  let programName = value.programName ?? null;
+  if (!programName) {
+    const tenant = await db('Tenant').where({ id: tenantId }).first(['displayName']);
+    if (tenant?.displayName) programName = tenant.displayName as string;
+  }
   return {
-    programName: value.programName ?? null,
+    programName,
     supportEmail: value.supportEmail ?? null,
   };
 }
