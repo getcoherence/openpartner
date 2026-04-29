@@ -70,7 +70,11 @@ export function CreatorMyProfilePage() {
   const [avatarUrl, setAvatarUrl] = useState('');
   const [bio, setBio] = useState('');
   const [categories, setCategories] = useState<string[]>([]);
-  const [audienceLocations, setAudienceLocations] = useState<string[]>([]);
+  // Audience locations is kept as a raw text string while the user is
+  // typing; we only split + normalize at save. Otherwise mid-keystroke
+  // values like "U" get filtered out as not-yet-2-chars and the input
+  // wipes itself.
+  const [audienceLocationsRaw, setAudienceLocationsRaw] = useState('');
   const [audienceAgeRange, setAudienceAgeRange] = useState<AgeRange | ''>('');
   const [portfolioLinks, setPortfolioLinks] = useState<string[]>([]);
   const [pastBrandsRaw, setPastBrandsRaw] = useState('');
@@ -82,7 +86,7 @@ export function CreatorMyProfilePage() {
       setAvatarUrl(data.avatarUrl ?? '');
       setBio(data.bio ?? '');
       setCategories(data.categories ?? []);
-      setAudienceLocations(data.audienceLocations ?? []);
+      setAudienceLocationsRaw((data.audienceLocations ?? []).join(', '));
       setAudienceAgeRange((data.audienceAgeRange ?? '') as AgeRange | '');
       setPortfolioLinks(data.portfolioLinks ?? []);
       setPastBrandsRaw((data.pastBrands ?? []).join(', '));
@@ -95,6 +99,11 @@ export function CreatorMyProfilePage() {
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
+      const audienceLocations = audienceLocationsRaw
+        .split(',')
+        .map((s) => s.trim().toUpperCase())
+        .filter((s) => /^[A-Z]{2}$/.test(s))
+        .slice(0, 5);
       return creatorApi('/creators/me', {
         method: 'PATCH',
         body: {
@@ -154,11 +163,12 @@ export function CreatorMyProfilePage() {
               <Field label="Categories" hint="Pick the niches you create in. Brands filter by these.">
                 <CategoryChips selected={categories} onChange={setCategories} />
               </Field>
-              <Field label="Audience locations" hint="Top countries your audience comes from. ISO-3166 alpha-2 codes (e.g. US, CA, GB), max 5, comma-separated.">
-                <CommaTokens
-                  value={audienceLocations.join(', ')}
-                  onChange={(v) => setAudienceLocations(v.split(',').map((s) => s.trim().toUpperCase()).filter((s) => /^[A-Z]{2}$/.test(s)).slice(0, 5))}
+              <Field label="Audience locations" hint="Top countries your audience comes from. ISO-3166 alpha-2 codes (e.g. US, CA, GB), max 5, comma-separated. Validated on save.">
+                <Input
+                  value={audienceLocationsRaw}
+                  onChange={(e) => setAudienceLocationsRaw(e.target.value)}
                   placeholder="US, CA, GB"
+                  style={{ fontFamily: theme.fontMono }}
                 />
               </Field>
               <Field label="Audience age range" hint="Single bucket — finer slicing comes with verified platform connections.">
@@ -265,10 +275,6 @@ function CategoryChips({ selected, onChange }: { selected: string[]; onChange: (
       })}
     </div>
   );
-}
-
-function CommaTokens({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
-  return <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />;
 }
 
 function UrlList({ value, onChange, max, placeholder }: { value: string[]; onChange: (v: string[]) => void; max: number; placeholder: string }) {
