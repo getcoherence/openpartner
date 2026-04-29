@@ -1,5 +1,5 @@
 import { serve } from '@hono/node-server';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { ulid } from 'ulid';
 import { createHash } from 'node:crypto';
 import { createDb, TABLES, type LinkRow } from '@openpartner/db';
@@ -15,11 +15,32 @@ const db = createDb({ connectionString: process.env.DATABASE_URL! });
 
 app.get('/health', (c) => c.json({ ok: true, service: 'router' }));
 
-// Click router: /r/:linkKey → resolve → insert Click → set first-party cookie → 302.
+// Click router. Two URL shapes depending on tenancy:
+//   /r/:slug/:linkKey  — multi-tenant, slug disambiguates per-tenant
+//                        unique linkKeys. The shared share-URL format
+//                        Network's deriveShareUrl produces.
+//   /r/:linkKey        — single-tenant fallback. linkKey is globally
+//                        unique here, so no slug needed. Self-host
+//                        deployments use this.
+//
+// Both resolve → insert Click → set first-party cookie → 302.
+app.get('/r/:slug/:linkKey', async (c) => {
+  const { slug, linkKey } = c.req.param();
+  const tenant = (await db('Tenant').where({ slug, status: 'active' }).first(['id'])) as
+    | { id: string }
+    | undefined;
+  if (!tenant) return c.text('Tenant not found', 404);
+  const link = await db<LinkRow>(TABLES.Link).where({ tenantId: tenant.id, linkKey }).first();
+  return resolveLink(c, link);
+});
+
 app.get('/r/:linkKey', async (c) => {
   const linkKey = c.req.param('linkKey');
-
   const link = await db<LinkRow>(TABLES.Link).where({ linkKey }).first();
+  return resolveLink(c, link);
+});
+
+async function resolveLink(c: Context, link: LinkRow | undefined) {
   if (!link) {
     return c.text('Link not found', 404);
   }
@@ -70,7 +91,7 @@ app.get('/r/:linkKey', async (c) => {
     return c.text('Rate limited', 429);
   }
 
-  const velocityFlagged = checkVelocity(ipHash, linkKey);
+  const velocityFlagged = checkVelocity(ipHash, link.linkKey);
 
   // Precedence: revoked beats velocity — a click on a pulled partner's
   // link is not a velocity signal, it's a revoked signal.
@@ -94,7 +115,7 @@ app.get('/r/:linkKey', async (c) => {
   );
 
   return c.redirect(destination.toString(), 302);
-});
+}
 
 function hashIp(ip: string): string | null {
   if (!ip) return null;
