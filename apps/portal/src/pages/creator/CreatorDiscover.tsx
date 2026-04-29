@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Globe } from 'lucide-react';
+import { CheckCircle2, Circle, Globe } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
@@ -42,6 +42,7 @@ export function CreatorDiscoverPage() {
   return (
     <Page title="Discover programs" subtitle="Partner programs across the OpenPartner Network. Apply to any.">
       <ErrorBanner error={error} />
+      <CreatorOnboarding />
       <Card>
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 240 }}>
@@ -96,4 +97,91 @@ export function CreatorDiscoverPage() {
       )}
     </Page>
   );
+}
+
+interface CreatorProfile {
+  id: string;
+  email: string;
+  name: string;
+  handle: string | null;
+  bio: string | null;
+}
+
+interface RequestRow {
+  id: string;
+  status: string;
+}
+
+/** Three-step nudge for new creators: handle, bio, first application.
+ *  Card disappears once everything's done; never shown for creators
+ *  who already filled in their profile. */
+function CreatorOnboarding() {
+  const profile = useQuery({
+    queryKey: ['creator-my-profile'],
+    queryFn: () => creatorApi<CreatorProfile>('/creators/me'),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const requests = useQuery({
+    queryKey: ['creator-my-requests'],
+    queryFn: () => creatorApi<{ requests: RequestRow[] }>('/creators/me/requests'),
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  if (!profile.data) return null;
+  const handleSet = !!profile.data.handle && profile.data.handle.length > 0;
+  const bioSet = !!profile.data.bio && profile.data.bio.length > 0;
+  const hasApplied = (requests.data?.requests ?? []).length > 0;
+  const complete = handleSet && bioSet && hasApplied;
+  if (complete) return null;
+
+  const items = [
+    { done: true, label: 'Account created', href: null as string | null },
+    { done: handleSet, label: 'Pick a handle', hint: 'Used as the default slug for your share links.', href: '/creator/profile' },
+    { done: bioSet, label: 'Add a short bio', hint: 'Brands see this on your applications.', href: '/creator/profile' },
+    { done: hasApplied, label: 'Apply to your first program', hint: 'Browse below and click "View & apply" on anything that fits.', href: null },
+  ];
+
+  return (
+    <Card style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Getting started</div>
+      <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
+        Three quick steps to put your best foot forward when applying. Card disappears when done.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {items.map((it, i) => (
+          <CreatorStep key={i} done={it.done} label={it.label} hint={it.hint} href={it.href} />
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function CreatorStep({ done, label, hint, href }: { done: boolean; label: string; hint?: string; href: string | null }) {
+  const inner = (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        padding: '10px 12px',
+        background: done ? theme.successSoft : theme.surface2,
+        border: `1px solid ${done ? `${theme.success}44` : theme.borderSubtle}`,
+        borderRadius: theme.radiusSm,
+      }}
+    >
+      <div style={{ color: done ? theme.success : theme.textDim, display: 'inline-flex' }}>
+        {done ? <CheckCircle2 size={18} /> : <Circle size={18} />}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, color: theme.text, textDecoration: done ? 'line-through' : 'none' }}>
+          {label}
+        </div>
+        {hint && !done && <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>{hint}</div>}
+      </div>
+    </div>
+  );
+  if (done || !href) return inner;
+  return <Link to={href} style={{ textDecoration: 'none' }}>{inner}</Link>;
 }

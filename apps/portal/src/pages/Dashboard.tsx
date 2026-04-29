@@ -11,6 +11,7 @@ import {
   Link2,
   CheckCircle2,
   Circle,
+  ArrowRight,
 } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { useTenantBase } from '../tenant-base.js';
@@ -338,6 +339,7 @@ function AdminDashboard() {
   return (
     <Page title="Partner Program" subtitle="Overview of every partner driving attributed revenue.">
       <ErrorBanner error={error} />
+      <BrandOnboarding />
       {isLoading || !data ? (
         <Card>Loading…</Card>
       ) : (
@@ -415,4 +417,97 @@ function MiniStat({ label, value }: { label: string; value: string }) {
       <div style={{ fontSize: 15, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
     </div>
   );
+}
+
+interface BrandOnboardingStatus {
+  brandInfoComplete: boolean;
+  campaignCount: number;
+  networkConnected: boolean;
+  offeringPublishedCount: number;
+  partnerCount: number;
+  complete: boolean;
+}
+
+function BrandOnboarding() {
+  const tenantBase = useTenantBase();
+  const { data } = useQuery({
+    queryKey: ['admin-onboarding-status'],
+    queryFn: () => api<BrandOnboardingStatus>('/admin/onboarding-status'),
+    staleTime: 30_000,
+    retry: false,
+  });
+  if (!data || data.complete) return null;
+  const items = [
+    { done: true, label: 'Brand account created', href: null as string | null },
+    {
+      done: data.brandInfoComplete,
+      label: 'Set your brand name and support email',
+      href: `${tenantBase}/admin/settings`,
+    },
+    {
+      done: data.campaignCount > 0,
+      label: 'Create your first program (Campaign)',
+      hint: 'Set the destination URL and commission terms.',
+      href: `${tenantBase}/admin/campaigns`,
+    },
+    {
+      done: data.networkConnected,
+      label: 'List your brand on the OpenPartner Network',
+      hint: 'Lets creators across the federation discover and apply.',
+      href: `${tenantBase}/admin/network`,
+    },
+    {
+      done: data.offeringPublishedCount > 0,
+      label: 'Publish your first offering',
+      hint: 'The marketplace listing creators see when they browse.',
+      href: data.networkConnected ? `${tenantBase}/admin/network/offerings` : null,
+    },
+    {
+      done: data.partnerCount > 0,
+      label: 'Invite a partner — or wait for Network applications',
+      href: `${tenantBase}/admin/partners`,
+    },
+  ];
+  return (
+    <Card style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Getting started</div>
+      <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
+        A few one-clicks to get your brand fully set up. The card disappears when you&rsquo;re done.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {items.map((it, i) => (
+          <BrandStep key={i} done={it.done} label={it.label} hint={it.hint} href={it.href} />
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function BrandStep({ done, label, hint, href }: { done: boolean; label: string; hint?: string; href: string | null }) {
+  const inner = (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        padding: '10px 12px',
+        background: done ? theme.successSoft : theme.surface2,
+        border: `1px solid ${done ? `${theme.success}44` : theme.borderSubtle}`,
+        borderRadius: theme.radiusSm,
+      }}
+    >
+      <div style={{ color: done ? theme.success : theme.textDim, display: 'inline-flex' }}>
+        {done ? <CheckCircle2 size={18} /> : <Circle size={18} />}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, color: theme.text, textDecoration: done ? 'line-through' : 'none' }}>
+          {label}
+        </div>
+        {hint && !done && <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>{hint}</div>}
+      </div>
+      {!done && href && <ArrowRight size={14} color={theme.textDim} />}
+    </div>
+  );
+  if (done || !href) return inner;
+  return <Link to={href} style={{ textDecoration: 'none' }}>{inner}</Link>;
 }
