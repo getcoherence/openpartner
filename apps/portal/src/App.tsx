@@ -452,7 +452,10 @@ function NavSection({
             background: 'transparent',
             border: 'none',
             cursor: 'pointer',
-            font: 'inherit',
+            // Only inherit font-family — the `font` shorthand would
+            // reset fontSize/letterSpacing/fontWeight back to the UA
+            // defaults (16px) and undo the headerCommonStyle spread.
+            fontFamily: 'inherit',
           }}
         >
           <ChevronRight
