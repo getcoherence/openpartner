@@ -168,8 +168,17 @@ export async function dispatch<T>(
   payload: Record<string, unknown>,
 ): Promise<T | null> {
   const m = await getNetworkMembership(db, tenantId);
-  if (!m || !m.enabled || !m.networkUrl || !m.vendorTokenCiphertext) {
+  if (!m || !m.enabled || !m.vendorTokenCiphertext) {
     return null; // Network not configured for this tenant — silent no-op.
+  }
+
+  // Same fallback as callNetwork: heal tenants that ended up with an
+  // empty networkUrl on their membership row (email-verify path before
+  // /start-connect was called) by reading from process.env.NETWORK_URL.
+  const networkUrl = m.networkUrl || process.env.NETWORK_URL;
+  if (!networkUrl) {
+    console.error('[network] no networkUrl on membership and NETWORK_URL env unset');
+    return null;
   }
 
   let token: string;
@@ -182,7 +191,7 @@ export async function dispatch<T>(
     return null;
   }
 
-  const url = endpointForOp(m.networkUrl, op);
+  const url = endpointForOp(networkUrl, op);
   try {
     const res = await fetch(url, {
       method: 'POST',
