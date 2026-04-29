@@ -18,6 +18,9 @@ export const NETWORK_FEDERATION_SCOPES = [
   'partners:read',
   'links:write',
   'commissions:read',
+  // Network pushes federated clicks (creator-domain traffic) back to
+  // the vendor instance so brand-side analytics still see them.
+  'clicks:write',
 ] as const;
 
 export const apiKeysRouter = Router();

@@ -38,6 +38,7 @@ import { partnerCampaignsRouter } from './routes/partner-campaigns.js';
 import { onboardingRouter } from './routes/onboarding.js';
 import { creatorPortalRouter } from './routes/creator-portal.js';
 import { signinRouter } from './routes/signin.js';
+import { clicksRouter } from './routes/clicks.js';
 import { sessionHomeRouter } from './routes/session-home.js';
 import { platformAuthRouter } from './routes/platform-auth.js';
 import { tenantMiddleware } from './tenancy.js';
@@ -150,6 +151,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(partnersRouter);
   app.use(campaignsRouter);
   app.use(linksRouter);
+  app.use(clicksRouter);
   app.use(dashboardRouter);
   app.use(apiKeysRouter);
   app.use(connectRouter);
