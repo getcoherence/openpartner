@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Tag } from 'lucide-react';
+import { HelpCircle, Plus, Tag } from 'lucide-react';
 import { api } from '../api.js';
 import { theme } from '../theme.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
@@ -167,7 +167,17 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
           <Input type="number" value={windowDays} onChange={(e) => setWindowDays(e.target.value)} />
         </div>
         <div>
-          <Label>Attribution model</Label>
+          <LabelWithHelp
+            label="Attribution model"
+            help={[
+              'Which click gets the commission when a conversion has multiple touches in the window.',
+              '',
+              'Last click — the most recent click gets 100%. Simple, predictable, the default for most programs.',
+              'First click — the very first click gets 100%. Rewards partners who introduced the brand.',
+              'Linear — every click in the window splits the commission evenly.',
+              'Position (40 / 20 / 40) — first + last click get 40% each, middle clicks split the remaining 20%.',
+            ].join('\n')}
+          />
           <Select value={model} onChange={(e) => setModel(e.target.value as typeof model)}>
             <option value="last_click">Last click</option>
             <option value="first_click">First click</option>
@@ -199,6 +209,25 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
       </div>
     </Card>
+  );
+}
+
+/** Field label with a hover-to-explain question-mark icon. Uses the
+ *  native `title` attribute so we don't need a tooltip library — the
+ *  browser handles positioning, multi-line via \n. Help text should be
+ *  plain prose; no HTML. */
+function LabelWithHelp({ label, help }: { label: string; help: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <Label>{label}</Label>
+      <span
+        title={help}
+        aria-label={help}
+        style={{ display: 'inline-flex', alignItems: 'center', color: theme.textDim, cursor: 'help', marginBottom: 4 }}
+      >
+        <HelpCircle size={14} />
+      </span>
+    </div>
   );
 }
 
