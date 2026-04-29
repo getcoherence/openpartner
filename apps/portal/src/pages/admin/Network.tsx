@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../api.js';
 import { Button, Card, ErrorBanner, Input, Label, Page } from '../../ui.js';
+import { theme } from '../../theme.js';
 
 interface NetworkMembership {
   enabled: boolean;
@@ -46,9 +47,9 @@ function NetworkConnection() {
   const connected = !!(membership?.enabled && membership.hasVendorToken);
 
   return (
-    <>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       {error && <ErrorBanner error={"Couldn't load Network settings."} />}
-      {isLoading && <Card><p>Loading…</p></Card>}
+      {isLoading && <Card><p style={{ fontSize: 13, margin: 0, color: theme.textMuted }}>Loading…</p></Card>}
       {membership && (
         <>
           {!connected ? <ConnectForm membership={membership} /> : <ConnectedPanel membership={membership} />}
@@ -56,7 +57,7 @@ function NetworkConnection() {
           {connected && <BackfillPanel />}
         </>
       )}
-    </>
+    </div>
   );
 }
 
@@ -93,13 +94,13 @@ function ConnectForm({ membership }: { membership: NetworkMembership }) {
 
   return (
     <Card>
-      <h3 style={{ marginTop: 0 }}>Not connected</h3>
-      <p>
+      <h3 style={{ marginTop: 0, fontSize: 15, fontWeight: 500 }}>Not connected</h3>
+      <p style={{ fontSize: 13, color: theme.textMuted, marginTop: 0 }}>
         Get matched with creators on the OpenPartner Network. Once connected, your published offerings
         show up in creator discovery and applications come into your Requests queue.
       </p>
       {membership.networkUrl && (
-        <p style={{ fontSize: 13, color: '#6b7280' }}>
+        <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 14px' }}>
           Network: <code>{membership.networkUrl}</code>
         </p>
       )}
@@ -111,9 +112,9 @@ function ConnectForm({ membership }: { membership: NetworkMembership }) {
           <Button onClick={() => auto.mutate()} disabled={auto.isPending}>
             {auto.isPending ? 'Connecting…' : 'List my brand on the Network'}
           </Button>
-          <p style={{ marginTop: 10, fontSize: 12, color: '#6b7280' }}>
+          <p style={{ marginTop: 10, fontSize: 12, color: theme.textDim }}>
             Self-host?{' '}
-            <button type="button" onClick={() => setShowManual(true)} style={{ background: 'transparent', border: 'none', color: '#0d9488', cursor: 'pointer', padding: 0 }}>
+            <button type="button" onClick={() => setShowManual(true)} style={{ background: 'transparent', border: 'none', color: theme.accent, cursor: 'pointer', padding: 0, font: 'inherit' }}>
               Use the email-verify flow instead
             </button>
           </p>
@@ -132,7 +133,7 @@ function ConnectForm({ membership }: { membership: NetworkMembership }) {
             {manual.isPending ? 'Sending…' : 'Send verification email'}
           </Button>
           {manual.isSuccess && (
-            <p style={{ marginTop: 12, color: '#1a6b1a' }}>
+            <p style={{ marginTop: 12, fontSize: 13, color: theme.success }}>
               Confirmation email sent. Click the link to finish connecting.
             </p>
           )}
@@ -150,19 +151,19 @@ function ConnectedPanel({ membership }: { membership: NetworkMembership }) {
   });
   return (
     <Card>
-      <h3 style={{ marginTop: 0, color: '#1a6b1a' }}>Connected ✓</h3>
-      <p style={{ marginBottom: 8 }}>
+      <h3 style={{ marginTop: 0, marginBottom: 8, fontSize: 15, fontWeight: 500, color: theme.success }}>Connected ✓</h3>
+      <p style={{ fontSize: 13, color: theme.textMuted, marginTop: 0, marginBottom: 8 }}>
         Network: <code>{membership.networkUrl}</code>
       </p>
-      {isLoading && <p style={{ color: '#6b7280', margin: 0 }}><em>Loading vendor profile…</em></p>}
+      {isLoading && <p style={{ fontSize: 13, color: theme.textMuted, margin: 0 }}><em>Loading vendor profile…</em></p>}
       {!isLoading && self && (
-        <p style={{ margin: 0 }}>
-          Listed as <strong>{self.displayName}</strong> · status: {self.status} · {self.partnerCount} active partners
+        <p style={{ fontSize: 13, color: theme.textMuted, margin: 0 }}>
+          Listed as <strong style={{ color: theme.text }}>{self.displayName}</strong> · status: {self.status} · {self.partnerCount} active partners
         </p>
       )}
       {!isLoading && error && (
         <div style={{ marginTop: 6 }}>
-          <div style={{ color: '#b91c1c', fontSize: 13 }}>
+          <div style={{ color: theme.danger, fontSize: 13 }}>
             Couldn&rsquo;t load vendor profile from the Network: {error instanceof Error ? error.message : String(error)}
           </div>
           <button
@@ -172,8 +173,8 @@ function ConnectedPanel({ membership }: { membership: NetworkMembership }) {
             style={{
               marginTop: 8,
               background: 'transparent',
-              color: '#0d9488',
-              border: '1px solid #0d9488',
+              color: theme.accent,
+              border: `1px solid ${theme.accent}`,
               borderRadius: 6,
               padding: '6px 12px',
               fontSize: 13,
@@ -196,13 +197,13 @@ function AutoEnrollPanel({ membership, onChange }: { membership: NetworkMembersh
   });
   return (
     <Card>
-      <h3 style={{ marginTop: 0 }}>Auto-enroll new partners</h3>
-      <p>
+      <h3 style={{ marginTop: 0, fontSize: 15, fontWeight: 500 }}>Auto-enroll new partners</h3>
+      <p style={{ fontSize: 13, color: theme.textMuted, marginTop: 0 }}>
         When ON, every partner created on this instance is automatically pushed to the Network. The Network
         dedups creators by email — the same person joining you and another vendor gets a single Network
         identity.
       </p>
-      <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text }}>
         <input
           type="checkbox"
           checked={membership.autoEnroll}
@@ -226,8 +227,8 @@ function BackfillPanel() {
   useEffect(() => { setResult(null); }, []);
   return (
     <Card>
-      <h3 style={{ marginTop: 0 }}>Backfill existing partners</h3>
-      <p>
+      <h3 style={{ marginTop: 0, fontSize: 15, fontWeight: 500 }}>Backfill existing partners</h3>
+      <p style={{ fontSize: 13, color: theme.textMuted, marginTop: 0 }}>
         If you turned the Network on after onboarding partners, run this once to push the existing roster
         through email-keyed dedup. Pre-existing creators (already on the Network from another vendor) come
         back with a flag so you can see their cross-vendor presence.
@@ -237,8 +238,8 @@ function BackfillPanel() {
         {m.isPending ? 'Backfilling…' : 'Backfill now'}
       </Button>
       {result && (
-        <p style={{ marginTop: 12 }}>
-          Pushed <strong>{result.pushed}</strong> of <strong>{result.total}</strong>.
+        <p style={{ marginTop: 12, fontSize: 13, color: theme.textMuted }}>
+          Pushed <strong style={{ color: theme.text }}>{result.pushed}</strong> of <strong style={{ color: theme.text }}>{result.total}</strong>.
           {result.queued > 0 && <> {result.queued} queued for retry.</>}
         </p>
       )}
