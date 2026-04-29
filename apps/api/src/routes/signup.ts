@@ -65,8 +65,8 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
     return res.status(409).json({ error: 'slug_reserved' });
   }
 
-  const tenantId = ulid();
-  const adminId = ulid();
+  let tenantId = ulid();
+  let adminId = ulid();
   const now = new Date();
 
   try {
@@ -76,15 +76,36 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
       // the unique constraint as a generic 500. The unique constraint is
       // still our final guard; this just gives us a clean error.
       const existing = await trx<TenantRow>(TABLES.Tenant).where({ slug }).first();
-      if (existing) throw new SignupGuardError('slug_taken');
+      if (existing) {
+        // Recovery path: if the slug exists but no admin has activated
+        // yet, the previous signup was abandoned (typo'd email, mailer
+        // misconfigured, etc.). Replace the unactivated admins + magic
+        // links + the network membership Config so the new email can
+        // claim the brand cleanly. If anyone has activated we still
+        // refuse — that's a real conflict.
+        const activatedExists = await trx<AdminRow>(TABLES.Admin)
+          .where({ tenantId: existing.id })
+          .whereNotNull('activatedAt')
+          .first();
+        if (activatedExists) throw new SignupGuardError('slug_taken');
 
-      await trx<TenantRow>(TABLES.Tenant).insert({
-        id: tenantId,
-        slug,
-        displayName: body.data.displayName,
-        status: 'active',
-        metadata: { createdBy: 'signup' } as unknown as never,
-      });
+        tenantId = existing.id;
+        await trx<AdminRow>(TABLES.Admin).where({ tenantId }).del();
+        await trx(TABLES.MagicLinkToken).where({ tenantId }).del();
+        await trx(TABLES.Config).where({ tenantId, key: 'network_membership' }).del();
+        await trx<TenantRow>(TABLES.Tenant).where({ id: tenantId }).update({
+          displayName: body.data.displayName,
+          updatedAt: new Date(),
+        });
+      } else {
+        await trx<TenantRow>(TABLES.Tenant).insert({
+          id: tenantId,
+          slug,
+          displayName: body.data.displayName,
+          status: 'active',
+          metadata: { createdBy: 'signup' } as unknown as never,
+        });
+      }
 
       await trx<AdminRow>(TABLES.Admin).insert({
         id: adminId,
