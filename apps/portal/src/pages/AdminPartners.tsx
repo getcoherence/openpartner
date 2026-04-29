@@ -111,13 +111,46 @@ export function AdminPartners() {
   );
 }
 
+interface CreateCampaignOption {
+  id: string;
+  name: string;
+}
+
 function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [grantAll, setGrantAll] = useState(true);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+
+  const campaigns = useQuery({
+    queryKey: ['me-campaigns-for-invite'],
+    queryFn: () => api<{ campaigns: CreateCampaignOption[] }>('/me/campaigns'),
+  });
+
   const mut = useMutation({
-    mutationFn: () => api<Partner>('/partners', { method: 'POST', body: { name, email } }),
+    mutationFn: () =>
+      api<Partner>('/partners', {
+        method: 'POST',
+        body: {
+          name,
+          email,
+          // Only send campaignIds when admin scoped explicitly. Omitting
+          // it preserves the legacy "grant all current campaigns"
+          // default the backend already implements.
+          campaignIds: grantAll ? undefined : Array.from(picked),
+        },
+      }),
     onSuccess: onCreated,
   });
+
+  function toggle(id: string) {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   return (
     <Card style={{ marginBottom: 14 }}>
@@ -136,8 +169,36 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
           <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ada@example.com" />
         </div>
       </div>
+      <div style={{ marginBottom: 14 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text, marginBottom: 8 }}>
+          <input type="checkbox" checked={grantAll} onChange={(e) => setGrantAll(e.target.checked)} />
+          Grant access to all current campaigns (default)
+        </label>
+        {!grantAll && (
+          <div style={{ marginTop: 8, padding: 12, background: theme.surface2, border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm }}>
+            <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 8 }}>
+              Pick the programs this partner can create share-links for. You can change this later from the partner&rsquo;s row.
+            </div>
+            {(campaigns.data?.campaigns ?? []).length === 0 ? (
+              <div style={{ fontSize: 13, color: theme.textDim }}>No campaigns yet — create one in Campaigns first.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {(campaigns.data?.campaigns ?? []).map((c) => (
+                  <label key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text }}>
+                    <input type="checkbox" checked={picked.has(c.id)} onChange={() => toggle(c.id)} />
+                    {c.name}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={() => mut.mutate()} disabled={!name || !email || mut.isPending}>
+        <Button
+          onClick={() => mut.mutate()}
+          disabled={!name || !email || mut.isPending || (!grantAll && picked.size === 0)}
+        >
           {mut.isPending ? 'Sending…' : 'Send invite'}
         </Button>
         <Button variant="secondary" onClick={onClose}>Cancel</Button>

@@ -28,6 +28,8 @@ interface Offering {
 interface Campaign {
   id: string;
   name: string;
+  destinationUrl: string;
+  deepLinkAllowedDomains: string | null;
 }
 
 export function AdminNetworkOfferings() {
@@ -122,42 +124,53 @@ function CreateOfferingForm() {
   const qc = useQueryClient();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [productUrl, setProductUrl] = useState('');
   const [vendorCampaignId, setVendorCampaignId] = useState('');
   const [commissionDescription, setCommissionDescription] = useState('');
   const [cookieWindowDays, setCookieWindowDays] = useState<number | ''>('');
   const [error, setError] = useState<string | null>(null);
 
-  // Pull campaigns so the admin can pick from a dropdown.
+  // Pull campaigns so the admin can pick from a dropdown. Each campaign
+  // carries its destinationUrl + deep-link allowlist; the picked
+  // campaign's destination becomes the offering's productUrl on create.
+  // We don't expose a separate URL input — same source of truth as
+  // brand-side Links so creators land where the brand intended.
   const { data: campaigns } = useQuery({
     queryKey: ['campaigns'],
     queryFn: () => api<{ campaigns: Campaign[] }>('/campaigns'),
   });
 
+  const selectedCampaign = campaigns?.campaigns.find((c) => c.id === vendorCampaignId);
+
   const m = useMutation({
-    mutationFn: () => api('/admin/network/offerings', {
-      method: 'POST',
-      body: {
-        title,
-        description: description || undefined,
-        productUrl,
-        vendorCampaignId,
-        terms: {
-          commissionDescription,
-          cookieWindowDays: cookieWindowDays === '' ? undefined : Number(cookieWindowDays),
+    mutationFn: () => {
+      if (!selectedCampaign) throw new Error('campaign_required');
+      return api('/admin/network/offerings', {
+        method: 'POST',
+        body: {
+          title,
+          description: description || undefined,
+          // Inherit destination from the bound Campaign — single source
+          // of truth on the brand side. Network stores a snapshot for
+          // marketplace display.
+          productUrl: selectedCampaign.destinationUrl,
+          vendorCampaignId,
+          terms: {
+            commissionDescription,
+            cookieWindowDays: cookieWindowDays === '' ? undefined : Number(cookieWindowDays),
+          },
+          published: true,
         },
-        published: true,
-      },
-    }),
+      });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['network-offerings'] });
-      setTitle(''); setDescription(''); setProductUrl(''); setVendorCampaignId('');
+      setTitle(''); setDescription(''); setVendorCampaignId('');
       setCommissionDescription(''); setCookieWindowDays('');
     },
     onError: (err) => setError(err instanceof ApiError ? err.message : 'failed'),
   });
 
-  useEffect(() => { setError(null); }, [title, productUrl, vendorCampaignId, commissionDescription]);
+  useEffect(() => { setError(null); }, [title, vendorCampaignId, commissionDescription]);
 
   return (
     <Card>
@@ -188,17 +201,22 @@ function CreateOfferingForm() {
         />
       </div>
       <div style={{ marginBottom: 12 }}>
-        <Label>Product URL (where the share link redirects to)</Label>
-        <Input value={productUrl} onChange={(e) => setProductUrl(e.target.value)} placeholder="https://acme.example.com/pro" />
-      </div>
-      <div style={{ marginBottom: 12 }}>
-        <Label>Campaign (commission rule lives here)</Label>
+        <Label>Campaign (commission rule + destination URL live here)</Label>
         <Select value={vendorCampaignId} onChange={(e) => setVendorCampaignId(e.target.value)}>
           <option value="">— pick a campaign —</option>
           {campaigns?.campaigns.map((c) => (
             <option key={c.id} value={c.id}>{c.name}</option>
           ))}
         </Select>
+        {selectedCampaign && (
+          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 6 }}>
+            Creators will land on{' '}
+            <a href={selectedCampaign.destinationUrl} target="_blank" rel="noopener noreferrer">
+              {selectedCampaign.destinationUrl}
+            </a>
+            {selectedCampaign.deepLinkAllowedDomains && ' (deep links allowed)'}
+          </div>
+        )}
       </div>
       <div style={{ marginBottom: 12 }}>
         <Label>Commission summary (shown to creators)</Label>
@@ -215,7 +233,7 @@ function CreateOfferingForm() {
       </div>
       <Button
         onClick={() => m.mutate()}
-        disabled={m.isPending || !title || !productUrl || !vendorCampaignId || !commissionDescription}
+        disabled={m.isPending || !title || !selectedCampaign || !commissionDescription}
       >
         {m.isPending ? 'Publishing…' : 'Publish offering'}
       </Button>
