@@ -57,6 +57,7 @@ import { CreatorSignupPage } from './pages/creator/CreatorSignup.js';
 import { CreatorSigninPage } from './pages/creator/CreatorSignin.js';
 import { CreatorMagicLandingPage } from './pages/creator/CreatorMagicLanding.js';
 import { CreatorShell } from './pages/creator/CreatorShell.js';
+import { CreatorPublicProfilePage } from './pages/creator/CreatorPublicProfile.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
 import { useQuery } from '@tanstack/react-query';
 
@@ -107,6 +108,8 @@ export function App() {
             <Route path="/creator/login" element={<CreatorSigninPage />} />
             <Route path="/creator/auth/magic" element={<CreatorMagicLandingPage />} />
             <Route path="/creator/*" element={<CreatorShell />} />
+            {/* Public creator profiles — no auth, browsable from anywhere. */}
+            <Route path="/creators/:handle" element={<CreatorPublicProfilePage />} />
             <Route path="/t/:slug/login" element={<LoginPage />} />
             <Route path="/t/:slug/auth/magic" element={<MagicLandingPage />} />
             <Route path="/t/:slug/*" element={<Shell />} />
