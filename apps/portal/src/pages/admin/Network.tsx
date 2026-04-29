@@ -143,24 +143,47 @@ function ConnectForm({ membership }: { membership: NetworkMembership }) {
 }
 
 function ConnectedPanel({ membership }: { membership: NetworkMembership }) {
-  const { data: self } = useQuery({
+  const { data: self, error, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['network-self'],
     queryFn: () => api<NetworkSelf>('/admin/network/me'),
-    retry: false,
+    retry: 1,
   });
   return (
     <Card>
       <h3 style={{ marginTop: 0, color: '#1a6b1a' }}>Connected ✓</h3>
-      <p>
-        Network: <code>{membership.networkUrl}</code><br />
-        {self ? (
-          <>
-            Listed as <strong>{self.displayName}</strong> · status: {self.status} · {self.partnerCount} active partners
-          </>
-        ) : (
-          <em>Loading vendor profile…</em>
-        )}
+      <p style={{ marginBottom: 8 }}>
+        Network: <code>{membership.networkUrl}</code>
       </p>
+      {isLoading && <p style={{ color: '#6b7280', margin: 0 }}><em>Loading vendor profile…</em></p>}
+      {!isLoading && self && (
+        <p style={{ margin: 0 }}>
+          Listed as <strong>{self.displayName}</strong> · status: {self.status} · {self.partnerCount} active partners
+        </p>
+      )}
+      {!isLoading && error && (
+        <div style={{ marginTop: 6 }}>
+          <div style={{ color: '#b91c1c', fontSize: 13 }}>
+            Couldn&rsquo;t load vendor profile from the Network: {error instanceof Error ? error.message : String(error)}
+          </div>
+          <button
+            type="button"
+            onClick={() => refetch()}
+            disabled={isRefetching}
+            style={{
+              marginTop: 8,
+              background: 'transparent',
+              color: '#0d9488',
+              border: '1px solid #0d9488',
+              borderRadius: 6,
+              padding: '6px 12px',
+              fontSize: 13,
+              cursor: isRefetching ? 'wait' : 'pointer',
+            }}
+          >
+            {isRefetching ? 'Retrying…' : 'Retry'}
+          </button>
+        </div>
+      )}
     </Card>
   );
 }

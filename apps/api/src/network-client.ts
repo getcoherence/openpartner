@@ -26,7 +26,13 @@ import { TABLES, type NetworkOutboxRow } from '@openpartner/db';
 import { decryptSecret, encryptSecret } from './crypto.js';
 
 const CONFIG_KEY = 'network_membership';
+// Outbox / fire-and-forget pushes — short timeout, the scheduler retries.
 const PUSH_TIMEOUT_MS = 5_000;
+// Synchronous admin proxy calls (/admin/network/*). Network can cold-start
+// from idle on App Platform basic-xs, which takes 10-20s, so a 5s budget
+// here meant every first-after-idle render of the Network admin page
+// failed with 504. Keep it generous; the request blocks the admin UI.
+const PROXY_TIMEOUT_MS = 30_000;
 const MAX_ATTEMPTS = 8; // exponential backoff: ~24h max wall time
 
 // ---------- config shape ----------
@@ -361,7 +367,12 @@ export async function signupWithNetwork(input: SignupInput): Promise<SignupResul
       contact: { email: input.contactEmail, name: input.contactName },
       portalCallbackUrl: input.portalCallbackUrl,
     }),
-    signal: AbortSignal.timeout(10_000),
+    // Network's signup is synchronous: row insert + magic-link insert +
+    // Postmark send all inside one transaction. Cold-start can push the
+    // mail send past the old 10s budget; bump to 30s so we don't ETIMEDOUT
+    // a request that ultimately succeeds (the user gets the email but
+    // sees a 502 in the UI, then double-clicks and lands on already-pending).
+    signal: AbortSignal.timeout(30_000),
   });
   const text = await res.text();
   if (!res.ok) {
@@ -434,7 +445,7 @@ async function callNetwork<T>(
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
+    signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
   });
   const text = await res.text();
   if (!res.ok) {
