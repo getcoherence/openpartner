@@ -20,6 +20,7 @@ import {
   Inbox,
 } from 'lucide-react';
 import { clearApiKey, api, type Principal } from './api.js';
+import { useTenantBase } from './tenant-base.js';
 import { theme } from './theme.js';
 import { Dashboard } from './pages/Dashboard.js';
 import { LinksPage } from './pages/Links.js';
@@ -409,15 +410,6 @@ function NavSection({ title, children }: { title: string; children: ReactNode })
       <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>{children}</div>
     </div>
   );
-}
-
-function useTenantBase(): string {
-  // In multi-tenant mode the Shell mounts under /t/<slug>/*. NavItem and
-  // friends pass absolute paths like "/links" — we prepend the tenant
-  // base so navigation stays scoped. Falls back to "" in single-tenant.
-  const { pathname } = useLocation();
-  const m = pathname.match(/^\/t\/([a-z0-9-]+)/);
-  return m ? `/t/${m[1]}` : '';
 }
 
 function NavItem({ to, icon, children }: { to: string; icon: ReactNode; children: ReactNode }) {

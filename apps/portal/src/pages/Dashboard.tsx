@@ -13,6 +13,7 @@ import {
   Circle,
 } from 'lucide-react';
 import { api, type Principal } from '../api.js';
+import { useTenantBase } from '../tenant-base.js';
 import { theme } from '../theme.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, SectionHeading, Stat, StatusPill, money } from '../ui.js';
 
@@ -205,12 +206,20 @@ function ChecklistRow({
         <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>{hint}</div>
       </div>
       {!done && (
-        <Link to={to} style={{ textDecoration: 'none' }}>
+        <TenantLink to={to} style={{ textDecoration: 'none' }}>
           <Button size="sm">{cta}</Button>
-        </Link>
+        </TenantLink>
       )}
     </div>
   );
+}
+
+/** Link that prepends the current `/t/<slug>` prefix to absolute paths
+ *  so navigation stays inside the multi-tenant brand workspace. */
+function TenantLink({ to, style, children }: { to: string; style?: React.CSSProperties; children: React.ReactNode }) {
+  const tenantBase = useTenantBase();
+  const href = to.startsWith('/') ? `${tenantBase}${to === '/' ? '' : to}` || '/' : to;
+  return <Link to={href} style={style}>{children}</Link>;
 }
 
 function ConnectNudge({ owed, connected }: { owed: number; connected: boolean }) {
@@ -228,9 +237,9 @@ function ConnectNudge({ owed, connected }: { owed: number; connected: boolean })
             You have {money(owed)} in commissions {connected ? 'waiting — complete onboarding to get paid.' : 'that can’t be paid out yet.'}
           </div>
         </div>
-        <Link to="/connect" style={{ textDecoration: 'none' }}>
+        <TenantLink to="/connect" style={{ textDecoration: 'none' }}>
           <Button icon={<CreditCard size={14} />}>{connected ? 'Finish onboarding' : 'Connect Stripe'}</Button>
-        </Link>
+        </TenantLink>
       </div>
     </Card>
   );
