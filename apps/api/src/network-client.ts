@@ -467,6 +467,16 @@ async function callNetwork<T>(
   });
   const text = await res.text();
   if (!res.ok) {
+    // Log the full upstream response so federation_failed / similar
+    // errors with a long detail field are visible in API logs without
+    // having to dig through browser devtools. Status ≥400 only — 2xx
+    // would be noisy.
+    console.error('[network-client] upstream error', {
+      method,
+      path,
+      status: res.status,
+      body: text.length > 1000 ? `${text.slice(0, 1000)}…(truncated)` : text,
+    });
     throw new NetworkProxyError(res.status, text.slice(0, 500) || `http_${res.status}`);
   }
   return text ? (JSON.parse(text) as T) : (null as unknown as T);
