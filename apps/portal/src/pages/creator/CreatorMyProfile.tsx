@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Button, Card, ErrorBanner, Input, Label, Page } from '../../ui.js';
+import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
 
@@ -84,22 +84,7 @@ export function CreatorMyProfilePage() {
             </div>
             <div>
               <Label>Bio</Label>
-              <textarea
-                value={bio}
-                onChange={(e) => setBio(e.target.value)}
-                rows={4}
-                style={{
-                  width: '100%',
-                  padding: '10px 12px',
-                  background: theme.surface2,
-                  border: `1px solid ${theme.border}`,
-                  borderRadius: theme.radiusSm,
-                  color: theme.text,
-                  fontFamily: 'inherit',
-                  fontSize: 14,
-                  resize: 'vertical',
-                }}
-              />
+              <Textarea value={bio} onChange={(e) => setBio(e.target.value)} rows={4} />
             </div>
             <div>
               <Button onClick={() => save.mutate()} disabled={save.isPending}>

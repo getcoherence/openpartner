@@ -282,6 +282,26 @@ export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement> & { 
   );
 }
 
+export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      {...props}
+      style={{
+        padding: '10px 12px',
+        fontSize: 14,
+        background: theme.surface2,
+        border: `1px solid ${theme.border}`,
+        borderRadius: theme.radiusSm,
+        color: theme.text,
+        width: '100%',
+        fontFamily: 'inherit',
+        resize: 'vertical',
+        ...props.style,
+      }}
+    />
+  );
+}
+
 export function Label({ children }: { children: ReactNode }) {
   return (
     <label

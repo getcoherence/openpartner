@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../api.js';
-import { Button, Card, ErrorBanner, Label, Page } from '../../ui.js';
+import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
 
 interface PartnershipRequest {
   id: string;
@@ -25,16 +25,16 @@ export function AdminNetworkRequests() {
       title="Network requests"
       subtitle="Creators applying to promote your offerings. Approve to provision a Partner + Link automatically."
       actions={
-        <select
+        <Select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
-          style={{ padding: '6px 10px', border: '1px solid #d0d0c8', borderRadius: 6, fontSize: 13 }}
+          style={{ width: 'auto', padding: '6px 10px', fontSize: 13 }}
         >
           <option value="pending">Pending</option>
           <option value="approved">Approved</option>
           <option value="rejected">Rejected</option>
           <option value="cancelled">Cancelled</option>
-        </select>
+        </Select>
       }
     >
       <RequestList statusFilter={statusFilter} />
@@ -127,12 +127,12 @@ function RequestRow({
       {isPending && (
         <div style={{ marginTop: 12 }}>
           <Label>Decision note (optional)</Label>
-          <input
+          <Input
             type="text"
             value={note}
             onChange={(e) => setNote(e.target.value)}
             placeholder="Welcome to the program!"
-            style={{ width: '100%', padding: '8px 10px', border: '1px solid #d0d0c8', borderRadius: 6, fontSize: 14, marginBottom: 12 }}
+            style={{ marginBottom: 12 }}
           />
           <div style={{ display: 'flex', gap: 8 }}>
             <Button onClick={() => onApprove(note || undefined)} disabled={busy}>

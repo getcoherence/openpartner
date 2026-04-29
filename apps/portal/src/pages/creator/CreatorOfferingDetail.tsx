@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Button, Card, ErrorBanner, Input, Label, Page } from '../../ui.js';
+import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi, ApiError } from './creator-api.js';
 
@@ -101,19 +101,11 @@ export function CreatorOfferingDetailPage() {
                 </div>
                 <div style={{ marginTop: 12 }}>
                   <Label>Message to the vendor (optional)</Label>
-                  <textarea
+                  <Textarea
                     value={message}
                     onChange={(e) => setMessage(e.target.value)}
                     rows={4}
                     placeholder="Why you'd be a great partner…"
-                    style={{
-                      width: '100%',
-                      padding: '8px 10px',
-                      border: `1px solid ${theme.border}`,
-                      borderRadius: 6,
-                      fontFamily: 'inherit',
-                      fontSize: 14,
-                    }}
                   />
                 </div>
                 <div style={{ marginTop: 12 }}>

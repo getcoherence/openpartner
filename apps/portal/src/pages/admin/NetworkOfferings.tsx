@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../api.js';
-import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
-import { theme } from '../../theme.js';
+import { Button, Card, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 
 interface OfferingTerms {
   commissionDescription?: string;
@@ -182,22 +181,11 @@ function CreateOfferingForm() {
       </div>
       <div style={{ marginBottom: 12 }}>
         <Label>Description (markdown OK on the Network side)</Label>
-        <textarea
+        <Textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={3}
           placeholder="What you sell, who it's for, why it converts."
-          style={{
-            width: '100%',
-            padding: '10px 12px',
-            background: theme.surface2,
-            border: `1px solid ${theme.border}`,
-            borderRadius: theme.radiusSm,
-            color: theme.text,
-            fontSize: 14,
-            fontFamily: 'inherit',
-            resize: 'vertical',
-          }}
         />
       </div>
       <div style={{ marginBottom: 12 }}>
