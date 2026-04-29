@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../api.js';
-import { Button, Card, ErrorBanner, Input, Label, Page } from '../../ui.js';
+import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
+import { theme } from '../../theme.js';
 
 interface OfferingTerms {
   commissionDescription?: string;
@@ -173,7 +174,17 @@ function CreateOfferingForm() {
           onChange={(e) => setDescription(e.target.value)}
           rows={3}
           placeholder="What you sell, who it's for, why it converts."
-          style={{ width: '100%', padding: '8px 10px', border: '1px solid #d0d0c8', borderRadius: 6, fontSize: 14, fontFamily: 'inherit', resize: 'vertical' }}
+          style={{
+            width: '100%',
+            padding: '10px 12px',
+            background: theme.surface2,
+            border: `1px solid ${theme.border}`,
+            borderRadius: theme.radiusSm,
+            color: theme.text,
+            fontSize: 14,
+            fontFamily: 'inherit',
+            resize: 'vertical',
+          }}
         />
       </div>
       <div style={{ marginBottom: 12 }}>
@@ -182,16 +193,12 @@ function CreateOfferingForm() {
       </div>
       <div style={{ marginBottom: 12 }}>
         <Label>Campaign (commission rule lives here)</Label>
-        <select
-          value={vendorCampaignId}
-          onChange={(e) => setVendorCampaignId(e.target.value)}
-          style={{ width: '100%', padding: '8px 10px', border: '1px solid #d0d0c8', borderRadius: 6, fontSize: 14, fontFamily: 'inherit' }}
-        >
+        <Select value={vendorCampaignId} onChange={(e) => setVendorCampaignId(e.target.value)}>
           <option value="">— pick a campaign —</option>
           {campaigns?.campaigns.map((c) => (
             <option key={c.id} value={c.id}>{c.name}</option>
           ))}
-        </select>
+        </Select>
       </div>
       <div style={{ marginBottom: 12 }}>
         <Label>Commission summary (shown to creators)</Label>
