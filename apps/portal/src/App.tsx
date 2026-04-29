@@ -262,14 +262,7 @@ function Sidebar({ principal }: { principal: Principal }) {
           </NavSection>
         )}
 
-        {principal.role === 'admin' && (
-          <NavSection title="Network">
-            <NavItem to="/admin/network" icon={<Globe size={16} />}>Connection</NavItem>
-            <NavItem to="/admin/network/offerings" icon={<Megaphone size={16} />}>Offerings</NavItem>
-            <NavItem to="/admin/network/requests" icon={<Inbox size={16} />}>Requests</NavItem>
-            <NavItem to="/admin/network/billing" icon={<CreditCard size={16} />}>Billing</NavItem>
-          </NavSection>
-        )}
+        {principal.role === 'admin' && <NetworkNav />}
       </div>
 
       <button
@@ -409,6 +402,33 @@ function NavSection({ title, children }: { title: string; children: ReactNode })
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>{children}</div>
     </div>
+  );
+}
+
+/** Network sidebar section. We only surface Offerings / Requests /
+ *  Billing once the brand is connected — those pages all error out if
+ *  there's no vendorToken, and showing dead nav entries is just noise.
+ *  Connection itself stays visible so the admin can come back to wire
+ *  it up. */
+function NetworkNav() {
+  const { data } = useQuery({
+    queryKey: ['network-membership'],
+    queryFn: () => api<{ enabled: boolean; hasVendorToken: boolean }>('/config/network'),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const connected = !!(data?.enabled && data.hasVendorToken);
+  return (
+    <NavSection title="Network">
+      <NavItem to="/admin/network" icon={<Globe size={16} />}>{connected ? 'Connection' : 'Get connected'}</NavItem>
+      {connected && (
+        <>
+          <NavItem to="/admin/network/offerings" icon={<Megaphone size={16} />}>Offerings</NavItem>
+          <NavItem to="/admin/network/requests" icon={<Inbox size={16} />}>Requests</NavItem>
+          <NavItem to="/admin/network/billing" icon={<CreditCard size={16} />}>Billing</NavItem>
+        </>
+      )}
+    </NavSection>
   );
 }
 
