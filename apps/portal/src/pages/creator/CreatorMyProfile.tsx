@@ -90,11 +90,14 @@ export function CreatorMyProfilePage() {
                 rows={4}
                 style={{
                   width: '100%',
-                  padding: '8px 10px',
+                  padding: '10px 12px',
+                  background: theme.surface2,
                   border: `1px solid ${theme.border}`,
-                  borderRadius: 6,
+                  borderRadius: theme.radiusSm,
+                  color: theme.text,
                   fontFamily: 'inherit',
                   fontSize: 14,
+                  resize: 'vertical',
                 }}
               />
             </div>
