@@ -40,6 +40,21 @@ linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), 
   const campaign = await db<CampaignRow>(TABLES.Campaign).where({ id: body.data.campaignId }).first();
   if (!campaign) return res.status(404).json({ error: 'campaign_not_found' });
 
+  // Partner-side: must be granted access to this Campaign via
+  // PartnerCampaign. Admins acting on a partner's behalf bypass this
+  // check (they're the ones who'd grant it anyway).
+  if (req.principal?.role === 'partner') {
+    const grant = await db(TABLES.PartnerCampaign)
+      .where({ partnerId: req.params.id, campaignId: body.data.campaignId })
+      .first();
+    if (!grant) {
+      return res.status(403).json({
+        error: 'campaign_not_granted',
+        detail: 'You don’t have access to this program. Apply through the Network or ask the brand admin to add you.',
+      });
+    }
+  }
+
   // Destination resolution: if the partner supplied an override, the
   // Campaign must allow deep-linking AND the override host must match
   // the allowlist. Otherwise the Link inherits Campaign.destinationUrl

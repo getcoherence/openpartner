@@ -17,6 +17,15 @@ const createSchema = z.object({
   // Partner row on behalf of an external creator network). Default is
   // "invite them" since that's the intent of the admin UI.
   sendInvite: z.boolean().optional(),
+  /** Programs (campaigns) this partner can create share-links for.
+   *  Omitted = grant access to ALL current campaigns (preserves the
+   *  pre-PartnerCampaign behavior). Empty array = grant nothing
+   *  (rare; admin can add later). */
+  campaignIds: z.array(z.string()).optional(),
+  /** Where the grants come from. 'offering' is what the Network
+   *  federation sends so we can tell admin assignments apart from
+   *  Network-driven ones in the audit log + UI. */
+  campaignGrantSource: z.enum(['admin', 'offering']).optional(),
 });
 
 export const partnersRouter = Router();
@@ -65,6 +74,27 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
       return res.status(409).json({ error: 'email_taken' });
     }
     throw err;
+  }
+
+  // Grant program (campaign) access. Default = all current campaigns
+  // when caller didn't specify, matching the pre-PartnerCampaign
+  // behavior so existing flows don't change shape.
+  const campaignIds = body.data.campaignIds
+    ?? ((await db(TABLES.Campaign).select('id')) as Array<{ id: string }>).map((c) => c.id);
+  if (campaignIds.length > 0) {
+    const grantSource = body.data.campaignGrantSource ?? 'admin';
+    await db(TABLES.PartnerCampaign)
+      .insert(
+        campaignIds.map((cid) => ({
+          id: `pc_${ulid()}`,
+          tenantId,
+          partnerId: id,
+          campaignId: cid,
+          source: grantSource,
+        })),
+      )
+      .onConflict(['tenantId', 'partnerId', 'campaignId'])
+      .ignore();
   }
 
   if (sendInvite) {

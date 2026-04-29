@@ -155,6 +155,18 @@ export interface CampaignRow {
   createdAt: Date;
 }
 
+export interface PartnerCampaignRow {
+  id: string;
+  tenantId: string;
+  partnerId: string;
+  campaignId: string;
+  /** Why this grant exists. 'admin' = brand admin assignment;
+   *  'offering' = auto-granted when a Network application was approved
+   *  for the Offering tied to this Campaign. */
+  source: 'admin' | 'offering';
+  createdAt: Date;
+}
+
 export interface LinkRow {
   id: string;
   tenantId: string;

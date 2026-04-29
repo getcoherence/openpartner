@@ -44,19 +44,48 @@ campaignsRouter.get('/campaigns', requireAuth, requireAdmin, async (req, res) =>
 });
 
 /**
- * Partner-facing campaign list — fields are limited to what a partner
- * needs to create a Link (id, name, destinationUrl, deepLinkAllowedDomains).
+ * Partner-facing campaign list — only the Programs the calling partner
+ * was granted access to (via admin assignment or Network-offering
+ * approval). Admins see all campaigns in their tenant.
+ *
+ * Fields are limited to what a partner needs to create a Link
+ * (id, name, destinationUrl, deepLinkAllowedDomains, source).
  * Commission rules + attribution settings are admin-only and stay out
  * of the response.
  */
 campaignsRouter.get('/me/campaigns', requireAuth, async (req, res) => {
-  if (req.principal?.role !== 'partner' && req.principal?.role !== 'admin') {
+  const p = req.principal;
+  if (!p) return res.status(401).json({ error: 'unauthorized' });
+  if (p.role !== 'partner' && p.role !== 'admin') {
     return res.status(403).json({ error: 'forbidden' });
   }
   const { db } = tenantOf(req);
-  const campaigns = (await db<CampaignRow>(TABLES.Campaign)
-    .select('id', 'name', 'destinationUrl', 'deepLinkAllowedDomains')
-    .orderBy('createdAt', 'desc')) as Array<Pick<CampaignRow, 'id' | 'name' | 'destinationUrl' | 'deepLinkAllowedDomains'>>;
+
+  if (p.role === 'admin') {
+    const campaigns = (await db<CampaignRow>(TABLES.Campaign)
+      .select('id', 'name', 'destinationUrl', 'deepLinkAllowedDomains')
+      .orderBy('createdAt', 'desc')) as Array<Pick<CampaignRow, 'id' | 'name' | 'destinationUrl' | 'deepLinkAllowedDomains'>>;
+    return res.json({ campaigns });
+  }
+
+  // Partner: filter through PartnerCampaign join.
+  const campaigns = (await db(TABLES.Campaign)
+    .join(TABLES.PartnerCampaign, `${TABLES.PartnerCampaign}.campaignId`, `${TABLES.Campaign}.id`)
+    .where(`${TABLES.PartnerCampaign}.partnerId`, p.partnerId!)
+    .select(
+      `${TABLES.Campaign}.id`,
+      `${TABLES.Campaign}.name`,
+      `${TABLES.Campaign}.destinationUrl`,
+      `${TABLES.Campaign}.deepLinkAllowedDomains`,
+      `${TABLES.PartnerCampaign}.source as source`,
+    )
+    .orderBy(`${TABLES.Campaign}.createdAt`, 'desc')) as Array<{
+      id: string;
+      name: string;
+      destinationUrl: string;
+      deepLinkAllowedDomains: string | null;
+      source: 'admin' | 'offering';
+    }>;
   res.json({ campaigns });
 });
 

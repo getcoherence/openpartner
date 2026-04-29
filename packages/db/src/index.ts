@@ -56,6 +56,7 @@ export const TABLES = {
   PlatformAdmin: 'PlatformAdmin',
   Partner: 'Partner',
   Campaign: 'Campaign',
+  PartnerCampaign: 'PartnerCampaign',
   Link: 'Link',
   Click: 'Click',
   Identity: 'Identity',
