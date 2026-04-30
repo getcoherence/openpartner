@@ -21,6 +21,7 @@ export function AdminPartners() {
   const [showCreate, setShowCreate] = useState(false);
   const [revoking, setRevoking] = useState<Partner | null>(null);
   const [managingPrograms, setManagingPrograms] = useState<Partner | null>(null);
+  const [managingCoupons, setManagingCoupons] = useState<Partner | null>(null);
 
   const partners = useQuery({ queryKey: ['partners'], queryFn: () => api<{ partners: Partner[] }>('/partners') });
 
@@ -61,6 +62,12 @@ export function AdminPartners() {
           onClose={() => setManagingPrograms(null)}
         />
       )}
+      {managingCoupons && (
+        <CouponsDialog
+          partner={managingCoupons}
+          onClose={() => setManagingCoupons(null)}
+        />
+      )}
 
       {partners.isLoading ? (
         <Card>Loading…</Card>
@@ -92,6 +99,13 @@ export function AdminPartners() {
                 style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accent, cursor: 'pointer' }}
               >
                 Programs
+              </button>
+              <span style={{ color: theme.border }}>·</span>
+              <button
+                onClick={() => setManagingCoupons(p)}
+                style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accent, cursor: 'pointer' }}
+              >
+                Coupons
               </button>
               <span style={{ color: theme.border }}>·</span>
               <Link to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Payouts</Link>
@@ -374,6 +388,117 @@ function ProgramsDialog({ partner, onClose }: { partner: Partner; onClose: () =>
             );
           })}
         </div>
+      )}
+    </Card>
+  );
+}
+
+interface CouponRow {
+  id: string;
+  code: string;
+  campaignId: string;
+  createdAt: string;
+}
+
+interface CampaignBrief {
+  id: string;
+  name: string;
+}
+
+function CouponsDialog({ partner, onClose }: { partner: Partner; onClose: () => void }) {
+  const qc = useQueryClient();
+  const coupons = useQuery({
+    queryKey: ['partner-coupons', partner.id],
+    queryFn: () => api<{ coupons: CouponRow[] }>(`/partners/${partner.id}/coupons`),
+  });
+  const campaigns = useQuery({
+    queryKey: ['campaigns'],
+    queryFn: () => api<{ campaigns: CampaignBrief[] }>('/campaigns'),
+  });
+
+  const [pickedCampaign, setPickedCampaign] = useState('');
+  const [customCode, setCustomCode] = useState('');
+
+  const mint = useMutation({
+    mutationFn: () =>
+      api(`/partners/${partner.id}/coupons`, {
+        method: 'POST',
+        body: { campaignId: pickedCampaign, code: customCode.trim() ? customCode.trim().toUpperCase() : undefined },
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['partner-coupons', partner.id] });
+      setCustomCode('');
+      setPickedCampaign('');
+    },
+  });
+
+  const existingCampaignIds = new Set((coupons.data?.coupons ?? []).map((c) => c.campaignId));
+  const availableCampaigns = (campaigns.data?.campaigns ?? []).filter((c) => !existingCampaignIds.has(c.id));
+  const campaignNameById = new Map((campaigns.data?.campaigns ?? []).map((c) => [c.id, c.name]));
+
+  return (
+    <Card style={{ marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 6 }}>
+        <div style={{ fontSize: 15, fontWeight: 500, flex: 1 }}>Coupons for {partner.name}</div>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', color: theme.textMuted, cursor: 'pointer', fontSize: 13 }}>
+          Close
+        </button>
+      </div>
+      <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
+        Coupons attribute conversions when customers enter a code at checkout instead of clicking a share link.
+        Your site calls <code>POST /coupons/redeem</code> with the code; same downstream commission flow as click-driven attribution.
+      </div>
+      <ErrorBanner error={coupons.error ?? mint.error} />
+      {coupons.isLoading ? (
+        <p style={{ color: theme.textMuted, fontSize: 13 }}>Loading…</p>
+      ) : (
+        <>
+          {(coupons.data?.coupons ?? []).length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
+              {(coupons.data?.coupons ?? []).map((c) => (
+                <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: theme.surface2, border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm }}>
+                  <code style={{ fontSize: 14, fontWeight: 500, color: theme.text, flex: 1 }}>{c.code}</code>
+                  <span style={{ color: theme.textMuted, fontSize: 12 }}>
+                    {campaignNameById.get(c.campaignId) ?? c.campaignId}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {availableCampaigns.length > 0 ? (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'end' }}>
+              <div>
+                <Label>Campaign</Label>
+                <select
+                  value={pickedCampaign}
+                  onChange={(e) => setPickedCampaign(e.target.value)}
+                  style={{ width: '100%', padding: '8px 10px', background: theme.surface2, border: `1px solid ${theme.border}`, borderRadius: theme.radiusSm, color: theme.text, fontSize: 13 }}
+                >
+                  <option value="">— pick a campaign —</option>
+                  {availableCampaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <Label>Code (optional)</Label>
+                <Input
+                  value={customCode}
+                  onChange={(e) => setCustomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''))}
+                  placeholder="auto-generates if blank"
+                  style={{ fontFamily: theme.fontMono }}
+                />
+              </div>
+              <Button onClick={() => mint.mutate()} disabled={!pickedCampaign || mint.isPending}>
+                {mint.isPending ? 'Minting…' : 'Mint coupon'}
+              </Button>
+            </div>
+          ) : (
+            <p style={{ color: theme.textMuted, fontSize: 13, margin: 0 }}>
+              {(coupons.data?.coupons ?? []).length === 0
+                ? 'No campaigns available. Create one in Campaigns first.'
+                : 'This partner has a coupon for every campaign already.'}
+            </p>
+          )}
+        </>
       )}
     </Card>
   );

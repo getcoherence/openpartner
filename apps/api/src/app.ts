@@ -20,6 +20,7 @@ import { payoutsRouter } from './routes/payouts.js';
 import { commissionsRouter } from './routes/commissions.js';
 import { exportRouter } from './routes/export.js';
 import { importPartnersRouter } from './routes/import-partners.js';
+import { couponsRouter } from './routes/coupons.js';
 import { billingRouter } from './routes/billing.js';
 import { authRouter } from './routes/auth.js';
 import { partnerAuthRouter } from './routes/partner-auth.js';
@@ -160,6 +161,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(commissionsRouter);
   app.use(exportRouter);
   app.use(importPartnersRouter);
+  app.use(couponsRouter);
   app.use(billingRouter);
   app.use(adminOverviewRouter);
   app.use(networkPartnerRouter);
