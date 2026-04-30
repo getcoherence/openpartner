@@ -2,13 +2,15 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Copy, Megaphone } from 'lucide-react';
-import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, formatDate } from '../../ui.js';
+import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, formatDate, money } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
 
 interface Coupon {
   code: string;
   campaignId: string;
+  redemptions90d: number;
+  revenue90d: number;
 }
 
 interface Partnership {
@@ -144,12 +146,10 @@ function PartnershipRow({ partnership }: { partnership: Partnership }) {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {partnership.coupons.map((c) => (
-              <CouponRow key={c.code} code={c.code} />
+              <CouponRow key={c.code} coupon={c} />
             ))}
           </div>
-          <p style={{ fontSize: 11, color: theme.textDim, margin: '6px 0 0' }}>
-            Customers who enter this code at checkout get attributed to you, same commission as the share link.
-          </p>
+          <CouponHelp coupons={partnership.coupons} />
         </div>
       )}
       {editing ? (
@@ -192,10 +192,10 @@ function PartnershipRow({ partnership }: { partnership: Partnership }) {
   );
 }
 
-function CouponRow({ code }: { code: string }) {
+function CouponRow({ coupon }: { coupon: Coupon }) {
   const [copied, setCopied] = useState(false);
   function copy() {
-    navigator.clipboard.writeText(code).then(
+    navigator.clipboard.writeText(coupon.code).then(
       () => { setCopied(true); setTimeout(() => setCopied(false), 1500); },
       () => {/* ignore */},
     );
@@ -212,7 +212,12 @@ function CouponRow({ code }: { code: string }) {
         padding: '6px 10px',
       }}
     >
-      <code style={{ flex: 1, fontSize: 13, fontWeight: 500, color: theme.text, fontFamily: theme.fontMono }}>{code}</code>
+      <code style={{ flex: 1, fontSize: 13, fontWeight: 500, color: theme.text, fontFamily: theme.fontMono }}>{coupon.code}</code>
+      <span style={{ color: theme.textMuted, fontSize: 11, whiteSpace: 'nowrap' }}>
+        {coupon.redemptions90d > 0
+          ? `${coupon.redemptions90d.toLocaleString()} redemption${coupon.redemptions90d === 1 ? '' : 's'} · ${money(coupon.revenue90d, 'USD')}`
+          : 'No redemptions yet (90d)'}
+      </span>
       <button
         onClick={copy}
         style={{
@@ -232,5 +237,27 @@ function CouponRow({ code }: { code: string }) {
         {copied ? 'Copied' : 'Copy'}
       </button>
     </div>
+  );
+}
+
+/** Footnote that adapts to whether the creator's coupons are seeing
+ *  redemptions. If they've shared codes but seen 0 redemptions in 90
+ *  days, surface a hint that the brand may not have the integration
+ *  wired up — closes the trust gap from the creator side. */
+function CouponHelp({ coupons }: { coupons: Coupon[] }) {
+  const totalRedemptions = coupons.reduce((sum, c) => sum + c.redemptions90d, 0);
+  const allZero = coupons.length > 0 && totalRedemptions === 0;
+  if (allZero) {
+    return (
+      <p style={{ fontSize: 11, color: theme.textMuted, margin: '6px 0 0' }}>
+        No redemptions yet. If you&rsquo;ve been sharing codes, the brand may not have wired up
+        the OpenPartner integration on their checkout. Reach out to confirm.
+      </p>
+    );
+  }
+  return (
+    <p style={{ fontSize: 11, color: theme.textDim, margin: '6px 0 0' }}>
+      Customers who enter a code at checkout get attributed to you, same commission as the share link.
+    </p>
   );
 }
