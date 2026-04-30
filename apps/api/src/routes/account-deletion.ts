@@ -33,24 +33,29 @@ import { adminRestoreVendor, getNetworkMembership, networkProxy, saveNetworkMemb
 export const accountDeletionRouter = Router();
 
 interface PendingObligations {
-  unpaidCommissionCents: number;
+  /** Sum of unpaid commission amounts (decimal, in the Commission's
+   *  currency — typically USD). Field renamed from the original
+   *  *Cents to match the actual `amount` decimal column. */
+  unpaidCommissionAmount: number;
   pendingPayoutCount: number;
 }
 
 async function checkPendingObligations(tenantId: string): Promise<PendingObligations> {
-  // Commissions in 'approved' or 'pending' state are owed but unpaid.
+  // Commissions are unpaid when status is 'accrued' (newly recorded,
+  // pending admin approval) or 'approved' (cleared but not paid out).
+  // 'paid' and 'reversed' are settled.
   const [c] = await db(TABLES.Commission)
     .where({ tenantId })
-    .whereIn('status', ['pending', 'approved'])
-    .sum<Array<{ sum: string | null }>>({ sum: 'amountCents' });
-  // Payouts in 'pending' or 'processing' state are mid-flight and can't
-  // be rolled back without intervention.
+    .whereIn('status', ['accrued', 'approved'])
+    .sum<Array<{ sum: string | null }>>({ sum: 'amount' });
+  // Payouts are mid-flight when 'pending'. 'paid' and 'failed' are
+  // resolved states. (No 'processing' status exists.)
   const [p] = await db(TABLES.Payout)
     .where({ tenantId })
-    .whereIn('status', ['pending', 'processing'])
+    .where('status', 'pending')
     .count<Array<{ count: string }>>({ count: '*' });
   return {
-    unpaidCommissionCents: Number(c?.sum ?? 0),
+    unpaidCommissionAmount: Number(c?.sum ?? 0),
     pendingPayoutCount: Number(p?.count ?? 0),
   };
 }
@@ -86,7 +91,7 @@ accountDeletionRouter.post('/account/delete', requireAuth, requireAdmin, async (
   // forceDespiteObligations after they've seen the warning surface in
   // the UI; without that flag, refuse so we don't strand creators.
   const obligations = await checkPendingObligations(tenantId);
-  const hasObligations = obligations.unpaidCommissionCents > 0 || obligations.pendingPayoutCount > 0;
+  const hasObligations = obligations.unpaidCommissionAmount > 0 || obligations.pendingPayoutCount > 0;
   if (hasObligations && !body.data.forceDespiteObligations) {
     return res.status(409).json({
       error: 'pending_obligations',
