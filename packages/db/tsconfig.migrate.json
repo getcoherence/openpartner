@@ -11,6 +11,7 @@
   "include": [
     "migrations/**/*.ts",
     "scripts/migrate.ts",
+    "scripts/ensure-app-role.ts",
     "knexfile.ts"
   ]
 }
