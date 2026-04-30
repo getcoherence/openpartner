@@ -175,10 +175,17 @@ creatorPortalRouter.all(/^\/creator-api(\/.*)?$/, async (req: Request, res: Resp
     }
 
     res.status(upstream.status);
+    // Force JSON content-type on the response. The upstream is the
+    // Network — which we control — but pinning the type here means a
+    // future Network change that returns html/plain (e.g. an error
+    // page) can't end up XSS'd into a browser-rendered page on
+    // app.openpartner.dev. All Network endpoints we proxy already
+    // return JSON; if they didn't, the body string is JSON-serialized
+    // and rendered as text by the browser regardless.
     if (upstreamCt.includes('application/json')) {
       res.type('application/json').send(body);
     } else {
-      res.send(body);
+      res.type('application/json').send(JSON.stringify({ raw: body, contentType: upstreamCt || null }));
     }
   } catch (err) {
     console.error('[creator-portal] proxy failed', { subpath, method: req.method, err });

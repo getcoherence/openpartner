@@ -151,6 +151,11 @@ const CORRECTIVE_EVENT_TYPES = new Set(['refund', 'dispute_created', 'invoice_pa
  */
 async function runInTenant<T>(tenantId: string, fn: (trx: Knex.Transaction) => Promise<T>): Promise<T> {
   return appDb.transaction(async (trx) => {
+    // tenantId is sourced from a DB lookup or our own metadata stamp on
+    // the Stripe object — never directly user-controlled — and single-
+    // quotes are escaped before inlining. Postgres SET LOCAL doesn't
+    // accept bind params, so the inline interpolation is required.
+    // nosemgrep: javascript.lang.security.audit.sqli.node-knex-sqli.node-knex-sqli
     await trx.raw(`set local app.tenant_id = '${tenantId.replace(/'/g, "''")}'`);
     return fn(trx);
   });

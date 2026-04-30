@@ -51,7 +51,10 @@ export function decryptSecret(envelope: string): string {
   const iv = buf.subarray(0, IV_LEN);
   const tag = buf.subarray(IV_LEN, IV_LEN + 16);
   const ct = buf.subarray(IV_LEN + 16);
-  const decipher = createDecipheriv(ALG, masterKey(), iv);
+  // authTagLength: 16 is required to refuse short tags on decrypt. Without
+  // it Node accepts any tag 4–16 bytes, which weakens GCM forgery resistance
+  // (Semgrep gcm-no-tag-length).
+  const decipher = createDecipheriv(ALG, masterKey(), iv, { authTagLength: 16 });
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
 }

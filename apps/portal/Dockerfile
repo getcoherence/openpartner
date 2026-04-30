@@ -34,10 +34,20 @@ RUN pnpm --filter @openpartner/db build \
 
 FROM nginx:1.27-alpine AS runner
 RUN apk add --no-cache tini \
- && rm /etc/nginx/conf.d/default.conf
+ && rm /etc/nginx/conf.d/default.conf \
+ # Make every path nginx writes to owned by the unprivileged `nginx`
+ # user that already exists in the image. Required because we drop
+ # privileges via USER below, and nginx writes pid/cache/logs at boot.
+ # Listening on 8080 (>1024) means we don't need CAP_NET_BIND_SERVICE.
+ && chown -R nginx:nginx /var/cache/nginx /var/log/nginx /etc/nginx/conf.d /usr/share/nginx/html \
+ && touch /var/run/nginx.pid \
+ && chown nginx:nginx /var/run/nginx.pid
 ENV API_UPSTREAM=api:4601
-COPY apps/portal/nginx.conf.template /etc/nginx/templates/default.conf.template
-COPY --from=builder /repo/apps/portal/dist /usr/share/nginx/html
+COPY --chown=nginx:nginx apps/portal/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=builder --chown=nginx:nginx /repo/apps/portal/dist /usr/share/nginx/html
+
+USER nginx
+
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1

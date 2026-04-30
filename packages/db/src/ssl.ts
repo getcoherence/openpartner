@@ -29,6 +29,12 @@ export function sslFromConnectionString(originalUrl: string): SslResolution {
   if (lower.includes('sslmode=verify-ca') || lower.includes('sslmode=verify-full')) {
     ssl = true;
   } else if (lower.includes('sslmode=require') || lower.includes('sslmode=no-verify')) {
+    // sslmode=require maps to "encrypt-but-don't-verify-CA" because most
+    // managed Postgres providers (DO Managed PG in particular) ship a
+    // self-signed CA that isn't in Node's default trust store. Operators
+    // who want full verification opt in via sslmode=verify-ca/verify-full
+    // and supply the CA in their trust store.
+    // nosemgrep: problem-based-packs.insecure-transport.js-node.bypass-tls-verification.bypass-tls-verification
     ssl = { rejectUnauthorized: false };
   }
   // Strip sslmode + any leftover separator so pg doesn't re-derive ssl.
