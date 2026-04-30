@@ -6,6 +6,11 @@ import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, formatDate }
 import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
 
+interface Coupon {
+  code: string;
+  campaignId: string;
+}
+
 interface Partnership {
   id: string;
   vendorId: string;
@@ -18,6 +23,7 @@ interface Partnership {
   offeringTitle: string | null;
   shareUrl: string;
   customDomain: string | null;
+  coupons: Coupon[];
 }
 
 export function CreatorShareLinksPage() {
@@ -131,6 +137,21 @@ function PartnershipRow({ partnership }: { partnership: Partnership }) {
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
+      {partnership.coupons.length > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 11, color: theme.textDim, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
+            Coupon code{partnership.coupons.length > 1 ? 's' : ''}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {partnership.coupons.map((c) => (
+              <CouponRow key={c.code} code={c.code} />
+            ))}
+          </div>
+          <p style={{ fontSize: 11, color: theme.textDim, margin: '6px 0 0' }}>
+            Customers who enter this code at checkout get attributed to you, same commission as the share link.
+          </p>
+        </div>
+      )}
       {editing ? (
         <div style={{ marginTop: 12 }}>
           <Label>Slug (path under your domain)</Label>
@@ -168,5 +189,48 @@ function PartnershipRow({ partnership }: { partnership: Partnership }) {
         </div>
       )}
     </Card>
+  );
+}
+
+function CouponRow({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+  function copy() {
+    navigator.clipboard.writeText(code).then(
+      () => { setCopied(true); setTimeout(() => setCopied(false), 1500); },
+      () => {/* ignore */},
+    );
+  }
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        background: theme.surface2,
+        border: `1px solid ${theme.borderSubtle}`,
+        borderRadius: theme.radiusSm,
+        padding: '6px 10px',
+      }}
+    >
+      <code style={{ flex: 1, fontSize: 13, fontWeight: 500, color: theme.text, fontFamily: theme.fontMono }}>{code}</code>
+      <button
+        onClick={copy}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          background: 'transparent',
+          border: `1px solid ${theme.borderSubtle}`,
+          borderRadius: 6,
+          padding: '4px 8px',
+          fontSize: 11,
+          color: copied ? theme.success : theme.textMuted,
+          cursor: 'pointer',
+        }}
+      >
+        <Copy size={11} />
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+    </div>
   );
 }
