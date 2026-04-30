@@ -52,7 +52,18 @@ export async function up(knex: Knex): Promise<void> {
       using ("tenantId" = current_setting('app.tenant_id', true))
       with check ("tenantId" = current_setting('app.tenant_id', true))
   `);
-  await knex.raw('grant select, insert, update, delete on "Coupon" to openpartner_app');
+  // App-role grant. Idempotent — if openpartner_app doesn't exist
+  // (OPENPARTNER_APP_DB_PASSWORD unset; the app runs as the migration
+  // role and bypasses RLS), this is a no-op via DO block.
+  await knex.raw(`
+    do $$
+    begin
+      if exists (select 1 from pg_roles where rolname = 'openpartner_app') then
+        execute 'grant select, insert, update, delete on "Coupon" to openpartner_app';
+      end if;
+    end
+    $$;
+  `);
 }
 
 export async function down(knex: Knex): Promise<void> {
