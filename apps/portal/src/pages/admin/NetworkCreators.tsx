@@ -291,13 +291,25 @@ function InviteDialog({ creator, onClose }: { creator: DirectoryRow; onClose: ()
 
   const send = useMutation({
     mutationFn: () =>
-      api(`/admin/network/offerings/${offeringId}/invite-creator`, {
-        method: 'POST',
-        body: { creatorId: creator.id, message: message.trim() || undefined },
-      }),
+      api<{ ok: boolean; expiresAt: string; deeplink?: string }>(
+        `/admin/network/offerings/${offeringId}/invite-creator`,
+        {
+          method: 'POST',
+          body: { creatorId: creator.id, message: message.trim() || undefined },
+        },
+      ),
   });
 
   const sent = send.isSuccess;
+  const deeplink = send.data?.deeplink;
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    if (!deeplink) return;
+    navigator.clipboard.writeText(deeplink).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }, () => {/* ignore */});
+  };
 
   return (
     <div
@@ -335,6 +347,40 @@ function InviteDialog({ creator, onClose }: { creator: DirectoryRow; onClose: ()
             <div style={{ background: theme.successSoft, border: `1px solid ${theme.success}55`, borderRadius: theme.radiusSm, padding: 12, fontSize: 13, color: theme.success, marginBottom: 14 }}>
               Invitation sent. They&rsquo;ll see your message + a deeplink in their inbox.
             </div>
+            {deeplink && (
+              <div style={{ marginBottom: 14 }}>
+                <Label>Deeplink (in case email lands in spam)</Label>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    background: theme.surface2,
+                    border: `1px solid ${theme.borderSubtle}`,
+                    borderRadius: theme.radiusSm,
+                    padding: '8px 10px',
+                    marginTop: 6,
+                  }}
+                >
+                  <code style={{ flex: 1, fontSize: 12, wordBreak: 'break-all' }}>{deeplink}</code>
+                  <button
+                    onClick={copy}
+                    style={{
+                      background: 'transparent',
+                      border: `1px solid ${theme.borderSubtle}`,
+                      borderRadius: 6,
+                      padding: '5px 9px',
+                      fontSize: 12,
+                      color: copied ? theme.success : theme.textMuted,
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {copied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+              </div>
+            )}
             <Button onClick={onClose} variant="secondary">Close</Button>
           </>
         ) : (
