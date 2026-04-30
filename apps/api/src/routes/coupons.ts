@@ -201,7 +201,7 @@ couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), a
   res.status(201).json({ ok: true, eventId: result.id, partnerId: coupon.partnerId });
 });
 
-// ---------- Helper ----------
+// ---------- Helpers ----------
 
 function defaultCode(email: string): string {
   // <local-part-stripped-of-symbols-uppercased> + 4 random chars.
@@ -210,4 +210,55 @@ function defaultCode(email: string): string {
   const slug = local.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 12) || 'PARTNER';
   const rand = randomBytes(2).toString('hex').toUpperCase();
   return `${slug}${rand}`;
+}
+
+/**
+ * Best-effort coupon mint after a PartnerCampaign grant. Used by:
+ *   - POST /partners (auto-grants all current campaigns by default)
+ *   - PUT /partners/:id/campaigns/:campaignId (admin grant)
+ *   - Federation Network → /partners with campaignIds (offering approval)
+ *
+ * Idempotent: skips silently if a coupon already exists for the
+ * (partnerId, campaignId) pair (admin may have minted one already).
+ * On code collision (rare, since email-derived suffixes are usually
+ * unique), retries once with a fresh suffix.
+ */
+export async function autoMintCouponsForGrants(
+  db: import('knex').Knex,
+  tenantId: string,
+  partner: { id: string; email: string },
+  campaignIds: string[],
+): Promise<void> {
+  if (campaignIds.length === 0) return;
+  for (const campaignId of campaignIds) {
+    let attempts = 0;
+    while (attempts < 2) {
+      attempts += 1;
+      const code = defaultCode(partner.email);
+      try {
+        await db<CouponRow>(TABLES.Coupon)
+          .insert({
+            id: `cpn_${ulid()}`,
+            tenantId,
+            partnerId: partner.id,
+            campaignId,
+            code,
+          })
+          .onConflict(['tenantId', 'partnerId', 'campaignId'])
+          .ignore(); // already exists for this (partner, campaign) — admin minted manually
+        break;
+      } catch (err) {
+        // Code collision (the (tenantId, code) unique constraint
+        // fired). Retry once with a fresh random suffix; defaultCode
+        // re-rolls 16 bits each call. If it still collides, drop on
+        // the floor — better to skip auto-mint than to fail the
+        // partner-grant operation.
+        if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505' && attempts < 2) {
+          continue;
+        }
+        console.error('[coupons] auto-mint failed', { partnerId: partner.id, campaignId, err });
+        break;
+      }
+    }
+  }
 }

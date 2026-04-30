@@ -8,6 +8,7 @@ import { getMailer } from '../mailer.js';
 import { buildMagicLinkUrl, partnerInviteEmail, partnerRevokedEmail } from '../email-templates.js';
 import { tenantOf } from '../tenancy.js';
 import { getNetworkMembership, pushPartnerRevoke, pushPartnerUpsert } from '../network-client.js';
+import { autoMintCouponsForGrants } from './coupons.js';
 
 const createSchema = z.object({
   email: z.string().email(),
@@ -112,6 +113,11 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
       )
       .onConflict(['tenantId', 'partnerId', 'campaignId'])
       .ignore();
+    // Auto-mint a default coupon per granted campaign so creators have
+    // both attribution paths (link + code) available without admin
+    // explicit action. ON CONFLICT IGNORE inside the helper means
+    // re-grants don't error.
+    await autoMintCouponsForGrants(db, tenantId, { id, email }, campaignIds);
   }
 
   if (sendInvite) {

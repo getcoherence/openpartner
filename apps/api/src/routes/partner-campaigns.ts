@@ -22,6 +22,7 @@ import { ulid } from 'ulid';
 import { TABLES, type CampaignRow, type PartnerCampaignRow, type PartnerRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
+import { autoMintCouponsForGrants } from './coupons.js';
 
 export const partnerCampaignsRouter = Router();
 
@@ -84,6 +85,11 @@ partnerCampaignsRouter.post('/partners/:id/campaigns', requireAuth, requireAdmin
     )
     .onConflict(['tenantId', 'partnerId', 'campaignId'])
     .ignore();
+
+  // Mint default coupons alongside the grant so creators have both
+  // attribution paths (link + code) without admin doing two steps.
+  // Idempotent — pre-existing coupons aren't disturbed.
+  await autoMintCouponsForGrants(db, tenantId, { id: partner.id, email: partner.email }, toInsert);
 
   res.status(201).json({ added: toInsert });
 });
