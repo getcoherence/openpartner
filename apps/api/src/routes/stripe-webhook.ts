@@ -203,8 +203,14 @@ async function resolveTenantForEvent(event: Stripe.Event): Promise<string | null
     }
     case 'checkout.session.completed': {
       const session = event.data.object as Stripe.Checkout.Session;
-      // Rewardful-style merchant→customer checkout: tenant resolves via the
-      // Click row identified by client_reference_id.
+      // Merchant-subscription checkout (the brand subscribing to Flex /
+      // Revshare via /admin/billing) stamps openpartner_tenant_id on
+      // session metadata at create time. Prefer that — it's a constant-
+      // time read with no DB round-trip.
+      const metaTenantId = session.metadata?.openpartner_tenant_id;
+      if (metaTenantId) return metaTenantId;
+      // Rewardful-style merchant→customer checkout: tenant resolves via
+      // the Click row identified by client_reference_id (the cref).
       if (session.client_reference_id) {
         const row = await db<ClickRow>(TABLES.Click)
           .where({ id: session.client_reference_id })
@@ -221,13 +227,20 @@ async function resolveTenantForEvent(event: Stripe.Event): Promise<string | null
     case 'invoice.payment_failed':
     case 'charge.refunded':
     case 'charge.dispute.created': {
-      // Customer/invoice/subscription/charge events: prefer the
-      // openpartner_tenant_id stamped on the Customer's metadata. As a
-      // fallback, look the customer up locally via the Identity → Click
-      // chain — this covers Customers stitched at checkout.session.completed
-      // before the metadata-backfill API call lands.
       const customerId = extractCustomerId(event.data.object as { customer?: unknown; id?: string });
       if (!customerId) return null;
+      // First, check whether this is a merchant-self-subscription
+      // Customer (created by /billing/checkout). We persist the
+      // customer id on Tenant.stripeCustomerId on first checkout,
+      // so the lookup is a constant-time indexed read and avoids a
+      // Stripe API roundtrip to inspect Customer.metadata.
+      const tenantRow = await db('Tenant')
+        .where({ stripeCustomerId: customerId })
+        .first<{ id: string }>('id');
+      if (tenantRow) return tenantRow.id;
+      // Fallback: rewardful-style customer (came in through attribution).
+      // Resolves via the Identity → Click chain — covers Customers
+      // stitched at checkout.session.completed by the Rewardful path.
       const identity = await db(TABLES.Identity)
         .join(TABLES.Click, `${TABLES.Click}.id`, `${TABLES.Identity}.clickId`)
         .where(`${TABLES.Identity}.userId`, customerId)
