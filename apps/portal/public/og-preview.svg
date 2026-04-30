@@ -49,24 +49,11 @@
     letter-spacing="-0.3"
   >OpenPartner</text>
 
-  <!-- Eyebrow pill: matches the marketing site .eyebrow style
-       (rgba(22,163,74,0.12) bg, #16a34a text, 999px radius, uppercase). -->
-  <g transform="translate(80, 200)">
-    <rect width="552" height="40" rx="20" ry="20" fill="#16a34a" fill-opacity="0.14" />
-    <text
-      x="22"
-      y="27"
-      fill="#22c55e"
-      font-size="17"
-      font-weight="700"
-      letter-spacing="1.6"
-    >PARTNER PROGRAM SOFTWARE WITH A BUILT-IN NETWORK</text>
-  </g>
-
-  <!-- Headline — same copy + structure as the marketing site hero -->
+  <!-- Headline — same copy + structure as the marketing site hero.
+       Centered vertically in the canvas now that the eyebrow's gone. -->
   <text
     x="80"
-    y="346"
+    y="288"
     fill="#e6e8eb"
     font-size="76"
     font-weight="700"
@@ -74,7 +61,7 @@
   >Launch a partner program.</text>
   <text
     x="80"
-    y="436"
+    y="378"
     fill="#e6e8eb"
     font-size="76"
     font-weight="700"
@@ -84,7 +71,7 @@
   <!-- Sub-line: tightens the value prop without being a wall of text -->
   <text
     x="80"
-    y="498"
+    y="442"
     fill="#9aa0a6"
     font-size="24"
     font-weight="400"
