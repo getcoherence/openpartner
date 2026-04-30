@@ -15,6 +15,7 @@ import {
 import { appDb, db } from '../db.js';
 import { attributeEvent } from '../attribution.js';
 import { persistMerchantSubscription } from './billing.js';
+import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
 
 const stripeKey = process.env.STRIPE_SECRET_KEY;
 // STRIPE_WEBHOOK_SECRET accepts either a single secret or a comma-separated
@@ -84,6 +85,16 @@ stripeWebhookRouter.post(
     const result = await runInTenant(tenantId, async (trx) => {
       const connectResult = await handleConnectEvent(trx, event!, tenantId);
       if (connectResult) return { connect: connectResult };
+
+      // Coupon auto-redemption: if the event carries a discount code that
+      // matches an OpenPartner Coupon in this tenant, ensure the synthetic
+      // Click + Identity exist BEFORE the standard attribution path runs.
+      // The next attributeEvent() call then finds the click and credits
+      // the partner — same code path as a clicked share-link conversion.
+      const redeemed = await maybeRedeemStripeCoupons(trx, stripe!, event!, tenantId);
+      if (redeemed.length > 0) {
+        console.log('[stripe-webhook] auto-redeemed coupons', { eventId: event!.id, redeemed });
+      }
 
       const mapped = await mapStripeEvent(trx, stripe!, event!);
       if (!mapped) return { skipped: event!.type };
@@ -524,4 +535,105 @@ async function resolveUserIdFromCustomer(
   // metadata-backfill on checkout.session.completed lands on Stripe's side.
   const identity = await trx<IdentityRow>(TABLES.Identity).where({ userId: customerId }).first();
   return identity ? customerId : null;
+}
+
+/**
+ * Auto-redeem any OpenPartner Coupons referenced by discount codes on
+ * the event. Runs BEFORE the standard event mapping — synthesizes the
+ * Click + Identity for the customer so the next attribution pass
+ * credits the partner. Returns the matched codes (for logging only).
+ *
+ * Stripe events that can carry discount codes:
+ *   - checkout.session.completed (session.discounts +
+ *                                  session.total_details.breakdown.discounts)
+ *   - invoice.paid (invoice.discounts)
+ *   - customer.subscription.created (subscription.discounts) — invoice
+ *     also fires for subs so this is partly redundant; covered for
+ *     consistency.
+ *
+ * The customer-facing code lives at promotion_code.code (when set).
+ * If the discount has only a Coupon (no PromotionCode), we fall back
+ * to coupon.id — brands setting their Stripe Coupon IDs to match
+ * OpenPartner codes works without an extra Stripe API call.
+ */
+async function maybeRedeemStripeCoupons(
+  trx: Knex.Transaction,
+  stripe: Stripe,
+  event: Stripe.Event,
+  tenantId: string,
+): Promise<string[]> {
+  const obj = event.data.object as unknown as Record<string, unknown>;
+  const ts = new Date(event.created * 1000);
+
+  // Customer ID — same shape across the event types we handle.
+  const customerRaw =
+    (obj.customer as string | { id: string } | null | undefined) ??
+    (obj.customer_email as string | undefined);
+  const userId = typeof customerRaw === 'string' ? customerRaw : customerRaw?.id;
+  if (!userId) return [];
+
+  // Collect candidate codes from wherever Stripe might surface them.
+  const candidateCodes: string[] = [];
+  for (const d of extractDiscounts(event)) {
+    const code = await resolveDiscountCode(stripe, d);
+    if (code) candidateCodes.push(code);
+  }
+  if (candidateCodes.length === 0) return [];
+
+  const matched: string[] = [];
+  for (const code of candidateCodes) {
+    const coupon = await findCouponByCode(trx, code);
+    if (!coupon) continue;
+    await ensureCouponClickAndIdentity(trx, tenantId, coupon, userId, ts);
+    matched.push(coupon.code);
+  }
+  return matched;
+}
+
+interface DiscountRef {
+  coupon?: string | { id: string } | null;
+  promotion_code?: string | { id: string; code?: string } | null;
+}
+
+function extractDiscounts(event: Stripe.Event): DiscountRef[] {
+  const obj = event.data.object as unknown as Record<string, unknown>;
+  const out: DiscountRef[] = [];
+
+  // checkout.session.completed: session.discounts + total_details.breakdown.discounts
+  if (Array.isArray(obj.discounts)) {
+    for (const d of obj.discounts as Array<DiscountRef | string>) {
+      if (typeof d === 'object' && d !== null) out.push(d);
+    }
+  }
+  const totalDetails = obj.total_details as
+    | { breakdown?: { discounts?: Array<{ discount?: DiscountRef }> } }
+    | undefined;
+  if (totalDetails?.breakdown?.discounts) {
+    for (const item of totalDetails.breakdown.discounts) {
+      if (item.discount) out.push(item.discount);
+    }
+  }
+  return out;
+}
+
+async function resolveDiscountCode(stripe: Stripe, d: DiscountRef): Promise<string | null> {
+  // Prefer the customer-facing PromotionCode string.
+  if (d.promotion_code) {
+    if (typeof d.promotion_code === 'object' && d.promotion_code.code) {
+      return d.promotion_code.code;
+    }
+    const id = typeof d.promotion_code === 'string' ? d.promotion_code : d.promotion_code.id;
+    try {
+      const promo = await stripe.promotionCodes.retrieve(id);
+      if (promo.code) return promo.code;
+    } catch (err) {
+      console.error('[stripe-webhook] promotion_code retrieve failed', { id, err });
+    }
+  }
+  // Fallback: use the Coupon's Stripe ID directly. Brands who set their
+  // Stripe Coupon IDs to match OpenPartner codes don't need the API call.
+  if (d.coupon) {
+    return typeof d.coupon === 'string' ? d.coupon : d.coupon.id;
+  }
+  return null;
 }

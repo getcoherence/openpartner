@@ -147,34 +147,7 @@ couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), a
   // Synthesize Click + Identity + Event in one trx so the attribution
   // engine sees a consistent picture.
   const result = await db.transaction(async (trx) => {
-    const clickId = ulid();
-    await trx<ClickRow>(TABLES.Click).insert({
-      id: clickId,
-      tenantId,
-      linkId: null, // no Link — coupon path doesn't have one
-      partnerId: coupon.partnerId,
-      campaignId: coupon.campaignId,
-      landingUrl: `coupon://${coupon.code}`,
-      ipHash: null,
-      userAgent: 'OpenPartner-CouponRedeem/1',
-      referer: null,
-      fraudFlag: null,
-      ts,
-    });
-
-    // Reuse existing Identity for this user if present, else mint one.
-    // Same dedup pattern the /identify route uses.
-    const existingIdentity = await trx<IdentityRow>(TABLES.Identity)
-      .where({ userId: body.data.userId })
-      .first();
-    if (!existingIdentity) {
-      await trx<IdentityRow>(TABLES.Identity).insert({
-        id: ulid(),
-        tenantId,
-        clickId,
-        userId: body.data.userId,
-      });
-    }
+    await ensureCouponClickAndIdentity(trx, tenantId, coupon, body.data.userId, ts);
 
     const eventId = ulid();
     const [eventRow] = (await trx<EventRow>(TABLES.Event)
@@ -200,6 +173,73 @@ couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), a
 
   res.status(201).json({ ok: true, eventId: result.id, partnerId: coupon.partnerId });
 });
+
+/**
+ * Lookup a Coupon by code (case-insensitive) within the current tenant.
+ * Used by both the /coupons/redeem route and the Stripe webhook auto-
+ * redemption path. Returns null when the code doesn't match anything in
+ * this tenant — letting the caller no-op rather than 404.
+ */
+export async function findCouponByCode(
+  db: import('knex').Knex,
+  code: string,
+): Promise<CouponRow | null> {
+  const row = await db<CouponRow>(TABLES.Coupon)
+    .whereRaw('lower("code") = ?', [code.toLowerCase()])
+    .first();
+  return row ?? null;
+}
+
+/**
+ * Ensure a synthetic coupon Click + Identity exists for the given
+ * (coupon, userId). If the user already has an Identity for any
+ * Click on this coupon's partner, no-op (the user is already
+ * attributed). Otherwise insert a fresh Click + Identity so the
+ * attribution engine credits this partner on the next Event for
+ * this user.
+ *
+ * The check is "any click for this partner" not "this exact coupon"
+ * — re-redemptions of the same code by the same user shouldn't add
+ * a new touchpoint, but a click on partner A's link followed by a
+ * coupon for partner B should add a second touch (multi-touch).
+ */
+export async function ensureCouponClickAndIdentity(
+  trx: import('knex').Knex,
+  tenantId: string,
+  coupon: CouponRow,
+  userId: string,
+  ts: Date,
+): Promise<{ clickId: string; reused: boolean }> {
+  // Has the user already been linked (via any Click) to this partner?
+  // If so, no-op — they're already attributed and adding another
+  // synthetic click would shift multi-touch weights unfairly.
+  const existing = await trx<IdentityRow>(TABLES.Identity)
+    .join(TABLES.Click, `${TABLES.Click}.id`, `${TABLES.Identity}.clickId`)
+    .where(`${TABLES.Identity}.userId`, userId)
+    .andWhere(`${TABLES.Click}.partnerId`, coupon.partnerId)
+    .first(`${TABLES.Identity}.clickId as clickId`) as { clickId: string } | undefined;
+  if (existing) return { clickId: existing.clickId, reused: true };
+
+  const clickId = ulid();
+  await trx<ClickRow>(TABLES.Click).insert({
+    id: clickId,
+    tenantId,
+    linkId: null, // no Link — coupon path doesn't have one
+    partnerId: coupon.partnerId,
+    campaignId: coupon.campaignId,
+    landingUrl: `coupon://${coupon.code}`,
+    ipHash: null,
+    userAgent: 'OpenPartner-CouponRedeem/1',
+    referer: null,
+    fraudFlag: null,
+    ts,
+  });
+  await trx<IdentityRow>(TABLES.Identity)
+    .insert({ id: ulid(), tenantId, clickId, userId })
+    .onConflict(['clickId', 'userId'])
+    .ignore();
+  return { clickId, reused: false };
+}
 
 // ---------- Helpers ----------
 
