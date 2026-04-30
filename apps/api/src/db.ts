@@ -22,11 +22,27 @@ import './env.js';
 import { createDb } from '@openpartner/db';
 
 const adminUrl = process.env.DATABASE_URL;
-const appUrl = process.env.DATABASE_URL_APP ?? adminUrl;
+const rawAppUrl = process.env.DATABASE_URL_APP ?? adminUrl;
 
 if (!adminUrl) {
   throw new Error('DATABASE_URL must be set');
 }
+
+// If the admin URL specifies sslmode but the app URL doesn't, carry it
+// across. Both URLs target the same managed cluster (the app role lives
+// alongside the admin role), so SSL requirements are identical — making
+// operators set sslmode in two places is just a footgun. DO Managed
+// Postgres rejects unencrypted connections, so a missing sslmode on the
+// app URL surfaces as a pg_hba "no encryption" error at request time.
+function inheritSslMode(appUrl: string, adminUrl: string): string {
+  if (/[?&]sslmode=/i.test(appUrl)) return appUrl;
+  const adminMode = adminUrl.match(/[?&](sslmode=[^&]+)/i);
+  if (!adminMode) return appUrl;
+  const sep = appUrl.includes('?') ? '&' : '?';
+  return `${appUrl}${sep}${adminMode[1]}`;
+}
+
+const appUrl = inheritSslMode(rawAppUrl!, adminUrl);
 
 /**
  * Privileged knex instance. Used by:
