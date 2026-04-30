@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
 import { Globe } from 'lucide-react';
 import { api } from '../../api.js';
+import { TenantLink } from '../../tenant-link.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
 import { theme } from '../../theme.js';
 
@@ -79,13 +79,13 @@ export function DiscoverPage() {
           {data.offerings.map((o) => (
             <Card key={o.id}>
               <div style={{ color: theme.textMuted, fontSize: 13 }}>
-                <Link to={`/network/vendors/${o.vendorId}`} style={{ color: theme.textMuted }}>{o.vendorName}</Link>
+                <TenantLink to={`/network/vendors/${o.vendorId}`} style={{ color: theme.textMuted }}>{o.vendorName}</TenantLink>
                 {o.vendorPartnerCount > 0 && (
                   <> · {o.vendorPartnerCount} partner{o.vendorPartnerCount === 1 ? '' : 's'}</>
                 )}
               </div>
               <h3 style={{ marginTop: 4, marginBottom: 8 }}>
-                <Link to={`/network/offerings/${o.id}`}>{o.title}</Link>
+                <TenantLink to={`/network/offerings/${o.id}`}>{o.title}</TenantLink>
               </h3>
               {o.terms?.commissionDescription && (
                 <p style={{ fontSize: 13, color: theme.textMuted, margin: '4px 0' }}>
@@ -98,9 +98,9 @@ export function DiscoverPage() {
                 </p>
               )}
               <div style={{ marginTop: 12 }}>
-                <Link to={`/network/offerings/${o.id}`}>
+                <TenantLink to={`/network/offerings/${o.id}`}>
                   <Button>View &amp; apply</Button>
-                </Link>
+                </TenantLink>
               </div>
             </Card>
           ))}

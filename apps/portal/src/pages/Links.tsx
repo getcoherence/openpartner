@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link2, Plus, ArrowRight } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { theme } from '../theme.js';
+import { TenantLink } from '../tenant-link.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 
 interface LinkRow {
@@ -49,7 +49,7 @@ function AdminLinksHub() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
           {data?.partners.map((p) => (
-            <Link
+            <TenantLink
               key={p.id}
               to={`/links?partnerId=${p.id}`}
               style={{
@@ -71,7 +71,7 @@ function AdminLinksHub() {
                 </div>
                 <ArrowRight size={14} color={theme.textDim} />
               </div>
-            </Link>
+            </TenantLink>
           ))}
         </div>
       )}

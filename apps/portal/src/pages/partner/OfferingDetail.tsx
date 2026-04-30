@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { api, ApiError, type Principal } from '../../api.js';
+import { TenantLink } from '../../tenant-link.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
 import { theme } from '../../theme.js';
 
@@ -82,7 +83,7 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
             <h3 style={{ marginTop: 0 }}>Apply to promote</h3>
             {!canApply ? (
               <p style={{ color: theme.textMuted }}>
-                Only partner accounts can apply. <Link to="/login">Switch accounts</Link>?
+                Only partner accounts can apply. <TenantLink to="/login">Switch accounts</TenantLink>?
               </p>
             ) : (
               <>

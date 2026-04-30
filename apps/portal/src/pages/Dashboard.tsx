@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { useTenantBase } from '../tenant-base.js';
+import { TenantLink } from '../tenant-link.js';
 import { theme } from '../theme.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, SectionHeading, Stat, StatusPill, money } from '../ui.js';
 
@@ -213,14 +214,6 @@ function ChecklistRow({
       )}
     </div>
   );
-}
-
-/** Link that prepends the current `/t/<slug>` prefix to absolute paths
- *  so navigation stays inside the multi-tenant brand workspace. */
-function TenantLink({ to, style, children }: { to: string; style?: React.CSSProperties; children: React.ReactNode }) {
-  const tenantBase = useTenantBase();
-  const href = to.startsWith('/') ? `${tenantBase}${to === '/' ? '' : to}` || '/' : to;
-  return <Link to={href} style={style}>{children}</Link>;
 }
 
 function ConnectNudge({ owed, connected }: { owed: number; connected: boolean }) {

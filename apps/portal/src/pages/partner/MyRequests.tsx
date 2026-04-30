@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Inbox } from 'lucide-react';
-import { Link } from 'react-router-dom';
 import { api } from '../../api.js';
+import { TenantLink } from '../../tenant-link.js';
 import { Button, Card, EmptyState, ErrorBanner, Page, StatusPill, formatDate } from '../../ui.js';
 import { theme } from '../../theme.js';
 
@@ -47,7 +47,7 @@ export function MyRequestsPage() {
           <Card key={r.id}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
               <h3 style={{ marginTop: 0, marginBottom: 4, flex: 1 }}>
-                <Link to={`/network/offerings/${r.offeringId}`}>{r.offeringTitle}</Link>{' '}
+                <TenantLink to={`/network/offerings/${r.offeringId}`}>{r.offeringTitle}</TenantLink>{' '}
                 <span style={{ color: theme.textMuted, fontWeight: 'normal', fontSize: 14 }}>· {r.vendorName}</span>
               </h3>
               <StatusPill status={r.status} />

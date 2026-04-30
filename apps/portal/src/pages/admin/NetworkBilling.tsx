@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
 import { useState } from 'react';
 import { api, ApiError } from '../../api.js';
+import { TenantLink } from '../../tenant-link.js';
 import { Button, Card, ErrorBanner, Page } from '../../ui.js';
 
 interface NetworkBilling {
@@ -44,7 +44,7 @@ function BillingPanel() {
         <ErrorBanner error={msg} />
         <Card>
           <p>
-            Set up your Network connection under <Link to="/admin/network">Network → Connection</Link>{' '}
+            Set up your Network connection under <TenantLink to="/admin/network">Network → Connection</TenantLink>{' '}
             before subscribing.
           </p>
         </Card>

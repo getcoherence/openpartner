@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Users } from 'lucide-react';
 import { api, ApiError } from '../api.js';
 import { theme } from '../theme.js';
+import { TenantLink } from '../tenant-link.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, StatusPill, Table, formatDate } from '../ui.js';
 
 interface Partner {
@@ -92,7 +92,7 @@ export function AdminPartners() {
             p.stripeConnectAccountId ? <StatusPill status="connected" /> : <span style={{ color: theme.textDim }}>—</span>,
             <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
             <div style={{ display: 'flex', gap: 6 }}>
-              <Link to={`/links?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Links</Link>
+              <TenantLink to={`/links?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Links</TenantLink>
               <span style={{ color: theme.border }}>·</span>
               <button
                 onClick={() => setManagingPrograms(p)}
@@ -108,7 +108,7 @@ export function AdminPartners() {
                 Coupons
               </button>
               <span style={{ color: theme.border }}>·</span>
-              <Link to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Payouts</Link>
+              <TenantLink to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Payouts</TenantLink>
               {!p.activatedAt && !p.revokedAt && (
                 <>
                   <span style={{ color: theme.border }}>·</span>

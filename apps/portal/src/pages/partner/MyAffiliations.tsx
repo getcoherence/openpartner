@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
 import { Globe } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
+import { TenantLink } from '../../tenant-link.js';
 import { Card, EmptyState, ErrorBanner, Page, Stat, StatusPill, formatDate, money } from '../../ui.js';
 import { theme } from '../../theme.js';
 
@@ -82,7 +82,7 @@ export function MyAffiliationsPage() {
           <Card key={a.id}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
               <h3 style={{ marginTop: 0, marginBottom: 4, flex: 1 }}>
-                <Link to={`/network/vendors/${a.vendorId}`}>{a.vendorName}</Link>
+                <TenantLink to={`/network/vendors/${a.vendorId}`}>{a.vendorName}</TenantLink>
               </h3>
               <StatusPill status={a.status} />
             </div>
