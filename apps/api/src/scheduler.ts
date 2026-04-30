@@ -33,7 +33,7 @@ import { TABLES, type TenantRow } from '@openpartner/db';
 import { appDb, db } from './db.js';
 import { reportUsageToStripe } from './usage-billing.js';
 import { runPayouts } from './payouts.js';
-import { drainOutbox, reportNetworkPayoutsToNetwork } from './network-client.js';
+import { drainOutbox, reportNetworkPayoutsToNetwork, sendHeartbeat } from './network-client.js';
 import { getMode } from './stripe.js';
 import { sweepCampaignEndNotifications } from './campaign-end-notifications.js';
 
@@ -96,6 +96,16 @@ const JOBS: ScheduledJob[] = [
     description: 'Per tenant: aggregate Network-originated payout volume + report to the Network for Stripe metering (daily 03:30 UTC)',
     handler: async () =>
       forEachActiveTenant((trx, tenantId) => reportNetworkPayoutsToNetwork(trx, tenantId)),
+  },
+  {
+    name: 'network-heartbeat',
+    cronExpr: '7 * * * *',
+    // Hourly (offset 7 min so it doesn't pile on top of other top-of-the-hour
+    // jobs). The Network uses partnerCount + lastHeartbeatAt to populate the
+    // vendor's "active partners" stat and to detect abandoned instances —
+    // shorter interval keeps that view fresh for brand admins.
+    description: 'Per tenant: ping the Network with current partner count (hourly @ :07)',
+    handler: async () => forEachActiveTenant((trx, tenantId) => sendHeartbeat(trx, tenantId)),
   },
   {
     name: 'tenant-hard-delete',

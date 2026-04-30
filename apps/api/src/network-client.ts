@@ -728,6 +728,72 @@ export async function reportNetworkPayoutsToNetwork(
   return { rangeStart, rangeEnd, amountUsd, reported: true };
 }
 
+// ---------- Heartbeat (Network liveness probe) ----------
+//
+// The Network uses partnerCount + lastHeartbeatAt to (a) populate the
+// vendor's "active partners" stat in admin UIs, and (b) prune abandoned
+// instances from creator-facing search after extended silence.
+//
+// Cadence: hourly via the scheduler — frequent enough that the displayed
+// count feels live to brand admins, infrequent enough to be polite to
+// the Network. Also opportunistically fired by `/admin/network/me` so a
+// brand admin who just landed on the page after a partner was added
+// sees fresh data on the next request.
+//
+// Counting: non-revoked Partners. lastEventAt is the most recent Event
+// timestamp (any kind), giving the Network signal even from tenants
+// who haven't added partners but are processing conversions.
+
+export interface HeartbeatResult {
+  sent: boolean;
+  partnerCount: number;
+  reason?: string;
+}
+
+export async function sendHeartbeat(db: Knex, tenantId: string): Promise<HeartbeatResult> {
+  const m = await getNetworkMembership(db, tenantId);
+  if (!m || !m.enabled || !m.networkUrl || !m.vendorTokenCiphertext) {
+    return { sent: false, partnerCount: 0, reason: 'network_not_configured' };
+  }
+  let token: string;
+  try {
+    token = decryptSecret(m.vendorTokenCiphertext);
+  } catch {
+    return { sent: false, partnerCount: 0, reason: 'token_undecryptable' };
+  }
+
+  const partnerRows = await db(TABLES.Partner)
+    .whereNull('revokedAt')
+    .count<Array<{ count: string }>>({ count: '*' });
+  const partnerCount = Number(partnerRows[0]?.count ?? 0);
+
+  const lastEventRow = await db(TABLES.Event)
+    .orderBy('createdAt', 'desc')
+    .first<{ createdAt: Date } | undefined>('createdAt');
+  const lastEventAt = lastEventRow?.createdAt ? new Date(lastEventRow.createdAt).toISOString() : undefined;
+
+  const url = `${m.networkUrl.replace(/\/$/, '')}/vendors/me/heartbeat`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+        'user-agent': 'OpenPartner-Vendor/1',
+      },
+      body: JSON.stringify({ partnerCount, ...(lastEventAt ? { lastEventAt } : {}) }),
+      signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '<no body>');
+      return { sent: false, partnerCount, reason: `network ${res.status}: ${text.slice(0, 200)}` };
+    }
+    return { sent: true, partnerCount };
+  } catch (err) {
+    return { sent: false, partnerCount, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 // ---------- outbox drain (called from scheduler.ts) ----------
 
 export async function drainOutbox(db: Knex, tenantId: string): Promise<{ drained: number; succeeded: number; dead: number }> {

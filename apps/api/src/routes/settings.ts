@@ -456,7 +456,19 @@ async function proxy(req: Request, res: Response, fn: (db: Knex, tenantId: strin
 }
 
 settingsRouter.get('/admin/network/me', requireAuth, requireAdmin, async (req, res) =>
-  proxy(req, res, (db, tenantId) => networkProxy.whoami(db, tenantId)),
+  proxy(req, res, async (db, tenantId) => {
+    // Override the Network's stored partnerCount with the local truth.
+    // Network's value updates via the hourly heartbeat job — between
+    // ticks (or before the first tick after connecting) it lags reality.
+    // The brand admin expects "active partners" to match the count they
+    // see on /admin/partners, so reconcile here.
+    const remote = await networkProxy.whoami(db, tenantId);
+    const partnerRows = await db(TABLES.Partner)
+      .whereNull('revokedAt')
+      .count<Array<{ count: string }>>({ count: '*' });
+    const partnerCount = Number(partnerRows[0]?.count ?? 0);
+    return { ...(remote as Record<string, unknown>), partnerCount };
+  }),
 );
 
 settingsRouter.get('/admin/network/offerings', requireAuth, requireAdmin, async (req, res) =>
