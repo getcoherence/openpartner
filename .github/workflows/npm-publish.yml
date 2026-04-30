@@ -1,0 +1,68 @@
+name: npm publish (sdk)
+
+on:
+  push:
+    # Same tag trigger as CI's docker push — a tagged release pushes
+    # docker images AND attempts an SDK publish. The publish step is
+    # idempotent: if packages/sdk's version is already on npm, it
+    # skips. So a tag bump that doesn't touch the SDK is a no-op here.
+    tags: ['v*']
+  workflow_dispatch:
+    # Manual trigger for republish-after-failure or first-publish runs
+    # before any tag exists.
+
+jobs:
+  publish:
+    name: build + publish @openpartner/sdk
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      # Required for npm provenance (Sigstore attestations). Lets users
+      # verify the published tarball was built by this workflow on this
+      # commit — defense against compromised maintainer tokens.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.11.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+          # registry-url is what enables `pnpm publish` to pick up
+          # NODE_AUTH_TOKEN below. Without it, publish 401s.
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build SDK
+        run: pnpm --filter @openpartner/sdk build
+
+      - name: Skip if version already published
+        id: check
+        run: |
+          local_version=$(node -p "require('./packages/sdk/package.json').version")
+          published=$(npm view @openpartner/sdk@$local_version version 2>/dev/null || true)
+          if [ -n "$published" ]; then
+            echo "@openpartner/sdk@$local_version already on npm — skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "@openpartner/sdk@$local_version not on npm yet — will publish"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.check.outputs.skip != 'true'
+        # --provenance generates a signed Sigstore attestation tying
+        # this tarball to this workflow run + commit SHA. Visible on
+        # npmjs.com/package as a "Provenance" badge.
+        # --no-git-checks: pnpm refuses to publish from a detached HEAD
+        # by default; tag pushes always run detached so we opt out.
+        run: pnpm --filter @openpartner/sdk publish --access public --provenance --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
