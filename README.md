@@ -21,15 +21,19 @@ OpenPartner fixes both.
 - Works across devices by stitching to logged-in user identity
 - Answers the questions that matter: *which creator drove this revenue?* *which content actually converted?*
 
-### Three-tier pricing
+### Pricing
 
-Pick the model that fits your business — at signup, not at year-three renewal:
+Pick the tier that fits your business — at signup, not at year-three renewal. You can move between hosted tiers anytime.
 
 | Tier | Price | Best for |
 | --- | --- | --- |
-| **Self-hosted** | Free forever | Teams who want to own their infra |
-| **Hosted — flat** | $99–$499/mo | Teams who want predictability |
-| **Hosted — revenue share** | 3% of GMV, no monthly | Teams who want to start cheaply and scale |
+| **Self-hosted** | Free | Teams who want to own their infra. Run the core on your own box. |
+| **Self-hosted + Network** | $29/mo + 3% on Network-originated payouts | Self-hosters who want creator-marketplace discovery on top of the core. |
+| **Hosted — Flex** | $49/mo + 1.5% of attributed GMV | Teams who want predictable pricing + the Network bundled in. |
+| **Hosted — Revshare** | 3% of attributed GMV, no monthly | Teams who want to start cheap and only pay when partners drive revenue. |
+| **Enterprise** | Custom | Larger programs that need dedicated infra, SLAs, or procurement support. |
+
+Self-hosted is the GitHub repo you're reading. Hosted tiers run the same code on OpenPartner infra. Full pricing details: [openpartner.dev/pricing](https://openpartner.dev/pricing).
 
 ### Your data stays yours
 
@@ -109,7 +113,7 @@ v1. End-to-end attribution, payouts, and export are working; API surface is stab
 - Program name + support email editable from the admin Settings UI (not env)
 - Mail transport (SMTP / Postmark / console) editable from the UI, SMTP passwords + Postmark tokens encrypted at rest with `SECRETS_ENCRYPTION_KEY`
 - Env vars (`SMTP_*`, `POSTMARK_*`, `MAIL_FROM`) remain as deploy-time fallbacks
-- Three deployment modes gated by `OPENPARTNER_MODE`: `selfhost`, `flat` (Stripe subscription), `revshare` (3% platform fee)
+- Three deployment modes gated by `OPENPARTNER_MODE`: `selfhost`, `flat` (Hosted Flex — $49/mo + 1.5% metered), `revshare` (Hosted Revshare — 3% metered, no monthly)
 
 **Integration surface**
 
