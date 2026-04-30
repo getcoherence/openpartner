@@ -98,10 +98,37 @@ const createSchema = z.object({
     .optional(),
 });
 
+/** Free-trial threshold: a brand can mint up to this many coupons
+ *  manually before we require integration verification. Auto-mint on
+ *  PartnerCampaign grant doesn't trip the gate (system action, not
+ *  admin intent). */
+const COUPON_VERIFICATION_THRESHOLD = 5;
+
 couponsRouter.post('/partners/:id/coupons', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = createSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  // Verification gate: past N coupons without a successful redemption
+  // ever recorded, refuse new manual mints. Forces the brand to
+  // actually wire up /coupons/redeem (or the Stripe webhook auto-
+  // redemption path) before they hand more codes to creators that
+  // won't attribute.
+  const tenant = (await db('Tenant').where({ id: tenantId }).first(['couponIntegrationVerifiedAt'])) as
+    | { couponIntegrationVerifiedAt: Date | null }
+    | undefined;
+  if (!tenant?.couponIntegrationVerifiedAt) {
+    const countRow = (await db(TABLES.Coupon).count<{ count: string }[]>({ count: '*' })) as Array<{ count: string }>;
+    const existing = Number(countRow[0]?.count ?? 0);
+    if (existing >= COUPON_VERIFICATION_THRESHOLD) {
+      return res.status(409).json({
+        error: 'verification_required',
+        detail: `You have ${existing} coupons but no successful redemption yet. Wire up POST /coupons/redeem on your checkout — or set up a Stripe webhook pointing at /webhooks/stripe — and process one test redemption to unlock further mints. This protects creators from sharing codes that don't actually attribute.`,
+        threshold: COUPON_VERIFICATION_THRESHOLD,
+        existing,
+      });
+    }
+  }
 
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
@@ -277,6 +304,18 @@ export async function ensureCouponClickAndIdentity(
     .insert({ id: ulid(), tenantId, clickId, userId })
     .onConflict(['clickId', 'userId'])
     .ignore();
+
+  // Stamp the tenant's "coupon integration is verified" flag on the
+  // FIRST successful redemption ever. COALESCE preserves the original
+  // verification date on subsequent redemptions. Cross-tenant write,
+  // which means the privileged db (not RLS-scoped trx) — but we
+  // already know the tenantId came from a verified Coupon lookup.
+  await trx('Tenant')
+    .where({ id: tenantId })
+    .update({
+      couponIntegrationVerifiedAt: trx.raw('COALESCE("couponIntegrationVerifiedAt", NOW())'),
+    });
+
   return { clickId, reused: false };
 }
 

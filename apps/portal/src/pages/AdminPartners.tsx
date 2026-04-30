@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Users } from 'lucide-react';
-import { api } from '../api.js';
+import { api, ApiError } from '../api.js';
 import { theme } from '../theme.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, StatusPill, Table, formatDate } from '../ui.js';
 
@@ -434,6 +434,12 @@ function CouponsDialog({ partner, onClose }: { partner: Partner; onClose: () => 
     },
   });
 
+  // Pull the verification gate state so the admin sees a banner when
+  // they've crossed the threshold without verifying.
+  const gateError = mint.error instanceof ApiError && mint.error.message === 'verification_required'
+    ? (mint.error.detail as { detail?: string; threshold?: number; existing?: number } | undefined)
+    : null;
+
   const existingCampaignIds = new Set((coupons.data?.coupons ?? []).map((c) => c.campaignId));
   const availableCampaigns = (campaigns.data?.campaigns ?? []).filter((c) => !existingCampaignIds.has(c.id));
   const campaignNameById = new Map((campaigns.data?.campaigns ?? []).map((c) => [c.id, c.name]));
@@ -450,7 +456,17 @@ function CouponsDialog({ partner, onClose }: { partner: Partner; onClose: () => 
         Coupons attribute conversions when customers enter a code at checkout instead of clicking a share link.
         Your site calls <code>POST /coupons/redeem</code> with the code; same downstream commission flow as click-driven attribution.
       </div>
-      <ErrorBanner error={coupons.error ?? mint.error} />
+      <ErrorBanner error={coupons.error ?? (gateError ? null : mint.error)} />
+      {gateError && (
+        <div style={{ background: `${theme.danger}10`, border: `1px solid ${theme.danger}55`, borderRadius: theme.radiusSm, padding: 12, marginBottom: 12 }}>
+          <div style={{ fontSize: 13, color: theme.danger, fontWeight: 500, marginBottom: 6 }}>
+            Verify your coupon integration before minting more
+          </div>
+          <div style={{ fontSize: 12, color: theme.text, lineHeight: 1.5 }}>
+            {gateError.detail}
+          </div>
+        </div>
+      )}
       {coupons.isLoading ? (
         <p style={{ color: theme.textMuted, fontSize: 13 }}>Loading…</p>
       ) : (

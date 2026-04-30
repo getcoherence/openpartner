@@ -25,6 +25,10 @@ export interface TenantRow {
   suspendedAt: Date | null;
   pendingDeletionAt: Date | null;
   deletionReason: string | null;
+  /** Set on the FIRST successful coupon redemption (any path). Used to
+   *  gate large coupon mints behind a "you've actually wired up the
+   *  /coupons/redeem integration" check. Null = never verified. */
+  couponIntegrationVerifiedAt: Date | null;
 }
 
 /** ID of the seeded default tenant — used in single-host mode and during migration backfills. */
