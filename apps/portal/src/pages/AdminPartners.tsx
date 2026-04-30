@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Users } from 'lucide-react';
-import { api, ApiError } from '../api.js';
+import { api } from '../api.js';
 import { theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, StatusPill, Table, formatDate } from '../ui.js';
@@ -20,8 +20,6 @@ export function AdminPartners() {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [revoking, setRevoking] = useState<Partner | null>(null);
-  const [managingPrograms, setManagingPrograms] = useState<Partner | null>(null);
-  const [managingCoupons, setManagingCoupons] = useState<Partner | null>(null);
 
   const partners = useQuery({ queryKey: ['partners'], queryFn: () => api<{ partners: Partner[] }>('/partners') });
 
@@ -56,18 +54,6 @@ export function AdminPartners() {
           }}
         />
       )}
-      {managingPrograms && (
-        <ProgramsDialog
-          partner={managingPrograms}
-          onClose={() => setManagingPrograms(null)}
-        />
-      )}
-      {managingCoupons && (
-        <CouponsDialog
-          partner={managingCoupons}
-          onClose={() => setManagingCoupons(null)}
-        />
-      )}
 
       {partners.isLoading ? (
         <Card>Loading…</Card>
@@ -94,19 +80,9 @@ export function AdminPartners() {
             <div style={{ display: 'flex', gap: 6 }}>
               <TenantLink to={`/links?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Links</TenantLink>
               <span style={{ color: theme.border }}>·</span>
-              <button
-                onClick={() => setManagingPrograms(p)}
-                style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accent, cursor: 'pointer' }}
-              >
-                Programs
-              </button>
+              <TenantLink to={`/admin/partners/${p.id}/programs`} style={{ color: theme.accent, fontSize: 13 }}>Programs</TenantLink>
               <span style={{ color: theme.border }}>·</span>
-              <button
-                onClick={() => setManagingCoupons(p)}
-                style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accent, cursor: 'pointer' }}
-              >
-                Coupons
-              </button>
+              <TenantLink to={`/admin/partners/${p.id}/coupons`} style={{ color: theme.accent, fontSize: 13 }}>Coupons</TenantLink>
               <span style={{ color: theme.border }}>·</span>
               <TenantLink to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Payouts</TenantLink>
               {!p.activatedAt && !p.revokedAt && (
@@ -301,228 +277,6 @@ function RevokeDialog({
         </Button>
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
       </div>
-    </Card>
-  );
-}
-
-interface CampaignGrant {
-  id: string;
-  name: string;
-  destinationUrl: string;
-  granted: boolean;
-  grantSource: 'admin' | 'offering' | null;
-}
-
-function ProgramsDialog({ partner, onClose }: { partner: Partner; onClose: () => void }) {
-  const qc = useQueryClient();
-  const { data, isLoading, error } = useQuery({
-    queryKey: ['partner-campaigns', partner.id],
-    queryFn: () => api<{ campaigns: CampaignGrant[] }>(`/partners/${partner.id}/campaigns`),
-  });
-
-  const add = useMutation({
-    mutationFn: (campaignId: string) =>
-      api(`/partners/${partner.id}/campaigns`, { method: 'POST', body: { campaignIds: [campaignId] } }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['partner-campaigns', partner.id] }),
-  });
-  const remove = useMutation({
-    mutationFn: (campaignId: string) =>
-      api(`/partners/${partner.id}/campaigns/${campaignId}`, { method: 'DELETE' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['partner-campaigns', partner.id] }),
-  });
-
-  const busyId = add.isPending ? add.variables : remove.isPending ? remove.variables : null;
-
-  return (
-    <Card style={{ marginBottom: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 6 }}>
-        <div style={{ fontSize: 15, fontWeight: 500, flex: 1 }}>Programs for {partner.name}</div>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', color: theme.textMuted, cursor: 'pointer', fontSize: 13 }}>
-          Close
-        </button>
-      </div>
-      <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
-        Toggle which programs this partner can create share-links for. Revoking a program doesn&rsquo;t remove
-        existing links — those keep working until the partner deletes them.
-      </div>
-      <ErrorBanner error={error ?? add.error ?? remove.error} />
-      {isLoading ? (
-        <div style={{ color: theme.textMuted }}>Loading…</div>
-      ) : !data || data.campaigns.length === 0 ? (
-        <div style={{ color: theme.textMuted }}>No campaigns exist yet — create one in Campaigns.</div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {data.campaigns.map((c) => {
-            const busy = busyId === c.id;
-            return (
-              <label
-                key={c.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  padding: '10px 12px',
-                  background: c.granted ? `${theme.success}10` : theme.surface2,
-                  border: `1px solid ${c.granted ? `${theme.success}44` : theme.borderSubtle}`,
-                  borderRadius: theme.radiusSm,
-                  cursor: busy ? 'wait' : 'pointer',
-                  opacity: busy ? 0.6 : 1,
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={c.granted}
-                  disabled={busy}
-                  onChange={(e) => (e.target.checked ? add.mutate(c.id) : remove.mutate(c.id))}
-                />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 500 }}>{c.name}</div>
-                  <div style={{ fontSize: 12, color: theme.textMuted, fontFamily: theme.fontMono }}>{c.destinationUrl}</div>
-                </div>
-                {c.grantSource === 'offering' && (
-                  <span style={{ fontSize: 11, color: theme.accent, padding: '3px 8px', background: `${theme.accent}15`, borderRadius: 12 }}>
-                    via Network
-                  </span>
-                )}
-              </label>
-            );
-          })}
-        </div>
-      )}
-    </Card>
-  );
-}
-
-interface CouponRow {
-  id: string;
-  code: string;
-  campaignId: string;
-  createdAt: string;
-  redemptions90d?: number;
-  revenue90d?: number;
-}
-
-interface CampaignBrief {
-  id: string;
-  name: string;
-}
-
-function CouponsDialog({ partner, onClose }: { partner: Partner; onClose: () => void }) {
-  const qc = useQueryClient();
-  const coupons = useQuery({
-    queryKey: ['partner-coupons', partner.id],
-    queryFn: () => api<{ coupons: CouponRow[] }>(`/partners/${partner.id}/coupons`),
-  });
-  const campaigns = useQuery({
-    queryKey: ['campaigns'],
-    queryFn: () => api<{ campaigns: CampaignBrief[] }>('/campaigns'),
-  });
-
-  const [pickedCampaign, setPickedCampaign] = useState('');
-  const [customCode, setCustomCode] = useState('');
-
-  const mint = useMutation({
-    mutationFn: () =>
-      api(`/partners/${partner.id}/coupons`, {
-        method: 'POST',
-        body: { campaignId: pickedCampaign, code: customCode.trim() ? customCode.trim().toUpperCase() : undefined },
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['partner-coupons', partner.id] });
-      setCustomCode('');
-      setPickedCampaign('');
-    },
-  });
-
-  // Pull the verification gate state so the admin sees a banner when
-  // they've crossed the threshold without verifying.
-  const gateError = mint.error instanceof ApiError && mint.error.message === 'verification_required'
-    ? (mint.error.detail as { detail?: string; threshold?: number; existing?: number } | undefined)
-    : null;
-
-  const existingCampaignIds = new Set((coupons.data?.coupons ?? []).map((c) => c.campaignId));
-  const availableCampaigns = (campaigns.data?.campaigns ?? []).filter((c) => !existingCampaignIds.has(c.id));
-  const campaignNameById = new Map((campaigns.data?.campaigns ?? []).map((c) => [c.id, c.name]));
-
-  return (
-    <Card style={{ marginBottom: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 6 }}>
-        <div style={{ fontSize: 15, fontWeight: 500, flex: 1 }}>Coupons for {partner.name}</div>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', color: theme.textMuted, cursor: 'pointer', fontSize: 13 }}>
-          Close
-        </button>
-      </div>
-      <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
-        Coupons attribute conversions when customers enter a code at checkout instead of clicking a share link.
-        Your site calls <code>POST /coupons/redeem</code> with the code; same downstream commission flow as click-driven attribution.
-      </div>
-      <ErrorBanner error={coupons.error ?? (gateError ? null : mint.error)} />
-      {gateError && (
-        <div style={{ background: `${theme.danger}10`, border: `1px solid ${theme.danger}55`, borderRadius: theme.radiusSm, padding: 12, marginBottom: 12 }}>
-          <div style={{ fontSize: 13, color: theme.danger, fontWeight: 500, marginBottom: 6 }}>
-            Verify your coupon integration before minting more
-          </div>
-          <div style={{ fontSize: 12, color: theme.text, lineHeight: 1.5 }}>
-            {gateError.detail}
-          </div>
-        </div>
-      )}
-      {coupons.isLoading ? (
-        <p style={{ color: theme.textMuted, fontSize: 13 }}>Loading…</p>
-      ) : (
-        <>
-          {(coupons.data?.coupons ?? []).length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
-              {(coupons.data?.coupons ?? []).map((c) => (
-                <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: theme.surface2, border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm }}>
-                  <code style={{ fontSize: 14, fontWeight: 500, color: theme.text, flex: 1 }}>{c.code}</code>
-                  <span style={{ color: theme.textMuted, fontSize: 12 }}>
-                    {campaignNameById.get(c.campaignId) ?? c.campaignId}
-                  </span>
-                  <span style={{ color: theme.textMuted, fontSize: 11, whiteSpace: 'nowrap' }}>
-                    {(c.redemptions90d ?? 0) > 0
-                      ? `${c.redemptions90d} redemption${c.redemptions90d === 1 ? '' : 's'} (90d)`
-                      : 'unused (90d)'}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-          {availableCampaigns.length > 0 ? (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'end' }}>
-              <div>
-                <Label>Campaign</Label>
-                <select
-                  value={pickedCampaign}
-                  onChange={(e) => setPickedCampaign(e.target.value)}
-                  style={{ width: '100%', padding: '8px 10px', background: theme.surface2, border: `1px solid ${theme.border}`, borderRadius: theme.radiusSm, color: theme.text, fontSize: 13 }}
-                >
-                  <option value="">— pick a campaign —</option>
-                  {availableCampaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-              </div>
-              <div>
-                <Label>Code (optional)</Label>
-                <Input
-                  value={customCode}
-                  onChange={(e) => setCustomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''))}
-                  placeholder="auto-generates if blank"
-                  style={{ fontFamily: theme.fontMono }}
-                />
-              </div>
-              <Button onClick={() => mint.mutate()} disabled={!pickedCampaign || mint.isPending}>
-                {mint.isPending ? 'Minting…' : 'Mint coupon'}
-              </Button>
-            </div>
-          ) : (
-            <p style={{ color: theme.textMuted, fontSize: 13, margin: 0 }}>
-              {(coupons.data?.coupons ?? []).length === 0
-                ? 'No campaigns available. Create one in Campaigns first.'
-                : 'This partner has a coupon for every campaign already.'}
-            </p>
-          )}
-        </>
-      )}
     </Card>
   );
 }
