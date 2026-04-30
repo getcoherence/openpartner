@@ -27,6 +27,7 @@ import { partnerAuthRouter } from './routes/partner-auth.js';
 import { adminOverviewRouter } from './routes/admin-overview.js';
 import { funnelRouter } from './routes/funnel.js';
 import { settingsRouter } from './routes/settings.js';
+import { mountStaticUploads, uploadsRouter } from './routes/uploads.js';
 import { adminsRouter } from './routes/admins.js';
 import { installRouter } from './routes/install.js';
 import { fraudReviewRouter } from './routes/fraud-review.js';
@@ -118,6 +119,11 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
     res.json({ ok: true, service: 'api', mode: MODE });
   });
 
+  // Static handler for FS-backed uploads (no-op when STORAGE_KIND=s3).
+  // Mounted before any auth middleware — uploaded assets are public-read
+  // by design (avatars + logos appear in unauthenticated contexts).
+  mountStaticUploads(app);
+
   // ----- Public, non-tenant routes (mounted BEFORE tenantMiddleware) -----
   // These either run before any tenant exists (install), or are platform-
   // wide (metrics scraped by Prometheus). They use the privileged db
@@ -145,6 +151,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(partnerSignupRouter);
   app.use(adminsRouter);
   app.use(settingsRouter);
+  app.use(uploadsRouter);
   app.use(funnelRouter);
   app.use(fraudReviewRouter);
   app.use(webhooksRouter);

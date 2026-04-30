@@ -42,27 +42,34 @@ const settingsSchema = z.object({
   supportEmail: z.string().trim().email().max(254).optional().or(z.literal('')),
 });
 
-export interface ProgramSettings {
+/** What we persist into the Config row. Logo lives on Tenant; everything
+ *  else is per-tenant program settings. */
+interface PersistedProgramSettings {
   programName: string | null;
   supportEmail: string | null;
 }
 
+export interface ProgramSettings extends PersistedProgramSettings {
+  logoUrl: string | null;
+}
+
 async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings> {
   const row = await db<ConfigRow>(TABLES.Config).where({ tenantId, key: CONFIG_KEY }).first();
-  const value = (row?.value ?? {}) as Partial<ProgramSettings>;
+  const value = (row?.value ?? {}) as Partial<PersistedProgramSettings>;
   // Fall back to Tenant.displayName so brand admins don't have to re-type
   // the brand name they set at signup. Saving this page promotes the
   // value into program_settings; until then we just surface the signup
   // value so the UI is pre-populated and the onboarding checklist
   // doesn't keep nagging about a thing that's effectively already set.
   let programName = value.programName ?? null;
-  if (!programName) {
-    const tenant = await db('Tenant').where({ id: tenantId }).first(['displayName']);
-    if (tenant?.displayName) programName = tenant.displayName as string;
-  }
+  // Logo lives on Tenant (set by /uploads/logo). Always read from there
+  // so the cached Config row never lags the actual upload.
+  const tenant = await db('Tenant').where({ id: tenantId }).first(['displayName', 'logoUrl']);
+  if (!programName && tenant?.displayName) programName = tenant.displayName as string;
   return {
     programName,
     supportEmail: value.supportEmail ?? null,
+    logoUrl: (tenant?.logoUrl as string | null | undefined) ?? null,
   };
 }
 
@@ -78,7 +85,7 @@ settingsRouter.post('/config/program', requireAuth, requireAdmin, async (req, re
   const body = settingsSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const next: ProgramSettings = {
+  const next: PersistedProgramSettings = {
     programName: body.data.programName?.trim() || null,
     supportEmail: body.data.supportEmail?.trim() || null,
   };
@@ -88,7 +95,8 @@ settingsRouter.post('/config/program', requireAuth, requireAdmin, async (req, re
     .insert({ tenantId, key: CONFIG_KEY, value: next as unknown as never, updatedAt: now })
     .onConflict(['tenantId', 'key'])
     .merge({ value: next as unknown as never, updatedAt: now });
-  res.json(next);
+  // Re-hydrate so the returned shape matches GET (includes logoUrl).
+  res.json(await readSettings(db, tenantId));
 });
 
 // ---------- Mail settings ----------

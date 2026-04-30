@@ -8,6 +8,7 @@ import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.
 interface ProgramSettings {
   programName: string | null;
   supportEmail: string | null;
+  logoUrl: string | null;
 }
 
 type MailKind = 'smtp' | 'postmark' | 'none';
@@ -69,6 +70,7 @@ function ProgramSection() {
         <div style={{ fontSize: 15, fontWeight: 500 }}>Brand info</div>
       </div>
       <ErrorBanner error={error ?? mut.error} />
+      <LogoUploader logoUrl={data?.logoUrl ?? null} brandName={data?.programName ?? null} />
       <div style={{ marginBottom: 16 }}>
         <Label>Brand name</Label>
         <Input value={programName} onChange={(e) => setProgramName(e.target.value)} placeholder="e.g. Acme" maxLength={120} />
@@ -285,6 +287,90 @@ function Row({ children }: { children: ReactNode }) {
 
 function Hint({ children }: { children: ReactNode }) {
   return <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>{children}</div>;
+}
+
+function LogoUploader({ logoUrl, brandName }: { logoUrl: string | null; brandName: string | null }) {
+  const qc = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const upload = useMutation({
+    mutationFn: (file: File) =>
+      api<{ logoUrl: string }>('/uploads/logo', { method: 'POST', body: file }),
+    onSuccess: () => {
+      setError(null);
+      qc.invalidateQueries({ queryKey: ['program-settings'] });
+      qc.invalidateQueries({ queryKey: ['session-home'] });
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : 'upload failed'),
+  });
+
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      setError('Image too large — max 2 MB.');
+      return;
+    }
+    upload.mutate(file);
+  };
+
+  return (
+    <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 14 }}>
+      <div
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: theme.radiusSm,
+          background: theme.surface2,
+          border: `1px solid ${theme.borderSubtle}`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          overflow: 'hidden',
+          flexShrink: 0,
+        }}
+      >
+        {logoUrl ? (
+          <img src={logoUrl} alt={brandName ?? 'Brand logo'} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+        ) : (
+          <span style={{ fontSize: 22, fontWeight: 600, color: theme.accent }}>
+            {brandName?.charAt(0).toUpperCase() ?? '?'}
+          </span>
+        )}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <Label>Brand logo</Label>
+        <div>
+          <label style={{ display: 'inline-block' }}>
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={onPick}
+              style={{ display: 'none' }}
+              disabled={upload.isPending}
+            />
+            <span
+              style={{
+                display: 'inline-block',
+                padding: '6px 12px',
+                background: theme.surface2,
+                border: `1px solid ${theme.border}`,
+                borderRadius: theme.radiusSm,
+                fontSize: 13,
+                color: theme.text,
+                cursor: upload.isPending ? 'wait' : 'pointer',
+                opacity: upload.isPending ? 0.6 : 1,
+              }}
+            >
+              {upload.isPending ? 'Uploading…' : logoUrl ? 'Replace logo' : 'Upload logo'}
+            </span>
+          </label>
+        </div>
+        <Hint>PNG, JPEG, or WebP. Max 2 MB. Square images render best in the sidebar (we display ~28×28).</Hint>
+        {error && <div style={{ marginTop: 6, fontSize: 12, color: theme.danger }}>{error}</div>}
+      </div>
+    </div>
+  );
 }
 
 // ---------- danger zone ----------

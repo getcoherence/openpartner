@@ -146,16 +146,22 @@ function CreatorChip({ creator }: { creator: NonNullable<Whoami['creator']> }) {
           width: 28,
           height: 28,
           borderRadius: '50%',
-          background: theme.accent,
+          background: creator.avatarUrl ? theme.surface : theme.accent,
           color: theme.accentInk,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           fontWeight: 600,
           fontSize: 12,
+          overflow: 'hidden',
+          flexShrink: 0,
         }}
       >
-        {creator.name.charAt(0).toUpperCase()}
+        {creator.avatarUrl ? (
+          <img src={creator.avatarUrl} alt={creator.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        ) : (
+          creator.name.charAt(0).toUpperCase()
+        )}
       </div>
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{creator.name}</div>

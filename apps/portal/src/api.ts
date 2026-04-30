@@ -31,8 +31,14 @@ export async function api<T = unknown>(
   const key = getApiKey();
   const headers = new Headers(init.headers);
   if (key) headers.set('Authorization', `Bearer ${key}`);
-  if (init.body !== undefined && !headers.has('content-type')) {
+  // Blob/File bodies carry their own content-type and pass through as-is
+  // (used by upload endpoints). Everything else gets JSON treatment.
+  const isBinaryBody = init.body instanceof Blob;
+  if (init.body !== undefined && !isBinaryBody && !headers.has('content-type')) {
     headers.set('content-type', 'application/json');
+  }
+  if (isBinaryBody && !headers.has('content-type')) {
+    headers.set('content-type', (init.body as Blob).type || 'application/octet-stream');
   }
   const slug = currentTenantSlug();
   const tenantPrefix = slug ? `/t/${slug}` : '';
@@ -42,9 +48,11 @@ export async function api<T = unknown>(
     credentials: 'include',
     body: init.body === undefined
       ? undefined
-      : typeof init.body === 'string'
-        ? init.body
-        : JSON.stringify(init.body),
+      : isBinaryBody
+        ? (init.body as Blob)
+        : typeof init.body === 'string'
+          ? init.body
+          : JSON.stringify(init.body),
   });
   if (res.status === 401) {
     clearApiKey();

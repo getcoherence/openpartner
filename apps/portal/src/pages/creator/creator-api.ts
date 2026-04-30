@@ -18,8 +18,14 @@ export async function creatorApi<T = unknown>(
   init: Omit<RequestInit, 'body'> & { body?: unknown } = {},
 ): Promise<T> {
   const headers = new Headers(init.headers);
-  if (init.body !== undefined && !headers.has('content-type')) {
+  // Blob/File bodies pass through with their own content-type so
+  // upload endpoints work without JSON wrapping.
+  const isBinaryBody = init.body instanceof Blob;
+  if (init.body !== undefined && !isBinaryBody && !headers.has('content-type')) {
     headers.set('content-type', 'application/json');
+  }
+  if (isBinaryBody && !headers.has('content-type')) {
+    headers.set('content-type', (init.body as Blob).type || 'application/octet-stream');
   }
   const res = await fetch(`/api/creator-api${path}`, {
     ...init,
@@ -27,9 +33,11 @@ export async function creatorApi<T = unknown>(
     credentials: 'include',
     body: init.body === undefined
       ? undefined
-      : typeof init.body === 'string'
-        ? init.body
-        : JSON.stringify(init.body),
+      : isBinaryBody
+        ? (init.body as Blob)
+        : typeof init.body === 'string'
+          ? init.body
+          : JSON.stringify(init.body),
   });
   if (!res.ok) {
     let detail: unknown = null;

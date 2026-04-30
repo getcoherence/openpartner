@@ -29,6 +29,9 @@ export interface TenantRow {
    *  gate large coupon mints behind a "you've actually wired up the
    *  /coupons/redeem integration" check. Null = never verified. */
   couponIntegrationVerifiedAt: Date | null;
+  /** Public URL for the tenant's brand logo, set via the upload endpoint.
+   *  Null when the brand hasn't uploaded one — UI falls back to text. */
+  logoUrl: string | null;
 }
 
 /** ID of the seeded default tenant — used in single-host mode and during migration backfills. */

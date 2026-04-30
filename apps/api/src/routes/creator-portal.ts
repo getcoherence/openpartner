@@ -20,9 +20,20 @@
  * Discover/Vendor pages render before signup.
  */
 
-import { Router, type Request, type Response } from 'express';
+import express, { Router, type Request, type Response } from 'express';
 
 export const creatorPortalRouter = Router();
+
+// Image-upload bodies arrive as raw binary, not JSON. The global
+// express.json() middleware ignores image content-types, so without this
+// raw parser req.body would be {} and the proxy would forward an empty
+// payload to the Network. Cap matches the Network-side limit.
+creatorPortalRouter.use(
+  express.raw({
+    type: ['image/jpeg', 'image/png', 'image/webp'],
+    limit: 2 * 1024 * 1024,
+  }),
+);
 
 // Whitelist: exact path match or prefix-with-glob. We only forward paths
 // the Network exposes for creator-side flows, never anything else.
@@ -42,6 +53,7 @@ const ALLOWED_EXACT = new Set([
   '/creators/me/partnerships',
   '/creators/me/platforms',
   '/creators/me/recommendations',
+  '/creators/me/uploads/avatar',
   '/offerings',
 ]);
 
@@ -107,7 +119,15 @@ creatorPortalRouter.all(/^\/creator-api(\/.*)?$/, async (req: Request, res: Resp
       signal: AbortSignal.timeout(10_000),
     };
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      init.body = req.body !== undefined ? JSON.stringify(req.body) : undefined;
+      // Binary bodies (image uploads, populated by the express.raw
+      // middleware above) forward as-is. Everything else gets JSON
+      // serialized — the global express.json() middleware put a parsed
+      // object on req.body for application/json requests.
+      if (Buffer.isBuffer(req.body)) {
+        init.body = req.body;
+      } else if (req.body !== undefined) {
+        init.body = JSON.stringify(req.body);
+      }
     }
 
     let upstream: globalThis.Response;

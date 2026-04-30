@@ -209,6 +209,7 @@ function Shell() {
 interface ProgramSettings {
   programName: string | null;
   supportEmail: string | null;
+  logoUrl: string | null;
 }
 
 function Sidebar({ principal }: { principal: Principal }) {
@@ -242,7 +243,15 @@ function Sidebar({ principal }: { principal: Principal }) {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 8px', marginBottom: 20 }}>
-        <Logo />
+        {settings.data?.logoUrl ? (
+          <img
+            src={settings.data.logoUrl}
+            alt={programName}
+            style={{ width: 26, height: 26, borderRadius: 6, objectFit: 'contain', background: theme.surface2 }}
+          />
+        ) : (
+          <Logo />
+        )}
         <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>{programName}</div>
       </div>
 

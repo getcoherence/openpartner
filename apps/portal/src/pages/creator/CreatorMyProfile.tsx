@@ -142,8 +142,8 @@ export function CreatorMyProfilePage() {
               <Field label="Handle" hint="Used as your default share-link slug and your /creators/<handle> URL.">
                 <Input value={handle} onChange={(e) => setHandle(e.target.value)} placeholder="your-handle" />
               </Field>
-              <Field label="Avatar URL">
-                <Input value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} placeholder="https://…" />
+              <Field label="Avatar">
+                <AvatarUploader value={avatarUrl} onChange={setAvatarUrl} name={name} />
               </Field>
               <Field label="Bio">
                 <Textarea value={bio} onChange={(e) => setBio(e.target.value)} rows={4} />
@@ -241,6 +241,93 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       <Label>{label}</Label>
       {children}
       {hint && <p style={{ color: theme.textMuted, fontSize: 12, marginTop: 4, marginBottom: 0 }}>{hint}</p>}
+    </div>
+  );
+}
+
+function AvatarUploader({ value, onChange, name }: { value: string; onChange: (v: string) => void; name: string }) {
+  const [error, setError] = useState<string | null>(null);
+  const upload = useMutation({
+    mutationFn: (file: File) =>
+      creatorApi<{ avatarUrl: string }>('/creators/me/uploads/avatar', { method: 'POST', body: file }),
+    onSuccess: (r) => {
+      setError(null);
+      onChange(r.avatarUrl);
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : 'upload failed'),
+  });
+
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      setError('Image too large — max 2 MB.');
+      return;
+    }
+    upload.mutate(file);
+  };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+      <div
+        style={{
+          width: 64,
+          height: 64,
+          borderRadius: '50%',
+          background: theme.surface,
+          border: `1px solid ${theme.borderSubtle}`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          overflow: 'hidden',
+          flexShrink: 0,
+        }}
+      >
+        {value ? (
+          <img src={value} alt={name || 'Avatar'} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        ) : (
+          <span style={{ fontSize: 24, fontWeight: 600, color: theme.accent }}>
+            {name?.charAt(0).toUpperCase() || '?'}
+          </span>
+        )}
+      </div>
+      <div style={{ flex: 1 }}>
+        <label>
+          <input
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            onChange={onPick}
+            style={{ display: 'none' }}
+            disabled={upload.isPending}
+          />
+          <span
+            style={{
+              display: 'inline-block',
+              padding: '6px 12px',
+              background: theme.surface,
+              border: `1px solid ${theme.border}`,
+              borderRadius: theme.radiusSm,
+              fontSize: 13,
+              color: theme.text,
+              cursor: upload.isPending ? 'wait' : 'pointer',
+              opacity: upload.isPending ? 0.6 : 1,
+            }}
+          >
+            {upload.isPending ? 'Uploading…' : value ? 'Replace' : 'Upload'}
+          </span>
+        </label>
+        {value && (
+          <button
+            onClick={() => onChange('')}
+            style={{ marginLeft: 8, background: 'transparent', border: 'none', color: theme.textMuted, fontSize: 12, cursor: 'pointer' }}
+          >
+            Remove
+          </button>
+        )}
+        <p style={{ fontSize: 12, color: theme.textMuted, margin: '6px 0 0' }}>PNG, JPEG, or WebP. Max 2 MB.</p>
+        {error && <p style={{ fontSize: 12, color: theme.danger, margin: '4px 0 0' }}>{error}</p>}
+      </div>
     </div>
   );
 }
