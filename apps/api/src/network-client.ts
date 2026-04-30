@@ -527,6 +527,19 @@ export const networkProxy = {
       `/vendors/me/discover/creators${querystring ? `?${querystring}` : ''}`,
     ),
 
+  /** Invite a creator to apply to one of this vendor's offerings.
+   *  Network mints an OfferingInvitation + emails the creator a
+   *  deeplink. Idempotent per (offering, creator) — re-inviting the
+   *  same creator refreshes the token + expiry. */
+  inviteCreator: (db: Knex, tenantId: string, offeringId: string, body: { creatorId: string; message?: string }) =>
+    callNetwork<{ ok: true; expiresAt: string }>(
+      db,
+      tenantId,
+      'POST',
+      `/vendors/me/offerings/${encodeURIComponent(offeringId)}/invitations`,
+      body,
+    ),
+
   // Billing — same pattern (vendor token held server-side, portal can't
   // hit Stripe directly). Forwards body straight through; the Network's
   // route does all validation.

@@ -495,6 +495,13 @@ settingsRouter.get('/admin/network/discover/creators', requireAuth, requireAdmin
   return proxy(req, res, (db, tenantId) => networkProxy.discoverCreators(db, tenantId, qs));
 });
 
+// Brand admin invites a discovered creator to apply to an offering.
+// Body is forwarded verbatim — Network validates the creatorId + offering
+// ownership.
+settingsRouter.post('/admin/network/offerings/:id/invite-creator', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.inviteCreator(db, tenantId, req.params.id!, req.body ?? {}), 201),
+);
+
 // ---------- Network billing proxy ----------
 // Self-hosted vendors subscribe to Network access ($29/mo + 3% metered)
 // from this admin surface. Hosted vendors get bundled with their main

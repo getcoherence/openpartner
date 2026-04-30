@@ -1,9 +1,19 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi, ApiError } from './creator-api.js';
+
+interface InvitationContext {
+  id: string;
+  offeringId: string;
+  offeringTitle: string | null;
+  vendorDisplayName: string | null;
+  message: string | null;
+  status: 'pending' | 'consumed' | 'expired';
+  expiresAt: string;
+}
 
 type MyStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'cancelled';
 
@@ -36,6 +46,8 @@ interface Whoami {
 
 export function CreatorOfferingDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  const invitationToken = searchParams.get('invitation');
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [message, setMessage] = useState('');
@@ -54,13 +66,43 @@ export function CreatorOfferingDetailPage() {
     retry: false,
   });
 
+  // Resolve the invitation token if present in the URL — gives us the
+  // brand's pitch + offering context so we can show a banner +
+  // pre-fill the apply form.
+  const { data: invitation } = useQuery({
+    queryKey: ['creator-invitation', invitationToken],
+    queryFn: () => creatorApi<InvitationContext>(`/invitations/${invitationToken}`),
+    enabled: !!invitationToken,
+    retry: false,
+  });
+
+  // When an invitation lands and the apply form is empty, drop the
+  // brand's message into the pitch field as a starting point. The
+  // creator can edit before submitting.
+  useEffect(() => {
+    if (invitation?.message && !message) {
+      setMessage(`Replying to your invitation: ${invitation.message}`);
+    }
+  }, [invitation?.message, message]);
+
   const apply = useMutation({
     mutationFn: () =>
       creatorApi(`/offerings/${id}/apply`, {
         method: 'POST',
         body: { message: message || undefined, preferredSlug: preferredSlug || undefined },
       }),
-    onSuccess: () => {
+    onSuccess: async () => {
+      // Best-effort consume the invitation if we came in via one — so
+      // the brand sees "Application received" status on their side.
+      // Failure here doesn't fail the application; it just leaves the
+      // invitation pending.
+      if (invitationToken && invitation?.status === 'pending') {
+        try {
+          await creatorApi(`/invitations/${invitationToken}/consume`, { method: 'POST' });
+        } catch {
+          /* fire-and-forget */
+        }
+      }
       qc.invalidateQueries({ queryKey: ['creator-my-requests'] });
       navigate('/creator/requests');
     },
@@ -70,6 +112,28 @@ export function CreatorOfferingDetailPage() {
     <Page title={offering?.title ?? 'Program'} subtitle={offering?.vendorName}>
       <ErrorBanner error={error} />
       {isLoading && <Card>Loading…</Card>}
+      {invitation && invitation.status === 'pending' && (
+        <Card style={{ marginBottom: 14, background: `${theme.accent}10`, borderColor: `${theme.accent}55` }}>
+          <div style={{ fontSize: 14, fontWeight: 500, color: theme.accent, marginBottom: 4 }}>
+            ✓ {invitation.vendorDisplayName ?? 'A brand'} invited you to apply
+          </div>
+          {invitation.message && (
+            <p style={{ fontSize: 13, color: theme.textMuted, margin: '8px 0 0', whiteSpace: 'pre-wrap' }}>
+              "{invitation.message}"
+            </p>
+          )}
+          <p style={{ fontSize: 12, color: theme.textDim, margin: '8px 0 0' }}>
+            Your pitch is pre-filled below. Edit + submit to apply.
+          </p>
+        </Card>
+      )}
+      {invitation && invitation.status === 'expired' && (
+        <Card style={{ marginBottom: 14, background: `${theme.danger}10`, borderColor: `${theme.danger}55` }}>
+          <div style={{ fontSize: 13, color: theme.danger }}>
+            This invitation expired. You can still apply normally below.
+          </div>
+        </Card>
+      )}
       {offering && (
         <>
           <Card>

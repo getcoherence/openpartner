@@ -58,6 +58,9 @@ const ALLOWED_PREFIX: Array<{ prefix: string; methods: Set<string> }> = [
   // Public profile lookup — no creator session required, lets brands
   // and the open web hit /creators/by-handle/<handle> on the portal.
   { prefix: '/creators/by-handle/', methods: new Set(['GET']) },
+  // Invitation deeplink resolver (no auth) + consume (creator auth).
+  // GET /invitations/:token, POST /invitations/:token/consume
+  { prefix: '/invitations/', methods: new Set(['GET', 'POST']) },
 ];
 
 function isAllowed(method: string, subpath: string): boolean {

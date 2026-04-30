@@ -9,10 +9,10 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { Users } from 'lucide-react';
-import { api } from '../../api.js';
-import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
+import { api, ApiError } from '../../api.js';
+import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 import { theme } from '../../theme.js';
 
 interface PlatformRow {
@@ -241,15 +241,148 @@ function CreatorCard({ creator }: { creator: DirectoryRow }) {
           {creator.bio}
         </p>
       )}
-      <a
-        href={`/creators/${creator.handle}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{ textDecoration: 'none' }}
-      >
-        <Button variant="secondary" style={{ width: '100%' }}>View profile →</Button>
-      </a>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <a
+          href={`/creators/${creator.handle}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ textDecoration: 'none', flex: 1 }}
+        >
+          <Button variant="secondary" style={{ width: '100%' }}>View profile</Button>
+        </a>
+        <InviteButton creator={creator} />
+      </div>
     </Card>
+  );
+}
+
+interface OfferingOption {
+  id: string;
+  title: string;
+  published: boolean;
+}
+
+function InviteButton({ creator }: { creator: DirectoryRow }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button onClick={() => setOpen(true)} style={{ flex: 1 }}>Invite</Button>
+      {open && <InviteDialog creator={creator} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+function InviteDialog({ creator, onClose }: { creator: DirectoryRow; onClose: () => void }) {
+  const offerings = useQuery({
+    queryKey: ['admin-network-offerings'],
+    queryFn: () => api<{ offerings: OfferingOption[] }>('/admin/network/offerings'),
+    retry: false,
+  });
+  const published = (offerings.data?.offerings ?? []).filter((o) => o.published);
+
+  const [offeringId, setOfferingId] = useState('');
+  const [message, setMessage] = useState('');
+
+  // Default-select the only published offering when there's one — saves
+  // a click in the common case.
+  useEffect(() => {
+    if (!offeringId && published.length === 1) setOfferingId(published[0]!.id);
+  }, [offeringId, published]);
+
+  const send = useMutation({
+    mutationFn: () =>
+      api(`/admin/network/offerings/${offeringId}/invite-creator`, {
+        method: 'POST',
+        body: { creatorId: creator.id, message: message.trim() || undefined },
+      }),
+  });
+
+  const sent = send.isSuccess;
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.5)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 50,
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        style={{
+          background: theme.surface,
+          border: `1px solid ${theme.borderSubtle}`,
+          borderRadius: theme.radiusSm,
+          padding: 24,
+          maxWidth: 480,
+          width: '92%',
+        }}
+      >
+        <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>
+          Invite @{creator.handle}
+        </div>
+        <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 16px' }}>
+          They&rsquo;ll get an email with a one-click link to apply to whichever offering you pick.
+        </p>
+        {sent ? (
+          <>
+            <div style={{ background: theme.successSoft, border: `1px solid ${theme.success}55`, borderRadius: theme.radiusSm, padding: 12, fontSize: 13, color: theme.success, marginBottom: 14 }}>
+              Invitation sent. They&rsquo;ll see your message + a deeplink in their inbox.
+            </div>
+            <Button onClick={onClose} variant="secondary">Close</Button>
+          </>
+        ) : (
+          <>
+            {send.error && (
+              <ErrorBanner error={
+                send.error instanceof ApiError && send.error.message === 'creator_not_found'
+                  ? 'This creator is no longer available (deleted account?).'
+                  : send.error
+              } />
+            )}
+            <div style={{ marginBottom: 14 }}>
+              <Label>Offering</Label>
+              {offerings.isLoading ? (
+                <p style={{ fontSize: 13, color: theme.textMuted, margin: '6px 0 0' }}>Loading…</p>
+              ) : published.length === 0 ? (
+                <p style={{ fontSize: 13, color: theme.textMuted, margin: '6px 0 0' }}>
+                  No published offerings yet. <a href="/admin/network/offerings" style={{ color: theme.accent }}>Create one</a>.
+                </p>
+              ) : (
+                <Select value={offeringId} onChange={(e) => setOfferingId(e.target.value)}>
+                  <option value="">— pick an offering —</option>
+                  {published.map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
+                </Select>
+              )}
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <Label>Message (optional)</Label>
+              <Textarea
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                rows={4}
+                placeholder="Why you'd love to have them. Specific is better than generic."
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button
+                onClick={() => send.mutate()}
+                disabled={!offeringId || send.isPending}
+              >
+                {send.isPending ? 'Sending…' : 'Send invitation'}
+              </Button>
+              <Button variant="secondary" onClick={onClose}>Cancel</Button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
