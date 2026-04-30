@@ -38,6 +38,7 @@ import { LoginPage } from './pages/auth/Login.js';
 import { MagicLandingPage } from './pages/auth/MagicLanding.js';
 import { WebhooksPage } from './pages/admin/Webhooks.js';
 import { AdminSettings } from './pages/admin/Settings.js';
+import { AdminBilling } from './pages/admin/Billing.js';
 import { AdminAdmins } from './pages/admin/Admins.js';
 import { AdminNetwork } from './pages/admin/Network.js';
 import { AdminNetworkComplete } from './pages/admin/NetworkComplete.js';
@@ -190,6 +191,7 @@ function Shell() {
               <Route path="admin/webhooks" element={<WebhooksPage />} />
               <Route path="admin/admins" element={<AdminAdmins />} />
               <Route path="admin/settings" element={<AdminSettings />} />
+              <Route path="admin/billing" element={<AdminBilling />} />
               <Route path="admin/network" element={<AdminNetwork />} />
               <Route path="admin/network/complete" element={<AdminNetworkComplete />} />
               <Route path="admin/network/offerings" element={<AdminNetworkOfferings />} />
@@ -286,6 +288,7 @@ function Sidebar({ principal }: { principal: Principal }) {
             <NavItem to="/admin/webhooks" icon={<Webhook size={16} />}>Webhooks</NavItem>
             <NavItem to="/admin/admins" icon={<UserCog size={16} />}>Admins</NavItem>
             <NavItem to="/admin/settings" icon={<Settings size={16} />}>Settings</NavItem>
+            <NavItem to="/admin/billing" icon={<CreditCard size={16} />}>Billing</NavItem>
           </NavSection>
         )}
 

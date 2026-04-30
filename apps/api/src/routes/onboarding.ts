@@ -15,6 +15,7 @@ import { TABLES, type CampaignRow, type PartnerRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { getNetworkMembership, networkProxy, NetworkProxyError } from '../network-client.js';
+import { getTenantBillingState } from '../billing-plan.js';
 
 export const onboardingRouter = Router();
 
@@ -24,6 +25,8 @@ interface BrandOnboardingStatus {
   networkConnected: boolean;
   offeringPublishedCount: number;
   partnerCount: number;
+  /** True when billing is set up OR not required (selfhost / enterprise). */
+  billingReady: boolean;
   /** True once everything actionable is done — card hides. */
   complete: boolean;
 }
@@ -68,12 +71,23 @@ onboardingRouter.get('/admin/onboarding-status', requireAuth, requireAdmin, asyn
     }
   }
 
+  // Billing readiness: selfhost has no billing, so always "ready".
+  // Enterprise tenants are billed out of band — we treat as "ready"
+  // since there's no Checkout flow for them. Everyone else needs an
+  // active Stripe subscription (trial counts).
+  const billingState = await getTenantBillingState(db, tenantId);
+  const billingReady =
+    billingState.mode === 'selfhost' ||
+    billingState.plan === 'enterprise' ||
+    !!billingState.stripeSubscriptionId;
+
   const complete =
     brandInfoComplete &&
     campaignCount > 0 &&
     networkConnected &&
     offeringPublishedCount > 0 &&
-    partnerCount > 0;
+    partnerCount > 0 &&
+    billingReady;
 
   const out: BrandOnboardingStatus = {
     brandInfoComplete,
@@ -81,6 +95,7 @@ onboardingRouter.get('/admin/onboarding-status', requireAuth, requireAdmin, asyn
     networkConnected,
     offeringPublishedCount,
     partnerCount,
+    billingReady,
     complete,
   };
   res.json(out);

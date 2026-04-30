@@ -418,6 +418,7 @@ interface BrandOnboardingStatus {
   networkConnected: boolean;
   offeringPublishedCount: number;
   partnerCount: number;
+  billingReady: boolean;
   complete: boolean;
 }
 
@@ -459,6 +460,12 @@ function BrandOnboarding() {
       done: data.partnerCount > 0,
       label: 'Invite a partner — or wait for Network applications',
       href: `${tenantBase}/admin/partners`,
+    },
+    {
+      done: data.billingReady,
+      label: 'Activate your 14-day free trial',
+      hint: 'No credit card required. Stripe emails you ~3 days before the trial ends.',
+      href: `${tenantBase}/admin/billing`,
     },
   ];
   return (
