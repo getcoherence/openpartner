@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CreditCard, ExternalLink } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
 import { theme } from '../../theme.js';
@@ -84,6 +84,7 @@ export function AdminBilling() {
 }
 
 function PlanCard({ status }: { status: BillingStatus }) {
+  const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
 
   const startCheckout = useMutation({
@@ -97,6 +98,21 @@ function PlanCard({ status }: { status: BillingStatus }) {
       }),
     onSuccess: (r) => {
       window.location.href = r.url;
+    },
+    onError: (err) => setError(err instanceof ApiError ? err.message : 'failed'),
+  });
+
+  // Pick a plan inline (legacy tenants + anyone signed up before the
+  // marketing pricing CTAs were live). Stamps Tenant.billingPlan, then
+  // chains immediately into Checkout so it's a single click from the
+  // user's perspective.
+  const pickPlan = useMutation({
+    mutationFn: (plan: Plan) =>
+      api<{ ok: boolean; plan: Plan }>('/billing/plan', { method: 'POST', body: { plan } }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['billing-status'] });
+      // Auto-trigger Checkout once the plan stuck.
+      startCheckout.mutate();
     },
     onError: (err) => setError(err instanceof ApiError ? err.message : 'failed'),
   });
@@ -163,17 +179,20 @@ function PlanCard({ status }: { status: BillingStatus }) {
       )}
 
       {!plan && (
-        <PlanPicker
-          onPick={async (picked) => {
-            // Update billingPlan via PATCH then trigger checkout.
-            // For now, the simplest path is to ask the user to re-enter
-            // through the marketing pricing CTA — server-side requires
-            // a plan to be set before checkout. Surface a helpful link.
-            setError(
-              `No plan on file. Pick a tier at openpartner.dev/pricing — clicking "Start ${picked === 'flex' ? 'Flex' : 'Revshare'}" lands you back here with the plan attached.`,
-            );
-          }}
-        />
+        <>
+          <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 14px' }}>
+            Pick a tier to start your 14-day free trial. No card required up front.
+          </p>
+          <PlanPicker
+            disabled={pickPlan.isPending || startCheckout.isPending}
+            onPick={(picked) => pickPlan.mutate(picked)}
+          />
+          {(pickPlan.isPending || startCheckout.isPending) && (
+            <p style={{ fontSize: 12, color: theme.textMuted, marginTop: 8 }}>
+              {pickPlan.isPending ? 'Saving plan…' : 'Opening Stripe Checkout…'}
+            </p>
+          )}
+        </>
       )}
 
       {error && <ErrorBanner error={error} />}
@@ -302,20 +321,22 @@ function PlanCard({ status }: { status: BillingStatus }) {
   );
 }
 
-function PlanPicker({ onPick }: { onPick: (plan: Plan) => void }) {
+function PlanPicker({ onPick, disabled }: { onPick: (plan: Plan) => void; disabled?: boolean }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
       {(['flex', 'revshare'] as const).map((p) => (
         <button
           key={p}
           onClick={() => onPick(p)}
+          disabled={disabled}
           style={{
             background: theme.surface2,
             border: `1px solid ${theme.borderSubtle}`,
             borderRadius: theme.radiusSm,
             padding: 14,
             textAlign: 'left',
-            cursor: 'pointer',
+            cursor: disabled ? 'wait' : 'pointer',
+            opacity: disabled ? 0.6 : 1,
             color: theme.text,
           }}
         >

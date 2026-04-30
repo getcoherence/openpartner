@@ -196,6 +196,20 @@ static_sites:
       pnpm --filter @openpartner/portal build
     output_dir: apps/portal/dist
     catchall_document: index.html
+    envs:
+      # PostHog product analytics. VITE_-prefixed so Vite inlines the
+      # value into the static bundle at build time. BUILD_TIME scope is
+      # required: the static site has no run-time process to read env
+      # vars from. Without this declaration the values you set in the
+      # DO UI may not flow into the build (depending on App Platform
+      # version). Same project key as studio-website for unified
+      # dashboards.
+      - key: VITE_POSTHOG_KEY
+        type: SECRET
+        scope: BUILD_TIME
+      - key: VITE_POSTHOG_HOST
+        scope: BUILD_TIME
+        value: https://us.i.posthog.com
 
 # App-level routing.
 #   /api/* → api (path stripped before forward)

@@ -8,85 +8,22 @@
  * fire — graceful no-op for self-hosters and contributors.
  *
  * Side-effecting on import: just `import './posthog.js'` from main.tsx.
+ *
+ * The bootstrap below is the verbatim PostHog snippet, injected into
+ * <head> as a <script> element. We do this instead of re-implementing
+ * the array-stub in TypeScript because the snippet has subtle
+ * function-shape requirements (arguments capture, push semantics) that
+ * are easy to get wrong in a rewrite. Keeping it as a string ships
+ * exactly what the studio-website ships.
  */
-
-declare global {
-  interface Window {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    posthog?: any;
-  }
-}
 
 const KEY = import.meta.env.VITE_POSTHOG_KEY as string | undefined;
 const HOST = (import.meta.env.VITE_POSTHOG_HOST as string | undefined) ?? 'https://us.i.posthog.com';
 
-if (KEY && typeof document !== 'undefined' && typeof window !== 'undefined') {
-  // The bootstrap below is the standard PostHog array-stub: it stubs
-  // out posthog.* methods that buffer to an array, then async-loads
-  // /static/array.js which replaces the stubs and replays the buffer.
-  // Lets early code call posthog.capture() / posthog.identify() safely
-  // before the real script lands.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ((t: Document, e: any) => {
-    let p: HTMLScriptElement;
-    let r: HTMLScriptElement;
-    if (e.__SV) return;
-    window.posthog = e;
-    e._i = [];
-    e.init = function (i: string, s: { api_host: string }, a: string) {
-      function g(t2: Record<string, unknown>, e2: string) {
-        const o = e2.split('.');
-        if (o.length === 2) {
-          t2 = t2[o[0]!] as Record<string, unknown>;
-          e2 = o[1]!;
-        }
-        t2[e2] = function () {
-          (t2 as { push: (x: unknown) => void }).push(
-            // eslint-disable-next-line prefer-rest-params
-            ([e2] as unknown[]).concat(Array.prototype.slice.call(arguments, 0)),
-          );
-        };
-      }
-      p = t.createElement('script');
-      p.type = 'text/javascript';
-      p.crossOrigin = 'anonymous';
-      p.async = true;
-      p.src = s.api_host.replace(/\/$/, '') + '/static/array.js';
-      r = t.getElementsByTagName('script')[0]!;
-      r.parentNode!.insertBefore(p, r);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let u: any = e;
-      if (a !== undefined) {
-        u = e[a] = [];
-      } else {
-        a = 'posthog';
-      }
-      u.analytics = u;
-      u.init = function (i2: string, s2: unknown, a2: string) {
-        e._i.push([i2, s2, a2]);
-      };
-      u.toString = function (t2: boolean) {
-        let e2 = 'posthog';
-        if (a !== 'posthog') e2 += '.' + a;
-        if (!t2) e2 += ' (stub)';
-        return e2;
-      };
-      u.people = u.people || [];
-      const methods = [
-        'capture', 'register', 'register_once', 'ready', 'set_config', 'get_config',
-        'get_property', 'get_distinct_id', 'toString', 'opt_in_capturing',
-        'opt_out_capturing', 'has_opted_in_capturing', 'has_opted_out_capturing',
-        'clear_opt_in_out_capturing', 'startSessionRecording', 'stopSessionRecording',
-        'sessionRecordingStarted', 'getActiveMatchingSurveys', 'getSurveys',
-        'getNextSurveyStep', 'onFeatureFlags', 'onSessionId', 'getSessionId',
-        'identify', 'setPersonProperties', 'group', 'getGroups',
-        'setGroupProperties', 'reloadFeatureFlags',
-      ];
-      for (const m of methods) g(u, m);
-      u._i.push([i, s, a]);
-    };
-    e.__SV = 1;
-  })(document, window.posthog || []);
-
-  window.posthog.init(KEY, { api_host: HOST, person_profiles: 'identified_only' });
+if (KEY && typeof document !== 'undefined') {
+  const snippet = `!function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]);t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(/\\/$/,"")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;void 0!==a?u=e[a]=[]:a="posthog";u.analytics=u;u.init=function(i,s,a){e._i.push([i,s,a])};u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e};u.people=u.people||[];g(u,"capture");g(u,"register");g(u,"register_once");g(u,"ready");g(u,"set_config");g(u,"get_config");g(u,"get_property");g(u,"get_distinct_id");g(u,"toString");g(u,"opt_in_capturing");g(u,"opt_out_capturing");g(u,"has_opted_in_capturing");g(u,"has_opted_out_capturing");g(u,"clear_opt_in_out_capturing");g(u,"startSessionRecording");g(u,"stopSessionRecording");g(u,"sessionRecordingStarted");g(u,"getActiveMatchingSurveys");g(u,"getSurveys");g(u,"getNextSurveyStep");g(u,"onFeatureFlags");g(u,"onSessionId");g(u,"getSessionId");g(u,"identify");g(u,"setPersonProperties");g(u,"group");g(u,"getGroups");g(u,"setGroupProperties");g(u,"reloadFeatureFlags");u._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);posthog.init(${JSON.stringify(KEY)},{api_host:${JSON.stringify(HOST)},person_profiles:'identified_only'});`;
+  const tag = document.createElement('script');
+  tag.type = 'text/javascript';
+  tag.text = snippet;
+  document.head.appendChild(tag);
 }

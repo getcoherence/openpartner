@@ -23,7 +23,7 @@
 import { Router } from 'express';
 import type { Knex } from 'knex';
 import { z } from 'zod';
-import { TABLES, type TenantRow } from '@openpartner/db';
+import { TABLES, BILLING_PLANS, type BillingPlan, type TenantRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { REVSHARE_FEE_BPS, requireStripe } from '../stripe.js';
 import { getTenantBillingState, priceIdsForPlan, TRIAL_DAYS } from '../billing-plan.js';
@@ -97,6 +97,37 @@ billingRouter.get('/billing/status', requireAuth, requireAdmin, async (req, res)
     trialEndsAt: state.trialEndsAt,
     inTrial: state.inTrial,
   });
+});
+
+/**
+ * Set the tenant's plan in-place when none was picked at signup
+ * (legacy tenants + anyone who signed up before the marketing
+ * pricing CTAs). Refuses to overwrite an existing plan — those go
+ * through the Stripe Customer Portal so the subscription's price
+ * IDs change in lockstep with our local mirror.
+ */
+const setPlanSchema = z.object({
+  plan: z.enum(BILLING_PLANS as readonly [string, ...string[]]),
+});
+billingRouter.post('/billing/plan', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = setPlanSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  const state = await getTenantBillingState(db, tenantId);
+  if (state.plan) {
+    return res.status(409).json({
+      error: 'plan_already_set',
+      detail: 'Use the Stripe Customer Portal to switch plans on an active subscription.',
+      currentPlan: state.plan,
+    });
+  }
+
+  await db<TenantRow>(TABLES.Tenant)
+    .where({ id: tenantId })
+    .update({ billingPlan: body.data.plan as BillingPlan, updatedAt: new Date() });
+
+  res.json({ ok: true, plan: body.data.plan });
 });
 
 const checkoutSchema = z.object({
