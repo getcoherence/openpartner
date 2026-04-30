@@ -10,6 +10,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Default to read-only. Jobs that need to write (the docker job pushes to
+# GHCR) opt in explicitly via their own permissions block.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: typecheck + test

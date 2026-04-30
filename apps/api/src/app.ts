@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import helmet from 'helmet';
 import pinoHttp from 'pino-http';
+import rateLimit from 'express-rate-limit';
 import { ulid } from 'ulid';
 
 import { stripeWebhookRouter } from './routes/stripe-webhook.js';
@@ -83,6 +84,53 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
     }),
   );
   app.use(cookieParser());
+
+  // CSRF: we deliberately do NOT mount a CSRF-token middleware. Defense
+  // is layered:
+  //   1. Session cookies are issued with SameSite=Lax (auth-sessions.ts +
+  //      platform-sessions.ts) — modern browsers refuse to attach them
+  //      on cross-site state-changing requests, which kills the basic
+  //      CSRF attack vector (a malicious site fetch()'ing our endpoints
+  //      with credentials: include can't get the cookie sent).
+  //   2. CORS allowlist is explicit (no `origin: true` reflection;
+  //      see corsOrigins above), so a cross-origin XHR / fetch can't
+  //      read the response even if it could send the request.
+  //   3. The state-changing surface that bypasses cookies entirely —
+  //      bearer-token API access — uses scoped keys, not session
+  //      cookies, so it isn't CSRF-relevant.
+  // CodeQL flags the cookie middleware as unprotected (js/missing-token-
+  // validation) because it can't see the SameSite property on the cookies
+  // we issue downstream — that's a static-analysis false positive.
+
+  // Global rate limit. Caps a single IP at 600 requests / 5 min — well
+  // above any legitimate single-user workload (the portal does ~30 req
+  // on a cold dashboard load) but tight enough that a runaway script
+  // or credential-stuffing loop hits the wall fast. Self-hosters who
+  // sit behind a CDN with rate-limiting (Cloudflare, etc.) get this as
+  // belt-and-suspenders; deployments without an edge layer get baseline
+  // protection here. /health is exempt so kube-probes don't drain the
+  // budget; the click-router hot path runs in a separate service so
+  // it's unaffected. Standard headers turn off the legacy X-RateLimit-*
+  // (we use the IETF draft).
+  app.use(
+    rateLimit({
+      windowMs: 5 * 60 * 1000,
+      limit: 600,
+      standardHeaders: 'draft-7',
+      legacyHeaders: false,
+      // Skip endpoints we trust externally:
+      //   /health, /metrics — kube-probes / Prometheus scrape, no auth, high freq
+      //   /webhooks/* — Stripe etc. retry on rejection; rate-limiting them
+      //     would amplify upstream backpressure into our queues
+      //   /uploads/* — static handler for FS-backed image assets
+      skip: (req) =>
+        req.path === '/health' ||
+        req.path === '/metrics' ||
+        req.path.startsWith('/webhooks/') ||
+        req.path.startsWith('/uploads/'),
+      message: { error: 'rate_limited' },
+    }),
+  );
 
   // Request correlation: accept an inbound X-Request-Id for callers that
   // want to correlate across services, generate a ULID otherwise, and

@@ -27,9 +27,13 @@ uploadsRouter.post(
   async (req, res) => {
     const { db, tenantId } = tenantOf(req);
 
+    // req.header() returns string | undefined and normalizes any
+    // accidental array form, vs req.headers[name] which is typed as
+    // string | string[] | undefined and creates a parameter-tampering
+    // hazard if a client sends multiple Content-Type headers.
     let validated;
     try {
-      validated = validateImageUpload(req.headers['content-type'], req.body?.length ?? 0);
+      validated = validateImageUpload(req.header('content-type'), req.body?.length ?? 0);
     } catch (err) {
       if (err instanceof UploadError) return res.status(400).json({ error: err.code, detail: err.message });
       throw err;
