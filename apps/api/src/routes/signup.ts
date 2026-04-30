@@ -66,7 +66,7 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
   }
 
   let tenantId = ulid();
-  let adminId = ulid();
+  const adminId = ulid();
   const now = new Date();
 
   try {

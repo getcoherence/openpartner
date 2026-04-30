@@ -12,7 +12,6 @@
  * flag so a fresh reminder fires before the new end date.
  */
 
-import type { Knex } from 'knex';
 import { TABLES, type AdminRow, type CampaignRow, type PartnerRow, type TenantRow } from '@openpartner/db';
 import { db, appDb } from './db.js';
 import { getMailer } from './mailer.js';

@@ -11,6 +11,7 @@
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import reactHooks from 'eslint-plugin-react-hooks';
+import globals from 'globals';
 
 export default [
   {
@@ -26,6 +27,38 @@ export default [
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  {
+    // Node globals everywhere — process, console, Buffer, __dirname,
+    // fetch (Node 18+), etc. Without this, no-undef fires on every
+    // console.log() across server code + scripts.
+    files: ['**/*.{ts,tsx,js,mjs,cjs}'],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
+  {
+    // Portal runs in the browser — window/document/localStorage/etc.
+    // Keep node globals on too (build scripts, vite config) since the
+    // portal package mixes both.
+    files: ['apps/portal/**/*.{ts,tsx}'],
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+      },
+    },
+  },
+  {
+    // SDK ships browser + server entries from the same package; both
+    // global sets are legitimate depending on which file you're in.
+    files: ['packages/sdk/**/*.{ts,tsx}'],
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+      },
+    },
+  },
   {
     files: ['**/*.ts', '**/*.tsx'],
     rules: {

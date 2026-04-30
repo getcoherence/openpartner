@@ -47,9 +47,13 @@ export interface Mailer {
 }
 
 /** Strip and quote pieces of a name for safe use in an RFC 5322 display
- *  name. Drops control chars and double-quotes; trims to 80 chars. */
+ *  name. Drops control chars and double-quotes; trims to 80 chars.
+ *  The control-char range is intentional — it's exactly what RFC 5322
+ *  forbids in atom + quoted-string productions. */
+// eslint-disable-next-line no-control-regex
+const DISPLAY_NAME_UNSAFE = /[\x00-\x1f"\\]/g;
 function safeDisplayName(name: string): string {
-  return name.replace(/[\x00-\x1f"\\]/g, '').trim().slice(0, 80);
+  return name.replace(DISPLAY_NAME_UNSAFE, '').trim().slice(0, 80);
 }
 
 /** Pull the bare email address out of `"Name" <addr@host>` or `addr@host`. */

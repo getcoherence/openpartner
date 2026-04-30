@@ -1,6 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
 import { Globe, Inbox, Link2, LogOut, Megaphone, Network, UserCog } from 'lucide-react';
 import { theme } from '../../theme.js';
 import { Logo } from '../auth/Shared.js';

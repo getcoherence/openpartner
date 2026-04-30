@@ -67,7 +67,11 @@ export const RESERVED_SLUGS = new Set([
   'platform',
 ]);
 
+// Express's own type definitions use a namespace under global, so the
+// canonical way to extend Request is the same shape — no idiomatic
+// "module" rewrite available without losing the augmentation.
 declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
       /** Resolved tenant ID. Always set inside the tenant middleware. */

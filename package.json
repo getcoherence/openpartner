@@ -25,6 +25,7 @@
     "@types/node": "^20.12.7",
     "eslint": "9",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.5.0",
     "tsx": "^4.19.0",
     "typescript": "5.4.5",
     "typescript-eslint": "8",
