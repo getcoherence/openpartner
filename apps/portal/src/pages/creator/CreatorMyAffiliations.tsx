@@ -16,6 +16,13 @@ interface Affiliation {
   approvedOfferings: Array<{ id: string; title: string }>;
 }
 
+interface EarningsLink {
+  linkKey: string;
+  clicks: number;
+  attributedEvents: number;
+  attributedRevenue: number;
+}
+
 interface Earnings {
   partnerId: string;
   since: string;
@@ -23,13 +30,16 @@ interface Earnings {
   attributedEvents: number;
   attributedRevenue: number;
   commissionByStatus: Record<string, number>;
+  links?: EarningsLink[];
 }
 
 function EarningsBlock({ aff }: { aff: Affiliation }) {
   const enabled = aff.status === 'active';
   const { data, isLoading, error } = useQuery<Earnings, ApiError>({
     queryKey: ['creator-aff-earnings', aff.id],
-    queryFn: () => creatorApi<Earnings>(`/creators/me/affiliations/${aff.id}/earnings`),
+    // includeLinks=true threads through openpartner's per-Link
+    // breakdown for channel-level performance ("newsletter vs TikTok").
+    queryFn: () => creatorApi<Earnings>(`/creators/me/affiliations/${aff.id}/earnings?includeLinks=true`),
     enabled,
     retry: false,
     staleTime: 60_000,
@@ -42,15 +52,57 @@ function EarningsBlock({ aff }: { aff: Affiliation }) {
     return <p style={{ color: theme.textMuted, fontSize: 13 }}>Couldn&rsquo;t load earnings.</p>;
   }
   if (!data) return null;
+  const linksWithActivity = (data.links ?? []).filter((l) => l.clicks > 0 || l.attributedEvents > 0);
   return (
-    <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 12 }}>
-      <Stat label="Clicks (30d)" value={data.clicks.toLocaleString()} />
-      <Stat label="Attributed events" value={data.attributedEvents.toLocaleString()} />
-      <Stat label="Revenue" value={money(data.attributedRevenue, 'USD')} />
-      {Object.entries(data.commissionByStatus ?? {}).map(([status, amount]) => (
-        <Stat key={status} label={`${status} commission`} value={money(amount, 'USD')} />
-      ))}
-    </div>
+    <>
+      <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 12 }}>
+        <Stat label="Clicks (30d)" value={data.clicks.toLocaleString()} />
+        <Stat label="Attributed events" value={data.attributedEvents.toLocaleString()} />
+        <Stat label="Revenue" value={money(data.attributedRevenue, 'USD')} />
+        {Object.entries(data.commissionByStatus ?? {}).map(([status, amount]) => (
+          <Stat key={status} label={`${status} commission`} value={money(amount, 'USD')} />
+        ))}
+      </div>
+      {linksWithActivity.length > 1 && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 11, color: theme.textDim, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+            By link (30d)
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {linksWithActivity.map((l) => {
+              const conversionRate = l.clicks > 0 ? (l.attributedEvents / l.clicks) * 100 : 0;
+              return (
+                <div
+                  key={l.linkKey}
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1.4fr 1fr 1fr 1fr 1fr',
+                    gap: 8,
+                    fontSize: 13,
+                    padding: '8px 10px',
+                    background: theme.surface2,
+                    border: `1px solid ${theme.borderSubtle}`,
+                    borderRadius: theme.radiusSm,
+                    alignItems: 'center',
+                  }}
+                >
+                  <code style={{ fontSize: 12, color: theme.textMuted }}>{l.linkKey}</code>
+                  <div style={{ color: theme.textMuted }}>{l.clicks.toLocaleString()} clicks</div>
+                  <div style={{ color: theme.textMuted }}>{l.attributedEvents.toLocaleString()} events</div>
+                  <div style={{ color: theme.text }}>{money(l.attributedRevenue, 'USD')}</div>
+                  <div style={{ color: conversionRate >= 1 ? theme.success : theme.textMuted, fontWeight: conversionRate >= 1 ? 500 : 400 }}>
+                    {conversionRate.toFixed(2)}% CVR
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <p style={{ color: theme.textDim, fontSize: 11, marginTop: 6, marginBottom: 0 }}>
+            Different links = different channels. Higher CVR means that channel converts better &mdash; focus there.
+          </p>
+        </div>
+      )}
+    </>
   );
 }
 
