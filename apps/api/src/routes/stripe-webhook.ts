@@ -11,6 +11,7 @@ import {
   type IdentityRow,
   type PartnerRow,
   type PayoutRow,
+  type TenantRow,
 } from '@openpartner/db';
 import { appDb, db } from '../db.js';
 import { attributeEvent } from '../attribution.js';
@@ -312,6 +313,16 @@ async function handleConnectEvent(
           stripeSubscriptionId: session.subscription,
           trialEndsAt,
         });
+        // Stamp firstTrialActivatedAt iff this checkout actually
+        // included a trial AND we haven't stamped before. Conditional
+        // SQL update avoids overwriting on a webhook retry.
+        const startedTrial = session.metadata?.openpartner_trial === '1';
+        if (startedTrial) {
+          await trx<TenantRow>(TABLES.Tenant)
+            .where({ id: tenantId })
+            .whereNull('firstTrialActivatedAt')
+            .update({ firstTrialActivatedAt: new Date(), updatedAt: new Date() });
+        }
         return 'merchant_subscription_persisted';
       }
       return null;

@@ -39,6 +39,11 @@ export interface TenantRow {
   /** Trial expiry. Null when no trial (legacy / enterprise) or when the
    *  trial has already converted to a paid subscription. */
   trialEndsAt: Date | null;
+  /** When the tenant first activated a trial. Set on the first
+   *  checkout.session.completed that includes a trial period; never
+   *  cleared. Used to refuse second-and-later trials so a user can't
+   *  trial-loop by cancelling and re-subscribing. */
+  firstTrialActivatedAt: Date | null;
 }
 
 export type BillingPlan = 'flex' | 'revshare' | 'enterprise';

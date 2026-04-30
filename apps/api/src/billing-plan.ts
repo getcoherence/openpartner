@@ -36,22 +36,41 @@ export interface TenantBillingState {
   mode: OpenPartnerMode;
   trialEndsAt: Date | null;
   inTrial: boolean;
+  /** True iff the tenant has previously activated a trial. Used to
+   *  refuse second-and-later trials. */
+  hasUsedTrial: boolean;
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
+  /** True for tenants that picked a paid plan, used a trial, and are
+   *  now without an active subscription. The soft trial-gate uses
+   *  this to 402 expensive write endpoints. */
+  trialExpiredWithoutSubscription: boolean;
 }
 
 export async function getTenantBillingState(db: Knex, tenantId: string): Promise<TenantBillingState> {
   const tenant = await db<TenantRow>(TABLES.Tenant)
     .where({ id: tenantId })
-    .first(['billingPlan', 'trialEndsAt', 'stripeCustomerId', 'stripeSubscriptionId']);
+    .first(['billingPlan', 'trialEndsAt', 'firstTrialActivatedAt', 'stripeCustomerId', 'stripeSubscriptionId']);
   const plan = (tenant?.billingPlan as BillingPlan | null) ?? null;
+  const hasUsedTrial = !!tenant?.firstTrialActivatedAt;
+  const stripeSubscriptionId = tenant?.stripeSubscriptionId ?? null;
+  // "Trial expired without sub" = paid plan picked, trial has been
+  // used at some point, no current subscription. Enterprise tenants
+  // are never gated (they don't go through the Checkout flow).
+  const trialExpiredWithoutSubscription =
+    plan !== null &&
+    plan !== 'enterprise' &&
+    hasUsedTrial &&
+    !stripeSubscriptionId;
   return {
     plan,
     mode: planToMode(plan),
     trialEndsAt: tenant?.trialEndsAt ? new Date(tenant.trialEndsAt) : null,
     inTrial: tenant?.trialEndsAt ? new Date(tenant.trialEndsAt) > new Date() : false,
+    hasUsedTrial,
     stripeCustomerId: tenant?.stripeCustomerId ?? null,
-    stripeSubscriptionId: tenant?.stripeSubscriptionId ?? null,
+    stripeSubscriptionId,
+    trialExpiredWithoutSubscription,
   };
 }
 

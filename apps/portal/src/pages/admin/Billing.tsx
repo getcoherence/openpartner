@@ -19,6 +19,8 @@ interface BillingStatus {
   trialEnd?: number | null;
   trialEndsAt?: string | null;
   inTrial?: boolean;
+  hasUsedTrial?: boolean;
+  trialExpiredWithoutSubscription?: boolean;
   // Revshare:
   feeRate?: string;
   accruedPlatformFees?: Record<string, number>;
@@ -178,22 +180,68 @@ function PlanCard({ status }: { status: BillingStatus }) {
 
       {plan && !subscribed && (
         <div>
-          <div
-            style={{
-              background: `${theme.accent}10`,
-              border: `1px solid ${theme.accent}55`,
-              borderRadius: theme.radiusSm,
-              padding: 12,
-              marginBottom: 14,
-              fontSize: 13,
-              color: theme.text,
-            }}
-          >
-            Your trial hasn't started yet. Activate it now — no card required for the first 14 days.
-          </div>
-          <Button onClick={() => startCheckout.mutate()} disabled={startCheckout.isPending}>
-            {startCheckout.isPending ? 'Opening Stripe…' : 'Activate 14-day free trial'}
-          </Button>
+          {status.trialExpiredWithoutSubscription ? (
+            <>
+              <div
+                style={{
+                  background: `${theme.danger}10`,
+                  border: `1px solid ${theme.danger}55`,
+                  borderRadius: theme.radiusSm,
+                  padding: 12,
+                  marginBottom: 14,
+                  fontSize: 13,
+                  color: theme.text,
+                }}
+              >
+                <strong style={{ color: theme.danger }}>Trial expired.</strong> Your 14-day free trial
+                has ended without a payment method. New programs, partners, coupons, and offerings
+                are paused until you re-subscribe — but click ingestion + attribution still run, so
+                no data is being lost.
+              </div>
+              <Button onClick={() => startCheckout.mutate()} disabled={startCheckout.isPending}>
+                {startCheckout.isPending ? 'Opening Stripe…' : 'Re-subscribe (card required)'}
+              </Button>
+            </>
+          ) : status.hasUsedTrial ? (
+            <>
+              <div
+                style={{
+                  background: `${theme.accent}10`,
+                  border: `1px solid ${theme.accent}55`,
+                  borderRadius: theme.radiusSm,
+                  padding: 12,
+                  marginBottom: 14,
+                  fontSize: 13,
+                  color: theme.text,
+                }}
+              >
+                You've previously used your free trial. Re-subscribing requires a payment method up
+                front — the trial doesn't reset.
+              </div>
+              <Button onClick={() => startCheckout.mutate()} disabled={startCheckout.isPending}>
+                {startCheckout.isPending ? 'Opening Stripe…' : 'Subscribe (card required)'}
+              </Button>
+            </>
+          ) : (
+            <>
+              <div
+                style={{
+                  background: `${theme.accent}10`,
+                  border: `1px solid ${theme.accent}55`,
+                  borderRadius: theme.radiusSm,
+                  padding: 12,
+                  marginBottom: 14,
+                  fontSize: 13,
+                  color: theme.text,
+                }}
+              >
+                Your trial hasn't started yet. Activate it now — no card required for the first 14 days.
+              </div>
+              <Button onClick={() => startCheckout.mutate()} disabled={startCheckout.isPending}>
+                {startCheckout.isPending ? 'Opening Stripe…' : 'Activate 14-day free trial'}
+              </Button>
+            </>
+          )}
         </div>
       )}
 

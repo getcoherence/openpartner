@@ -58,6 +58,8 @@ billingRouter.get('/billing/status', requireAuth, requireAdmin, async (req, res)
         subscribed: false,
         trialEndsAt: state.trialEndsAt,
         inTrial: state.inTrial,
+        hasUsedTrial: state.hasUsedTrial,
+        trialExpiredWithoutSubscription: state.trialExpiredWithoutSubscription,
       });
     }
     const stripe = requireStripe();
@@ -154,25 +156,38 @@ billingRouter.post('/billing/checkout', requireAuth, requireAdmin, async (req, r
       .update({ stripeCustomerId: customerId, updatedAt: new Date() });
   }
 
-  // Trial: 14 days, no payment method required to start. Stripe emails
-  // the customer ~3 days before the trial ends asking for a card. If
-  // they don't provide one, the subscription cancels automatically.
+  // Trial: 14 days on first activation, no payment method required to
+  // start. Stripe emails the customer ~3 days before the trial ends
+  // asking for a card; if they don't provide one, the subscription
+  // cancels automatically (trial_settings.end_behavior).
+  //
+  // Re-subscription after a prior trial: skip the trial entirely and
+  // require a card up front. firstTrialActivatedAt is set the first
+  // time a checkout-with-trial completes; once it's stamped, no second
+  // trial.
+  const includeTrial = !state.hasUsedTrial;
   const session = await stripe.checkout.sessions.create({
     mode: 'subscription',
     customer: customerId,
     line_items: lineItems,
-    subscription_data: {
-      trial_period_days: TRIAL_DAYS,
-      trial_settings: {
-        end_behavior: { missing_payment_method: 'cancel' },
-      },
-    },
-    payment_method_collection: 'if_required',
+    subscription_data: includeTrial
+      ? {
+          trial_period_days: TRIAL_DAYS,
+          trial_settings: {
+            end_behavior: { missing_payment_method: 'cancel' },
+          },
+        }
+      : undefined,
+    payment_method_collection: includeTrial ? 'if_required' : 'always',
     success_url: body.data.successUrl,
     cancel_url: body.data.cancelUrl,
-    metadata: { openpartner_tenant_id: tenantId, openpartner_plan: state.plan },
+    metadata: {
+      openpartner_tenant_id: tenantId,
+      openpartner_plan: state.plan,
+      openpartner_trial: includeTrial ? '1' : '0',
+    },
   });
-  res.json({ url: session.url });
+  res.json({ url: session.url, trial: includeTrial });
 });
 
 billingRouter.post('/billing/report-usage', requireAuth, requireAdmin, async (req, res) => {
@@ -255,6 +270,10 @@ export interface MerchantSubscriptionPatch {
   stripeCustomerId?: string | null;
   stripeSubscriptionId?: string | null;
   trialEndsAt?: Date | null;
+  /** Stamp the trial-used marker on this update. Webhook sets it to
+   *  `new Date()` only on the first checkout-with-trial completion;
+   *  never cleared afterward. */
+  firstTrialActivatedAt?: Date | null;
 }
 
 export async function persistMerchantSubscription(
@@ -266,6 +285,7 @@ export async function persistMerchantSubscription(
   if (patch.stripeCustomerId !== undefined) dbPatch.stripeCustomerId = patch.stripeCustomerId;
   if (patch.stripeSubscriptionId !== undefined) dbPatch.stripeSubscriptionId = patch.stripeSubscriptionId;
   if (patch.trialEndsAt !== undefined) dbPatch.trialEndsAt = patch.trialEndsAt;
+  if (patch.firstTrialActivatedAt !== undefined) dbPatch.firstTrialActivatedAt = patch.firstTrialActivatedAt;
   await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).update(dbPatch);
 }
 

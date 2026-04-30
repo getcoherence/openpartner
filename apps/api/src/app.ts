@@ -46,6 +46,7 @@ import { clicksRouter } from './routes/clicks.js';
 import { sessionHomeRouter } from './routes/session-home.js';
 import { platformAuthRouter } from './routes/platform-auth.js';
 import { tenantMiddleware } from './tenancy.js';
+import { trialGate } from './middleware/trial-gate.js';
 
 export function createApp(options: { enableLogger?: boolean } = {}) {
   const app = express();
@@ -193,6 +194,12 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   // In single-tenancy mode, tenantId is always 'default'. In multi-tenancy
   // mode, it's resolved from /t/<slug>/... in the URL.
   app.use(tenantMiddleware);
+
+  // Soft trial-gate. Returns 402 on a small allowlist of expensive write
+  // endpoints when the tenant's trial expired without conversion. Reads,
+  // SDK callbacks, click ingestion, billing routes, and auth all stay
+  // open. Mounted right after tenantMiddleware so it has tenant scope.
+  app.use(trialGate);
 
   app.use(authRouter);
   app.use(partnerAuthRouter);
