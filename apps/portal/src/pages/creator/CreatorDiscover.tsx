@@ -46,6 +46,7 @@ export function CreatorDiscoverPage() {
     <Page title="Discover programs" subtitle="Partner programs across the OpenPartner Network. Apply to any.">
       <ErrorBanner error={error} />
       <CreatorOnboarding />
+      <RecommendedStrip />
       <Card>
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 240 }}>
@@ -106,6 +107,69 @@ export function CreatorDiscoverPage() {
         </div>
       )}
     </Page>
+  );
+}
+
+interface Recommendation {
+  id: string;
+  title: string;
+  description: string | null;
+  vendorId: string;
+  vendorName: string;
+  terms: { commissionDescription?: string };
+  reasons: string[];
+}
+
+/** "Recommended for you" strip above the open Discover grid. Lifts
+ *  application volume for creators who don't browse. Hidden when the
+ *  recommender has nothing to show — better than padding with noise. */
+function RecommendedStrip() {
+  const { data, isLoading } = useQuery({
+    queryKey: ['creator-recommendations'],
+    queryFn: () => creatorApi<{ recommendations: Recommendation[] }>('/creators/me/recommendations'),
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
+
+  if (isLoading || !data || data.recommendations.length === 0) return null;
+
+  return (
+    <Card style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>Recommended for you</div>
+      <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 14px' }}>
+        Programs that match your profile, ranked by category overlap + commission richness.
+      </p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 10 }}>
+        {data.recommendations.map((r) => (
+          <Link
+            key={r.id}
+            to={`/creator/offerings/${r.id}`}
+            style={{
+              textDecoration: 'none',
+              padding: '12px 14px',
+              background: theme.surface2,
+              border: `1px solid ${theme.borderSubtle}`,
+              borderRadius: theme.radiusSm,
+              color: theme.text,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+            }}
+          >
+            <div style={{ fontSize: 11, color: theme.textMuted }}>{r.vendorName}</div>
+            <div style={{ fontSize: 14, fontWeight: 500 }}>{r.title}</div>
+            {r.terms?.commissionDescription && (
+              <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 2 }}>{r.terms.commissionDescription}</div>
+            )}
+            {r.reasons.length > 0 && (
+              <div style={{ fontSize: 11, color: theme.accent, marginTop: 6 }}>
+                {r.reasons.slice(0, 2).join(' · ')}
+              </div>
+            )}
+          </Link>
+        ))}
+      </div>
+    </Card>
   );
 }
 

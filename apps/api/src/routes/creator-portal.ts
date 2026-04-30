@@ -41,6 +41,7 @@ const ALLOWED_EXACT = new Set([
   '/creators/me/domains',
   '/creators/me/partnerships',
   '/creators/me/platforms',
+  '/creators/me/recommendations',
   '/offerings',
 ]);
 
