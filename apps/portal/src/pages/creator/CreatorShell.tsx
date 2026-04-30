@@ -61,7 +61,14 @@ function CreatorSidebar({ creator }: { creator: NonNullable<Whoami['creator']> }
   return (
     <aside
       style={{
+        // Sticky + 100vh pins the aside to the viewport so the middle
+        // nav's overflow:auto actually scrolls (otherwise the aside
+        // grows with the main content and the inner overflow never
+        // triggers).
         width: 248,
+        height: '100vh',
+        position: 'sticky',
+        top: 0,
         background: theme.sidebar,
         borderRight: `1px solid ${theme.borderSubtle}`,
         display: 'flex',

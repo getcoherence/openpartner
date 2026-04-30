@@ -222,7 +222,14 @@ function Sidebar({ principal }: { principal: Principal }) {
   return (
     <aside
       style={{
+        // Sticky + 100vh pins the aside to the viewport so the middle
+        // nav's overflow:auto actually scrolls. Without this, the
+        // aside would grow with the main content and the inner overflow
+        // would never trigger.
         width: 248,
+        height: '100vh',
+        position: 'sticky',
+        top: 0,
         background: theme.sidebar,
         borderRight: `1px solid ${theme.borderSubtle}`,
         display: 'flex',
