@@ -45,7 +45,46 @@ couponsRouter.get('/partners/:id/coupons', requireAuth, requirePartnerOrAdmin('i
   const rows = await db<CouponRow>(TABLES.Coupon)
     .where({ partnerId: req.params.id })
     .orderBy('createdAt', 'asc');
-  res.json({ coupons: rows });
+  if (rows.length === 0) return res.json({ coupons: [] });
+
+  // 90-day redemption stats per coupon. Coupon-driven Clicks are
+  // identifiable by landingUrl='coupon://<code>'. Two batched queries
+  // (one for click counts, one for revenue) keep this O(1) regardless
+  // of how many coupons the partner has.
+  const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+  const landingUrls = rows.map((r) => `coupon://${r.code}`);
+
+  const clickCounts = (await db(TABLES.Click)
+    .where({ partnerId: req.params.id })
+    .whereIn('landingUrl', landingUrls)
+    .andWhere('ts', '>=', since)
+    .groupBy('landingUrl')
+    .select('landingUrl')
+    .count<{ landingUrl: string; count: string }[]>({ count: '*' })) as Array<{ landingUrl: string; count: string }>;
+
+  const revenue = (await db(TABLES.Click)
+    .join(TABLES.Attribution, `${TABLES.Attribution}.clickId`, `${TABLES.Click}.id`)
+    .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
+    .where(`${TABLES.Click}.partnerId`, req.params.id)
+    .whereIn(`${TABLES.Click}.landingUrl`, landingUrls)
+    .andWhere(`${TABLES.Attribution}.computedAt`, '>=', since)
+    .groupBy(`${TABLES.Click}.landingUrl`)
+    .select(`${TABLES.Click}.landingUrl as landingUrl`)
+    .select(db.raw(`COALESCE(SUM("Event".value * "Attribution".weight), 0) as revenue`))) as Array<{ landingUrl: string; revenue: string }>;
+
+  const countByUrl = new Map(clickCounts.map((r) => [r.landingUrl, Number(r.count)]));
+  const revenueByUrl = new Map(revenue.map((r) => [r.landingUrl, Number(r.revenue)]));
+
+  res.json({
+    coupons: rows.map((r) => {
+      const url = `coupon://${r.code}`;
+      return {
+        ...r,
+        redemptions90d: countByUrl.get(url) ?? 0,
+        revenue90d: revenueByUrl.get(url) ?? 0,
+      };
+    }),
+  });
 });
 
 const createSchema = z.object({

@@ -398,6 +398,8 @@ interface CouponRow {
   code: string;
   campaignId: string;
   createdAt: string;
+  redemptions90d?: number;
+  revenue90d?: number;
 }
 
 interface CampaignBrief {
@@ -460,6 +462,11 @@ function CouponsDialog({ partner, onClose }: { partner: Partner; onClose: () => 
                   <code style={{ fontSize: 14, fontWeight: 500, color: theme.text, flex: 1 }}>{c.code}</code>
                   <span style={{ color: theme.textMuted, fontSize: 12 }}>
                     {campaignNameById.get(c.campaignId) ?? c.campaignId}
+                  </span>
+                  <span style={{ color: theme.textMuted, fontSize: 11, whiteSpace: 'nowrap' }}>
+                    {(c.redemptions90d ?? 0) > 0
+                      ? `${c.redemptions90d} redemption${c.redemptions90d === 1 ? '' : 's'} (90d)`
+                      : 'unused (90d)'}
                   </span>
                 </div>
               ))}
