@@ -20,7 +20,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
-import { TABLES, type AdminRow, type TenantRow } from '@openpartner/db';
+import { TABLES, BILLING_PLANS, type AdminRow, type TenantRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { issueMagicLink } from '../auth-sessions.js';
@@ -42,6 +42,11 @@ const signupSchema = z.object({
   displayName: z.string().trim().min(1).max(120),
   adminEmail: z.string().trim().email().max(254),
   adminName: z.string().trim().min(1).max(120),
+  /** Optional billing plan picked from the marketing pricing CTAs. Stored
+   *  on Tenant.billingPlan; the actual subscription is created when the
+   *  admin completes Stripe Checkout post-activation. Enterprise tenants
+   *  set this for record-keeping but never run through Checkout. */
+  plan: z.enum(BILLING_PLANS as readonly [string, ...string[]]).optional(),
 });
 
 class SignupGuardError extends Error {
@@ -95,6 +100,9 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
         await trx(TABLES.Config).where({ tenantId, key: 'network_membership' }).del();
         await trx<TenantRow>(TABLES.Tenant).where({ id: tenantId }).update({
           displayName: body.data.displayName,
+          // Refresh the plan choice on recovery — the user may have come
+          // back via a different pricing CTA than their first attempt.
+          ...(body.data.plan ? { billingPlan: body.data.plan as TenantRow['billingPlan'] } : {}),
           updatedAt: new Date(),
         });
       } else {
@@ -103,6 +111,7 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
           slug,
           displayName: body.data.displayName,
           status: 'active',
+          billingPlan: (body.data.plan ?? null) as TenantRow['billingPlan'],
           metadata: { createdBy: 'signup' } as unknown as never,
         });
       }

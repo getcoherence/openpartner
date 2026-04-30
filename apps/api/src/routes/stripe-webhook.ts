@@ -14,7 +14,7 @@ import {
 } from '@openpartner/db';
 import { appDb, db } from '../db.js';
 import { attributeEvent } from '../attribution.js';
-import { persistMerchantSubscription } from './billing.js';
+import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFromStripeSub } from './billing.js';
 import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
 
 const stripeKey = process.env.STRIPE_SECRET_KEY;
@@ -214,6 +214,8 @@ async function resolveTenantForEvent(event: Stripe.Event): Promise<string | null
     }
     case 'customer.created':
     case 'customer.subscription.created':
+    case 'customer.subscription.updated':
+    case 'customer.subscription.deleted':
     case 'invoice.paid':
     case 'invoice.payment_failed':
     case 'charge.refunded':
@@ -292,10 +294,60 @@ async function handleConnectEvent(
       // let mapStripeEvent do attribution."
       if (session.client_reference_id) return null;
       if (session.mode === 'subscription' && typeof session.customer === 'string' && typeof session.subscription === 'string') {
-        await persistMerchantSubscription(trx, tenantId, session.customer, session.subscription);
+        // Pull trial_end off the subscription so the dashboard can show
+        // "trial ends in N days" without an extra round-trip on every
+        // page load.
+        let trialEndsAt: Date | null = null;
+        if (stripe) {
+          try {
+            const sub = await stripe.subscriptions.retrieve(session.subscription);
+            trialEndsAt = sub.trial_end ? new Date(sub.trial_end * 1000) : null;
+          } catch {
+            // Non-fatal: dashboard will show "trial unknown" until the
+            // next subscription update event lands.
+          }
+        }
+        await persistMerchantSubscription(trx, tenantId, {
+          stripeCustomerId: session.customer,
+          stripeSubscriptionId: session.subscription,
+          trialEndsAt,
+        });
         return 'merchant_subscription_persisted';
       }
       return null;
+    }
+    case 'customer.subscription.updated': {
+      // Plan switch via Stripe Customer Portal (or trial conversion).
+      // Detect the new plan from the price IDs on the active items and
+      // update Tenant.billingPlan to match. Only act when the price IDs
+      // are ones we recognize — third-party additions (e.g. one-off line
+      // items) shouldn't reclassify the tenant.
+      const sub = event.data.object as Stripe.Subscription;
+      const priceIds = sub.items.data.map((it) => it.price.id);
+      const newPlan = inferPlanFromPriceIds(priceIds);
+      const trialEndsAt = sub.trial_end ? new Date(sub.trial_end * 1000) : null;
+      if (newPlan) {
+        await updateTenantPlanFromStripeSub(trx, tenantId, newPlan);
+      }
+      // Always refresh trial_end + subscriptionId so the local mirror
+      // reflects the current Stripe state.
+      await persistMerchantSubscription(trx, tenantId, {
+        stripeSubscriptionId: sub.id,
+        trialEndsAt,
+      });
+      return newPlan ? `subscription_updated_plan_${newPlan}` : 'subscription_updated';
+    }
+    case 'customer.subscription.deleted': {
+      // Cancellation (manual via Portal, trial-without-card, or dunning
+      // exhaustion). Clear the local subscription pointer; Tenant stays
+      // active so the admin can re-subscribe via /billing/checkout
+      // without losing data.
+      const sub = event.data.object as Stripe.Subscription;
+      await persistMerchantSubscription(trx, tenantId, {
+        stripeSubscriptionId: null,
+        trialEndsAt: null,
+      });
+      return `subscription_deleted_${sub.status}`;
     }
     case 'transfer.updated':
     case 'transfer.reversed': {

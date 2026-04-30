@@ -1,8 +1,18 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { ApiError } from '../api.js';
 import { theme } from '../theme.js';
 import { AuthFrame } from './auth/Shared.js';
+
+type SignupPlan = 'flex' | 'revshare' | 'enterprise';
+const PLAN_LABELS: Record<SignupPlan, { name: string; tagline: string }> = {
+  flex: { name: 'Flex', tagline: '$49/mo + 1.5% of attributed GMV · 14-day free trial' },
+  revshare: { name: 'Revshare', tagline: '3% of attributed GMV, no monthly · 14-day free trial' },
+  enterprise: { name: 'Enterprise', tagline: 'Custom pricing — our team will reach out' },
+};
+function isPlan(s: string | null): s is SignupPlan {
+  return s === 'flex' || s === 'revshare' || s === 'enterprise';
+}
 
 interface SignupResult {
   ok: true;
@@ -12,6 +22,9 @@ interface SignupResult {
 }
 
 export function SignupPage() {
+  const [params] = useSearchParams();
+  const planParam = params.get('plan');
+  const plan: SignupPlan | null = isPlan(planParam) ? planParam : null;
   const [slug, setSlug] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [adminEmail, setAdminEmail] = useState('');
@@ -37,6 +50,7 @@ export function SignupPage() {
           displayName: displayName.trim(),
           adminEmail: adminEmail.trim().toLowerCase(),
           adminName: adminName.trim(),
+          ...(plan ? { plan } : {}),
         }),
       });
       const data = (await res.json()) as Record<string, unknown>;
@@ -72,6 +86,24 @@ export function SignupPage() {
 
   return (
     <AuthFrame title="Sign up as a brand" subtitle="Create your brand account. We'll email you a sign-in link.">
+      {plan && (
+        <div
+          style={{
+            background: `${theme.accent}10`,
+            border: `1px solid ${theme.accent}55`,
+            borderRadius: theme.radiusSm,
+            padding: '10px 12px',
+            marginBottom: 14,
+          }}
+        >
+          <div style={{ fontSize: 12, color: theme.accent, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: 2 }}>
+            Plan: {PLAN_LABELS[plan].name}
+          </div>
+          <div style={{ fontSize: 12, color: theme.textMuted }}>
+            {PLAN_LABELS[plan].tagline}
+          </div>
+        </div>
+      )}
       <form onSubmit={submit}>
         <Field label="Brand name" hint="What partners see — e.g. Acme.">
           <input

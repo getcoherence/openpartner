@@ -24,7 +24,8 @@
 import type { Knex } from 'knex';
 import { TABLES, type EventRow } from '@openpartner/db';
 import { CONFIG_KEYS, getConfig, setConfig } from './config.js';
-import { getMode, requireStripe } from './stripe.js';
+import { requireStripe } from './stripe.js';
+import { getTenantBillingState } from './billing-plan.js';
 
 // Events we count toward attributed GMV. We sum Event.value for these,
 // scoped to events that have a corresponding Attribution row (i.e. credit
@@ -108,7 +109,8 @@ export async function aggregateAttributedGmv(
  * the same meter. Both are provisioned by `scripts/setup-stripe.mjs`.
  */
 export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<UsageReportResult> {
-  const mode = getMode();
+  const state = await getTenantBillingState(db, tenantId);
+  const mode = state.mode;
   const meterEventName = MODE_TO_METER[mode];
   if (!meterEventName) {
     return {
@@ -123,7 +125,13 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
     };
   }
 
-  const customerId = await getConfig<string>(db, tenantId, CONFIG_KEYS.StripeMerchantCustomerId);
+  // Read Stripe customer from Tenant column (canonical) — fall back to
+  // the legacy Config key for tenants that subscribed before the
+  // billingPlan migration backfilled it. Both should be equivalent
+  // post-migration.
+  const customerId =
+    state.stripeCustomerId ??
+    (await getConfig<string>(db, tenantId, CONFIG_KEYS.StripeMerchantCustomerId));
   if (!customerId) {
     return {
       mode,

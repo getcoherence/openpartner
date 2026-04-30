@@ -32,7 +32,17 @@ export interface TenantRow {
   /** Public URL for the tenant's brand logo, set via the upload endpoint.
    *  Null when the brand hasn't uploaded one — UI falls back to text. */
   logoUrl: string | null;
+  /** Per-tenant billing tier. Null = legacy tenant predating per-tenant
+   *  pricing (resolver falls back to OPENPARTNER_MODE). 'enterprise' has
+   *  no Stripe subscription; billed out of band. */
+  billingPlan: BillingPlan | null;
+  /** Trial expiry. Null when no trial (legacy / enterprise) or when the
+   *  trial has already converted to a paid subscription. */
+  trialEndsAt: Date | null;
 }
+
+export type BillingPlan = 'flex' | 'revshare' | 'enterprise';
+export const BILLING_PLANS: readonly BillingPlan[] = ['flex', 'revshare', 'enterprise'];
 
 /** ID of the seeded default tenant — used in single-host mode and during migration backfills. */
 export const DEFAULT_TENANT_ID = '01J0000000DEFAULTTENANT0000';
