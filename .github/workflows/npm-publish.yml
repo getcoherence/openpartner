@@ -18,9 +18,11 @@ jobs:
 
     permissions:
       contents: read
-      # Required for npm provenance (Sigstore attestations). Lets users
-      # verify the published tarball was built by this workflow on this
-      # commit — defense against compromised maintainer tokens.
+      # Required for npm Trusted Publishing AND provenance attestations.
+      # The OIDC token GitHub mints here is what npm exchanges for a
+      # short-lived publish credential — no NPM_TOKEN secret needed —
+      # AND what Sigstore signs the tarball attestation with so users
+      # can verify the build.
       id-token: write
 
     steps:
@@ -58,11 +60,11 @@ jobs:
 
       - name: Publish
         if: steps.check.outputs.skip != 'true'
-        # --provenance generates a signed Sigstore attestation tying
-        # this tarball to this workflow run + commit SHA. Visible on
-        # npmjs.com/package as a "Provenance" badge.
-        # --no-git-checks: pnpm refuses to publish from a detached HEAD
-        # by default; tag pushes always run detached so we opt out.
+        # Trusted Publishing: no NPM_TOKEN secret. The npm CLI mints a
+        # short-lived publish credential from this workflow's OIDC token
+        # (enabled by `id-token: write` above), validated against the
+        # trusted-publisher config on npmjs.com. Provenance attestation
+        # is automatic. --no-git-checks: pnpm refuses to publish from a
+        # detached HEAD by default; tag pushes always run detached so
+        # we opt out.
         run: pnpm --filter @openpartner/sdk publish --access public --provenance --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
