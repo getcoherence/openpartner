@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ApiError } from '../api.js';
 import { theme } from '../theme.js';
-import { AuthFrame } from './auth/Shared.js';
+import { AuthFrame, SignupTabs } from './auth/Shared.js';
 
 type SignupPlan = 'flex' | 'revshare' | 'enterprise';
 const PLAN_LABELS: Record<SignupPlan, { name: string; tagline: string }> = {
@@ -86,6 +86,7 @@ export function SignupPage() {
 
   return (
     <AuthFrame title="Sign up as a brand" subtitle="Create your brand account. We'll email you a sign-in link.">
+      <SignupTabs active="brand" />
       {plan && (
         <div
           style={{
@@ -151,10 +152,10 @@ export function SignupPage() {
         </Field>
         {err && <div style={{ color: theme.danger, fontSize: 13, marginTop: 4, marginBottom: 8 }}>{err}</div>}
         <button type="submit" disabled={busy} style={primaryBtnStyle(busy)}>
-          {busy ? 'Creating…' : 'Create account'}
+          {busy ? 'Creating brand…' : 'Create brand account'}
         </button>
         <div style={{ marginTop: 12, fontSize: 12, color: theme.textDim, textAlign: 'center' }}>
-          Already have a program? <Link to="/" style={{ color: theme.accent }}>Back to landing</Link>
+          Already have a program? <Link to="/signin" style={{ color: theme.accent }}>Sign in</Link>
         </div>
       </form>
     </AuthFrame>

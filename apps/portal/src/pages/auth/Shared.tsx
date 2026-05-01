@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import { theme } from '../../theme.js';
 
 export function AuthFrame({
@@ -54,5 +55,59 @@ export function Logo({ size = 26 }: { size?: number } = {}) {
       height={size}
       style={{ display: 'block' }}
     />
+  );
+}
+
+/**
+ * Tab strip for switching between brand and creator signup. Renders
+ * above the form on both /signup and /creator/signup. Active tab
+ * shows in the accent color; clicking the inactive tab navigates to
+ * the other signup route, preserving the query string so plan-aware
+ * marketing CTAs (?plan=flex) survive the switch.
+ */
+export function SignupTabs({ active }: { active: 'brand' | 'creator' }) {
+  const location = useLocation();
+  // Preserve search params (?plan=flex etc.) so a brand-side query
+  // stays meaningful if the user toggles to creator and back.
+  const qs = location.search;
+  const tabs = [
+    { key: 'brand' as const, label: 'Brand', href: `/signup${qs}` },
+    { key: 'creator' as const, label: 'Creator', href: `/creator/signup${qs}` },
+  ];
+  return (
+    <div
+      style={{
+        display: 'flex',
+        gap: 4,
+        padding: 4,
+        background: theme.surface2,
+        border: `1px solid ${theme.border}`,
+        borderRadius: theme.radiusSm,
+        marginBottom: 16,
+      }}
+    >
+      {tabs.map((t) => {
+        const isActive = active === t.key;
+        return (
+          <Link
+            key={t.key}
+            to={t.href}
+            style={{
+              flex: 1,
+              textAlign: 'center',
+              padding: '8px 12px',
+              borderRadius: 6,
+              fontSize: 13,
+              fontWeight: 600,
+              color: isActive ? theme.accentInk : theme.textMuted,
+              background: isActive ? theme.accent : 'transparent',
+              transition: 'background 120ms, color 120ms',
+            }}
+          >
+            {t.label}
+          </Link>
+        );
+      })}
+    </div>
   );
 }

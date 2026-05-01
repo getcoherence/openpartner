@@ -1,13 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { theme } from '../../theme.js';
-import { AuthFrame } from '../auth/Shared.js';
+import { AuthFrame, SignupTabs } from '../auth/Shared.js';
 import { creatorApi, ApiError } from './creator-api.js';
 
 type HandleStatus = 'idle' | 'checking' | 'available' | 'taken';
 
 export function CreatorSignupPage() {
-  const nav = useNavigate();
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [handle, setHandle] = useState('');
@@ -76,6 +75,7 @@ export function CreatorSignupPage() {
 
   return (
     <AuthFrame title="Sign up as a creator" subtitle="Browse and apply to partner programs across the OpenPartner Network.">
+      <SignupTabs active="creator" />
       <form onSubmit={submit}>
         <Field label="Your name">
           <input name="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ada Lovelace" required style={inputStyle} />
@@ -108,13 +108,10 @@ export function CreatorSignupPage() {
           disabled={busy || handleStatus === 'taken' || handleStatus === 'checking'}
           style={primaryBtnStyle(busy || handleStatus === 'taken' || handleStatus === 'checking')}
         >
-          {busy ? 'Sending…' : 'Send me a sign-in link'}
+          {busy ? 'Creating creator…' : 'Become a creator'}
         </button>
         <div style={{ marginTop: 12, fontSize: 12, color: theme.textDim, textAlign: 'center' }}>
-          Already have an account? <Link to="/creator/login" style={{ color: theme.accent }}>Sign in</Link> · <Link to="/" style={{ color: theme.accent }}>Home</Link>
-        </div>
-        <div style={{ marginTop: 6, fontSize: 12, color: theme.textDim, textAlign: 'center' }}>
-          Are you a brand? <button type="button" onClick={() => nav('/signup')} style={linkBtnStyle}>Sign up as a brand →</button>
+          Already have an account? <Link to="/creator/login" style={{ color: theme.accent }}>Sign in</Link>
         </div>
       </form>
     </AuthFrame>
@@ -157,11 +154,3 @@ function primaryBtnStyle(disabled: boolean): React.CSSProperties {
   };
 }
 
-const linkBtnStyle: React.CSSProperties = {
-  background: 'transparent',
-  border: 'none',
-  color: theme.accent,
-  cursor: 'pointer',
-  font: 'inherit',
-  padding: 0,
-};
