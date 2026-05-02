@@ -28,6 +28,7 @@ interface Offering {
     commissionDescription?: string;
     cookieWindowDays?: number;
     payoutCadence?: string;
+    payoutHoldbackDays?: number;
     bonuses?: string[];
   };
   createdAt: string;
@@ -147,6 +148,11 @@ export function CreatorOfferingDetailPage() {
             <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 12, color: theme.textMuted, fontSize: 13 }}>
               {offering.terms.cookieWindowDays != null && <span>Cookie window: {offering.terms.cookieWindowDays} days</span>}
               {offering.terms.payoutCadence && <span>Payouts: {offering.terms.payoutCadence}</span>}
+              {offering.terms.payoutHoldbackDays != null && offering.terms.payoutHoldbackDays > 0 && (
+                <span title="Time after a customer converts before the brand can approve + pay your commission. Aligns with their refund window or trial.">
+                  Holdback: {offering.terms.payoutHoldbackDays} days
+                </span>
+              )}
             </div>
           </Card>
 

@@ -16,7 +16,7 @@ interface OfferingListItem {
   vendorId: string;
   vendorName: string;
   vendorPartnerCount: number;
-  terms: { commissionDescription?: string };
+  terms: { commissionDescription?: string; payoutHoldbackDays?: number };
   createdAt: string;
   myStatus: MyStatus;
 }
@@ -83,7 +83,12 @@ export function CreatorDiscoverPage() {
                 <Link to={`/creator/offerings/${o.id}`}>{o.title}</Link>
               </h3>
               {o.terms?.commissionDescription && (
-                <p style={{ fontSize: 13, color: theme.textMuted, margin: '4px 0' }}>{o.terms.commissionDescription}</p>
+                <p style={{ fontSize: 13, color: theme.textMuted, margin: '4px 0' }}>
+                  {o.terms.commissionDescription}
+                  {o.terms.payoutHoldbackDays != null && o.terms.payoutHoldbackDays > 0 && (
+                    <> · {o.terms.payoutHoldbackDays}d holdback</>
+                  )}
+                </p>
               )}
               {o.description && (
                 <p style={{ fontSize: 14, color: theme.text, margin: '8px 0' }}>
@@ -116,7 +121,7 @@ interface Recommendation {
   description: string | null;
   vendorId: string;
   vendorName: string;
-  terms: { commissionDescription?: string };
+  terms: { commissionDescription?: string; payoutHoldbackDays?: number };
   reasons: string[];
 }
 

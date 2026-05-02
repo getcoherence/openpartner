@@ -7,6 +7,7 @@ interface OfferingTerms {
   commissionDescription?: string;
   cookieWindowDays?: number;
   payoutCadence?: string;
+  payoutHoldbackDays?: number;
   bonuses?: string[];
 }
 
@@ -29,6 +30,7 @@ interface Campaign {
   name: string;
   destinationUrl: string;
   deepLinkAllowedDomains: string | null;
+  holdbackDays: number | null;
 }
 
 export function AdminNetworkOfferings() {
@@ -108,6 +110,9 @@ function OfferingList() {
           </div>
           <p style={{ color: '#6b7280', fontSize: 13, margin: '4px 0' }}>
             {o.terms.commissionDescription} · campaign <code>{o.vendorCampaignId}</code>
+            {o.terms.payoutHoldbackDays != null && o.terms.payoutHoldbackDays > 0 && (
+              <> · pays out {o.terms.payoutHoldbackDays}d after conversion</>
+            )}
           </p>
           {o.description && <p>{o.description}</p>}
           <p style={{ fontSize: 13 }}>
@@ -156,6 +161,11 @@ function CreateOfferingForm() {
           terms: {
             commissionDescription,
             cookieWindowDays: cookieWindowDays === '' ? undefined : Number(cookieWindowDays),
+            // Inherit payout holdback from the bound Campaign so creators
+            // see the actual policy on the marketplace listing. Single
+            // source of truth — the brand sets it once on the Campaign,
+            // every Offering backed by that Campaign reflects it.
+            payoutHoldbackDays: selectedCampaign.holdbackDays ?? undefined,
           },
           published: true,
         },
