@@ -9,6 +9,13 @@ interface OfferingTerms {
   payoutCadence?: string;
   payoutHoldbackDays?: number;
   bonuses?: string[];
+  // Snapshot of the bound Campaign's attribution config — surfaced on
+  // the marketplace listing so creators can filter by these values.
+  attributionWindowDays?: number;
+  attributionModel?: string;
+  commissionType?: 'percent' | 'fixed';
+  commissionValue?: number;
+  recurring?: boolean;
 }
 
 interface Offering {
@@ -31,6 +38,9 @@ interface Campaign {
   destinationUrl: string;
   deepLinkAllowedDomains: string | null;
   holdbackDays: number | null;
+  attributionWindowDays: number;
+  attributionModel: string;
+  commissionRule: { type: 'percent' | 'fixed'; value: number; recurring?: boolean };
 }
 
 export function AdminNetworkOfferings() {
@@ -161,11 +171,17 @@ function CreateOfferingForm() {
           terms: {
             commissionDescription,
             cookieWindowDays: cookieWindowDays === '' ? undefined : Number(cookieWindowDays),
-            // Inherit payout holdback from the bound Campaign so creators
-            // see the actual policy on the marketplace listing. Single
-            // source of truth — the brand sets it once on the Campaign,
-            // every Offering backed by that Campaign reflects it.
+            // Snapshot the bound Campaign's attribution + commission
+            // config so creators can filter the discover grid by them.
+            // Single source of truth — the brand sets these on the
+            // Campaign once, every Offering reflects them. Re-publish
+            // an offering to re-snapshot after a campaign edit.
             payoutHoldbackDays: selectedCampaign.holdbackDays ?? undefined,
+            attributionWindowDays: selectedCampaign.attributionWindowDays,
+            attributionModel: selectedCampaign.attributionModel,
+            commissionType: selectedCampaign.commissionRule.type,
+            commissionValue: selectedCampaign.commissionRule.value,
+            recurring: selectedCampaign.commissionRule.recurring ?? false,
           },
           published: true,
         },

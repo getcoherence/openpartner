@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { CheckCircle2, Circle, Globe } from 'lucide-react';
@@ -7,6 +7,19 @@ import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
 
 type MyStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'cancelled';
+type AttributionModel = 'last_click' | 'first_click' | 'linear' | 'position';
+
+interface OfferingTerms {
+  commissionDescription?: string;
+  cookieWindowDays?: number;
+  payoutCadence?: string;
+  payoutHoldbackDays?: number;
+  attributionWindowDays?: number;
+  attributionModel?: AttributionModel;
+  commissionType?: 'percent' | 'fixed';
+  commissionValue?: number;
+  recurring?: boolean;
+}
 
 interface OfferingListItem {
   id: string;
@@ -16,15 +29,34 @@ interface OfferingListItem {
   vendorId: string;
   vendorName: string;
   vendorPartnerCount: number;
-  terms: { commissionDescription?: string; payoutHoldbackDays?: number };
+  terms: OfferingTerms;
   createdAt: string;
   myStatus: MyStatus;
 }
+
+const MODEL_LABELS: Record<AttributionModel, string> = {
+  last_click: 'Last click',
+  first_click: 'First click',
+  linear: 'Linear',
+  position: 'Position',
+};
 
 export function CreatorDiscoverPage() {
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [sort, setSort] = useState<'newest' | 'popular'>('newest');
+
+  // Filter state. All filter-by-* defaults to 'any' so the grid renders
+  // the full result set on first load. Client-side filter — the network
+  // /offerings endpoint stays simple, and the dataset is small enough at
+  // launch (a few hundred offerings) that filtering in the browser is
+  // imperceptible. Move to server-side when we cross ~1k.
+  const [model, setModel] = useState<'any' | AttributionModel>('any');
+  const [maxHoldback, setMaxHoldback] = useState<'any' | '0' | '14' | '30' | '60' | '90'>('any');
+  const [minWindow, setMinWindow] = useState<'any' | '30' | '60' | '90'>('any');
+  const [recurringOnly, setRecurringOnly] = useState(false);
+  const [minCommission, setMinCommission] = useState<'any' | '10' | '20' | '30'>('any');
+  const [showFilters, setShowFilters] = useState(false);
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
@@ -41,6 +73,49 @@ export function CreatorDiscoverPage() {
     queryFn: () => creatorApi<{ offerings: OfferingListItem[] }>(`/offerings${qs ? '?' + qs : ''}`),
     retry: false,
   });
+
+  const filtered = useMemo(() => {
+    if (!data) return [];
+    return data.offerings.filter((o) => {
+      const t = o.terms ?? {};
+      if (model !== 'any' && t.attributionModel !== model) return false;
+      if (maxHoldback !== 'any') {
+        const cap = Number(maxHoldback);
+        const h = t.payoutHoldbackDays ?? 0;
+        if (h > cap) return false;
+      }
+      if (minWindow !== 'any') {
+        const min = Number(minWindow);
+        const w = t.attributionWindowDays ?? 0;
+        if (w < min) return false;
+      }
+      if (recurringOnly && !t.recurring) return false;
+      if (minCommission !== 'any') {
+        const min = Number(minCommission);
+        // Only filter by commission % when the offering explicitly
+        // exposes a percent rule. Fixed-fee offerings stay visible
+        // (they're a different shape; filtering them out would over-
+        // hide).
+        if (t.commissionType === 'percent' && (t.commissionValue ?? 0) < min) return false;
+      }
+      return true;
+    });
+  }, [data, model, maxHoldback, minWindow, recurringOnly, minCommission]);
+
+  const activeFilterCount =
+    (model !== 'any' ? 1 : 0) +
+    (maxHoldback !== 'any' ? 1 : 0) +
+    (minWindow !== 'any' ? 1 : 0) +
+    (recurringOnly ? 1 : 0) +
+    (minCommission !== 'any' ? 1 : 0);
+
+  function clearFilters() {
+    setModel('any');
+    setMaxHoldback('any');
+    setMinWindow('any');
+    setRecurringOnly(false);
+    setMinCommission('any');
+  }
 
   return (
     <Page title="Discover programs" subtitle="Partner programs across the OpenPartner Network. Apply to any.">
@@ -60,20 +135,119 @@ export function CreatorDiscoverPage() {
               <option value="popular">Most partners</option>
             </Select>
           </div>
+          <button
+            type="button"
+            onClick={() => setShowFilters((s) => !s)}
+            style={{
+              background: showFilters ? `${theme.accent}15` : 'transparent',
+              border: `1px solid ${showFilters ? theme.accent : theme.border}`,
+              borderRadius: theme.radiusSm,
+              color: showFilters ? theme.accent : theme.text,
+              cursor: 'pointer',
+              padding: '9px 14px',
+              fontSize: 13,
+              fontWeight: 500,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Filters{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ''}
+          </button>
         </div>
+        {showFilters && (
+          <div
+            style={{
+              marginTop: 14,
+              paddingTop: 14,
+              borderTop: `1px solid ${theme.borderSubtle}`,
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+              gap: 12,
+            }}
+          >
+            <div>
+              <Label>Attribution model</Label>
+              <Select value={model} onChange={(e) => setModel(e.target.value as typeof model)}>
+                <option value="any">Any</option>
+                <option value="last_click">Last click</option>
+                <option value="first_click">First click</option>
+                <option value="linear">Linear</option>
+                <option value="position">Position</option>
+              </Select>
+            </div>
+            <div>
+              <Label>Min attribution window</Label>
+              <Select value={minWindow} onChange={(e) => setMinWindow(e.target.value as typeof minWindow)}>
+                <option value="any">Any</option>
+                <option value="30">≥ 30 days</option>
+                <option value="60">≥ 60 days</option>
+                <option value="90">≥ 90 days</option>
+              </Select>
+            </div>
+            <div>
+              <Label>Max payout holdback</Label>
+              <Select value={maxHoldback} onChange={(e) => setMaxHoldback(e.target.value as typeof maxHoldback)}>
+                <option value="any">Any</option>
+                <option value="0">No holdback</option>
+                <option value="14">≤ 14 days</option>
+                <option value="30">≤ 30 days</option>
+                <option value="60">≤ 60 days</option>
+                <option value="90">≤ 90 days</option>
+              </Select>
+            </div>
+            <div>
+              <Label>Min commission</Label>
+              <Select value={minCommission} onChange={(e) => setMinCommission(e.target.value as typeof minCommission)}>
+                <option value="any">Any</option>
+                <option value="10">≥ 10%</option>
+                <option value="20">≥ 20%</option>
+                <option value="30">≥ 30%</option>
+              </Select>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', paddingBottom: 2 }}>
+              <Label>&nbsp;</Label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text, padding: '9px 0' }}>
+                <input type="checkbox" checked={recurringOnly} onChange={(e) => setRecurringOnly(e.target.checked)} />
+                Recurring only
+              </label>
+            </div>
+            {activeFilterCount > 0 && (
+              <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 9 }}>
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  style={{ background: 'transparent', border: 'none', color: theme.accent, cursor: 'pointer', fontSize: 13, padding: 0 }}
+                >
+                  Clear all
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </Card>
       <div style={{ height: 18 }} />
       {isLoading ? (
         <Card>Loading…</Card>
-      ) : !data || data.offerings.length === 0 ? (
+      ) : filtered.length === 0 ? (
         <EmptyState
-          title={debouncedQ ? `No matches for "${debouncedQ}"` : 'No programs yet'}
-          hint={debouncedQ ? 'Try a different keyword.' : 'Vendors are joining all the time — check back soon.'}
+          title={
+            debouncedQ
+              ? `No matches for "${debouncedQ}"`
+              : activeFilterCount > 0
+                ? 'No programs match your filters'
+                : 'No programs yet'
+          }
+          hint={
+            activeFilterCount > 0
+              ? 'Try widening one of the filters above.'
+              : debouncedQ
+                ? 'Try a different keyword.'
+                : 'Vendors are joining all the time — check back soon.'
+          }
           icon={<Globe size={28} strokeWidth={1.25} />}
         />
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
-          {data.offerings.map((o) => (
+          {filtered.map((o) => (
             <Card key={o.id}>
               <div style={{ color: theme.textMuted, fontSize: 13 }}>
                 <Link to={`/creator/vendors/${o.vendorId}`} style={{ color: theme.textMuted }}>{o.vendorName}</Link>
@@ -83,19 +257,15 @@ export function CreatorDiscoverPage() {
                 <Link to={`/creator/offerings/${o.id}`}>{o.title}</Link>
               </h3>
               {o.terms?.commissionDescription && (
-                <p style={{ fontSize: 13, color: theme.textMuted, margin: '4px 0' }}>
-                  {o.terms.commissionDescription}
-                  {o.terms.payoutHoldbackDays != null && o.terms.payoutHoldbackDays > 0 && (
-                    <> · {o.terms.payoutHoldbackDays}d holdback</>
-                  )}
-                </p>
+                <p style={{ fontSize: 13, color: theme.textMuted, margin: '4px 0 0' }}>{o.terms.commissionDescription}</p>
               )}
+              <OfferingChips terms={o.terms} />
               {o.description && (
-                <p style={{ fontSize: 14, color: theme.text, margin: '8px 0' }}>
+                <p style={{ fontSize: 14, color: theme.text, margin: '10px 0 0' }}>
                   {o.description.slice(0, 180)}{o.description.length > 180 ? '…' : ''}
                 </p>
               )}
-              <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Link to={`/creator/offerings/${o.id}`}>
                   <Button variant={o.myStatus === 'approved' || o.myStatus === 'pending' ? 'secondary' : 'primary'}>
                     {ctaForStatus(o.myStatus)}
@@ -112,6 +282,43 @@ export function CreatorDiscoverPage() {
         </div>
       )}
     </Page>
+  );
+}
+
+/** Inline chip row showing the offering's terms at a glance. Each
+ *  chip maps to one filterable dimension so the grid is self-
+ *  explanatory and the filter values match what's visible. */
+function OfferingChips({ terms }: { terms: OfferingTerms }) {
+  const chips: Array<{ label: string; tone?: 'accent' | 'muted' }> = [];
+  if (terms.attributionModel) chips.push({ label: MODEL_LABELS[terms.attributionModel] });
+  if (terms.attributionWindowDays) chips.push({ label: `${terms.attributionWindowDays}d window` });
+  if (terms.cookieWindowDays) chips.push({ label: `${terms.cookieWindowDays}d cookie` });
+  if (terms.recurring) chips.push({ label: 'Recurring', tone: 'accent' });
+  if (terms.payoutHoldbackDays != null && terms.payoutHoldbackDays > 0) {
+    chips.push({ label: `${terms.payoutHoldbackDays}d holdback`, tone: 'muted' });
+  }
+  if (terms.payoutCadence) chips.push({ label: `${terms.payoutCadence} payouts`, tone: 'muted' });
+  if (chips.length === 0) return null;
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+      {chips.map((c, i) => (
+        <span
+          key={i}
+          style={{
+            fontSize: 11,
+            fontWeight: 500,
+            padding: '3px 8px',
+            borderRadius: 999,
+            background: c.tone === 'accent' ? `${theme.accent}15` : theme.surface2,
+            color: c.tone === 'accent' ? theme.accent : theme.textMuted,
+            border: `1px solid ${c.tone === 'accent' ? `${theme.accent}55` : theme.borderSubtle}`,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {c.label}
+        </span>
+      ))}
+    </div>
   );
 }
 
