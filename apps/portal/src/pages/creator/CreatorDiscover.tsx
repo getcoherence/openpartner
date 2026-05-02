@@ -28,6 +28,7 @@ interface OfferingListItem {
   productUrl: string;
   vendorId: string;
   vendorName: string;
+  vendorLogoUrl: string | null;
   vendorPartnerCount: number;
   terms: OfferingTerms;
   createdAt: string;
@@ -249,9 +250,12 @@ export function CreatorDiscoverPage() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
           {filtered.map((o) => (
             <Card key={o.id}>
-              <div style={{ color: theme.textMuted, fontSize: 13 }}>
-                <Link to={`/creator/vendors/${o.vendorId}`} style={{ color: theme.textMuted }}>{o.vendorName}</Link>
-                {o.vendorPartnerCount > 0 && <> · {o.vendorPartnerCount} partner{o.vendorPartnerCount === 1 ? '' : 's'}</>}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                <BrandMark logoUrl={o.vendorLogoUrl} name={o.vendorName} />
+                <div style={{ color: theme.textMuted, fontSize: 13, minWidth: 0, flex: 1 }}>
+                  <Link to={`/creator/vendors/${o.vendorId}`} style={{ color: theme.textMuted }}>{o.vendorName}</Link>
+                  {o.vendorPartnerCount > 0 && <> · {o.vendorPartnerCount} partner{o.vendorPartnerCount === 1 ? '' : 's'}</>}
+                </div>
               </div>
               <h3 style={{ marginTop: 4, marginBottom: 8 }}>
                 <Link to={`/creator/offerings/${o.id}`}>{o.title}</Link>
@@ -282,6 +286,40 @@ export function CreatorDiscoverPage() {
         </div>
       )}
     </Page>
+  );
+}
+
+/** 28×28 brand mark next to the vendor name on a discover card.
+ *  Uses Tenant.logoUrl when the brand has uploaded one (mirrored from
+ *  openpartner via the heartbeat); falls back to a colored letter
+ *  chip so cards don't look skeletal for brands that haven't set a
+ *  logo. */
+function BrandMark({ logoUrl, name }: { logoUrl: string | null; name: string }) {
+  const initial = name.charAt(0).toUpperCase() || '?';
+  return (
+    <div
+      style={{
+        width: 28,
+        height: 28,
+        borderRadius: 6,
+        background: logoUrl ? theme.surface2 : theme.accent,
+        color: theme.accentInk,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontWeight: 700,
+        fontSize: 12,
+        overflow: 'hidden',
+        flexShrink: 0,
+        border: `1px solid ${theme.borderSubtle}`,
+      }}
+    >
+      {logoUrl ? (
+        <img src={logoUrl} alt={name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+      ) : (
+        initial
+      )}
+    </div>
   );
 }
 

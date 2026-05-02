@@ -772,6 +772,13 @@ export async function sendHeartbeat(db: Knex, tenantId: string): Promise<Heartbe
     .first<{ createdAt: Date } | undefined>('createdAt');
   const lastEventAt = lastEventRow?.createdAt ? new Date(lastEventRow.createdAt).toISOString() : undefined;
 
+  // Mirror Tenant.logoUrl up to the Network so the marketplace
+  // listing can show the brand mark next to the vendor name. Empty
+  // string clears (vendor uploaded then removed); undefined leaves
+  // alone (legacy tenants without a logo column populated).
+  const tenantRow = await db(TABLES.Tenant).where({ id: tenantId }).first<{ logoUrl: string | null } | undefined>('logoUrl');
+  const logoUrl = tenantRow?.logoUrl ?? '';
+
   const url = `${m.networkUrl.replace(/\/$/, '')}/vendors/me/heartbeat`;
   try {
     const res = await fetch(url, {
@@ -781,7 +788,11 @@ export async function sendHeartbeat(db: Knex, tenantId: string): Promise<Heartbe
         authorization: `Bearer ${token}`,
         'user-agent': 'OpenPartner-Vendor/1',
       },
-      body: JSON.stringify({ partnerCount, ...(lastEventAt ? { lastEventAt } : {}) }),
+      body: JSON.stringify({
+        partnerCount,
+        ...(lastEventAt ? { lastEventAt } : {}),
+        logoUrl,
+      }),
       signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
     });
     if (!res.ok) {

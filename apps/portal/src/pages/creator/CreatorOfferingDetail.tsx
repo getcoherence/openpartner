@@ -24,6 +24,7 @@ interface Offering {
   productUrl: string;
   vendorId: string;
   vendorName: string;
+  vendorLogoUrl?: string | null;
   terms: {
     commissionDescription?: string;
     cookieWindowDays?: number;
