@@ -140,19 +140,32 @@ export function CreatorOfferingDetailPage() {
         <>
           <Card>
             {offering.terms.commissionDescription && (
-              <p style={{ color: theme.textMuted, fontSize: 14 }}>{offering.terms.commissionDescription}</p>
+              <TermLine label="Commission" value={offering.terms.commissionDescription} />
             )}
-            {offering.description && <p style={{ marginTop: 8 }}>{offering.description}</p>}
-            <p style={{ marginTop: 12 }}>
-              <a href={offering.productUrl} target="_blank" rel="noopener noreferrer">View product →</a>
-            </p>
-            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 12, color: theme.textMuted, fontSize: 13 }}>
-              {offering.terms.cookieWindowDays != null && <span>Cookie window: {offering.terms.cookieWindowDays} days</span>}
-              {offering.terms.payoutCadence && <span>Payouts: {offering.terms.payoutCadence}</span>}
+            {offering.description && (
+              <TermLine label="About" value={offering.description} multiline />
+            )}
+            <TermLine
+              label="Product"
+              value={
+                <a href={offering.productUrl} target="_blank" rel="noopener noreferrer" style={{ color: theme.accent }}>
+                  {offering.productUrl} ↗
+                </a>
+              }
+            />
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 16, paddingTop: 14, borderTop: `1px solid ${theme.borderSubtle}`, color: theme.textMuted, fontSize: 13 }}>
+              {offering.terms.cookieWindowDays != null && (
+                <LabeledChip label="Cookie window" value={`${offering.terms.cookieWindowDays} days`} />
+              )}
+              {offering.terms.payoutCadence && (
+                <LabeledChip label="Payouts" value={offering.terms.payoutCadence} />
+              )}
               {offering.terms.payoutHoldbackDays != null && offering.terms.payoutHoldbackDays > 0 && (
-                <span title="Time after a customer converts before the brand can approve + pay your commission. Aligns with their refund window or trial.">
-                  Holdback: {offering.terms.payoutHoldbackDays} days
-                </span>
+                <LabeledChip
+                  label="Holdback"
+                  value={`${offering.terms.payoutHoldbackDays} days`}
+                  hint="Time after a customer converts before the brand can approve + pay your commission. Aligns with their refund window or trial."
+                />
               )}
             </div>
           </Card>
@@ -182,6 +195,42 @@ interface ApplyOrStatusProps {
   preferredSlug: string;
   setPreferredSlug: (v: string) => void;
   apply: ReturnType<typeof useMutation<unknown, Error, void>>;
+}
+
+/** Label-on-top, value-below row used inside the offering terms card.
+ *  Replaces the former unlabeled paragraph that left freeform values
+ *  like "50%" floating without context. */
+function TermLine({
+  label,
+  value,
+  multiline,
+}: {
+  label: string;
+  value: React.ReactNode;
+  multiline?: boolean;
+}) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 11, color: theme.textDim, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: 4 }}>
+        {label}
+      </div>
+      <div style={{ fontSize: multiline ? 14 : 15, color: theme.text, whiteSpace: multiline ? 'pre-wrap' : 'normal', lineHeight: multiline ? 1.55 : 1.4 }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+/** Compact label/value pair used for the secondary terms row (cookie
+ *  window, holdback, payout cadence). Kept inline so they fit
+ *  side-by-side on desktop and wrap on mobile. */
+function LabeledChip({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <div title={hint ?? undefined} style={{ display: 'flex', flexDirection: 'column' }}>
+      <span style={{ fontSize: 11, color: theme.textDim, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{label}</span>
+      <span style={{ fontSize: 13, color: theme.text }}>{value}</span>
+    </div>
+  );
 }
 
 function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlug, setPreferredSlug, apply }: ApplyOrStatusProps) {

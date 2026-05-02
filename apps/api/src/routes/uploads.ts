@@ -2,6 +2,7 @@ import express, { Router } from 'express';
 import { TABLES } from '@openpartner/db';
 import { requireAuth, requireAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
+import { sendHeartbeat } from '../network-client.js';
 import { fsStorageDir, getStorage, MAX_UPLOAD_BYTES, newUploadKey, UploadError, validateImageUpload } from '../storage.js';
 
 export const uploadsRouter = Router();
@@ -47,6 +48,15 @@ uploadsRouter.post(
     const url = getStorage().publicUrl(key);
 
     await db(TABLES.Tenant).where({ id: tenantId }).update({ logoUrl: url, updatedAt: new Date() });
+
+    // Push the new logo to the Network now instead of waiting up to an
+    // hour for the cron heartbeat. Brand admins upload then immediately
+    // check the discover/offering pages — without this they see the old
+    // (or missing) logo and assume something's broken. Fire-and-forget
+    // so a Network blip doesn't fail the upload.
+    sendHeartbeat(db, tenantId).catch((err) => {
+      console.error('[uploads/logo] opportunistic heartbeat failed', err);
+    });
 
     res.json({ logoUrl: url });
   },

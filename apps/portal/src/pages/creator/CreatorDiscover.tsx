@@ -261,13 +261,18 @@ export function CreatorDiscoverPage() {
                 <Link to={`/creator/offerings/${o.id}`}>{o.title}</Link>
               </h3>
               {o.terms?.commissionDescription && (
-                <p style={{ fontSize: 13, color: theme.textMuted, margin: '4px 0 0' }}>{o.terms.commissionDescription}</p>
+                <CardField label="Commission" value={o.terms.commissionDescription} emphasize />
               )}
               <OfferingChips terms={o.terms} />
               {o.description && (
-                <p style={{ fontSize: 14, color: theme.text, margin: '10px 0 0' }}>
-                  {o.description.slice(0, 180)}{o.description.length > 180 ? '…' : ''}
-                </p>
+                <CardField
+                  label="About"
+                  value={
+                    o.description.length > 180
+                      ? `${o.description.slice(0, 180)}…`
+                      : o.description
+                  }
+                />
               )}
               <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Link to={`/creator/offerings/${o.id}`}>
@@ -319,6 +324,31 @@ function BrandMark({ logoUrl, name }: { logoUrl: string | null; name: string }) 
       ) : (
         initial
       )}
+    </div>
+  );
+}
+
+/** Tiny label-on-top row used inside a discover card. Replaces the
+ *  former unlabeled paragraph text — creators should never see "50%"
+ *  or a free-form description floating without context. `emphasize`
+ *  bumps the value typography for the headline commission line. */
+function CardField({ label, value, emphasize }: { label: string; value: string; emphasize?: boolean }) {
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ fontSize: 10, color: theme.textDim, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+        {label}
+      </div>
+      <div
+        style={{
+          fontSize: emphasize ? 14 : 13,
+          color: emphasize ? theme.text : theme.textMuted,
+          fontWeight: emphasize ? 500 : 400,
+          marginTop: 2,
+          lineHeight: 1.4,
+        }}
+      >
+        {value}
+      </div>
     </div>
   );
 }
