@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { CheckCircle2, Circle, Globe } from 'lucide-react';
+import { CheckCircle2, Circle, Globe, HelpCircle } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
@@ -57,7 +57,10 @@ export function CreatorDiscoverPage() {
   const [minWindow, setMinWindow] = useState<'any' | '30' | '60' | '90'>('any');
   const [recurringOnly, setRecurringOnly] = useState(false);
   const [minCommission, setMinCommission] = useState<'any' | '10' | '20' | '30'>('any');
-  const [showFilters, setShowFilters] = useState(false);
+  // Filters open by default — they're the main way creators narrow the
+  // grid, and an unopened panel hid the most useful affordance behind a
+  // click. Toggle still collapses for users who want a denser view.
+  const [showFilters, setShowFilters] = useState(true);
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
@@ -166,7 +169,10 @@ export function CreatorDiscoverPage() {
             }}
           >
             <div>
-              <Label>Attribution model</Label>
+              <LabelWithHelp
+                label="Attribution model"
+                hint="How the brand splits credit when a customer touches several creator links before converting. Last click pays the most recent referrer; first click pays the discoverer; linear/position split across all touches."
+              />
               <Select value={model} onChange={(e) => setModel(e.target.value as typeof model)}>
                 <option value="any">Any</option>
                 <option value="last_click">Last click</option>
@@ -176,7 +182,10 @@ export function CreatorDiscoverPage() {
               </Select>
             </div>
             <div>
-              <Label>Min attribution window</Label>
+              <LabelWithHelp
+                label="Min attribution window"
+                hint="The longest gap between someone's click on your link and their eventual purchase that still pays you. Bigger window = more conversions credited to you, especially for products with long evaluation cycles."
+              />
               <Select value={minWindow} onChange={(e) => setMinWindow(e.target.value as typeof minWindow)}>
                 <option value="any">Any</option>
                 <option value="30">≥ 30 days</option>
@@ -185,7 +194,10 @@ export function CreatorDiscoverPage() {
               </Select>
             </div>
             <div>
-              <Label>Max payout holdback</Label>
+              <LabelWithHelp
+                label="Max payout holdback"
+                hint="Time after a customer converts before the brand can approve + pay your commission. Aligns with their refund window or trial — shorter holdback = faster cash, but expect some clawbacks if customers cancel."
+              />
               <Select value={maxHoldback} onChange={(e) => setMaxHoldback(e.target.value as typeof maxHoldback)}>
                 <option value="any">Any</option>
                 <option value="0">No holdback</option>
@@ -196,7 +208,10 @@ export function CreatorDiscoverPage() {
               </Select>
             </div>
             <div>
-              <Label>Min commission</Label>
+              <LabelWithHelp
+                label="Min commission"
+                hint="Lower bound on the percent-of-sale commission. Filters by the program's stated rate — fixed-fee programs (e.g. $50 per signup) stay visible regardless, since percent thresholds don't apply to them."
+              />
               <Select value={minCommission} onChange={(e) => setMinCommission(e.target.value as typeof minCommission)}>
                 <option value="any">Any</option>
                 <option value="10">≥ 10%</option>
@@ -209,6 +224,7 @@ export function CreatorDiscoverPage() {
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text, padding: '9px 0' }}>
                 <input type="checkbox" checked={recurringOnly} onChange={(e) => setRecurringOnly(e.target.checked)} />
                 Recurring only
+                <HelpIcon hint="Show only programs that pay commission on every renewal of a subscription, not just the first invoice. Best for SaaS / membership products where the customer keeps paying month after month." />
               </label>
             </div>
             {activeFilterCount > 0 && (
@@ -325,6 +341,31 @@ function BrandMark({ logoUrl, name }: { logoUrl: string | null; name: string }) 
         initial
       )}
     </div>
+  );
+}
+
+/** Filter label with a hover-help icon that explains the dimension.
+ *  Creators picking filters often don't know what "attribution window"
+ *  or "holdback" mean in concrete terms — the inline ? avoids forcing
+ *  them out to docs. Tooltip uses native title for zero JS cost. */
+function LabelWithHelp({ label, hint }: { label: string; hint: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
+      <span style={{ fontSize: 12, color: theme.textMuted, fontWeight: 500 }}>{label}</span>
+      <HelpIcon hint={hint} />
+    </div>
+  );
+}
+
+function HelpIcon({ hint }: { hint: string }) {
+  return (
+    <span
+      title={hint}
+      aria-label={hint}
+      style={{ display: 'inline-flex', color: theme.textDim, cursor: 'help' }}
+    >
+      <HelpCircle size={13} strokeWidth={1.75} />
+    </span>
   );
 }
 
