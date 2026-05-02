@@ -19,6 +19,11 @@ interface OfferingTerms {
   commissionType?: 'percent' | 'fixed';
   commissionValue?: number;
   recurring?: boolean;
+  /** ISO timestamp when the bound vendor Campaign expires. Null =
+   *  indefinite (no end date). Absent = legacy offering created
+   *  before the snapshot was added — duration UI omits the chip
+   *  rather than guessing. */
+  campaignEndsAt?: string | null;
 }
 
 interface OfferingListItem {
@@ -42,6 +47,46 @@ const MODEL_LABELS: Record<AttributionModel, string> = {
   position: 'Position',
 };
 
+/** Days between now and `endsAt`, rounded up. Returns null when the
+ *  field is unknown (legacy offering) or explicitly null (indefinite)
+ *  — both qualify for any "min remaining" filter since they're at least
+ *  as long as any bounded program. Returns 0 for already-ended (which
+ *  shouldn't appear in the listing but defensively guards the UI). */
+function daysRemaining(endsAt: string | null | undefined): number | null {
+  if (endsAt === undefined || endsAt === null) return null;
+  const end = new Date(endsAt);
+  if (Number.isNaN(end.getTime())) return null;
+  const ms = end.getTime() - Date.now();
+  if (ms <= 0) return 0;
+  return Math.ceil(ms / (24 * 60 * 60 * 1000));
+}
+
+/** Render-ready chip describing the program's runway. Returns null
+ *  for unknown (no chip — don't lie about Ongoing). `kind: 'soon'`
+ *  bumps the chip to accent tone so a 12-day window pops vs a 6-month
+ *  one. */
+function formatDuration(
+  endsAt: string | null | undefined,
+): { label: string; kind: 'ongoing' | 'soon' | 'date' } | null {
+  if (endsAt === undefined) return null;
+  if (endsAt === null) return { label: 'Ongoing', kind: 'ongoing' };
+  const end = new Date(endsAt);
+  if (Number.isNaN(end.getTime())) return null;
+  const days = daysRemaining(endsAt);
+  if (days === null || days <= 0) return null;
+  if (days <= 14) return { label: `Ends in ${days}d`, kind: 'soon' };
+  if (days <= 60) return { label: `Ends in ${days}d`, kind: 'date' };
+  // For longer windows show the actual date — "Ends in 184d" is harder
+  // to picture than "Ends Sep 12".
+  const now = new Date();
+  const fmt = end.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    ...(end.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}),
+  });
+  return { label: `Ends ${fmt}`, kind: 'date' };
+}
+
 export function CreatorDiscoverPage() {
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
@@ -57,6 +102,11 @@ export function CreatorDiscoverPage() {
   const [minWindow, setMinWindow] = useState<'any' | '30' | '60' | '90'>('any');
   const [recurringOnly, setRecurringOnly] = useState(false);
   const [minCommission, setMinCommission] = useState<'any' | '10' | '20' | '30'>('any');
+  // Min remaining runway on the program. Indefinite (no end date) and
+  // unknown (legacy offerings without a snapshot) always qualify —
+  // they're at least as long as any bounded program, so excluding them
+  // would over-hide.
+  const [minDuration, setMinDuration] = useState<'any' | '30' | '90' | '365'>('any');
   // Filters open by default — they're the main way creators narrow the
   // grid, and an unopened panel hid the most useful affordance behind a
   // click. Toggle still collapses for users who want a denser view.
@@ -102,16 +152,25 @@ export function CreatorDiscoverPage() {
         // hide).
         if (t.commissionType === 'percent' && (t.commissionValue ?? 0) < min) return false;
       }
+      if (minDuration !== 'any') {
+        const min = Number(minDuration);
+        const remaining = daysRemaining(t.campaignEndsAt);
+        // null = indefinite OR unknown — always qualifies (longest
+        // possible runway). Bounded programs only qualify when their
+        // remaining days clear the threshold.
+        if (remaining !== null && remaining < min) return false;
+      }
       return true;
     });
-  }, [data, model, maxHoldback, minWindow, recurringOnly, minCommission]);
+  }, [data, model, maxHoldback, minWindow, recurringOnly, minCommission, minDuration]);
 
   const activeFilterCount =
     (model !== 'any' ? 1 : 0) +
     (maxHoldback !== 'any' ? 1 : 0) +
     (minWindow !== 'any' ? 1 : 0) +
     (recurringOnly ? 1 : 0) +
-    (minCommission !== 'any' ? 1 : 0);
+    (minCommission !== 'any' ? 1 : 0) +
+    (minDuration !== 'any' ? 1 : 0);
 
   function clearFilters() {
     setModel('any');
@@ -119,6 +178,7 @@ export function CreatorDiscoverPage() {
     setMinWindow('any');
     setRecurringOnly(false);
     setMinCommission('any');
+    setMinDuration('any');
   }
 
   return (
@@ -217,6 +277,18 @@ export function CreatorDiscoverPage() {
                 <option value="10">≥ 10%</option>
                 <option value="20">≥ 20%</option>
                 <option value="30">≥ 30%</option>
+              </Select>
+            </div>
+            <div>
+              <LabelWithHelp
+                label="Min remaining duration"
+                hint="How long the program is guaranteed to keep accepting your conversions. Indefinite programs (no end date set) always qualify — they're the longest possible runway. Useful when you're investing time in a piece of content and want it to keep paying you."
+              />
+              <Select value={minDuration} onChange={(e) => setMinDuration(e.target.value as typeof minDuration)}>
+                <option value="any">Any</option>
+                <option value="30">≥ 30 days</option>
+                <option value="90">≥ 90 days</option>
+                <option value="365">≥ 1 year</option>
               </Select>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', paddingBottom: 2 }}>
@@ -407,6 +479,8 @@ function OfferingChips({ terms }: { terms: OfferingTerms }) {
     chips.push({ label: `${terms.payoutHoldbackDays}d holdback`, tone: 'muted' });
   }
   if (terms.payoutCadence) chips.push({ label: `${terms.payoutCadence} payouts`, tone: 'muted' });
+  const duration = formatDuration(terms.campaignEndsAt);
+  if (duration) chips.push({ label: duration.label, tone: duration.kind === 'soon' ? 'accent' : 'muted' });
   if (chips.length === 0) return null;
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>

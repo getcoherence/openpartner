@@ -16,6 +16,11 @@ interface OfferingTerms {
   commissionType?: 'percent' | 'fixed';
   commissionValue?: number;
   recurring?: boolean;
+  // Snapshot of the bound Campaign's endsAt. Null = indefinite. Used
+  // by the discover grid to filter / chip the program's remaining
+  // runway. Re-publish the offering after a campaign extension to
+  // re-snapshot.
+  campaignEndsAt?: string | null;
 }
 
 interface Offering {
@@ -41,6 +46,7 @@ interface Campaign {
   attributionWindowDays: number;
   attributionModel: string;
   commissionRule: { type: 'percent' | 'fixed'; value: number; recurring?: boolean };
+  endsAt: string | null;
 }
 
 export function AdminNetworkOfferings() {
@@ -182,6 +188,10 @@ function CreateOfferingForm() {
             commissionType: selectedCampaign.commissionRule.type,
             commissionValue: selectedCampaign.commissionRule.value,
             recurring: selectedCampaign.commissionRule.recurring ?? false,
+            // Snapshot of the campaign's end date. Null = indefinite —
+            // creators see "Ongoing" on the discover card. Re-publish
+            // after a campaign extension to refresh.
+            campaignEndsAt: selectedCampaign.endsAt ?? null,
           },
           published: true,
         },

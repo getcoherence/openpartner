@@ -31,6 +31,9 @@ interface Offering {
     payoutCadence?: string;
     payoutHoldbackDays?: number;
     bonuses?: string[];
+    /** ISO timestamp when the bound vendor Campaign expires. Null =
+     *  indefinite (no end date). Absent = legacy offering. */
+    campaignEndsAt?: string | null;
   };
   createdAt: string;
   myStatus: MyStatus;
@@ -167,6 +170,10 @@ export function CreatorOfferingDetailPage() {
                   hint="Time after a customer converts before the brand can approve + pay your commission. Aligns with their refund window or trial."
                 />
               )}
+              {(() => {
+                const d = formatOfferingDuration(offering.terms.campaignEndsAt);
+                return d ? <LabeledChip label="Duration" value={d} /> : null;
+              })()}
             </div>
           </Card>
 
@@ -219,6 +226,27 @@ function TermLine({
       </div>
     </div>
   );
+}
+
+/** Renders the offering's runway as a single string for the Duration
+ *  chip. Indefinite → "Ongoing". Bounded near-term → "Ends in Nd".
+ *  Bounded far-term → "Ends MMM D". Unknown (legacy offering, field
+ *  absent) → null so the chip is omitted instead of guessing. */
+function formatOfferingDuration(endsAt: string | null | undefined): string | null {
+  if (endsAt === undefined) return null;
+  if (endsAt === null) return 'Ongoing';
+  const end = new Date(endsAt);
+  if (Number.isNaN(end.getTime())) return null;
+  const ms = end.getTime() - Date.now();
+  if (ms <= 0) return null;
+  const days = Math.ceil(ms / (24 * 60 * 60 * 1000));
+  if (days <= 60) return `Ends in ${days} ${days === 1 ? 'day' : 'days'}`;
+  const now = new Date();
+  return `Ends ${end.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    ...(end.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}),
+  })}`;
 }
 
 /** Compact label/value pair used for the secondary terms row (cookie
