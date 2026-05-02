@@ -25,6 +25,9 @@ const createSchema = z.object({
   /** Comma-separated host allowlist for partner deep-linking. Null/omitted
    *  means partners can't override the destination. */
   deepLinkAllowedDomains: z.string().max(1000).optional(),
+  /** Holdback before commissions become approvable. Used to align
+   *  payouts with refund / trial windows. 0 / omitted = no holdback. */
+  holdbackDays: z.number().int().min(0).max(365).optional(),
   startsAt: z.string().datetime().nullable().optional(),
   endsAt: z.string().datetime().nullable().optional(),
   /** When true, after creating the campaign, also grant every existing
@@ -42,6 +45,7 @@ const updateSchema = z.object({
   attributionModel: z.enum(['last_click', 'first_click', 'linear', 'position']).optional(),
   destinationUrl: z.string().url().optional(),
   deepLinkAllowedDomains: z.string().max(1000).nullable().optional(),
+  holdbackDays: z.number().int().min(0).max(365).nullable().optional(),
   startsAt: z.string().datetime().nullable().optional(),
   endsAt: z.string().datetime().nullable().optional(),
 });
@@ -126,6 +130,7 @@ campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) =
       attributionModel: body.data.attributionModel ?? 'last_click',
       destinationUrl: body.data.destinationUrl,
       deepLinkAllowedDomains: body.data.deepLinkAllowedDomains ?? null,
+      holdbackDays: body.data.holdbackDays ?? null,
       startsAt: body.data.startsAt ? new Date(body.data.startsAt) : null,
       endsAt: body.data.endsAt ? new Date(body.data.endsAt) : null,
     })
@@ -173,6 +178,7 @@ campaignsRouter.patch('/campaigns/:id', requireAuth, requireAdmin, async (req, r
   if (body.data.attributionModel !== undefined) patch.attributionModel = body.data.attributionModel;
   if (body.data.destinationUrl !== undefined) patch.destinationUrl = body.data.destinationUrl;
   if (body.data.deepLinkAllowedDomains !== undefined) patch.deepLinkAllowedDomains = body.data.deepLinkAllowedDomains;
+  if (body.data.holdbackDays !== undefined) patch.holdbackDays = body.data.holdbackDays;
   if (body.data.startsAt !== undefined) patch.startsAt = body.data.startsAt ? new Date(body.data.startsAt) : null;
   if (body.data.endsAt !== undefined) patch.endsAt = body.data.endsAt ? new Date(body.data.endsAt) : null;
 

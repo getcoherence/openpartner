@@ -174,6 +174,13 @@ export interface CampaignRow {
    *  overrides (deep-linking to product pages). Null = partners can't
    *  override the Campaign default. */
   deepLinkAllowedDomains: string | null;
+  /** Days a commission must age past accruedAt before it can be
+   *  approved + paid out. Null/0 = no holdback (immediately approvable).
+   *  Used by brands with a refund window or trial — e.g. set to 30
+   *  for a 30-day money-back guarantee so partners don't get paid on
+   *  conversions that might still refund. Surfaced on the offering
+   *  listing so creators see the terms before applying. */
+  holdbackDays: number | null;
   /** Optional scheduled start. Null = no start gate (active immediately). */
   startsAt: Date | null;
   /** Optional scheduled end. Null = runs forever. After this date the

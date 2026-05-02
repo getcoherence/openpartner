@@ -13,6 +13,7 @@ interface Campaign {
   attributionModel: string;
   destinationUrl: string;
   deepLinkAllowedDomains: string | null;
+  holdbackDays: number | null;
   startsAt: string | null;
   endsAt: string | null;
   createdAt: string;
@@ -59,7 +60,7 @@ export function AdminCampaigns() {
         <EmptyState title="No campaigns yet" hint="A campaign holds the commission rule and attribution settings." icon={<Tag size={28} strokeWidth={1.25} />} />
       ) : (
         <Table
-          columns={['Name', 'Status', 'Destination', 'Commission', 'Window', 'Model', 'Created']}
+          columns={['Name', 'Status', 'Destination', 'Commission', 'Window', 'Holdback', 'Model', 'Created']}
           rows={(campaigns.data?.campaigns ?? []).map((c) => [
             <span style={{ fontWeight: 500 }}>{c.name}</span>,
             <CampaignStatusPill campaign={c} />,
@@ -74,6 +75,9 @@ export function AdminCampaigns() {
               {c.commissionRule.recurring && <span style={{ color: theme.textDim, fontSize: 12, marginLeft: 6 }}>(recurring)</span>}
             </span>,
             <span style={{ color: theme.textMuted }}>{c.attributionWindowDays}d</span>,
+            <span style={{ color: c.holdbackDays ? theme.text : theme.textDim }}>
+              {c.holdbackDays ? `${c.holdbackDays}d` : '—'}
+            </span>,
             <code style={{ color: theme.accent, fontSize: 12 }}>{c.attributionModel}</code>,
             <span style={{ color: theme.textMuted }}>{formatDate(c.createdAt, { relative: true })}</span>,
           ])}
@@ -92,6 +96,7 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
   const [recurring, setRecurring] = useState(true);
   const [windowDays, setWindowDays] = useState('60');
   const [model, setModel] = useState<'last_click' | 'first_click' | 'linear' | 'position'>('last_click');
+  const [holdbackDays, setHoldbackDays] = useState('0');
   const [startsAt, setStartsAt] = useState('');
   const [endsAt, setEndsAt] = useState('');
   const [grantToAllPartners, setGrantToAllPartners] = useState(false);
@@ -107,6 +112,7 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
           commissionRule: { type: ruleType, value: Number(ruleValue), recurring },
           attributionWindowDays: Number(windowDays),
           attributionModel: model,
+          holdbackDays: Number(holdbackDays) || undefined,
           startsAt: startsAt ? new Date(startsAt).toISOString() : null,
           endsAt: endsAt ? new Date(endsAt).toISOString() : null,
           grantToAllPartners: grantToAllPartners || undefined,
@@ -187,6 +193,28 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
             <option value="position">Position (40 / 20 / 40)</option>
           </Select>
         </div>
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <LabelWithHelp
+          label="Payout holdback (days)"
+          help={[
+            'How long a commission must age past the conversion before it can be paid out.',
+            '',
+            'Set this to match your refund window or trial period — e.g. 30 days for a SaaS with a 30-day money-back guarantee, or 14 for a 14-day trial. Commissions accrue immediately on conversion but stay in "holdback" until this window elapses.',
+            '',
+            'Visible to creators on the program listing so they know your terms before applying.',
+            '',
+            '0 (default) = no holdback, commissions can be approved as soon as they accrue.',
+          ].join('\n')}
+        />
+        <Select value={holdbackDays} onChange={(e) => setHoldbackDays(e.target.value)}>
+          <option value="0">None — approve immediately</option>
+          <option value="7">7 days</option>
+          <option value="14">14 days (matches a 14-day trial)</option>
+          <option value="30">30 days (matches a 30-day refund window)</option>
+          <option value="60">60 days</option>
+          <option value="90">90 days</option>
+        </Select>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 16 }}>
         <div>

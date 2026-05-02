@@ -36,6 +36,7 @@ import { runPayouts } from './payouts.js';
 import { drainOutbox, reportNetworkPayoutsToNetwork, sendHeartbeat } from './network-client.js';
 import { getMode } from './stripe.js';
 import { sweepCampaignEndNotifications } from './campaign-end-notifications.js';
+import { autoApproveMatureCommissions } from './commission-auto-approve.js';
 
 interface ScheduledJob {
   name: string;
@@ -118,6 +119,12 @@ const JOBS: ScheduledJob[] = [
     cronExpr: '0 9 * * *',
     description: 'Email brand admins + participating partners ~7 days before a campaign ends (daily 09:00 UTC)',
     handler: async () => sweepCampaignEndNotifications(),
+  },
+  {
+    name: 'commission-auto-approve',
+    cronExpr: '15 5 * * *',
+    description: 'Per tenant: auto-approve accrued commissions whose holdback has elapsed (daily 05:15 UTC)',
+    handler: async () => forEachActiveTenant((trx) => autoApproveMatureCommissions(trx)),
   },
 ];
 
