@@ -779,10 +779,15 @@ export async function sendHeartbeat(db: Knex, tenantId: string): Promise<Heartbe
 
   let lastEventAt: string | undefined;
   try {
+    // Event uses `ts` for the event timestamp, not `createdAt` — the
+    // raw event time is the contract-relevant value (when the
+    // conversion happened in the customer's session), not the row
+    // insert time. Using `createdAt` here was a typo that 500'd the
+    // heartbeat in prod and poisoned the request transaction.
     const lastEventRow = await db(TABLES.Event)
-      .orderBy('createdAt', 'desc')
-      .first<{ createdAt: Date } | undefined>('createdAt');
-    lastEventAt = lastEventRow?.createdAt ? new Date(lastEventRow.createdAt).toISOString() : undefined;
+      .orderBy('ts', 'desc')
+      .first<{ ts: Date } | undefined>('ts');
+    lastEventAt = lastEventRow?.ts ? new Date(lastEventRow.ts).toISOString() : undefined;
   } catch (err) {
     return { sent: false, partnerCount, reason: `local_event_lookup_failed: ${errMsg(err)}` };
   }
