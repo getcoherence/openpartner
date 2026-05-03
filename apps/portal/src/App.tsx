@@ -520,7 +520,7 @@ function NetworkNav() {
   const connected = !!(data?.enabled && data.hasVendorToken);
   return (
     <NavSection title="Network" collapsible storageKey="admin-network">
-      <NavItem to="/admin/network" icon={<Globe size={16} />}>{connected ? 'Connection' : 'Get connected'}</NavItem>
+      <NavItem to="/admin/network" icon={<Globe size={16} />} exact>{connected ? 'Connection' : 'Get connected'}</NavItem>
       {connected && (
         <>
           <NavItem to="/admin/network/offerings" icon={<Megaphone size={16} />}>Offerings</NavItem>
@@ -533,11 +533,31 @@ function NetworkNav() {
   );
 }
 
-function NavItem({ to, icon, children }: { to: string; icon: ReactNode; children: ReactNode }) {
+function NavItem({
+  to,
+  icon,
+  children,
+  exact,
+}: {
+  to: string;
+  icon: ReactNode;
+  children: ReactNode;
+  /** When true, this item only highlights on an exact pathname match.
+   *  Use for parent routes whose children are also rendered as their
+   *  own nav items — otherwise prefix-matching makes the parent stay
+   *  highlighted alongside the active child. */
+  exact?: boolean;
+}) {
   const location = useLocation();
   const tenantBase = useTenantBase();
   const href = to.startsWith('/') ? `${tenantBase}${to === '/' ? '' : to}` || '/' : to;
-  const active = location.pathname === href || (href !== '/' && location.pathname.startsWith(href));
+  // Default prefix-match requires the next char to be '/' so that
+  // '/admin/network' doesn't accidentally match '/admin/network-foo'
+  // or '/admin/network-archive'. `exact` opts out of prefix matching
+  // entirely for routes whose children have their own nav entries.
+  const active =
+    location.pathname === href ||
+    (!exact && href !== '/' && location.pathname.startsWith(`${href}/`));
   return (
     <Link
       to={href}
