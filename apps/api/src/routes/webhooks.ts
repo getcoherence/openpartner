@@ -117,6 +117,23 @@ webhooksRouter.get('/webhooks/:id/deliveries', requireAuth, requireAdmin, async 
   res.json({ deliveries });
 });
 
+// Synthetic test ping. Sends a signed `webhook.test` event to the
+// subscriber URL and returns the resulting WebhookDelivery row inline.
+// Zapier / ActivePieces setup flows expect this — it lets the user
+// verify their endpoint config (URL reachable, signature verifiable)
+// without waiting for a real event to fire. Synchronous because the
+// admin is staring at the page; failures should surface, not silently
+// land in the delivery log.
+webhooksRouter.post('/webhooks/:id/test', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const endpoint = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: req.params.id }).first();
+  if (!endpoint) return res.status(404).json({ error: 'not_found' });
+  if (!endpoint.active) return res.status(400).json({ error: 'endpoint_inactive' });
+  const { sendTest } = await import('../webhook-dispatcher.js');
+  const delivery = await sendTest(tenantId, endpoint.id);
+  res.json({ delivery });
+});
+
 webhooksRouter.post('/webhooks/:id/deliveries/:deliveryId/retry', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   // Verify the delivery actually belongs to this endpoint BEFORE firing

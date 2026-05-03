@@ -351,11 +351,69 @@ partnersRouter.post('/partners/:id/reinstate', requireAuth, requireAdmin, async 
   res.json({ ok: true });
 });
 
-partnersRouter.get('/partners', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  const partners = await db<PartnerRow>(TABLES.Partner).orderBy('createdAt', 'desc').limit(500);
-  res.json({ partners });
+/**
+ * List partners. Supports:
+ *   - ?email=foo@bar.com  — exact-match filter (Zapier "find by email")
+ *   - ?limit=N            — page size (1-200, default 100)
+ *   - ?cursor=...         — opaque cursor returned by the previous page
+ *
+ * Returns { partners, nextCursor }. nextCursor is null when no more
+ * pages. Cursor is base64(`createdAt|id`) — encoded so callers don't
+ * try to construct it themselves and we keep ordering invariants.
+ *
+ * Stable ordering: createdAt DESC, id DESC as tiebreaker (id is
+ * lexicographically increasing for ULIDs but not for legacy partners,
+ * so we explicitly tie-break).
+ */
+const listQuerySchema = z.object({
+  email: z.string().trim().email().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional().default(100),
+  cursor: z.string().optional(),
 });
+partnersRouter.get('/partners', requireAuth, grantScope('partners:read'), requireAdmin, async (req, res) => {
+  const q = listQuerySchema.safeParse(req.query);
+  if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
+  const { db } = tenantOf(req);
+  const query = db<PartnerRow>(TABLES.Partner).orderBy([
+    { column: 'createdAt', order: 'desc' },
+    { column: 'id', order: 'desc' },
+  ]);
+  if (q.data.email) query.where('email', q.data.email.toLowerCase());
+  if (q.data.cursor) {
+    const decoded = decodeCursor(q.data.cursor);
+    if (!decoded) return res.status(400).json({ error: 'invalid_cursor' });
+    // Strict inequality on the composite key — the row at the cursor
+    // itself was already returned in the previous page.
+    query.andWhere((qb) =>
+      qb
+        .where('createdAt', '<', decoded.createdAt)
+        .orWhere((qq) => qq.where('createdAt', decoded.createdAt).andWhere('id', '<', decoded.id)),
+    );
+  }
+  const partners = await query.limit(q.data.limit + 1);
+  const hasMore = partners.length > q.data.limit;
+  const page = hasMore ? partners.slice(0, q.data.limit) : partners;
+  const last = page[page.length - 1];
+  const nextCursor = hasMore && last ? encodeCursor(last.createdAt, last.id) : null;
+  res.json({ partners: page, nextCursor });
+});
+
+function encodeCursor(createdAt: Date, id: string): string {
+  return Buffer.from(`${createdAt.toISOString()}|${id}`).toString('base64url');
+}
+
+function decodeCursor(cursor: string): { createdAt: Date; id: string } | null {
+  try {
+    const raw = Buffer.from(cursor, 'base64url').toString('utf8');
+    const [iso, id] = raw.split('|');
+    if (!iso || !id) return null;
+    const createdAt = new Date(iso);
+    if (Number.isNaN(createdAt.getTime())) return null;
+    return { createdAt, id };
+  } catch {
+    return null;
+  }
+}
 
 partnersRouter.get('/partners/:id', requireAuth, requirePartnerOrAdmin('id'), async (req, res) => {
   const { db } = tenantOf(req);

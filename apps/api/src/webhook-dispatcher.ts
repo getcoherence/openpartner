@@ -84,6 +84,38 @@ async function runDispatch(tenantId: string, event: WebhookEventType, data: unkn
   await Promise.all(matching.map((endpoint) => deliverOne(tenantId, endpoint, envelope)));
 }
 
+/**
+ * Synchronous test ping. Used by Zapier / ActivePieces setup flows
+ * via POST /webhooks/:id/test — admin clicks "Send test" and we want
+ * to surface the result immediately rather than dropping it in the
+ * delivery log to be hunted for. Returns the WebhookDelivery row
+ * after the attempt completes (delivered or failed).
+ */
+export async function sendTest(tenantId: string, endpointId: string): Promise<WebhookDeliveryRow | null> {
+  const endpoint = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint)
+    .where({ id: endpointId, tenantId })
+    .first();
+  if (!endpoint) return null;
+  const envelope: WebhookEnvelope = {
+    id: `evt_${ulid()}`,
+    event: 'webhook.test',
+    created: new Date().toISOString(),
+    data: {
+      message: 'This is a test webhook delivery from OpenPartner.',
+      endpointId: endpoint.id,
+      sentAt: new Date().toISOString(),
+    },
+  };
+  await deliverOne(tenantId, endpoint, envelope);
+  // Re-fetch the delivery row that deliverOne wrote so the caller
+  // sees status / httpStatus / error.
+  return (
+    (await db<WebhookDeliveryRow>(TABLES.WebhookDelivery)
+      .where({ eventId: envelope.id })
+      .first()) ?? null
+  );
+}
+
 async function deliverOne(tenantId: string, endpoint: WebhookEndpointRow, envelope: WebhookEnvelope): Promise<void> {
   const deliveryId = ulid();
   const body = JSON.stringify(envelope);
