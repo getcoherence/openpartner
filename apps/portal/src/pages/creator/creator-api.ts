@@ -46,11 +46,19 @@ export async function creatorApi<T = unknown>(
     } catch {
       /* ignore */
     }
-    const detailMsg = (detail && typeof detail === 'object' && 'error' in detail)
-      ? String((detail as { error: unknown }).error)
-      : `${res.status} ${res.statusText}`;
-    throw new ApiError(res.status, detailMsg, detail);
+    throw new ApiError(res.status, friendlyMessage(res, detail), detail);
   }
   if (res.status === 204) return undefined as unknown as T;
   return res.json() as Promise<T>;
+}
+
+function friendlyMessage(res: Response, detail: unknown): string {
+  const fallback = res.statusText ? `${res.status} ${res.statusText}` : `${res.status}`;
+  if (!detail || typeof detail !== 'object') return fallback;
+  const d = detail as Record<string, unknown>;
+  if (typeof d.detail === 'string' && d.detail.length > 0) {
+    return typeof d.error === 'string' ? `${d.error}: ${d.detail}` : d.detail;
+  }
+  if (typeof d.error === 'string' && d.error.length > 0) return d.error;
+  return fallback;
 }

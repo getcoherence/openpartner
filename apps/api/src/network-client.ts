@@ -762,22 +762,45 @@ export async function sendHeartbeat(db: Knex, tenantId: string): Promise<Heartbe
     return { sent: false, partnerCount: 0, reason: 'token_undecryptable' };
   }
 
-  const partnerRows = await db(TABLES.Partner)
-    .whereNull('revokedAt')
-    .count<Array<{ count: string }>>({ count: '*' });
-  const partnerCount = Number(partnerRows[0]?.count ?? 0);
+  // Each local query is independently caught — without this a missing
+  // column or RLS denial bubbles up as a generic 500 from whichever
+  // route invoked us, hiding the real cause behind a meaningless
+  // status code. Returning a descriptive reason lets the admin
+  // diagnose without server log access.
+  let partnerCount = 0;
+  try {
+    const partnerRows = await db(TABLES.Partner)
+      .whereNull('revokedAt')
+      .count<Array<{ count: string }>>({ count: '*' });
+    partnerCount = Number(partnerRows[0]?.count ?? 0);
+  } catch (err) {
+    return { sent: false, partnerCount: 0, reason: `local_partner_count_failed: ${errMsg(err)}` };
+  }
 
-  const lastEventRow = await db(TABLES.Event)
-    .orderBy('createdAt', 'desc')
-    .first<{ createdAt: Date } | undefined>('createdAt');
-  const lastEventAt = lastEventRow?.createdAt ? new Date(lastEventRow.createdAt).toISOString() : undefined;
+  let lastEventAt: string | undefined;
+  try {
+    const lastEventRow = await db(TABLES.Event)
+      .orderBy('createdAt', 'desc')
+      .first<{ createdAt: Date } | undefined>('createdAt');
+    lastEventAt = lastEventRow?.createdAt ? new Date(lastEventRow.createdAt).toISOString() : undefined;
+  } catch (err) {
+    return { sent: false, partnerCount, reason: `local_event_lookup_failed: ${errMsg(err)}` };
+  }
 
   // Mirror Tenant.logoUrl up to the Network so the marketplace
   // listing can show the brand mark next to the vendor name. Empty
   // string clears (vendor uploaded then removed); undefined leaves
   // alone (legacy tenants without a logo column populated).
-  const tenantRow = await db(TABLES.Tenant).where({ id: tenantId }).first<{ logoUrl: string | null } | undefined>('logoUrl');
-  const logoUrl = tenantRow?.logoUrl ?? '';
+  let logoUrl = '';
+  try {
+    const tenantRow = await db(TABLES.Tenant).where({ id: tenantId }).first<{ logoUrl: string | null } | undefined>('logoUrl');
+    logoUrl = tenantRow?.logoUrl ?? '';
+  } catch (err) {
+    // Most likely: Tenant.logoUrl migration not applied. Don't fail
+    // the heartbeat — drop the field and continue. partnerCount +
+    // lastEventAt still propagate, which is more useful than a 500.
+    console.warn('[network-client] tenant logoUrl read failed; skipping logo propagation', err);
+  }
 
   const url = `${m.networkUrl.replace(/\/$/, '')}/vendors/me/heartbeat`;
   try {
@@ -801,8 +824,12 @@ export async function sendHeartbeat(db: Knex, tenantId: string): Promise<Heartbe
     }
     return { sent: true, partnerCount };
   } catch (err) {
-    return { sent: false, partnerCount, reason: err instanceof Error ? err.message : String(err) };
+    return { sent: false, partnerCount, reason: errMsg(err) };
   }
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 // ---------- outbox drain (called from scheduler.ts) ----------

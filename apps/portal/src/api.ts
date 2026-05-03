@@ -65,9 +65,26 @@ export async function api<T = unknown>(
     } catch {
       /* ignore */
     }
-    throw new ApiError(res.status, `${res.status} ${res.statusText}`, detail);
+    // Pull the most meaningful string out of the body when one's
+    // present. Server convention is `{ error, detail }` where `detail`
+    // is the verbose human-readable cause (e.g. upstream Network's
+    // 4xx body when proxied). Without this every API failure renders
+    // as a bare "500" or "400" — useless when triaging.
+    throw new ApiError(res.status, friendlyMessage(res, detail), detail);
   }
   return res.json() as Promise<T>;
+}
+
+function friendlyMessage(res: Response, detail: unknown): string {
+  const fallback = res.statusText ? `${res.status} ${res.statusText}` : `${res.status}`;
+  if (!detail || typeof detail !== 'object') return fallback;
+  const d = detail as Record<string, unknown>;
+  // Prefer the verbose explanation; fall back to the short error code.
+  if (typeof d.detail === 'string' && d.detail.length > 0) {
+    return typeof d.error === 'string' ? `${d.error}: ${d.detail}` : d.detail;
+  }
+  if (typeof d.error === 'string' && d.error.length > 0) return d.error;
+  return fallback;
 }
 
 export class ApiError extends Error {
