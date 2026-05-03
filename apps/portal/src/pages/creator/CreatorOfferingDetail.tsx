@@ -18,6 +18,13 @@ interface InvitationContext {
 
 type MyStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'cancelled';
 
+const MODEL_LABELS: Record<'last_click' | 'first_click' | 'linear' | 'position', string> = {
+  last_click: 'Last click',
+  first_click: 'First click',
+  linear: 'Linear',
+  position: 'Position',
+};
+
 interface Offering {
   id: string;
   title: string;
@@ -32,6 +39,15 @@ interface Offering {
     payoutCadence?: string;
     payoutHoldbackDays?: number;
     bonuses?: string[];
+    /** Attribution model — last_click (most common), first_click,
+     *  linear, position. Snapshotted from the Campaign at offering
+     *  create. Absent for legacy offerings or campaigns that didn't
+     *  set one. */
+    attributionModel?: 'last_click' | 'first_click' | 'linear' | 'position';
+    /** How long after a click the brand still attributes a conversion. */
+    attributionWindowDays?: number;
+    /** True when commission pays on every renewal of a subscription. */
+    recurring?: boolean;
     /** ISO timestamp when the bound vendor Campaign expires. Null =
      *  indefinite (no end date). Absent = legacy offering. */
     campaignEndsAt?: string | null;
@@ -188,8 +204,29 @@ export function CreatorOfferingDetailPage() {
               }
             />
             <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 16, paddingTop: 14, borderTop: `1px solid ${theme.borderSubtle}`, color: theme.textMuted, fontSize: 13 }}>
+              {offering.terms.attributionModel && (
+                <LabeledChip
+                  label="Attribution"
+                  value={MODEL_LABELS[offering.terms.attributionModel]}
+                  hint="Which click gets the credit when a customer touches several creator links before converting. Last click = the most recent referrer (most common); first click = the discoverer; linear/position split across all touches."
+                />
+              )}
+              {offering.terms.attributionWindowDays != null && (
+                <LabeledChip
+                  label="Attribution window"
+                  value={`${offering.terms.attributionWindowDays} days`}
+                  hint="The longest gap between someone's click on your link and their eventual purchase that still pays you. Bigger window = more conversions credited to you, especially for products with long evaluation cycles."
+                />
+              )}
               {offering.terms.cookieWindowDays != null && (
                 <LabeledChip label="Cookie window" value={`${offering.terms.cookieWindowDays} days`} />
+              )}
+              {offering.terms.recurring && (
+                <LabeledChip
+                  label="Recurring"
+                  value="Every renewal"
+                  hint="Commission pays on every renewal of a subscription, not just the first invoice. Best for SaaS / membership products."
+                />
               )}
               {offering.terms.payoutCadence && (
                 <LabeledChip label="Payouts" value={offering.terms.payoutCadence} />
