@@ -93,37 +93,66 @@ function OfferingList() {
   return (
     <>
       {offerings.map((o) => (
-        <Card key={o.id}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
-            <h3 style={{ marginTop: 0, marginBottom: 4, flex: 1 }}>
-              {o.title}{' '}
-              <span style={{
-                fontSize: 11,
-                padding: '2px 8px',
-                borderRadius: 12,
-                background: o.published ? '#d4f0d4' : '#fff7d4',
-                color: o.published ? '#1a6b1a' : '#8b6f00',
-              }}>
-                {o.published ? 'published' : 'draft'}
-              </span>
-            </h3>
-            <Button
-              onClick={() => togglePublished.mutate({ id: o.id, published: !o.published })}
-              disabled={togglePublished.isPending}
-              variant="secondary"
-            >
-              {o.published ? 'Unpublish' : 'Publish'}
-            </Button>
-            <Button
-              onClick={() => {
-                if (confirm(`Delete "${o.title}"?`)) del.mutate(o.id);
-              }}
-              disabled={del.isPending}
-              variant="danger"
-            >
-              Delete
-            </Button>
-          </div>
+        <OfferingCard
+          key={o.id}
+          offering={o}
+          togglePublished={togglePublished}
+          del={del}
+        />
+      ))}
+    </>
+  );
+}
+
+interface OfferingCardProps {
+  offering: Offering;
+  togglePublished: ReturnType<typeof useMutation<unknown, Error, { id: string; published: boolean }>>;
+  del: ReturnType<typeof useMutation<unknown, Error, string>>;
+}
+
+function OfferingCard({ offering: o, togglePublished, del }: OfferingCardProps) {
+  const [editing, setEditing] = useState(false);
+  return (
+    <Card>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+        <h3 style={{ marginTop: 0, marginBottom: 4, flex: 1 }}>
+          {o.title}{' '}
+          <span style={{
+            fontSize: 11,
+            padding: '2px 8px',
+            borderRadius: 12,
+            background: o.published ? '#d4f0d4' : '#fff7d4',
+            color: o.published ? '#1a6b1a' : '#8b6f00',
+          }}>
+            {o.published ? 'published' : 'draft'}
+          </span>
+        </h3>
+        {!editing && (
+          <Button onClick={() => setEditing(true)} variant="secondary">
+            Edit
+          </Button>
+        )}
+        <Button
+          onClick={() => togglePublished.mutate({ id: o.id, published: !o.published })}
+          disabled={togglePublished.isPending}
+          variant="secondary"
+        >
+          {o.published ? 'Unpublish' : 'Publish'}
+        </Button>
+        <Button
+          onClick={() => {
+            if (confirm(`Delete "${o.title}"?`)) del.mutate(o.id);
+          }}
+          disabled={del.isPending}
+          variant="danger"
+        >
+          Delete
+        </Button>
+      </div>
+      {editing ? (
+        <EditOfferingForm offering={o} onClose={() => setEditing(false)} />
+      ) : (
+        <>
           <p style={{ color: '#6b7280', fontSize: 13, margin: '4px 0' }}>
             {o.terms.commissionDescription} · campaign <code>{o.vendorCampaignId}</code>
             {o.terms.payoutHoldbackDays != null && o.terms.payoutHoldbackDays > 0 && (
@@ -134,9 +163,150 @@ function OfferingList() {
           <p style={{ fontSize: 13 }}>
             <a href={o.productUrl} target="_blank" rel="noopener noreferrer">{o.productUrl} ↗</a>
           </p>
-        </Card>
-      ))}
-    </>
+        </>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * Inline edit form for an existing offering. Two tiers:
+ *
+ *   - Free-text fields (title, description) — edit freely. These don't
+ *     change anything a creator has been quoted, just the listing copy.
+ *
+ *   - Contract fields (commissionDescription, cookieWindowDays) — edit
+ *     allowed but with a warning. These are visible to creators when
+ *     they apply; changing them after partnerships exist is a
+ *     unilateral change to the deal. Useful for fixing typos or
+ *     clarifying language; not great for materially shifting terms.
+ *
+ *   - Snapshotted-from-Campaign fields (commission %, holdback,
+ *     attribution model/window, destination URL) are deliberately NOT
+ *     editable here — they live on the Campaign as the source of
+ *     truth. Editing them here would silently diverge the Network
+ *     listing from what the brand actually pays / where their links
+ *     send. Surfaced as read-only with a "edit the campaign instead"
+ *     hint so the admin doesn't have to guess where to go.
+ */
+function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [title, setTitle] = useState(offering.title);
+  const [description, setDescription] = useState(offering.description ?? '');
+  const [commissionDescription, setCommissionDescription] = useState(
+    offering.terms.commissionDescription ?? '',
+  );
+  const [cookieWindowDays, setCookieWindowDays] = useState<number | ''>(
+    offering.terms.cookieWindowDays ?? '',
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const save = useMutation({
+    mutationFn: () =>
+      api(`/admin/network/offerings/${offering.id}`, {
+        method: 'PATCH',
+        body: {
+          title: title.trim(),
+          description: description.trim() === '' ? null : description.trim(),
+          // Merge into the existing terms snapshot so we don't drop
+          // the Campaign-derived fields (commissionType/Value,
+          // attributionModel, payoutHoldbackDays, campaignEndsAt, ...).
+          terms: {
+            ...offering.terms,
+            commissionDescription: commissionDescription.trim(),
+            cookieWindowDays: cookieWindowDays === '' ? undefined : Number(cookieWindowDays),
+          },
+        },
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['network-offerings'] });
+      onClose();
+    },
+    onError: (err) => setError(err instanceof ApiError ? err.message : 'failed'),
+  });
+
+  const dirty =
+    title !== offering.title ||
+    description !== (offering.description ?? '') ||
+    commissionDescription !== (offering.terms.commissionDescription ?? '') ||
+    String(cookieWindowDays) !== String(offering.terms.cookieWindowDays ?? '');
+
+  return (
+    <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
+      {error && <ErrorBanner error={error} />}
+      <div style={{ marginBottom: 12 }}>
+        <Label>Title</Label>
+        <Input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={120} />
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <Label>Description</Label>
+        <Textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          rows={3}
+          placeholder="What you sell, who it's for, why it converts."
+        />
+      </div>
+      <div
+        style={{
+          marginBottom: 12,
+          padding: 10,
+          background: '#fff8e6',
+          border: '1px solid #f5d782',
+          borderRadius: 6,
+          fontSize: 12,
+          color: '#7a5400',
+        }}
+      >
+        ⚠️ The fields below are shown to creators when they apply.
+        Editing them after creators have partnered is effectively a
+        unilateral change to your deal. Fine for typos or clarification;
+        avoid for material shifts in commission or attribution.
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <Label>Commission summary (shown to creators)</Label>
+        <Input
+          value={commissionDescription}
+          onChange={(e) => setCommissionDescription(e.target.value)}
+          maxLength={200}
+          placeholder="20% recurring on all plans"
+        />
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <Label>Cookie window (days, optional)</Label>
+        <Input
+          type="number"
+          value={cookieWindowDays}
+          onChange={(e) => setCookieWindowDays(e.target.value === '' ? '' : Number(e.target.value))}
+          placeholder="60"
+        />
+      </div>
+      <div
+        style={{
+          marginBottom: 14,
+          padding: 10,
+          background: '#f3f4f6',
+          border: '1px solid #d1d5db',
+          borderRadius: 6,
+          fontSize: 12,
+          color: '#4b5563',
+        }}
+      >
+        Commission %, holdback, attribution model/window, and the
+        destination URL come from the bound Campaign (
+        <code>{offering.vendorCampaignId}</code>). Edit the Campaign in
+        Admin → Campaigns to change those, then re-publish this
+        offering to refresh the snapshot.
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button onClick={() => save.mutate()} disabled={save.isPending || !dirty || !title.trim() || !commissionDescription.trim()}>
+          {save.isPending ? 'Saving…' : 'Save changes'}
+        </Button>
+        <Button onClick={onClose} variant="secondary" disabled={save.isPending}>
+          Cancel
+        </Button>
+      </div>
+    </div>
   );
 }
 
