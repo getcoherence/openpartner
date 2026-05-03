@@ -33,7 +33,22 @@ interface CreatedKey {
   scopes: string[];
 }
 
-const EVENTS_SCOPE = 'events:write';
+// Scopes minted on every integration key. Covers the union of what
+// CRM webhooks (events:write), Zapier/ActivePieces triggers
+// (partners:read + commissions:read for performList), and Zapier/
+// ActivePieces actions (partners:write to create + revoke) need.
+// Keeping a single bundled scope set means admins don't have to
+// pick the right combo per platform — and a leaked key still can't
+// touch billing, payouts, or admin surfaces (those have no scope
+// grants anywhere). Used to be just events:write, which broke
+// everything beyond the CRM-event use case.
+const INTEGRATION_SCOPES = [
+  'events:write',
+  'partners:write',
+  'partners:read',
+  'commissions:read',
+] as const;
+const EVENTS_SCOPE = 'events:write'; // legacy filter on the keys list query
 
 export function AdminIntegrations() {
   return (
@@ -97,7 +112,7 @@ function KeysPanel() {
     mutationFn: () =>
       api<CreatedKey>('/api-keys/scoped', {
         method: 'POST',
-        body: { scopes: [EVENTS_SCOPE], label: label.trim() || 'CRM webhook' },
+        body: { scopes: [...INTEGRATION_SCOPES], label: label.trim() || 'CRM webhook' },
       }),
     onSuccess: (res) => {
       setCreated(res);
