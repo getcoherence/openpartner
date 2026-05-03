@@ -74,4 +74,5 @@ export const TABLES = {
   WebhookDelivery: 'WebhookDelivery',
   NetworkOutbox: 'NetworkOutbox',
   Coupon: 'Coupon',
+  PartnerCommission: 'PartnerCommission',
 } as const;

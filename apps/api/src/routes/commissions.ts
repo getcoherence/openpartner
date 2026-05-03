@@ -52,16 +52,19 @@ commissionsRouter.get('/commissions', requireAuth, requireAdmin, async (req, res
   res.json({ commissions: commissions.map(decorateMaturity) });
 });
 
-/** Shared base query — joins Commission → Attribution → Campaign so we
- *  can surface holdbackDays + a derived matureAt timestamp on each row.
- *  The UI uses these to show "Matures in N days" badges and to disable
- *  the approve button while holdback is active. */
+/** Shared base query — joins Commission → Attribution → Campaign and
+ *  picks the effective holdback. Effective = the partner's snapshotted
+ *  value (from approval-time federation) with fallback to the
+ *  campaign's value for legacy / non-Network partners. The UI uses
+ *  this to show "Matures in N days" badges and to disable the approve
+ *  button while holdback is active. */
 function listQueryBase(db: import('knex').Knex) {
   return db(`${TABLES.Commission} as c`)
     .leftJoin(`${TABLES.Attribution} as a`, 'a.id', 'c.attributionId')
     .leftJoin(`${TABLES.Campaign} as cp`, 'cp.id', 'a.campaignId')
+    .leftJoin(`${TABLES.PartnerCommission} as pc`, 'pc.partnerId', 'c.partnerId')
     .select('c.*')
-    .select('cp.holdbackDays as _holdbackDays')
+    .select(db.raw('coalesce("pc"."holdbackDays", "cp"."holdbackDays") as "_holdbackDays"'))
     .select('cp.id as _campaignId')
     .select('cp.name as _campaignName')
     .orderBy('c.accruedAt', 'desc');

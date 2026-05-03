@@ -49,6 +49,7 @@ const TENANT_TABLES = [
   'PlatformAdmin',
   'NetworkOutbox',
   'Coupon',
+  'PartnerCommission',
 ];
 
 async function main(): Promise<void> {

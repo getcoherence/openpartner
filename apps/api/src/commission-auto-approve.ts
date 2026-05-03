@@ -18,25 +18,27 @@ export interface AutoApproveResult {
 export async function autoApproveMatureCommissions(
   db: Knex,
 ): Promise<AutoApproveResult> {
-  // Find every accrued commission whose campaign has a holdback set
-  // AND whose accruedAt + holdbackDays days has elapsed. Postgres
-  // INTERVAL math via raw because knex can't construct the dynamic
-  // interval expression cleanly.
+  // Find every accrued commission whose effective holdback has
+  // elapsed. Effective holdback = the partner's snapshotted value
+  // (PartnerCommission.holdbackDays, set at PartnershipRequest
+  // approval time via federation), with fallback to the campaign's
+  // value for legacy / non-Network partners. COALESCE picks the
+  // first non-null in order — partner snapshot, then campaign.
   //
-  // We update in a single statement so two scheduler ticks racing
-  // don't double-process the same row — UPDATE is atomic against the
-  // WHERE filter.
+  // Single statement so two scheduler ticks racing don't double-
+  // process the same row.
   const result = (await db.raw(
     `
     update "${TABLES.Commission}" c
        set status = 'approved'
-      from "${TABLES.Attribution}" a, "${TABLES.Campaign}" cp
+      from "${TABLES.Attribution}" a
+      join "${TABLES.Campaign}" cp on a."campaignId" = cp.id
+      left join "${TABLES.PartnerCommission}" pc on pc."partnerId" = c."partnerId"
      where c.status = 'accrued'
        and c."attributionId" = a.id
-       and a."campaignId" = cp.id
-       and cp."holdbackDays" is not null
-       and cp."holdbackDays" > 0
-       and c."accruedAt" + (cp."holdbackDays" * interval '1 day') <= now()
+       and coalesce(pc."holdbackDays", cp."holdbackDays") is not null
+       and coalesce(pc."holdbackDays", cp."holdbackDays") > 0
+       and c."accruedAt" + (coalesce(pc."holdbackDays", cp."holdbackDays") * interval '1 day') <= now()
     returning c.id
     `,
   )) as { rows: Array<{ id: string }> };

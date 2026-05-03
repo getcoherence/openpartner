@@ -83,6 +83,28 @@ export interface PartnerRow {
   revokeReason: string | null;
 }
 
+export type CommissionType = 'percent' | 'fixed';
+export type PartnerCommissionSource = 'approval' | 'backfill' | 'amendment';
+
+/**
+ * Per-Partner commission snapshot. Sidecar to Partner. Presence of a
+ * row means commission accrual reads from here instead of the live
+ * Campaign rule — preserves the rate the partner was approved under
+ * even after the brand edits the Campaign. Absence falls back to the
+ * Campaign rule (legacy partners + non-Network partners).
+ */
+export interface PartnerCommissionRow {
+  partnerId: string;
+  tenantId: string;
+  commissionType: CommissionType;
+  /** Decimal — comes back as string from pg. Percent stored as 20 for 20%. */
+  commissionValue: string;
+  recurring: boolean;
+  holdbackDays: number | null;
+  source: PartnerCommissionSource;
+  snapshottedAt: Date;
+}
+
 export type MagicLinkPurpose =
   | 'partner_invite'
   | 'partner_signin'

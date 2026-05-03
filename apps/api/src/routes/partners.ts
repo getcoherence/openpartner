@@ -27,6 +27,21 @@ const createSchema = z.object({
    *  federation sends so we can tell admin assignments apart from
    *  Network-driven ones in the audit log + UI. */
   campaignGrantSource: z.enum(['admin', 'offering']).optional(),
+  /** Snapshot of the offering's commission terms at approval time.
+   *  Sent by the Network federation when provisioning a Partner from
+   *  an approved PartnershipRequest. Persisted as a PartnerCommission
+   *  row so future commission accruals use these values instead of
+   *  the live Campaign rule — preserves the rate the partner was
+   *  approved under even if the brand later edits the Campaign.
+   *  All fields individually optional; partial snapshots are fine. */
+  commissionSnapshot: z
+    .object({
+      commissionType: z.enum(['percent', 'fixed']).optional(),
+      commissionValue: z.number().nonnegative().optional(),
+      recurring: z.boolean().optional(),
+      holdbackDays: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
 });
 
 export const partnersRouter = Router();
@@ -118,6 +133,24 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
     // explicit action. ON CONFLICT IGNORE inside the helper means
     // re-grants don't error.
     await autoMintCouponsForGrants(db, tenantId, { id, email }, campaignIds);
+  }
+
+  // Persist the commission snapshot if the federation push carried one.
+  // Only writes when both type + value are present — a partial snapshot
+  // would silently mis-price commissions, so we'd rather fall back to
+  // the live Campaign rule than guess.
+  const snap = body.data.commissionSnapshot;
+  if (snap?.commissionType != null && snap.commissionValue != null) {
+    await db(TABLES.PartnerCommission).insert({
+      partnerId: id,
+      tenantId,
+      commissionType: snap.commissionType,
+      commissionValue: snap.commissionValue.toFixed(4),
+      recurring: snap.recurring ?? false,
+      holdbackDays: snap.holdbackDays ?? null,
+      source: 'approval',
+      snapshottedAt: new Date(),
+    });
   }
 
   if (sendInvite) {
@@ -303,4 +336,29 @@ partnersRouter.get('/partners/:id', requireAuth, requirePartnerOrAdmin('id'), as
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });
   res.json(partner);
+});
+
+// Per-partner commission snapshot (PartnerCommission row, if any).
+// Surfaced separately because the partner detail page wants to show
+// "Approved under: 20% recurring, 30d holdback (since 2026-04-15)"
+// and the snapshot is a sidecar table — keeps the GET /partners/:id
+// shape unchanged.
+partnersRouter.get('/partners/:id/commission-snapshot', requireAuth, requirePartnerOrAdmin('id'), async (req, res) => {
+  const { db } = tenantOf(req);
+  const snapshot = await db(TABLES.PartnerCommission)
+    .where({ partnerId: req.params.id })
+    .first('partnerId', 'commissionType', 'commissionValue', 'recurring', 'holdbackDays', 'source', 'snapshottedAt');
+  if (!snapshot) return res.json({ snapshot: null });
+  res.json({ snapshot });
+});
+
+// One-shot backfill of PartnerCommission for partners that predate
+// snapshot federation. Idempotent — can be run multiple times. See
+// backfillCommissionSnapshots for the (intentional) limitations
+// around multi-campaign partners.
+partnersRouter.post('/partners/backfill-commission-snapshots', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const { backfillCommissionSnapshots } = await import('../backfill-commission-snapshots.js');
+  const result = await backfillCommissionSnapshots(db, tenantId);
+  res.json(result);
 });

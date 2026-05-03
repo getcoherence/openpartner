@@ -131,7 +131,13 @@ export async function attributeEvent(
       continue;
     }
 
-    const rule = parseCommissionRule(click.campaign.commissionRule);
+    // Prefer the partner's snapshotted rate (set at PartnershipRequest
+    // approval time via federation) over the live Campaign rule. This
+    // is what makes "brand edits campaign rate post-approval" safe —
+    // existing partners keep what they were approved under. Absent
+    // snapshot = pre-snapshot partner OR non-Network partner; falls
+    // back to the Campaign rule (status quo).
+    const rule = await resolveCommissionRule(db, click.partnerId, click.campaign.commissionRule);
     const amount = computeCommissionAmount(rule, event) * weight;
     const commissionId = ulid();
     await db(TABLES.Commission).insert({
@@ -206,6 +212,38 @@ export function applyModel(model: AttributionModel, n: number): number[] {
 function parseCommissionRule(raw: unknown): CommissionRule {
   if (raw && typeof raw === 'object' && 'type' in raw) return raw as CommissionRule;
   throw new Error('Invalid commissionRule on Campaign');
+}
+
+/**
+ * Look up the partner's snapshotted commission rate (set at
+ * PartnershipRequest approval via federation, or backfilled by an
+ * admin migration). Falls back to the live Campaign rule when no
+ * snapshot exists — preserves status quo for non-Network partners
+ * and partners onboarded before snapshots shipped.
+ *
+ * Recurring stays on the Campaign rule even when a snapshot exists —
+ * it's a campaign-level "do we pay on renewals" decision, not a
+ * per-partnership negotiation. (Snapshotting it per-partnership is
+ * possible but adds surface for amendment confusion; revisit when an
+ * actual customer asks.)
+ */
+async function resolveCommissionRule(
+  db: Knex,
+  partnerId: string,
+  campaignRule: unknown,
+): Promise<CommissionRule> {
+  const fallback = parseCommissionRule(campaignRule);
+  const snapshot = await db<{ commissionType: 'percent' | 'fixed'; commissionValue: string }>(
+    TABLES.PartnerCommission,
+  )
+    .where({ partnerId })
+    .first('commissionType', 'commissionValue');
+  if (!snapshot) return fallback;
+  return {
+    type: snapshot.commissionType,
+    value: Number(snapshot.commissionValue),
+    recurring: fallback.recurring,
+  };
 }
 
 export function computeCommissionAmount(rule: CommissionRule, event: Pick<EventRow, 'value'>): number {
