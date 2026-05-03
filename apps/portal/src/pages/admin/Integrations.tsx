@@ -1,0 +1,305 @@
+import { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ExternalLink } from 'lucide-react';
+import { api } from '../../api.js';
+import { theme } from '../../theme.js';
+import { Button, Card, ErrorBanner, Input, Label, Page } from '../../ui.js';
+
+/**
+ * Inbound CRM integration. Surfaces a guided way to mint a scoped API
+ * key (`events:write`) that a brand's CRM (HubSpot / Salesforce /
+ * Pipedrive) — or a Zapier / Make workflow in front of their CRM —
+ * can use to POST conversion events to /attribution/events.
+ *
+ * Why scoped, not admin: brands shouldn't paste a full admin key into
+ * a Zap. A `events:write`-only key, leaked, can only fabricate
+ * conversion events for their own tenant — not delete partners or
+ * change payouts.
+ */
+
+interface ApiKeyRow {
+  id: string;
+  prefix: string;
+  label: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  scopes?: string[] | null;
+}
+
+interface CreatedKey {
+  id: string;
+  plaintext: string;
+  scopes: string[];
+}
+
+const EVENTS_SCOPE = 'events:write';
+
+export function AdminIntegrations() {
+  return (
+    <Page
+      title="CRM integration"
+      subtitle="Pipe your CRM's conversion events into OpenPartner so partners get attributed for full-funnel deals, not just self-serve signups."
+    >
+      <WhyCard />
+      <div style={{ height: 18 }} />
+      <KeysPanel />
+      <div style={{ height: 18 }} />
+      <PayloadGuide />
+    </Page>
+  );
+}
+
+function WhyCard() {
+  return (
+    <Card>
+      <h3 style={{ marginTop: 0, marginBottom: 8, fontSize: 15, fontWeight: 500 }}>
+        How this works
+      </h3>
+      <p style={{ fontSize: 13, color: theme.textMuted, marginTop: 0, marginBottom: 10, lineHeight: 1.55 }}>
+        Conversion events that drive partner commissions don&rsquo;t always
+        happen in your billing system. For B2B / SaaS programs, the
+        meaningful state changes — &ldquo;lead qualified&rdquo;,
+        &ldquo;opportunity won&rdquo;, &ldquo;trial converted&rdquo; — live
+        in your CRM. Without a CRM signal, partners only get paid on the
+        trivial cases.
+      </p>
+      <p style={{ fontSize: 13, color: theme.textMuted, marginTop: 0, marginBottom: 10, lineHeight: 1.55 }}>
+        Mint a scoped API key here, then have your CRM (or a Zapier /
+        Make workflow in front of it) POST conversion events to{' '}
+        <code style={{ background: theme.surface2, padding: '2px 6px', borderRadius: 4, fontSize: 12 }}>
+          /attribution/events
+        </code>{' '}
+        with the key as a Bearer token. OpenPartner ties the event to the
+        originating click via the <code>userId</code> you assigned at
+        signup, then accrues commission per the bound campaign&rsquo;s
+        rule.
+      </p>
+      <p style={{ fontSize: 13, color: theme.textMuted, margin: 0, lineHeight: 1.55 }}>
+        Keys here are scoped to <strong>events:write</strong> only — a
+        leak can fabricate conversion events for your tenant but can&rsquo;t
+        edit partners, payouts, or campaigns.
+      </p>
+    </Card>
+  );
+}
+
+function KeysPanel() {
+  const qc = useQueryClient();
+  const list = useQuery({
+    queryKey: ['integration-keys'],
+    queryFn: () => api<{ apiKeys: ApiKeyRow[] }>('/api-keys?scope=events:write'),
+  });
+  const [label, setLabel] = useState('');
+  const [created, setCreated] = useState<CreatedKey | null>(null);
+
+  const create = useMutation({
+    mutationFn: () =>
+      api<CreatedKey>('/api-keys/scoped', {
+        method: 'POST',
+        body: { scopes: [EVENTS_SCOPE], label: label.trim() || 'CRM webhook' },
+      }),
+    onSuccess: (res) => {
+      setCreated(res);
+      setLabel('');
+      qc.invalidateQueries({ queryKey: ['integration-keys'] });
+    },
+  });
+
+  const revoke = useMutation({
+    mutationFn: (id: string) => api(`/api-keys/${id}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['integration-keys'] }),
+  });
+
+  const keys = (list.data?.apiKeys ?? []).filter((k) => !k.revokedAt && (k.scopes ?? []).includes(EVENTS_SCOPE));
+
+  return (
+    <Card>
+      <h3 style={{ marginTop: 0, marginBottom: 4, fontSize: 15, fontWeight: 500 }}>API keys for CRM</h3>
+      <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 14px' }}>
+        One key per integration — a separate key for HubSpot vs. Zapier vs. internal scripts
+        makes leak attribution easy and revocation clean.
+      </p>
+      <ErrorBanner error={create.error ?? revoke.error ?? list.error} />
+
+      {created && (
+        <div
+          style={{
+            background: `${theme.success}10`,
+            border: `1px solid ${theme.success}55`,
+            borderRadius: theme.radiusSm,
+            padding: 12,
+            marginBottom: 14,
+          }}
+        >
+          <div style={{ fontSize: 13, fontWeight: 500, color: theme.success, marginBottom: 6 }}>
+            New key created — copy it now
+          </div>
+          <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 8px' }}>
+            We don&rsquo;t store the plaintext anywhere. After you leave this page you&rsquo;ll
+            never see it again — generate a new one if you lose it.
+          </p>
+          <code
+            style={{
+              display: 'block',
+              padding: '10px 12px',
+              background: theme.surface2,
+              border: `1px solid ${theme.borderSubtle}`,
+              borderRadius: 6,
+              fontSize: 13,
+              wordBreak: 'break-all',
+              userSelect: 'all',
+            }}
+          >
+            {created.plaintext}
+          </code>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              navigator.clipboard.writeText(created.plaintext).catch(() => {});
+            }}
+            style={{ marginTop: 10 }}
+          >
+            Copy to clipboard
+          </Button>
+          <button
+            type="button"
+            onClick={() => setCreated(null)}
+            style={{
+              marginLeft: 8,
+              background: 'transparent',
+              border: 'none',
+              color: theme.textMuted,
+              cursor: 'pointer',
+              fontSize: 13,
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 14 }}>
+        <div style={{ flex: 1 }}>
+          <Label>Label</Label>
+          <Input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="HubSpot prod"
+            maxLength={120}
+          />
+        </div>
+        <Button onClick={() => create.mutate()} disabled={create.isPending}>
+          {create.isPending ? 'Generating…' : 'Generate key'}
+        </Button>
+      </div>
+
+      {list.isLoading ? (
+        <p style={{ fontSize: 13, color: theme.textMuted, margin: 0 }}>Loading…</p>
+      ) : keys.length === 0 ? (
+        <p style={{ fontSize: 13, color: theme.textDim, margin: 0 }}>
+          No CRM keys yet. Generate one above to start receiving events.
+        </p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {keys.map((k) => (
+            <div
+              key={k.id}
+              style={{
+                display: 'flex',
+                gap: 12,
+                alignItems: 'center',
+                padding: '10px 12px',
+                background: theme.surface2,
+                border: `1px solid ${theme.borderSubtle}`,
+                borderRadius: theme.radiusSm,
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, color: theme.text }}>{k.label ?? 'CRM webhook'}</div>
+                <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 2 }}>
+                  <code>{k.prefix}…</code> · created {new Date(k.createdAt).toLocaleDateString()}
+                  {k.lastUsedAt && <> · last used {new Date(k.lastUsedAt).toLocaleDateString()}</>}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm(`Revoke "${k.label ?? 'CRM webhook'}"? Any CRM using this key will stop receiving events.`)) {
+                    revoke.mutate(k.id);
+                  }
+                }}
+                disabled={revoke.isPending}
+                style={{
+                  background: 'transparent',
+                  border: `1px solid ${theme.danger}55`,
+                  borderRadius: 6,
+                  padding: '5px 10px',
+                  fontSize: 12,
+                  color: theme.danger,
+                  cursor: 'pointer',
+                }}
+              >
+                Revoke
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function PayloadGuide() {
+  const apiBase = typeof window === 'undefined' ? 'https://your-instance' : window.location.origin;
+  return (
+    <Card>
+      <h3 style={{ marginTop: 0, marginBottom: 4, fontSize: 15, fontWeight: 500 }}>
+        Payload contract
+      </h3>
+      <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 12px' }}>
+        Send a POST with the key as a Bearer token. <code>userId</code> is the same identifier
+        you assign at signup time so OpenPartner can stitch the event to a click. <code>type</code>{' '}
+        can be any string — use <code>opportunity_won</code> for B2B sales,{' '}
+        <code>trial_converted</code> for trial→paid, or your own conventions.
+      </p>
+      <pre
+        style={{
+          padding: 14,
+          background: theme.surface2,
+          border: `1px solid ${theme.borderSubtle}`,
+          borderRadius: 6,
+          fontSize: 12,
+          overflow: 'auto',
+          margin: 0,
+        }}
+      >{`curl -X POST ${apiBase}/api/attribution/events \\
+  -H "Authorization: Bearer <your-key>" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "userId": "user_or_email_from_your_system",
+    "type": "opportunity_won",
+    "value": 4500.00,
+    "currency": "USD",
+    "metadata": {
+      "deal_id": "0061k00000ABC",
+      "stage": "Closed Won"
+    }
+  }'`}</pre>
+      <p style={{ fontSize: 12, color: theme.textMuted, margin: '12px 0 0' }}>
+        See the{' '}
+        <a
+          href="/docs/integrations/crm"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: theme.accent, display: 'inline-flex', alignItems: 'center', gap: 3 }}
+        >
+          CRM integration docs
+          <ExternalLink size={12} />
+        </a>{' '}
+        for HubSpot, Salesforce, Pipedrive, and Zapier walkthroughs.
+      </p>
+    </Card>
+  );
+}
+

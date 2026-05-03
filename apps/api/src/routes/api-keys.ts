@@ -45,6 +45,21 @@ apiKeysRouter.post('/api-keys/scoped', requireAuth, requireAdmin, async (req, re
   res.status(201).json({ id: key.id, plaintext: key.plaintext, scopes: body.data.scopes });
 });
 
+// Admin: list scoped keys (optionally filtered by ?scope=...). Used by
+// the CRM integration page so admins can see / revoke the keys they've
+// minted for HubSpot / Zapier / etc. Doesn't return plaintext (only
+// generated at create time and never stored).
+const listQuerySchema = z.object({ scope: z.string().optional() });
+apiKeysRouter.get('/api-keys', requireAuth, requireAdmin, async (req, res) => {
+  const q = listQuerySchema.safeParse(req.query);
+  if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
+  const { db } = tenantOf(req);
+  const query = db<ApiKeyRow>(TABLES.ApiKey).whereNotNull('scopes').orderBy('createdAt', 'desc');
+  const rows = await query.select('id', 'prefix', 'label', 'scopes', 'createdAt', 'lastUsedAt', 'revokedAt');
+  const filtered = q.data.scope ? rows.filter((r) => Array.isArray(r.scopes) && r.scopes.includes(q.data.scope!)) : rows;
+  res.json({ apiKeys: filtered });
+});
+
 // Admin or the partner themselves: create a partner-scoped key.
 apiKeysRouter.post(
   '/partners/:id/api-keys',

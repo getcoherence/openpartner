@@ -37,6 +37,7 @@ import { AdminExport } from './pages/AdminExport.js';
 import { LoginPage } from './pages/auth/Login.js';
 import { MagicLandingPage } from './pages/auth/MagicLanding.js';
 import { WebhooksPage } from './pages/admin/Webhooks.js';
+import { AdminIntegrations } from './pages/admin/Integrations.js';
 import { AdminSettings } from './pages/admin/Settings.js';
 import { AdminBilling } from './pages/admin/Billing.js';
 import { AdminAdmins } from './pages/admin/Admins.js';
@@ -189,6 +190,7 @@ function Shell() {
               <Route path="admin/export" element={<AdminExport />} />
               <Route path="admin/fraud-review" element={<FraudReviewPage />} />
               <Route path="admin/webhooks" element={<WebhooksPage />} />
+              <Route path="admin/integrations" element={<AdminIntegrations />} />
               <Route path="admin/admins" element={<AdminAdmins />} />
               <Route path="admin/settings" element={<AdminSettings />} />
               <Route path="admin/billing" element={<AdminBilling />} />
@@ -286,6 +288,7 @@ function Sidebar({ principal }: { principal: Principal }) {
             <NavItem to="/admin/export" icon={<Download size={16} />}>Export / import</NavItem>
             <NavItem to="/admin/fraud-review" icon={<ShieldCheck size={16} />}>Fraud review</NavItem>
             <NavItem to="/admin/webhooks" icon={<Webhook size={16} />}>Webhooks</NavItem>
+            <NavItem to="/admin/integrations" icon={<Link2 size={16} />}>CRM integration</NavItem>
             <NavItem to="/admin/admins" icon={<UserCog size={16} />}>Admins</NavItem>
             <NavItem to="/admin/settings" icon={<Settings size={16} />}>Settings</NavItem>
             <NavItem to="/admin/billing" icon={<CreditCard size={16} />}>Billing</NavItem>

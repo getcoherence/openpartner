@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { ulid } from 'ulid';
 import { TABLES, type EventRow } from '@openpartner/db';
 import { attributeEvent } from '../attribution.js';
-import { requireAdmin, requireAuth } from '../auth.js';
+import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 
 const schema = z.object({
@@ -18,8 +18,10 @@ const schema = z.object({
 export const eventsRouter = Router();
 
 // Server-to-server conversion event ingest — requires admin credentials
-// (this is the merchant's backend speaking, not a browser).
-eventsRouter.post('/attribution/events', requireAuth, requireAdmin, async (req, res) => {
+// (this is the merchant's backend speaking, not a browser). A scoped key
+// with `events:write` is also accepted so brands can wire CRMs / Zapier /
+// HubSpot workflows into this route without sharing a full admin key.
+eventsRouter.post('/attribution/events', requireAuth, grantScope('events:write'), requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = schema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
