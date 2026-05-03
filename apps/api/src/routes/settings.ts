@@ -27,6 +27,7 @@ import {
   NetworkProxyError,
   networkProxy,
   saveNetworkMembership,
+  sendHeartbeat,
   signupWithNetwork,
 } from '../network-client.js';
 import { createApiKeyRow } from '../auth.js';
@@ -465,6 +466,13 @@ async function proxy(req: Request, res: Response, fn: (db: Knex, tenantId: strin
 
 settingsRouter.get('/admin/network/me', requireAuth, requireAdmin, async (req, res) =>
   proxy(req, res, async (db, tenantId) => {
+    // Fire a heartbeat opportunistically so a brand admin who just
+    // updated their logo / added a partner / etc. doesn't have to wait
+    // until the next :07 cron. Fire-and-forget — don't block the page
+    // load on a Network blip.
+    sendHeartbeat(db, tenantId).catch((err) => {
+      console.error('[admin/network/me] opportunistic heartbeat failed', err);
+    });
     // Override the Network's stored partnerCount with the local truth.
     // Network's value updates via the hourly heartbeat job — between
     // ticks (or before the first tick after connecting) it lags reality.
@@ -478,6 +486,17 @@ settingsRouter.get('/admin/network/me', requireAuth, requireAdmin, async (req, r
     return { ...(remote as Record<string, unknown>), partnerCount };
   }),
 );
+
+// Diagnostic / on-demand fire. Returns the heartbeat result inline so
+// the admin page can show "sent" or the failure reason — useful for
+// debugging silent propagation failures (Network rejected the URL,
+// migration not run, vendor token bad, etc.) without waiting for the
+// hourly cron to run + log somewhere the admin can't reach.
+settingsRouter.post('/admin/network/heartbeat', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const result = await sendHeartbeat(db, tenantId);
+  res.json(result);
+});
 
 settingsRouter.get('/admin/network/offerings', requireAuth, requireAdmin, async (req, res) =>
   proxy(req, res, (db, tenantId) => networkProxy.listOfferings(db, tenantId)),

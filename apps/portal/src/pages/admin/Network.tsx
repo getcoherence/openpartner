@@ -149,6 +149,16 @@ function ConnectedPanel({ membership }: { membership: NetworkMembership }) {
     queryFn: () => api<NetworkSelf>('/admin/network/me'),
     retry: 1,
   });
+  // On-demand heartbeat fire — useful when the brand admin updated their
+  // logo / name / etc. and is wondering why the marketplace listing
+  // hasn't refreshed. Returns the result inline so propagation failures
+  // (Network rejected, vendor token bad, etc.) surface visibly instead
+  // of dying in the cron logs.
+  const heartbeat = useMutation({
+    mutationFn: () =>
+      api<{ sent: boolean; partnerCount: number; reason?: string }>('/admin/network/heartbeat', { method: 'POST' }),
+    onSuccess: () => refetch(),
+  });
   return (
     <Card>
       <h3 style={{ marginTop: 0, marginBottom: 8, fontSize: 15, fontWeight: 500, color: theme.success }}>Connected ✓</h3>
@@ -185,6 +195,39 @@ function ConnectedPanel({ membership }: { membership: NetworkMembership }) {
           </button>
         </div>
       )}
+      <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${theme.borderSubtle}` }}>
+        <button
+          type="button"
+          onClick={() => heartbeat.mutate()}
+          disabled={heartbeat.isPending}
+          style={{
+            background: 'transparent',
+            color: theme.accent,
+            border: `1px solid ${theme.accent}55`,
+            borderRadius: 6,
+            padding: '6px 12px',
+            fontSize: 12,
+            cursor: heartbeat.isPending ? 'wait' : 'pointer',
+          }}
+        >
+          {heartbeat.isPending ? 'Sending…' : 'Push update to marketplace now'}
+        </button>
+        <span style={{ marginLeft: 10, fontSize: 12, color: theme.textDim }}>
+          Otherwise auto-syncs hourly. Use this after changing your logo or name.
+        </span>
+        {heartbeat.data && (
+          <div style={{ marginTop: 8, fontSize: 12, color: heartbeat.data.sent ? theme.success : theme.danger }}>
+            {heartbeat.data.sent
+              ? `Sent — marketplace will reflect changes within a minute.`
+              : `Failed: ${heartbeat.data.reason ?? 'unknown reason'}`}
+          </div>
+        )}
+        {heartbeat.error && (
+          <div style={{ marginTop: 8, fontSize: 12, color: theme.danger }}>
+            Failed: {heartbeat.error instanceof Error ? heartbeat.error.message : String(heartbeat.error)}
+          </div>
+        )}
+      </div>
     </Card>
   );
 }
