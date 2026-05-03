@@ -352,6 +352,55 @@ partnersRouter.get('/partners/:id/commission-snapshot', requireAuth, requirePart
   res.json({ snapshot });
 });
 
+// Admin override: set or replace a partner's commission snapshot.
+// Used for the "VIP gets 30%" case where a brand wants to give a
+// specific partner a different rate than the campaign default. Stamped
+// with source='amendment' so it's distinguishable from the regular
+// approval-time + backfill snapshots in audit + reporting. PUT
+// semantics — replaces any existing row in full.
+const overrideSchema = z.object({
+  commissionType: z.enum(['percent', 'fixed']),
+  commissionValue: z.number().nonnegative(),
+  recurring: z.boolean().optional(),
+  holdbackDays: z.number().int().nonnegative().nullable().optional(),
+});
+partnersRouter.put('/partners/:id/commission-snapshot', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = overrideSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  if (!partner) return res.status(404).json({ error: 'partner_not_found' });
+  await db(TABLES.PartnerCommission)
+    .insert({
+      partnerId: partner.id,
+      tenantId,
+      commissionType: body.data.commissionType,
+      commissionValue: body.data.commissionValue.toFixed(4),
+      recurring: body.data.recurring ?? false,
+      holdbackDays: body.data.holdbackDays ?? null,
+      source: 'amendment',
+      snapshottedAt: new Date(),
+    })
+    .onConflict('partnerId')
+    .merge();
+  const fresh = await db(TABLES.PartnerCommission)
+    .where({ partnerId: partner.id })
+    .first('partnerId', 'commissionType', 'commissionValue', 'recurring', 'holdbackDays', 'source', 'snapshottedAt');
+  res.json({ snapshot: fresh });
+});
+
+// Admin: clear a partner's commission override. Drops the
+// PartnerCommission row, which means future commissions fall back to
+// the live Campaign rule again. Useful for unwinding a VIP rate when
+// a partnership downgrades.
+partnersRouter.delete('/partners/:id/commission-snapshot', requireAuth, requireAdmin, async (req, res) => {
+  const { db } = tenantOf(req);
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  if (!partner) return res.status(404).json({ error: 'partner_not_found' });
+  await db(TABLES.PartnerCommission).where({ partnerId: partner.id }).del();
+  res.json({ ok: true });
+});
+
 // One-shot backfill of PartnerCommission for partners that predate
 // snapshot federation. Idempotent — can be run multiple times. See
 // backfillCommissionSnapshots for the (intentional) limitations

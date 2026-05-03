@@ -86,6 +86,8 @@ export function AdminPartners() {
               <span style={{ color: theme.border }}>·</span>
               <TenantLink to={`/admin/partners/${p.id}/coupons`} style={{ color: theme.accent, fontSize: 13 }}>Coupons</TenantLink>
               <span style={{ color: theme.border }}>·</span>
+              <TenantLink to={`/admin/partners/${p.id}/commission`} style={{ color: theme.accent, fontSize: 13 }}>Commission</TenantLink>
+              <span style={{ color: theme.border }}>·</span>
               <TenantLink to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Payouts</TenantLink>
               {!p.activatedAt && !p.revokedAt && (
                 <>
