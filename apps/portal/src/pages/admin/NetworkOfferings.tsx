@@ -254,19 +254,30 @@ function OfferingCard({ offering: o, campaign, togglePublished, del }: OfferingC
 }
 
 /**
- * Inline edit form for an existing offering. Listing copy only —
- * title and description. Material terms (commission summary, cookie
- * window, payout cadence, attribution config) are deliberately not
- * editable: a creator who applied to "20% recurring" should keep
- * earning 20% even if the brand later regrets that rate. The clean
- * way to change terms is to create a new offering and unpublish the
- * old one; existing partnerships stay bound to the terms they were
- * approved under.
+ * Inline edit form for an existing offering. Two tiers:
+ *
+ *   - Listing copy (title, description) — edit freely. No contract
+ *     impact; pure marketing.
+ *
+ *   - Visible terms (commission summary, cookie window) — edit
+ *     allowed with a banner explaining the snapshot semantics.
+ *     These are quoted to creators on the marketplace listing, BUT
+ *     the actual rate they're paid comes from PartnerCommission
+ *     (snapshot stamped at approval time), so editing here only
+ *     affects what new applicants see — existing partners keep
+ *     their snapshotted rate at accrual time. Same grandfathering
+ *     model as the Campaign edit form.
  */
 function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: () => void }) {
   const qc = useQueryClient();
   const [title, setTitle] = useState(offering.title);
   const [description, setDescription] = useState(offering.description ?? '');
+  const [commissionDescription, setCommissionDescription] = useState(
+    offering.terms.commissionDescription ?? '',
+  );
+  const [cookieWindowDays, setCookieWindowDays] = useState<number | ''>(
+    offering.terms.cookieWindowDays ?? '',
+  );
   const [error, setError] = useState<string | null>(null);
 
   const save = useMutation({
@@ -276,6 +287,14 @@ function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: 
         body: {
           title: title.trim(),
           description: description.trim() === '' ? null : description.trim(),
+          // Merge with existing terms so the campaign-derived snapshot
+          // fields (attributionModel, commissionType/Value, etc.)
+          // aren't dropped.
+          terms: {
+            ...offering.terms,
+            commissionDescription: commissionDescription.trim(),
+            cookieWindowDays: cookieWindowDays === '' ? undefined : Number(cookieWindowDays),
+          },
         },
       }),
     onSuccess: () => {
@@ -286,7 +305,10 @@ function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: 
   });
 
   const dirty =
-    title !== offering.title || description !== (offering.description ?? '');
+    title !== offering.title ||
+    description !== (offering.description ?? '') ||
+    commissionDescription !== (offering.terms.commissionDescription ?? '') ||
+    String(cookieWindowDays) !== String(offering.terms.cookieWindowDays ?? '');
 
   return (
     <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
@@ -306,6 +328,42 @@ function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: 
       </div>
       <div
         style={{
+          marginBottom: 12,
+          padding: 10,
+          background: '#eef6fc',
+          border: '1px solid #88b6dc',
+          borderRadius: 6,
+          fontSize: 12,
+          color: '#1f4e79',
+        }}
+      >
+        The fields below are shown on the marketplace listing.
+        Editing them affects <strong>new applicants only</strong> —
+        existing partners keep the rate snapshotted on their
+        PartnerCommission row at approval time. Run the backfill
+        once if you want this guarantee for partners onboarded
+        before snapshots shipped (Admin → Partners → Tools).
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <Label>Commission summary (shown to creators)</Label>
+        <Input
+          value={commissionDescription}
+          onChange={(e) => setCommissionDescription(e.target.value)}
+          maxLength={200}
+          placeholder="20% recurring on all plans"
+        />
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <Label>Cookie window (days, optional)</Label>
+        <Input
+          type="number"
+          value={cookieWindowDays}
+          onChange={(e) => setCookieWindowDays(e.target.value === '' ? '' : Number(e.target.value))}
+          placeholder="60"
+        />
+      </div>
+      <div
+        style={{
           marginBottom: 14,
           padding: 10,
           background: '#f3f4f6',
@@ -315,17 +373,14 @@ function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: 
           color: '#4b5563',
         }}
       >
-        Commission, cookie window, holdback, attribution, and the
-        destination URL aren&rsquo;t editable here — creators who
-        applied saw those terms and are owed them. To change material
-        terms, publish a <strong>new offering</strong> with the new
-        rules and unpublish this one; existing partnerships stay
-        bound to what they were approved under. Campaign-level
-        config lives in Admin → Campaigns (
-        <code>{offering.vendorCampaignId}</code>).
+        Commission rate, holdback, attribution, and the destination
+        URL come from the bound Campaign (
+        <code>{offering.vendorCampaignId}</code>). Edit those in
+        Admin → Campaigns and use <strong>Refresh from campaign</strong>
+        on this offering to re-snapshot.
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={() => save.mutate()} disabled={save.isPending || !dirty || !title.trim()}>
+        <Button onClick={() => save.mutate()} disabled={save.isPending || !dirty || !title.trim() || !commissionDescription.trim()}>
           {save.isPending ? 'Saving…' : 'Save changes'}
         </Button>
         <Button onClick={onClose} variant="secondary" disabled={save.isPending}>

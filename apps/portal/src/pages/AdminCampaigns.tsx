@@ -8,7 +8,7 @@ import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Tabl
 interface Campaign {
   id: string;
   name: string;
-  commissionRule: { type: string; value: number; recurring?: boolean };
+  commissionRule: { type: 'percent' | 'fixed'; value: number; recurring?: boolean };
   attributionWindowDays: number;
   attributionModel: string;
   destinationUrl: string;
@@ -112,7 +112,7 @@ export function AdminCampaigns() {
                   onClick={() => setEditing(c)}
                   style={smallActionStyle(theme.textMuted)}
                 >
-                  Edit dates
+                  Edit
                 </button>
                 {status !== 'ended' && (
                   <button
@@ -151,12 +151,18 @@ function smallActionStyle(color: string): React.CSSProperties {
 }
 
 /**
- * Lightweight inline form for adjusting a campaign's startsAt /
- * endsAt after creation. Doesn't expose any other Campaign fields —
- * commission rate / attribution window / model edits are out of scope
- * here for the same reason the offering edit form pulled them: there's
- * no per-partnership snapshot of those, so editing would silently
- * re-price live conversions.
+ * Inline edit form for an existing campaign.
+ *
+ * Dates section: free to edit. Just scheduling.
+ *
+ * Terms section: behind a banner explaining the snapshot semantics.
+ * Editing commission rate or holdback only affects partnerships
+ * approved AFTER the change — existing partners keep the rate they
+ * were quoted (snapshot is stamped at PartnershipRequest approval
+ * time and stored on PartnerCommission, queried at accrual). This is
+ * what makes "rate cut without losing creators" safe and matches the
+ * grandfathering pattern of mature affiliate networks (Impact,
+ * Partnerize).
  */
 function EditCampaignDates({
   campaign,
@@ -169,6 +175,12 @@ function EditCampaignDates({
 }) {
   const [startsAt, setStartsAt] = useState(campaign.startsAt ? toDateTimeLocal(campaign.startsAt) : '');
   const [endsAt, setEndsAt] = useState(campaign.endsAt ? toDateTimeLocal(campaign.endsAt) : '');
+  const [ruleType, setRuleType] = useState<'percent' | 'fixed'>(campaign.commissionRule.type);
+  const [ruleValue, setRuleValue] = useState(String(campaign.commissionRule.value));
+  const [recurring, setRecurring] = useState(campaign.commissionRule.recurring ?? false);
+  const [holdbackDays, setHoldbackDays] = useState(
+    campaign.holdbackDays != null ? String(campaign.holdbackDays) : '0',
+  );
 
   const save = useMutation({
     mutationFn: () =>
@@ -177,6 +189,8 @@ function EditCampaignDates({
         body: {
           startsAt: startsAt ? new Date(startsAt).toISOString() : null,
           endsAt: endsAt ? new Date(endsAt).toISOString() : null,
+          commissionRule: { type: ruleType, value: Number(ruleValue), recurring },
+          holdbackDays: Number(holdbackDays) || 0,
         },
       }),
     onSuccess: onSaved,
@@ -185,14 +199,18 @@ function EditCampaignDates({
   return (
     <Card style={{ marginBottom: 14 }}>
       <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>
-        Edit dates — {campaign.name}
+        Edit campaign — {campaign.name}
       </div>
-      <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 14px' }}>
+      <ErrorBanner error={save.error} />
+
+      <div style={{ marginTop: 14, fontSize: 12, color: theme.textMuted, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+        Schedule
+      </div>
+      <p style={{ fontSize: 12, color: theme.textDim, margin: '4px 0 12px' }}>
         Setting <strong>Ends</strong> to a past date marks the campaign Ended immediately. Past the
         end date, existing share-links keep redirecting but no new commissions accrue.
       </p>
-      <ErrorBanner error={save.error} />
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 18 }}>
         <div>
           <Label>Starts</Label>
           <Input type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} />
@@ -208,9 +226,58 @@ function EditCampaignDates({
           </div>
         </div>
       </div>
+
+      <div style={{ fontSize: 12, color: theme.textMuted, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+        Terms
+      </div>
+      <div
+        style={{
+          margin: '6px 0 12px',
+          padding: 10,
+          background: `${theme.accent}10`,
+          border: `1px solid ${theme.accent}55`,
+          borderRadius: 6,
+          fontSize: 12,
+          color: theme.text,
+        }}
+      >
+        Editing the rate or holdback affects <strong>new partnerships only</strong>. Existing
+        partners keep the rate they were approved under — the snapshot is stamped at approval
+        time. Run the backfill once if you want this guarantee for partners onboarded before
+        snapshots shipped (Admin → Partners → Tools).
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr auto', gap: 12, marginBottom: 14, alignItems: 'end' }}>
+        <div>
+          <Label>Rule</Label>
+          <Select value={ruleType} onChange={(e) => setRuleType(e.target.value as 'percent' | 'fixed')}>
+            <option value="percent">Percent</option>
+            <option value="fixed">Fixed</option>
+          </Select>
+        </div>
+        <div>
+          <Label>Value</Label>
+          <Input type="number" value={ruleValue} onChange={(e) => setRuleValue(e.target.value)} />
+        </div>
+        <label style={{ fontSize: 13, display: 'flex', gap: 8, alignItems: 'center', paddingBottom: 10, color: theme.textMuted }}>
+          <input type="checkbox" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} />
+          Recurring
+        </label>
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <Label>Payout holdback (days)</Label>
+        <Select value={holdbackDays} onChange={(e) => setHoldbackDays(e.target.value)}>
+          <option value="0">None</option>
+          <option value="7">7 days</option>
+          <option value="14">14 days</option>
+          <option value="30">30 days</option>
+          <option value="60">60 days</option>
+          <option value="90">90 days</option>
+        </Select>
+      </div>
+
       <div style={{ display: 'flex', gap: 8 }}>
         <Button onClick={() => save.mutate()} disabled={save.isPending}>
-          {save.isPending ? 'Saving…' : 'Save dates'}
+          {save.isPending ? 'Saving…' : 'Save changes'}
         </Button>
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
       </div>
