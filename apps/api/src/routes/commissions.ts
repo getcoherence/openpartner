@@ -41,7 +41,7 @@ commissionsRouter.get(
   },
 );
 
-commissionsRouter.get('/commissions', requireAuth, requireAdmin, async (req, res) => {
+commissionsRouter.get('/commissions', requireAuth, grantScope('commissions:read'), requireAdmin, async (req, res) => {
   const { db } = tenantOf(req);
   const q = listQuerySchema.safeParse(req.query);
   if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
