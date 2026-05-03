@@ -90,21 +90,32 @@ async function runDispatch(tenantId: string, event: WebhookEventType, data: unkn
  * to surface the result immediately rather than dropping it in the
  * delivery log to be hunted for. Returns the WebhookDelivery row
  * after the attempt completes (delivered or failed).
+ *
+ * Pass an `eventType` (any of SYNTHETIC_PAYLOADS keys, or omit) to
+ * fire a realistic-looking sample payload for that event type
+ * instead of the generic webhook.test envelope. Useful for
+ * end-to-end testing of Zapier triggers + ActivePieces pieces
+ * without needing to seed real conversion data on the brand's DB.
+ *
+ * The synthetic fire bypasses subscription filtering — the event
+ * goes to the chosen endpoint regardless of whether that endpoint
+ * subscribes to the chosen event type. That's intentional: this
+ * is a testing tool, not a normal dispatch path.
  */
-export async function sendTest(tenantId: string, endpointId: string): Promise<WebhookDeliveryRow | null> {
+export async function sendTest(
+  tenantId: string,
+  endpointId: string,
+  eventType: string = 'webhook.test',
+): Promise<WebhookDeliveryRow | null> {
   const endpoint = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint)
     .where({ id: endpointId, tenantId })
     .first();
   if (!endpoint) return null;
   const envelope: WebhookEnvelope = {
     id: `evt_${ulid()}`,
-    event: 'webhook.test',
+    event: eventType as WebhookEventType,
     created: new Date().toISOString(),
-    data: {
-      message: 'This is a test webhook delivery from OpenPartner.',
-      endpointId: endpoint.id,
-      sentAt: new Date().toISOString(),
-    },
+    data: payloadFor(eventType, endpoint.id),
   };
   await deliverOne(tenantId, endpoint, envelope);
   // Re-fetch the delivery row that deliverOne wrote so the caller
@@ -114,6 +125,101 @@ export async function sendTest(tenantId: string, endpointId: string): Promise<We
       .where({ eventId: envelope.id })
       .first()) ?? null
   );
+}
+
+/** Sample payload bodies for each known event type — shape-matches
+ *  what real fires from attribution.ts / payouts.ts / commissions.ts
+ *  produce, so a Zap built against a synthetic sample works
+ *  identically against real events. Keys with no entry fall through
+ *  to the generic webhook.test body (useful when an admin wants to
+ *  test a custom event type they're firing themselves). */
+const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
+  'attribution.created': () => ({
+    attributionId: `01J${'2'.repeat(23)}`,
+    eventId: `01J${'3'.repeat(23)}`,
+    partnerId: `01J${'1'.repeat(23)}`,
+    campaignId: 'cmp_default',
+    clickId: `01J${'4'.repeat(23)}`,
+    model: 'last_click',
+    weight: 1,
+    eventType: 'invoice_paid',
+    eventValue: 60.0,
+    commissionId: `01J${'0'.repeat(23)}`,
+    commissionAmount: '12.00',
+    commissionCurrency: 'USD',
+  }),
+  'commission.accrued': () => ({
+    commissionId: `01J${'0'.repeat(23)}`,
+    partnerId: `01J${'1'.repeat(23)}`,
+    attributionId: `01J${'2'.repeat(23)}`,
+    campaignId: 'cmp_default',
+    amount: '12.00',
+    currency: 'USD',
+    eventType: 'invoice_paid',
+    eventValue: 60.0,
+  }),
+  'commission.approved': () => ({
+    commissionId: `01J${'0'.repeat(23)}`,
+    partnerId: `01J${'1'.repeat(23)}`,
+    amount: '12.00',
+    currency: 'USD',
+    approvedAt: new Date().toISOString(),
+  }),
+  'commission.paid': () => ({
+    commissionId: `01J${'0'.repeat(23)}`,
+    payoutId: `01J${'5'.repeat(23)}`,
+    partnerId: `01J${'1'.repeat(23)}`,
+    amount: '12.00',
+    currency: 'USD',
+  }),
+  'commission.reversed': () => ({
+    commissionId: `01J${'0'.repeat(23)}`,
+    partnerId: `01J${'1'.repeat(23)}`,
+    amount: '12.00',
+    currency: 'USD',
+    reason: 'refund',
+  }),
+  'partner.created': () => ({
+    partnerId: `01J${'1'.repeat(23)}`,
+    email: 'sample@example.com',
+    name: 'Sample Partner',
+    activatedAt: null,
+    invited: true,
+    campaignIds: ['cmp_default'],
+  }),
+  'partner.activated': () => ({
+    partnerId: `01J${'1'.repeat(23)}`,
+    email: 'sample@example.com',
+    name: 'Sample Partner',
+    activatedAt: new Date().toISOString(),
+  }),
+  'partnership.approved': () => ({
+    partnerId: `01J${'1'.repeat(23)}`,
+    email: 'sample@example.com',
+    name: 'Sample Partner',
+    networkCreatorId: `crt_${'a'.repeat(20)}`,
+    campaignIds: ['cmp_default'],
+  }),
+  'payout.created': () => ({
+    payoutId: `01J${'5'.repeat(23)}`,
+    partnerId: `01J${'1'.repeat(23)}`,
+    amount: '120.00',
+    currency: 'USD',
+    commissionCount: 10,
+  }),
+};
+
+function payloadFor(eventType: string, endpointId: string): Record<string, unknown> {
+  const factory = SYNTHETIC_PAYLOADS[eventType];
+  if (factory) {
+    return { ...factory(), _synthetic: true, _endpointId: endpointId };
+  }
+  return {
+    message: 'This is a test webhook delivery from OpenPartner.',
+    endpointId,
+    sentAt: new Date().toISOString(),
+    _synthetic: true,
+  };
 }
 
 async function deliverOne(tenantId: string, endpoint: WebhookEndpointRow, envelope: WebhookEnvelope): Promise<void> {

@@ -19,11 +19,14 @@ import {
 
 const KNOWN_EVENTS = [
   'attribution.created',
+  'commission.accrued',
   'commission.approved',
   'commission.paid',
   'commission.reversed',
-  'payout.created',
+  'partner.created',
+  'partner.activated',
   'partnership.approved',
+  'payout.created',
 ] as const;
 
 interface Endpoint {
@@ -177,6 +180,26 @@ function EndpointCard({
     mutationFn: () => api(`/webhooks/${endpoint.id}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['webhooks'] }),
   });
+  // Synthetic test fire — sends a realistic-looking sample payload
+  // for the chosen event type to this endpoint, bypassing
+  // subscription filters. Lets admins end-to-end test integrations
+  // (Zapier triggers filter by event type) without seeding fake
+  // conversion data in the brand's DB.
+  const [testEvent, setTestEvent] = useState<string>(
+    endpoint.events.length > 0 && endpoint.events[0] !== '*' ? endpoint.events[0]! : KNOWN_EVENTS[0],
+  );
+  const [testResult, setTestResult] = useState<{ status: string; httpStatus: number | null; error: string | null } | null>(null);
+  const sendTest = useMutation({
+    mutationFn: (event: string) =>
+      api<{ delivery: { status: string; httpStatus: number | null; error: string | null }; event: string }>(
+        `/webhooks/${endpoint.id}/test?event=${encodeURIComponent(event)}`,
+        { method: 'POST' },
+      ),
+    onSuccess: (res) => {
+      setTestResult(res.delivery);
+      qc.invalidateQueries({ queryKey: ['webhook-deliveries', endpoint.id] });
+    },
+  });
 
   return (
     <Card>
@@ -225,6 +248,74 @@ function EndpointCard({
           </Button>
           <Button size="sm" variant="danger" icon={<Trash2 size={12} />} onClick={() => del.mutate()} disabled={del.isPending} />
         </div>
+      </div>
+
+      <div
+        style={{
+          marginTop: 12,
+          paddingTop: 12,
+          borderTop: `1px solid ${theme.borderSubtle}`,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          flexWrap: 'wrap',
+        }}
+      >
+        <span style={{ fontSize: 12, color: theme.textMuted }}>Send test event:</span>
+        <select
+          value={testEvent}
+          onChange={(e) => setTestEvent(e.target.value)}
+          disabled={!endpoint.active || sendTest.isPending}
+          style={{
+            padding: '4px 8px',
+            background: theme.surface2,
+            border: `1px solid ${theme.borderSubtle}`,
+            borderRadius: 6,
+            color: theme.text,
+            fontSize: 12,
+            fontFamily: theme.fontMono,
+          }}
+        >
+          {KNOWN_EVENTS.map((ev) => (
+            <option key={ev} value={ev}>
+              {ev}
+            </option>
+          ))}
+        </select>
+        <Button
+          size="sm"
+          variant="secondary"
+          icon={<Play size={11} />}
+          onClick={() => sendTest.mutate(testEvent)}
+          disabled={!endpoint.active || sendTest.isPending}
+        >
+          {sendTest.isPending ? 'Sending…' : 'Fire'}
+        </Button>
+        {!endpoint.active && (
+          <span style={{ fontSize: 11, color: theme.textDim }}>Endpoint disabled — enable to test</span>
+        )}
+        {testResult && (
+          <span
+            style={{
+              fontSize: 12,
+              color:
+                testResult.status === 'delivered'
+                  ? theme.success
+                  : testResult.status === 'failed'
+                    ? theme.danger
+                    : theme.textMuted,
+            }}
+          >
+            {testResult.status === 'delivered'
+              ? `✓ Delivered (HTTP ${testResult.httpStatus})`
+              : `✗ ${testResult.status}${testResult.httpStatus ? ` (HTTP ${testResult.httpStatus})` : ''}: ${testResult.error ?? 'unknown'}`}
+          </span>
+        )}
+        {sendTest.error && (
+          <span style={{ fontSize: 12, color: theme.danger }}>
+            {sendTest.error instanceof Error ? sendTest.error.message : String(sendTest.error)}
+          </span>
+        )}
       </div>
 
       {expanded && <DeliveryList endpointId={endpoint.id} />}

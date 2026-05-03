@@ -117,21 +117,43 @@ webhooksRouter.get('/webhooks/:id/deliveries', requireAuth, requireAdmin, async 
   res.json({ deliveries });
 });
 
-// Synthetic test ping. Sends a signed `webhook.test` event to the
-// subscriber URL and returns the resulting WebhookDelivery row inline.
-// Zapier / ActivePieces setup flows expect this — it lets the user
-// verify their endpoint config (URL reachable, signature verifiable)
-// without waiting for a real event to fire. Synchronous because the
-// admin is staring at the page; failures should surface, not silently
-// land in the delivery log.
+// Synthetic test ping. Sends a signed event to the subscriber URL
+// and returns the resulting WebhookDelivery row inline. Two modes:
+//
+//   - No `event` param → fires a generic `webhook.test` envelope.
+//     Used by Zapier/ActivePieces setup flows to verify the
+//     endpoint is reachable + signature parses.
+//
+//   - `event=commission.accrued` (or any other known type) → fires
+//     a realistic-looking sample payload for that event type.
+//     Lets admins end-to-end-test their integration (Zapier triggers
+//     filter by event type) without seeding fake conversion data
+//     in the brand's DB.
+//
+// Bypasses subscription filtering — synthetic fires go to the
+// chosen endpoint regardless of whether it subscribes to that event.
+// '*' is a valid subscription wildcard but not a fireable event,
+// so exclude it from the test-fire enum.
+const FIREABLE_EVENTS = KNOWN_EVENTS.filter((e) => e !== '*') as readonly Exclude<
+  (typeof KNOWN_EVENTS)[number],
+  '*'
+>[];
+const testQuerySchema = z.object({
+  event: z.enum(FIREABLE_EVENTS as unknown as [string, ...string[]]).optional(),
+});
 webhooksRouter.post('/webhooks/:id/test', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
+  const q = testQuerySchema.safeParse(req.query);
+  if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
   const endpoint = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: req.params.id }).first();
   if (!endpoint) return res.status(404).json({ error: 'not_found' });
   if (!endpoint.active) return res.status(400).json({ error: 'endpoint_inactive' });
   const { sendTest } = await import('../webhook-dispatcher.js');
-  const delivery = await sendTest(tenantId, endpoint.id);
-  res.json({ delivery });
+  // 'webhook.test' isn't in KNOWN_EVENTS (it's a meta-event, not a
+  // dispatchable type), so omitting `event` defaults to it inside
+  // sendTest.
+  const delivery = await sendTest(tenantId, endpoint.id, q.data.event);
+  res.json({ delivery, event: q.data.event ?? 'webhook.test' });
 });
 
 webhooksRouter.post('/webhooks/:id/deliveries/:deliveryId/retry', requireAuth, requireAdmin, async (req, res) => {
