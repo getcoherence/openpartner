@@ -69,6 +69,16 @@ function OfferingList() {
     queryFn: () => api<{ offerings: Offering[] }>('/admin/network/offerings'),
     retry: false,
   });
+  // Pulled alongside offerings so each card knows the current state of
+  // its bound Campaign — needed for the "Refresh from campaign"
+  // action that re-snapshots stale offering.terms with whatever the
+  // campaign currently says.
+  const { data: campaignsData } = useQuery({
+    queryKey: ['campaigns'],
+    queryFn: () => api<{ campaigns: Campaign[] }>('/campaigns'),
+  });
+  const campaignById = new Map((campaignsData?.campaigns ?? []).map((c) => [c.id, c]));
+
   const del = useMutation({
     mutationFn: (id: string) => api(`/admin/network/offerings/${id}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['network-offerings'] }),
@@ -96,6 +106,7 @@ function OfferingList() {
         <OfferingCard
           key={o.id}
           offering={o}
+          campaign={campaignById.get(o.vendorCampaignId)}
           togglePublished={togglePublished}
           del={del}
         />
@@ -106,12 +117,55 @@ function OfferingList() {
 
 interface OfferingCardProps {
   offering: Offering;
+  campaign: Campaign | undefined;
   togglePublished: ReturnType<typeof useMutation<unknown, Error, { id: string; published: boolean }>>;
   del: ReturnType<typeof useMutation<unknown, Error, string>>;
 }
 
-function OfferingCard({ offering: o, togglePublished, del }: OfferingCardProps) {
+function OfferingCard({ offering: o, campaign, togglePublished, del }: OfferingCardProps) {
+  const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
+
+  // Re-snap the snapshot fields from the bound Campaign while
+  // preserving editable fields (commissionDescription, cookieWindowDays).
+  // Unblocks creators who land on a stale offering whose terms predate
+  // the current chip set, and brand admins who edit the bound Campaign
+  // and want the marketplace to reflect the new values without
+  // recreating the offering.
+  const refresh = useMutation({
+    mutationFn: () => {
+      if (!campaign) throw new Error('campaign_unavailable');
+      const refreshed: OfferingTerms = {
+        ...o.terms,
+        payoutHoldbackDays: campaign.holdbackDays ?? undefined,
+        attributionWindowDays: campaign.attributionWindowDays,
+        attributionModel: campaign.attributionModel,
+        commissionType: campaign.commissionRule.type,
+        commissionValue: campaign.commissionRule.value,
+        recurring: campaign.commissionRule.recurring ?? false,
+        campaignEndsAt: campaign.endsAt ?? null,
+      };
+      return api(`/admin/network/offerings/${o.id}`, {
+        method: 'PATCH',
+        body: { terms: refreshed },
+      });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['network-offerings'] }),
+  });
+
+  // Detect when the current snapshot is missing fields the bound
+  // Campaign has — flag the user so they know why creator chips look
+  // sparse and what to do about it. campaignEndsAt = null is a
+  // legitimate snapshot value (indefinite) so we treat its absence
+  // as "field missing" by checking for the property's presence rather
+  // than its truthiness.
+  const stale =
+    !!campaign &&
+    (o.terms.attributionModel == null ||
+      o.terms.attributionWindowDays == null ||
+      o.terms.commissionType == null ||
+      !('campaignEndsAt' in o.terms));
+
   return (
     <Card>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
@@ -130,6 +184,15 @@ function OfferingCard({ offering: o, togglePublished, del }: OfferingCardProps) 
         {!editing && (
           <Button onClick={() => setEditing(true)} variant="secondary">
             Edit
+          </Button>
+        )}
+        {!editing && campaign && (
+          <Button
+            onClick={() => refresh.mutate()}
+            disabled={refresh.isPending}
+            variant="secondary"
+          >
+            {refresh.isPending ? 'Refreshing…' : 'Refresh from campaign'}
           </Button>
         )}
         <Button
@@ -153,6 +216,27 @@ function OfferingCard({ offering: o, togglePublished, del }: OfferingCardProps) 
         <EditOfferingForm offering={o} onClose={() => setEditing(false)} />
       ) : (
         <>
+          {stale && (
+            <div
+              style={{
+                marginTop: 8,
+                marginBottom: 8,
+                padding: 10,
+                background: '#fff8e6',
+                border: '1px solid #f5d782',
+                borderRadius: 6,
+                fontSize: 12,
+                color: '#7a5400',
+              }}
+            >
+              ⚠️ This offering&rsquo;s terms snapshot is missing
+              attribution + commission detail. Creators won&rsquo;t see
+              chips for those on the marketplace. Click <strong>Refresh
+              from campaign</strong> to pull the current values from
+              your bound campaign into the snapshot.
+            </div>
+          )}
+          {refresh.error && <ErrorBanner error={refresh.error} />}
           <p style={{ color: '#6b7280', fontSize: 13, margin: '4px 0' }}>
             {o.terms.commissionDescription} · campaign <code>{o.vendorCampaignId}</code>
             {o.terms.payoutHoldbackDays != null && o.terms.payoutHoldbackDays > 0 && (
