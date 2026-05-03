@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { ChevronRight } from 'lucide-react';
 import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi, ApiError } from './creator-api.js';
@@ -114,9 +115,39 @@ export function CreatorOfferingDetailPage() {
   });
 
   return (
-    <Page title={offering?.title ?? 'Program'} subtitle={offering?.vendorName}>
+    <Page title={offering?.title ?? 'Program'}>
       <ErrorBanner error={error} />
       {isLoading && <Card>Loading…</Card>}
+      {offering && (
+        <Link
+          to={`/creator/vendors/${offering.vendorId}`}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '12px 14px',
+            background: theme.surface,
+            border: `1px solid ${theme.borderSubtle}`,
+            borderRadius: theme.radiusSm,
+            marginBottom: 14,
+            textDecoration: 'none',
+            color: theme.text,
+          }}
+        >
+          <BrandMark logoUrl={offering.vendorLogoUrl ?? null} name={offering.vendorName} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 11, color: theme.textDim, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+              Brand
+            </div>
+            <div style={{ fontSize: 15, fontWeight: 500, marginTop: 2, color: theme.text }}>
+              {offering.vendorName}
+            </div>
+          </div>
+          <span style={{ fontSize: 12, color: theme.accent, display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+            View profile <ChevronRight size={14} />
+          </span>
+        </Link>
+      )}
       {invitation && invitation.status === 'pending' && (
         <Card style={{ marginBottom: 14, background: `${theme.accent}10`, borderColor: `${theme.accent}55` }}>
           <div style={{ fontSize: 14, fontWeight: 500, color: theme.accent, marginBottom: 4 }}>
@@ -224,6 +255,38 @@ function TermLine({
       <div style={{ fontSize: multiline ? 14 : 15, color: theme.text, whiteSpace: multiline ? 'pre-wrap' : 'normal', lineHeight: multiline ? 1.55 : 1.4 }}>
         {value}
       </div>
+    </div>
+  );
+}
+
+/** 36px brand mark used inside the Brand strip above the terms card.
+ *  Smaller than the vendor profile page header (which sits at the
+ *  top of its own page); same fallback behavior. */
+function BrandMark({ logoUrl, name }: { logoUrl: string | null; name: string }) {
+  const initial = name.charAt(0).toUpperCase() || '?';
+  return (
+    <div
+      style={{
+        width: 36,
+        height: 36,
+        borderRadius: 8,
+        background: logoUrl ? theme.surface2 : theme.accent,
+        color: theme.accentInk,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontWeight: 700,
+        fontSize: 14,
+        overflow: 'hidden',
+        flexShrink: 0,
+        border: `1px solid ${theme.borderSubtle}`,
+      }}
+    >
+      {logoUrl ? (
+        <img src={logoUrl} alt={name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+      ) : (
+        initial
+      )}
     </div>
   );
 }
