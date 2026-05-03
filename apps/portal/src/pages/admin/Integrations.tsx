@@ -42,12 +42,17 @@ interface CreatedKey {
 // touch billing, payouts, or admin surfaces (those have no scope
 // grants anywhere). Used to be just events:write, which broke
 // everything beyond the CRM-event use case.
-const INTEGRATION_SCOPES = [
-  'events:write',
-  'partners:write',
-  'partners:read',
-  'commissions:read',
-] as const;
+//
+// SCOPE_DESCRIPTIONS is what the dev sees in the UI, sourced from
+// the same constant so the displayed list never drifts from what
+// the create mutation actually mints.
+const SCOPE_DESCRIPTIONS: Array<{ scope: string; description: string }> = [
+  { scope: 'events:write', description: 'Record conversion events (the CRM webhook path).' },
+  { scope: 'partners:write', description: 'Create + revoke partners (Zapier/ActivePieces actions).' },
+  { scope: 'partners:read', description: 'List partners + look up by email.' },
+  { scope: 'commissions:read', description: 'List commissions for trigger sample data.' },
+];
+const INTEGRATION_SCOPES = SCOPE_DESCRIPTIONS.map((s) => s.scope);
 const EVENTS_SCOPE = 'events:write'; // legacy filter on the keys list query
 
 export function AdminIntegrations() {
@@ -194,7 +199,7 @@ function KeysPanel() {
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 14 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 8 }}>
         <div style={{ flex: 1 }}>
           <Label>Label</Label>
           <Input
@@ -208,6 +213,8 @@ function KeysPanel() {
           {create.isPending ? 'Generating…' : 'Generate key'}
         </Button>
       </div>
+      <ScopesPanel />
+      <div style={{ height: 14 }} />
 
       {list.isLoading ? (
         <p style={{ fontSize: 13, color: theme.textMuted, margin: 0 }}>Loading…</p>
@@ -262,6 +269,70 @@ function KeysPanel() {
         </div>
       )}
     </Card>
+  );
+}
+
+/** Surfaces the scope set this page mints so devs can verify what
+ *  the key carries before generating it (and after, when auditing).
+ *  Sourced from the same SCOPE_DESCRIPTIONS constant the create
+ *  mutation reads, so what's shown is what's minted — they can't
+ *  drift. Collapsible to keep the create flow visually quiet for
+ *  admins who don't care. */
+function ScopesPanel() {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div
+      style={{
+        padding: '8px 12px',
+        background: theme.surface2,
+        border: `1px solid ${theme.borderSubtle}`,
+        borderRadius: theme.radiusSm,
+        fontSize: 12,
+        color: theme.textMuted,
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => setExpanded((s) => !s)}
+        style={{
+          background: 'transparent',
+          border: 'none',
+          color: theme.textMuted,
+          cursor: 'pointer',
+          padding: 0,
+          fontSize: 12,
+          fontFamily: 'inherit',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          width: '100%',
+          textAlign: 'left',
+        }}
+      >
+        <span>{expanded ? '▾' : '▸'}</span>
+        Generated keys carry <strong style={{ color: theme.text }}>{INTEGRATION_SCOPES.length} scopes</strong>
+        {!expanded && (
+          <span style={{ color: theme.textDim, marginLeft: 4 }}>
+            ({INTEGRATION_SCOPES.join(', ')})
+          </span>
+        )}
+      </button>
+      {expanded && (
+        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {SCOPE_DESCRIPTIONS.map(({ scope, description }) => (
+            <div key={scope} style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+              <code style={{ color: theme.accent, fontSize: 12, minWidth: 130, fontWeight: 500 }}>{scope}</code>
+              <span style={{ color: theme.textMuted, fontSize: 12 }}>{description}</span>
+            </div>
+          ))}
+          <div style={{ marginTop: 4, color: theme.textDim, fontSize: 11, lineHeight: 1.5 }}>
+            None of these touch billing, payouts, campaigns, or admin surfaces — those have no
+            scope grants. A leaked key can fabricate conversion events + create/revoke
+            partners on this tenant only.
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
