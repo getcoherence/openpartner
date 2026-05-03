@@ -170,35 +170,19 @@ function OfferingCard({ offering: o, togglePublished, del }: OfferingCardProps) 
 }
 
 /**
- * Inline edit form for an existing offering. Two tiers:
- *
- *   - Free-text fields (title, description) — edit freely. These don't
- *     change anything a creator has been quoted, just the listing copy.
- *
- *   - Contract fields (commissionDescription, cookieWindowDays) — edit
- *     allowed but with a warning. These are visible to creators when
- *     they apply; changing them after partnerships exist is a
- *     unilateral change to the deal. Useful for fixing typos or
- *     clarifying language; not great for materially shifting terms.
- *
- *   - Snapshotted-from-Campaign fields (commission %, holdback,
- *     attribution model/window, destination URL) are deliberately NOT
- *     editable here — they live on the Campaign as the source of
- *     truth. Editing them here would silently diverge the Network
- *     listing from what the brand actually pays / where their links
- *     send. Surfaced as read-only with a "edit the campaign instead"
- *     hint so the admin doesn't have to guess where to go.
+ * Inline edit form for an existing offering. Listing copy only —
+ * title and description. Material terms (commission summary, cookie
+ * window, payout cadence, attribution config) are deliberately not
+ * editable: a creator who applied to "20% recurring" should keep
+ * earning 20% even if the brand later regrets that rate. The clean
+ * way to change terms is to create a new offering and unpublish the
+ * old one; existing partnerships stay bound to the terms they were
+ * approved under.
  */
 function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: () => void }) {
   const qc = useQueryClient();
   const [title, setTitle] = useState(offering.title);
   const [description, setDescription] = useState(offering.description ?? '');
-  const [commissionDescription, setCommissionDescription] = useState(
-    offering.terms.commissionDescription ?? '',
-  );
-  const [cookieWindowDays, setCookieWindowDays] = useState<number | ''>(
-    offering.terms.cookieWindowDays ?? '',
-  );
   const [error, setError] = useState<string | null>(null);
 
   const save = useMutation({
@@ -208,14 +192,6 @@ function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: 
         body: {
           title: title.trim(),
           description: description.trim() === '' ? null : description.trim(),
-          // Merge into the existing terms snapshot so we don't drop
-          // the Campaign-derived fields (commissionType/Value,
-          // attributionModel, payoutHoldbackDays, campaignEndsAt, ...).
-          terms: {
-            ...offering.terms,
-            commissionDescription: commissionDescription.trim(),
-            cookieWindowDays: cookieWindowDays === '' ? undefined : Number(cookieWindowDays),
-          },
         },
       }),
     onSuccess: () => {
@@ -226,10 +202,7 @@ function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: 
   });
 
   const dirty =
-    title !== offering.title ||
-    description !== (offering.description ?? '') ||
-    commissionDescription !== (offering.terms.commissionDescription ?? '') ||
-    String(cookieWindowDays) !== String(offering.terms.cookieWindowDays ?? '');
+    title !== offering.title || description !== (offering.description ?? '');
 
   return (
     <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
@@ -249,40 +222,6 @@ function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: 
       </div>
       <div
         style={{
-          marginBottom: 12,
-          padding: 10,
-          background: '#fff8e6',
-          border: '1px solid #f5d782',
-          borderRadius: 6,
-          fontSize: 12,
-          color: '#7a5400',
-        }}
-      >
-        ⚠️ The fields below are shown to creators when they apply.
-        Editing them after creators have partnered is effectively a
-        unilateral change to your deal. Fine for typos or clarification;
-        avoid for material shifts in commission or attribution.
-      </div>
-      <div style={{ marginBottom: 12 }}>
-        <Label>Commission summary (shown to creators)</Label>
-        <Input
-          value={commissionDescription}
-          onChange={(e) => setCommissionDescription(e.target.value)}
-          maxLength={200}
-          placeholder="20% recurring on all plans"
-        />
-      </div>
-      <div style={{ marginBottom: 12 }}>
-        <Label>Cookie window (days, optional)</Label>
-        <Input
-          type="number"
-          value={cookieWindowDays}
-          onChange={(e) => setCookieWindowDays(e.target.value === '' ? '' : Number(e.target.value))}
-          placeholder="60"
-        />
-      </div>
-      <div
-        style={{
           marginBottom: 14,
           padding: 10,
           background: '#f3f4f6',
@@ -292,14 +231,17 @@ function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: 
           color: '#4b5563',
         }}
       >
-        Commission %, holdback, attribution model/window, and the
-        destination URL come from the bound Campaign (
-        <code>{offering.vendorCampaignId}</code>). Edit the Campaign in
-        Admin → Campaigns to change those, then re-publish this
-        offering to refresh the snapshot.
+        Commission, cookie window, holdback, attribution, and the
+        destination URL aren&rsquo;t editable here — creators who
+        applied saw those terms and are owed them. To change material
+        terms, publish a <strong>new offering</strong> with the new
+        rules and unpublish this one; existing partnerships stay
+        bound to what they were approved under. Campaign-level
+        config lives in Admin → Campaigns (
+        <code>{offering.vendorCampaignId}</code>).
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={() => save.mutate()} disabled={save.isPending || !dirty || !title.trim() || !commissionDescription.trim()}>
+        <Button onClick={() => save.mutate()} disabled={save.isPending || !dirty || !title.trim()}>
           {save.isPending ? 'Saving…' : 'Save changes'}
         </Button>
         <Button onClick={onClose} variant="secondary" disabled={save.isPending}>
