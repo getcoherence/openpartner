@@ -340,9 +340,7 @@ function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: 
         The fields below are shown on the marketplace listing.
         Editing them affects <strong>new applicants only</strong> —
         existing partners keep the rate snapshotted on their
-        PartnerCommission row at approval time. Run the backfill
-        once if you want this guarantee for partners onboarded
-        before snapshots shipped (Admin → Partners → Tools).
+        PartnerCommission row at approval time.
       </div>
       <div style={{ marginBottom: 12 }}>
         <Label>Commission summary (shown to creators)</Label>

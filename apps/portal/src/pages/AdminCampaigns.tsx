@@ -243,8 +243,7 @@ function EditCampaignDates({
       >
         Editing the rate or holdback affects <strong>new partnerships only</strong>. Existing
         partners keep the rate they were approved under — the snapshot is stamped at approval
-        time. Run the backfill once if you want this guarantee for partners onboarded before
-        snapshots shipped (Admin → Partners → Tools).
+        time and stored on PartnerCommission, queried at accrual.
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr auto', gap: 12, marginBottom: 14, alignItems: 'end' }}>
         <div>

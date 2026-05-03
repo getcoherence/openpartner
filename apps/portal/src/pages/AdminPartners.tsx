@@ -55,8 +55,6 @@ export function AdminPartners() {
         />
       )}
 
-      <ToolsCard />
-
       {partners.isLoading ? (
         <Card>Loading…</Card>
       ) : (partners.data?.partners ?? []).length === 0 ? (
@@ -110,75 +108,6 @@ interface CreateCampaignOption {
   name: string;
 }
 
-interface BackfillResult {
-  scanned: number;
-  inserted: number;
-  ambiguous: number;
-  alreadyHadSnapshot: number;
-  noCampaignRule: number;
-}
-
-/**
- * Tools panel — currently just the commission-snapshot backfill.
- * Idempotent + safe to run repeatedly. Lives here (rather than a
- * separate Settings → Maintenance page) because the operation is
- * partner-scoped and admins looking at the partner list are the
- * audience.
- */
-function ToolsCard() {
-  const [result, setResult] = useState<BackfillResult | null>(null);
-  const [showDetails, setShowDetails] = useState(false);
-  const backfill = useMutation({
-    mutationFn: () => api<BackfillResult>('/partners/backfill-commission-snapshots', { method: 'POST' }),
-    onSuccess: (r) => setResult(r),
-  });
-  return (
-    <Card style={{ marginBottom: 14 }}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10,
-          flexWrap: 'wrap',
-          cursor: 'pointer',
-        }}
-        onClick={() => setShowDetails((s) => !s)}
-      >
-        <div style={{ fontSize: 14, fontWeight: 500, flex: 1, minWidth: 0 }}>
-          Tools <span style={{ color: theme.textDim, fontSize: 12, fontWeight: 400 }}>{showDetails ? '▾' : '▸'}</span>
-        </div>
-      </div>
-      {showDetails && (
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${theme.borderSubtle}` }}>
-          <div style={{ fontSize: 13, fontWeight: 500 }}>Backfill commission snapshots</div>
-          <p style={{ fontSize: 12, color: theme.textMuted, margin: '4px 0 10px', lineHeight: 1.5 }}>
-            Stamps a <code>PartnerCommission</code> row for partners that predate snapshot
-            federation, using their bound campaign&rsquo;s current rule + holdback. After
-            running, edits to that campaign no longer retroactively re-price these partners&rsquo;
-            commissions. Idempotent — safe to run repeatedly. Only touches single-campaign
-            partners (multi-campaign rows have no unambiguous &ldquo;the rate&rdquo; to snapshot).
-          </p>
-          <Button onClick={() => backfill.mutate()} disabled={backfill.isPending} variant="secondary">
-            {backfill.isPending ? 'Running…' : 'Run backfill'}
-          </Button>
-          {backfill.error && (
-            <div style={{ marginTop: 8, fontSize: 12, color: theme.danger }}>
-              Failed: {backfill.error instanceof Error ? backfill.error.message : String(backfill.error)}
-            </div>
-          )}
-          {result && (
-            <div style={{ marginTop: 10, fontSize: 12, color: theme.textMuted }}>
-              Scanned <strong>{result.scanned}</strong> · backfilled{' '}
-              <strong style={{ color: theme.success }}>{result.inserted}</strong> · already had
-              snapshot {result.alreadyHadSnapshot} · multi-campaign skipped {result.ambiguous} ·
-              no parseable campaign rule {result.noCampaignRule}
-            </div>
-          )}
-        </div>
-      )}
-    </Card>
-  );
-}
 
 function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState('');
