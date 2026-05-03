@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink } from 'lucide-react';
-import { api } from '../../api.js';
+import { api, currentTenantSlug } from '../../api.js';
 import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page } from '../../ui.js';
 
@@ -251,12 +251,37 @@ function KeysPanel() {
 }
 
 function PayloadGuide() {
-  const apiBase = typeof window === 'undefined' ? 'https://your-instance' : window.location.origin;
+  // Build the actual full URL the admin should paste into their CRM /
+  // Zapier / Make / curl. On multi-tenant installs the path includes
+  // the tenant slug — leaving it out 500s with a generic error and
+  // is the single most common configuration mistake. Render the real
+  // URL so admins copy-paste it correctly without thinking.
+  const origin = typeof window === 'undefined' ? 'https://your-instance' : window.location.origin;
+  const slug = currentTenantSlug();
+  const apiBase = slug ? `${origin}/t/${slug}` : origin;
   return (
     <Card>
       <h3 style={{ marginTop: 0, marginBottom: 4, fontSize: 15, fontWeight: 500 }}>
         Payload contract
       </h3>
+      {slug && (
+        <div
+          style={{
+            margin: '0 0 12px',
+            padding: 10,
+            background: `${theme.accent}10`,
+            border: `1px solid ${theme.accent}55`,
+            borderRadius: 6,
+            fontSize: 12,
+            color: theme.text,
+            lineHeight: 1.55,
+          }}
+        >
+          <strong>Multi-tenant URL:</strong> the path includes your tenant slug{' '}
+          (<code>/t/{slug}</code>) before <code>/api/...</code>. Use the full base URL below
+          as-is — leaving the slug out returns a <code>tenant_slug_missing</code> 400 error.
+        </div>
+      )}
       <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 12px' }}>
         Send a POST with the key as a Bearer token. <code>userId</code> is the same identifier
         you assign at signup time so OpenPartner can stitch the event to a click. <code>type</code>{' '}

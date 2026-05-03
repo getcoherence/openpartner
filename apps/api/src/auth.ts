@@ -56,6 +56,21 @@ export function hashKey(plaintext: string): string {
 }
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+  // Multi-tenant requests need to come in under /t/<slug>/ so the
+  // tenant middleware fires and sets req.db. Without that, every
+  // downstream auth check would have to defensively re-detect "no
+  // tenant scope" and we'd 500 with an internal-only error message
+  // (the previous behavior). Surface a clean 400 here instead so
+  // callers — Zapier, CRM webhooks, raw curl — get an actionable
+  // hint about the missing prefix.
+  if (!req.db) {
+    res.status(400).json({
+      error: 'tenant_slug_missing',
+      detail:
+        'This API request did not pass through tenant resolution. On multi-tenant installs, include the tenant slug in the URL: /t/<your-slug>/api/...',
+    });
+    return;
+  }
   const principal = await resolvePrincipal(req);
   if (!principal) {
     res.status(401).json({ error: 'unauthorized' });
