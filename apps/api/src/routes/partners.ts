@@ -9,6 +9,7 @@ import { buildMagicLinkUrl, partnerInviteEmail, partnerRevokedEmail } from '../e
 import { tenantOf } from '../tenancy.js';
 import { getNetworkMembership, pushPartnerRevoke, pushPartnerUpsert } from '../network-client.js';
 import { autoMintCouponsForGrants } from './coupons.js';
+import { dispatchEvent } from '../webhook-dispatcher.js';
 
 const createSchema = z.object({
   email: z.string().email(),
@@ -207,6 +208,31 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
           updatedAt: new Date(),
         });
     }
+  }
+
+  // Webhook fan-out. partner.created always; partnership.approved
+  // only when this Partner was created via Network federation
+  // (metadata.source === 'openpartner_network' set by the Network's
+  // approve flow). Subscribers like Zapier / ActivePieces use these
+  // to drive Slack notifications, CRM contact creation, welcome
+  // sequences, etc. Async — failures don't block the response.
+  const partnerRow = partner as PartnerRow;
+  dispatchEvent(tenantId, 'partner.created', {
+    partnerId: id,
+    email,
+    name: body.data.name,
+    activatedAt: partnerRow.activatedAt ? partnerRow.activatedAt.toISOString() : null,
+    invited: sendInvite,
+    campaignIds,
+  });
+  if ((body.data.metadata as Record<string, unknown> | undefined)?.source === 'openpartner_network') {
+    dispatchEvent(tenantId, 'partnership.approved', {
+      partnerId: id,
+      email,
+      name: body.data.name,
+      networkCreatorId: (body.data.metadata as Record<string, unknown>).networkCreatorId,
+      campaignIds,
+    });
   }
 
   res.status(201).json({ ...partner, invited: sendInvite });

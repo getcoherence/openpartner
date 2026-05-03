@@ -14,11 +14,14 @@ export const webhooksRouter = Router();
 
 const KNOWN_EVENTS = [
   'attribution.created',
+  'commission.accrued',
   'commission.approved',
   'commission.paid',
   'commission.reversed',
-  'payout.created',
+  'partner.created',
+  'partner.activated',
   'partnership.approved',
+  'payout.created',
   '*',
 ] as const;
 

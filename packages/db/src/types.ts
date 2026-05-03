@@ -344,9 +344,13 @@ export interface ApiKeyRow {
 
 export type WebhookEventType =
   | 'attribution.created'
+  | 'commission.accrued'
   | 'commission.approved'
   | 'commission.paid'
   | 'commission.reversed'
+  | 'partner.created'
+  | 'partner.activated'
+  | 'partnership.approved'
   | 'payout.created'
   | (string & {});
 

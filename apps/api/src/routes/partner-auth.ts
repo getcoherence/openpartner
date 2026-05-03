@@ -139,6 +139,17 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
     await db<PartnerRow>(TABLES.Partner)
       .where({ id: partner.id })
       .update({ activatedAt: new Date(), updatedAt: new Date() });
+    // Fire once, on the actual activation. partner.created already
+    // fired at invite time; this is the "they accepted + are now
+    // promoting" signal Zapier subscribers want for welcome
+    // sequences, Slack pings, etc.
+    const { dispatchEvent } = await import('../webhook-dispatcher.js');
+    dispatchEvent(tenantId, 'partner.activated', {
+      partnerId: partner.id,
+      email: partner.email,
+      name: partner.name,
+      activatedAt: new Date().toISOString(),
+    });
   }
 
   const session = await createSession(db, { tenantId, principalKind: 'partner', principalId: partner.id });

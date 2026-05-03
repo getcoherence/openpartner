@@ -164,6 +164,20 @@ export async function attributeEvent(
       commissionAmount: amount.toFixed(2),
       commissionCurrency: event.currency ?? 'USD',
     });
+    // Separate commission.accrued event because Zapier / ActivePieces
+    // / outbound subscribers commonly want to fire on the moment the
+    // commission lands (notify partner via Slack/email, log to a
+    // sheet, etc.) without parsing the broader attribution payload.
+    dispatchEvent(event.tenantId, 'commission.accrued', {
+      commissionId,
+      partnerId: click.partnerId,
+      attributionId,
+      campaignId: click.campaignId,
+      amount: amount.toFixed(2),
+      currency: event.currency ?? 'USD',
+      eventType: event.type,
+      eventValue: event.value,
+    });
   }
 
   if (allDup) return { status: 'already_attributed', model };
