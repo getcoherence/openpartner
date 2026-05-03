@@ -29,9 +29,23 @@ function statusOf(c: Pick<Campaign, 'startsAt' | 'endsAt'>, at: Date = new Date(
 export function AdminCampaigns() {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
+  const [editing, setEditing] = useState<Campaign | null>(null);
   const campaigns = useQuery({
     queryKey: ['campaigns'],
     queryFn: () => api<{ campaigns: Campaign[] }>('/campaigns'),
+  });
+
+  // End-now sets endsAt = current time. Existing share-links keep
+  // redirecting (the router doesn't gate on endsAt — that would break
+  // creators' embeds), only new commission accrual stops. So this is
+  // safe to fire without a multi-step flow.
+  const endNow = useMutation({
+    mutationFn: (id: string) =>
+      api(`/campaigns/${id}`, {
+        method: 'PATCH',
+        body: { endsAt: new Date().toISOString() },
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
   });
 
   return (
@@ -44,12 +58,22 @@ export function AdminCampaigns() {
         </Button>
       }
     >
-      <ErrorBanner error={campaigns.error} />
+      <ErrorBanner error={campaigns.error ?? endNow.error} />
       {showCreate && (
         <CreateCampaign
           onClose={() => setShowCreate(false)}
           onCreated={() => {
             setShowCreate(false);
+            qc.invalidateQueries({ queryKey: ['campaigns'] });
+          }}
+        />
+      )}
+      {editing && (
+        <EditCampaignDates
+          campaign={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
             qc.invalidateQueries({ queryKey: ['campaigns'] });
           }}
         />
@@ -60,31 +84,147 @@ export function AdminCampaigns() {
         <EmptyState title="No campaigns yet" hint="A campaign holds the commission rule and attribution settings." icon={<Tag size={28} strokeWidth={1.25} />} />
       ) : (
         <Table
-          columns={['Name', 'Status', 'Destination', 'Commission', 'Window', 'Holdback', 'Model', 'Created']}
-          rows={(campaigns.data?.campaigns ?? []).map((c) => [
-            <span style={{ fontWeight: 500 }}>{c.name}</span>,
-            <CampaignStatusPill campaign={c} />,
-            <span style={{ color: theme.textMuted, fontSize: 12, fontFamily: theme.fontMono }}>
-              {c.destinationUrl ? new URL(c.destinationUrl).hostname + new URL(c.destinationUrl).pathname.replace(/\/$/, '') : '—'}
-              {c.deepLinkAllowedDomains && (
-                <span style={{ color: theme.accent, fontSize: 11, marginLeft: 8 }}>+ deep links</span>
-              )}
-            </span>,
-            <span>
-              {c.commissionRule.type === 'percent' ? `${c.commissionRule.value}%` : `$${c.commissionRule.value} fixed`}
-              {c.commissionRule.recurring && <span style={{ color: theme.textDim, fontSize: 12, marginLeft: 6 }}>(recurring)</span>}
-            </span>,
-            <span style={{ color: theme.textMuted }}>{c.attributionWindowDays}d</span>,
-            <span style={{ color: c.holdbackDays ? theme.text : theme.textDim }}>
-              {c.holdbackDays ? `${c.holdbackDays}d` : '—'}
-            </span>,
-            <code style={{ color: theme.accent, fontSize: 12 }}>{c.attributionModel}</code>,
-            <span style={{ color: theme.textMuted }}>{formatDate(c.createdAt, { relative: true })}</span>,
-          ])}
+          columns={['Name', 'Status', 'Destination', 'Commission', 'Window', 'Holdback', 'Model', 'Created', 'Actions']}
+          rows={(campaigns.data?.campaigns ?? []).map((c) => {
+            const status = statusOf(c);
+            return [
+              <span style={{ fontWeight: 500 }}>{c.name}</span>,
+              <CampaignStatusPill campaign={c} />,
+              <span style={{ color: theme.textMuted, fontSize: 12, fontFamily: theme.fontMono }}>
+                {c.destinationUrl ? new URL(c.destinationUrl).hostname + new URL(c.destinationUrl).pathname.replace(/\/$/, '') : '—'}
+                {c.deepLinkAllowedDomains && (
+                  <span style={{ color: theme.accent, fontSize: 11, marginLeft: 8 }}>+ deep links</span>
+                )}
+              </span>,
+              <span>
+                {c.commissionRule.type === 'percent' ? `${c.commissionRule.value}%` : `$${c.commissionRule.value} fixed`}
+                {c.commissionRule.recurring && <span style={{ color: theme.textDim, fontSize: 12, marginLeft: 6 }}>(recurring)</span>}
+              </span>,
+              <span style={{ color: theme.textMuted }}>{c.attributionWindowDays}d</span>,
+              <span style={{ color: c.holdbackDays ? theme.text : theme.textDim }}>
+                {c.holdbackDays ? `${c.holdbackDays}d` : '—'}
+              </span>,
+              <code style={{ color: theme.accent, fontSize: 12 }}>{c.attributionModel}</code>,
+              <span style={{ color: theme.textMuted }}>{formatDate(c.createdAt, { relative: true })}</span>,
+              <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  onClick={() => setEditing(c)}
+                  style={smallActionStyle(theme.textMuted)}
+                >
+                  Edit dates
+                </button>
+                {status !== 'ended' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (confirm(`End "${c.name}" now? Existing share-links keep redirecting; new commissions stop accruing.`)) {
+                        endNow.mutate(c.id);
+                      }
+                    }}
+                    disabled={endNow.isPending}
+                    style={smallActionStyle(theme.danger)}
+                  >
+                    End now
+                  </button>
+                )}
+              </div>,
+            ];
+          })}
         />
       )}
     </Page>
   );
+}
+
+function smallActionStyle(color: string): React.CSSProperties {
+  return {
+    background: 'transparent',
+    border: `1px solid ${color}55`,
+    borderRadius: 6,
+    padding: '4px 10px',
+    fontSize: 12,
+    color,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  };
+}
+
+/**
+ * Lightweight inline form for adjusting a campaign's startsAt /
+ * endsAt after creation. Doesn't expose any other Campaign fields —
+ * commission rate / attribution window / model edits are out of scope
+ * here for the same reason the offering edit form pulled them: there's
+ * no per-partnership snapshot of those, so editing would silently
+ * re-price live conversions.
+ */
+function EditCampaignDates({
+  campaign,
+  onClose,
+  onSaved,
+}: {
+  campaign: Campaign;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [startsAt, setStartsAt] = useState(campaign.startsAt ? toDateTimeLocal(campaign.startsAt) : '');
+  const [endsAt, setEndsAt] = useState(campaign.endsAt ? toDateTimeLocal(campaign.endsAt) : '');
+
+  const save = useMutation({
+    mutationFn: () =>
+      api(`/campaigns/${campaign.id}`, {
+        method: 'PATCH',
+        body: {
+          startsAt: startsAt ? new Date(startsAt).toISOString() : null,
+          endsAt: endsAt ? new Date(endsAt).toISOString() : null,
+        },
+      }),
+    onSuccess: onSaved,
+  });
+
+  return (
+    <Card style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>
+        Edit dates — {campaign.name}
+      </div>
+      <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 14px' }}>
+        Setting <strong>Ends</strong> to a past date marks the campaign Ended immediately. Past the
+        end date, existing share-links keep redirecting but no new commissions accrue.
+      </p>
+      <ErrorBanner error={save.error} />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
+        <div>
+          <Label>Starts</Label>
+          <Input type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} />
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+            Blank = started immediately. Future date hides from creators until then.
+          </div>
+        </div>
+        <div>
+          <Label>Ends</Label>
+          <Input type="datetime-local" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} />
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+            Blank = runs indefinitely.
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button onClick={() => save.mutate()} disabled={save.isPending}>
+          {save.isPending ? 'Saving…' : 'Save dates'}
+        </Button>
+        <Button variant="secondary" onClick={onClose}>Cancel</Button>
+      </div>
+    </Card>
+  );
+}
+
+/** Format an ISO timestamp into the value shape <input type="datetime-local">
+ *  expects (YYYY-MM-DDTHH:mm in local time). The native control will not
+ *  pre-fill from a Z-suffixed ISO string. */
+function toDateTimeLocal(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
