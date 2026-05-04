@@ -6,7 +6,7 @@ import {
   type WebhookDeliveryRow,
   type WebhookEndpointRow,
 } from '@openpartner/db';
-import { requireAdmin, requireAuth } from '../auth.js';
+import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import { makeSecret, redeliver } from '../webhook-dispatcher.js';
 import { tenantOf } from '../tenancy.js';
 
@@ -40,7 +40,7 @@ const updateSchema = z.object({
 
 // -------- Endpoints CRUD --------
 
-webhooksRouter.post('/webhooks', requireAuth, requireAdmin, async (req, res) => {
+webhooksRouter.post('/webhooks', requireAuth, grantScope('webhooks:write'), requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = createSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
@@ -92,7 +92,7 @@ webhooksRouter.patch('/webhooks/:id', requireAuth, requireAdmin, async (req, res
   res.json({ endpoint: strip(fresh!) });
 });
 
-webhooksRouter.delete('/webhooks/:id', requireAuth, requireAdmin, async (req, res) => {
+webhooksRouter.delete('/webhooks/:id', requireAuth, grantScope('webhooks:write'), requireAdmin, async (req, res) => {
   const { db } = tenantOf(req);
   // Soft-delete via active=false keeps the delivery history intact for
   // forensics. We also allow hard-delete via ?hard=1 in case an operator

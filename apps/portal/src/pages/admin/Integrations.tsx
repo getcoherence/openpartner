@@ -52,6 +52,7 @@ const SCOPE_DESCRIPTIONS: Array<{ scope: string; description: string }> = [
   { scope: 'partners:write', description: 'Create + revoke partners (Zapier/ActivePieces actions).' },
   { scope: 'partners:read', description: 'List partners + look up by email.' },
   { scope: 'commissions:read', description: 'List commissions for trigger sample data.' },
+  { scope: 'webhooks:write', description: 'Subscribe + unsubscribe webhook endpoints (Zapier/ActivePieces triggers register their callback URLs through these).' },
 ];
 const INTEGRATION_SCOPES = SCOPE_DESCRIPTIONS.map((s) => s.scope);
 const EVENTS_SCOPE = 'events:write'; // legacy filter on the keys list query
@@ -97,13 +98,14 @@ function WhyCard() {
         rule.
       </p>
       <p style={{ fontSize: 13, color: theme.textMuted, margin: 0, lineHeight: 1.55 }}>
-        Keys here carry four scopes (events:write, partners:write,
-        partners:read, commissions:read) — covers the full surface
-        Zapier / ActivePieces / CRM workflows touch. A leak can
-        fabricate conversion events + create/revoke partners on your
-        tenant, but can&rsquo;t touch billing, payouts, campaigns, or
-        admin surfaces. Full per-scope breakdown sits under the
-        Generate button below.
+        Keys here carry five scopes (events:write, partners:write,
+        partners:read, commissions:read, webhooks:write) — covers the
+        full surface Zapier / ActivePieces / CRM workflows touch. A
+        leak can fabricate conversion events, create/revoke partners,
+        and register/remove webhook endpoints on your tenant — but
+        can&rsquo;t touch billing, payouts, campaigns, or admin
+        surfaces. Full per-scope breakdown sits under the Generate
+        button below.
       </p>
     </Card>
   );
