@@ -6,15 +6,16 @@ import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page } from '../../ui.js';
 
 /**
- * Inbound CRM integration. Surfaces a guided way to mint a scoped API
- * key (`events:write`) that a brand's CRM (HubSpot / Salesforce /
- * Pipedrive) — or a Zapier / Make workflow in front of their CRM —
- * can use to POST conversion events to /attribution/events.
+ * Integration API key surface. Mints scoped keys covering the union
+ * of what CRM webhooks (events:write), Zapier/ActivePieces triggers
+ * (partners:read + commissions:read for performList), and Zapier/
+ * ActivePieces actions (partners:write to create + revoke) need.
  *
  * Why scoped, not admin: brands shouldn't paste a full admin key into
- * a Zap. A `events:write`-only key, leaked, can only fabricate
- * conversion events for their own tenant — not delete partners or
- * change payouts.
+ * a Zap or a CRM workflow. A leaked key with this scope set can
+ * fabricate conversion events + create/revoke partners on the tenant
+ * — but can't touch billing, payouts, campaigns, or admin surfaces
+ * (those have no scope grants anywhere in the API).
  */
 
 interface ApiKeyRow {
@@ -96,9 +97,13 @@ function WhyCard() {
         rule.
       </p>
       <p style={{ fontSize: 13, color: theme.textMuted, margin: 0, lineHeight: 1.55 }}>
-        Keys here are scoped to <strong>events:write</strong> only — a
-        leak can fabricate conversion events for your tenant but can&rsquo;t
-        edit partners, payouts, or campaigns.
+        Keys here carry four scopes (events:write, partners:write,
+        partners:read, commissions:read) — covers the full surface
+        Zapier / ActivePieces / CRM workflows touch. A leak can
+        fabricate conversion events + create/revoke partners on your
+        tenant, but can&rsquo;t touch billing, payouts, campaigns, or
+        admin surfaces. Full per-scope breakdown sits under the
+        Generate button below.
       </p>
     </Card>
   );
