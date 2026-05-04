@@ -259,14 +259,25 @@ partnersRouter.post('/partners/:id/invite', requireAuth, grantScope('partners:wr
   const { resolveBrandName } = await import('../brand-name.js');
   const brandName = await resolveBrandName(db, tenantId);
   const tmpl = partnerInviteEmail(partner.name, buildMagicLinkUrl(issued.plaintext, req.tenantSlug), brandName);
-  await getMailer().send({ db, tenantId }, {
-    to: partner.email,
-    subject: tmpl.subject,
-    text: tmpl.text,
-    html: tmpl.html,
-    tag: 'partner_invite',
-    metadata: { purpose: 'partner_invite', partnerId: partner.id, resend: true },
-  });
+  // Mail-send failures here mean the partner literally can't get the
+  // magic link — the invite genuinely didn't go out. But surface as
+  // 422 mail_send_failed (not 500) so the caller can distinguish
+  // "partner uncontactable" from a real server error and react
+  // accordingly (Postmark suppression list, bad address, etc.).
+  try {
+    await getMailer().send({ db, tenantId }, {
+      to: partner.email,
+      subject: tmpl.subject,
+      text: tmpl.text,
+      html: tmpl.html,
+      tag: 'partner_invite',
+      metadata: { purpose: 'partner_invite', partnerId: partner.id, resend: true },
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error('[partners/invite] mail send failed', { partnerId: partner.id, detail });
+    return res.status(422).json({ error: 'mail_send_failed', detail });
+  }
   res.json({ ok: true });
 });
 
@@ -313,16 +324,31 @@ partnersRouter.post('/partners/:id/revoke', requireAuth, grantScope('partners:wr
     .whereNull('revokedAt')
     .update({ revokedAt: now });
 
+  // Notification is best-effort. The revoke itself already
+  // succeeded above (DB updates are committed); a failed mail send
+  // — Postmark suppression list, SMTP outage, bounce — shouldn't
+  // bubble as a 500 and make the caller think the revoke didn't
+  // happen. Log + continue. The response indicates whether we
+  // managed to send so the caller can surface a follow-up to the
+  // admin if they care.
+  let notified = false;
+  let notifyError: string | null = null;
   if (body.data.notify) {
-    const tmpl = partnerRevokedEmail(partner.name, reason);
-    await getMailer().send({ db, tenantId }, {
-      to: partner.email,
-      subject: tmpl.subject,
-      text: tmpl.text,
-      html: tmpl.html,
-      tag: 'partner_revoked',
-      metadata: { purpose: 'partner_revoked', partnerId: partner.id },
-    });
+    try {
+      const tmpl = partnerRevokedEmail(partner.name, reason);
+      await getMailer().send({ db, tenantId }, {
+        to: partner.email,
+        subject: tmpl.subject,
+        text: tmpl.text,
+        html: tmpl.html,
+        tag: 'partner_revoked',
+        metadata: { purpose: 'partner_revoked', partnerId: partner.id },
+      });
+      notified = true;
+    } catch (err) {
+      notifyError = err instanceof Error ? err.message : String(err);
+      console.error('[partners/revoke] notify failed', { partnerId: partner.id, err: notifyError });
+    }
   }
 
   // Network gets the revoke too — but unconditionally if Network is
@@ -335,7 +361,7 @@ partnersRouter.post('/partners/:id/revoke', requireAuth, grantScope('partners:wr
     await pushPartnerRevoke(db, tenantId, partner.id);
   }
 
-  res.json({ ok: true, revokedAt: now, notified: body.data.notify });
+  res.json({ ok: true, revokedAt: now, notified, notifyError });
 });
 
 /** Undo revoke — partner regains dashboard access and future attribution. */
