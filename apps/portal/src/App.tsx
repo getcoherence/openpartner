@@ -308,13 +308,16 @@ function Sidebar({ principal }: { principal: Principal }) {
           // The latter outlives workspace logout otherwise — and
           // since the Workspaces page auto-enters when there's only
           // one workspace, the user gets silently re-signed-in on the
-          // next navigation. Users expect "Sign out" to mean "sign
-          // me all the way out", not "sign me out of just this
-          // workspace and instantly bounce me back in."
+          // next navigation.
+          //
+          // /auth/platform-signout is a non-tenant route (mounted
+          // before tenantMiddleware in the API), so it can't go
+          // through api() which auto-prepends the /t/<slug> prefix.
+          // Raw fetch directly at /api/auth/platform-signout.
           try {
             await Promise.all([
               api('/auth/signout', { method: 'POST' }).catch(() => {}),
-              api('/auth/platform-signout', { method: 'POST' }).catch(() => {}),
+              fetch('/api/auth/platform-signout', { method: 'POST', credentials: 'include' }).catch(() => {}),
             ]);
           } catch {
             /* ignore */
