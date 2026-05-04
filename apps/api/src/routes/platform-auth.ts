@@ -147,6 +147,9 @@ platformAuthRouter.post('/workspaces/enter', async (req, res) => {
 platformAuthRouter.post('/auth/platform-signout', async (req, res) => {
   const cookie = readPlatformCookie(req);
   if (cookie) await revokePlatformSession(db, cookie);
-  res.clearCookie(PLATFORM_SESSION_COOKIE, { path: '/' });
+  // Mirror cookie attributes from set-time so the browser actually
+  // clears it. See partner-auth's /auth/signout for the same fix
+  // and the underlying Express clearCookie behavior.
+  res.clearCookie(PLATFORM_SESSION_COOKIE, platformSessionCookieOptions());
   res.json({ ok: true });
 });

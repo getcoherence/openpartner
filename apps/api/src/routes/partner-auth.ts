@@ -175,6 +175,13 @@ partnerAuthRouter.post('/auth/signout', async (req, res) => {
     const session = await resolveSession(db, cookie);
     if (session) await revokeSession(db, session.id);
   }
-  res.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
+  // Express's clearCookie only works when the options match the
+  // original cookie's attributes (path + secure + sameSite + domain
+  // — anything that would key the cookie distinctly in the browser).
+  // Passing just { path: '/' } would emit a Set-Cookie the browser
+  // sees as a DIFFERENT cookie (no secure, no sameSite) and the
+  // original op_session would persist. Reuse the same factory used
+  // at set time to guarantee they match.
+  res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
   res.json({ ok: true });
 });
