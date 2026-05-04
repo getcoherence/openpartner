@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { KeyRound, Mail } from 'lucide-react';
 import { api, clearApiKey, setApiKey, ApiError, type Principal } from '../../api.js';
+import { useTenantBase } from '../../tenant-base.js';
 import { theme } from '../../theme.js';
 import { Logo, AuthFrame } from './Shared.js';
 
@@ -108,6 +109,7 @@ function EmailTab() {
 
 function KeyTab() {
   const nav = useNavigate();
+  const tenantBase = useTenantBase();
   const [token, setToken] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -119,7 +121,11 @@ function KeyTab() {
     setApiKey(token.trim());
     try {
       await api<Principal>('/auth/whoami');
-      nav('/');
+      // Land on the tenant root (admin dashboard for admin keys,
+      // partner dashboard for partner keys) rather than '/' which
+      // strips the tenant prefix and falls through to the marketing
+      // landing page on multi-tenant deployments.
+      nav(tenantBase || '/');
     } catch (e) {
       clearApiKey();
       setErr(e instanceof ApiError && e.status === 401 ? "That key didn't work." : 'Could not reach the API.');
