@@ -51,6 +51,15 @@ authRouter.get('/auth/whoami', requireAuth, async (req, res) => {
         : null,
     });
   }
-  // Scoped keys used by federation clients don't need a human-facing whoami.
-  res.json({ role: p.role });
+  // Scoped keys are server-to-server credentials (Zapier / ActivePieces /
+  // CRM webhooks / Network federation). They have no role in the portal —
+  // rejecting at whoami means the API-key login screen shows a clean
+  // error instead of falling through to the partner sidebar with no
+  // partner identity (which is what was happening: principal.role
+  // 'scoped' isn't 'admin', so the portal defaulted to partner UI).
+  res.status(403).json({
+    error: 'scoped_key_not_for_portal',
+    detail:
+      'This is a scoped integration API key (used for Zapier / ActivePieces / CRM webhooks). It cannot sign into the portal. Use your admin magic link, or an admin API key (from ADMIN_API_KEY).',
+  });
 });

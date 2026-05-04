@@ -17,7 +17,7 @@ export function LoginPage() {
           Email
         </TabButton>
         <TabButton active={tab === 'key'} onClick={() => setTab('key')} icon={<KeyRound size={14} />}>
-          API key
+          Admin / partner key
         </TabButton>
       </div>
       {tab === 'email' ? <EmailTab /> : <KeyTab />}
@@ -128,7 +128,22 @@ function KeyTab() {
       nav(tenantBase || '/');
     } catch (e) {
       clearApiKey();
-      setErr(e instanceof ApiError && e.status === 401 ? "That key didn't work." : 'Could not reach the API.');
+      if (e instanceof ApiError) {
+        if (e.status === 401) {
+          setErr("That key didn't work.");
+        } else if (e.status === 403 && typeof e.message === 'string' && e.message.includes('scoped_key_not_for_portal')) {
+          // Common confusion: pasting a scoped integration key
+          // (CRM / Zapier / federation) into the portal sign-in.
+          // Tell them what kind of key actually works here.
+          setErr(
+            "That's a scoped integration key — they can't sign into the portal. Use your admin magic link (Email tab) or an admin API key.",
+          );
+        } else {
+          setErr(e.message || 'Could not reach the API.');
+        }
+      } else {
+        setErr('Could not reach the API.');
+      }
       setBusy(false);
     }
   }
@@ -155,6 +170,10 @@ function KeyTab() {
       <div style={{ marginTop: 12, fontSize: 12, color: theme.textDim, lineHeight: 1.6 }}>
         Admin keys come from <code style={{ color: theme.textMuted }}>ADMIN_API_KEY</code>.
         Partner keys are issued from the Partners admin view.
+        <br />
+        <strong style={{ color: theme.textMuted }}>Not for integration keys</strong> — scoped
+        keys minted under Admin → CRM integration are server-to-server credentials and can&rsquo;t
+        sign into the portal.
       </div>
     </form>
   );
