@@ -303,11 +303,19 @@ function Sidebar({ principal }: { principal: Principal }) {
       <button
         onClick={async () => {
           clearApiKey();
-          // Fire-and-forget — server-side revokes the session. If we're
-          // signed in via API key only, the server sees no cookie and
-          // just returns 200.
+          // Kill BOTH sessions: the workspace session (op_session)
+          // and the platform-identity session (op_platform_session).
+          // The latter outlives workspace logout otherwise — and
+          // since the Workspaces page auto-enters when there's only
+          // one workspace, the user gets silently re-signed-in on the
+          // next navigation. Users expect "Sign out" to mean "sign
+          // me all the way out", not "sign me out of just this
+          // workspace and instantly bounce me back in."
           try {
-            await api('/auth/signout', { method: 'POST' });
+            await Promise.all([
+              api('/auth/signout', { method: 'POST' }).catch(() => {}),
+              api('/auth/platform-signout', { method: 'POST' }).catch(() => {}),
+            ]);
           } catch {
             /* ignore */
           }
