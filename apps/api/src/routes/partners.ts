@@ -243,7 +243,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
  * Idempotent: multiple sends are fine; the partner can click any one
  * (they all expire in 15 minutes).
  */
-partnersRouter.post('/partners/:id/invite', requireAuth, requireAdmin, async (req, res) => {
+partnersRouter.post('/partners/:id/invite', requireAuth, grantScope('partners:write'), requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });
