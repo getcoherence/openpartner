@@ -49,6 +49,16 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Truncate before destroying so subsequent test files (which share
+  // this DB and may not list every Partner-referencing table in their
+  // own beforeEach) start from a clean slate. Without this, a Link or
+  // Click left behind here cascades into FK violations when another
+  // file's `delete from Partner` runs.
+  if (!skipIntegration) {
+    for (const t of TABLES_TO_CLEAN) {
+      await db(t).del();
+    }
+  }
   await db.destroy();
 });
 
@@ -73,7 +83,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const campaignRes = await request(app)
       .post('/campaigns')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ name: 'Default', commissionRule: { type: 'percent', value: 20 } });
+      .send({ name: 'Default', commissionRule: { type: 'percent', value: 20 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
     expect(campaignRes.status).toBe(201);
     const campaignId = campaignRes.body.id;
 
@@ -82,7 +92,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const linkRes = await request(app)
       .post(`/partners/${partnerId}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey, campaignId, destinationUrl: 'https://example.com/signup' });
+      .send({ linkKey, campaignId, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
     expect(linkRes.status).toBe(201);
 
     // 4. Simulate a click (normally written by the router).
@@ -168,7 +178,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const campaignRes = await request(app)
       .post('/campaigns')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ name: 'C', commissionRule: { type: 'percent', value: 10 } });
+      .send({ name: 'C', commissionRule: { type: 'percent', value: 10 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
     const campaignId = campaignRes.body.id;
 
     const linkRes = await request(app)
@@ -261,7 +271,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const linearCampaign = (await request(app)
       .post('/campaigns')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ name: 'Linear', commissionRule: { type: 'percent', value: 20 }, attributionModel: 'linear' })).body.id;
+      .send({ name: 'Linear', commissionRule: { type: 'percent', value: 20 }, attributionModel: 'linear', destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })).body.id;
 
     const link1 = (await request(app)
       .post(`/partners/${p1}/links`)
@@ -360,7 +370,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
       await request(app)
         .post('/campaigns')
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ name: 'F', commissionRule: { type: 'percent', value: 10 } })
+        .send({ name: 'F', commissionRule: { type: 'percent', value: 10 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })
     ).body;
     const link = (
       await request(app)
@@ -425,7 +435,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
       await request(app)
         .post('/campaigns')
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ name: 'Fr', commissionRule: { type: 'percent', value: 20 } })
+        .send({ name: 'Fr', commissionRule: { type: 'percent', value: 20 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })
     ).body;
     const link = (
       await request(app)

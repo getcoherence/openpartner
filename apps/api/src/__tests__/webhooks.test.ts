@@ -137,7 +137,7 @@ describe.skipIf(skipIntegration)('webhooks', () => {
     const campaignRes = await request(app)
       .post('/campaigns')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ name: 'WH', commissionRule: { type: 'percent', value: 20 } });
+      .send({ name: 'WH', commissionRule: { type: 'percent', value: 20 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
     const campaignId = campaignRes.body.id;
     const linkRes = await request(app)
       .post(`/partners/${partnerId}/links`)
@@ -222,7 +222,7 @@ describe.skipIf(skipIntegration)('webhooks', () => {
       await request(app)
         .post('/campaigns')
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ name: 'R', commissionRule: { type: 'percent', value: 10 } })
+        .send({ name: 'R', commissionRule: { type: 'percent', value: 10 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })
     ).body;
     const link = (
       await request(app)
@@ -303,7 +303,7 @@ describe.skipIf(skipIntegration)('webhooks', () => {
       await request(app)
         .post('/campaigns')
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ name: 'S', commissionRule: { type: 'percent', value: 10 } })
+        .send({ name: 'S', commissionRule: { type: 'percent', value: 10 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })
     ).body;
     const link = (
       await request(app)

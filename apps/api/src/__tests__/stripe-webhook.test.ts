@@ -99,6 +99,7 @@ async function seedClick(): Promise<Ids> {
     attributionModel: 'last_click',
     attributionWindowDays: 60,
     commissionRule: { type: 'percent', value: 20 },
+    destinationUrl: 'https://example.com/signup',
   });
   await db(TABLES.Link).insert({
     id: linkId,

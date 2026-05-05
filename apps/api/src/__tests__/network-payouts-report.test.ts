@@ -72,8 +72,20 @@ afterAll(async () => {
   await db.destroy();
 });
 
+// Order matters: child tables before Partner so FK constraints don't
+// fire when wiping rows another test file may have left behind.
 const TABLES_TO_CLEAN = [
+  TABLES.Commission,
+  TABLES.Attribution,
+  TABLES.Event,
+  TABLES.Identity,
+  TABLES.Click,
+  TABLES.Link,
+  TABLES.Coupon,
+  TABLES.PartnerCampaign,
+  TABLES.PartnerCommission,
   TABLES.Payout,
+  TABLES.Campaign,
   TABLES.Partner,
   TABLES.Config,
 ];

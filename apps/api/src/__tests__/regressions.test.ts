@@ -310,6 +310,8 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
       .send({
         name: 'Regression',
         commissionRule: { type: 'percent', value: 10, recurring: true },
+        destinationUrl: 'https://example.com/signup',
+        deepLinkAllowedDomains: 'e.com,example.com',
         ...overrides,
       });
     expect(res.status).toBe(201);
