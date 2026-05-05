@@ -25,8 +25,19 @@ interface BrandOnboardingStatus {
   networkConnected: boolean;
   offeringPublishedCount: number;
   partnerCount: number;
+  /** Pending creator applications waiting for brand approval on the
+   *  Network. Drives the "X partners are waiting" subscribe-now banner
+   *  on the Dashboard. 0 when Network is unreachable or not connected. */
+  pendingPartnershipRequests: number;
   /** True when billing is set up OR not required (selfhost / enterprise). */
   billingReady: boolean;
+  /** ISO timestamp the in-product evaluation window ends. Null when there's
+   *  no trial concept (selfhost / enterprise / legacy tenants). The UI
+   *  shows "Subscribe by <date>" / urgency styling off this. */
+  trialEndsAt: string | null;
+  /** Whole days from now until trialEndsAt. Negative when expired. Null
+   *  when trialEndsAt is null. */
+  trialDaysRemaining: number | null;
   /** True once everything actionable is done — card hides. */
   complete: boolean;
 }
@@ -58,6 +69,7 @@ onboardingRouter.get('/admin/onboarding-status', requireAuth, requireAdmin, asyn
   // Offering count: only when connected. Network would 503 otherwise
   // and we don't want a transient Network outage to block onboarding.
   let offeringPublishedCount = 0;
+  let pendingPartnershipRequests = 0;
   if (networkConnected) {
     try {
       const r = await networkProxy.listOfferings(db, tenantId);
@@ -69,17 +81,36 @@ onboardingRouter.get('/admin/onboarding-status', requireAuth, requireAdmin, asyn
       // Leave as 0; surface as "not done yet" rather than failing the
       // whole probe because the Network can't be reached.
     }
+    try {
+      const r = await networkProxy.listRequests(db, tenantId, 'pending');
+      pendingPartnershipRequests = Array.isArray(r.requests) ? r.requests.length : 0;
+    } catch (err) {
+      if (!(err instanceof NetworkProxyError)) throw err;
+      // Same fallback semantics — Network outage shouldn't suppress
+      // the rest of the onboarding probe.
+    }
   }
 
   // Billing readiness: selfhost has no billing, so always "ready".
   // Enterprise tenants are billed out of band — we treat as "ready"
   // since there's no Checkout flow for them. Everyone else needs an
-  // active Stripe subscription (trial counts).
+  // active Stripe subscription.
   const billingState = await getTenantBillingState(db, tenantId);
   const billingReady =
     billingState.mode === 'selfhost' ||
     billingState.plan === 'enterprise' ||
     !!billingState.stripeSubscriptionId;
+
+  // Surface the signup-set evaluation window so the dashboard can render
+  // a "Subscribe by <date>" pressure task instead of an "activate trial"
+  // task. Selfhost + enterprise + legacy tenants without a trialEndsAt
+  // get null — the UI falls back to a plain "Set up billing" label.
+  const trialEndsAt = billingState.trialEndsAt;
+  let trialDaysRemaining: number | null = null;
+  if (trialEndsAt) {
+    const msPerDay = 24 * 60 * 60 * 1000;
+    trialDaysRemaining = Math.ceil((trialEndsAt.getTime() - Date.now()) / msPerDay);
+  }
 
   const complete =
     brandInfoComplete &&
@@ -95,7 +126,10 @@ onboardingRouter.get('/admin/onboarding-status', requireAuth, requireAdmin, asyn
     networkConnected,
     offeringPublishedCount,
     partnerCount,
+    pendingPartnershipRequests,
     billingReady,
+    trialEndsAt: trialEndsAt ? trialEndsAt.toISOString() : null,
+    trialDaysRemaining,
     complete,
   };
   res.json(out);

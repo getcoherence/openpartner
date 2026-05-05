@@ -27,6 +27,7 @@ import { issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
 import { adminInviteEmail, buildMagicLinkUrl } from '../email-templates.js';
 import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
+import { newTrialEnd } from '../billing-plan.js';
 
 export const signupRouter = Router();
 
@@ -103,6 +104,10 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
           // Refresh the plan choice on recovery — the user may have come
           // back via a different pricing CTA than their first attempt.
           ...(body.data.plan ? { billingPlan: body.data.plan as TenantRow['billingPlan'] } : {}),
+          // Reset the 14-day evaluation window on recovery — the brand
+          // is effectively starting over.
+          trialEndsAt: newTrialEnd(),
+          firstTrialActivatedAt: now,
           updatedAt: new Date(),
         });
       } else {
@@ -112,6 +117,12 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
           displayName: body.data.displayName,
           status: 'active',
           billingPlan: (body.data.plan ?? null) as TenantRow['billingPlan'],
+          // Trial starts at signup, not at Stripe Checkout — brands get a
+          // 14-day evaluation window from t=0. firstTrialActivatedAt is
+          // stamped now so the post-trial Stripe Checkout never grants a
+          // second trial via subscription_data.trial_period_days.
+          trialEndsAt: newTrialEnd(),
+          firstTrialActivatedAt: now,
           metadata: { createdBy: 'signup' } as unknown as never,
         });
       }

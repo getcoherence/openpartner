@@ -26,7 +26,7 @@ import { z } from 'zod';
 import { TABLES, BILLING_PLANS, type BillingPlan, type TenantRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { REVSHARE_FEE_BPS, requireStripe } from '../stripe.js';
-import { getTenantBillingState, priceIdsForPlan, TRIAL_DAYS } from '../billing-plan.js';
+import { getTenantBillingState, priceIdsForPlan } from '../billing-plan.js';
 import { reportUsageToStripe } from '../usage-billing.js';
 import { tenantOf } from '../tenancy.js';
 
@@ -187,38 +187,24 @@ billingRouter.post('/billing/checkout', requireAuth, requireAdmin, async (req, r
       .update({ stripeCustomerId: customerId, updatedAt: new Date() });
   }
 
-  // Trial: 14 days on first activation, no payment method required to
-  // start. Stripe emails the customer ~3 days before the trial ends
-  // asking for a card; if they don't provide one, the subscription
-  // cancels automatically (trial_settings.end_behavior).
-  //
-  // Re-subscription after a prior trial: skip the trial entirely and
-  // require a card up front. firstTrialActivatedAt is set the first
-  // time a checkout-with-trial completes; once it's stamped, no second
-  // trial.
-  const includeTrial = !state.hasUsedTrial;
+  // The 14-day trial runs from signup, not from Stripe Checkout — by
+  // the time a brand reaches Checkout the evaluation window is the
+  // pressure to subscribe. Always require a payment method up front;
+  // never set trial_period_days (Stripe would otherwise add a *second*
+  // trial on top of the one they just spent in-product).
   const session = await stripe.checkout.sessions.create({
     mode: 'subscription',
     customer: customerId,
     line_items: lineItems,
-    subscription_data: includeTrial
-      ? {
-          trial_period_days: TRIAL_DAYS,
-          trial_settings: {
-            end_behavior: { missing_payment_method: 'cancel' },
-          },
-        }
-      : undefined,
-    payment_method_collection: includeTrial ? 'if_required' : 'always',
+    payment_method_collection: 'always',
     success_url: body.data.successUrl,
     cancel_url: body.data.cancelUrl,
     metadata: {
       openpartner_tenant_id: tenantId,
       openpartner_plan: state.plan,
-      openpartner_trial: includeTrial ? '1' : '0',
     },
   });
-  res.json({ url: session.url, trial: includeTrial });
+  res.json({ url: session.url });
 });
 
 billingRouter.post('/billing/report-usage', requireAuth, requireAdmin, async (req, res) => {

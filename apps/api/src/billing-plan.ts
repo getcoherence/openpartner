@@ -112,3 +112,15 @@ export function newTrialEnd(): Date {
   d.setUTCDate(d.getUTCDate() + TRIAL_DAYS);
   return d;
 }
+
+/** Hard gate: refuse value-creating writes (partner approvals, etc.)
+ *  when the brand's evaluation window has closed and they haven't
+ *  subscribed. Conservative — only fires when trialEndsAt is set and
+ *  already past, so legacy tenants without a trialEndsAt are
+ *  grandfathered. Selfhost + enterprise + active sub are always allowed. */
+export function isTrialGateActive(state: TenantBillingState): boolean {
+  if (state.mode === 'selfhost') return false;
+  if (state.plan === 'enterprise') return false;
+  if (state.stripeSubscriptionId) return false;
+  return state.trialEndsAt != null && state.trialEndsAt <= new Date();
+}

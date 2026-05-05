@@ -1,21 +1,24 @@
 /**
  * Soft trial-gate.
  *
- * When a tenant's billing state is "trial expired without subscription"
- * (paid plan picked, trial used, no current Stripe sub), this middleware
- * returns 402 Payment Required on a small allowlist of "expensive"
- * write endpoints. The product keeps working — clicks still get
- * recorded, attribution still runs, the dashboard still renders, the
- * admin can still subscribe — but they can't expand the program until
- * billing is restored.
+ * When the brand's 14-day evaluation window has closed and they don't
+ * have an active Stripe subscription, this middleware returns 402 on a
+ * small allowlist of "expensive" write endpoints. The product keeps
+ * working — clicks still get recorded, attribution still runs, the
+ * dashboard still renders, the admin can still subscribe — but they
+ * can't expand the program until billing is restored.
  *
  * What's gated:
- *   - POST /campaigns                 (create new program)
- *   - POST /partners                  (invite new partner)
- *   - POST /partners/:id/coupons      (mint coupon)
- *   - POST /partners/:id/campaigns    (grant program to partner)
- *   - POST /import/partners-csv       (bulk roster import)
- *   - POST /admin/network/offerings   (publish on the Network)
+ *   - POST /campaigns                       (create new program)
+ *   - POST /partners                        (invite new partner OR
+ *                                            federated approval landing)
+ *   - POST /partners/:id/coupons            (mint coupon)
+ *   - POST /partners/:id/campaigns          (grant program to partner)
+ *   - POST /import/partners-csv             (bulk roster import)
+ *   - POST /admin/network/offerings         (publish on the Network)
+ *   - POST /admin/network/requests/:id/approve  (approve creator
+ *                                            application coming through
+ *                                            the Network)
  *
  * What stays open (deliberate):
  *   - GET *                           (read; show their data)
@@ -34,7 +37,7 @@
 
 import type { NextFunction, Request, Response } from 'express';
 import { tenantOf } from '../tenancy.js';
-import { getTenantBillingState } from '../billing-plan.js';
+import { getTenantBillingState, isTrialGateActive } from '../billing-plan.js';
 
 // Methods+path patterns that get the 402. Keep narrow — every entry is
 // a pinch point on the user's program-expansion workflow, not a
@@ -51,6 +54,7 @@ const GATED: GatedRoute[] = [
   { method: 'POST', test: (p) => /^\/partners\/[^/]+\/campaigns$/.test(p) },
   { method: 'POST', test: (p) => p === '/import/partners-csv' },
   { method: 'POST', test: (p) => p === '/admin/network/offerings' },
+  { method: 'POST', test: (p) => /^\/admin\/network\/requests\/[^/]+\/approve$/.test(p) },
 ];
 
 export async function trialGate(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -72,12 +76,13 @@ export async function trialGate(req: Request, res: Response, next: NextFunction)
   }
 
   const state = await getTenantBillingState(scope.db, scope.tenantId);
-  if (!state.trialExpiredWithoutSubscription) return next();
+  if (!isTrialGateActive(state)) return next();
 
   res.status(402).json({
     error: 'trial_expired',
     detail:
-      'Your 14-day trial has ended without an active subscription. Re-subscribe at /admin/billing to restore this action.',
+      'Your 14-day evaluation period has ended. Subscribe at /admin/billing to continue inviting partners and accepting applications.',
     plan: state.plan,
+    trialEndsAt: state.trialEndsAt?.toISOString() ?? null,
   });
 }

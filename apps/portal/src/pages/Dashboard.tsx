@@ -332,6 +332,7 @@ function AdminDashboard() {
   return (
     <Page title="Partner Program" subtitle="Overview of every partner driving attributed revenue.">
       <ErrorBanner error={error} />
+      <PendingApprovalsBanner />
       <BrandOnboarding />
       {isLoading || !data ? (
         <Card>Loading…</Card>
@@ -418,8 +419,64 @@ interface BrandOnboardingStatus {
   networkConnected: boolean;
   offeringPublishedCount: number;
   partnerCount: number;
+  pendingPartnershipRequests: number;
   billingReady: boolean;
+  trialEndsAt: string | null;
+  trialDaysRemaining: number | null;
   complete: boolean;
+}
+
+/** Shown above the dashboard when creators have applied via the Network
+ *  but the brand hasn't subscribed yet — they can't approve until they
+ *  do (trial-gate enforces). Stays present even after the Getting
+ *  Started checklist is done; goes away once billing is set up. */
+function PendingApprovalsBanner() {
+  const tenantBase = useTenantBase();
+  const { data } = useQuery({
+    queryKey: ['admin-onboarding-status'],
+    queryFn: () => api<BrandOnboardingStatus>('/admin/onboarding-status'),
+    staleTime: 30_000,
+    retry: false,
+  });
+  if (!data || data.billingReady || data.pendingPartnershipRequests <= 0) return null;
+  const expired = data.trialDaysRemaining != null && data.trialDaysRemaining <= 0;
+  const tone = expired ? 'danger' : 'warning';
+  const palette = tone === 'danger'
+    ? { bg: theme.dangerSoft, border: `${theme.danger}55`, fg: theme.danger }
+    : { bg: theme.warnSoft, border: `${theme.warn}55`, fg: theme.warn };
+  const count = data.pendingPartnershipRequests;
+  const noun = count === 1 ? 'partner is' : 'partners are';
+  const headline = expired
+    ? `${count} ${noun} waiting — subscribe to approve them`
+    : `${count} ${noun} waiting for your approval`;
+  const body = expired
+    ? 'Your evaluation period has ended. Subscribe to start approving creator applications again.'
+    : 'Subscribe before your evaluation period ends so you can keep approving creators without interruption.';
+  return (
+    <div
+      style={{
+        background: palette.bg,
+        border: `1px solid ${palette.border}`,
+        borderRadius: theme.radiusSm,
+        padding: '14px 16px',
+        marginBottom: 18,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14,
+      }}
+    >
+      <AlertCircle size={20} color={palette.fg} style={{ flexShrink: 0 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: palette.fg, marginBottom: 2 }}>
+          {headline}
+        </div>
+        <div style={{ fontSize: 13, color: theme.textMuted }}>{body}</div>
+      </div>
+      <TenantLink to={`${tenantBase}/admin/billing`} style={{ textDecoration: 'none' }}>
+        <Button size="sm" variant="primary">Set up billing</Button>
+      </TenantLink>
+    </div>
+  );
 }
 
 function BrandOnboarding() {
@@ -461,12 +518,7 @@ function BrandOnboarding() {
       label: 'Invite a partner — or wait for Network applications',
       href: `${tenantBase}/admin/partners`,
     },
-    {
-      done: data.billingReady,
-      label: 'Activate your 14-day free trial',
-      hint: 'No credit card required. Stripe emails you ~3 days before the trial ends.',
-      href: `${tenantBase}/admin/billing`,
-    },
+    buildBillingStep(data, `${tenantBase}/admin/billing`),
   ];
   return (
     <Card style={{ marginBottom: 18 }}>
@@ -476,14 +528,66 @@ function BrandOnboarding() {
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {items.map((it, i) => (
-          <BrandStep key={i} done={it.done} label={it.label} hint={it.hint} href={it.href} />
+          <BrandStep key={i} done={it.done} label={it.label} hint={it.hint} href={it.href} tone={it.tone} />
         ))}
       </div>
     </Card>
   );
 }
 
-function BrandStep({ done, label, hint, href }: { done: boolean; label: string; hint?: string; href: string | null }) {
+type StepTone = 'default' | 'warning' | 'danger';
+
+interface OnboardingStep {
+  done: boolean;
+  label: string;
+  hint?: string;
+  href: string | null;
+  tone?: StepTone;
+}
+
+/** The billing step doubles as the trial-deadline pressure. Once
+ *  billingReady, it just shows checked. Otherwise the label is
+ *  "Subscribe by <date>" and the tone shifts to warning then danger as
+ *  the evaluation window closes. */
+function buildBillingStep(data: BrandOnboardingStatus, href: string): OnboardingStep {
+  if (data.billingReady) {
+    return { done: true, label: 'Set up billing', href };
+  }
+  const days = data.trialDaysRemaining;
+  if (days == null) {
+    return { done: false, label: 'Set up billing', href };
+  }
+  if (days <= 0) {
+    return {
+      done: false,
+      label: 'Subscribe to keep using OpenPartner',
+      hint: 'Your 14-day evaluation period has ended.',
+      href,
+      tone: 'danger',
+    };
+  }
+  const date = data.trialEndsAt ? formatTrialDate(data.trialEndsAt) : '';
+  return {
+    done: false,
+    label: date ? `Subscribe by ${date}` : 'Subscribe before your evaluation ends',
+    hint: `${days} day${days === 1 ? '' : 's'} left in your evaluation period.`,
+    href,
+    tone: days <= 3 ? 'danger' : days <= 7 ? 'warning' : 'default',
+  };
+}
+
+function formatTrialDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const now = new Date();
+  const sameYear = d.getUTCFullYear() === now.getUTCFullYear();
+  return d.toLocaleDateString(undefined, sameYear
+    ? { month: 'short', day: 'numeric' }
+    : { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function BrandStep({ done, label, hint, href, tone = 'default' }: OnboardingStep) {
+  const palette = stepPalette(done, tone);
   const inner = (
     <div
       style={{
@@ -491,23 +595,36 @@ function BrandStep({ done, label, hint, href }: { done: boolean; label: string; 
         alignItems: 'center',
         gap: 12,
         padding: '10px 12px',
-        background: done ? theme.successSoft : theme.surface2,
-        border: `1px solid ${done ? `${theme.success}44` : theme.borderSubtle}`,
+        background: palette.bg,
+        border: `1px solid ${palette.border}`,
         borderRadius: theme.radiusSm,
       }}
     >
-      <div style={{ color: done ? theme.success : theme.textDim, display: 'inline-flex' }}>
+      <div style={{ color: palette.icon, display: 'inline-flex' }}>
         {done ? <CheckCircle2 size={18} /> : <Circle size={18} />}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 14, fontWeight: 500, color: theme.text, textDecoration: done ? 'line-through' : 'none' }}>
           {label}
         </div>
-        {hint && !done && <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>{hint}</div>}
+        {hint && !done && <div style={{ fontSize: 12, color: palette.hint, marginTop: 2 }}>{hint}</div>}
       </div>
       {!done && href && <ArrowRight size={14} color={theme.textDim} />}
     </div>
   );
   if (done || !href) return inner;
   return <Link to={href} style={{ textDecoration: 'none' }}>{inner}</Link>;
+}
+
+function stepPalette(done: boolean, tone: StepTone) {
+  if (done) {
+    return { bg: theme.successSoft, border: `${theme.success}44`, icon: theme.success, hint: theme.textDim };
+  }
+  if (tone === 'danger') {
+    return { bg: theme.dangerSoft, border: `${theme.danger}66`, icon: theme.danger, hint: theme.danger };
+  }
+  if (tone === 'warning') {
+    return { bg: theme.warnSoft, border: `${theme.warn}66`, icon: theme.warn, hint: theme.warn };
+  }
+  return { bg: theme.surface2, border: theme.borderSubtle, icon: theme.textDim, hint: theme.textDim };
 }
