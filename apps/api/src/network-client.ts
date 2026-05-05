@@ -459,12 +459,22 @@ async function callNetwork<T>(
     // VendorAffiliation(vendorId, vendorPartnerId).
     headers['x-act-as-vendor-partner'] = opts.actingVendorPartnerId;
   }
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
+    });
+  } catch (err) {
+    // ECONNREFUSED / DNS / TLS / timeout — fetch throws bare TypeError
+    // or AbortError, neither of which is a NetworkProxyError. Wrap so
+    // callers' narrow catches treat it the same as a 5xx upstream and
+    // don't 500 the whole user-facing request.
+    const message = err instanceof Error ? err.message : String(err);
+    throw new NetworkProxyError(503, `network_unreachable: ${message}`);
+  }
   const text = await res.text();
   if (!res.ok) {
     // Log the full upstream response so federation_failed / similar
