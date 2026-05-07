@@ -32,6 +32,7 @@ import {
   type WebhookEventType,
 } from '@openpartner/db';
 import { db } from './db.js';
+import { dispatchPartnerPostbacks, isPostbackEvent } from './partner-postback.js';
 
 const SIGNATURE_HEADER = 'x-openpartner-signature';
 const TIMESTAMP_HEADER = 'x-openpartner-timestamp';
@@ -67,21 +68,43 @@ export function dispatchEvent(tenantId: string, event: WebhookEventType, data: u
 }
 
 async function runDispatch(tenantId: string, event: WebhookEventType, data: unknown): Promise<void> {
+  // Tenant-side outbound webhooks (brand integrations: Zapier / CRM / etc.).
   const endpoints = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ tenantId, active: true });
   const matching = endpoints.filter((e) => {
     const events = Array.isArray(e.events) ? e.events : [];
     return events.includes(event) || events.includes('*');
   });
-  if (matching.length === 0) return;
+  if (matching.length > 0) {
+    const envelope: WebhookEnvelope = {
+      id: `evt_${ulid()}`,
+      event,
+      created: new Date().toISOString(),
+      data,
+    };
+    await Promise.all(matching.map((endpoint) => deliverOne(tenantId, endpoint, envelope)));
+  }
 
-  const envelope: WebhookEnvelope = {
-    id: `evt_${ulid()}`,
-    event,
-    created: new Date().toISOString(),
-    data,
-  };
-
-  await Promise.all(matching.map((endpoint) => deliverOne(tenantId, endpoint, envelope)));
+  // Partner-side postbacks. Only commission.* events carry a partnerId
+  // and a meaningful conversion ledger semantic — partner-state events
+  // (partner.created etc.) stay tenant-scoped.
+  if (isPostbackEvent(event)) {
+    const d = (data ?? {}) as Record<string, unknown>;
+    const partnerId = typeof d.partnerId === 'string' ? d.partnerId : null;
+    if (partnerId) {
+      dispatchPartnerPostbacks(tenantId, partnerId, event, {
+        click_id: typeof d.clickId === 'string' ? d.clickId : undefined,
+        partner_id: partnerId,
+        commission_id: typeof d.commissionId === 'string' ? d.commissionId : undefined,
+        commission_amount: typeof d.amount === 'string' ? d.amount : undefined,
+        currency: typeof d.currency === 'string' ? d.currency : undefined,
+        event_id: typeof d.eventId === 'string' ? d.eventId : undefined,
+        transaction_id: typeof d.eventId === 'string' ? d.eventId : undefined,
+        event_type: typeof d.eventType === 'string' ? d.eventType : undefined,
+        campaign_id: typeof d.campaignId === 'string' ? d.campaignId : undefined,
+        payout_id: typeof d.payoutId === 'string' ? d.payoutId : undefined,
+      });
+    }
+  }
 }
 
 /**

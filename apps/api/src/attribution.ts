@@ -172,6 +172,11 @@ export async function attributeEvent(
       commissionId,
       partnerId: click.partnerId,
       attributionId,
+      // clickId + eventId carry through to partner postback macros
+      // ({click_id}, {event_id}, {transaction_id}). Tenant webhook
+      // subscribers ignore them if they don't care.
+      clickId: click.id,
+      eventId: event.id,
       campaignId: click.campaignId,
       amount: amount.toFixed(2),
       currency: event.currency ?? 'USD',

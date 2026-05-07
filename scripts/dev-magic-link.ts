@@ -19,11 +19,35 @@ const DEFAULT_TENANT_ID = '01J0000000DEFAULTTENANT0000';
 
 async function main() {
   const k = knex({ client: 'pg', connection: DATABASE_URL });
+  // Pass --partner to mint a link for the most recently-created Partner
+  // row. Default behavior is admin (preserves the original CLI shape).
+  const wantsPartner = process.argv.includes('--partner');
   try {
-    const admin = await k('Admin').where({ tenantId: DEFAULT_TENANT_ID }).whereNull('revokedAt').first();
-    if (!admin) {
-      console.error('No admin row found. Run /install first.');
-      process.exit(1);
+    let principal: { id: string; email: string };
+    let principalKind: 'admin' | 'partner';
+    let purpose: 'admin_invite' | 'partner_invite';
+    if (wantsPartner) {
+      const partner = await k('Partner').where({ tenantId: DEFAULT_TENANT_ID }).whereNull('revokedAt').orderBy('createdAt', 'desc').first();
+      if (!partner) {
+        console.error('No partner row found. Create one in the admin UI first.');
+        process.exit(1);
+      }
+      // Activate so /auth/whoami doesn't 403 on a pending account.
+      if (!partner.activatedAt) {
+        await k('Partner').where({ id: partner.id }).update({ activatedAt: new Date() });
+      }
+      principal = partner;
+      principalKind = 'partner';
+      purpose = 'partner_invite';
+    } else {
+      const admin = await k('Admin').where({ tenantId: DEFAULT_TENANT_ID }).whereNull('revokedAt').first();
+      if (!admin) {
+        console.error('No admin row found. Run /install first.');
+        process.exit(1);
+      }
+      principal = admin;
+      principalKind = 'admin';
+      purpose = 'admin_invite';
     }
     const plaintext = `opml_${randomBytes(24).toString('hex')}`;
     const tokenHash = createHash('sha256').update(plaintext).digest('hex');
@@ -33,10 +57,10 @@ async function main() {
       tenantId: DEFAULT_TENANT_ID,
       prefix,
       tokenHash,
-      email: admin.email,
-      purpose: 'admin_invite',
-      principalKind: 'admin',
-      principalId: admin.id,
+      email: principal.email,
+      purpose,
+      principalKind,
+      principalId: principal.id,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
     });
     console.log(`${PORTAL_URL}/auth/magic?token=${plaintext}`);

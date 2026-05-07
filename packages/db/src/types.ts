@@ -399,6 +399,32 @@ export interface PayoutRow {
   completedAt: Date | null;
 }
 
+// ---- Partner postbacks ----
+
+/** Events a partner postback can subscribe to. Restricted to the
+ *  conversion ledger; partner-state events stay tenant-scoped. */
+export type PartnerPostbackEvent =
+  | 'commission.accrued'
+  | 'commission.approved'
+  | 'commission.paid'
+  | 'commission.reversed';
+
+export interface PartnerPostbackRow {
+  id: string;
+  tenantId: string;
+  partnerId: string;
+  url: string;
+  events: PartnerPostbackEvent[];
+  enabled: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  lastFiredAt: Date | null;
+  lastStatus: number | null;
+  lastError: string | null;
+  successCount: number;
+  failureCount: number;
+}
+
 export type NetworkOutboxOp = 'partner_upsert' | 'partner_revoke' | 'backfill_partner';
 export type NetworkOutboxStatus = 'pending' | 'dead';
 

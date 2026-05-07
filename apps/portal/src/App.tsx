@@ -54,6 +54,7 @@ import { VendorDetailPage } from './pages/partner/VendorDetail.js';
 import { MyAffiliationsPage } from './pages/partner/MyAffiliations.js';
 import { MyRequestsPage } from './pages/partner/MyRequests.js';
 import { MyProfilePage } from './pages/partner/MyProfile.js';
+import { PartnerPostbacksPage } from './pages/partner/Postbacks.js';
 import { InstallPage } from './pages/Install.js';
 import { LandingPage } from './pages/Landing.js';
 import { SignupPage } from './pages/Signup.js';
@@ -178,6 +179,7 @@ function Shell() {
               <Route path="network/affiliations" element={<MyAffiliationsPage />} />
               <Route path="network/requests" element={<MyRequestsPage />} />
               <Route path="network/profile" element={<MyProfilePage />} />
+              <Route path="postbacks" element={<PartnerPostbacksPage principal={auth.principal} />} />
             </>
           )}
 
@@ -271,6 +273,7 @@ function Sidebar({ principal }: { principal: Principal }) {
           <NavItem to="/commissions" icon={<Receipt size={16} />}>Commissions</NavItem>
           <NavItem to="/payouts" icon={<Banknote size={16} />}>Payouts</NavItem>
           {principal.role === 'partner' && <NavItem to="/connect" icon={<CreditCard size={16} />}>Stripe Connect</NavItem>}
+          {principal.role === 'partner' && <NavItem to="/postbacks" icon={<Webhook size={16} />}>Postbacks</NavItem>}
         </div>
 
         {principal.role === 'partner' && (

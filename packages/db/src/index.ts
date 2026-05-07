@@ -75,4 +75,5 @@ export const TABLES = {
   NetworkOutbox: 'NetworkOutbox',
   Coupon: 'Coupon',
   PartnerCommission: 'PartnerCommission',
+  PartnerPostback: 'PartnerPostback',
 } as const;

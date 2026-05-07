@@ -39,6 +39,7 @@ import { partnerSignupRouter } from './routes/partner-signup.js';
 import { networkPartnerRouter } from './routes/network-partner.js';
 import { accountDeletionRouter } from './routes/account-deletion.js';
 import { partnerCampaignsRouter } from './routes/partner-campaigns.js';
+import { partnerPostbacksRouter } from './routes/partner-postbacks.js';
 import { onboardingRouter } from './routes/onboarding.js';
 import { creatorPortalRouter } from './routes/creator-portal.js';
 import { signinRouter } from './routes/signin.js';
@@ -229,6 +230,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(networkPartnerRouter);
   app.use(accountDeletionRouter);
   app.use(partnerCampaignsRouter);
+  app.use(partnerPostbacksRouter);
   app.use(onboardingRouter);
 
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
