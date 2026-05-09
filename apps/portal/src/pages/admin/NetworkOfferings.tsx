@@ -2,20 +2,38 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../api.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
+import {
+  renderCommissionSummary,
+  type CommissionSubRuleLike,
+  type CustomerRewardLike,
+} from '../../lib/commission-summary.js';
 
 interface OfferingTerms {
+  /** Derived display string. Always written by OpenPartner from the
+   *  bound Campaign's commissionRule + customerReward. The Network may
+   *  surface an admin-typed override on its own UI; OSS clients ignore
+   *  it and re-derive on every refresh. */
   commissionDescription?: string;
   cookieWindowDays?: number;
   payoutCadence?: string;
   payoutHoldbackDays?: number;
+  /** Display-only, not enforced by the engine. Use compound commission
+   *  rules with a 'first' trigger for actual first-sale bonuses. */
   bonuses?: string[];
   // Snapshot of the bound Campaign's attribution config — surfaced on
   // the marketplace listing so creators can filter by these values.
   attributionWindowDays?: number;
   attributionModel?: string;
+  /** Legacy single-rule snapshot (still surfaced for older clients). */
   commissionType?: 'percent' | 'fixed';
   commissionValue?: number;
   recurring?: boolean;
+  /** Compound rule snapshot (preferred). When present, OSS clients
+   *  derive commissionDescription from this. */
+  commissionRules?: CommissionSubRuleLike[];
+  /** Customer-side reward snapshot. Surfaced on the offering so
+   *  creators see "customers get 25% off" alongside their commission. */
+  customerReward?: CustomerRewardLike | null;
   // Snapshot of the bound Campaign's endsAt. Null = indefinite. Used
   // by the discover grid to filter / chip the program's remaining
   // runway. Re-publish the offering after a campaign extension to
@@ -45,8 +63,23 @@ interface Campaign {
   holdbackDays: number | null;
   attributionWindowDays: number;
   attributionModel: string;
-  commissionRule: { type: 'percent' | 'fixed'; value: number; recurring?: boolean };
+  /** Post-compound-rules: an array of triggered sub-rules. The legacy
+   *  single-object shape is still tolerated client-side via
+   *  normalizeRules to handle deploy windows where the API may briefly
+   *  return either. */
+  commissionRule:
+    | CommissionSubRuleLike[]
+    | { type: 'percent' | 'fixed'; value: number; recurring?: boolean };
+  customerReward: CustomerRewardLike | null;
   endsAt: string | null;
+}
+
+function normalizeRules(
+  raw: Campaign['commissionRule'] | undefined,
+): CommissionSubRuleLike[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  return [{ trigger: 'every', type: raw.type, value: raw.value, recurring: raw.recurring }];
 }
 
 export function AdminNetworkOfferings() {
@@ -135,14 +168,24 @@ function OfferingCard({ offering: o, campaign, togglePublished, del }: OfferingC
   const refresh = useMutation({
     mutationFn: () => {
       if (!campaign) throw new Error('campaign_unavailable');
+      const rules = normalizeRules(campaign.commissionRule);
+      const legacy = rules.find((r) => r.trigger === 'every') ?? rules[0];
       const refreshed: OfferingTerms = {
         ...o.terms,
         payoutHoldbackDays: campaign.holdbackDays ?? undefined,
         attributionWindowDays: campaign.attributionWindowDays,
         attributionModel: campaign.attributionModel,
-        commissionType: campaign.commissionRule.type,
-        commissionValue: campaign.commissionRule.value,
-        recurring: campaign.commissionRule.recurring ?? false,
+        // Legacy single-rule mirror — kept populated for older Network
+        // clients that haven't picked up commissionRules yet.
+        commissionType: legacy?.type,
+        commissionValue: legacy?.value,
+        recurring: legacy?.recurring ?? false,
+        commissionRules: rules,
+        customerReward: campaign.customerReward,
+        // Always derived from the rule + reward — never trust an
+        // admin-typed override. See checkpoint 3 of the May 2026
+        // offering refactor for context.
+        commissionDescription: renderCommissionSummary(rules, campaign.customerReward),
         campaignEndsAt: campaign.endsAt ?? null,
       };
       return api(`/admin/network/offerings/${o.id}`, {
@@ -238,7 +281,14 @@ function OfferingCard({ offering: o, campaign, togglePublished, del }: OfferingC
           )}
           {refresh.error && <ErrorBanner error={refresh.error} />}
           <p style={{ color: '#6b7280', fontSize: 13, margin: '4px 0' }}>
-            {o.terms.commissionDescription} · campaign <code>{o.vendorCampaignId}</code>
+            {/* Derive client-side too so even offerings whose Network row
+                wasn't re-stamped after the May 2026 refactor still display
+                a rule-faithful summary. Falls back to the stored value if
+                we don't have a parseable snapshot yet. */}
+            {o.terms.commissionRules
+              ? renderCommissionSummary(o.terms.commissionRules, o.terms.customerReward)
+              : o.terms.commissionDescription}
+            {' '}· campaign <code>{o.vendorCampaignId}</code>
             {o.terms.payoutHoldbackDays != null && o.terms.payoutHoldbackDays > 0 && (
               <> · pays out {o.terms.payoutHoldbackDays}d after conversion</>
             )}
@@ -272,13 +322,19 @@ function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: 
   const qc = useQueryClient();
   const [title, setTitle] = useState(offering.title);
   const [description, setDescription] = useState(offering.description ?? '');
-  const [commissionDescription, setCommissionDescription] = useState(
-    offering.terms.commissionDescription ?? '',
-  );
   const [cookieWindowDays, setCookieWindowDays] = useState<number | ''>(
     offering.terms.cookieWindowDays ?? '',
   );
   const [error, setError] = useState<string | null>(null);
+
+  // The displayed commission summary is always derived from the snapshotted
+  // rule + customer reward — never an admin-typed override. This is the
+  // anti-fraud guarantee: a brand can't promise something the engine
+  // wouldn't pay out on.
+  const derivedSummary = renderCommissionSummary(
+    offering.terms.commissionRules,
+    offering.terms.customerReward,
+  );
 
   const save = useMutation({
     mutationFn: () =>
@@ -289,10 +345,12 @@ function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: 
           description: description.trim() === '' ? null : description.trim(),
           // Merge with existing terms so the campaign-derived snapshot
           // fields (attributionModel, commissionType/Value, etc.)
-          // aren't dropped.
+          // aren't dropped. commissionDescription is always rewritten
+          // from the derived summary so even an old-shape Network row
+          // gets normalized on the next admin save.
           terms: {
             ...offering.terms,
-            commissionDescription: commissionDescription.trim(),
+            commissionDescription: derivedSummary,
             cookieWindowDays: cookieWindowDays === '' ? undefined : Number(cookieWindowDays),
           },
         },
@@ -307,7 +365,6 @@ function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: 
   const dirty =
     title !== offering.title ||
     description !== (offering.description ?? '') ||
-    commissionDescription !== (offering.terms.commissionDescription ?? '') ||
     String(cookieWindowDays) !== String(offering.terms.cookieWindowDays ?? '');
 
   return (
@@ -326,30 +383,25 @@ function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: 
           placeholder="What you sell, who it's for, why it converts."
         />
       </div>
-      <div
-        style={{
-          marginBottom: 12,
-          padding: 10,
-          background: '#eef6fc',
-          border: '1px solid #88b6dc',
-          borderRadius: 6,
-          fontSize: 12,
-          color: '#1f4e79',
-        }}
-      >
-        The fields below are shown on the marketplace listing.
-        Editing them affects <strong>new applicants only</strong> —
-        existing partners keep the rate snapshotted on their
-        PartnerCommission row at approval time.
-      </div>
       <div style={{ marginBottom: 12 }}>
-        <Label>Commission summary (shown to creators)</Label>
-        <Input
-          value={commissionDescription}
-          onChange={(e) => setCommissionDescription(e.target.value)}
-          maxLength={200}
-          placeholder="20% recurring on all plans"
-        />
+        <Label>Commission summary (auto-derived from your campaign)</Label>
+        <div
+          style={{
+            padding: '8px 12px',
+            background: '#f8fafc',
+            border: '1px solid #e2e8f0',
+            borderRadius: 6,
+            fontSize: 13,
+            color: '#1f2937',
+          }}
+        >
+          {derivedSummary}
+        </div>
+        <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
+          We render this from the bound Campaign&rsquo;s commission rule + customer
+          reward. To change it, edit the Campaign and click <strong>Refresh from
+          campaign</strong>.
+        </div>
       </div>
       <div style={{ marginBottom: 12 }}>
         <Label>Cookie window (days, optional)</Label>
@@ -378,7 +430,7 @@ function EditOfferingForm({ offering, onClose }: { offering: Offering; onClose: 
         on this offering to re-snapshot.
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={() => save.mutate()} disabled={save.isPending || !dirty || !title.trim() || !commissionDescription.trim()}>
+        <Button onClick={() => save.mutate()} disabled={save.isPending || !dirty || !title.trim()}>
           {save.isPending ? 'Saving…' : 'Save changes'}
         </Button>
         <Button onClick={onClose} variant="secondary" disabled={save.isPending}>
@@ -394,7 +446,6 @@ function CreateOfferingForm() {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [vendorCampaignId, setVendorCampaignId] = useState('');
-  const [commissionDescription, setCommissionDescription] = useState('');
   const [cookieWindowDays, setCookieWindowDays] = useState<number | ''>('');
   const [error, setError] = useState<string | null>(null);
 
@@ -409,10 +460,16 @@ function CreateOfferingForm() {
   });
 
   const selectedCampaign = campaigns?.campaigns.find((c) => c.id === vendorCampaignId);
+  const selectedRules = selectedCampaign ? normalizeRules(selectedCampaign.commissionRule) : [];
+  const previewSummary = selectedCampaign
+    ? renderCommissionSummary(selectedRules, selectedCampaign.customerReward)
+    : null;
 
   const m = useMutation({
     mutationFn: () => {
       if (!selectedCampaign) throw new Error('campaign_required');
+      const rules = normalizeRules(selectedCampaign.commissionRule);
+      const legacy = rules.find((r) => r.trigger === 'every') ?? rules[0];
       return api('/admin/network/offerings', {
         method: 'POST',
         body: {
@@ -424,7 +481,8 @@ function CreateOfferingForm() {
           productUrl: selectedCampaign.destinationUrl,
           vendorCampaignId,
           terms: {
-            commissionDescription,
+            // Always derived — admin can't type custom copy.
+            commissionDescription: renderCommissionSummary(rules, selectedCampaign.customerReward),
             cookieWindowDays: cookieWindowDays === '' ? undefined : Number(cookieWindowDays),
             // Snapshot the bound Campaign's attribution + commission
             // config so creators can filter the discover grid by them.
@@ -434,9 +492,12 @@ function CreateOfferingForm() {
             payoutHoldbackDays: selectedCampaign.holdbackDays ?? undefined,
             attributionWindowDays: selectedCampaign.attributionWindowDays,
             attributionModel: selectedCampaign.attributionModel,
-            commissionType: selectedCampaign.commissionRule.type,
-            commissionValue: selectedCampaign.commissionRule.value,
-            recurring: selectedCampaign.commissionRule.recurring ?? false,
+            // Legacy single-rule mirror for older Network clients.
+            commissionType: legacy?.type,
+            commissionValue: legacy?.value,
+            recurring: legacy?.recurring ?? false,
+            commissionRules: rules,
+            customerReward: selectedCampaign.customerReward,
             // Snapshot of the campaign's end date. Null = indefinite —
             // creators see "Ongoing" on the discover card. Re-publish
             // after a campaign extension to refresh.
@@ -449,12 +510,12 @@ function CreateOfferingForm() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['network-offerings'] });
       setTitle(''); setDescription(''); setVendorCampaignId('');
-      setCommissionDescription(''); setCookieWindowDays('');
+      setCookieWindowDays('');
     },
     onError: (err) => setError(err instanceof ApiError ? err.message : 'failed'),
   });
 
-  useEffect(() => { setError(null); }, [title, vendorCampaignId, commissionDescription]);
+  useEffect(() => { setError(null); }, [title, vendorCampaignId]);
 
   return (
     <Card>
@@ -491,10 +552,27 @@ function CreateOfferingForm() {
           </div>
         )}
       </div>
-      <div style={{ marginBottom: 12 }}>
-        <Label>Commission summary (shown to creators)</Label>
-        <Input value={commissionDescription} onChange={(e) => setCommissionDescription(e.target.value)} placeholder="20% recurring on all plans" />
-      </div>
+      {previewSummary && (
+        <div style={{ marginBottom: 12 }}>
+          <Label>Commission summary (auto-derived — shown to creators)</Label>
+          <div
+            style={{
+              padding: '8px 12px',
+              background: '#f8fafc',
+              border: '1px solid #e2e8f0',
+              borderRadius: 6,
+              fontSize: 13,
+              color: '#1f2937',
+            }}
+          >
+            {previewSummary}
+          </div>
+          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
+            Generated from the campaign&rsquo;s rule + customer reward. To change
+            it, edit the campaign.
+          </div>
+        </div>
+      )}
       <div style={{ marginBottom: 12 }}>
         <Label>Cookie window (days, optional)</Label>
         <Input
@@ -506,7 +584,7 @@ function CreateOfferingForm() {
       </div>
       <Button
         onClick={() => m.mutate()}
-        disabled={m.isPending || !title || !selectedCampaign || !commissionDescription}
+        disabled={m.isPending || !title || !selectedCampaign}
       >
         {m.isPending ? 'Publishing…' : 'Publish offering'}
       </Button>

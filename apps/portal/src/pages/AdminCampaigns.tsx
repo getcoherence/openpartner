@@ -4,6 +4,7 @@ import { HelpCircle, Plus, Tag, Trash2 } from 'lucide-react';
 import { api } from '../api.js';
 import { theme } from '../theme.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
+import { renderCommissionSummary } from '../lib/commission-summary.js';
 
 interface CommissionSubRule {
   trigger: 'every' | 'first';
@@ -46,24 +47,8 @@ function normalizeRules(raw: Campaign['commissionRule']): CommissionSubRule[] {
   return [{ trigger: 'every', type: raw.type, value: raw.value, recurring: raw.recurring }];
 }
 
-function summarizeRules(raw: Campaign['commissionRule']): string {
-  const rules = normalizeRules(raw);
-  if (rules.length === 0) return '—';
-  return rules.map(formatRule).join(' + ');
-}
-
-function formatRule(r: CommissionSubRule): string {
-  const amount = r.type === 'percent' ? `${r.value}%` : `$${r.value} fixed`;
-  const triggerHint =
-    r.trigger === 'first' && r.eventType
-      ? ` on first ${r.eventType.replace(/_/g, ' ')}`
-      : '';
-  const recurringHint = r.recurring
-    ? r.recurringMonths
-      ? ` recurring × ${r.recurringMonths}mo`
-      : ' recurring'
-    : '';
-  return `${amount}${triggerHint}${recurringHint}`;
+function summarizeRules(raw: Campaign['commissionRule'], reward: CustomerReward | null): string {
+  return renderCommissionSummary(normalizeRules(raw), reward);
 }
 
 type CampaignStatus = 'scheduled' | 'active' | 'ended';
@@ -143,7 +128,7 @@ export function AdminCampaigns() {
                   <span style={{ color: theme.accent, fontSize: 11, marginLeft: 8 }}>+ deep links</span>
                 )}
               </span>,
-              <span style={{ fontSize: 13 }}>{summarizeRules(c.commissionRule)}</span>,
+              <span style={{ fontSize: 13 }}>{summarizeRules(c.commissionRule, c.customerReward)}</span>,
               <span style={{ color: theme.textMuted }}>{c.attributionWindowDays}d</span>,
               <span style={{ color: c.holdbackDays ? theme.text : theme.textDim }}>
                 {c.holdbackDays ? `${c.holdbackDays}d` : '—'}
