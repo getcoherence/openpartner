@@ -28,6 +28,7 @@ import {
   type CampaignRow,
   type ClickRow,
   type CouponRow,
+  type CustomerReward,
   type EventRow,
   type IdentityRow,
   type PartnerRow,
@@ -35,6 +36,7 @@ import {
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { attributeEvent } from '../attribution.js';
+import { provisionCustomerReward } from '../customer-rewards.js';
 
 export const couponsRouter = Router();
 
@@ -137,6 +139,16 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, requireAdmin, async (re
   if (!campaign) return res.status(404).json({ error: 'campaign_not_found' });
 
   const code = body.data.code ?? defaultCode(partner.email);
+  // Provision the Stripe customer-side discount BEFORE writing our row
+  // so a Stripe failure doesn't leave a dangling Coupon with stale
+  // stripeCouponId fields. provisionCustomerReward returns null on
+  // any failure (Stripe not configured, API error, malformed reward) —
+  // the row is still inserted, just without the auto-applied discount.
+  const reward = (campaign.customerReward as CustomerReward | null) ?? null;
+  const provisioned = reward
+    ? await provisionCustomerReward(reward, code, campaign.name)
+    : null;
+
   try {
     const id = `cpn_${ulid()}`;
     await db<CouponRow>(TABLES.Coupon).insert({
@@ -145,6 +157,8 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, requireAdmin, async (re
       partnerId: partner.id,
       campaignId: campaign.id,
       code,
+      stripeCouponId: provisioned?.stripeCouponId ?? null,
+      stripePromotionCodeId: provisioned?.stripePromotionCodeId ?? null,
     });
     const row = await db<CouponRow>(TABLES.Coupon).where({ id }).first();
     return res.status(201).json(row);
@@ -348,11 +362,45 @@ export async function autoMintCouponsForGrants(
   campaignIds: string[],
 ): Promise<void> {
   if (campaignIds.length === 0) return;
+
+  // Pre-load campaigns so we know which need a Stripe-side reward without
+  // a SELECT per code-collision retry.
+  const campaigns = (await db<CampaignRow>(TABLES.Campaign)
+    .whereIn('id', campaignIds)
+    .select('id', 'name', 'customerReward')) as Array<{
+      id: string;
+      name: string;
+      customerReward: CustomerReward | null;
+    }>;
+  const campaignsById = new Map(campaigns.map((c) => [c.id, c]));
+
   for (const campaignId of campaignIds) {
+    const campaign = campaignsById.get(campaignId);
+    if (!campaign) continue;
+
+    // Pre-check: if this partner already has a coupon for this campaign,
+    // don't waste a Stripe API call. The unique constraint would also
+    // catch this, but provisioning happens BEFORE the insert.
+    const existing = await db<CouponRow>(TABLES.Coupon)
+      .where({ tenantId, partnerId: partner.id, campaignId })
+      .first('id');
+    if (existing) continue;
+
     let attempts = 0;
+    let provisioned: Awaited<ReturnType<typeof provisionCustomerReward>> = null;
     while (attempts < 2) {
       attempts += 1;
       const code = defaultCode(partner.email);
+
+      // Provision the customer-side Stripe coupon on the FIRST attempt.
+      // On a code-collision retry we'd want to delete the prior Stripe
+      // promo and re-provision under the new code, but the collision is
+      // rare (16-bit random suffix) and a single dangling Stripe coupon
+      // per ~65k partners is acceptable. Skip re-provisioning on retry.
+      if (attempts === 1 && campaign.customerReward) {
+        provisioned = await provisionCustomerReward(campaign.customerReward, code, campaign.name);
+      }
+
       try {
         await db<CouponRow>(TABLES.Coupon)
           .insert({
@@ -361,6 +409,8 @@ export async function autoMintCouponsForGrants(
             partnerId: partner.id,
             campaignId,
             code,
+            stripeCouponId: provisioned?.stripeCouponId ?? null,
+            stripePromotionCodeId: provisioned?.stripePromotionCodeId ?? null,
           })
           .onConflict(['tenantId', 'partnerId', 'campaignId'])
           .ignore(); // already exists for this (partner, campaign) — admin minted manually

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
-import { TABLES, type CampaignRow, type CommissionRule } from '@openpartner/db';
+import { TABLES, type CampaignRow, type CommissionRule, type CustomerReward } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { campaignAcceptsNewActivity } from '../campaign-lifecycle.js';
@@ -72,6 +72,44 @@ const commissionRuleSchema = z.union([
   }]),
 ]);
 
+/**
+ * Customer-side reward (dual-sided). Validated by reward type:
+ *   amount_off requires currency
+ *   repeating duration requires durationInMonths
+ *   free_months ignores duration entirely (always treated as repeating)
+ */
+const customerRewardSchema = z
+  .object({
+    type: z.enum(['percent_off', 'amount_off', 'free_months']),
+    value: z.number().positive(),
+    currency: z.string().length(3).optional(),
+    duration: z.enum(['once', 'forever', 'repeating']),
+    durationInMonths: z.number().int().positive().max(120).optional(),
+  })
+  .superRefine((reward, ctx) => {
+    if (reward.type === 'amount_off' && !reward.currency) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'amount_off rewards require a currency',
+        path: ['currency'],
+      });
+    }
+    if (reward.type === 'percent_off' && reward.value > 100) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'percent_off cannot exceed 100',
+        path: ['value'],
+      });
+    }
+    if (reward.duration === 'repeating' && !reward.durationInMonths && reward.type !== 'free_months') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "duration='repeating' requires durationInMonths",
+        path: ['durationInMonths'],
+      });
+    }
+  });
+
 const createSchema = z.object({
   name: z.string().min(1),
   commissionRule: commissionRuleSchema,
@@ -86,6 +124,10 @@ const createSchema = z.object({
   holdbackDays: z.number().int().min(0).max(365).optional(),
   startsAt: z.string().datetime().nullable().optional(),
   endsAt: z.string().datetime().nullable().optional(),
+  /** Customer-side reward provisioned as a Stripe Coupon + PromotionCode
+   *  on every auto-minted Coupon for this campaign. Null/omitted = no
+   *  customer-side reward (partner-only program). */
+  customerReward: customerRewardSchema.nullable().optional(),
   /** When true, after creating the campaign, also grant every existing
    *  non-revoked partner access to it (source='admin'). Defaults to
    *  false so VIP / scoped campaigns stay private unless the brand opts
@@ -104,6 +146,7 @@ const updateSchema = z.object({
   holdbackDays: z.number().int().min(0).max(365).nullable().optional(),
   startsAt: z.string().datetime().nullable().optional(),
   endsAt: z.string().datetime().nullable().optional(),
+  customerReward: customerRewardSchema.nullable().optional(),
 });
 
 export const campaignsRouter = Router();
@@ -192,6 +235,9 @@ campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) =
       holdbackDays: body.data.holdbackDays ?? null,
       startsAt: body.data.startsAt ? new Date(body.data.startsAt) : null,
       endsAt: body.data.endsAt ? new Date(body.data.endsAt) : null,
+      customerReward: body.data.customerReward
+        ? (JSON.stringify(body.data.customerReward) as unknown as CustomerReward)
+        : null,
     })
     .returning('*');
 
@@ -242,6 +288,11 @@ campaignsRouter.patch('/campaigns/:id', requireAuth, requireAdmin, async (req, r
   if (body.data.holdbackDays !== undefined) patch.holdbackDays = body.data.holdbackDays;
   if (body.data.startsAt !== undefined) patch.startsAt = body.data.startsAt ? new Date(body.data.startsAt) : null;
   if (body.data.endsAt !== undefined) patch.endsAt = body.data.endsAt ? new Date(body.data.endsAt) : null;
+  if (body.data.customerReward !== undefined) {
+    patch.customerReward = body.data.customerReward
+      ? (JSON.stringify(body.data.customerReward) as unknown as CustomerReward)
+      : null;
+  }
 
   await db<CampaignRow>(TABLES.Campaign).where({ id: req.params.id }).update(patch);
   const updated = await db<CampaignRow>(TABLES.Campaign).where({ id: req.params.id }).first();

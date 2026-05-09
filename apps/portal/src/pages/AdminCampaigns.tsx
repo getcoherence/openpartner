@@ -15,6 +15,14 @@ interface CommissionSubRule {
   recurringMonths?: number;
 }
 
+interface CustomerReward {
+  type: 'percent_off' | 'amount_off' | 'free_months';
+  value: number;
+  currency?: string;
+  duration: 'once' | 'forever' | 'repeating';
+  durationInMonths?: number;
+}
+
 interface Campaign {
   id: string;
   name: string;
@@ -29,6 +37,7 @@ interface Campaign {
   holdbackDays: number | null;
   startsAt: string | null;
   endsAt: string | null;
+  customerReward: CustomerReward | null;
   createdAt: string;
 }
 
@@ -211,6 +220,7 @@ function EditCampaignDates({
   const [startsAt, setStartsAt] = useState(campaign.startsAt ? toDateTimeLocal(campaign.startsAt) : '');
   const [endsAt, setEndsAt] = useState(campaign.endsAt ? toDateTimeLocal(campaign.endsAt) : '');
   const [rules, setRules] = useState<CommissionSubRule[]>(normalizeRules(campaign.commissionRule));
+  const [customerReward, setCustomerReward] = useState<CustomerReward | null>(campaign.customerReward);
   const [holdbackDays, setHoldbackDays] = useState(
     campaign.holdbackDays != null ? String(campaign.holdbackDays) : '0',
   );
@@ -223,6 +233,7 @@ function EditCampaignDates({
           startsAt: startsAt ? new Date(startsAt).toISOString() : null,
           endsAt: endsAt ? new Date(endsAt).toISOString() : null,
           commissionRule: rules,
+          customerReward,
           holdbackDays: Number(holdbackDays) || 0,
         },
       }),
@@ -279,6 +290,7 @@ function EditCampaignDates({
         time and stored on PartnerCommission, queried at accrual.
       </div>
       <CompoundRuleEditor rules={rules} onChange={setRules} />
+      <CustomerRewardEditor reward={customerReward} onChange={setCustomerReward} />
       <div style={{ marginBottom: 16 }}>
         <Label>Payout holdback (days)</Label>
         <Select value={holdbackDays} onChange={(e) => setHoldbackDays(e.target.value)}>
@@ -317,6 +329,7 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
   const [rules, setRules] = useState<CommissionSubRule[]>([
     { trigger: 'every', type: 'percent', value: 20, recurring: true },
   ]);
+  const [customerReward, setCustomerReward] = useState<CustomerReward | null>(null);
   const [windowDays, setWindowDays] = useState('60');
   const [model, setModel] = useState<'last_click' | 'first_click' | 'linear' | 'position'>('last_click');
   const [holdbackDays, setHoldbackDays] = useState('0');
@@ -338,6 +351,7 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
           holdbackDays: Number(holdbackDays) || undefined,
           startsAt: startsAt ? new Date(startsAt).toISOString() : null,
           endsAt: endsAt ? new Date(endsAt).toISOString() : null,
+          customerReward,
           grantToAllPartners: grantToAllPartners || undefined,
         },
       }),
@@ -376,6 +390,7 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
         </div>
       </div>
       <CompoundRuleEditor rules={rules} onChange={setRules} />
+      <CustomerRewardEditor reward={customerReward} onChange={setCustomerReward} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 14, marginBottom: 16 }}>
         <div>
           <Label>Attribution window (days)</Label>
@@ -606,6 +621,140 @@ function SubRuleRow({
           <span style={{ fontSize: 12, color: theme.textDim }}>
             months from the partner's first attributed event of this type. Blank = no cap.
           </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Editor for the Campaign-level customer-side reward (dual-sided incentive).
+ *
+ * When set, every Coupon auto-minted for this Campaign also provisions a
+ * matching Stripe Coupon + PromotionCode so the customer's discount applies
+ * automatically at checkout. Without Stripe configured the OpenPartner Coupon
+ * still works for partner attribution; the customer just doesn't get the
+ * discount auto-applied.
+ *
+ * Defaults when toggled on: 20% off for the first 3 months — a sane
+ * starting point that mirrors how Dub presents the feature.
+ */
+function CustomerRewardEditor({
+  reward,
+  onChange,
+}: {
+  reward: CustomerReward | null;
+  onChange: (reward: CustomerReward | null) => void;
+}) {
+  const enabled = reward != null;
+  const update = (patch: Partial<CustomerReward>) => {
+    onChange({ ...(reward as CustomerReward), ...patch });
+  };
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text, marginBottom: 6 }}>
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) =>
+            onChange(
+              e.target.checked
+                ? { type: 'percent_off', value: 20, duration: 'repeating', durationInMonths: 3 }
+                : null,
+            )
+          }
+        />
+        Offer customer-side discount (dual-sided)
+      </label>
+      <div style={{ fontSize: 12, color: theme.textDim, marginLeft: 24, marginBottom: 8 }}>
+        Auto-provisioned as a Stripe coupon on each partner's code. Customer types
+        the code at your Stripe checkout → discount applies automatically.
+      </div>
+      {enabled && reward && (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '160px 130px 130px 1fr',
+            gap: 8,
+            padding: 8,
+            background: theme.surface2,
+            borderRadius: 6,
+            alignItems: 'end',
+          }}
+        >
+          <div>
+            <Label>Type</Label>
+            <Select
+              value={reward.type}
+              onChange={(e) => {
+                const type = e.target.value as CustomerReward['type'];
+                if (type === 'free_months') {
+                  onChange({ type, value: reward.value || 1, duration: 'repeating' });
+                } else {
+                  update({ type });
+                }
+              }}
+            >
+              <option value="percent_off">% off</option>
+              <option value="amount_off">$ off</option>
+              <option value="free_months">Free months</option>
+            </Select>
+          </div>
+          <div>
+            <Label>{reward.type === 'free_months' ? 'Months' : 'Value'}</Label>
+            <Input
+              type="number"
+              value={reward.value}
+              onChange={(e) => update({ value: Number(e.target.value) })}
+            />
+          </div>
+          {reward.type === 'amount_off' ? (
+            <div>
+              <Label>Currency</Label>
+              <Input
+                value={reward.currency ?? ''}
+                placeholder="USD"
+                onChange={(e) => update({ currency: e.target.value.toUpperCase().slice(0, 3) || undefined })}
+              />
+            </div>
+          ) : (
+            <div />
+          )}
+          {reward.type === 'free_months' ? (
+            <span style={{ fontSize: 12, color: theme.textDim, paddingBottom: 8 }}>
+              Delivered as a 100% Stripe coupon for the configured number of months.
+            </span>
+          ) : (
+            <div>
+              <Label>Duration</Label>
+              <Select
+                value={reward.duration}
+                onChange={(e) => {
+                  const duration = e.target.value as CustomerReward['duration'];
+                  update({
+                    duration,
+                    durationInMonths: duration === 'repeating' ? reward.durationInMonths ?? 3 : undefined,
+                  });
+                }}
+              >
+                <option value="once">First invoice only</option>
+                <option value="forever">Every invoice</option>
+                <option value="repeating">First N months</option>
+              </Select>
+            </div>
+          )}
+          {reward.type !== 'free_months' && reward.duration === 'repeating' && (
+            <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'auto 120px 1fr', gap: 8, alignItems: 'center' }}>
+              <span style={{ fontSize: 12, color: theme.textMuted }}>Apply for</span>
+              <Input
+                type="number"
+                value={reward.durationInMonths ?? ''}
+                onChange={(e) => update({ durationInMonths: e.target.value ? Number(e.target.value) : undefined })}
+              />
+              <span style={{ fontSize: 12, color: theme.textDim }}>months from the customer's first invoice.</span>
+            </div>
+          )}
         </div>
       )}
     </div>

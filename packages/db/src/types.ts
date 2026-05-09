@@ -96,6 +96,38 @@ export interface CommissionSubRule {
 
 export type CommissionRule = CommissionSubRule[];
 
+/**
+ * Customer-side reward (dual-sided incentives, Path A — coupon-based).
+ *
+ * Configured per-Campaign. When set, every auto-minted Coupon for that
+ * Campaign also provisions a matching Stripe Coupon + PromotionCode so
+ * the customer's discount applies automatically at checkout.
+ *
+ * Maps to Stripe's Coupon API:
+ *   percent_off  → coupon.percent_off
+ *   amount_off   → coupon.amount_off (cents) + currency
+ *   free_months  → coupon.percent_off=100 + duration='repeating' + duration_in_months=value
+ *
+ * `duration` controls how many invoices the discount applies to. 'once' = first
+ * invoice only, 'forever' = every invoice indefinitely, 'repeating' = first N
+ * invoices (durationInMonths required).
+ */
+export type CustomerRewardType = 'percent_off' | 'amount_off' | 'free_months';
+export type CustomerRewardDuration = 'once' | 'forever' | 'repeating';
+
+export interface CustomerReward {
+  type: CustomerRewardType;
+  /** percent_off: 20 = 20%. amount_off: 20 = $20 (currency required).
+   *  free_months: 1 = 1 free month (delivered as percent_off=100 over N months). */
+  value: number;
+  /** Required for amount_off. ISO 4217 lowercase, e.g. 'usd'. */
+  currency?: string;
+  /** Ignored for free_months (always treated as repeating). */
+  duration: CustomerRewardDuration;
+  /** Required when duration='repeating'. */
+  durationInMonths?: number;
+}
+
 export type AttributionModel = 'last_click' | 'first_click' | 'linear' | 'position';
 
 export type CommissionStatus = 'accrued' | 'approved' | 'paid' | 'reversed';
@@ -260,6 +292,10 @@ export interface CampaignRow {
    *  pushed back past the window and the flag was cleared so a fresh
    *  reminder fires before the new end). */
   endNotificationSentAt: Date | null;
+  /** Customer-side reward (dual-sided incentive). Null = partner-only.
+   *  When set, auto-minted Coupons for this Campaign also provision a
+   *  Stripe Coupon + PromotionCode. */
+  customerReward: CustomerReward | null;
   createdAt: Date;
 }
 
@@ -495,5 +531,11 @@ export interface CouponRow {
   /** User-facing string. Per-tenant unique. Lookups are case-insensitive
    *  but storage is whatever the creator/admin picked at mint time. */
   code: string;
+  /** Stripe Coupon ID provisioned alongside the OpenPartner Coupon when
+   *  the bound Campaign has a customerReward. Null = no customer-side
+   *  reward, OR Stripe wasn't configured at mint time. */
+  stripeCouponId: string | null;
+  /** Stripe PromotionCode ID — what the customer types at checkout. */
+  stripePromotionCodeId: string | null;
   createdAt: Date;
 }
