@@ -5,6 +5,11 @@ import { CheckCircle2, Circle, Globe, HelpCircle } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
+import {
+  renderCommissionSummary,
+  type CommissionSubRuleLike,
+  type CustomerRewardLike,
+} from '../../lib/commission-summary.js';
 
 type MyStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'cancelled';
 type AttributionModel = 'last_click' | 'first_click' | 'linear' | 'position';
@@ -16,9 +21,18 @@ interface OfferingTerms {
   payoutHoldbackDays?: number;
   attributionWindowDays?: number;
   attributionModel?: AttributionModel;
+  /** Legacy single-rule mirror — still surfaced for older offerings
+   *  whose Network row predates the compound-rules refactor. */
   commissionType?: 'percent' | 'fixed';
   commissionValue?: number;
   recurring?: boolean;
+  /** Compound rule snapshot. Preferred — when present we re-derive the
+   *  display summary client-side so even an offering whose Network
+   *  commissionDescription wasn't re-stamped renders rule-faithfully. */
+  commissionRules?: CommissionSubRuleLike[];
+  /** Customer-side reward. Drives the "Dual reward" chip + extends the
+   *  derived summary with "customers get …". */
+  customerReward?: CustomerRewardLike | null;
   /** ISO timestamp when the bound vendor Campaign expires. Null =
    *  indefinite (no end date). Absent = legacy offering created
    *  before the snapshot was added — duration UI omits the chip
@@ -337,48 +351,110 @@ export function CreatorDiscoverPage() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
           {filtered.map((o) => (
-            <Card key={o.id}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-                <BrandMark logoUrl={o.vendorLogoUrl} name={o.vendorName} />
-                <div style={{ color: theme.textMuted, fontSize: 13, minWidth: 0, flex: 1 }}>
-                  <Link to={`/creator/vendors/${o.vendorId}`} style={{ color: theme.textMuted }}>{o.vendorName}</Link>
-                  {o.vendorPartnerCount > 0 && <> · {o.vendorPartnerCount} partner{o.vendorPartnerCount === 1 ? '' : 's'}</>}
-                </div>
-              </div>
-              <h3 style={{ marginTop: 4, marginBottom: 8 }}>
-                <Link to={`/creator/offerings/${o.id}`}>{o.title}</Link>
-              </h3>
-              {o.terms?.commissionDescription && (
-                <CardField label="Commission" value={o.terms.commissionDescription} emphasize />
-              )}
-              <OfferingChips terms={o.terms} />
-              {o.description && (
-                <CardField
-                  label="About"
-                  value={
-                    o.description.length > 180
-                      ? `${o.description.slice(0, 180)}…`
-                      : o.description
-                  }
-                />
-              )}
-              <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
-                <Link to={`/creator/offerings/${o.id}`}>
-                  <Button variant={o.myStatus === 'approved' || o.myStatus === 'pending' ? 'secondary' : 'primary'}>
-                    {ctaForStatus(o.myStatus)}
-                  </Button>
-                </Link>
-                {o.myStatus !== 'none' && o.myStatus !== 'rejected' && (
-                  <span style={{ fontSize: 12, color: o.myStatus === 'approved' ? theme.success : theme.textMuted }}>
-                    {o.myStatus === 'approved' ? '✓ Active' : o.myStatus === 'pending' ? 'Awaiting brand review' : null}
-                  </span>
-                )}
-              </div>
-            </Card>
+            <OfferingDiscoverCard key={o.id} offering={o} />
           ))}
         </div>
       )}
     </Page>
+  );
+}
+
+/**
+ * Dub-style marketplace card.
+ *
+ * Layout (top → bottom): logo + brand name → description (line-clamp-3)
+ * → chip strip with derived commission summary as the lead chip
+ * → CTA pinned to the bottom of a fixed-height card so the grid lines
+ * up regardless of how long any one description is.
+ *
+ * The full description lives on the offering detail page — only the
+ * card truncates. Per-card height = 280px to fit ~3 lines of description
+ * + chips + CTA without internal scroll on standard zooms.
+ */
+function OfferingDiscoverCard({ offering: o }: { offering: OfferingListItem }) {
+  // Derive client-side from the rule snapshot when available so the
+  // commission line is always rule-faithful even for offerings whose
+  // Network row predates the May 2026 refactor. Falls back to whatever
+  // the Network has stored.
+  const commissionLine = o.terms.commissionRules
+    ? renderCommissionSummary(o.terms.commissionRules, o.terms.customerReward)
+    : o.terms.commissionDescription ?? null;
+  const hasDualReward = o.terms.customerReward != null;
+
+  return (
+    <Card
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 280,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+        <BrandMark logoUrl={o.vendorLogoUrl} name={o.vendorName} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <Link
+            to={`/creator/vendors/${o.vendorId}`}
+            style={{
+              color: theme.text,
+              fontSize: 15,
+              fontWeight: 600,
+              display: 'block',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {o.vendorName}
+          </Link>
+          {o.vendorPartnerCount > 0 && (
+            <div style={{ color: theme.textDim, fontSize: 11 }}>
+              {o.vendorPartnerCount} partner{o.vendorPartnerCount === 1 ? '' : 's'}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {o.description && (
+        <Link
+          to={`/creator/offerings/${o.id}`}
+          style={{
+            color: theme.textMuted,
+            fontSize: 13,
+            lineHeight: 1.45,
+            display: '-webkit-box',
+            WebkitLineClamp: 3,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+            marginBottom: 12,
+            textDecoration: 'none',
+          }}
+          title={o.description}
+        >
+          {o.description}
+        </Link>
+      )}
+
+      <div style={{ flex: 1 }} />
+
+      <OfferingChips
+        terms={o.terms}
+        commissionLine={commissionLine}
+        hasDualReward={hasDualReward}
+      />
+
+      <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <Link to={`/creator/offerings/${o.id}`}>
+          <Button variant={o.myStatus === 'approved' || o.myStatus === 'pending' ? 'secondary' : 'primary'}>
+            {ctaForStatus(o.myStatus)}
+          </Button>
+        </Link>
+        {o.myStatus !== 'none' && o.myStatus !== 'rejected' && (
+          <span style={{ fontSize: 12, color: o.myStatus === 'approved' ? theme.success : theme.textMuted }}>
+            {o.myStatus === 'approved' ? '✓ Active' : o.myStatus === 'pending' ? 'Awaiting brand review' : null}
+          </span>
+        )}
+      </div>
+    </Card>
   );
 }
 
@@ -466,15 +542,31 @@ function CardField({ label, value, emphasize }: { label: string; value: string; 
   );
 }
 
-/** Inline chip row showing the offering's terms at a glance. Each
- *  chip maps to one filterable dimension so the grid is self-
- *  explanatory and the filter values match what's visible. */
-function OfferingChips({ terms }: { terms: OfferingTerms }) {
-  const chips: Array<{ label: string; tone?: 'accent' | 'muted' }> = [];
-  if (terms.attributionModel) chips.push({ label: MODEL_LABELS[terms.attributionModel] });
-  if (terms.attributionWindowDays) chips.push({ label: `${terms.attributionWindowDays}d window` });
-  if (terms.cookieWindowDays) chips.push({ label: `${terms.cookieWindowDays}d cookie` });
-  if (terms.recurring) chips.push({ label: 'Recurring', tone: 'accent' });
+/** Chip row at the bottom of a discover card. Lead chip is the rule-derived
+ *  commission line (rendered prominently); secondary chips are the
+ *  filterable dimensions so the grid stays self-explanatory and matches
+ *  the filter values above. Recurring + Dual reward + Ending-soon get
+ *  accent tone so they pop against the muted secondary chips.
+ *
+ *  Caller passes commissionLine (vs. reading from terms) so we can derive
+ *  client-side from the rule snapshot when present, while still falling back
+ *  to whatever the Network stored.
+ */
+function OfferingChips({
+  terms,
+  commissionLine,
+  hasDualReward,
+}: {
+  terms: OfferingTerms;
+  commissionLine?: string | null;
+  hasDualReward?: boolean;
+}) {
+  const chips: Array<{ label: string; tone?: 'accent' | 'muted' | 'lead' }> = [];
+  if (commissionLine) chips.push({ label: commissionLine, tone: 'lead' });
+  if (hasDualReward) chips.push({ label: 'Dual reward', tone: 'accent' });
+  if (terms.attributionModel) chips.push({ label: MODEL_LABELS[terms.attributionModel], tone: 'muted' });
+  if (terms.attributionWindowDays) chips.push({ label: `${terms.attributionWindowDays}d window`, tone: 'muted' });
+  if (terms.cookieWindowDays) chips.push({ label: `${terms.cookieWindowDays}d cookie`, tone: 'muted' });
   if (terms.payoutHoldbackDays != null && terms.payoutHoldbackDays > 0) {
     chips.push({ label: `${terms.payoutHoldbackDays}d holdback`, tone: 'muted' });
   }
@@ -483,24 +575,29 @@ function OfferingChips({ terms }: { terms: OfferingTerms }) {
   if (duration) chips.push({ label: duration.label, tone: duration.kind === 'soon' ? 'accent' : 'muted' });
   if (chips.length === 0) return null;
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
-      {chips.map((c, i) => (
-        <span
-          key={i}
-          style={{
-            fontSize: 11,
-            fontWeight: 500,
-            padding: '3px 8px',
-            borderRadius: 999,
-            background: c.tone === 'accent' ? `${theme.accent}15` : theme.surface2,
-            color: c.tone === 'accent' ? theme.accent : theme.textMuted,
-            border: `1px solid ${c.tone === 'accent' ? `${theme.accent}55` : theme.borderSubtle}`,
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {c.label}
-        </span>
-      ))}
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+      {chips.map((c, i) => {
+        const isLead = c.tone === 'lead';
+        const isAccent = c.tone === 'accent';
+        return (
+          <span
+            key={i}
+            style={{
+              fontSize: isLead ? 12 : 11,
+              fontWeight: isLead ? 600 : 500,
+              padding: isLead ? '4px 10px' : '3px 8px',
+              borderRadius: 999,
+              background: isLead || isAccent ? `${theme.accent}15` : theme.surface2,
+              color: isLead || isAccent ? theme.accent : theme.textMuted,
+              border: `1px solid ${isLead || isAccent ? `${theme.accent}55` : theme.borderSubtle}`,
+              whiteSpace: isLead ? 'normal' : 'nowrap',
+              maxWidth: '100%',
+            }}
+          >
+            {c.label}
+          </span>
+        );
+      })}
     </div>
   );
 }
