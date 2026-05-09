@@ -19,7 +19,8 @@
  */
 
 import type { Knex } from 'knex';
-import { TABLES, type CommissionType } from '@openpartner/db';
+import { TABLES, type CommissionRule, type CommissionType } from '@openpartner/db';
+import { parseCommissionRule } from './attribution.js';
 
 export interface BackfillResult {
   scanned: number;
@@ -110,6 +111,9 @@ export async function backfillCommissionSnapshots(db: Knex, tenantId: string): P
     commissionType: CommissionType;
     commissionValue: string;
     recurring: boolean;
+    /** Stored as a JSON-stringified value so knex routes it through the
+     *  jsonb column without trying to spread the array as columns. */
+    commissionRules: string;
     holdbackDays: number | null;
     source: 'backfill';
     snapshottedAt: Date;
@@ -131,17 +135,30 @@ export async function backfillCommissionSnapshots(db: Knex, tenantId: string): P
       result.ambiguous += 1;
       continue;
     }
-    const rule = parseRule(campaign.commissionRule);
-    if (!rule) {
+    let rules: CommissionRule;
+    try {
+      rules = parseCommissionRule(campaign.commissionRule);
+    } catch {
       result.noCampaignRule += 1;
       continue;
     }
+    if (rules.length === 0) {
+      result.noCampaignRule += 1;
+      continue;
+    }
+    // Pick a representative sub-rule for the legacy NOT NULL columns.
+    // Preference: the first 'every'-trigger rule (the recurring/main rate).
+    // The legacy columns are best-effort summaries — the canonical state is
+    // commissionRules — so this only affects deployments that read the
+    // legacy columns (none, post-migration).
+    const legacy = rules.find((r) => r.trigger === 'every') ?? rules[0]!;
     inserts.push({
       partnerId: partner.id,
       tenantId: partner.tenantId,
-      commissionType: rule.type,
-      commissionValue: rule.value.toFixed(4),
-      recurring: rule.recurring ?? false,
+      commissionType: legacy.type,
+      commissionValue: legacy.value.toFixed(4),
+      recurring: legacy.recurring ?? false,
+      commissionRules: JSON.stringify(rules),
       holdbackDays: campaign.holdbackDays,
       source: 'backfill',
       snapshottedAt: now,
@@ -153,22 +170,4 @@ export async function backfillCommissionSnapshots(db: Knex, tenantId: string): P
     result.inserted = inserts.length;
   }
   return result;
-}
-
-interface ParsedRule {
-  type: CommissionType;
-  value: number;
-  recurring?: boolean;
-}
-
-function parseRule(raw: unknown): ParsedRule | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const r = raw as Record<string, unknown>;
-  if (r.type !== 'percent' && r.type !== 'fixed') return null;
-  if (typeof r.value !== 'number') return null;
-  return {
-    type: r.type,
-    value: r.value,
-    recurring: typeof r.recurring === 'boolean' ? r.recurring : false,
-  };
 }

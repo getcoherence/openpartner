@@ -1,24 +1,52 @@
 import { describe, it, expect } from 'vitest';
-import { applyModel, computeCommissionAmount } from '../attribution.js';
+import { applyModel, computeSubRuleAmount, parseCommissionRule } from '../attribution.js';
 
-describe('computeCommissionAmount', () => {
+describe('computeSubRuleAmount', () => {
   it('percent rule scales revenue', () => {
-    expect(computeCommissionAmount({ type: 'percent', value: 10 }, { value: '100.00' })).toBe(10);
-    expect(computeCommissionAmount({ type: 'percent', value: 25 }, { value: '99.99' })).toBeCloseTo(25, 2);
+    expect(computeSubRuleAmount({ trigger: 'every', type: 'percent', value: 10 }, { value: '100.00' })).toBe(10);
+    expect(computeSubRuleAmount({ trigger: 'every', type: 'percent', value: 25 }, { value: '99.99' })).toBeCloseTo(25, 2);
   });
 
   it('fixed rule ignores revenue', () => {
-    expect(computeCommissionAmount({ type: 'fixed', value: 5 }, { value: '100.00' })).toBe(5);
-    expect(computeCommissionAmount({ type: 'fixed', value: 5 }, { value: null })).toBe(5);
+    expect(computeSubRuleAmount({ trigger: 'every', type: 'fixed', value: 5 }, { value: '100.00' })).toBe(5);
+    expect(computeSubRuleAmount({ trigger: 'every', type: 'fixed', value: 5 }, { value: null })).toBe(5);
   });
 
   it('percent rule with null revenue earns nothing', () => {
-    expect(computeCommissionAmount({ type: 'percent', value: 10 }, { value: null })).toBe(0);
+    expect(computeSubRuleAmount({ trigger: 'every', type: 'percent', value: 10 }, { value: null })).toBe(0);
   });
 
   it('rounds to cents', () => {
     // 33.33 * 10% should round to 3.33, not 3.333
-    expect(computeCommissionAmount({ type: 'percent', value: 10 }, { value: '33.33' })).toBe(3.33);
+    expect(computeSubRuleAmount({ trigger: 'every', type: 'percent', value: 10 }, { value: '33.33' })).toBe(3.33);
+  });
+});
+
+describe('parseCommissionRule', () => {
+  it('passes array shape through unchanged', () => {
+    const rules = [
+      { trigger: 'first' as const, eventType: 'subscription_created', type: 'fixed' as const, value: 200 },
+      { trigger: 'every' as const, eventType: 'invoice_paid', type: 'percent' as const, value: 20, recurring: true, recurringMonths: 12 },
+    ];
+    expect(parseCommissionRule(rules)).toEqual(rules);
+  });
+
+  it('wraps legacy single-object shape in a 1-element array', () => {
+    expect(parseCommissionRule({ type: 'percent', value: 50, recurring: true })).toEqual([
+      { trigger: 'every', type: 'percent', value: 50, currency: undefined, recurring: true },
+    ]);
+  });
+
+  it('preserves currency on legacy fixed rules', () => {
+    expect(parseCommissionRule({ type: 'fixed', value: 25, currency: 'USD' })).toEqual([
+      { trigger: 'every', type: 'fixed', value: 25, currency: 'USD', recurring: undefined },
+    ]);
+  });
+
+  it('throws on unrecognized shapes', () => {
+    expect(() => parseCommissionRule(null)).toThrow();
+    expect(() => parseCommissionRule({})).toThrow();
+    expect(() => parseCommissionRule('20%')).toThrow();
   });
 });
 

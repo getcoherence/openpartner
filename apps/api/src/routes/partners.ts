@@ -34,13 +34,33 @@ const createSchema = z.object({
    *  row so future commission accruals use these values instead of
    *  the live Campaign rule — preserves the rate the partner was
    *  approved under even if the brand later edits the Campaign.
-   *  All fields individually optional; partial snapshots are fine. */
+   *
+   *  `commissionRules` (array form) is the post-compound-rules wire
+   *  shape; `commissionType`/`commissionValue`/`recurring` are the
+   *  legacy single-rule shape, still accepted so older Network
+   *  deployments don't have to upgrade in lockstep. When both are
+   *  sent, `commissionRules` wins. */
   commissionSnapshot: z
     .object({
       commissionType: z.enum(['percent', 'fixed']).optional(),
       commissionValue: z.number().nonnegative().optional(),
       recurring: z.boolean().optional(),
       holdbackDays: z.number().int().nonnegative().optional(),
+      commissionRules: z
+        .array(
+          z.object({
+            trigger: z.enum(['every', 'first']),
+            eventType: z.string().min(1).max(80).optional(),
+            type: z.enum(['percent', 'fixed']),
+            value: z.number().nonnegative(),
+            currency: z.string().length(3).optional(),
+            recurring: z.boolean().optional(),
+            recurringMonths: z.number().int().positive().max(600).optional(),
+          }),
+        )
+        .min(1)
+        .max(10)
+        .optional(),
     })
     .optional(),
 });
@@ -137,11 +157,33 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
   }
 
   // Persist the commission snapshot if the federation push carried one.
-  // Only writes when both type + value are present — a partial snapshot
-  // would silently mis-price commissions, so we'd rather fall back to
-  // the live Campaign rule than guess.
+  // Two accepted shapes:
+  //   - commissionRules (compound array) — preferred, written verbatim
+  //   - commissionType + commissionValue (legacy single rule) — accepted
+  //     for older Network deployments; legacy columns get filled, no
+  //     compound array stored
+  //
+  // When commissionRules is present, the legacy NOT NULL columns are
+  // populated from the first 'every' sub-rule (or the first sub-rule)
+  // as a best-effort summary; the resolver always prefers commissionRules.
+  //
+  // Without enough info to write either shape we fall back to the live
+  // Campaign rule rather than silently mis-pricing.
   const snap = body.data.commissionSnapshot;
-  if (snap?.commissionType != null && snap.commissionValue != null) {
+  if (snap?.commissionRules && snap.commissionRules.length > 0) {
+    const legacy = snap.commissionRules.find((r) => r.trigger === 'every') ?? snap.commissionRules[0]!;
+    await db(TABLES.PartnerCommission).insert({
+      partnerId: id,
+      tenantId,
+      commissionType: legacy.type,
+      commissionValue: legacy.value.toFixed(4),
+      recurring: legacy.recurring ?? false,
+      commissionRules: JSON.stringify(snap.commissionRules),
+      holdbackDays: snap.holdbackDays ?? null,
+      source: 'approval',
+      snapshottedAt: new Date(),
+    });
+  } else if (snap?.commissionType != null && snap.commissionValue != null) {
     await db(TABLES.PartnerCommission).insert({
       partnerId: id,
       tenantId,
@@ -457,7 +499,16 @@ partnersRouter.get('/partners/:id/commission-snapshot', requireAuth, requirePart
   const { db } = tenantOf(req);
   const snapshot = await db(TABLES.PartnerCommission)
     .where({ partnerId: req.params.id })
-    .first('partnerId', 'commissionType', 'commissionValue', 'recurring', 'holdbackDays', 'source', 'snapshottedAt');
+    .first(
+      'partnerId',
+      'commissionType',
+      'commissionValue',
+      'recurring',
+      'commissionRules',
+      'holdbackDays',
+      'source',
+      'snapshottedAt',
+    );
   if (!snapshot) return res.json({ snapshot: null });
   res.json({ snapshot });
 });
@@ -473,6 +524,25 @@ const overrideSchema = z.object({
   commissionValue: z.number().nonnegative(),
   recurring: z.boolean().optional(),
   holdbackDays: z.number().int().nonnegative().nullable().optional(),
+  /** Optional compound-rule override. When omitted, the override is a
+   *  pure single-rule amendment and any prior compound rules attached
+   *  to this partner are cleared (set to NULL) so the engine doesn't
+   *  silently keep using stale sub-rules. */
+  commissionRules: z
+    .array(
+      z.object({
+        trigger: z.enum(['every', 'first']),
+        eventType: z.string().min(1).max(80).optional(),
+        type: z.enum(['percent', 'fixed']),
+        value: z.number().nonnegative(),
+        currency: z.string().length(3).optional(),
+        recurring: z.boolean().optional(),
+        recurringMonths: z.number().int().positive().max(600).optional(),
+      }),
+    )
+    .min(1)
+    .max(10)
+    .optional(),
 });
 partnersRouter.put('/partners/:id/commission-snapshot', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
@@ -487,6 +557,7 @@ partnersRouter.put('/partners/:id/commission-snapshot', requireAuth, requireAdmi
       commissionType: body.data.commissionType,
       commissionValue: body.data.commissionValue.toFixed(4),
       recurring: body.data.recurring ?? false,
+      commissionRules: body.data.commissionRules ? JSON.stringify(body.data.commissionRules) : null,
       holdbackDays: body.data.holdbackDays ?? null,
       source: 'amendment',
       snapshottedAt: new Date(),
@@ -495,7 +566,16 @@ partnersRouter.put('/partners/:id/commission-snapshot', requireAuth, requireAdmi
     .merge();
   const fresh = await db(TABLES.PartnerCommission)
     .where({ partnerId: partner.id })
-    .first('partnerId', 'commissionType', 'commissionValue', 'recurring', 'holdbackDays', 'source', 'snapshottedAt');
+    .first(
+      'partnerId',
+      'commissionType',
+      'commissionValue',
+      'recurring',
+      'commissionRules',
+      'holdbackDays',
+      'source',
+      'snapshottedAt',
+    );
   res.json({ snapshot: fresh });
 });
 

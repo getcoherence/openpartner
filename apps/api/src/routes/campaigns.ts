@@ -1,12 +1,57 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
-import { TABLES, type CampaignRow } from '@openpartner/db';
+import { TABLES, type CampaignRow, type CommissionRule } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { campaignAcceptsNewActivity } from '../campaign-lifecycle.js';
 
-const commissionRuleSchema = z.discriminatedUnion('type', [
+/**
+ * Commission rule schema. The wire format is an array of triggered sub-rules.
+ *
+ * We also accept the legacy single-object shape and normalize it to a
+ * 1-element array so older clients (the OSS partner SDK <0.4, scripted
+ * imports, etc.) keep working without an immediate upgrade. The normalization
+ * happens here at the API boundary so storage is always the new shape.
+ */
+const subRuleSchema = z.intersection(
+  z.object({
+    trigger: z.enum(['every', 'first']),
+    eventType: z.string().min(1).max(80).optional(),
+    recurring: z.boolean().optional(),
+    /** Months to keep firing a recurring rule (counting from the first
+     *  attributed event of this type for the partner+user). Null/omitted
+     *  = no cap. Capped at 600 (50 years) to keep the cap a sane integer. */
+    recurringMonths: z.number().int().positive().max(600).optional(),
+  }),
+  z.discriminatedUnion('type', [
+    z.object({ type: z.literal('percent'), value: z.number().positive() }),
+    z.object({ type: z.literal('fixed'), value: z.number().positive(), currency: z.string().length(3).optional() }),
+  ]),
+).superRefine((sub, ctx) => {
+  // `first` trigger needs an eventType — "first sale of WHAT" is otherwise
+  // ambiguous. `every` without an eventType means "every event with a value",
+  // which is a real use case (the legacy single-rule behavior).
+  if (sub.trigger === 'first' && !sub.eventType) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'first-trigger sub-rules require an eventType',
+      path: ['eventType'],
+    });
+  }
+  // recurringMonths only makes sense on recurring rules. Permit it to be
+  // present on non-recurring rules but warn loudly via validation rather
+  // than silently ignore.
+  if (sub.recurringMonths != null && !sub.recurring) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'recurringMonths requires recurring: true',
+      path: ['recurringMonths'],
+    });
+  }
+});
+
+const legacyRuleSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('percent'), value: z.number().positive(), recurring: z.boolean().optional() }),
   z.object({
     type: z.literal('fixed'),
@@ -14,6 +59,17 @@ const commissionRuleSchema = z.discriminatedUnion('type', [
     currency: z.string().length(3).optional(),
     recurring: z.boolean().optional(),
   }),
+]);
+
+const commissionRuleSchema = z.union([
+  z.array(subRuleSchema).min(1).max(10),
+  legacyRuleSchema.transform((legacy) => [{
+    trigger: 'every' as const,
+    type: legacy.type,
+    value: legacy.value,
+    ...('currency' in legacy && legacy.currency ? { currency: legacy.currency } : {}),
+    ...(legacy.recurring ? { recurring: legacy.recurring } : {}),
+  }]),
 ]);
 
 const createSchema = z.object({
@@ -125,7 +181,10 @@ campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) =
       id,
       tenantId,
       name: body.data.name,
-      commissionRule: body.data.commissionRule,
+      // JSON.stringify the array explicitly. Knex's pg driver auto-serializes
+      // plain objects into jsonb but treats arrays as Postgres arrays, which
+      // collides with the jsonb column type.
+      commissionRule: JSON.stringify(body.data.commissionRule) as unknown as CommissionRule,
       attributionWindowDays: body.data.attributionWindowDays ?? 60,
       attributionModel: body.data.attributionModel ?? 'last_click',
       destinationUrl: body.data.destinationUrl,
@@ -173,7 +232,9 @@ campaignsRouter.patch('/campaigns/:id', requireAuth, requireAdmin, async (req, r
 
   const patch: Partial<CampaignRow> = {};
   if (body.data.name !== undefined) patch.name = body.data.name;
-  if (body.data.commissionRule !== undefined) patch.commissionRule = body.data.commissionRule;
+  if (body.data.commissionRule !== undefined) {
+    patch.commissionRule = JSON.stringify(body.data.commissionRule) as unknown as CommissionRule;
+  }
   if (body.data.attributionWindowDays !== undefined) patch.attributionWindowDays = body.data.attributionWindowDays;
   if (body.data.attributionModel !== undefined) patch.attributionModel = body.data.attributionModel;
   if (body.data.destinationUrl !== undefined) patch.destinationUrl = body.data.destinationUrl;

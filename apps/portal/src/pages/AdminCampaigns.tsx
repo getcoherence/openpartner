@@ -1,14 +1,27 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { HelpCircle, Plus, Tag } from 'lucide-react';
+import { HelpCircle, Plus, Tag, Trash2 } from 'lucide-react';
 import { api } from '../api.js';
 import { theme } from '../theme.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 
+interface CommissionSubRule {
+  trigger: 'every' | 'first';
+  eventType?: string;
+  type: 'percent' | 'fixed';
+  value: number;
+  currency?: string;
+  recurring?: boolean;
+  recurringMonths?: number;
+}
+
 interface Campaign {
   id: string;
   name: string;
-  commissionRule: { type: 'percent' | 'fixed'; value: number; recurring?: boolean };
+  /** Server returns the array form post-migration. The single-object
+   *  shape is still tolerated client-side for older API responses
+   *  surfaced during a deploy gap — `normalizeRules` handles both. */
+  commissionRule: CommissionSubRule[] | { type: 'percent' | 'fixed'; value: number; recurring?: boolean };
   attributionWindowDays: number;
   attributionModel: string;
   destinationUrl: string;
@@ -17,6 +30,31 @@ interface Campaign {
   startsAt: string | null;
   endsAt: string | null;
   createdAt: string;
+}
+
+function normalizeRules(raw: Campaign['commissionRule']): CommissionSubRule[] {
+  if (Array.isArray(raw)) return raw;
+  return [{ trigger: 'every', type: raw.type, value: raw.value, recurring: raw.recurring }];
+}
+
+function summarizeRules(raw: Campaign['commissionRule']): string {
+  const rules = normalizeRules(raw);
+  if (rules.length === 0) return '—';
+  return rules.map(formatRule).join(' + ');
+}
+
+function formatRule(r: CommissionSubRule): string {
+  const amount = r.type === 'percent' ? `${r.value}%` : `$${r.value} fixed`;
+  const triggerHint =
+    r.trigger === 'first' && r.eventType
+      ? ` on first ${r.eventType.replace(/_/g, ' ')}`
+      : '';
+  const recurringHint = r.recurring
+    ? r.recurringMonths
+      ? ` recurring × ${r.recurringMonths}mo`
+      : ' recurring'
+    : '';
+  return `${amount}${triggerHint}${recurringHint}`;
 }
 
 type CampaignStatus = 'scheduled' | 'active' | 'ended';
@@ -96,10 +134,7 @@ export function AdminCampaigns() {
                   <span style={{ color: theme.accent, fontSize: 11, marginLeft: 8 }}>+ deep links</span>
                 )}
               </span>,
-              <span>
-                {c.commissionRule.type === 'percent' ? `${c.commissionRule.value}%` : `$${c.commissionRule.value} fixed`}
-                {c.commissionRule.recurring && <span style={{ color: theme.textDim, fontSize: 12, marginLeft: 6 }}>(recurring)</span>}
-              </span>,
+              <span style={{ fontSize: 13 }}>{summarizeRules(c.commissionRule)}</span>,
               <span style={{ color: theme.textMuted }}>{c.attributionWindowDays}d</span>,
               <span style={{ color: c.holdbackDays ? theme.text : theme.textDim }}>
                 {c.holdbackDays ? `${c.holdbackDays}d` : '—'}
@@ -175,9 +210,7 @@ function EditCampaignDates({
 }) {
   const [startsAt, setStartsAt] = useState(campaign.startsAt ? toDateTimeLocal(campaign.startsAt) : '');
   const [endsAt, setEndsAt] = useState(campaign.endsAt ? toDateTimeLocal(campaign.endsAt) : '');
-  const [ruleType, setRuleType] = useState<'percent' | 'fixed'>(campaign.commissionRule.type);
-  const [ruleValue, setRuleValue] = useState(String(campaign.commissionRule.value));
-  const [recurring, setRecurring] = useState(campaign.commissionRule.recurring ?? false);
+  const [rules, setRules] = useState<CommissionSubRule[]>(normalizeRules(campaign.commissionRule));
   const [holdbackDays, setHoldbackDays] = useState(
     campaign.holdbackDays != null ? String(campaign.holdbackDays) : '0',
   );
@@ -189,7 +222,7 @@ function EditCampaignDates({
         body: {
           startsAt: startsAt ? new Date(startsAt).toISOString() : null,
           endsAt: endsAt ? new Date(endsAt).toISOString() : null,
-          commissionRule: { type: ruleType, value: Number(ruleValue), recurring },
+          commissionRule: rules,
           holdbackDays: Number(holdbackDays) || 0,
         },
       }),
@@ -245,23 +278,7 @@ function EditCampaignDates({
         partners keep the rate they were approved under — the snapshot is stamped at approval
         time and stored on PartnerCommission, queried at accrual.
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr auto', gap: 12, marginBottom: 14, alignItems: 'end' }}>
-        <div>
-          <Label>Rule</Label>
-          <Select value={ruleType} onChange={(e) => setRuleType(e.target.value as 'percent' | 'fixed')}>
-            <option value="percent">Percent</option>
-            <option value="fixed">Fixed</option>
-          </Select>
-        </div>
-        <div>
-          <Label>Value</Label>
-          <Input type="number" value={ruleValue} onChange={(e) => setRuleValue(e.target.value)} />
-        </div>
-        <label style={{ fontSize: 13, display: 'flex', gap: 8, alignItems: 'center', paddingBottom: 10, color: theme.textMuted }}>
-          <input type="checkbox" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} />
-          Recurring
-        </label>
-      </div>
+      <CompoundRuleEditor rules={rules} onChange={setRules} />
       <div style={{ marginBottom: 16 }}>
         <Label>Payout holdback (days)</Label>
         <Select value={holdbackDays} onChange={(e) => setHoldbackDays(e.target.value)}>
@@ -275,7 +292,7 @@ function EditCampaignDates({
       </div>
 
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={() => save.mutate()} disabled={save.isPending}>
+        <Button onClick={() => save.mutate()} disabled={save.isPending || rules.length === 0}>
           {save.isPending ? 'Saving…' : 'Save changes'}
         </Button>
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
@@ -297,9 +314,9 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
   const [name, setName] = useState('');
   const [destinationUrl, setDestinationUrl] = useState('');
   const [deepLinkDomains, setDeepLinkDomains] = useState('');
-  const [ruleType, setRuleType] = useState<'percent' | 'fixed'>('percent');
-  const [ruleValue, setRuleValue] = useState('20');
-  const [recurring, setRecurring] = useState(true);
+  const [rules, setRules] = useState<CommissionSubRule[]>([
+    { trigger: 'every', type: 'percent', value: 20, recurring: true },
+  ]);
   const [windowDays, setWindowDays] = useState('60');
   const [model, setModel] = useState<'last_click' | 'first_click' | 'linear' | 'position'>('last_click');
   const [holdbackDays, setHoldbackDays] = useState('0');
@@ -315,7 +332,7 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
           name,
           destinationUrl,
           deepLinkAllowedDomains: deepLinkDomains.trim() || undefined,
-          commissionRule: { type: ruleType, value: Number(ruleValue), recurring },
+          commissionRule: rules,
           attributionWindowDays: Number(windowDays),
           attributionModel: model,
           holdbackDays: Number(holdbackDays) || undefined,
@@ -358,23 +375,7 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
           Comma-separated host list. Partners can override the destination on share-links as long as their override matches one of these. Leave blank to lock destinations.
         </div>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr auto', gap: 12, marginBottom: 14, alignItems: 'end' }}>
-        <div>
-          <Label>Rule</Label>
-          <Select value={ruleType} onChange={(e) => setRuleType(e.target.value as 'percent' | 'fixed')}>
-            <option value="percent">Percent</option>
-            <option value="fixed">Fixed</option>
-          </Select>
-        </div>
-        <div>
-          <Label>Value</Label>
-          <Input type="number" value={ruleValue} onChange={(e) => setRuleValue(e.target.value)} />
-        </div>
-        <label style={{ fontSize: 13, display: 'flex', gap: 8, alignItems: 'center', paddingBottom: 10, color: theme.textMuted }}>
-          <input type="checkbox" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} />
-          Recurring
-        </label>
-      </div>
+      <CompoundRuleEditor rules={rules} onChange={setRules} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 14, marginBottom: 16 }}>
         <div>
           <Label>Attribution window (days)</Label>
@@ -453,12 +454,161 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
         </div>
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={() => mut.mutate()} disabled={!name || !ruleValue || !destinationUrl || mut.isPending}>
+        <Button
+          onClick={() => mut.mutate()}
+          disabled={!name || rules.length === 0 || rules.some((r) => !r.value) || !destinationUrl || mut.isPending}
+        >
           {mut.isPending ? 'Creating…' : 'Create campaign'}
         </Button>
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
       </div>
     </Card>
+  );
+}
+
+/**
+ * Editor for one Campaign's commissionRule[]. Each row is one sub-rule.
+ *
+ * Sub-rules combine: a `subscription_created` event might match both a
+ * first-sale bonus AND an every-event recurring rule, producing two
+ * Commission rows against the same Attribution. Order in the array doesn't
+ * affect engine semantics (each sub-rule evaluates independently).
+ */
+function CompoundRuleEditor({
+  rules,
+  onChange,
+}: {
+  rules: CommissionSubRule[];
+  onChange: (rules: CommissionSubRule[]) => void;
+}) {
+  const update = (i: number, patch: Partial<CommissionSubRule>) => {
+    onChange(rules.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  };
+  const remove = (i: number) => {
+    onChange(rules.filter((_, j) => j !== i));
+  };
+  const add = () => {
+    onChange([...rules, { trigger: 'first', eventType: 'subscription_created', type: 'fixed', value: 100 }]);
+  };
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <Label>Commission rules</Label>
+        <span style={{ fontSize: 12, color: theme.textDim }}>
+          Multiple rules combine — e.g. one-time bonus + recurring revenue share.
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
+        {rules.map((rule, i) => (
+          <SubRuleRow
+            key={i}
+            rule={rule}
+            onChange={(patch) => update(i, patch)}
+            onRemove={rules.length > 1 ? () => remove(i) : undefined}
+          />
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={add}
+        style={{
+          background: 'transparent',
+          border: `1px dashed ${theme.accent}88`,
+          borderRadius: 6,
+          padding: '6px 12px',
+          color: theme.accent,
+          fontSize: 12,
+          cursor: 'pointer',
+        }}
+      >
+        + Add bonus or rule
+      </button>
+    </div>
+  );
+}
+
+function SubRuleRow({
+  rule,
+  onChange,
+  onRemove,
+}: {
+  rule: CommissionSubRule;
+  onChange: (patch: Partial<CommissionSubRule>) => void;
+  onRemove?: () => void;
+}) {
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '110px 160px 110px 1fr 90px auto',
+        gap: 8,
+        alignItems: 'center',
+        padding: 8,
+        background: theme.surface2,
+        borderRadius: 6,
+      }}
+    >
+      <Select value={rule.trigger} onChange={(e) => onChange({ trigger: e.target.value as 'every' | 'first' })}>
+        <option value="every">On every</option>
+        <option value="first">On first</option>
+      </Select>
+      <Input
+        placeholder={rule.trigger === 'first' ? 'subscription_created' : 'invoice_paid (or all)'}
+        value={rule.eventType ?? ''}
+        onChange={(e) => onChange({ eventType: e.target.value.trim() || undefined })}
+      />
+      <Select value={rule.type} onChange={(e) => onChange({ type: e.target.value as 'percent' | 'fixed' })}>
+        <option value="percent">Percent</option>
+        <option value="fixed">Fixed $</option>
+      </Select>
+      <Input
+        type="number"
+        value={rule.value}
+        onChange={(e) => onChange({ value: Number(e.target.value) })}
+      />
+      <label style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center', color: theme.textMuted }}>
+        <input
+          type="checkbox"
+          checked={rule.recurring ?? false}
+          onChange={(e) => onChange({ recurring: e.target.checked, recurringMonths: e.target.checked ? rule.recurringMonths : undefined })}
+        />
+        Recurring
+      </label>
+      {onRemove ? (
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label="Remove rule"
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: theme.danger,
+            cursor: 'pointer',
+            padding: 4,
+            display: 'flex',
+          }}
+        >
+          <Trash2 size={14} />
+        </button>
+      ) : (
+        <span />
+      )}
+      {rule.recurring && (
+        <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'auto 120px 1fr', gap: 8, alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: theme.textMuted }}>Cap recurring at</span>
+          <Input
+            type="number"
+            placeholder="∞"
+            value={rule.recurringMonths ?? ''}
+            onChange={(e) => onChange({ recurringMonths: e.target.value ? Number(e.target.value) : undefined })}
+          />
+          <span style={{ fontSize: 12, color: theme.textDim }}>
+            months from the partner's first attributed event of this type. Blank = no cap.
+          </span>
+        </div>
+      )}
+    </div>
   );
 }
 

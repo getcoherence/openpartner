@@ -30,10 +30,18 @@ import {
   type CampaignRow,
   type ClickRow,
   type CommissionRule,
+  type CommissionSubRule,
   type EventRow,
   type IdentityRow,
 } from '@openpartner/db';
 import { dispatchEvent } from './webhook-dispatcher.js';
+
+// Average month length used by the recurringMonths cap. We use 30.4375 days
+// (365.25 / 12) so a "12 months" cap doesn't drift by an extra day every
+// February. The cap fires when (event.ts - firstAttributedEventTs) exceeds
+// this; we DON'T anchor on calendar months because that would require
+// timezone reasoning the rest of the engine doesn't do.
+const MONTH_MS = 30.4375 * 24 * 60 * 60 * 1000;
 
 export interface AttributeResult {
   status: 'attributed' | 'no_identity' | 'no_click' | 'outside_window' | 'already_attributed';
@@ -131,25 +139,60 @@ export async function attributeEvent(
       continue;
     }
 
-    // Prefer the partner's snapshotted rate (set at PartnershipRequest
+    // Prefer the partner's snapshotted rule (set at PartnershipRequest
     // approval time via federation) over the live Campaign rule. This
-    // is what makes "brand edits campaign rate post-approval" safe —
+    // is what makes "brand edits campaign rule post-approval" safe —
     // existing partners keep what they were approved under. Absent
     // snapshot = pre-snapshot partner OR non-Network partner; falls
     // back to the Campaign rule (status quo).
-    const rule = await resolveCommissionRule(db, click.partnerId, click.campaign.commissionRule);
-    const amount = computeCommissionAmount(rule, event) * weight;
-    const commissionId = ulid();
-    await db(TABLES.Commission).insert({
-      id: commissionId,
-      tenantId: event.tenantId,
-      attributionId,
-      partnerId: click.partnerId,
-      amount: amount.toFixed(2),
-      currency: event.currency ?? 'USD',
-      status: 'accrued',
-    });
-    results.push({ clickId: click.id, partnerId: click.partnerId, weight, attributionId, commissionId });
+    const rules = await resolveCommissionRule(db, click.partnerId, click.campaign.commissionRule);
+
+    // Walk every sub-rule. A single event may produce multiple Commission
+    // rows (e.g., a `subscription_created` matches both a one-time bonus
+    // and a recurring rule). Each sub-rule's eligibility is evaluated
+    // independently against the same Event + Attribution.
+    let firstCommissionId: string | undefined;
+    for (const subRule of rules) {
+      const baseAmount = await evaluateSubRule(db, subRule, event, click.partnerId);
+      if (baseAmount === null) continue; // not eligible (filter / first / cap miss)
+      const amount = baseAmount * weight;
+      if (amount === 0) continue;
+
+      const commissionId = ulid();
+      await db(TABLES.Commission).insert({
+        id: commissionId,
+        tenantId: event.tenantId,
+        attributionId,
+        partnerId: click.partnerId,
+        amount: amount.toFixed(2),
+        currency: event.currency ?? 'USD',
+        status: 'accrued',
+      });
+      if (!firstCommissionId) firstCommissionId = commissionId;
+
+      dispatchEvent(event.tenantId, 'commission.accrued', {
+        commissionId,
+        partnerId: click.partnerId,
+        attributionId,
+        // clickId + eventId carry through to partner postback macros
+        // ({click_id}, {event_id}, {transaction_id}). Tenant webhook
+        // subscribers ignore them if they don't care.
+        clickId: click.id,
+        eventId: event.id,
+        campaignId: click.campaignId,
+        amount: amount.toFixed(2),
+        currency: event.currency ?? 'USD',
+        eventType: event.type,
+        eventValue: event.value,
+      });
+    }
+
+    // attribution.created fires once per Attribution regardless of how many
+    // Commission rows it produced. commissionId/Amount in the payload
+    // reflect the FIRST commission for backwards compat with subscribers
+    // that key off a single commission per attribution; multi-rule consumers
+    // should listen to commission.accrued.
+    results.push({ clickId: click.id, partnerId: click.partnerId, weight, attributionId, commissionId: firstCommissionId });
     dispatchEvent(event.tenantId, 'attribution.created', {
       attributionId,
       eventId: event.id,
@@ -160,28 +203,8 @@ export async function attributeEvent(
       weight,
       eventType: event.type,
       eventValue: event.value,
-      commissionId,
-      commissionAmount: amount.toFixed(2),
+      commissionId: firstCommissionId,
       commissionCurrency: event.currency ?? 'USD',
-    });
-    // Separate commission.accrued event because Zapier / ActivePieces
-    // / outbound subscribers commonly want to fire on the moment the
-    // commission lands (notify partner via Slack/email, log to a
-    // sheet, etc.) without parsing the broader attribution payload.
-    dispatchEvent(event.tenantId, 'commission.accrued', {
-      commissionId,
-      partnerId: click.partnerId,
-      attributionId,
-      // clickId + eventId carry through to partner postback macros
-      // ({click_id}, {event_id}, {transaction_id}). Tenant webhook
-      // subscribers ignore them if they don't care.
-      clickId: click.id,
-      eventId: event.id,
-      campaignId: click.campaignId,
-      amount: amount.toFixed(2),
-      currency: event.currency ?? 'USD',
-      eventType: event.type,
-      eventValue: event.value,
     });
   }
 
@@ -228,45 +251,130 @@ export function applyModel(model: AttributionModel, n: number): number[] {
   return w;
 }
 
-function parseCommissionRule(raw: unknown): CommissionRule {
-  if (raw && typeof raw === 'object' && 'type' in raw) return raw as CommissionRule;
+/**
+ * Tolerate both the array shape (post-compound-rules migration) and the
+ * legacy single-object shape ({type, value, recurring?}). The single-object
+ * fallback is what makes a half-applied migration non-catastrophic — the
+ * 20260614000000 migration backfills Campaign rows but a pre-deploy app
+ * version reading a post-migration row, or vice versa, still produces a
+ * valid array.
+ */
+export function parseCommissionRule(raw: unknown): CommissionRule {
+  if (Array.isArray(raw)) return raw as CommissionRule;
+  if (raw && typeof raw === 'object' && 'type' in raw) {
+    const r = raw as { type: 'percent' | 'fixed'; value: number; currency?: string; recurring?: boolean };
+    return [{
+      trigger: 'every',
+      type: r.type,
+      value: r.value,
+      currency: r.currency,
+      recurring: r.recurring,
+    }];
+  }
   throw new Error('Invalid commissionRule on Campaign');
 }
 
 /**
- * Look up the partner's snapshotted commission rate (set at
+ * Look up the partner's snapshotted commission rule (set at
  * PartnershipRequest approval via federation, or backfilled by an
  * admin migration). Falls back to the live Campaign rule when no
  * snapshot exists — preserves status quo for non-Network partners
  * and partners onboarded before snapshots shipped.
  *
- * Recurring stays on the Campaign rule even when a snapshot exists —
- * it's a campaign-level "do we pay on renewals" decision, not a
- * per-partnership negotiation. (Snapshotting it per-partnership is
- * possible but adds surface for amendment confusion; revisit when an
- * actual customer asks.)
+ * Snapshot lookup precedence:
+ *   1. PartnerCommission.commissionRules (the array form, post-compound)
+ *   2. PartnerCommission legacy columns (commissionType/commissionValue/
+ *      recurring) — wrapped into a 1-element array for the engine
+ *   3. Campaign.commissionRule (no snapshot exists)
  */
 async function resolveCommissionRule(
   db: Knex,
   partnerId: string,
   campaignRule: unknown,
 ): Promise<CommissionRule> {
-  const fallback = parseCommissionRule(campaignRule);
-  const snapshot = await db<{ commissionType: 'percent' | 'fixed'; commissionValue: string }>(
-    TABLES.PartnerCommission,
-  )
+  const snapshot = await db<{
+    commissionType: 'percent' | 'fixed';
+    commissionValue: string;
+    recurring: boolean;
+    commissionRules: CommissionRule | null;
+  }>(TABLES.PartnerCommission)
     .where({ partnerId })
-    .first('commissionType', 'commissionValue');
-  if (!snapshot) return fallback;
-  return {
-    type: snapshot.commissionType,
-    value: Number(snapshot.commissionValue),
-    recurring: fallback.recurring,
-  };
+    .first('commissionType', 'commissionValue', 'recurring', 'commissionRules');
+
+  if (snapshot?.commissionRules) return snapshot.commissionRules;
+
+  if (snapshot) {
+    return [{
+      trigger: 'every',
+      type: snapshot.commissionType,
+      value: Number(snapshot.commissionValue),
+      recurring: snapshot.recurring,
+    }];
+  }
+
+  return parseCommissionRule(campaignRule);
 }
 
-export function computeCommissionAmount(rule: CommissionRule, event: Pick<EventRow, 'value'>): number {
-  if (rule.type === 'fixed') return rule.value;
+/**
+ * Decide whether `subRule` fires for `event` and, if so, return the
+ * pre-weight commission base amount. Returns null when the rule doesn't
+ * apply to this event (type mismatch, first-trigger already fired, or
+ * recurringMonths cap reached).
+ *
+ * Trigger checks issue one query each against (Attribution × Event); the
+ * indexes on Attribution(partnerId) + Event(userId) keep this O(log n).
+ * The cap check piggybacks on the same join so it's a second small query.
+ */
+async function evaluateSubRule(
+  db: Knex,
+  subRule: CommissionSubRule,
+  event: EventRow,
+  partnerId: string,
+): Promise<number | null> {
+  if (subRule.eventType && subRule.eventType !== event.type) return null;
+
+  if (subRule.trigger === 'first') {
+    // "First sale of type X for this partner+user". A prior Attribution for
+    // the same (partnerId, userId, eventType) means the bonus already fired
+    // — skip. Refunds aren't subtracted here; if the brand wants a refund
+    // to "re-arm" the bonus they'd reverse the prior commission and
+    // re-attribute, which is consistent with how holdback works.
+    const prior = await db(TABLES.Attribution)
+      .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
+      .where(`${TABLES.Attribution}.partnerId`, partnerId)
+      .andWhere(`${TABLES.Event}.userId`, event.userId)
+      .andWhere(`${TABLES.Event}.type`, event.type)
+      .andWhere(`${TABLES.Event}.ts`, '<', event.ts)
+      .first(`${TABLES.Event}.id`);
+    if (prior) return null;
+  }
+
+  if (subRule.recurring && subRule.recurringMonths != null) {
+    const first = (await db(TABLES.Attribution)
+      .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
+      .where(`${TABLES.Attribution}.partnerId`, partnerId)
+      .andWhere(`${TABLES.Event}.userId`, event.userId)
+      .andWhere(`${TABLES.Event}.type`, event.type)
+      .orderBy(`${TABLES.Event}.ts`, 'asc')
+      .first(`${TABLES.Event}.ts as ts`)) as { ts: Date | string } | undefined;
+    if (first) {
+      const firstMs = new Date(first.ts).getTime();
+      const eventMs = new Date(event.ts).getTime();
+      if (eventMs - firstMs > subRule.recurringMonths * MONTH_MS) return null;
+    }
+  }
+
+  return computeSubRuleAmount(subRule, event);
+}
+
+/** Pure dollar amount for one sub-rule against one event. No trigger
+ *  evaluation — caller is responsible for that. Exported so tests can
+ *  exercise the math without a database. */
+export function computeSubRuleAmount(
+  subRule: CommissionSubRule,
+  event: Pick<EventRow, 'value'>,
+): number {
+  if (subRule.type === 'fixed') return subRule.value;
   const revenue = event.value ? Number(event.value) : 0;
-  return Math.round(revenue * rule.value) / 100;
+  return Math.round(revenue * subRule.value) / 100;
 }

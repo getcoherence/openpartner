@@ -52,9 +52,49 @@ export const BILLING_PLANS: readonly BillingPlan[] = ['flex', 'revshare', 'enter
 /** ID of the seeded default tenant — used in single-host mode and during migration backfills. */
 export const DEFAULT_TENANT_ID = '01J0000000DEFAULTTENANT0000';
 
-export type CommissionRule =
-  | { type: 'percent'; value: number; recurring?: boolean }
-  | { type: 'fixed'; value: number; currency?: string; recurring?: boolean };
+/**
+ * Commission rules.
+ *
+ * A Campaign's commissionRule is an ARRAY of triggered sub-rules. One event can
+ * fire multiple sub-rules (e.g., a `subscription_created` matches both a
+ * first-sale bonus AND an every-event recurring rule), each producing its own
+ * Commission row against the same Attribution.
+ *
+ * Triggers:
+ *   every — fires on every event whose type matches `eventType` (or every event
+ *           if `eventType` is omitted; preserves single-rule behavior)
+ *   first — fires only on the FIRST event of `eventType` for this (partner, user)
+ *           pair. Used for "$200 first-sale bonus"-style payouts.
+ *
+ * recurringMonths caps how long a `recurring` rule keeps firing, measured from
+ * the first attributed event of the rule's `eventType` for this (partner, user).
+ * Null = indefinite.
+ *
+ * Wire format is a JSON array on Campaign.commissionRule. The
+ * 20260520000000_compound_commission_rules migration backfilled pre-array rows
+ * into 1-element arrays — `parseCommissionRule` in attribution.ts also tolerates
+ * the legacy single-object shape so a half-applied migration can't break attribution.
+ */
+export type CommissionRuleTrigger = 'every' | 'first';
+
+export interface CommissionSubRule {
+  trigger: CommissionRuleTrigger;
+  /** Event-type filter. Required for `first`, optional for `every` (omit = all events). */
+  eventType?: string;
+  type: 'percent' | 'fixed';
+  /** Percent: 20 means 20%. Fixed: dollar amount. */
+  value: number;
+  /** Only meaningful for fixed rules. */
+  currency?: string;
+  /** When true, the rule keeps firing on subsequent matching events
+   *  (renewals). Combined with recurringMonths to cap duration. */
+  recurring?: boolean;
+  /** Cap (in months) after the first attributed event of this type for
+   *  the (partner, user) pair. Null/omitted = no cap. */
+  recurringMonths?: number;
+}
+
+export type CommissionRule = CommissionSubRule[];
 
 export type AttributionModel = 'last_click' | 'first_click' | 'linear' | 'position';
 
@@ -96,10 +136,16 @@ export type PartnerCommissionSource = 'approval' | 'backfill' | 'amendment';
 export interface PartnerCommissionRow {
   partnerId: string;
   tenantId: string;
+  /** Legacy single-rule columns. Still populated for backwards compat — the
+   *  resolver prefers `commissionRules` (the array form) when present and
+   *  only falls back to these for snapshots predating compound rules. */
   commissionType: CommissionType;
   /** Decimal — comes back as string from pg. Percent stored as 20 for 20%. */
   commissionValue: string;
   recurring: boolean;
+  /** Compound rule snapshot. Null = use legacy columns above. New snapshots
+   *  always populate this; resolveCommissionRule prefers it when present. */
+  commissionRules: CommissionRule | null;
   holdbackDays: number | null;
   source: PartnerCommissionSource;
   snapshottedAt: Date;
