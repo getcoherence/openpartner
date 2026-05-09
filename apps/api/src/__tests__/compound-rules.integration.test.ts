@@ -194,6 +194,59 @@ describe.skipIf(skipIntegration)('compound commission rules', () => {
     expect(commissions.every((c) => Number(c.amount) === 50)).toBe(true);
   });
 
+  it('first + subsequent on the same eventType: 50% on first invoice, 20% thereafter', async () => {
+    const partner = await createPartner();
+    const campaign = await createCampaign({
+      commissionRule: [
+        {
+          trigger: 'first',
+          eventType: 'invoice_paid',
+          type: 'percent',
+          value: 50,
+        },
+        {
+          trigger: 'subsequent',
+          eventType: 'invoice_paid',
+          type: 'percent',
+          value: 20,
+          recurring: true,
+        },
+      ],
+    });
+    const link = await createLink(partner.id, campaign.id, `firstsub-${Date.now()}`);
+    const userId = `u-${Date.now()}`;
+
+    const clickId = ulid();
+    await db(TABLES.Click).insert({
+      id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
+      linkId: link.id,
+      partnerId: partner.id,
+      campaignId: campaign.id,
+      landingUrl: 'https://example.com/',
+      ts: new Date(),
+    });
+    await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId, userId });
+
+    // Event 1: first invoice — only the `first` rule fires (50% of $100 = $50).
+    const ev1 = await insertEvent(userId, 'invoice_paid', '100.00', new Date('2026-01-01'));
+    await attributeEvent(db, ev1);
+    // Event 2: second invoice — only the `subsequent` rule fires (20% of $100 = $20).
+    const ev2 = await insertEvent(userId, 'invoice_paid', '100.00', new Date('2026-02-01'));
+    await attributeEvent(db, ev2);
+    // Event 3: third invoice — same as #2 (20%).
+    const ev3 = await insertEvent(userId, 'invoice_paid', '100.00', new Date('2026-03-01'));
+    await attributeEvent(db, ev3);
+
+    const commissions = (await db(TABLES.Commission).orderBy('accruedAt', 'asc')) as Array<{
+      amount: string;
+    }>;
+    expect(commissions).toHaveLength(3);
+    expect(Number(commissions[0]!.amount)).toBe(50);
+    expect(Number(commissions[1]!.amount)).toBe(20);
+    expect(Number(commissions[2]!.amount)).toBe(20);
+  });
+
   it('eventType-less every rule fires on every event (legacy behavior preserved)', async () => {
     const partner = await createPartner();
     const campaign = await createCampaign({

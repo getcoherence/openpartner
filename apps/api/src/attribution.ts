@@ -333,12 +333,13 @@ async function evaluateSubRule(
 ): Promise<number | null> {
   if (subRule.eventType && subRule.eventType !== event.type) return null;
 
-  if (subRule.trigger === 'first') {
-    // "First sale of type X for this partner+user". A prior Attribution for
-    // the same (partnerId, userId, eventType) means the bonus already fired
-    // — skip. Refunds aren't subtracted here; if the brand wants a refund
-    // to "re-arm" the bonus they'd reverse the prior commission and
-    // re-attribute, which is consistent with how holdback works.
+  if (subRule.trigger === 'first' || subRule.trigger === 'subsequent') {
+    // "Has this (partner, user, eventType) been attributed before?"
+    // first      → fire only when there's NO prior attribution
+    // subsequent → fire only when there IS a prior attribution
+    // Refunds don't re-arm the lookup; if a brand wants a refund to
+    // re-trigger the bonus they'd reverse the prior commission and
+    // re-attribute, consistent with how holdback works.
     const prior = await db(TABLES.Attribution)
       .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
       .where(`${TABLES.Attribution}.partnerId`, partnerId)
@@ -346,7 +347,8 @@ async function evaluateSubRule(
       .andWhere(`${TABLES.Event}.type`, event.type)
       .andWhere(`${TABLES.Event}.ts`, '<', event.ts)
       .first(`${TABLES.Event}.id`);
-    if (prior) return null;
+    if (subRule.trigger === 'first' && prior) return null;
+    if (subRule.trigger === 'subsequent' && !prior) return null;
   }
 
   if (subRule.recurring && subRule.recurringMonths != null) {

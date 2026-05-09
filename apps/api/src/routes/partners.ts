@@ -49,7 +49,7 @@ const createSchema = z.object({
       commissionRules: z
         .array(
           z.object({
-            trigger: z.enum(['every', 'first']),
+            trigger: z.enum(['every', 'first', 'subsequent']),
             eventType: z.string().min(1).max(80).optional(),
             type: z.enum(['percent', 'fixed']),
             value: z.number().nonnegative(),
@@ -531,7 +531,7 @@ const overrideSchema = z.object({
   commissionRules: z
     .array(
       z.object({
-        trigger: z.enum(['every', 'first']),
+        trigger: z.enum(['every', 'first', 'subsequent']),
         eventType: z.string().min(1).max(80).optional(),
         type: z.enum(['percent', 'fixed']),
         value: z.number().nonnegative(),

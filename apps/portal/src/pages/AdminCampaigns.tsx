@@ -7,7 +7,7 @@ import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Tabl
 import { renderCommissionSummary } from '../lib/commission-summary.js';
 
 interface CommissionSubRule {
-  trigger: 'every' | 'first';
+  trigger: 'every' | 'first' | 'subsequent';
   eventType?: string;
   type: 'percent' | 'fixed';
   value: number;
@@ -573,20 +573,21 @@ function SubRuleRow({
       <Select
         value={rule.trigger}
         onChange={(e) => {
-          const trigger = e.target.value as 'every' | 'first';
+          const trigger = e.target.value as 'every' | 'first' | 'subsequent';
           // Re-default eventType per trigger when the prior value would
-          // be confusing in the new context. 'first' requires an event
-          // type — pick subscription_created. 'every' tolerates absent
-          // (= all events with value), so leave the prior choice intact.
+          // be confusing in the new context. 'first' / 'subsequent'
+          // require an event type — pick a sensible default. 'every'
+          // tolerates absent (= all events with value).
           const patch: Partial<CommissionSubRule> = { trigger };
-          if (trigger === 'first' && !rule.eventType) {
-            patch.eventType = 'subscription_created';
+          if ((trigger === 'first' || trigger === 'subsequent') && !rule.eventType) {
+            patch.eventType = trigger === 'first' ? 'subscription_created' : 'invoice_paid';
           }
           onChange(patch);
         }}
       >
         <option value="every">On every</option>
         <option value="first">On first</option>
+        <option value="subsequent">On every subsequent</option>
       </Select>
       <Select
         value={eventSelectValue}
@@ -604,8 +605,8 @@ function SubRuleRow({
           }
         }}
       >
-        {/* Empty-string option only meaningful for 'every' — 'first'
-            requires an eventType, so we hide it. */}
+        {/* Empty-string option only meaningful for 'every' — 'first' and
+            'subsequent' require a specific eventType, so we hide it. */}
         {rule.trigger === 'every' && <option value="">All events with value</option>}
         {STANDARD_EVENT_TYPES.map((e) => (
           <option key={e.value} value={e.value}>{e.label}</option>

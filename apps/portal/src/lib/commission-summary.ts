@@ -17,7 +17,7 @@
  */
 
 export interface CommissionSubRuleLike {
-  trigger: 'every' | 'first';
+  trigger: 'every' | 'first' | 'subsequent';
   eventType?: string;
   type: 'percent' | 'fixed';
   value: number;
@@ -59,9 +59,15 @@ function formatSubRule(rule: CommissionSubRuleLike): string {
   return `${amount}${recurringPrefix}${eventPhrase}${recurringPhrase}`;
 }
 
-function formatEventPhrase(trigger: 'every' | 'first', eventType: string | undefined): string {
+function formatEventPhrase(
+  trigger: 'every' | 'first' | 'subsequent',
+  eventType: string | undefined,
+): string {
   if (trigger === 'first') {
     return ` on first ${humanizeEventType(eventType ?? 'sale')}`;
+  }
+  if (trigger === 'subsequent') {
+    return ` on every subsequent ${humanizeEventType(eventType ?? 'sale')}`;
   }
   if (!eventType) return ''; // every-event-no-filter — keep terse
   return ` on every ${humanizeEventType(eventType)}`;

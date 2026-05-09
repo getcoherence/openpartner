@@ -61,10 +61,14 @@ export const DEFAULT_TENANT_ID = '01J0000000DEFAULTTENANT0000';
  * Commission row against the same Attribution.
  *
  * Triggers:
- *   every — fires on every event whose type matches `eventType` (or every event
- *           if `eventType` is omitted; preserves single-rule behavior)
- *   first — fires only on the FIRST event of `eventType` for this (partner, user)
- *           pair. Used for "$200 first-sale bonus"-style payouts.
+ *   every      — fires on every event whose type matches `eventType` (or every
+ *                event if `eventType` is omitted; preserves single-rule behavior)
+ *   first      — fires only on the FIRST event of `eventType` for this
+ *                (partner, user) pair. "$200 first-sale bonus"-style payouts.
+ *   subsequent — fires on every event of `eventType` for this (partner, user)
+ *                EXCEPT the first. Pairs with a `first` rule to express
+ *                "50% on first invoice, 20% on every subsequent invoice"
+ *                without the rules double-firing on event #1.
  *
  * recurringMonths caps how long a `recurring` rule keeps firing, measured from
  * the first attributed event of the rule's `eventType` for this (partner, user).
@@ -75,7 +79,7 @@ export const DEFAULT_TENANT_ID = '01J0000000DEFAULTTENANT0000';
  * into 1-element arrays — `parseCommissionRule` in attribution.ts also tolerates
  * the legacy single-object shape so a half-applied migration can't break attribution.
  */
-export type CommissionRuleTrigger = 'every' | 'first';
+export type CommissionRuleTrigger = 'every' | 'first' | 'subsequent';
 
 export interface CommissionSubRule {
   trigger: CommissionRuleTrigger;

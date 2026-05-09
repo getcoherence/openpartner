@@ -16,7 +16,7 @@ import { campaignAcceptsNewActivity } from '../campaign-lifecycle.js';
  */
 const subRuleSchema = z.intersection(
   z.object({
-    trigger: z.enum(['every', 'first']),
+    trigger: z.enum(['every', 'first', 'subsequent']),
     eventType: z.string().min(1).max(80).optional(),
     recurring: z.boolean().optional(),
     /** Months to keep firing a recurring rule (counting from the first
@@ -29,13 +29,13 @@ const subRuleSchema = z.intersection(
     z.object({ type: z.literal('fixed'), value: z.number().positive(), currency: z.string().length(3).optional() }),
   ]),
 ).superRefine((sub, ctx) => {
-  // `first` trigger needs an eventType — "first sale of WHAT" is otherwise
-  // ambiguous. `every` without an eventType means "every event with a value",
-  // which is a real use case (the legacy single-rule behavior).
-  if (sub.trigger === 'first' && !sub.eventType) {
+  // `first` and `subsequent` triggers need an eventType — "first/subsequent
+  // sale of WHAT" is otherwise ambiguous. `every` without an eventType means
+  // "every event with a value" (the legacy single-rule behavior).
+  if ((sub.trigger === 'first' || sub.trigger === 'subsequent') && !sub.eventType) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'first-trigger sub-rules require an eventType',
+      message: `${sub.trigger}-trigger sub-rules require an eventType`,
       path: ['eventType'],
     });
   }
