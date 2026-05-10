@@ -64,8 +64,12 @@ const ALLOWED_PREFIX: Array<{ prefix: string; methods: Set<string> }> = [
   { prefix: '/creators/me/requests/', methods: new Set(['POST']) },
   // Custom share-domain management — POST /verify, DELETE the domain.
   { prefix: '/creators/me/domains/', methods: new Set(['POST', 'DELETE']) },
-  // Per-partnership slug edit (creatorSlug — the path under custom domain).
-  { prefix: '/creators/me/partnerships/', methods: new Set(['PATCH']) },
+  // Per-partnership operations: slug edit (PATCH), coupon
+  // append/deactivate (POST/DELETE .../coupons), and analytics reads
+  // (GET .../timeseries|events|customers|commissions). Single prefix
+  // covers all since the matcher is method+prefix only — finer
+  // method/path checks live on the Network side.
+  { prefix: '/creators/me/partnerships/', methods: new Set(['GET', 'PATCH', 'POST', 'DELETE']) },
   // Per-platform handle upsert (PUT) + delete.
   { prefix: '/creators/me/platforms/', methods: new Set(['PUT', 'DELETE']) },
   // Public profile lookup — no creator session required, lets brands

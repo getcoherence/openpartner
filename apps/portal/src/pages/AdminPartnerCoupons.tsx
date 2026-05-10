@@ -19,6 +19,10 @@ interface CouponRow {
   createdAt: string;
   redemptions90d?: number;
   revenue90d?: number;
+  /** Null = active. Non-null = retired; the Stripe PromotionCode is
+   *  disabled so customers entering this string at checkout get an
+   *  invalid-code error. Historical attribution stays attached. */
+  deactivatedAt?: string | null;
 }
 
 interface ProgramBrief {
@@ -67,8 +71,20 @@ export function AdminPartnerCoupons() {
     ? (mint.error.detail as { detail?: string; threshold?: number; existing?: number } | undefined)
     : null;
 
-  const existingCampaignIds = new Set((coupons.data?.coupons ?? []).map((c) => c.programId));
-  const availableCampaigns = (campaigns.data?.programs ?? []).filter((c) => !existingCampaignIds.has(c.id));
+  // Programs that still have an ACTIVE coupon — admin can re-mint
+  // freely once an old code is deactivated (append-only model).
+  const programsWithActiveCoupon = new Set(
+    (coupons.data?.coupons ?? []).filter((c) => !c.deactivatedAt).map((c) => c.programId),
+  );
+  const availableCampaigns = (campaigns.data?.programs ?? []).filter(
+    (c) => !programsWithActiveCoupon.has(c.id),
+  );
+
+  const deactivate = useMutation({
+    mutationFn: (couponId: string) =>
+      api(`/partners/${partnerId}/coupons/${couponId}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['partner-coupons', partnerId] }),
+  });
   const campaignNameById = new Map((campaigns.data?.programs ?? []).map((c) => [c.id, c.name]));
   const partnerName = partner.data?.name ?? '…';
 
@@ -100,19 +116,57 @@ export function AdminPartnerCoupons() {
           <>
             {(coupons.data?.coupons ?? []).length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
-                {(coupons.data?.coupons ?? []).map((c) => (
-                  <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: theme.surface2, border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm }}>
-                    <code style={{ fontSize: 14, fontWeight: 500, color: theme.text, flex: 1 }}>{c.code}</code>
-                    <span style={{ color: theme.textMuted, fontSize: 12 }}>
-                      {campaignNameById.get(c.programId) ?? c.programId}
-                    </span>
-                    <span style={{ color: theme.textMuted, fontSize: 11, whiteSpace: 'nowrap' }}>
-                      {(c.redemptions90d ?? 0) > 0
-                        ? `${c.redemptions90d} redemption${c.redemptions90d === 1 ? '' : 's'} (90d)`
-                        : 'unused (90d)'}
-                    </span>
-                  </div>
-                ))}
+                {(coupons.data?.coupons ?? []).map((c) => {
+                  const isDeactivated = !!c.deactivatedAt;
+                  return (
+                    <div
+                      key={c.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                        padding: '8px 12px',
+                        background: theme.surface2,
+                        border: `1px solid ${theme.borderSubtle}`,
+                        borderRadius: theme.radiusSm,
+                        opacity: isDeactivated ? 0.55 : 1,
+                      }}
+                    >
+                      <code style={{ fontSize: 14, fontWeight: 500, color: theme.text, flex: 1, textDecoration: isDeactivated ? 'line-through' : 'none' }}>
+                        {c.code}
+                      </code>
+                      <span style={{ color: theme.textMuted, fontSize: 12 }}>
+                        {campaignNameById.get(c.programId) ?? c.programId}
+                      </span>
+                      <span style={{ color: theme.textMuted, fontSize: 11, whiteSpace: 'nowrap' }}>
+                        {(c.redemptions90d ?? 0) > 0
+                          ? `${c.redemptions90d} redemption${c.redemptions90d === 1 ? '' : 's'} (90d)`
+                          : 'unused (90d)'}
+                      </span>
+                      {isDeactivated ? (
+                        <span style={{ fontSize: 11, color: theme.textDim, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                          Deactivated
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => deactivate.mutate(c.id)}
+                          disabled={deactivate.isPending}
+                          style={{
+                            background: 'transparent',
+                            border: `1px solid ${theme.borderSubtle}`,
+                            borderRadius: 6,
+                            padding: '4px 8px',
+                            fontSize: 11,
+                            color: theme.textMuted,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Deactivate
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
             {availableCampaigns.length > 0 ? (

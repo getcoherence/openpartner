@@ -57,6 +57,32 @@ export async function provisionCustomerReward(
 }
 
 /**
+ * Disable a Stripe PromotionCode so customers entering the string at
+ * checkout get "promotion code is no longer valid" instead of a discount.
+ * Used by the coupon-deactivate flow (partner retiring an old code).
+ *
+ * We deactivate the PromotionCode but leave the parent Coupon alone:
+ * Stripe rejects coupon deletion once redemptions exist, and the cost of
+ * an orphan inactive coupon in Stripe is zero — historical receipts +
+ * dashboard redemption records all reference the parent. Cheaper to leak
+ * a dormant Coupon than to chase delete failures.
+ *
+ * Best-effort: failures log but don't throw. The OpenPartner side has
+ * already flipped its own deactivatedAt flag when this is called, and
+ * an OpenPartner-deactivated code without Stripe deactivation just
+ * means the customer gets the discount but the redemption doesn't
+ * attribute (the OpenPartner Coupon lookup excludes deactivated rows).
+ */
+export async function deactivateCustomerReward(stripePromotionCodeId: string): Promise<void> {
+  if (!stripe) return;
+  try {
+    await stripe.promotionCodes.update(stripePromotionCodeId, { active: false });
+  } catch (err) {
+    console.error('[customer-rewards] deactivate promo failed', { stripePromotionCodeId, err });
+  }
+}
+
+/**
  * Translate the OpenPartner CustomerReward shape to Stripe's CouponCreateParams.
  *
  * Returns null when the reward is malformed (e.g., amount_off without currency,

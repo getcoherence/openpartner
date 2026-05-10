@@ -1,9 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Globe } from 'lucide-react';
+import { ArrowUpRight, Globe } from 'lucide-react';
 import { Card, EmptyState, ErrorBanner, Page, Stat, StatusPill, formatDate, money } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi, ApiError } from './creator-api.js';
+
+interface PartnershipLite {
+  id: string;
+  offeringId: string;
+}
 
 interface Affiliation {
   id: string;
@@ -113,6 +118,20 @@ export function CreatorMyAffiliationsPage() {
     retry: false,
   });
 
+  // Pull the partnerships list (same query key share-links uses, so it's
+  // cache-shared) to map offeringId → partnershipId. The affiliations
+  // endpoint returns offerings but the program detail page is keyed by
+  // partnership; without this lookup the "View dashboard" link can't
+  // route correctly.
+  const partnerships = useQuery({
+    queryKey: ['creator-partnerships'],
+    queryFn: () => creatorApi<{ partnerships: PartnershipLite[] }>('/creators/me/partnerships'),
+    retry: false,
+  });
+  const partnershipByOffering = new Map(
+    (partnerships.data?.partnerships ?? []).map((p) => [p.offeringId, p.id]),
+  );
+
   return (
     <Page title="My partnerships" subtitle="Programs across the Network you&rsquo;re actively partnered with.">
       <ErrorBanner error={error} />
@@ -135,15 +154,36 @@ export function CreatorMyAffiliationsPage() {
             </div>
             <p style={{ color: theme.textMuted, fontSize: 13 }}>Joined {formatDate(a.joinedVendorAt, { relative: true })}</p>
             {a.approvedOfferings.length > 0 && (
-              <p style={{ color: theme.textMuted, fontSize: 13, marginTop: 4 }}>
-                Approved for:{' '}
-                {a.approvedOfferings.map((o, i) => (
-                  <span key={o.id}>
-                    {i > 0 && ', '}
-                    <Link to={`/creator/offerings/${o.id}`}>{o.title}</Link>
-                  </span>
-                ))}
-              </p>
+              <div style={{ marginTop: 4 }}>
+                <p style={{ color: theme.textMuted, fontSize: 13, marginBottom: 4 }}>Approved for:</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {a.approvedOfferings.map((o) => {
+                    const partnershipId = partnershipByOffering.get(o.id);
+                    return (
+                      <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+                        <Link to={`/creator/offerings/${o.id}`} style={{ color: theme.text }}>
+                          {o.title}
+                        </Link>
+                        {partnershipId && (
+                          <Link
+                            to={`/creator/programs/${partnershipId}`}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              color: theme.accent,
+                              fontSize: 12,
+                              textDecoration: 'none',
+                            }}
+                          >
+                            View dashboard <ArrowUpRight size={12} />
+                          </Link>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             )}
             <EarningsBlock aff={a} />
           </Card>

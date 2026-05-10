@@ -158,6 +158,10 @@ const createSchema = z.object({
     .array(z.string().refine((s) => PROGRAM_CATEGORY_SLUGS.has(s), { message: 'unknown category' }))
     .max(5)
     .optional(),
+  /** When true, partners may rename their own coupon code via the
+   *  creator portal (federation-allowed PATCH on the coupon row).
+   *  Defaults to false — admin keeps full control of code strings. */
+  partnersMayCustomizeCode: z.boolean().optional(),
   /** When true, after creating the campaign, also grant every existing
    *  non-revoked partner access to it (source='admin'). Defaults to
    *  false so VIP / scoped campaigns stay private unless the brand opts
@@ -183,6 +187,7 @@ const updateSchema = z.object({
     .array(z.string().refine((s) => PROGRAM_CATEGORY_SLUGS.has(s), { message: 'unknown category' }))
     .max(5)
     .optional(),
+  partnersMayCustomizeCode: z.boolean().optional(),
 });
 
 export const programsRouter = Router();
@@ -294,6 +299,7 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
       shareOnNetwork,
       marketplaceDescription: body.data.marketplaceDescription ?? null,
       categories: body.data.categories ?? [],
+      partnersMayCustomizeCode: body.data.partnersMayCustomizeCode ?? false,
     })
     .returning('*');
 
@@ -368,6 +374,9 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
     patch.marketplaceDescription = body.data.marketplaceDescription;
   }
   if (body.data.categories !== undefined) patch.categories = body.data.categories;
+  if (body.data.partnersMayCustomizeCode !== undefined) {
+    patch.partnersMayCustomizeCode = body.data.partnersMayCustomizeCode;
+  }
 
   // Marketplace description is required when shareOnNetwork=true.
   // Compute the post-update state by merging body fields over existing,

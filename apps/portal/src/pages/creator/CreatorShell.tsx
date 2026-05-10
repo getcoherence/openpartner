@@ -12,6 +12,7 @@ import { CreatorMyRequestsPage } from './CreatorMyRequests.js';
 import { CreatorMyProfilePage } from './CreatorMyProfile.js';
 import { CreatorShareLinksPage } from './CreatorShareLinks.js';
 import { CreatorDomainsPage } from './CreatorDomains.js';
+import { CreatorProgramDetailPage } from './CreatorProgramDetail.js';
 
 interface Whoami {
   creator: { id: string; name: string; email: string; handle: string | null; avatarUrl: string | null; bio: string | null } | null;
@@ -44,6 +45,7 @@ export function CreatorShell() {
           <Route path="offerings/:id" element={<CreatorOfferingDetailPage />} />
           <Route path="vendors/:id" element={<CreatorVendorDetailPage />} />
           <Route path="affiliations" element={<CreatorMyAffiliationsPage />} />
+          <Route path="programs/:partnershipId/*" element={<CreatorProgramDetailPage />} />
           <Route path="links" element={<CreatorShareLinksPage />} />
           <Route path="domains" element={<CreatorDomainsPage />} />
           <Route path="requests" element={<CreatorMyRequestsPage />} />

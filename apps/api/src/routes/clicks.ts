@@ -33,6 +33,15 @@ const ingestSchema = z.object({
   ipHash: z.string().max(64).nullable().optional(),
   userAgent: z.string().max(500).nullable().optional(),
   referer: z.string().max(500).nullable().optional(),
+  /** UTMs captured by the federating caller (Network's share-router).
+   *  Stored as-is; trim/truncate happened upstream. Older Network
+   *  builds omit these — leave nullable. */
+  utmSource: z.string().max(255).nullable().optional(),
+  utmMedium: z.string().max(255).nullable().optional(),
+  utmCampaign: z.string().max(255).nullable().optional(),
+  utmTerm: z.string().max(255).nullable().optional(),
+  utmContent: z.string().max(255).nullable().optional(),
+  country: z.string().length(2).nullable().optional(),
   fraudFlag: z.enum(['velocity', 'manual', 'revoked']).nullable().optional(),
   /** Click timestamp from the federating caller — preserves the actual
    *  click time even if the federation push is delayed. ISO 8601. */
@@ -62,6 +71,12 @@ clicksRouter.post('/clicks', requireAuth, grantScope('clicks:write'), async (req
       ipHash: body.data.ipHash ?? null,
       userAgent: body.data.userAgent ?? null,
       referer: body.data.referer ?? null,
+      utmSource: body.data.utmSource ?? null,
+      utmMedium: body.data.utmMedium ?? null,
+      utmCampaign: body.data.utmCampaign ?? null,
+      utmTerm: body.data.utmTerm ?? null,
+      utmContent: body.data.utmContent ?? null,
+      country: body.data.country?.toLowerCase() ?? null,
       fraudFlag: body.data.fraudFlag ?? null,
       ts: new Date(body.data.ts),
     });

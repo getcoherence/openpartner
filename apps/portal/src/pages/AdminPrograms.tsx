@@ -41,6 +41,7 @@ interface Program {
   endsAt: string | null;
   customerReward: CustomerReward | null;
   shareOnNetwork: boolean;
+  partnersMayCustomizeCode?: boolean;
   marketplaceDescription: string | null;
   networkOfferingId: string | null;
   categories: string[];
@@ -221,6 +222,9 @@ function EditProgramDates({
   const [shareOnNetwork, setShareOnNetwork] = useState(campaign.shareOnNetwork);
   const [marketplaceDescription, setMarketplaceDescription] = useState(campaign.marketplaceDescription ?? '');
   const [categories, setCategories] = useState<string[]>(campaign.categories ?? []);
+  const [partnersMayCustomizeCode, setPartnersMayCustomizeCode] = useState(
+    campaign.partnersMayCustomizeCode ?? false,
+  );
   const [holdbackDays, setHoldbackDays] = useState(
     campaign.holdbackDays != null ? String(campaign.holdbackDays) : '0',
   );
@@ -237,6 +241,7 @@ function EditProgramDates({
           shareOnNetwork,
           marketplaceDescription: marketplaceDescription.trim() || null,
           categories,
+          partnersMayCustomizeCode,
           holdbackDays: Number(holdbackDays) || 0,
         },
       }),
@@ -294,6 +299,10 @@ function EditProgramDates({
       </div>
       <CompoundRuleEditor rules={rules} onChange={setRules} />
       <CustomerRewardEditor reward={customerReward} onChange={setCustomerReward} />
+      <PartnerCodeCustomizationField
+        enabled={partnersMayCustomizeCode}
+        onChange={setPartnersMayCustomizeCode}
+      />
       <MarketplaceFields
         shareOnNetwork={shareOnNetwork}
         onShareChange={setShareOnNetwork}
@@ -361,6 +370,7 @@ function CreateProgram({ onClose, onCreated }: { onClose: () => void; onCreated:
   const [shareOnNetwork, setShareOnNetwork] = useState(true);
   const [marketplaceDescription, setMarketplaceDescription] = useState('');
   const [categories, setCategories] = useState<string[]>([]);
+  const [partnersMayCustomizeCode, setPartnersMayCustomizeCode] = useState(false);
   const [windowDays, setWindowDays] = useState('60');
   const [model, setModel] = useState<'last_click' | 'first_click' | 'linear' | 'position'>('last_click');
   const [holdbackDays, setHoldbackDays] = useState('0');
@@ -392,6 +402,7 @@ function CreateProgram({ onClose, onCreated }: { onClose: () => void; onCreated:
               ? marketplaceDescription.trim()
               : undefined,
           categories: categories.length > 0 ? categories : undefined,
+          partnersMayCustomizeCode: partnersMayCustomizeCode || undefined,
           grantToAllPartners: grantToAllPartners || undefined,
         },
       }),
@@ -431,6 +442,10 @@ function CreateProgram({ onClose, onCreated }: { onClose: () => void; onCreated:
       </div>
       <CompoundRuleEditor rules={rules} onChange={setRules} />
       <CustomerRewardEditor reward={customerReward} onChange={setCustomerReward} />
+      <PartnerCodeCustomizationField
+        enabled={partnersMayCustomizeCode}
+        onChange={setPartnersMayCustomizeCode}
+      />
       {networkEnabled && (
         <MarketplaceFields
           shareOnNetwork={shareOnNetwork}
@@ -750,17 +765,39 @@ function SubRuleRow({
 }
 
 /**
- * Editor for the Campaign-level customer-side reward (dual-sided incentive).
+ * Per-program toggle: can partners self-rename their coupon code?
  *
- * When set, every Coupon auto-minted for this  Program also provisions a
- * matching Stripe Coupon + PromotionCode so the customer's discount applies
- * automatically at checkout. Without Stripe configured the OpenPartner Coupon
- * still works for partner attribution; the customer just doesn't get the
- * discount auto-applied.
+ * Off (default) = admin-only. The Coupon row's `code` is set at mint time
+ * and only the admin can change it. On = the creator portal exposes a
+ * rename action; the vendor accepts a federated PATCH on the coupon row.
  *
- * Defaults when toggled on: 20% off for the first 3 months — a sane
- * starting point that mirrors how Dub presents the feature.
+ * Either way the brand owns the discount terms (customerReward); the
+ * partner can only change the string customers type at checkout.
  */
+function PartnerCodeCustomizationField({
+  enabled,
+  onChange,
+}: {
+  enabled: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text, marginBottom: 6 }}>
+        <input type="checkbox" checked={enabled} onChange={(e) => onChange(e.target.checked)} />
+        Let partners customize their coupon code
+      </label>
+      <div style={{ fontSize: 12, color: theme.textDim, marginLeft: 24 }}>
+        Off (default) = you control every code. On = creators can pick a
+        vanity code from their dashboard (e.g. <code>GRACIE15</code>). The
+        discount terms above stay locked — partners only change the string.
+        Renaming replaces the previous code; anyone using the old one at
+        checkout gets an invalid-code error.
+      </div>
+    </div>
+  );
+}
+
 /**
  * Marketplace presence for the campaign. Only rendered when the brand is
  * connected to the Network (caller gates the mount). Toggle off = the

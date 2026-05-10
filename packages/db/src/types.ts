@@ -305,6 +305,11 @@ export interface ProgramRow {
    *  Category chip on the discover card. Empty array = uncategorized
    *  (legitimate; the brand can leave this blank). */
   categories: string[];
+  /** When true, partners may rename their own coupon code from the
+   *  creator portal. Defaults to false (admin-only). The vendor's
+   *  PATCH /partners/:id/coupons/:couponId gates federated callers on
+   *  this flag — admin auth always bypasses. */
+  partnersMayCustomizeCode: boolean;
   /** When true AND the brand has a Network membership configured, every
    *  campaign save upserts the corresponding Network Offering so the
    *  marketplace listing stays in sync. False = private campaign,
@@ -362,6 +367,16 @@ export interface ClickRow {
   ipHash: string | null;
   userAgent: string | null;
   referer: string | null;
+  /** UTM params parsed off the inbound URL at click time. Null for
+   *  pre-Tier-3 rows + clicks without UTMs in the URL. */
+  utmSource: string | null;
+  utmMedium: string | null;
+  utmCampaign: string | null;
+  utmTerm: string | null;
+  utmContent: string | null;
+  /** ISO 3166-1 alpha-2, lowercase. From cf-ipcountry header. Null
+   *  when the click bypassed Cloudflare or pre-dates Tier 3. */
+  country: string | null;
   fraudFlag: ClickFraudFlag;
   ts: Date;
 }
@@ -561,5 +576,11 @@ export interface CouponRow {
   stripeCouponId: string | null;
   /** Stripe PromotionCode ID — what the customer types at checkout. */
   stripePromotionCodeId: string | null;
+  /** When the partner / admin retired this code. NULL = active (still
+   *  redeemable at checkout, still attributes). Non-null = deactivated:
+   *  the Stripe PromotionCode is disabled too, so customers entering the
+   *  old string get an invalid-code error. Historical redemptions remain
+   *  attributed to this row. */
+  deactivatedAt: Date | null;
   createdAt: Date;
 }
