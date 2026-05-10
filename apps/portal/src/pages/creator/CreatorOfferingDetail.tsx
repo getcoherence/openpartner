@@ -484,26 +484,46 @@ function QuickCell({ label, children }: { label: string; children: React.ReactNo
 }
 
 function RewardIcon({ kind }: { kind: 'commission' | 'customer' }) {
-  const isGift = kind === 'customer';
   return (
     <span
       style={{
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        width: 26,
-        height: 26,
+        width: 28,
+        height: 28,
         borderRadius: 6,
-        background: isGift ? `${theme.warnSoft ?? '#fef3c7'}` : theme.surface2,
-        border: `1px solid ${isGift ? '#fbbf24' : theme.borderSubtle}`,
-        color: isGift ? '#92400e' : theme.accent,
-        fontWeight: 700,
-        fontSize: isGift ? 14 : 13,
+        background: theme.surface2,
+        border: `1px solid ${theme.borderSubtle}`,
+        color: theme.textMuted,
         cursor: 'help',
       }}
     >
-      {isGift ? '🎁' : '$'}
+      {kind === 'commission' ? <DollarIcon /> : <GiftIcon />}
     </span>
+  );
+}
+
+/** Inline lucide-style line icons. Matches the marketing-site marketplace
+ *  so the brand-mark / reward-icon visual language is shared. */
+function DollarIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="12" y1="2" x2="12" y2="22" />
+      <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+    </svg>
+  );
+}
+
+function GiftIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 12 20 22 4 22 4 12" />
+      <rect x="2" y="7" width="20" height="5" />
+      <line x1="12" y1="22" x2="12" y2="7" />
+      <path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z" />
+      <path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z" />
+    </svg>
   );
 }
 
