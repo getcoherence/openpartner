@@ -103,7 +103,7 @@ export function AdminPartners() {
   );
 }
 
-interface CreateCampaignOption {
+interface CreateProgramOption {
   id: string;
   name: string;
 }
@@ -117,7 +117,7 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
 
   const campaigns = useQuery({
     queryKey: ['me-campaigns-for-invite'],
-    queryFn: () => api<{ campaigns: CreateCampaignOption[] }>('/me/programs'),
+    queryFn: () => api<{ programs: CreateProgramOption[] }>('/me/programs'),
   });
 
   const mut = useMutation({
@@ -172,11 +172,11 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
             <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 8 }}>
               Pick the programs this partner can create share-links for. You can change this later from the partner&rsquo;s row.
             </div>
-            {(campaigns.data?.campaigns ?? []).length === 0 ? (
+            {(campaigns.data?.programs ?? []).length === 0 ? (
               <div style={{ fontSize: 13, color: theme.textDim }}>No campaigns yet — create one in Campaigns first.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {(campaigns.data?.campaigns ?? []).map((c) => (
+                {(campaigns.data?.programs ?? []).map((c) => (
                   <label key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text }}>
                     <input type="checkbox" checked={picked.has(c.id)} onChange={() => toggle(c.id)} />
                     {c.name}

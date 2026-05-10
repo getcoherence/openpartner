@@ -499,7 +499,7 @@ function BrandOnboarding() {
       done: data.campaignCount > 0,
       label: 'Create your first program (Campaign)',
       hint: 'Set the destination URL and commission terms.',
-      href: `${tenantBase}/admin/campaigns`,
+      href: `${tenantBase}/admin/programs`,
     },
     {
       done: data.networkConnected,
@@ -509,12 +509,12 @@ function BrandOnboarding() {
     },
     {
       done: data.offeringPublishedCount > 0,
-      label: 'Create your first campaign',
+      label: 'Create your first program',
       hint:
         data.networkConnected
           ? 'Auto-listed on the OpenPartner Network when shareOnNetwork is on.'
           : 'Defines your commission rule + destination URL.',
-      href: `${tenantBase}/admin/campaigns`,
+      href: `${tenantBase}/admin/programs`,
     },
     {
       done: data.partnerCount > 0,

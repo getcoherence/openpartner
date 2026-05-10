@@ -188,7 +188,7 @@ function Shell() {
               <Route path="admin/partners/:id/programs" element={<AdminPartnerPrograms />} />
               <Route path="admin/partners/:id/coupons" element={<AdminPartnerCoupons />} />
               <Route path="admin/partners/:id/commission" element={<AdminPartnerCommission />} />
-              <Route path="admin/campaigns" element={<AdminPrograms />} />
+              <Route path="admin/programs" element={<AdminPrograms />} />
               <Route path="admin/review" element={<AdminReview />} />
               <Route path="admin/export" element={<AdminExport />} />
               <Route path="admin/fraud-review" element={<FraudReviewPage />} />
@@ -286,7 +286,7 @@ function Sidebar({ principal }: { principal: Principal }) {
         {principal.role === 'admin' && (
           <NavSection title="Admin" collapsible storageKey="admin-admin">
             <NavItem to="/admin/partners" icon={<Users size={16} />}>Partners</NavItem>
-            <NavItem to="/admin/campaigns" icon={<Tag size={16} />}>Campaigns</NavItem>
+            <NavItem to="/admin/programs" icon={<Tag size={16} />}>Programs</NavItem>
             <NavItem to="/admin/review" icon={<ShieldCheck size={16} />}>Review queue</NavItem>
             <NavItem to="/admin/export" icon={<Download size={16} />}>Export / import</NavItem>
             <NavItem to="/admin/fraud-review" icon={<ShieldCheck size={16} />}>Fraud review</NavItem>

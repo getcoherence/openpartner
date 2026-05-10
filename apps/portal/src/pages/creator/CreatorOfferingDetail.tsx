@@ -40,7 +40,7 @@ interface Offering {
     payoutHoldbackDays?: number;
     bonuses?: string[];
     /** Attribution model — last_click (most common), first_click,
-     *  linear, position. Snapshotted from the Campaign at offering
+     *  linear, position. Snapshotted from the  Program at offering
      *  create. Absent for legacy offerings or campaigns that didn't
      *  set one. */
     attributionModel?: 'last_click' | 'first_click' | 'linear' | 'position';
@@ -48,7 +48,7 @@ interface Offering {
     attributionWindowDays?: number;
     /** True when commission pays on every renewal of a subscription. */
     recurring?: boolean;
-    /** ISO timestamp when the bound vendor Campaign expires. Null =
+    /** ISO timestamp when the bound vendor  Program expires. Null =
      *  indefinite (no end date). Absent = legacy offering. */
     campaignEndsAt?: string | null;
   };

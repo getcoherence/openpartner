@@ -25,7 +25,7 @@ interface CustomerReward {
   durationInMonths?: number;
 }
 
-interface Campaign {
+interface Program {
   id: string;
   name: string;
   /** Server returns the array form post-migration. The single-object
@@ -51,17 +51,17 @@ interface NetworkConnectionState {
   enabled: boolean;
 }
 
-function normalizeRules(raw: Campaign['commissionRule']): CommissionSubRule[] {
+function normalizeRules(raw: Program['commissionRule']): CommissionSubRule[] {
   if (Array.isArray(raw)) return raw;
   return [{ trigger: 'every', type: raw.type, value: raw.value, recurring: raw.recurring }];
 }
 
-function summarizeRules(raw: Campaign['commissionRule'], reward: CustomerReward | null): string {
+function summarizeRules(raw: Program['commissionRule'], reward: CustomerReward | null): string {
   return renderCommissionSummary(normalizeRules(raw), reward);
 }
 
-type CampaignStatus = 'scheduled' | 'active' | 'ended';
-function statusOf(c: Pick<Campaign, 'startsAt' | 'endsAt'>, at: Date = new Date()): CampaignStatus {
+type ProgramStatus = 'scheduled' | 'active' | 'ended';
+function statusOf(c: Pick<Program, 'startsAt' | 'endsAt'>, at: Date = new Date()): ProgramStatus {
   if (c.startsAt && at < new Date(c.startsAt)) return 'scheduled';
   if (c.endsAt && at >= new Date(c.endsAt)) return 'ended';
   return 'active';
@@ -70,10 +70,10 @@ function statusOf(c: Pick<Campaign, 'startsAt' | 'endsAt'>, at: Date = new Date(
 export function AdminPrograms() {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
-  const [editing, setEditing] = useState<Campaign | null>(null);
+  const [editing, setEditing] = useState<Program | null>(null);
   const campaigns = useQuery({
     queryKey: ['campaigns'],
-    queryFn: () => api<{ campaigns: Campaign[] }>('/programs'),
+    queryFn: () => api<{ programs: Program[] }>('/programs'),
   });
 
   // End-now sets endsAt = current time. Existing share-links keep
@@ -91,7 +91,7 @@ export function AdminPrograms() {
 
   return (
     <Page
-      title="Campaigns"
+      title="Programs"
       subtitle="Commission rules, attribution windows, and models applied to partner clicks."
       actions={
         <Button icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
@@ -101,7 +101,7 @@ export function AdminPrograms() {
     >
       <ErrorBanner error={campaigns.error ?? endNow.error} />
       {showCreate && (
-        <CreateCampaign
+        <CreateProgram
           onClose={() => setShowCreate(false)}
           onCreated={() => {
             setShowCreate(false);
@@ -110,7 +110,7 @@ export function AdminPrograms() {
         />
       )}
       {editing && (
-        <EditCampaignDates
+        <EditProgramDates
           campaign={editing}
           onClose={() => setEditing(null)}
           onSaved={() => {
@@ -121,16 +121,16 @@ export function AdminPrograms() {
       )}
       {campaigns.isLoading ? (
         <Card>Loading…</Card>
-      ) : (campaigns.data?.campaigns ?? []).length === 0 ? (
+      ) : (campaigns.data?.programs ?? []).length === 0 ? (
         <EmptyState title="No campaigns yet" hint="A campaign holds the commission rule and attribution settings." icon={<Tag size={28} strokeWidth={1.25} />} />
       ) : (
         <Table
           columns={['Name', 'Status', 'Destination', 'Commission', 'Window', 'Holdback', 'Model', 'Created', 'Actions']}
-          rows={(campaigns.data?.campaigns ?? []).map((c) => {
+          rows={(campaigns.data?.programs ?? []).map((c) => {
             const status = statusOf(c);
             return [
               <span style={{ fontWeight: 500 }}>{c.name}</span>,
-              <CampaignStatusPill campaign={c} />,
+              <ProgramStatusPill campaign={c} />,
               <span style={{ color: theme.textMuted, fontSize: 12, fontFamily: theme.fontMono }}>
                 {c.destinationUrl ? new URL(c.destinationUrl).hostname + new URL(c.destinationUrl).pathname.replace(/\/$/, '') : '—'}
                 {c.deepLinkAllowedDomains && (
@@ -202,12 +202,12 @@ function smallActionStyle(color: string): React.CSSProperties {
  * grandfathering pattern of mature affiliate networks (Impact,
  * Partnerize).
  */
-function EditCampaignDates({
+function EditProgramDates({
   campaign,
   onClose,
   onSaved,
 }: {
-  campaign: Campaign;
+  campaign: Program;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -330,7 +330,7 @@ function toDateTimeLocal(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+function CreateProgram({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   // Network status drives the smart default for shareOnNetwork. When the
   // brand is connected, default ON; otherwise hide the toggle entirely
   // (no point promising marketplace listing for a brand that isn't on
@@ -360,7 +360,7 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
 
   const mut = useMutation({
     mutationFn: () =>
-      api<Campaign>('/programs', {
+      api<Program>('/programs', {
         method: 'POST',
         body: {
           name,
@@ -735,7 +735,7 @@ function SubRuleRow({
 /**
  * Editor for the Campaign-level customer-side reward (dual-sided incentive).
  *
- * When set, every Coupon auto-minted for this Campaign also provisions a
+ * When set, every Coupon auto-minted for this  Program also provisions a
  * matching Stripe Coupon + PromotionCode so the customer's discount applies
  * automatically at checkout. Without Stripe configured the OpenPartner Coupon
  * still works for partner attribution; the customer just doesn't get the
@@ -994,9 +994,9 @@ function LabelWithHelp({ label, help }: { label: string; help: string }) {
   );
 }
 
-function CampaignStatusPill({ campaign }: { campaign: Pick<Campaign, 'startsAt' | 'endsAt'> }) {
+function ProgramStatusPill({ campaign }: { campaign: Pick<Program, 'startsAt' | 'endsAt'> }) {
   const status = statusOf(campaign);
-  const palette: Record<CampaignStatus, { bg: string; fg: string; label: string }> = {
+  const palette: Record<ProgramStatus, { bg: string; fg: string; label: string }> = {
     active: { bg: theme.successSoft, fg: theme.success, label: 'Active' },
     scheduled: { bg: `${theme.accent}15`, fg: theme.accent, label: 'Scheduled' },
     ended: { bg: theme.surface2, fg: theme.textMuted, label: 'Ended' },

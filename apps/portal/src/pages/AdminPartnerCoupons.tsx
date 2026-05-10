@@ -21,7 +21,7 @@ interface CouponRow {
   revenue90d?: number;
 }
 
-interface CampaignBrief {
+interface ProgramBrief {
   id: string;
   name: string;
 }
@@ -44,22 +44,22 @@ export function AdminPartnerCoupons() {
   });
   const campaigns = useQuery({
     queryKey: ['campaigns'],
-    queryFn: () => api<{ campaigns: CampaignBrief[] }>('/programs'),
+    queryFn: () => api<{ programs: ProgramBrief[] }>('/programs'),
   });
 
-  const [pickedCampaign, setPickedCampaign] = useState('');
+  const [pickedProgram, setPickedProgram] = useState('');
   const [customCode, setCustomCode] = useState('');
 
   const mint = useMutation({
     mutationFn: () =>
       api(`/partners/${partnerId}/coupons`, {
         method: 'POST',
-        body: { programId: pickedCampaign, code: customCode.trim() ? customCode.trim().toUpperCase() : undefined },
+        body: { programId: pickedProgram, code: customCode.trim() ? customCode.trim().toUpperCase() : undefined },
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['partner-coupons', partnerId] });
       setCustomCode('');
-      setPickedCampaign('');
+      setPickedProgram('');
     },
   });
 
@@ -68,8 +68,8 @@ export function AdminPartnerCoupons() {
     : null;
 
   const existingCampaignIds = new Set((coupons.data?.coupons ?? []).map((c) => c.programId));
-  const availableCampaigns = (campaigns.data?.campaigns ?? []).filter((c) => !existingCampaignIds.has(c.id));
-  const campaignNameById = new Map((campaigns.data?.campaigns ?? []).map((c) => [c.id, c.name]));
+  const availableCampaigns = (campaigns.data?.programs ?? []).filter((c) => !existingCampaignIds.has(c.id));
+  const campaignNameById = new Map((campaigns.data?.programs ?? []).map((c) => [c.id, c.name]));
   const partnerName = partner.data?.name ?? '…';
 
   return (
@@ -118,10 +118,10 @@ export function AdminPartnerCoupons() {
             {availableCampaigns.length > 0 ? (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'end' }}>
                 <div>
-                  <Label>Campaign</Label>
+                  <Label>Program</Label>
                   <select
-                    value={pickedCampaign}
-                    onChange={(e) => setPickedCampaign(e.target.value)}
+                    value={pickedProgram}
+                    onChange={(e) => setPickedProgram(e.target.value)}
                     style={{ width: '100%', padding: '8px 10px', background: theme.surface2, border: `1px solid ${theme.border}`, borderRadius: theme.radiusSm, color: theme.text, fontSize: 13 }}
                   >
                     <option value="">— pick a campaign —</option>
@@ -137,7 +137,7 @@ export function AdminPartnerCoupons() {
                     style={{ fontFamily: theme.fontMono }}
                   />
                 </div>
-                <Button onClick={() => mint.mutate()} disabled={!pickedCampaign || mint.isPending}>
+                <Button onClick={() => mint.mutate()} disabled={!pickedProgram || mint.isPending}>
                   {mint.isPending ? 'Minting…' : 'Mint coupon'}
                 </Button>
               </div>

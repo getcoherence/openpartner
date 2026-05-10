@@ -11,7 +11,7 @@ interface Partner {
   name: string;
 }
 
-interface CampaignGrant {
+interface ProgramGrant {
   id: string;
   name: string;
   destinationUrl: string;
@@ -32,13 +32,13 @@ export function AdminPartnerPrograms() {
 
   const grants = useQuery({
     queryKey: ['partner-campaigns', partnerId],
-    queryFn: () => api<{ campaigns: CampaignGrant[] }>(`/partners/${partnerId}/campaigns`),
+    queryFn: () => api<{ programs: ProgramGrant[] }>(`/partners/${partnerId}/programs`),
     enabled: !!partnerId,
   });
 
   const add = useMutation({
     mutationFn: (programId: string) =>
-      api(`/partners/${partnerId}/campaigns`, { method: 'POST', body: { programIds: [programId] } }),
+      api(`/partners/${partnerId}/programs`, { method: 'POST', body: { programIds: [programId] } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['partner-campaigns', partnerId] }),
   });
   const remove = useMutation({
@@ -64,11 +64,11 @@ export function AdminPartnerPrograms() {
       <Card>
         {grants.isLoading ? (
           <div style={{ color: theme.textMuted }}>Loading…</div>
-        ) : !grants.data || grants.data.campaigns.length === 0 ? (
+        ) : !grants.data || grants.data.programs.length === 0 ? (
           <div style={{ color: theme.textMuted }}>No campaigns exist yet — create one in Campaigns.</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {grants.data.campaigns.map((c) => {
+            {grants.data.programs.map((c) => {
               const busy = busyId === c.id;
               return (
                 <label

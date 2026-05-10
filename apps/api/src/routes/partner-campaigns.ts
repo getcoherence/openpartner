@@ -1,8 +1,8 @@
 /**
  * Brand-admin management of partner ↔ campaign access.
  *
- *   GET    /partners/:id/campaigns            list current grants + every campaign in the tenant
- *   POST   /partners/:id/campaigns            add grants — body: { programIds: string[] }
+ *   GET    /partners/:id/programs            list current grants + every campaign in the tenant
+ *   POST   /partners/:id/programs            add grants — body: { programIds: string[] }
  *   DELETE /partners/:id/programs/:programId revoke a single grant
  *
  * Guard rails:
@@ -26,7 +26,7 @@ import { autoMintCouponsForGrants } from './coupons.js';
 
 export const partnerCampaignsRouter = Router();
 
-partnerCampaignsRouter.get('/partners/:id/campaigns', requireAuth, requireAdmin, async (req, res) => {
+partnerCampaignsRouter.get('/partners/:id/programs', requireAuth, requireAdmin, async (req, res) => {
   const { db } = tenantOf(req);
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
@@ -48,14 +48,14 @@ partnerCampaignsRouter.get('/partners/:id/campaigns', requireAuth, requireAdmin,
     grantedAt: grantByCampaign.get(c.id)?.createdAt ?? null,
   }));
 
-  res.json({ campaigns: result });
+  res.json({ programs: result });
 });
 
 const addSchema = z.object({
   programIds: z.array(z.string().min(1)).min(1),
 });
 
-partnerCampaignsRouter.post('/partners/:id/campaigns', requireAuth, requireAdmin, async (req, res) => {
+partnerCampaignsRouter.post('/partners/:id/programs', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });

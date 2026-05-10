@@ -37,7 +37,7 @@ interface OfferingTerms {
   /** Curated category slugs (PROGRAM_CATEGORIES). Drives both the
    *  Category filter and the chip strip. */
   categories?: string[];
-  /** ISO timestamp when the bound vendor Campaign expires. Null =
+  /** ISO timestamp when the bound vendor  Program expires. Null =
    *  indefinite (no end date). Absent = legacy offering created
    *  before the snapshot was added — duration UI omits the chip
    *  rather than guessing. */

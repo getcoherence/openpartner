@@ -13,7 +13,7 @@
  *   - POST /partners                        (invite new partner OR
  *                                            federated approval landing)
  *   - POST /partners/:id/coupons            (mint coupon)
- *   - POST /partners/:id/campaigns          (grant program to partner)
+ *   - POST /partners/:id/programs          (grant program to partner)
  *   - POST /import/partners-csv             (bulk roster import)
  *   - POST /admin/network/offerings         (publish on the Network)
  *   - POST /admin/network/requests/:id/approve  (approve creator

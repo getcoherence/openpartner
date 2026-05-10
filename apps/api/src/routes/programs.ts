@@ -190,7 +190,7 @@ export const programsRouter = Router();
 programsRouter.get('/programs', requireAuth, requireAdmin, async (req, res) => {
   const { db } = tenantOf(req);
   const campaigns = await db<ProgramRow>(TABLES.Program).orderBy('createdAt', 'desc');
-  res.json({ campaigns });
+  res.json({ programs: campaigns });
 });
 
 /**
@@ -217,7 +217,7 @@ programsRouter.get('/me/programs', requireAuth, async (req, res) => {
       .orderBy('createdAt', 'desc')) as Array<
         Pick<ProgramRow, 'id' | 'name' | 'destinationUrl' | 'deepLinkAllowedDomains' | 'startsAt' | 'endsAt'>
       >;
-    return res.json({ campaigns });
+    return res.json({ programs: campaigns });
   }
 
   // Partner: filter through PartnerCampaign join. Hide scheduled (not
@@ -246,7 +246,7 @@ programsRouter.get('/me/programs', requireAuth, async (req, res) => {
       source: 'admin' | 'offering';
     }>;
   const campaigns = rows.filter((r) => campaignAcceptsNewActivity(r));
-  res.json({ campaigns });
+  res.json({ programs: campaigns });
 });
 
 programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => {

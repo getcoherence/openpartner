@@ -27,7 +27,7 @@ interface Snapshot {
 
 const SOURCE_LABEL: Record<CommissionSource, string> = {
   approval: 'Stamped at PartnershipRequest approval',
-  backfill: 'Backfilled from current Campaign rule',
+  backfill: 'Backfilled from current  Program rule',
   amendment: 'Admin override',
 };
 

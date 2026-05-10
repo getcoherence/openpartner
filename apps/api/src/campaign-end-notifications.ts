@@ -97,7 +97,7 @@ async function notifyOne(campaign: ProgramRow): Promise<void> {
     const portalBase = (process.env.PORTAL_URL ?? '').replace(/\/$/, '');
     const tenantSlug = tenant?.slug ?? '';
     const tenantBase = portalBase && tenantSlug ? `${portalBase}/t/${tenantSlug}` : '';
-    const manageUrl = tenantBase ? `${tenantBase}/admin/campaigns` : '';
+    const manageUrl = tenantBase ? `${tenantBase}/admin/programs` : '';
 
     if (admin && manageUrl) {
       const tmpl = campaignEndingBrandEmail(brandName, campaign.name, campaign.endsAt, manageUrl);

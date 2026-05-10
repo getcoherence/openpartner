@@ -300,7 +300,7 @@ function MacroReference() {
     ['{event_id}', 'The Event row that drove the commission'],
     ['{transaction_id}', 'Alias for {event_id} — many trackers use this name'],
     ['{event_type}', 'invoice_paid / signup / your custom event'],
-    ['{program_id}', 'Campaign id'],
+    ['{program_id}', ' Program id'],
     ['{payout_id}', 'Only present on commission.paid'],
   ];
   return (
