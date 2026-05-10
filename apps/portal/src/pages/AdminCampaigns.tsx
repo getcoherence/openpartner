@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import { theme } from '../theme.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
+import { PROGRAM_CATEGORIES, categoryLabel } from '@openpartner/db';
 
 interface CommissionSubRule {
   trigger: 'every' | 'first' | 'subsequent';
@@ -42,6 +43,7 @@ interface Campaign {
   shareOnNetwork: boolean;
   marketplaceDescription: string | null;
   networkOfferingId: string | null;
+  categories: string[];
   createdAt: string;
 }
 
@@ -215,6 +217,7 @@ function EditCampaignDates({
   const [customerReward, setCustomerReward] = useState<CustomerReward | null>(campaign.customerReward);
   const [shareOnNetwork, setShareOnNetwork] = useState(campaign.shareOnNetwork);
   const [marketplaceDescription, setMarketplaceDescription] = useState(campaign.marketplaceDescription ?? '');
+  const [categories, setCategories] = useState<string[]>(campaign.categories ?? []);
   const [holdbackDays, setHoldbackDays] = useState(
     campaign.holdbackDays != null ? String(campaign.holdbackDays) : '0',
   );
@@ -230,6 +233,7 @@ function EditCampaignDates({
           customerReward,
           shareOnNetwork,
           marketplaceDescription: marketplaceDescription.trim() || null,
+          categories,
           holdbackDays: Number(holdbackDays) || 0,
         },
       }),
@@ -292,6 +296,8 @@ function EditCampaignDates({
         onShareChange={setShareOnNetwork}
         description={marketplaceDescription}
         onDescriptionChange={setMarketplaceDescription}
+        categories={categories}
+        onCategoriesChange={setCategories}
       />
       <div style={{ marginBottom: 16 }}>
         <Label>Payout holdback (days)</Label>
@@ -344,6 +350,7 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
   const [customerReward, setCustomerReward] = useState<CustomerReward | null>(null);
   const [shareOnNetwork, setShareOnNetwork] = useState(true);
   const [marketplaceDescription, setMarketplaceDescription] = useState('');
+  const [categories, setCategories] = useState<string[]>([]);
   const [windowDays, setWindowDays] = useState('60');
   const [model, setModel] = useState<'last_click' | 'first_click' | 'linear' | 'position'>('last_click');
   const [holdbackDays, setHoldbackDays] = useState('0');
@@ -374,6 +381,7 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
             networkEnabled && shareOnNetwork && marketplaceDescription.trim()
               ? marketplaceDescription.trim()
               : undefined,
+          categories: categories.length > 0 ? categories : undefined,
           grantToAllPartners: grantToAllPartners || undefined,
         },
       }),
@@ -419,6 +427,8 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
           onShareChange={setShareOnNetwork}
           description={marketplaceDescription}
           onDescriptionChange={setMarketplaceDescription}
+          categories={categories}
+          onCategoriesChange={setCategories}
         />
       )}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 14, marginBottom: 16 }}>
@@ -748,12 +758,26 @@ function MarketplaceFields({
   onShareChange,
   description,
   onDescriptionChange,
+  categories,
+  onCategoriesChange,
 }: {
   shareOnNetwork: boolean;
   onShareChange: (v: boolean) => void;
   description: string;
   onDescriptionChange: (v: string) => void;
+  categories: string[];
+  onCategoriesChange: (v: string[]) => void;
 }) {
+  const toggleCategory = (slug: string) => {
+    if (categories.includes(slug)) {
+      onCategoriesChange(categories.filter((c) => c !== slug));
+    } else {
+      // 5-cap matches the API; UI gates here so the user gets feedback
+      // before the request rejects.
+      if (categories.length >= 5) return;
+      onCategoriesChange([...categories, slug]);
+    }
+  };
   return (
     <div style={{ marginBottom: 16 }}>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text, marginBottom: 6 }}>
@@ -788,9 +812,40 @@ function MarketplaceFields({
               resize: 'vertical',
             }}
           />
-          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4, marginBottom: 12 }}>
             Public copy on the discover card. Leave blank to render the card
             without a description block.
+          </div>
+          <Label>Categories (up to 5)</Label>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+            {PROGRAM_CATEGORIES.map((cat) => {
+              const selected = categories.includes(cat.slug);
+              const disabled = !selected && categories.length >= 5;
+              return (
+                <button
+                  key={cat.slug}
+                  type="button"
+                  onClick={() => toggleCategory(cat.slug)}
+                  disabled={disabled}
+                  style={{
+                    fontSize: 12,
+                    padding: '4px 10px',
+                    borderRadius: 999,
+                    cursor: disabled ? 'not-allowed' : 'pointer',
+                    opacity: disabled ? 0.4 : 1,
+                    background: selected ? `${theme.accent}25` : 'transparent',
+                    color: selected ? theme.accent : theme.textMuted,
+                    border: `1px solid ${selected ? theme.accent : theme.borderSubtle}`,
+                  }}
+                >
+                  {cat.label}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+            Helps creators filter the marketplace. Pick the closest matches —
+            don&rsquo;t tag every category, it dilutes filtering.
           </div>
         </div>
       )}

@@ -10,6 +10,7 @@ import {
   type CommissionSubRuleLike,
   type CustomerRewardLike,
 } from '../../lib/commission-summary.js';
+import { PROGRAM_CATEGORIES, categoryLabel } from '@openpartner/db';
 
 type MyStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'cancelled';
 type AttributionModel = 'last_click' | 'first_click' | 'linear' | 'position';
@@ -33,6 +34,9 @@ interface OfferingTerms {
   /** Customer-side reward. Drives the "Dual reward" chip + extends the
    *  derived summary with "customers get …". */
   customerReward?: CustomerRewardLike | null;
+  /** Curated category slugs (PROGRAM_CATEGORIES). Drives both the
+   *  Category filter and the chip strip. */
+  categories?: string[];
   /** ISO timestamp when the bound vendor Campaign expires. Null =
    *  indefinite (no end date). Absent = legacy offering created
    *  before the snapshot was added — duration UI omits the chip
@@ -116,6 +120,10 @@ export function CreatorDiscoverPage() {
   const [minWindow, setMinWindow] = useState<'any' | '30' | '60' | '90'>('any');
   const [recurringOnly, setRecurringOnly] = useState(false);
   const [minCommission, setMinCommission] = useState<'any' | '10' | '20' | '30'>('any');
+  /** Selected category slug, or 'any'. Single-select keeps the filter
+   *  bar compact; brands tag a program with up to 5 categories so the
+   *  match still picks up multi-tagged programs. */
+  const [category, setCategory] = useState<'any' | string>('any');
   // Min remaining runway on the program. Indefinite (no end date) and
   // unknown (legacy offerings without a snapshot) always qualify —
   // they're at least as long as any bounded program, so excluding them
@@ -174,9 +182,13 @@ export function CreatorDiscoverPage() {
         // remaining days clear the threshold.
         if (remaining !== null && remaining < min) return false;
       }
+      if (category !== 'any') {
+        const cats = t.categories ?? [];
+        if (!cats.includes(category)) return false;
+      }
       return true;
     });
-  }, [data, model, maxHoldback, minWindow, recurringOnly, minCommission, minDuration]);
+  }, [data, model, maxHoldback, minWindow, recurringOnly, minCommission, minDuration, category]);
 
   const activeFilterCount =
     (model !== 'any' ? 1 : 0) +
@@ -184,7 +196,8 @@ export function CreatorDiscoverPage() {
     (minWindow !== 'any' ? 1 : 0) +
     (recurringOnly ? 1 : 0) +
     (minCommission !== 'any' ? 1 : 0) +
-    (minDuration !== 'any' ? 1 : 0);
+    (minDuration !== 'any' ? 1 : 0) +
+    (category !== 'any' ? 1 : 0);
 
   function clearFilters() {
     setModel('any');
@@ -193,6 +206,7 @@ export function CreatorDiscoverPage() {
     setRecurringOnly(false);
     setMinCommission('any');
     setMinDuration('any');
+    setCategory('any');
   }
 
   return (
@@ -291,6 +305,18 @@ export function CreatorDiscoverPage() {
                 <option value="10">≥ 10%</option>
                 <option value="20">≥ 20%</option>
                 <option value="30">≥ 30%</option>
+              </Select>
+            </div>
+            <div>
+              <LabelWithHelp
+                label="Category"
+                hint="Industry / product type the brand tagged this program with. Programs can carry up to 5 categories, so a 'SaaS analytics tool' shows up under both SaaS and Analytics."
+              />
+              <Select value={category} onChange={(e) => setCategory(e.target.value)}>
+                <option value="any">Any</option>
+                {PROGRAM_CATEGORIES.map((c) => (
+                  <option key={c.slug} value={c.slug}>{c.label}</option>
+                ))}
               </Select>
             </div>
             <div>
@@ -564,6 +590,12 @@ function OfferingChips({
   const chips: Array<{ label: string; tone?: 'accent' | 'muted' | 'lead' }> = [];
   if (commissionLine) chips.push({ label: commissionLine, tone: 'lead' });
   if (hasDualReward) chips.push({ label: 'Dual reward', tone: 'accent' });
+  // Category chips render right after the lead — top-of-mind axis creators
+  // sort by. Cap at 2 displayed so a heavily-tagged program doesn't crowd
+  // out the attribution / payout chips below.
+  for (const slug of (terms.categories ?? []).slice(0, 2)) {
+    chips.push({ label: categoryLabel(slug), tone: 'muted' });
+  }
   if (terms.attributionModel) chips.push({ label: MODEL_LABELS[terms.attributionModel], tone: 'muted' });
   if (terms.attributionWindowDays) chips.push({ label: `${terms.attributionWindowDays}d window`, tone: 'muted' });
   if (terms.cookieWindowDays) chips.push({ label: `${terms.cookieWindowDays}d cookie`, tone: 'muted' });

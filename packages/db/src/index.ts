@@ -12,6 +12,12 @@ export type {
   CommissionSubRuleLike,
   CustomerRewardLike,
 } from './commission-summary.js';
+export {
+  PROGRAM_CATEGORIES,
+  PROGRAM_CATEGORY_SLUGS,
+  categoryLabel,
+} from './categories.js';
+export type { ProgramCategory } from './categories.js';
 
 export interface DbConfig {
   connectionString: string;

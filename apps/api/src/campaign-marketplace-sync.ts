@@ -44,6 +44,9 @@ interface OfferingTerms {
   /** Compound rule snapshot — preferred. */
   commissionRules?: CommissionSubRule[];
   customerReward?: unknown;
+  /** Curated category slugs (PROGRAM_CATEGORIES). Surfaces on the
+   *  marketplace card as a chip and powers category-based filtering. */
+  categories?: string[];
   campaignEndsAt?: string | null;
 }
 
@@ -140,6 +143,7 @@ function buildTermsPayload(campaign: CampaignRow, derivedSummary: string): Offer
     recurring: legacy?.recurring ?? false,
     commissionRules: rules,
     customerReward: campaign.customerReward ?? null,
+    categories: campaign.categories ?? [],
     campaignEndsAt: campaign.endsAt ? campaign.endsAt.toISOString() : null,
   };
 }

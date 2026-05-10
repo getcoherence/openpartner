@@ -300,6 +300,11 @@ export interface CampaignRow {
    *  When set, auto-minted Coupons for this Campaign also provision a
    *  Stripe Coupon + PromotionCode. */
   customerReward: CustomerReward | null;
+  /** Industry / product categories. Multi-value, drawn from the curated
+   *  PROGRAM_CATEGORIES list. Drives marketplace filtering + the
+   *  Category chip on the discover card. Empty array = uncategorized
+   *  (legitimate; the brand can leave this blank). */
+  categories: string[];
   /** When true AND the brand has a Network membership configured, every
    *  campaign save upserts the corresponding Network Offering so the
    *  marketplace listing stays in sync. False = private campaign,

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
 import {
+  PROGRAM_CATEGORY_SLUGS,
   TABLES,
   renderCommissionSummary,
   type CampaignRow,
@@ -149,6 +150,14 @@ const createSchema = z.object({
   /** Public-facing description for the marketplace card. Optional —
    *  the card renders without a description block when null. */
   marketplaceDescription: z.string().max(4000).nullable().optional(),
+  /** Curated category slugs (see PROGRAM_CATEGORIES). Validated against
+   *  the curated list — unknown slugs are rejected so a typo doesn't
+   *  silently leak through. Empty array allowed (uncategorized). Capped
+   *  at 5 so a brand can't tag every category and dilute filtering. */
+  categories: z
+    .array(z.string().refine((s) => PROGRAM_CATEGORY_SLUGS.has(s), { message: 'unknown category' }))
+    .max(5)
+    .optional(),
   /** When true, after creating the campaign, also grant every existing
    *  non-revoked partner access to it (source='admin'). Defaults to
    *  false so VIP / scoped campaigns stay private unless the brand opts
@@ -170,6 +179,10 @@ const updateSchema = z.object({
   customerReward: customerRewardSchema.nullable().optional(),
   shareOnNetwork: z.boolean().optional(),
   marketplaceDescription: z.string().max(4000).nullable().optional(),
+  categories: z
+    .array(z.string().refine((s) => PROGRAM_CATEGORY_SLUGS.has(s), { message: 'unknown category' }))
+    .max(5)
+    .optional(),
 });
 
 export const campaignsRouter = Router();
@@ -269,6 +282,7 @@ campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) =
         : null,
       shareOnNetwork,
       marketplaceDescription: body.data.marketplaceDescription ?? null,
+      categories: body.data.categories ?? [],
     })
     .returning('*');
 
@@ -342,6 +356,7 @@ campaignsRouter.patch('/campaigns/:id', requireAuth, requireAdmin, async (req, r
   if (body.data.marketplaceDescription !== undefined) {
     patch.marketplaceDescription = body.data.marketplaceDescription;
   }
+  if (body.data.categories !== undefined) patch.categories = body.data.categories;
 
   await db<CampaignRow>(TABLES.Campaign).where({ id: req.params.id }).update(patch);
   const updated = (await db<CampaignRow>(TABLES.Campaign).where({ id: req.params.id }).first()) as CampaignRow;
