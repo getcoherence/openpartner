@@ -94,6 +94,14 @@ export async function syncCampaignToMarketplace(
   // offering, otherwise create a new one and capture the id back.
   if (campaign.networkOfferingId) {
     try {
+      // TEMP DEBUG: surface the exact rule shape being pushed so we can
+      // diagnose missing-recurringMonths-on-Network. Remove once the
+      // path is confirmed end-to-end.
+      console.log('[campaign-marketplace-sync DEBUG] pushing rules', {
+        campaignId: campaign.id,
+        rawRule: campaign.commissionRule,
+        builtRules: terms.commissionRules,
+      });
       await networkProxy.updateOffering(db, tenantId, campaign.networkOfferingId, {
         title: campaign.name,
         description: campaign.marketplaceDescription ?? null,
