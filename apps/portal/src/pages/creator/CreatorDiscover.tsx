@@ -6,6 +6,7 @@ import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select } fro
 import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
 import {
+  formatCustomerReward,
   renderCommissionSummary,
   type CommissionSubRuleLike,
   type CustomerRewardLike,
@@ -398,14 +399,22 @@ export function CreatorDiscoverPage() {
  * + chips + CTA without internal scroll on standard zooms.
  */
 function OfferingDiscoverCard({ offering: o }: { offering: OfferingListItem }) {
-  // Derive client-side from the rule snapshot when available so the
-  // commission line is always rule-faithful even for offerings whose
-  // Network row predates the May 2026 refactor. Falls back to whatever
-  // the Network has stored.
+  // Derive partner-side and customer-side strings independently so the
+  // chip row can render them as TWO chips (one lead "you earn …", one
+  // accent "customers get …") instead of a single mashed pill that's
+  // hard to scan at a glance.
+  //
+  // Pass an empty/null customerReward to renderCommissionSummary so it
+  // returns ONLY the partner-side string. The customer-side chip pulls
+  // from formatCustomerReward independently. Falls back to the legacy
+  // commissionDescription when the rule snapshot is absent (older
+  // offerings predating the May 2026 refactor).
   const commissionLine = o.terms.commissionRules
-    ? renderCommissionSummary(o.terms.commissionRules, o.terms.customerReward)
+    ? renderCommissionSummary(o.terms.commissionRules, null)
     : o.terms.commissionDescription ?? null;
-  const hasDualReward = o.terms.customerReward != null;
+  const customerRewardLine = o.terms.customerReward
+    ? formatCustomerReward(o.terms.customerReward)
+    : null;
 
   return (
     <Card
@@ -465,7 +474,7 @@ function OfferingDiscoverCard({ offering: o }: { offering: OfferingListItem }) {
       <OfferingChips
         terms={o.terms}
         commissionLine={commissionLine}
-        hasDualReward={hasDualReward}
+        customerRewardLine={customerRewardLine}
       />
 
       <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -581,15 +590,18 @@ function CardField({ label, value, emphasize }: { label: string; value: string; 
 function OfferingChips({
   terms,
   commissionLine,
-  hasDualReward,
+  customerRewardLine,
 }: {
   terms: OfferingTerms;
   commissionLine?: string | null;
-  hasDualReward?: boolean;
+  /** Pre-formatted "20% off for 3 months"-style string. When set, we
+   *  render it as its own accent chip prefixed with "Customers:" so
+   *  partner-side and customer-side terms are visually separable. */
+  customerRewardLine?: string | null;
 }) {
   const chips: Array<{ label: string; tone?: 'accent' | 'muted' | 'lead' }> = [];
   if (commissionLine) chips.push({ label: commissionLine, tone: 'lead' });
-  if (hasDualReward) chips.push({ label: 'Dual reward', tone: 'accent' });
+  if (customerRewardLine) chips.push({ label: `Customers: ${customerRewardLine}`, tone: 'accent' });
   // Category chips render right after the lead — top-of-mind axis creators
   // sort by. Cap at 2 displayed so a heavily-tagged program doesn't crowd
   // out the attribution / payout chips below.

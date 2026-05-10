@@ -40,7 +40,7 @@ export function CreatorMyRequestsPage() {
         <EmptyState title="No applications yet" hint="Browse programs to apply." icon={<Inbox size={28} strokeWidth={1.25} />} />
       ) : (
         data.requests.map((r) => (
-          <Card key={r.id}>
+          <Card key={r.id} style={{ marginBottom: 12 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
               <h3 style={{ marginTop: 0, marginBottom: 4, flex: 1 }}>
                 <Link to={`/creator/offerings/${r.offeringId}`}>{r.offeringTitle}</Link>{' '}

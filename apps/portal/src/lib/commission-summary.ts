@@ -88,7 +88,7 @@ function humanizeEventType(eventType: string): string {
   }
 }
 
-function formatCustomerReward(reward: CustomerRewardLike): string {
+export function formatCustomerReward(reward: CustomerRewardLike): string {
   const base = (() => {
     if (reward.type === 'percent_off') return `${trimNumber(reward.value)}% off`;
     if (reward.type === 'amount_off') {

@@ -663,22 +663,20 @@ function formatOfferingDuration(endsAt: string | null | undefined): string | nul
 function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlug, setPreferredSlug, apply, embedded }: ApplyOrStatusProps & { embedded?: boolean }) {
   // `embedded` skips the outer <Card> wrapper — the caller has already
   // wrapped this in their own Card so we just render bare contents.
-  const Wrap: React.FC<{ children: React.ReactNode }> = embedded
-    ? ({ children }) => <>{children}</>
-    : ({ children }) => <Card>{children}</Card>;
-
-  // Show approved share link when active partnership exists. Hide the
-  // apply form for pending/cancelled (cancelled is rare; the creator
-  // can still re-apply through the rejected path if needed).
+  // We branch in render rather than synthesizing a wrapper component
+  // (a previous version did `const Wrap = embedded ? Fragment : Card`,
+  // which created a fresh component reference on every render and
+  // unmounted/remounted the inputs — killing focus on every keystroke).
   if (!whoami?.creator) {
-    return (
-      <Wrap>
+    const inner = (
+      <>
         {!embedded && <h3 style={{ marginTop: 0 }}>Apply to promote</h3>}
         <p style={{ color: theme.textMuted, margin: 0 }}>
           <Link to="/creator/signup" style={{ color: theme.accent }}>Sign up</Link> or <Link to="/creator/login" style={{ color: theme.accent }}>sign in</Link> to apply.
         </p>
-      </Wrap>
+      </>
     );
+    return embedded ? inner : <Card>{inner}</Card>;
   }
 
   if (offering.myStatus === 'approved') {
@@ -686,20 +684,21 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
   }
 
   if (offering.myStatus === 'pending') {
-    return (
-      <Wrap>
+    const inner = (
+      <>
         {!embedded && <h3 style={{ marginTop: 0 }}>Application pending</h3>}
         <p style={{ color: theme.textMuted, fontSize: 13, margin: 0 }}>
           {embedded && <strong style={{ color: theme.text }}>Application pending. </strong>}
           You&rsquo;ve applied to {offering.vendorName}. They&rsquo;ll review and you&rsquo;ll get an email when they decide.
           Track it on <Link to="/creator/requests" style={{ color: theme.accent }}>My applications</Link>.
         </p>
-      </Wrap>
+      </>
     );
+    return embedded ? inner : <Card>{inner}</Card>;
   }
 
-  return (
-    <Wrap>
+  const inner = (
+    <>
       {!embedded && <h3 style={{ marginTop: 0 }}>{offering.myStatus === 'rejected' ? 'Re-apply' : 'Apply to promote'}</h3>}
       {offering.myStatus === 'rejected' && (
         <p style={{ color: theme.textMuted, fontSize: 13, marginTop: 0 }}>
@@ -732,8 +731,9 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
           {apply.isPending ? 'Applying…' : 'Submit application'}
         </Button>
       </div>
-    </Wrap>
+    </>
   );
+  return embedded ? inner : <Card>{inner}</Card>;
 }
 
 /** Active partnership — fetch the share URL from /creators/me/partnerships
