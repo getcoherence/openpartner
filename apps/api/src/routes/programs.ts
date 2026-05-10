@@ -260,6 +260,17 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
   const shareOnNetwork =
     body.data.shareOnNetwork ?? (await defaultShareOnNetwork(db, tenantId));
 
+  // Marketplace description is required when shareOnNetwork=true. The
+  // public marketplace card is the brand's only sales surface for cold
+  // creator traffic; an empty card is a missed conversion. Reject 400
+  // rather than render a blank card.
+  if (shareOnNetwork && !body.data.marketplaceDescription?.trim()) {
+    return res.status(400).json({
+      error: 'invalid_body',
+      detail: { fieldErrors: { marketplaceDescription: ['required when shareOnNetwork is true'] } },
+    });
+  }
+
   const id = ulid();
   const [campaign] = await db<ProgramRow>(TABLES.Program)
     .insert({
@@ -357,6 +368,19 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
     patch.marketplaceDescription = body.data.marketplaceDescription;
   }
   if (body.data.categories !== undefined) patch.categories = body.data.categories;
+
+  // Marketplace description is required when shareOnNetwork=true.
+  // Compute the post-update state by merging body fields over existing,
+  // then reject if the listing would render with no description.
+  const finalShareOnNetwork = patch.shareOnNetwork ?? existing.shareOnNetwork;
+  const finalDescription =
+    'marketplaceDescription' in patch ? patch.marketplaceDescription : existing.marketplaceDescription;
+  if (finalShareOnNetwork && !finalDescription?.trim()) {
+    return res.status(400).json({
+      error: 'invalid_body',
+      detail: { fieldErrors: { marketplaceDescription: ['required when shareOnNetwork is true'] } },
+    });
+  }
 
   await db<ProgramRow>(TABLES.Program).where({ id: req.params.id }).update(patch);
   const updated = (await db<ProgramRow>(TABLES.Program).where({ id: req.params.id }).first()) as ProgramRow;

@@ -312,7 +312,14 @@ function EditProgramDates({
       </div>
 
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={() => save.mutate()} disabled={save.isPending || rules.length === 0}>
+        <Button
+          onClick={() => save.mutate()}
+          disabled={
+            save.isPending ||
+            rules.length === 0 ||
+            (shareOnNetwork && !marketplaceDescription.trim())
+          }
+        >
           {save.isPending ? 'Saving…' : 'Save changes'}
         </Button>
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
@@ -511,7 +518,14 @@ function CreateProgram({ onClose, onCreated }: { onClose: () => void; onCreated:
       <div style={{ display: 'flex', gap: 8 }}>
         <Button
           onClick={() => mut.mutate()}
-          disabled={!name || rules.length === 0 || rules.some((r) => !r.value) || !destinationUrl || mut.isPending}
+          disabled={
+            !name ||
+            rules.length === 0 ||
+            rules.some((r) => !r.value) ||
+            !destinationUrl ||
+            (networkEnabled && shareOnNetwork && !marketplaceDescription.trim()) ||
+            mut.isPending
+          }
         >
           {mut.isPending ? 'Creating…' : 'Create campaign'}
         </Button>
@@ -750,8 +764,10 @@ function SubRuleRow({
  * campaign stays private (existing partners only); toggle on = every save
  * upserts the Network listing automatically.
  *
- * marketplaceDescription is the public-facing card copy. Optional — when
- * empty the card renders without a description block.
+ * marketplaceDescription is the public-facing card copy. Required when
+ * shareOnNetwork is on — the marketplace card is the brand's only sales
+ * surface for cold creator traffic; an empty card is a missed conversion.
+ * UI gates Save when missing; the API also rejects 400.
  */
 function MarketplaceFields({
   shareOnNetwork,
@@ -794,27 +810,27 @@ function MarketplaceFields({
       </div>
       {shareOnNetwork && (
         <div style={{ marginLeft: 24 }}>
-          <Label>Marketplace description (optional)</Label>
+          <Label>Marketplace description <span style={{ color: theme.danger }}>*</span></Label>
           <textarea
             value={description}
             onChange={(e) => onDescriptionChange(e.target.value)}
             rows={3}
             placeholder="What you sell, who it's for, why it converts."
+            required
             style={{
               width: '100%',
               padding: '8px 10px',
               fontSize: 13,
               background: theme.surface,
               color: theme.text,
-              border: `1px solid ${theme.borderSubtle}`,
+              border: `1px solid ${description.trim() ? theme.borderSubtle : `${theme.danger}66`}`,
               borderRadius: 6,
               fontFamily: 'inherit',
               resize: 'vertical',
             }}
           />
           <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4, marginBottom: 12 }}>
-            Public copy on the discover card. Leave blank to render the card
-            without a description block.
+            Public copy on the discover card. Required when listed on the marketplace.
           </div>
           <Label>Categories (up to 5)</Label>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
