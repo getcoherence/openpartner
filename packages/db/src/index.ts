@@ -7,6 +7,11 @@ import { sslFromConnectionString } from './ssl.js';
 
 export * from './types.js';
 export { sslFromConnectionString } from './ssl.js';
+export { renderCommissionSummary } from './commission-summary.js';
+export type {
+  CommissionSubRuleLike,
+  CustomerRewardLike,
+} from './commission-summary.js';
 
 export interface DbConfig {
   connectionString: string;

@@ -11,7 +11,6 @@ interface OfferingListItem {
   title: string;
   description: string | null;
   productUrl: string;
-  heroImageUrl: string | null;
   vendorId: string;
   vendorName: string;
   vendorPartnerCount: number;

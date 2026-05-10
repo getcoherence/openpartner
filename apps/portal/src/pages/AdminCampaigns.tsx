@@ -39,7 +39,14 @@ interface Campaign {
   startsAt: string | null;
   endsAt: string | null;
   customerReward: CustomerReward | null;
+  shareOnNetwork: boolean;
+  marketplaceDescription: string | null;
+  networkOfferingId: string | null;
   createdAt: string;
+}
+
+interface NetworkConnectionState {
+  enabled: boolean;
 }
 
 function normalizeRules(raw: Campaign['commissionRule']): CommissionSubRule[] {
@@ -206,6 +213,8 @@ function EditCampaignDates({
   const [endsAt, setEndsAt] = useState(campaign.endsAt ? toDateTimeLocal(campaign.endsAt) : '');
   const [rules, setRules] = useState<CommissionSubRule[]>(normalizeRules(campaign.commissionRule));
   const [customerReward, setCustomerReward] = useState<CustomerReward | null>(campaign.customerReward);
+  const [shareOnNetwork, setShareOnNetwork] = useState(campaign.shareOnNetwork);
+  const [marketplaceDescription, setMarketplaceDescription] = useState(campaign.marketplaceDescription ?? '');
   const [holdbackDays, setHoldbackDays] = useState(
     campaign.holdbackDays != null ? String(campaign.holdbackDays) : '0',
   );
@@ -219,6 +228,8 @@ function EditCampaignDates({
           endsAt: endsAt ? new Date(endsAt).toISOString() : null,
           commissionRule: rules,
           customerReward,
+          shareOnNetwork,
+          marketplaceDescription: marketplaceDescription.trim() || null,
           holdbackDays: Number(holdbackDays) || 0,
         },
       }),
@@ -276,6 +287,12 @@ function EditCampaignDates({
       </div>
       <CompoundRuleEditor rules={rules} onChange={setRules} />
       <CustomerRewardEditor reward={customerReward} onChange={setCustomerReward} />
+      <MarketplaceFields
+        shareOnNetwork={shareOnNetwork}
+        onShareChange={setShareOnNetwork}
+        description={marketplaceDescription}
+        onDescriptionChange={setMarketplaceDescription}
+      />
       <div style={{ marginBottom: 16 }}>
         <Label>Payout holdback (days)</Label>
         <Select value={holdbackDays} onChange={(e) => setHoldbackDays(e.target.value)}>
@@ -308,6 +325,16 @@ function toDateTimeLocal(iso: string): string {
 }
 
 function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  // Network status drives the smart default for shareOnNetwork. When the
+  // brand is connected, default ON; otherwise hide the toggle entirely
+  // (no point promising marketplace listing for a brand that isn't on
+  // the marketplace).
+  const network = useQuery({
+    queryKey: ['network-membership'],
+    queryFn: () => api<NetworkConnectionState>('/config/network'),
+  });
+  const networkEnabled = network.data?.enabled ?? false;
+
   const [name, setName] = useState('');
   const [destinationUrl, setDestinationUrl] = useState('');
   const [deepLinkDomains, setDeepLinkDomains] = useState('');
@@ -315,6 +342,8 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
     { trigger: 'every', type: 'percent', value: 20, recurring: true },
   ]);
   const [customerReward, setCustomerReward] = useState<CustomerReward | null>(null);
+  const [shareOnNetwork, setShareOnNetwork] = useState(true);
+  const [marketplaceDescription, setMarketplaceDescription] = useState('');
   const [windowDays, setWindowDays] = useState('60');
   const [model, setModel] = useState<'last_click' | 'first_click' | 'linear' | 'position'>('last_click');
   const [holdbackDays, setHoldbackDays] = useState('0');
@@ -337,6 +366,14 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
           startsAt: startsAt ? new Date(startsAt).toISOString() : null,
           endsAt: endsAt ? new Date(endsAt).toISOString() : null,
           customerReward,
+          // Only send shareOnNetwork when the brand is connected; otherwise
+          // let the server apply its own default (false). Same for
+          // marketplaceDescription which has no effect when not listed.
+          shareOnNetwork: networkEnabled ? shareOnNetwork : undefined,
+          marketplaceDescription:
+            networkEnabled && shareOnNetwork && marketplaceDescription.trim()
+              ? marketplaceDescription.trim()
+              : undefined,
           grantToAllPartners: grantToAllPartners || undefined,
         },
       }),
@@ -376,6 +413,14 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
       </div>
       <CompoundRuleEditor rules={rules} onChange={setRules} />
       <CustomerRewardEditor reward={customerReward} onChange={setCustomerReward} />
+      {networkEnabled && (
+        <MarketplaceFields
+          shareOnNetwork={shareOnNetwork}
+          onShareChange={setShareOnNetwork}
+          description={marketplaceDescription}
+          onDescriptionChange={setMarketplaceDescription}
+        />
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 14, marginBottom: 16 }}>
         <div>
           <Label>Attribution window (days)</Label>
@@ -689,6 +734,70 @@ function SubRuleRow({
  * Defaults when toggled on: 20% off for the first 3 months — a sane
  * starting point that mirrors how Dub presents the feature.
  */
+/**
+ * Marketplace presence for the campaign. Only rendered when the brand is
+ * connected to the Network (caller gates the mount). Toggle off = the
+ * campaign stays private (existing partners only); toggle on = every save
+ * upserts the Network listing automatically.
+ *
+ * marketplaceDescription is the public-facing card copy. Optional — when
+ * empty the card renders without a description block.
+ */
+function MarketplaceFields({
+  shareOnNetwork,
+  onShareChange,
+  description,
+  onDescriptionChange,
+}: {
+  shareOnNetwork: boolean;
+  onShareChange: (v: boolean) => void;
+  description: string;
+  onDescriptionChange: (v: string) => void;
+}) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text, marginBottom: 6 }}>
+        <input
+          type="checkbox"
+          checked={shareOnNetwork}
+          onChange={(e) => onShareChange(e.target.checked)}
+        />
+        List on the OpenPartner Network marketplace
+      </label>
+      <div style={{ fontSize: 12, color: theme.textDim, marginLeft: 24, marginBottom: shareOnNetwork ? 12 : 0 }}>
+        Creators on the marketplace can discover this campaign and apply.
+        Off = private (existing partners only — VIP / scoped programs).
+      </div>
+      {shareOnNetwork && (
+        <div style={{ marginLeft: 24 }}>
+          <Label>Marketplace description (optional)</Label>
+          <textarea
+            value={description}
+            onChange={(e) => onDescriptionChange(e.target.value)}
+            rows={3}
+            placeholder="What you sell, who it's for, why it converts."
+            style={{
+              width: '100%',
+              padding: '8px 10px',
+              fontSize: 13,
+              background: theme.surface,
+              color: theme.text,
+              border: `1px solid ${theme.borderSubtle}`,
+              borderRadius: 6,
+              fontFamily: 'inherit',
+              resize: 'vertical',
+            }}
+          />
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+            Public copy on the discover card. Leave blank to render the card
+            without a description block.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CustomerRewardEditor({
   reward,
   onChange,

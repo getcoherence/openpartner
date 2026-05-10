@@ -1,7 +1,20 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
-import { TABLES, type CampaignRow, type CommissionRule, type CustomerReward } from '@openpartner/db';
+import {
+  TABLES,
+  renderCommissionSummary,
+  type CampaignRow,
+  type CommissionRule,
+  type CommissionSubRuleLike,
+  type CustomerReward,
+  type CustomerRewardLike,
+} from '@openpartner/db';
+import {
+  syncCampaignToMarketplace,
+  defaultShareOnNetwork,
+  persistNetworkOfferingId,
+} from '../campaign-marketplace-sync.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { campaignAcceptsNewActivity } from '../campaign-lifecycle.js';
@@ -128,6 +141,14 @@ const createSchema = z.object({
    *  on every auto-minted Coupon for this campaign. Null/omitted = no
    *  customer-side reward (partner-only program). */
   customerReward: customerRewardSchema.nullable().optional(),
+  /** Publish this campaign as a Network marketplace listing. Omitted =
+   *  default to true if the brand has a Network membership configured,
+   *  false otherwise. Brand can opt out per-campaign for VIP / private
+   *  programs by passing false explicitly. */
+  shareOnNetwork: z.boolean().optional(),
+  /** Public-facing description for the marketplace card. Optional —
+   *  the card renders without a description block when null. */
+  marketplaceDescription: z.string().max(4000).nullable().optional(),
   /** When true, after creating the campaign, also grant every existing
    *  non-revoked partner access to it (source='admin'). Defaults to
    *  false so VIP / scoped campaigns stay private unless the brand opts
@@ -147,6 +168,8 @@ const updateSchema = z.object({
   startsAt: z.string().datetime().nullable().optional(),
   endsAt: z.string().datetime().nullable().optional(),
   customerReward: customerRewardSchema.nullable().optional(),
+  shareOnNetwork: z.boolean().optional(),
+  marketplaceDescription: z.string().max(4000).nullable().optional(),
 });
 
 export const campaignsRouter = Router();
@@ -218,6 +241,12 @@ campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) =
   const body = createSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
+  // Smart default: shareOnNetwork=true when the brand is on the Network so
+  // the common case is "create campaign, immediately listed." Brand can opt
+  // out per-campaign by passing false explicitly (VIP / private programs).
+  const shareOnNetwork =
+    body.data.shareOnNetwork ?? (await defaultShareOnNetwork(db, tenantId));
+
   const id = ulid();
   const [campaign] = await db<CampaignRow>(TABLES.Campaign)
     .insert({
@@ -238,6 +267,8 @@ campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) =
       customerReward: body.data.customerReward
         ? (JSON.stringify(body.data.customerReward) as unknown as CustomerReward)
         : null,
+      shareOnNetwork,
+      marketplaceDescription: body.data.marketplaceDescription ?? null,
     })
     .returning('*');
 
@@ -265,11 +296,25 @@ campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) =
     }
   }
 
+  // Push the marketplace listing if applicable. Best-effort — failures
+  // log + continue, the brand can re-save to retry. Captures the
+  // Network's offering id back onto the row so later edits PATCH the
+  // same listing instead of creating duplicates.
+  const summary = renderCommissionSummary(
+    body.data.commissionRule as CommissionSubRuleLike[],
+    (body.data.customerReward ?? null) as CustomerRewardLike | null,
+  );
+  const offeringId = await syncCampaignToMarketplace(db, tenantId, campaign as CampaignRow, summary);
+  if (offeringId && offeringId !== (campaign as CampaignRow).networkOfferingId) {
+    await persistNetworkOfferingId(db, id, offeringId);
+    (campaign as CampaignRow).networkOfferingId = offeringId;
+  }
+
   res.status(201).json(campaign);
 });
 
 campaignsRouter.patch('/campaigns/:id', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const body = updateSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
@@ -293,8 +338,27 @@ campaignsRouter.patch('/campaigns/:id', requireAuth, requireAdmin, async (req, r
       ? (JSON.stringify(body.data.customerReward) as unknown as CustomerReward)
       : null;
   }
+  if (body.data.shareOnNetwork !== undefined) patch.shareOnNetwork = body.data.shareOnNetwork;
+  if (body.data.marketplaceDescription !== undefined) {
+    patch.marketplaceDescription = body.data.marketplaceDescription;
+  }
 
   await db<CampaignRow>(TABLES.Campaign).where({ id: req.params.id }).update(patch);
-  const updated = await db<CampaignRow>(TABLES.Campaign).where({ id: req.params.id }).first();
+  const updated = (await db<CampaignRow>(TABLES.Campaign).where({ id: req.params.id }).first()) as CampaignRow;
+
+  // Sync to the marketplace whenever the saved row could affect the
+  // listing. We sync unconditionally (vs. diffing fields) — the helper
+  // is idempotent and the cost is one HTTP call per save, well below
+  // the noise floor of an admin-initiated request.
+  const summary = renderCommissionSummary(
+    updated.commissionRule as unknown as CommissionSubRuleLike[],
+    updated.customerReward as CustomerRewardLike | null,
+  );
+  const offeringId = await syncCampaignToMarketplace(db, tenantId, updated, summary);
+  if (offeringId && offeringId !== updated.networkOfferingId) {
+    await persistNetworkOfferingId(db, updated.id, offeringId);
+    updated.networkOfferingId = offeringId;
+  }
+
   res.json(updated);
 });

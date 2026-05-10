@@ -509,9 +509,12 @@ function BrandOnboarding() {
     },
     {
       done: data.offeringPublishedCount > 0,
-      label: 'Publish your first offering',
-      hint: 'The marketplace listing creators see when they browse.',
-      href: data.networkConnected ? `${tenantBase}/admin/network/offerings` : null,
+      label: 'Create your first campaign',
+      hint:
+        data.networkConnected
+          ? 'Auto-listed on the OpenPartner Network when shareOnNetwork is on.'
+          : 'Defines your commission rule + destination URL.',
+      href: `${tenantBase}/admin/campaigns`,
     },
     {
       done: data.partnerCount > 0,

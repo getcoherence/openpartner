@@ -300,6 +300,21 @@ export interface CampaignRow {
    *  When set, auto-minted Coupons for this Campaign also provision a
    *  Stripe Coupon + PromotionCode. */
   customerReward: CustomerReward | null;
+  /** When true AND the brand has a Network membership configured, every
+   *  campaign save upserts the corresponding Network Offering so the
+   *  marketplace listing stays in sync. False = private campaign,
+   *  partner-only — no marketplace presence. Defaults to false at the
+   *  DB level; the API route applies a smarter default (true when the
+   *  brand is on the Network) for new campaigns. */
+  shareOnNetwork: boolean;
+  /** Public-facing description shown on the Network marketplace card.
+   *  Null/empty = card renders without a description block (just brand
+   *  mark + chips + CTA). Internal `name` stays admin-only. */
+  marketplaceDescription: string | null;
+  /** The Network's Offering row id we're synced against. Null until
+   *  the first successful federation upsert; subsequent edits PATCH
+   *  this id instead of creating a new offering. */
+  networkOfferingId: string | null;
   createdAt: Date;
 }
 

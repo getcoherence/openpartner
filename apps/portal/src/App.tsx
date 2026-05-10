@@ -44,7 +44,6 @@ import { AdminBilling } from './pages/admin/Billing.js';
 import { AdminAdmins } from './pages/admin/Admins.js';
 import { AdminNetwork } from './pages/admin/Network.js';
 import { AdminNetworkComplete } from './pages/admin/NetworkComplete.js';
-import { AdminNetworkOfferings } from './pages/admin/NetworkOfferings.js';
 import { AdminNetworkRequests } from './pages/admin/NetworkRequests.js';
 import { AdminNetworkCreators } from './pages/admin/NetworkCreators.js';
 import { AdminNetworkBilling } from './pages/admin/NetworkBilling.js';
@@ -200,7 +199,6 @@ function Shell() {
               <Route path="admin/billing" element={<AdminBilling />} />
               <Route path="admin/network" element={<AdminNetwork />} />
               <Route path="admin/network/complete" element={<AdminNetworkComplete />} />
-              <Route path="admin/network/offerings" element={<AdminNetworkOfferings />} />
               <Route path="admin/network/requests" element={<AdminNetworkRequests />} />
               <Route path="admin/network/creators" element={<AdminNetworkCreators />} />
               <Route path="admin/network/billing" element={<AdminNetworkBilling />} />
@@ -537,7 +535,6 @@ function NetworkNav() {
       <NavItem to="/admin/network" icon={<Globe size={16} />} exact>{connected ? 'Connection' : 'Get connected'}</NavItem>
       {connected && (
         <>
-          <NavItem to="/admin/network/offerings" icon={<Megaphone size={16} />}>Offerings</NavItem>
           <NavItem to="/admin/network/requests" icon={<Inbox size={16} />}>Requests</NavItem>
           <NavItem to="/admin/network/creators" icon={<Users size={16} />}>Discover creators</NavItem>
           <NavItem to="/admin/network/billing" icon={<CreditCard size={16} />}>Billing</NavItem>
