@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ChevronRight } from 'lucide-react';
 import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi, ApiError } from './creator-api.js';
+import { categoryLabel } from '@openpartner/db';
 
 interface InvitationContext {
   id: string;
@@ -24,6 +24,14 @@ const MODEL_LABELS: Record<'last_click' | 'first_click' | 'linear' | 'position',
   linear: 'Linear',
   position: 'Position',
 };
+
+interface CustomerReward {
+  type: 'percent_off' | 'amount_off' | 'free_months';
+  value: number;
+  currency?: string;
+  duration: 'once' | 'forever' | 'repeating';
+  durationInMonths?: number;
+}
 
 interface Offering {
   id: string;
@@ -48,12 +56,50 @@ interface Offering {
     attributionWindowDays?: number;
     /** True when commission pays on every renewal of a subscription. */
     recurring?: boolean;
+    /** Customer-side reward (dual-sided incentive). Drives the gift
+     *  icon in the Rewards quick-info cell + a row in the Rewards
+     *  card. */
+    customerReward?: CustomerReward | null;
+    /** Curated category slugs. First one renders in the Category
+     *  quick-info cell; the rest live in a "+N" tooltip. */
+    categories?: string[];
     /** ISO timestamp when the bound vendor  Program expires. Null =
      *  indefinite (no end date). Absent = legacy offering. */
     campaignEndsAt?: string | null;
   };
   createdAt: string;
   myStatus: MyStatus;
+}
+
+function partnerOnlySummary(full: string | undefined): string {
+  if (!full) return '';
+  const idx = full.indexOf(' — customers get ');
+  return idx >= 0 ? full.slice(0, idx) : full;
+}
+
+function formatCustomerReward(r: CustomerReward): string {
+  const base = (() => {
+    if (r.type === 'percent_off') return `${r.value}% off`;
+    if (r.type === 'amount_off') {
+      const cur = r.currency && r.currency.toUpperCase() !== 'USD' ? ` ${r.currency.toUpperCase()}` : '';
+      return `$${r.value}${cur} off`;
+    }
+    return `${r.value} ${r.value === 1 ? 'month' : 'months'} free`;
+  })();
+  if (r.type === 'free_months') return base;
+  if (r.duration === 'once') return `${base} on first invoice`;
+  if (r.duration === 'forever') return `${base} forever`;
+  if (r.duration === 'repeating' && r.durationInMonths) return `${base} for ${r.durationInMonths} months`;
+  return base;
+}
+
+function hostnameOf(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
+}
+
+function firstParagraph(s: string): string {
+  const blocks = s.split(/\n\s*\n/);
+  return blocks[0]?.trim() ?? s.trim();
 }
 
 interface PartnershipForOffering {
@@ -134,36 +180,6 @@ export function CreatorOfferingDetailPage() {
     <Page title={offering?.title ?? 'Program'}>
       <ErrorBanner error={error} />
       {isLoading && <Card>Loading…</Card>}
-      {offering && (
-        <Link
-          to={`/creator/vendors/${offering.vendorId}`}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            padding: '12px 14px',
-            background: theme.surface,
-            border: `1px solid ${theme.borderSubtle}`,
-            borderRadius: theme.radiusSm,
-            marginBottom: 14,
-            textDecoration: 'none',
-            color: theme.text,
-          }}
-        >
-          <BrandMark logoUrl={offering.vendorLogoUrl ?? null} name={offering.vendorName} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 11, color: theme.textDim, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
-              Brand
-            </div>
-            <div style={{ fontSize: 15, fontWeight: 500, marginTop: 2, color: theme.text }}>
-              {offering.vendorName}
-            </div>
-          </div>
-          <span style={{ fontSize: 12, color: theme.accent, display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-            View profile <ChevronRight size={14} />
-          </span>
-        </Link>
-      )}
       {invitation && invitation.status === 'pending' && (
         <Card style={{ marginBottom: 14, background: `${theme.accent}10`, borderColor: `${theme.accent}55` }}>
           <div style={{ fontSize: 14, fontWeight: 500, color: theme.accent, marginBottom: 4 }}>
@@ -187,78 +203,377 @@ export function CreatorOfferingDetailPage() {
         </Card>
       )}
       {offering && (
-        <>
-          <Card>
+        <OfferingDetailBody
+          offering={offering}
+          whoami={whoami}
+          message={message}
+          setMessage={setMessage}
+          preferredSlug={preferredSlug}
+          setPreferredSlug={setPreferredSlug}
+          apply={apply}
+        />
+      )}
+    </Page>
+  );
+}
+
+/**
+ * Main body of the offering detail page — Dub-style layout matching
+ * the public marketplace's per-program page on openpartner.dev.
+ *
+ *   - Brand header: logo + vendor name + tagline (first paragraph of
+ *     description). Vendor name links to the vendor's full profile.
+ *   - Quick-info row: Rewards icons (with hover tooltips), Category
+ *     (first label + "+N" tooltip), Website link.
+ *   - Two-column body: left = "Join the X" intro + apply form +
+ *     Rewards card + program details; right = full About text.
+ */
+function OfferingDetailBody({
+  offering,
+  whoami,
+  message,
+  setMessage,
+  preferredSlug,
+  setPreferredSlug,
+  apply,
+}: ApplyOrStatusProps) {
+  const cats = offering.terms.categories ?? [];
+  return (
+    <>
+      <header style={{ display: 'flex', gap: 18, alignItems: 'flex-start', marginBottom: 18 }}>
+        <BrandMark logoUrl={offering.vendorLogoUrl ?? null} name={offering.vendorName} size={56} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Link
+            to={`/creator/vendors/${offering.vendorId}`}
+            style={{
+              fontSize: 26,
+              fontWeight: 700,
+              color: theme.text,
+              textDecoration: 'none',
+              lineHeight: 1.15,
+              display: 'block',
+            }}
+          >
+            {offering.vendorName}
+          </Link>
+          {offering.description && (
+            <p
+              style={{
+                fontSize: 14,
+                color: theme.textMuted,
+                lineHeight: 1.5,
+                margin: '6px 0 0',
+                maxWidth: 640,
+                display: '-webkit-box',
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: 'vertical',
+                overflow: 'hidden',
+              }}
+            >
+              {firstParagraph(offering.description)}
+            </p>
+          )}
+        </div>
+      </header>
+
+      {/* Quick-info row — Rewards / Category / Website at-a-glance */}
+      <div
+        style={{
+          display: 'flex',
+          gap: 32,
+          flexWrap: 'wrap',
+          padding: '14px 0',
+          marginBottom: 18,
+          borderTop: `1px solid ${theme.borderSubtle}`,
+          borderBottom: `1px solid ${theme.borderSubtle}`,
+        }}
+      >
+        <QuickCell label="Rewards">
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             {offering.terms.commissionDescription && (
-              <TermLine label="Commission" value={offering.terms.commissionDescription} />
+              <Tooltip text={partnerOnlySummary(offering.terms.commissionDescription)}>
+                <RewardIcon kind="commission" />
+              </Tooltip>
             )}
-            {offering.description && (
-              <TermLine label="About" value={offering.description} multiline />
+            {offering.terms.customerReward && (
+              <Tooltip text={`Customers get ${formatCustomerReward(offering.terms.customerReward)}`}>
+                <RewardIcon kind="customer" />
+              </Tooltip>
             )}
-            <TermLine
-              label="Product"
-              value={
-                <a href={offering.productUrl} target="_blank" rel="noopener noreferrer" style={{ color: theme.accent }}>
-                  {offering.productUrl} ↗
-                </a>
-              }
+          </div>
+        </QuickCell>
+        {cats.length > 0 && (
+          <QuickCell label="Category">
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span style={{ fontSize: 14, fontWeight: 600, color: theme.text }}>
+                {categoryLabel(cats[0]!)}
+              </span>
+              {cats.length > 1 && (
+                <Tooltip text={cats.slice(1).map(categoryLabel).join('\n')} stacked>
+                  <span style={{ fontSize: 12, color: theme.textMuted, cursor: 'help', padding: '2px 6px' }}>
+                    +{cats.length - 1}
+                  </span>
+                </Tooltip>
+              )}
+            </div>
+          </QuickCell>
+        )}
+        {offering.productUrl && (
+          <QuickCell label="Website">
+            <a
+              href={offering.productUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: 14, color: theme.accent, textDecoration: 'none' }}
+            >
+              {hostnameOf(offering.productUrl)} ↗
+            </a>
+          </QuickCell>
+        )}
+      </div>
+
+      {/* Two-column body */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+          gap: 24,
+        }}
+      >
+        <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <Card>
+            <h2 style={{ fontSize: 18, margin: '0 0 8px', color: theme.text }}>
+              Join the {offering.vendorName} partner program
+            </h2>
+            <p style={{ fontSize: 14, color: theme.textMuted, lineHeight: 1.55, margin: '0 0 16px' }}>
+              Share {offering.vendorName} with your audience. For each customer you refer,
+              you earn the commission below — paid directly to your Stripe account.
+            </p>
+
+            <ApplyOrStatusCard
+              offering={offering}
+              whoami={whoami}
+              message={message}
+              setMessage={setMessage}
+              preferredSlug={preferredSlug}
+              setPreferredSlug={setPreferredSlug}
+              apply={apply}
+              embedded
             />
-            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 16, paddingTop: 14, borderTop: `1px solid ${theme.borderSubtle}`, color: theme.textMuted, fontSize: 13 }}>
+          </Card>
+
+          <Card>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: theme.textDim,
+                letterSpacing: '0.06em',
+                textTransform: 'uppercase',
+                marginBottom: 10,
+              }}
+            >
+              Rewards
+            </div>
+            {offering.terms.commissionDescription && (
+              <RewardCardRow
+                icon="commission"
+                text={partnerOnlySummary(offering.terms.commissionDescription)}
+              />
+            )}
+            {offering.terms.customerReward && (
+              <RewardCardRow
+                icon="customer"
+                text={`New customers get ${formatCustomerReward(offering.terms.customerReward)}`}
+              />
+            )}
+          </Card>
+
+          <Card>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: theme.textDim,
+                letterSpacing: '0.06em',
+                textTransform: 'uppercase',
+                marginBottom: 10,
+              }}
+            >
+              Program details
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: '8px 16px' }}>
               {offering.terms.attributionModel && (
-                <LabeledChip
-                  label="Attribution"
-                  value={MODEL_LABELS[offering.terms.attributionModel]}
-                  hint="Which click gets the credit when a customer touches several creator links before converting. Last click = the most recent referrer (most common); first click = the discoverer; linear/position split across all touches."
-                />
+                <>
+                  <span style={{ fontSize: 13, color: theme.textMuted }}>Attribution</span>
+                  <span style={{ fontSize: 13, color: theme.text }}>{MODEL_LABELS[offering.terms.attributionModel]}</span>
+                </>
               )}
               {offering.terms.attributionWindowDays != null && (
-                <LabeledChip
-                  label="Attribution window"
-                  value={`${offering.terms.attributionWindowDays} days`}
-                  hint="The longest gap between someone's click on your link and their eventual purchase that still pays you. Bigger window = more conversions credited to you, especially for products with long evaluation cycles."
-                />
+                <>
+                  <span style={{ fontSize: 13, color: theme.textMuted }}>Attribution window</span>
+                  <span style={{ fontSize: 13, color: theme.text }}>{offering.terms.attributionWindowDays} days</span>
+                </>
               )}
               {offering.terms.cookieWindowDays != null && (
-                <LabeledChip label="Cookie window" value={`${offering.terms.cookieWindowDays} days`} />
-              )}
-              {offering.terms.recurring && (
-                <LabeledChip
-                  label="Recurring"
-                  value="Every renewal"
-                  hint="Commission pays on every renewal of a subscription, not just the first invoice. Best for SaaS / membership products."
-                />
-              )}
-              {offering.terms.payoutCadence && (
-                <LabeledChip label="Payouts" value={offering.terms.payoutCadence} />
+                <>
+                  <span style={{ fontSize: 13, color: theme.textMuted }}>Cookie window</span>
+                  <span style={{ fontSize: 13, color: theme.text }}>{offering.terms.cookieWindowDays} days</span>
+                </>
               )}
               {offering.terms.payoutHoldbackDays != null && offering.terms.payoutHoldbackDays > 0 && (
-                <LabeledChip
-                  label="Holdback"
-                  value={`${offering.terms.payoutHoldbackDays} days`}
-                  hint="Time after a customer converts before the brand can approve + pay your commission. Aligns with their refund window or trial."
-                />
+                <>
+                  <span style={{ fontSize: 13, color: theme.textMuted }}>Payout holdback</span>
+                  <span style={{ fontSize: 13, color: theme.text }}>{offering.terms.payoutHoldbackDays} days</span>
+                </>
+              )}
+              {offering.terms.payoutCadence && (
+                <>
+                  <span style={{ fontSize: 13, color: theme.textMuted }}>Payouts</span>
+                  <span style={{ fontSize: 13, color: theme.text }}>{offering.terms.payoutCadence}</span>
+                </>
               )}
               {(() => {
                 const d = formatOfferingDuration(offering.terms.campaignEndsAt);
-                return d ? <LabeledChip label="Duration" value={d} /> : null;
+                return d ? (
+                  <>
+                    <span style={{ fontSize: 13, color: theme.textMuted }}>Duration</span>
+                    <span style={{ fontSize: 13, color: theme.text }}>{d}</span>
+                  </>
+                ) : null;
               })()}
             </div>
           </Card>
+        </div>
 
-          <div style={{ height: 18 }} />
+        {offering.description && (
+          <div style={{ minWidth: 0 }}>
+            <Card>
+              <h2 style={{ fontSize: 18, margin: '0 0 12px', color: theme.text }}>
+                About {offering.vendorName}
+              </h2>
+              <div style={{ fontSize: 14, color: theme.textMuted, lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>
+                {offering.description}
+              </div>
+            </Card>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
 
-          <ApplyOrStatusCard
-            offering={offering}
-            whoami={whoami}
-            message={message}
-            setMessage={setMessage}
-            preferredSlug={preferredSlug}
-            setPreferredSlug={setPreferredSlug}
-            apply={apply}
-          />
-        </>
-      )}
-    </Page>
+/** Quick-info row cell — label-above-content. */
+function QuickCell({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <span
+        style={{
+          fontSize: 11,
+          fontWeight: 600,
+          color: theme.textDim,
+          letterSpacing: '0.06em',
+          textTransform: 'uppercase',
+        }}
+      >
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function RewardIcon({ kind }: { kind: 'commission' | 'customer' }) {
+  const isGift = kind === 'customer';
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 26,
+        height: 26,
+        borderRadius: 6,
+        background: isGift ? `${theme.warnSoft ?? '#fef3c7'}` : theme.surface2,
+        border: `1px solid ${isGift ? '#fbbf24' : theme.borderSubtle}`,
+        color: isGift ? '#92400e' : theme.accent,
+        fontWeight: 700,
+        fontSize: isGift ? 14 : 13,
+        cursor: 'help',
+      }}
+    >
+      {isGift ? '🎁' : '$'}
+    </span>
+  );
+}
+
+function RewardCardRow({ icon, text }: { icon: 'commission' | 'customer'; text: string }) {
+  return (
+    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '6px 0' }}>
+      <RewardIcon kind={icon} />
+      <span style={{ fontSize: 14, color: theme.text, lineHeight: 1.5, paddingTop: 3 }}>{text}</span>
+    </div>
+  );
+}
+
+/**
+ * Custom CSS-only tooltip — sits above the trigger on hover. We avoid
+ * the browser's `title` attribute everywhere on this page so the tooltip
+ * styling is consistent and the 1s+ system delay doesn't make the UI
+ * feel sluggish. `stacked` flag switches to a multi-line list layout
+ * for the "+N" categories popover.
+ */
+function Tooltip({
+  text,
+  children,
+  stacked,
+}: {
+  text: string;
+  children: React.ReactNode;
+  stacked?: boolean;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const lines = stacked ? text.split('\n').filter(Boolean) : null;
+  return (
+    <span
+      style={{ position: 'relative', display: 'inline-flex' }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {children}
+      <span
+        style={{
+          position: 'absolute',
+          bottom: 'calc(100% + 8px)',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: theme.surface,
+          color: theme.text,
+          fontSize: 12,
+          fontWeight: 500,
+          padding: stacked ? '8px 12px' : '6px 10px',
+          borderRadius: 6,
+          border: `1px solid ${theme.borderSubtle}`,
+          boxShadow: '0 4px 12px rgba(15, 23, 42, 0.25)',
+          whiteSpace: stacked ? 'normal' : 'nowrap',
+          maxWidth: 280,
+          pointerEvents: 'none',
+          opacity: hovered ? 1 : 0,
+          transition: 'opacity 0.12s',
+          zIndex: 30,
+        }}
+      >
+        {lines ? (
+          <span style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {lines.map((l, i) => (
+              <span key={i} style={{ fontSize: 13, whiteSpace: 'nowrap' }}>{l}</span>
+            ))}
+          </span>
+        ) : (
+          text
+        )}
+      </span>
+    </span>
   );
 }
 
@@ -272,48 +587,23 @@ interface ApplyOrStatusProps {
   apply: ReturnType<typeof useMutation<unknown, Error, void>>;
 }
 
-/** Label-on-top, value-below row used inside the offering terms card.
- *  Replaces the former unlabeled paragraph that left freeform values
- *  like "50%" floating without context. */
-function TermLine({
-  label,
-  value,
-  multiline,
-}: {
-  label: string;
-  value: React.ReactNode;
-  multiline?: boolean;
-}) {
-  return (
-    <div style={{ marginBottom: 12 }}>
-      <div style={{ fontSize: 11, color: theme.textDim, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: 4 }}>
-        {label}
-      </div>
-      <div style={{ fontSize: multiline ? 14 : 15, color: theme.text, whiteSpace: multiline ? 'pre-wrap' : 'normal', lineHeight: multiline ? 1.55 : 1.4 }}>
-        {value}
-      </div>
-    </div>
-  );
-}
-
-/** 36px brand mark used inside the Brand strip above the terms card.
- *  Smaller than the vendor profile page header (which sits at the
- *  top of its own page); same fallback behavior. */
-function BrandMark({ logoUrl, name }: { logoUrl: string | null; name: string }) {
+/** Brand mark used in the offering header. Sizable so the same component
+ *  works at 36px for compact headers and 56px for the page-top header. */
+function BrandMark({ logoUrl, name, size = 36 }: { logoUrl: string | null; name: string; size?: number }) {
   const initial = name.charAt(0).toUpperCase() || '?';
   return (
     <div
       style={{
-        width: 36,
-        height: 36,
-        borderRadius: 8,
+        width: size,
+        height: size,
+        borderRadius: size >= 48 ? 10 : 8,
         background: logoUrl ? theme.surface2 : theme.accent,
         color: theme.accentInk,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         fontWeight: 700,
-        fontSize: 14,
+        fontSize: Math.round(size * 0.4),
         overflow: 'hidden',
         flexShrink: 0,
         border: `1px solid ${theme.borderSubtle}`,
@@ -349,52 +639,47 @@ function formatOfferingDuration(endsAt: string | null | undefined): string | nul
   })}`;
 }
 
-/** Compact label/value pair used for the secondary terms row (cookie
- *  window, holdback, payout cadence). Kept inline so they fit
- *  side-by-side on desktop and wrap on mobile. */
-function LabeledChip({ label, value, hint }: { label: string; value: string; hint?: string }) {
-  return (
-    <div title={hint ?? undefined} style={{ display: 'flex', flexDirection: 'column' }}>
-      <span style={{ fontSize: 11, color: theme.textDim, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{label}</span>
-      <span style={{ fontSize: 13, color: theme.text }}>{value}</span>
-    </div>
-  );
-}
+function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlug, setPreferredSlug, apply, embedded }: ApplyOrStatusProps & { embedded?: boolean }) {
+  // `embedded` skips the outer <Card> wrapper — the caller has already
+  // wrapped this in their own Card so we just render bare contents.
+  const Wrap: React.FC<{ children: React.ReactNode }> = embedded
+    ? ({ children }) => <>{children}</>
+    : ({ children }) => <Card>{children}</Card>;
 
-function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlug, setPreferredSlug, apply }: ApplyOrStatusProps) {
   // Show approved share link when active partnership exists. Hide the
   // apply form for pending/cancelled (cancelled is rare; the creator
   // can still re-apply through the rejected path if needed).
   if (!whoami?.creator) {
     return (
-      <Card>
-        <h3 style={{ marginTop: 0 }}>Apply to promote</h3>
-        <p style={{ color: theme.textMuted }}>
+      <Wrap>
+        {!embedded && <h3 style={{ marginTop: 0 }}>Apply to promote</h3>}
+        <p style={{ color: theme.textMuted, margin: 0 }}>
           <Link to="/creator/signup" style={{ color: theme.accent }}>Sign up</Link> or <Link to="/creator/login" style={{ color: theme.accent }}>sign in</Link> to apply.
         </p>
-      </Card>
+      </Wrap>
     );
   }
 
   if (offering.myStatus === 'approved') {
-    return <ApprovedCard offering={offering} />;
+    return <ApprovedCard offering={offering} embedded={embedded} />;
   }
 
   if (offering.myStatus === 'pending') {
     return (
-      <Card>
-        <h3 style={{ marginTop: 0 }}>Application pending</h3>
-        <p style={{ color: theme.textMuted, fontSize: 13 }}>
-          You&rsquo;ve applied to {offering.vendorName} for this program. They&rsquo;ll review and you&rsquo;ll get an email when they decide.
-          You can track it on <Link to="/creator/requests" style={{ color: theme.accent }}>My applications</Link>.
+      <Wrap>
+        {!embedded && <h3 style={{ marginTop: 0 }}>Application pending</h3>}
+        <p style={{ color: theme.textMuted, fontSize: 13, margin: 0 }}>
+          {embedded && <strong style={{ color: theme.text }}>Application pending. </strong>}
+          You&rsquo;ve applied to {offering.vendorName}. They&rsquo;ll review and you&rsquo;ll get an email when they decide.
+          Track it on <Link to="/creator/requests" style={{ color: theme.accent }}>My applications</Link>.
         </p>
-      </Card>
+      </Wrap>
     );
   }
 
   return (
-    <Card>
-      <h3 style={{ marginTop: 0 }}>{offering.myStatus === 'rejected' ? 'Re-apply' : 'Apply to promote'}</h3>
+    <Wrap>
+      {!embedded && <h3 style={{ marginTop: 0 }}>{offering.myStatus === 'rejected' ? 'Re-apply' : 'Apply to promote'}</h3>}
       {offering.myStatus === 'rejected' && (
         <p style={{ color: theme.textMuted, fontSize: 13, marginTop: 0 }}>
           Your previous application was declined. You can try again with a different pitch.
@@ -404,7 +689,7 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
       {apply.error instanceof ApiError && apply.error.message === 'request_already_exists' && (
         <p style={{ color: theme.textMuted, fontSize: 13 }}>You already have a pending or active request for this program.</p>
       )}
-      <div style={{ marginTop: 8 }}>
+      <div>
         <Label>Preferred share-link slug (optional)</Label>
         <Input
           placeholder={whoami.creator.handle ?? 'your-handle'}
@@ -426,7 +711,7 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
           {apply.isPending ? 'Applying…' : 'Submit application'}
         </Button>
       </div>
-    </Card>
+    </Wrap>
   );
 }
 
@@ -434,7 +719,7 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
  *  and show it inline with a copy button. The flat partnerships endpoint
  *  already computes shareUrl (custom domain when verified, else the
  *  openpartner default). */
-function ApprovedCard({ offering }: { offering: Offering }) {
+function ApprovedCard({ offering, embedded }: { offering: Offering; embedded?: boolean }) {
   const [copied, setCopied] = useState(false);
   const { data } = useQuery({
     queryKey: ['creator-partnerships'],
@@ -451,9 +736,18 @@ function ApprovedCard({ offering }: { offering: Offering }) {
     );
   }
 
+  const Wrap: React.FC<{ children: React.ReactNode }> = embedded
+    ? ({ children }) => <>{children}</>
+    : ({ children }) => <Card>{children}</Card>;
+
   return (
-    <Card>
-      <h3 style={{ marginTop: 0 }}>You&rsquo;re approved to promote this</h3>
+    <Wrap>
+      {!embedded && <h3 style={{ marginTop: 0 }}>You&rsquo;re approved to promote this</h3>}
+      {embedded && (
+        <div style={{ fontSize: 14, fontWeight: 600, color: theme.success, marginBottom: 6 }}>
+          ✓ Approved — your share link is ready
+        </div>
+      )}
       <p style={{ color: theme.textMuted, fontSize: 13 }}>
         Drop this share link on socials, in your newsletter, anywhere your audience hangs out.
       </p>
@@ -493,6 +787,6 @@ function ApprovedCard({ offering }: { offering: Offering }) {
       <p style={{ marginTop: 12, fontSize: 12 }}>
         <Link to="/creator/links" style={{ color: theme.accent }}>Edit slug or copy from My share links →</Link>
       </p>
-    </Card>
+    </Wrap>
   );
 }
