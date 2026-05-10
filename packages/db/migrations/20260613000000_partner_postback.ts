@@ -59,7 +59,19 @@ export async function up(knex: Knex): Promise<void> {
         or current_setting('app.platform_admin', true) = 'on'
       )
   `);
-  await knex.raw(`grant select, insert, update, delete on "PartnerPostback" to openpartner_app`);
+  // Idempotent grant — no-op when openpartner_app role doesn't exist
+  // (CI / single-tenant deployments where OPENPARTNER_APP_DB_PASSWORD
+  // is unset and the app runs as the migration role, bypassing RLS).
+  // Same DO-block guard the other RLS-tagged tables use.
+  await knex.raw(`
+    do $$
+    begin
+      if exists (select 1 from pg_roles where rolname = 'openpartner_app') then
+        execute 'grant select, insert, update, delete on "PartnerPostback" to openpartner_app';
+      end if;
+    end
+    $$;
+  `);
 }
 
 export async function down(knex: Knex): Promise<void> {
