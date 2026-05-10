@@ -67,13 +67,13 @@ function statusOf(c: Pick<Campaign, 'startsAt' | 'endsAt'>, at: Date = new Date(
   return 'active';
 }
 
-export function AdminCampaigns() {
+export function AdminPrograms() {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState<Campaign | null>(null);
   const campaigns = useQuery({
     queryKey: ['campaigns'],
-    queryFn: () => api<{ campaigns: Campaign[] }>('/campaigns'),
+    queryFn: () => api<{ campaigns: Campaign[] }>('/programs'),
   });
 
   // End-now sets endsAt = current time. Existing share-links keep
@@ -82,7 +82,7 @@ export function AdminCampaigns() {
   // safe to fire without a multi-step flow.
   const endNow = useMutation({
     mutationFn: (id: string) =>
-      api(`/campaigns/${id}`, {
+      api(`/programs/${id}`, {
         method: 'PATCH',
         body: { endsAt: new Date().toISOString() },
       }),
@@ -224,7 +224,7 @@ function EditCampaignDates({
 
   const save = useMutation({
     mutationFn: () =>
-      api(`/campaigns/${campaign.id}`, {
+      api(`/programs/${campaign.id}`, {
         method: 'PATCH',
         body: {
           startsAt: startsAt ? new Date(startsAt).toISOString() : null,
@@ -360,7 +360,7 @@ function CreateCampaign({ onClose, onCreated }: { onClose: () => void; onCreated
 
   const mut = useMutation({
     mutationFn: () =>
-      api<Campaign>('/campaigns', {
+      api<Campaign>('/programs', {
         method: 'POST',
         body: {
           name,

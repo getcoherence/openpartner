@@ -28,7 +28,7 @@ const TABLES_TO_CLEAN = [
   TABLES.Identity,
   TABLES.Click,
   TABLES.Link,
-  TABLES.Campaign,
+  TABLES.Program,
   TABLES.Partner,
 ];
 
@@ -81,7 +81,7 @@ describe.skipIf(skipIntegration)('compound commission rules', () => {
       tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
-      campaignId: campaign.id,
+      programId: campaign.id,
       landingUrl: 'https://example.com/',
       ts: new Date(),
     });
@@ -131,7 +131,7 @@ describe.skipIf(skipIntegration)('compound commission rules', () => {
       tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
-      campaignId: campaign.id,
+      programId: campaign.id,
       landingUrl: 'https://example.com/',
       ts: new Date(),
     });
@@ -174,7 +174,7 @@ describe.skipIf(skipIntegration)('compound commission rules', () => {
       tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
-      campaignId: campaign.id,
+      programId: campaign.id,
       landingUrl: 'https://example.com/',
       ts: new Date('2026-01-01'),
     });
@@ -222,7 +222,7 @@ describe.skipIf(skipIntegration)('compound commission rules', () => {
       tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
-      campaignId: campaign.id,
+      programId: campaign.id,
       landingUrl: 'https://example.com/',
       ts: new Date(),
     });
@@ -261,7 +261,7 @@ describe.skipIf(skipIntegration)('compound commission rules', () => {
       tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
-      campaignId: campaign.id,
+      programId: campaign.id,
       landingUrl: 'https://example.com/',
       ts: new Date(),
     });
@@ -290,7 +290,7 @@ describe.skipIf(skipIntegration)('compound commission rules', () => {
 
   async function createCampaign(overrides: Record<string, unknown> = {}) {
     const res = await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
       .send({
         name: 'Compound',
@@ -303,11 +303,11 @@ describe.skipIf(skipIntegration)('compound commission rules', () => {
     return res.body as { id: string };
   }
 
-  async function createLink(partnerId: string, campaignId: string, linkKey: string) {
+  async function createLink(partnerId: string, programId: string, linkKey: string) {
     const res = await request(app)
       .post(`/partners/${partnerId}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey, campaignId, destinationUrl: 'https://example.com/' });
+      .send({ linkKey, programId, destinationUrl: 'https://example.com/' });
     expect(res.status).toBe(201);
     return res.body as { id: string };
   }

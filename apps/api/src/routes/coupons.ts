@@ -3,7 +3,7 @@
  *
  *   GET  /partners/:id/coupons                 list a partner's coupons
  *   POST /partners/:id/coupons                 mint a coupon (admin only)
- *                                              body: { campaignId, code? }
+ *                                              body: { programId, code? }
  *                                              code defaults to <handle><rand4>
  *   POST /coupons/redeem                       brand-side conversion path
  *                                              body: { code, eventType, value?,
@@ -25,7 +25,7 @@ import { ulid } from 'ulid';
 import { randomBytes } from 'node:crypto';
 import {
   TABLES,
-  type CampaignRow,
+  type ProgramRow,
   type ClickRow,
   type CouponRow,
   type CustomerReward,
@@ -90,7 +90,7 @@ couponsRouter.get('/partners/:id/coupons', requireAuth, requirePartnerOrAdmin('i
 });
 
 const createSchema = z.object({
-  campaignId: z.string().min(1),
+  programId: z.string().min(1),
   code: z
     .string()
     .trim()
@@ -135,7 +135,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, requireAdmin, async (re
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
 
-  const campaign = await db<CampaignRow>(TABLES.Campaign).where({ id: body.data.campaignId }).first();
+  const campaign = await db<ProgramRow>(TABLES.Program).where({ id: body.data.programId }).first();
   if (!campaign) return res.status(404).json({ error: 'campaign_not_found' });
 
   const code = body.data.code ?? defaultCode(partner.email);
@@ -155,7 +155,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, requireAdmin, async (re
       id,
       tenantId,
       partnerId: partner.id,
-      campaignId: campaign.id,
+      programId: campaign.id,
       code,
       stripeCouponId: provisioned?.stripeCouponId ?? null,
       stripePromotionCodeId: provisioned?.stripePromotionCodeId ?? null,
@@ -173,7 +173,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, requireAdmin, async (re
 // ---------- Redeem ----------
 //
 // Brand calls this from checkout when a customer enters a coupon code.
-// We resolve the code → (partnerId, campaignId), then synthesize the
+// We resolve the code → (partnerId, programId), then synthesize the
 // click → identity → event chain so the existing attribution engine
 // processes the redemption identically to a real clicked conversion.
 //
@@ -306,7 +306,7 @@ export async function ensureCouponClickAndIdentity(
     tenantId,
     linkId: null, // no Link — coupon path doesn't have one
     partnerId: coupon.partnerId,
-    campaignId: coupon.campaignId,
+    programId: coupon.programId,
     landingUrl: `coupon://${coupon.code}`,
     ipHash: null,
     userAgent: 'OpenPartner-CouponRedeem/1',
@@ -347,11 +347,11 @@ function defaultCode(email: string): string {
 /**
  * Best-effort coupon mint after a PartnerCampaign grant. Used by:
  *   - POST /partners (auto-grants all current campaigns by default)
- *   - PUT /partners/:id/campaigns/:campaignId (admin grant)
- *   - Federation Network → /partners with campaignIds (offering approval)
+ *   - PUT /partners/:id/programs/:programId (admin grant)
+ *   - Federation Network → /partners with programIds (offering approval)
  *
  * Idempotent: skips silently if a coupon already exists for the
- * (partnerId, campaignId) pair (admin may have minted one already).
+ * (partnerId, programId) pair (admin may have minted one already).
  * On code collision (rare, since email-derived suffixes are usually
  * unique), retries once with a fresh suffix.
  */
@@ -359,14 +359,14 @@ export async function autoMintCouponsForGrants(
   db: import('knex').Knex,
   tenantId: string,
   partner: { id: string; email: string },
-  campaignIds: string[],
+  programIds: string[],
 ): Promise<void> {
-  if (campaignIds.length === 0) return;
+  if (programIds.length === 0) return;
 
   // Pre-load campaigns so we know which need a Stripe-side reward without
   // a SELECT per code-collision retry.
-  const campaigns = (await db<CampaignRow>(TABLES.Campaign)
-    .whereIn('id', campaignIds)
+  const campaigns = (await db<ProgramRow>(TABLES.Program)
+    .whereIn('id', programIds)
     .select('id', 'name', 'customerReward')) as Array<{
       id: string;
       name: string;
@@ -374,15 +374,15 @@ export async function autoMintCouponsForGrants(
     }>;
   const campaignsById = new Map(campaigns.map((c) => [c.id, c]));
 
-  for (const campaignId of campaignIds) {
-    const campaign = campaignsById.get(campaignId);
+  for (const programId of programIds) {
+    const campaign = campaignsById.get(programId);
     if (!campaign) continue;
 
     // Pre-check: if this partner already has a coupon for this campaign,
     // don't waste a Stripe API call. The unique constraint would also
     // catch this, but provisioning happens BEFORE the insert.
     const existing = await db<CouponRow>(TABLES.Coupon)
-      .where({ tenantId, partnerId: partner.id, campaignId })
+      .where({ tenantId, partnerId: partner.id, programId })
       .first('id');
     if (existing) continue;
 
@@ -407,12 +407,12 @@ export async function autoMintCouponsForGrants(
             id: `cpn_${ulid()}`,
             tenantId,
             partnerId: partner.id,
-            campaignId,
+            programId,
             code,
             stripeCouponId: provisioned?.stripeCouponId ?? null,
             stripePromotionCodeId: provisioned?.stripePromotionCodeId ?? null,
           })
-          .onConflict(['tenantId', 'partnerId', 'campaignId'])
+          .onConflict(['tenantId', 'partnerId', 'programId'])
           .ignore(); // already exists for this (partner, campaign) — admin minted manually
         break;
       } catch (err) {
@@ -424,7 +424,7 @@ export async function autoMintCouponsForGrants(
         if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505' && attempts < 2) {
           continue;
         }
-        console.error('[coupons] auto-mint failed', { partnerId: partner.id, campaignId, err });
+        console.error('[coupons] auto-mint failed', { partnerId: partner.id, programId, err });
         break;
       }
     }

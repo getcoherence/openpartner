@@ -11,7 +11,7 @@
  */
 
 import { Router } from 'express';
-import { TABLES, type CampaignRow, type PartnerRow } from '@openpartner/db';
+import { TABLES, type ProgramRow, type PartnerRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { getNetworkMembership, networkProxy, NetworkProxyError } from '../network-client.js';
@@ -55,7 +55,7 @@ onboardingRouter.get('/admin/onboarding-status', requireAuth, requireAdmin, asyn
   const displayName = ((tenant?.displayName as string | undefined) ?? '').trim();
   const brandInfoComplete = programName.length > 0 || displayName.length > 0;
 
-  const campaignRows = await db<CampaignRow>(TABLES.Campaign).count<Array<{ count: string }>>({ count: '*' });
+  const campaignRows = await db<ProgramRow>(TABLES.Program).count<Array<{ count: string }>>({ count: '*' });
   const campaignCount = Number(campaignRows[0]?.count ?? 0);
 
   const partnerRows = await db<PartnerRow>(TABLES.Partner)

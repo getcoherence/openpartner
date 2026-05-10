@@ -43,7 +43,7 @@ interface PartnerSlim {
 
 interface GrantSlim {
   partnerId: string;
-  campaignId: string;
+  programId: string;
 }
 
 interface CampaignSlim {
@@ -80,14 +80,14 @@ export async function backfillCommissionSnapshots(db: Knex, tenantId: string): P
   const haveSnapshot = new Set(existing.map((e) => e.partnerId));
 
   // Grants per partner.
-  const grants = (await db(TABLES.PartnerCampaign)
+  const grants = (await db(TABLES.PartnerProgram)
     .whereIn('partnerId', partnerIds)
-    .select('partnerId', 'campaignId')) as GrantSlim[];
+    .select('partnerId', 'programId')) as GrantSlim[];
 
   const campaignsByPartner = new Map<string, string[]>();
   for (const g of grants) {
     const list = campaignsByPartner.get(g.partnerId) ?? [];
-    list.push(g.campaignId);
+    list.push(g.programId);
     campaignsByPartner.set(g.partnerId, list);
   }
 
@@ -100,7 +100,7 @@ export async function backfillCommissionSnapshots(db: Knex, tenantId: string): P
   const campaigns =
     singleCampaignIds.size === 0
       ? []
-      : ((await db(TABLES.Campaign)
+      : ((await db(TABLES.Program)
           .whereIn('id', [...singleCampaignIds])
           .select('id', 'commissionRule', 'holdbackDays')) as CampaignSlim[]);
   const campaignById = new Map(campaigns.map((c) => [c.id, c]));

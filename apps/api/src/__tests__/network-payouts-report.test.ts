@@ -82,10 +82,10 @@ const TABLES_TO_CLEAN = [
   TABLES.Click,
   TABLES.Link,
   TABLES.Coupon,
-  TABLES.PartnerCampaign,
+  TABLES.PartnerProgram,
   TABLES.PartnerCommission,
   TABLES.Payout,
-  TABLES.Campaign,
+  TABLES.Program,
   TABLES.Partner,
   TABLES.Config,
 ];

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
-import { TABLES, type CampaignRow, type LinkRow } from '@openpartner/db';
+import { TABLES, type ProgramRow, type LinkRow } from '@openpartner/db';
 import { grantScope, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 
@@ -11,7 +11,7 @@ const createSchema = z.object({
     .min(3)
     .max(64)
     .regex(/^[a-zA-Z0-9_-]+$/, 'linkKey must be url-safe'),
-  campaignId: z.string().min(1),
+  programId: z.string().min(1),
   /** Optional override of Campaign.destinationUrl. Allowed only when
    *  the Campaign has deepLinkAllowedDomains set AND the override host
    *  matches one of those domains. Otherwise rejected with
@@ -37,7 +37,7 @@ linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), 
   const partner = await db(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
 
-  const campaign = await db<CampaignRow>(TABLES.Campaign).where({ id: body.data.campaignId }).first();
+  const campaign = await db<ProgramRow>(TABLES.Program).where({ id: body.data.programId }).first();
   if (!campaign) return res.status(404).json({ error: 'campaign_not_found' });
 
   // Lifecycle gate: scheduled or ended campaigns refuse new Link
@@ -57,8 +57,8 @@ linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), 
   // PartnerCampaign. Admins acting on a partner's behalf bypass this
   // check (they're the ones who'd grant it anyway).
   if (req.principal?.role === 'partner') {
-    const grant = await db(TABLES.PartnerCampaign)
-      .where({ partnerId: req.params.id, campaignId: body.data.campaignId })
+    const grant = await db(TABLES.PartnerProgram)
+      .where({ partnerId: req.params.id, programId: body.data.programId })
       .first();
     if (!grant) {
       return res.status(403).json({
@@ -93,7 +93,7 @@ linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), 
         tenantId,
         linkKey: body.data.linkKey,
         partnerId: req.params.id,
-        campaignId: body.data.campaignId,
+        programId: body.data.programId,
         destinationUrl: destinationOverride,
       })
       .returning('*');
@@ -106,7 +106,7 @@ linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), 
   }
 });
 
-function isDeepLinkAllowed(campaign: CampaignRow, url: string): boolean {
+function isDeepLinkAllowed(campaign: ProgramRow, url: string): boolean {
   if (!campaign.deepLinkAllowedDomains) return false;
   let host: string;
   try {

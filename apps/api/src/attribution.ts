@@ -27,7 +27,7 @@ import {
   TABLES,
   type AttributionModel,
   type AttributionRow,
-  type CampaignRow,
+  type ProgramRow,
   type ClickRow,
   type CommissionRule,
   type CommissionSubRule,
@@ -50,7 +50,7 @@ export interface AttributeResult {
 }
 
 interface ClickWithCampaign extends ClickRow {
-  campaign: CampaignRow;
+  campaign: ProgramRow;
 }
 
 export async function attributeEvent(
@@ -81,14 +81,14 @@ export async function attributeEvent(
   const eligibleByPartner = cleanClicks.filter((c) => !revokedSet.has(c.partnerId));
   if (eligibleByPartner.length === 0) return { status: 'no_click' };
 
-  const campaignIds = Array.from(new Set(eligibleByPartner.map((c) => c.campaignId)));
-  const campaigns = await db<CampaignRow>(TABLES.Campaign).whereIn('id', campaignIds);
+  const programIds = Array.from(new Set(eligibleByPartner.map((c) => c.programId)));
+  const campaigns = await db<ProgramRow>(TABLES.Program).whereIn('id', programIds);
   const campaignsById = new Map(campaigns.map((c) => [c.id, c]));
 
   // Clicks in-window relative to this event, with their campaign attached.
   const eligible: ClickWithCampaign[] = [];
   for (const click of eligibleByPartner) {
-    const campaign = campaignsById.get(click.campaignId);
+    const campaign = campaignsById.get(click.programId);
     if (!campaign) continue;
     const windowMs = campaign.attributionWindowDays * 24 * 60 * 60 * 1000;
     if (new Date(event.ts).getTime() - new Date(click.ts).getTime() > windowMs) continue;
@@ -117,7 +117,7 @@ export async function attributeEvent(
         tenantId: event.tenantId,
         eventId: event.id,
         partnerId: click.partnerId,
-        campaignId: click.campaignId,
+        programId: click.programId,
         clickId: click.id,
         model,
         weight: weight.toFixed(4),
@@ -179,7 +179,7 @@ export async function attributeEvent(
         // subscribers ignore them if they don't care.
         clickId: click.id,
         eventId: event.id,
-        campaignId: click.campaignId,
+        programId: click.programId,
         amount: amount.toFixed(2),
         currency: event.currency ?? 'USD',
         eventType: event.type,
@@ -197,7 +197,7 @@ export async function attributeEvent(
       attributionId,
       eventId: event.id,
       partnerId: click.partnerId,
-      campaignId: click.campaignId,
+      programId: click.programId,
       clickId: click.id,
       model,
       weight,

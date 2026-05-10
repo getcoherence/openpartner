@@ -63,7 +63,7 @@ export interface PostbackContext {
   currency?: string;
   event_id?: string;
   event_type?: string;
-  campaign_id?: string;
+  program_id?: string;
   payout_id?: string;
   /** Alias for event_id — affiliate trackers commonly call it
    *  "transaction_id" / "tid". */

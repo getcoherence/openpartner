@@ -117,7 +117,7 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
 
   const campaigns = useQuery({
     queryKey: ['me-campaigns-for-invite'],
-    queryFn: () => api<{ campaigns: CreateCampaignOption[] }>('/me/campaigns'),
+    queryFn: () => api<{ campaigns: CreateCampaignOption[] }>('/me/programs'),
   });
 
   const mut = useMutation({
@@ -127,10 +127,10 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
         body: {
           name,
           email,
-          // Only send campaignIds when admin scoped explicitly. Omitting
+          // Only send programIds when admin scoped explicitly. Omitting
           // it preserves the legacy "grant all current campaigns"
           // default the backend already implements.
-          campaignIds: grantAll ? undefined : Array.from(picked),
+          programIds: grantAll ? undefined : Array.from(picked),
         },
       }),
     onSuccess: onCreated,

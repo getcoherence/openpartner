@@ -12,7 +12,7 @@
  * flag so a fresh reminder fires before the new end date.
  */
 
-import { TABLES, type AdminRow, type CampaignRow, type PartnerRow, type TenantRow } from '@openpartner/db';
+import { TABLES, type AdminRow, type ProgramRow, type PartnerRow, type TenantRow } from '@openpartner/db';
 import { db, appDb } from './db.js';
 import { getMailer } from './mailer.js';
 import { campaignEndingBrandEmail, campaignEndingPartnerEmail } from './email-templates.js';
@@ -45,7 +45,7 @@ export async function sweepCampaignEndNotifications(): Promise<SweepResult> {
   const cleared = Number(clearedCount ?? 0);
 
   // Now find campaigns ripe for the reminder.
-  const due = await db<CampaignRow>(TABLES.Campaign)
+  const due = await db<ProgramRow>(TABLES.Program)
     .whereNotNull('endsAt')
     .andWhere('endsAt', '>=', windowStart)
     .andWhere('endsAt', '<', windowEnd)
@@ -59,7 +59,7 @@ export async function sweepCampaignEndNotifications(): Promise<SweepResult> {
     try {
       await notifyOne(campaign);
       // Stamp via privileged db (cross-tenant context here in scheduler).
-      await db<CampaignRow>(TABLES.Campaign)
+      await db<ProgramRow>(TABLES.Program)
         .where({ id: campaign.id })
         .update({ endNotificationSentAt: new Date() });
       notified += 1;
@@ -72,7 +72,7 @@ export async function sweepCampaignEndNotifications(): Promise<SweepResult> {
   return { notified, cleared, errors };
 }
 
-async function notifyOne(campaign: CampaignRow): Promise<void> {
+async function notifyOne(campaign: ProgramRow): Promise<void> {
   if (!campaign.endsAt) return;
 
   // Need a tenant-scoped trx for mailer.send (it reads tenant mail
@@ -107,7 +107,7 @@ async function notifyOne(campaign: CampaignRow): Promise<void> {
         text: tmpl.text,
         html: tmpl.html,
         tag: 'campaign_ending_brand',
-        metadata: { campaignId: campaign.id },
+        metadata: { programId: campaign.id },
       });
     }
 
@@ -118,7 +118,7 @@ async function notifyOne(campaign: CampaignRow): Promise<void> {
     const linkPartners = (await trx
       .from(TABLES.Link)
       .join(TABLES.Partner, `${TABLES.Partner}.id`, `${TABLES.Link}.partnerId`)
-      .where(`${TABLES.Link}.campaignId`, campaign.id)
+      .where(`${TABLES.Link}.programId`, campaign.id)
       .whereNull(`${TABLES.Partner}.revokedAt`)
       .whereNotNull(`${TABLES.Partner}.activatedAt`)
       .distinct(
@@ -137,13 +137,13 @@ async function notifyOne(campaign: CampaignRow): Promise<void> {
           text: tmpl.text,
           html: tmpl.html,
           tag: 'campaign_ending_partner',
-          metadata: { campaignId: campaign.id, partnerId: p.id },
+          metadata: { programId: campaign.id, partnerId: p.id },
         });
       } catch (err) {
         // One partner's mail failure shouldn't block the rest. Log,
         // continue. Stamping endNotificationSentAt at the campaign
         // level still moves on — we don't re-try individual partners.
-        console.error('[end-notify] partner mail failed', { campaignId: campaign.id, partnerId: p.id, err });
+        console.error('[end-notify] partner mail failed', { programId: campaign.id, partnerId: p.id, err });
       }
     }
 

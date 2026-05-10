@@ -87,9 +87,9 @@ importPartnersRouter.post(
 
     // Pull the campaign list once — every newly-created partner gets
     // access to all current campaigns (the same default as POST /partners
-    // when campaignIds is omitted). Done outside the loop so we don't
+    // when programIds is omitted). Done outside the loop so we don't
     // re-query per row.
-    const allCampaigns = (await db(TABLES.Campaign).select('id')) as Array<{ id: string }>;
+    const allCampaigns = (await db(TABLES.Program).select('id')) as Array<{ id: string }>;
     const allCampaignIds = allCampaigns.map((c) => c.id);
 
     const report: RowReport[] = [];
@@ -143,17 +143,17 @@ importPartnersRouter.post(
           activatedAt,
         });
         if (allCampaignIds.length > 0) {
-          await db(TABLES.PartnerCampaign)
+          await db(TABLES.PartnerProgram)
             .insert(
               allCampaignIds.map((cid) => ({
                 id: `pc_${ulid()}`,
                 tenantId,
                 partnerId: id,
-                campaignId: cid,
+                programId: cid,
                 source: 'admin',
               })),
             )
-            .onConflict(['tenantId', 'partnerId', 'campaignId'])
+            .onConflict(['tenantId', 'partnerId', 'programId'])
             .ignore();
         }
       }

@@ -23,7 +23,7 @@
 import type { Knex } from 'knex';
 import {
   TABLES,
-  type CampaignRow,
+  type ProgramRow,
   type CommissionRule,
   type CommissionSubRule,
 } from '@openpartner/db';
@@ -63,7 +63,7 @@ interface OfferingTerms {
 export async function syncCampaignToMarketplace(
   db: Knex,
   tenantId: string,
-  campaign: CampaignRow,
+  campaign: ProgramRow,
   derivedSummary: string,
 ): Promise<string | null> {
   const membership = await getNetworkMembership(db, tenantId);
@@ -112,7 +112,7 @@ export async function syncCampaignToMarketplace(
       title: campaign.name,
       description: campaign.marketplaceDescription ?? undefined,
       productUrl: campaign.destinationUrl,
-      vendorCampaignId: campaign.id,
+      vendorProgramId: campaign.id,
       terms,
       published: true,
     })) as { id?: string } | null;
@@ -123,7 +123,7 @@ export async function syncCampaignToMarketplace(
   }
 }
 
-function buildTermsPayload(campaign: CampaignRow, derivedSummary: string): OfferingTerms {
+function buildTermsPayload(campaign: ProgramRow, derivedSummary: string): OfferingTerms {
   let rules: CommissionRule;
   try {
     rules = parseCommissionRule(campaign.commissionRule);
@@ -148,14 +148,14 @@ function buildTermsPayload(campaign: CampaignRow, derivedSummary: string): Offer
   };
 }
 
-function logSyncError(op: 'create' | 'update' | 'unpublish', campaignId: string, err: unknown): void {
+function logSyncError(op: 'create' | 'update' | 'unpublish', programId: string, err: unknown): void {
   const detail =
     err instanceof NetworkProxyError
       ? `${err.status} ${err.message}`
       : err instanceof Error
         ? err.message
         : String(err);
-  console.error(`[campaign-marketplace-sync] ${op} failed`, { campaignId, detail });
+  console.error(`[campaign-marketplace-sync] ${op} failed`, { programId, detail });
 }
 
 /** Default for new-campaign shareOnNetwork when the caller didn't specify.
@@ -171,11 +171,11 @@ export async function defaultShareOnNetwork(db: Knex, tenantId: string): Promise
  *  already correct, so writing this on every save is fine. */
 export async function persistNetworkOfferingId(
   db: Knex,
-  campaignId: string,
+  programId: string,
   networkOfferingId: string | null,
 ): Promise<void> {
-  await db<CampaignRow>(TABLES.Campaign)
-    .where({ id: campaignId })
+  await db<ProgramRow>(TABLES.Program)
+    .where({ id: programId })
     .andWhere((qb) => {
       if (networkOfferingId == null) qb.whereNotNull('networkOfferingId');
       else qb.where('networkOfferingId', '!=', networkOfferingId).orWhereNull('networkOfferingId');

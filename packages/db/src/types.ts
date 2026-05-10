@@ -263,7 +263,7 @@ export interface PlatformAdminRow {
   revokedAt: Date | null;
 }
 
-export interface CampaignRow {
+export interface ProgramRow {
   id: string;
   tenantId: string;
   name: string;
@@ -323,11 +323,11 @@ export interface CampaignRow {
   createdAt: Date;
 }
 
-export interface PartnerCampaignRow {
+export interface PartnerProgramRow {
   id: string;
   tenantId: string;
   partnerId: string;
-  campaignId: string;
+  programId: string;
   /** Why this grant exists. 'admin' = brand admin assignment;
    *  'offering' = auto-granted when a Network application was approved
    *  for the Offering tied to this Campaign. */
@@ -340,7 +340,7 @@ export interface LinkRow {
   tenantId: string;
   linkKey: string;
   partnerId: string;
-  campaignId: string;
+  programId: string;
   /** Override of Campaign.destinationUrl. Null = inherit. Set only when
    *  the Campaign allows deep-linking and the partner picked a custom
    *  destination on an allowed host. */
@@ -357,7 +357,7 @@ export interface ClickRow {
    *  (no Link involved — customer entered a code, not clicked a URL). */
   linkId: string | null;
   partnerId: string;
-  campaignId: string;
+  programId: string;
   landingUrl: string;
   ipHash: string | null;
   userAgent: string | null;
@@ -398,7 +398,7 @@ export interface AttributionRow {
   tenantId: string;
   eventId: string;
   partnerId: string;
-  campaignId: string;
+  programId: string;
   clickId: string;
   model: AttributionModel;
   weight: string; // decimal as string
@@ -551,7 +551,7 @@ export interface CouponRow {
   id: string;
   tenantId: string;
   partnerId: string;
-  campaignId: string;
+  programId: string;
   /** User-facing string. Per-tenant unique. Lookups are case-insensitive
    *  but storage is whatever the creator/admin picked at mint time. */
   code: string;

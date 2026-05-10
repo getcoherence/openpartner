@@ -154,7 +154,7 @@ async function hardDeleteExpiredTenants(): Promise<{ purged: number; tenantIds: 
     TABLES.Identity,
     TABLES.Click,
     TABLES.Link,
-    TABLES.Campaign,
+    TABLES.Program,
     TABLES.Partner,
     TABLES.Admin,
   ];

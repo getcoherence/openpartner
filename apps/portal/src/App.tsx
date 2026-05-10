@@ -32,7 +32,7 @@ import { AdminPartners } from './pages/AdminPartners.js';
 import { AdminPartnerPrograms } from './pages/AdminPartnerPrograms.js';
 import { AdminPartnerCoupons } from './pages/AdminPartnerCoupons.js';
 import { AdminPartnerCommission } from './pages/AdminPartnerCommission.js';
-import { AdminCampaigns } from './pages/AdminCampaigns.js';
+import { AdminPrograms } from './pages/AdminPrograms.js';
 import { AdminReview } from './pages/AdminReview.js';
 import { AdminExport } from './pages/AdminExport.js';
 import { LoginPage } from './pages/auth/Login.js';
@@ -188,7 +188,7 @@ function Shell() {
               <Route path="admin/partners/:id/programs" element={<AdminPartnerPrograms />} />
               <Route path="admin/partners/:id/coupons" element={<AdminPartnerCoupons />} />
               <Route path="admin/partners/:id/commission" element={<AdminPartnerCommission />} />
-              <Route path="admin/campaigns" element={<AdminCampaigns />} />
+              <Route path="admin/campaigns" element={<AdminPrograms />} />
               <Route path="admin/review" element={<AdminReview />} />
               <Route path="admin/export" element={<AdminExport />} />
               <Route path="admin/fraud-review" element={<FraudReviewPage />} />

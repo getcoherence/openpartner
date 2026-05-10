@@ -48,7 +48,7 @@ interface GatedRoute {
 }
 
 const GATED: GatedRoute[] = [
-  { method: 'POST', test: (p) => p === '/campaigns' },
+  { method: 'POST', test: (p) => p === '/programs' },
   { method: 'POST', test: (p) => p === '/partners' },
   { method: 'POST', test: (p) => /^\/partners\/[^/]+\/coupons$/.test(p) },
   { method: 'POST', test: (p) => /^\/partners\/[^/]+\/campaigns$/.test(p) },

@@ -12,7 +12,7 @@
 
 import { Router } from 'express';
 import { z } from 'zod';
-import { TABLES, type AttributionRow, type CampaignRow, type CommissionRow } from '@openpartner/db';
+import { TABLES, type AttributionRow, type ProgramRow, type CommissionRow } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
 import { tenantOf } from '../tenancy.js';
@@ -61,7 +61,7 @@ commissionsRouter.get('/commissions', requireAuth, grantScope('commissions:read'
 function listQueryBase(db: import('knex').Knex) {
   return db(`${TABLES.Commission} as c`)
     .leftJoin(`${TABLES.Attribution} as a`, 'a.id', 'c.attributionId')
-    .leftJoin(`${TABLES.Campaign} as cp`, 'cp.id', 'a.campaignId')
+    .leftJoin(`${TABLES.Program} as cp`, 'cp.id', 'a.programId')
     .leftJoin(`${TABLES.PartnerCommission} as pc`, 'pc.partnerId', 'c.partnerId')
     .select('c.*')
     .select(db.raw('coalesce("pc"."holdbackDays", "cp"."holdbackDays") as "_holdbackDays"'))
@@ -72,7 +72,7 @@ function listQueryBase(db: import('knex').Knex) {
 
 interface DecoratedCommission extends CommissionRow {
   holdbackDays: number | null;
-  campaignId: string | null;
+  programId: string | null;
   campaignName: string | null;
   matureAt: string | null;
 }
@@ -92,7 +92,7 @@ function decorateMaturity(row: CommissionRow & {
   return {
     ...c,
     holdbackDays: _holdbackDays,
-    campaignId: _campaignId,
+    programId: _campaignId,
     campaignName: _campaignName,
     matureAt,
   };
@@ -104,12 +104,12 @@ commissionsRouter.post('/commissions/:id/approve', requireAuth, requireAdmin, as
   // Holdback check: if the campaign tied to this commission has a
   // holdbackDays > 0, refuse to approve before accruedAt + holdbackDays.
   // Lookup is Commission → Attribution → Campaign (Attribution carries
-  // campaignId directly).
+  // programId directly).
   const c0 = await db<CommissionRow>(TABLES.Commission).where({ id: req.params.id }).first();
   if (!c0) return res.status(404).json({ error: 'not_found' });
   const attr = await db<AttributionRow>(TABLES.Attribution).where({ id: c0.attributionId }).first();
   if (attr) {
-    const camp = await db<CampaignRow>(TABLES.Campaign).where({ id: attr.campaignId }).first();
+    const camp = await db<ProgramRow>(TABLES.Program).where({ id: attr.programId }).first();
     const holdback = camp?.holdbackDays ?? 0;
     if (holdback > 0) {
       const matureAt = new Date(c0.accruedAt);

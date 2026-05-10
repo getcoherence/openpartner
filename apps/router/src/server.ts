@@ -59,7 +59,7 @@ async function resolveLink(c: Context, link: LinkRow | undefined) {
   // an override when the Campaign explicitly allows deep-linking.
   let destinationUrl = link.destinationUrl;
   if (!destinationUrl) {
-    const campaign = (await db('Campaign').where({ id: link.campaignId }).first()) as
+    const campaign = (await db('Campaign').where({ id: link.programId }).first()) as
       | { destinationUrl: string }
       | undefined;
     if (!campaign) return c.text('Campaign not found', 410);
@@ -101,7 +101,7 @@ async function resolveLink(c: Context, link: LinkRow | undefined) {
     id: clickId,
     linkId: link.id,
     partnerId: link.partnerId,
-    campaignId: link.campaignId,
+    programId: link.programId,
     landingUrl: destination.toString(),
     ipHash,
     userAgent: c.req.header('user-agent') ?? null,

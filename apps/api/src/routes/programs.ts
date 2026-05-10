@@ -5,7 +5,7 @@ import {
   PROGRAM_CATEGORY_SLUGS,
   TABLES,
   renderCommissionSummary,
-  type CampaignRow,
+  type ProgramRow,
   type CommissionRule,
   type CommissionSubRuleLike,
   type CustomerReward,
@@ -185,11 +185,11 @@ const updateSchema = z.object({
     .optional(),
 });
 
-export const campaignsRouter = Router();
+export const programsRouter = Router();
 
-campaignsRouter.get('/campaigns', requireAuth, requireAdmin, async (req, res) => {
+programsRouter.get('/programs', requireAuth, requireAdmin, async (req, res) => {
   const { db } = tenantOf(req);
-  const campaigns = await db<CampaignRow>(TABLES.Campaign).orderBy('createdAt', 'desc');
+  const campaigns = await db<ProgramRow>(TABLES.Program).orderBy('createdAt', 'desc');
   res.json({ campaigns });
 });
 
@@ -203,7 +203,7 @@ campaignsRouter.get('/campaigns', requireAuth, requireAdmin, async (req, res) =>
  * Commission rules + attribution settings are admin-only and stay out
  * of the response.
  */
-campaignsRouter.get('/me/campaigns', requireAuth, async (req, res) => {
+programsRouter.get('/me/programs', requireAuth, async (req, res) => {
   const p = req.principal;
   if (!p) return res.status(401).json({ error: 'unauthorized' });
   if (p.role !== 'partner' && p.role !== 'admin') {
@@ -212,10 +212,10 @@ campaignsRouter.get('/me/campaigns', requireAuth, async (req, res) => {
   const { db } = tenantOf(req);
 
   if (p.role === 'admin') {
-    const campaigns = (await db<CampaignRow>(TABLES.Campaign)
+    const campaigns = (await db<ProgramRow>(TABLES.Program)
       .select('id', 'name', 'destinationUrl', 'deepLinkAllowedDomains', 'startsAt', 'endsAt')
       .orderBy('createdAt', 'desc')) as Array<
-        Pick<CampaignRow, 'id' | 'name' | 'destinationUrl' | 'deepLinkAllowedDomains' | 'startsAt' | 'endsAt'>
+        Pick<ProgramRow, 'id' | 'name' | 'destinationUrl' | 'deepLinkAllowedDomains' | 'startsAt' | 'endsAt'>
       >;
     return res.json({ campaigns });
   }
@@ -224,19 +224,19 @@ campaignsRouter.get('/me/campaigns', requireAuth, async (req, res) => {
   // yet started) and ended campaigns — partners shouldn't be picking
   // those when they create a Link. Admins see them all so they can
   // edit dates.
-  const rows = (await db(TABLES.Campaign)
-    .join(TABLES.PartnerCampaign, `${TABLES.PartnerCampaign}.campaignId`, `${TABLES.Campaign}.id`)
-    .where(`${TABLES.PartnerCampaign}.partnerId`, p.partnerId!)
+  const rows = (await db(TABLES.Program)
+    .join(TABLES.PartnerProgram, `${TABLES.PartnerProgram}.programId`, `${TABLES.Program}.id`)
+    .where(`${TABLES.PartnerProgram}.partnerId`, p.partnerId!)
     .select(
-      `${TABLES.Campaign}.id`,
-      `${TABLES.Campaign}.name`,
-      `${TABLES.Campaign}.destinationUrl`,
-      `${TABLES.Campaign}.deepLinkAllowedDomains`,
-      `${TABLES.Campaign}.startsAt as startsAt`,
-      `${TABLES.Campaign}.endsAt as endsAt`,
-      `${TABLES.PartnerCampaign}.source as source`,
+      `${TABLES.Program}.id`,
+      `${TABLES.Program}.name`,
+      `${TABLES.Program}.destinationUrl`,
+      `${TABLES.Program}.deepLinkAllowedDomains`,
+      `${TABLES.Program}.startsAt as startsAt`,
+      `${TABLES.Program}.endsAt as endsAt`,
+      `${TABLES.PartnerProgram}.source as source`,
     )
-    .orderBy(`${TABLES.Campaign}.createdAt`, 'desc')) as Array<{
+    .orderBy(`${TABLES.Program}.createdAt`, 'desc')) as Array<{
       id: string;
       name: string;
       destinationUrl: string;
@@ -249,7 +249,7 @@ campaignsRouter.get('/me/campaigns', requireAuth, async (req, res) => {
   res.json({ campaigns });
 });
 
-campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) => {
+programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = createSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
@@ -261,7 +261,7 @@ campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) =
     body.data.shareOnNetwork ?? (await defaultShareOnNetwork(db, tenantId));
 
   const id = ulid();
-  const [campaign] = await db<CampaignRow>(TABLES.Campaign)
+  const [campaign] = await db<ProgramRow>(TABLES.Program)
     .insert({
       id,
       tenantId,
@@ -295,17 +295,17 @@ campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) =
       .whereNull('revokedAt')
       .select('id')) as Array<{ id: string }>;
     if (partners.length > 0) {
-      await db(TABLES.PartnerCampaign)
+      await db(TABLES.PartnerProgram)
         .insert(
           partners.map((p) => ({
             id: `pc_${ulid()}`,
             tenantId,
             partnerId: p.id,
-            campaignId: id,
+            programId: id,
             source: 'admin',
           })),
         )
-        .onConflict(['tenantId', 'partnerId', 'campaignId'])
+        .onConflict(['tenantId', 'partnerId', 'programId'])
         .ignore();
     }
   }
@@ -318,24 +318,24 @@ campaignsRouter.post('/campaigns', requireAuth, requireAdmin, async (req, res) =
     body.data.commissionRule as CommissionSubRuleLike[],
     (body.data.customerReward ?? null) as CustomerRewardLike | null,
   );
-  const offeringId = await syncCampaignToMarketplace(db, tenantId, campaign as CampaignRow, summary);
-  if (offeringId && offeringId !== (campaign as CampaignRow).networkOfferingId) {
+  const offeringId = await syncCampaignToMarketplace(db, tenantId, campaign as ProgramRow, summary);
+  if (offeringId && offeringId !== (campaign as ProgramRow).networkOfferingId) {
     await persistNetworkOfferingId(db, id, offeringId);
-    (campaign as CampaignRow).networkOfferingId = offeringId;
+    (campaign as ProgramRow).networkOfferingId = offeringId;
   }
 
   res.status(201).json(campaign);
 });
 
-campaignsRouter.patch('/campaigns/:id', requireAuth, requireAdmin, async (req, res) => {
+programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = updateSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const existing = await db<CampaignRow>(TABLES.Campaign).where({ id: req.params.id }).first();
+  const existing = await db<ProgramRow>(TABLES.Program).where({ id: req.params.id }).first();
   if (!existing) return res.status(404).json({ error: 'not_found' });
 
-  const patch: Partial<CampaignRow> = {};
+  const patch: Partial<ProgramRow> = {};
   if (body.data.name !== undefined) patch.name = body.data.name;
   if (body.data.commissionRule !== undefined) {
     patch.commissionRule = JSON.stringify(body.data.commissionRule) as unknown as CommissionRule;
@@ -358,8 +358,8 @@ campaignsRouter.patch('/campaigns/:id', requireAuth, requireAdmin, async (req, r
   }
   if (body.data.categories !== undefined) patch.categories = body.data.categories;
 
-  await db<CampaignRow>(TABLES.Campaign).where({ id: req.params.id }).update(patch);
-  const updated = (await db<CampaignRow>(TABLES.Campaign).where({ id: req.params.id }).first()) as CampaignRow;
+  await db<ProgramRow>(TABLES.Program).where({ id: req.params.id }).update(patch);
+  const updated = (await db<ProgramRow>(TABLES.Program).where({ id: req.params.id }).first()) as ProgramRow;
 
   // Sync to the marketplace whenever the saved row could affect the
   // listing. We sync unconditionally (vs. diffing fields) — the helper

@@ -37,13 +37,13 @@ export function AdminPartnerPrograms() {
   });
 
   const add = useMutation({
-    mutationFn: (campaignId: string) =>
-      api(`/partners/${partnerId}/campaigns`, { method: 'POST', body: { campaignIds: [campaignId] } }),
+    mutationFn: (programId: string) =>
+      api(`/partners/${partnerId}/campaigns`, { method: 'POST', body: { programIds: [programId] } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['partner-campaigns', partnerId] }),
   });
   const remove = useMutation({
-    mutationFn: (campaignId: string) =>
-      api(`/partners/${partnerId}/campaigns/${campaignId}`, { method: 'DELETE' }),
+    mutationFn: (programId: string) =>
+      api(`/partners/${partnerId}/programs/${programId}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['partner-campaigns', partnerId] }),
   });
 

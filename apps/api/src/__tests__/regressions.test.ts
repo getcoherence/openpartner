@@ -30,7 +30,7 @@ const TABLES_TO_CLEAN = [
   TABLES.Identity,
   TABLES.Click,
   TABLES.Link,
-  TABLES.Campaign,
+  TABLES.Program,
   TABLES.Payout,
   TABLES.WebhookDelivery,
   TABLES.WebhookEndpoint,
@@ -75,7 +75,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
       tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
-      campaignId: campaign.id,
+      programId: campaign.id,
       landingUrl: 'https://example.com/',
       ts: new Date(),
     });
@@ -136,7 +136,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
         tenantId: DEFAULT_TENANT_ID,
         linkId: link.id,
         partnerId: partner.id,
-        campaignId: campaign.id,
+        programId: campaign.id,
         landingUrl: 'https://example.com/',
         ts: new Date(),
       });
@@ -158,7 +158,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
         eventId,
         clickId: cid,
         partnerId: partner.id,
-        campaignId: campaign.id,
+        programId: campaign.id,
         model: 'linear',
         weight: '0.3333',
         computedAt: new Date(),
@@ -193,7 +193,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
         tenantId: DEFAULT_TENANT_ID,
         linkId: link.id,
         partnerId: partner.id,
-        campaignId: campaign.id,
+        programId: campaign.id,
         landingUrl: 'https://example.com/',
         fraudFlag: 'velocity',
         ts: new Date(Date.now() - 2000),
@@ -203,7 +203,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
         tenantId: DEFAULT_TENANT_ID,
         linkId: link.id,
         partnerId: partner.id,
-        campaignId: campaign.id,
+        programId: campaign.id,
         landingUrl: 'https://example.com/',
         ts: new Date(Date.now() - 1000),
       },
@@ -305,7 +305,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
   }
   async function createCampaign(overrides: Record<string, unknown> = {}) {
     const res = await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
       .send({
         name: 'Regression',
@@ -317,11 +317,11 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
     expect(res.status).toBe(201);
     return res.body as { id: string };
   }
-  async function createLink(partnerId: string, campaignId: string, linkKey: string) {
+  async function createLink(partnerId: string, programId: string, linkKey: string) {
     const res = await request(app)
       .post(`/partners/${partnerId}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey, campaignId, destinationUrl: 'https://example.com/' });
+      .send({ linkKey, programId, destinationUrl: 'https://example.com/' });
     expect(res.status).toBe(201);
     return res.body as { id: string };
   }

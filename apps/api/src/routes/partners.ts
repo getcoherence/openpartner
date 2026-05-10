@@ -23,7 +23,7 @@ const createSchema = z.object({
    *  Omitted = grant access to ALL current campaigns (preserves the
    *  pre-PartnerCampaign behavior). Empty array = grant nothing
    *  (rare; admin can add later). */
-  campaignIds: z.array(z.string()).optional(),
+  programIds: z.array(z.string()).optional(),
   /** Where the grants come from. 'offering' is what the Network
    *  federation sends so we can tell admin assignments apart from
    *  Network-driven ones in the audit log + UI. */
@@ -116,44 +116,44 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
   // Grant program (campaign) access. Default = all current campaigns
   // when caller didn't specify, matching the pre-PartnerCampaign
   // behavior so existing flows don't change shape.
-  let campaignIds: string[];
-  if (body.data.campaignIds) {
+  let programIds: string[];
+  if (body.data.programIds) {
     // Explicit list — validate that each ID exists in this tenant.
     // Without this, a stale ID (e.g. Network Offering still references
     // a Campaign deleted on the vendor side) hits the FK constraint
     // and surfaces to the caller as an opaque 500. Federation flows
     // need a clean error message back instead.
-    const existing = (await db(TABLES.Campaign)
-      .whereIn('id', body.data.campaignIds)
+    const existing = (await db(TABLES.Program)
+      .whereIn('id', body.data.programIds)
       .select('id')) as Array<{ id: string }>;
     const existingIds = new Set(existing.map((c) => c.id));
-    const missing = body.data.campaignIds.filter((cid) => !existingIds.has(cid));
+    const missing = body.data.programIds.filter((cid) => !existingIds.has(cid));
     if (missing.length > 0) {
       return res.status(400).json({ error: 'unknown_campaign_ids', missing });
     }
-    campaignIds = body.data.campaignIds;
+    programIds = body.data.programIds;
   } else {
-    campaignIds = ((await db(TABLES.Campaign).select('id')) as Array<{ id: string }>).map((c) => c.id);
+    programIds = ((await db(TABLES.Program).select('id')) as Array<{ id: string }>).map((c) => c.id);
   }
-  if (campaignIds.length > 0) {
+  if (programIds.length > 0) {
     const grantSource = body.data.campaignGrantSource ?? 'admin';
-    await db(TABLES.PartnerCampaign)
+    await db(TABLES.PartnerProgram)
       .insert(
-        campaignIds.map((cid) => ({
+        programIds.map((cid) => ({
           id: `pc_${ulid()}`,
           tenantId,
           partnerId: id,
-          campaignId: cid,
+          programId: cid,
           source: grantSource,
         })),
       )
-      .onConflict(['tenantId', 'partnerId', 'campaignId'])
+      .onConflict(['tenantId', 'partnerId', 'programId'])
       .ignore();
     // Auto-mint a default coupon per granted campaign so creators have
     // both attribution paths (link + code) available without admin
     // explicit action. ON CONFLICT IGNORE inside the helper means
     // re-grants don't error.
-    await autoMintCouponsForGrants(db, tenantId, { id, email }, campaignIds);
+    await autoMintCouponsForGrants(db, tenantId, { id, email }, programIds);
   }
 
   // Persist the commission snapshot if the federation push carried one.
@@ -265,7 +265,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
     name: body.data.name,
     activatedAt: partnerRow.activatedAt ? partnerRow.activatedAt.toISOString() : null,
     invited: sendInvite,
-    campaignIds,
+    programIds,
   });
   if ((body.data.metadata as Record<string, unknown> | undefined)?.source === 'openpartner_network') {
     dispatchEvent(tenantId, 'partnership.approved', {
@@ -273,7 +273,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
       email,
       name: body.data.name,
       networkCreatorId: (body.data.metadata as Record<string, unknown>).networkCreatorId,
-      campaignIds,
+      programIds,
     });
   }
 

@@ -47,10 +47,10 @@ const TABLES_TO_CLEAN = [
   TABLES.Click,
   TABLES.Link,
   TABLES.Coupon,
-  TABLES.PartnerCampaign,
+  TABLES.PartnerProgram,
   TABLES.PartnerCommission,
   TABLES.Payout,
-  TABLES.Campaign,
+  TABLES.Program,
   TABLES.ApiKey,
   TABLES.Partner,
   TABLES.Config,
@@ -108,7 +108,7 @@ describe.skipIf(skipIntegration)('partner postback', () => {
     const partnerId = partnerRes.body.id;
 
     const campaignRes = await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
       .send({
         name: 'PB',
@@ -116,12 +116,12 @@ describe.skipIf(skipIntegration)('partner postback', () => {
         destinationUrl: 'https://example.com/signup',
       });
     expect(campaignRes.status).toBe(201);
-    const campaignId = campaignRes.body.id;
+    const programId = campaignRes.body.id;
 
     const linkRes = await request(app)
       .post(`/partners/${partnerId}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey: `pb_${Date.now()}`, campaignId });
+      .send({ linkKey: `pb_${Date.now()}`, programId });
     expect(linkRes.status).toBe(201);
 
     // 2. Register a partner postback against the local capturing server.
@@ -143,7 +143,7 @@ describe.skipIf(skipIntegration)('partner postback', () => {
       tenantId: DEFAULT_TENANT_ID,
       linkId: linkRes.body.id,
       partnerId,
-      campaignId,
+      programId,
       landingUrl: 'https://example.com/signup',
       ipHash: 'test-hash',
       userAgent: 'test',
@@ -196,18 +196,18 @@ describe.skipIf(skipIntegration)('partner postback', () => {
     const partnerId = partnerRes.body.id;
 
     const campaignRes = await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
       .send({
         name: 'Skip',
         commissionRule: { type: 'percent', value: 10 },
         destinationUrl: 'https://example.com/',
       });
-    const campaignId = campaignRes.body.id;
+    const programId = campaignRes.body.id;
     const linkRes = await request(app)
       .post(`/partners/${partnerId}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey: `skip_${Date.now()}`, campaignId });
+      .send({ linkKey: `skip_${Date.now()}`, programId });
 
     // Disabled postback — should be ignored.
     await db<PartnerPostbackRow>(TABLES.PartnerPostback).insert({
@@ -234,7 +234,7 @@ describe.skipIf(skipIntegration)('partner postback', () => {
       tenantId: DEFAULT_TENANT_ID,
       linkId: linkRes.body.id,
       partnerId,
-      campaignId,
+      programId,
       landingUrl: 'https://example.com/',
       ipHash: 'h',
       userAgent: 't',

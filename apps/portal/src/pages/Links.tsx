@@ -10,7 +10,7 @@ interface LinkRow {
   id: string;
   linkKey: string;
   destinationUrl: string | null;
-  campaignId: string;
+  programId: string;
   partnerId: string;
   createdAt: string;
 }
@@ -93,7 +93,7 @@ function PartnerLinks({ partnerId, readOnly }: { partnerId: string; readOnly: bo
   // partner-friendly read-only slice (no commission rules etc.).
   const campaigns = useQuery({
     queryKey: ['me-campaigns'],
-    queryFn: () => api<{ campaigns: Campaign[] }>('/me/campaigns').catch(() => ({ campaigns: [] })),
+    queryFn: () => api<{ campaigns: Campaign[] }>('/me/programs').catch(() => ({ campaigns: [] })),
   });
 
   return (
@@ -136,7 +136,7 @@ function PartnerLinks({ partnerId, readOnly }: { partnerId: string; readOnly: bo
         <Table
           columns={['Key', 'Destination', 'Program', 'Created']}
           rows={(links.data?.links ?? []).map((l) => {
-            const campaign = campaigns.data?.campaigns.find((c) => c.id === l.campaignId);
+            const campaign = campaigns.data?.campaigns.find((c) => c.id === l.programId);
             const dest = l.destinationUrl ?? campaign?.destinationUrl ?? '—';
             return [
               <code style={{ color: theme.accent }}>/r/{l.linkKey}</code>,
@@ -146,7 +146,7 @@ function PartnerLinks({ partnerId, readOnly }: { partnerId: string; readOnly: bo
                   <span style={{ color: theme.accent, fontSize: 11, marginLeft: 8 }}>(deep link)</span>
                 )}
               </span>,
-              <span>{campaign?.name ?? <code style={{ color: theme.textDim, fontSize: 12 }}>{l.campaignId.slice(0, 8)}…</code>}</span>,
+              <span>{campaign?.name ?? <code style={{ color: theme.textDim, fontSize: 12 }}>{l.programId.slice(0, 8)}…</code>}</span>,
               <span style={{ color: theme.textMuted }}>{formatDate(l.createdAt, { relative: true })}</span>,
             ];
           })}
@@ -168,11 +168,11 @@ function CreateLink({
   onCreated: () => void;
 }) {
   const [linkKey, setLinkKey] = useState('');
-  const [campaignId, setCampaignId] = useState(campaigns[0]?.id ?? '');
+  const [programId, setCampaignId] = useState(campaigns[0]?.id ?? '');
   const [useDeepLink, setUseDeepLink] = useState(false);
   const [destinationOverride, setDestinationOverride] = useState('');
 
-  const selectedCampaign = campaigns.find((c) => c.id === campaignId);
+  const selectedCampaign = campaigns.find((c) => c.id === programId);
   const deepLinkAllowed = !!selectedCampaign?.deepLinkAllowedDomains;
 
   const mut = useMutation({
@@ -181,7 +181,7 @@ function CreateLink({
         method: 'POST',
         body: {
           linkKey,
-          campaignId,
+          programId,
           // Only send destinationUrl when the partner has explicitly
           // opted into a deep-link override on a Campaign that allows it.
           destinationUrl: useDeepLink && destinationOverride ? destinationOverride : undefined,
@@ -197,9 +197,9 @@ function CreateLink({
       <div style={{ marginBottom: 14 }}>
         <Label>Program</Label>
         {campaigns.length === 0 ? (
-          <Input value={campaignId} onChange={(e) => setCampaignId(e.target.value)} placeholder="campaign id (ULID)" />
+          <Input value={programId} onChange={(e) => setCampaignId(e.target.value)} placeholder="campaign id (ULID)" />
         ) : (
-          <Select value={campaignId} onChange={(e) => setCampaignId(e.target.value)}>
+          <Select value={programId} onChange={(e) => setCampaignId(e.target.value)}>
             {campaigns.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
@@ -242,7 +242,7 @@ function CreateLink({
         </div>
       )}
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={() => mut.mutate()} disabled={!linkKey || !campaignId || mut.isPending}>
+        <Button onClick={() => mut.mutate()} disabled={!linkKey || !programId || mut.isPending}>
           {mut.isPending ? 'Creating…' : 'Create link'}
         </Button>
         <Button variant="secondary" onClick={onClose}>

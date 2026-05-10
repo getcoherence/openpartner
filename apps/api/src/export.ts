@@ -20,7 +20,7 @@ import { TABLES } from '@openpartner/db';
 
 export const EXPORTABLE_TABLES = [
   TABLES.Partner,
-  TABLES.Campaign,
+  TABLES.Program,
   TABLES.Link,
   TABLES.Click,
   TABLES.Identity,

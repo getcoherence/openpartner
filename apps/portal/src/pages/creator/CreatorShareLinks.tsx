@@ -8,7 +8,7 @@ import { creatorApi } from './creator-api.js';
 
 interface Coupon {
   code: string;
-  campaignId: string;
+  programId: string;
   redemptions90d: number;
   revenue90d: number;
 }

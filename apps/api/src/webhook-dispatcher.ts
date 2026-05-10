@@ -100,7 +100,7 @@ async function runDispatch(tenantId: string, event: WebhookEventType, data: unkn
         event_id: typeof d.eventId === 'string' ? d.eventId : undefined,
         transaction_id: typeof d.eventId === 'string' ? d.eventId : undefined,
         event_type: typeof d.eventType === 'string' ? d.eventType : undefined,
-        campaign_id: typeof d.campaignId === 'string' ? d.campaignId : undefined,
+        program_id: typeof d.programId === 'string' ? d.programId : undefined,
         payout_id: typeof d.payoutId === 'string' ? d.payoutId : undefined,
       });
     }
@@ -161,7 +161,7 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     attributionId: `01J${'2'.repeat(23)}`,
     eventId: `01J${'3'.repeat(23)}`,
     partnerId: `01J${'1'.repeat(23)}`,
-    campaignId: 'cmp_default',
+    programId: 'cmp_default',
     clickId: `01J${'4'.repeat(23)}`,
     model: 'last_click',
     weight: 1,
@@ -175,7 +175,7 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     commissionId: `01J${'0'.repeat(23)}`,
     partnerId: `01J${'1'.repeat(23)}`,
     attributionId: `01J${'2'.repeat(23)}`,
-    campaignId: 'cmp_default',
+    programId: 'cmp_default',
     amount: '12.00',
     currency: 'USD',
     eventType: 'invoice_paid',
@@ -208,7 +208,7 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     name: 'Sample Partner',
     activatedAt: null,
     invited: true,
-    campaignIds: ['cmp_default'],
+    programIds: ['cmp_default'],
   }),
   'partner.activated': () => ({
     partnerId: `01J${'1'.repeat(23)}`,
@@ -221,7 +221,7 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     email: 'sample@example.com',
     name: 'Sample Partner',
     networkCreatorId: `crt_${'a'.repeat(20)}`,
-    campaignIds: ['cmp_default'],
+    programIds: ['cmp_default'],
   }),
   'payout.created': () => ({
     payoutId: `01J${'5'.repeat(23)}`,

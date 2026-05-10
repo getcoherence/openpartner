@@ -32,7 +32,7 @@ export async function autoApproveMatureCommissions(
     update "${TABLES.Commission}" c
        set status = 'approved'
       from "${TABLES.Attribution}" a
-      join "${TABLES.Campaign}" cp on a."campaignId" = cp.id
+      join "${TABLES.Program}" cp on a."programId" = cp.id
       left join "${TABLES.PartnerCommission}" pc on pc."partnerId" = c."partnerId"
      where c.status = 'accrued'
        and c."attributionId" = a.id

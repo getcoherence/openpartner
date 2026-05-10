@@ -78,7 +78,7 @@ const TABLES_TO_CLEAN = [
   TABLES.Identity,
   TABLES.Click,
   TABLES.Link,
-  TABLES.Campaign,
+  TABLES.Program,
   TABLES.Payout,
   TABLES.ApiKey,
   TABLES.Partner,
@@ -135,14 +135,14 @@ describe.skipIf(skipIntegration)('webhooks', () => {
       .send({ email: 'wh@e.com', name: 'WH' });
     const partnerId = partnerRes.body.id;
     const campaignRes = await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
       .send({ name: 'WH', commissionRule: { type: 'percent', value: 20 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
-    const campaignId = campaignRes.body.id;
+    const programId = campaignRes.body.id;
     const linkRes = await request(app)
       .post(`/partners/${partnerId}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey: `wh_${Date.now()}`, campaignId, destinationUrl: 'https://e.com' });
+      .send({ linkKey: `wh_${Date.now()}`, programId, destinationUrl: 'https://e.com' });
     const linkId = linkRes.body.id;
 
     const clickId = ulid();
@@ -151,7 +151,7 @@ describe.skipIf(skipIntegration)('webhooks', () => {
       tenantId: DEFAULT_TENANT_ID,
       linkId,
       partnerId,
-      campaignId,
+      programId,
       landingUrl: 'x',
       ipHash: 'x',
       userAgent: 'x',
@@ -220,7 +220,7 @@ describe.skipIf(skipIntegration)('webhooks', () => {
     ).body;
     const campaign = (
       await request(app)
-        .post('/campaigns')
+        .post('/programs')
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
         .send({ name: 'R', commissionRule: { type: 'percent', value: 10 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })
     ).body;
@@ -228,7 +228,7 @@ describe.skipIf(skipIntegration)('webhooks', () => {
       await request(app)
         .post(`/partners/${partner.id}/links`)
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ linkKey: `r_${Date.now()}`, campaignId: campaign.id, destinationUrl: 'https://e.com' })
+        .send({ linkKey: `r_${Date.now()}`, programId: campaign.id, destinationUrl: 'https://e.com' })
     ).body;
     const clickId = ulid();
     await db(TABLES.Click).insert({
@@ -236,7 +236,7 @@ describe.skipIf(skipIntegration)('webhooks', () => {
       tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
-      campaignId: campaign.id,
+      programId: campaign.id,
       landingUrl: 'x',
       ipHash: 'x',
       userAgent: 'x',
@@ -301,7 +301,7 @@ describe.skipIf(skipIntegration)('webhooks', () => {
     ).body;
     const campaign = (
       await request(app)
-        .post('/campaigns')
+        .post('/programs')
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
         .send({ name: 'S', commissionRule: { type: 'percent', value: 10 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })
     ).body;
@@ -309,7 +309,7 @@ describe.skipIf(skipIntegration)('webhooks', () => {
       await request(app)
         .post(`/partners/${partner.id}/links`)
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ linkKey: `s_${Date.now()}`, campaignId: campaign.id, destinationUrl: 'https://e.com' })
+        .send({ linkKey: `s_${Date.now()}`, programId: campaign.id, destinationUrl: 'https://e.com' })
     ).body;
     const clickId = ulid();
     await db(TABLES.Click).insert({
@@ -317,7 +317,7 @@ describe.skipIf(skipIntegration)('webhooks', () => {
       tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
-      campaignId: campaign.id,
+      programId: campaign.id,
       landingUrl: 'x',
       ipHash: 'x',
       userAgent: 'x',

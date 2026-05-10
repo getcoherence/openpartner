@@ -31,7 +31,7 @@ const TABLES_TO_CLEAN = [
   TABLES.Identity,
   TABLES.Click,
   TABLES.Link,
-  TABLES.Campaign,
+  TABLES.Program,
   TABLES.Payout,
   TABLES.ApiKey,
   TABLES.Partner,
@@ -81,18 +81,18 @@ describe.skipIf(skipIntegration)('api integration', () => {
 
     // 2. Admin creates a campaign (20% commission).
     const campaignRes = await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
       .send({ name: 'Default', commissionRule: { type: 'percent', value: 20 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
     expect(campaignRes.status).toBe(201);
-    const campaignId = campaignRes.body.id;
+    const programId = campaignRes.body.id;
 
     // 3. Admin creates a link for the partner.
     const linkKey = `test_${Date.now()}`;
     const linkRes = await request(app)
       .post(`/partners/${partnerId}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey, campaignId, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
+      .send({ linkKey, programId, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
     expect(linkRes.status).toBe(201);
 
     // 4. Simulate a click (normally written by the router).
@@ -102,7 +102,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
       tenantId: DEFAULT_TENANT_ID,
       linkId: linkRes.body.id,
       partnerId,
-      campaignId,
+      programId,
       landingUrl: 'https://example.com/signup?cref=' + clickId,
       ipHash: 'test-hash',
       userAgent: 'test',
@@ -176,15 +176,15 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const partnerId = partnerRes.body.id;
 
     const campaignRes = await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
       .send({ name: 'C', commissionRule: { type: 'percent', value: 10 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
-    const campaignId = campaignRes.body.id;
+    const programId = campaignRes.body.id;
 
     const linkRes = await request(app)
       .post(`/partners/${partnerId}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey: `fraud_${Date.now()}`, campaignId, destinationUrl: 'https://e.com' });
+      .send({ linkKey: `fraud_${Date.now()}`, programId, destinationUrl: 'https://e.com' });
 
     const clickId = ulid();
     await db(TABLES.Click).insert({
@@ -192,7 +192,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
       tenantId: DEFAULT_TENANT_ID,
       linkId: linkRes.body.id,
       partnerId,
-      campaignId,
+      programId,
       landingUrl: 'https://e.com',
       ipHash: 'x',
       userAgent: 'x',
@@ -269,28 +269,28 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const p2 = (await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email: 'p2@x.com', name: 'P2' })).body.id;
 
     const linearCampaign = (await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
       .send({ name: 'Linear', commissionRule: { type: 'percent', value: 20 }, attributionModel: 'linear', destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })).body.id;
 
     const link1 = (await request(app)
       .post(`/partners/${p1}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey: `l1_${Date.now()}`, campaignId: linearCampaign, destinationUrl: 'https://e.com' })).body;
+      .send({ linkKey: `l1_${Date.now()}`, programId: linearCampaign, destinationUrl: 'https://e.com' })).body;
     const link2 = (await request(app)
       .post(`/partners/${p2}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey: `l2_${Date.now()}`, campaignId: linearCampaign, destinationUrl: 'https://e.com' })).body;
+      .send({ linkKey: `l2_${Date.now()}`, programId: linearCampaign, destinationUrl: 'https://e.com' })).body;
 
     const click1 = ulid();
     const click2 = ulid();
     await db(TABLES.Click).insert({
-      id: click1, tenantId: DEFAULT_TENANT_ID, linkId: link1.id, partnerId: p1, campaignId: linearCampaign,
+      id: click1, tenantId: DEFAULT_TENANT_ID, linkId: link1.id, partnerId: p1, programId: linearCampaign,
       landingUrl: 'x', ipHash: 'x', userAgent: 'x', referer: null, fraudFlag: null,
       ts: new Date(Date.now() - 10_000),
     });
     await db(TABLES.Click).insert({
-      id: click2, tenantId: DEFAULT_TENANT_ID, linkId: link2.id, partnerId: p2, campaignId: linearCampaign,
+      id: click2, tenantId: DEFAULT_TENANT_ID, linkId: link2.id, partnerId: p2, programId: linearCampaign,
       landingUrl: 'x', ipHash: 'x', userAgent: 'x', referer: null, fraudFlag: null,
       ts: new Date(Date.now() - 5_000),
     });
@@ -368,7 +368,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
     ).body;
     const campaign = (
       await request(app)
-        .post('/campaigns')
+        .post('/programs')
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
         .send({ name: 'F', commissionRule: { type: 'percent', value: 10 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })
     ).body;
@@ -376,7 +376,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
       await request(app)
         .post(`/partners/${partner.id}/links`)
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ linkKey: `fk_${Date.now()}`, campaignId: campaign.id, destinationUrl: 'https://e.com' })
+        .send({ linkKey: `fk_${Date.now()}`, programId: campaign.id, destinationUrl: 'https://e.com' })
     ).body;
 
     // 3 clicks, one flagged.
@@ -384,9 +384,9 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const click2 = ulid();
     const click3 = ulid();
     await db(TABLES.Click).insert([
-      { id: click1, tenantId: DEFAULT_TENANT_ID, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'a', userAgent: 'x', referer: null, fraudFlag: null },
-      { id: click2, tenantId: DEFAULT_TENANT_ID, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'b', userAgent: 'x', referer: null, fraudFlag: null },
-      { id: click3, tenantId: DEFAULT_TENANT_ID, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'c', userAgent: 'x', referer: null, fraudFlag: 'velocity' },
+      { id: click1, tenantId: DEFAULT_TENANT_ID, linkId: link.id, partnerId: partner.id, programId: campaign.id, landingUrl: 'x', ipHash: 'a', userAgent: 'x', referer: null, fraudFlag: null },
+      { id: click2, tenantId: DEFAULT_TENANT_ID, linkId: link.id, partnerId: partner.id, programId: campaign.id, landingUrl: 'x', ipHash: 'b', userAgent: 'x', referer: null, fraudFlag: null },
+      { id: click3, tenantId: DEFAULT_TENANT_ID, linkId: link.id, partnerId: partner.id, programId: campaign.id, landingUrl: 'x', ipHash: 'c', userAgent: 'x', referer: null, fraudFlag: 'velocity' },
     ]);
 
     // User 1 stitches, signs up, pays.
@@ -433,7 +433,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
     ).body;
     const campaign = (
       await request(app)
-        .post('/campaigns')
+        .post('/programs')
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
         .send({ name: 'Fr', commissionRule: { type: 'percent', value: 20 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })
     ).body;
@@ -441,7 +441,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
       await request(app)
         .post(`/partners/${partner.id}/links`)
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ linkKey: `fr_${Date.now()}`, campaignId: campaign.id, destinationUrl: 'https://e.com' })
+        .send({ linkKey: `fr_${Date.now()}`, programId: campaign.id, destinationUrl: 'https://e.com' })
     ).body;
 
     // Click comes in flagged as velocity.
@@ -451,7 +451,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
       tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
-      campaignId: campaign.id,
+      programId: campaign.id,
       landingUrl: 'x',
       ipHash: 'x',
       userAgent: 'x',

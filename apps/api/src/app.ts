@@ -12,7 +12,7 @@ import { stripeWebhookRouter } from './routes/stripe-webhook.js';
 import { identifyRouter } from './routes/identify.js';
 import { eventsRouter } from './routes/events.js';
 import { partnersRouter } from './routes/partners.js';
-import { campaignsRouter } from './routes/campaigns.js';
+import { programsRouter } from './routes/programs.js';
 import { linksRouter } from './routes/links.js';
 import { dashboardRouter } from './routes/dashboard.js';
 import { apiKeysRouter } from './routes/api-keys.js';
@@ -214,7 +214,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(identifyRouter);
   app.use(eventsRouter);
   app.use(partnersRouter);
-  app.use(campaignsRouter);
+  app.use(programsRouter);
   app.use(linksRouter);
   app.use(clicksRouter);
   app.use(dashboardRouter);

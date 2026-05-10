@@ -26,7 +26,7 @@ const ingestSchema = z.object({
   /** ULID minted by the federating caller (Network). Replays carry the
    *  same id so we can dedupe via the unique primary key. */
   id: z.string().min(20).max(40),
-  /** Resolves to a Link in this tenant. We derive partnerId + campaignId
+  /** Resolves to a Link in this tenant. We derive partnerId + programId
    *  from the Link so the caller can't forge attribution. */
   linkKey: z.string().min(3).max(64),
   landingUrl: z.string().url().max(2048),
@@ -47,7 +47,7 @@ clicksRouter.post('/clicks', requireAuth, grantScope('clicks:write'), async (req
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
   // Look up the Link by linkKey within this tenant. Don't trust the
-  // caller's claimed partnerId/campaignId — derive from the Link row.
+  // caller's claimed partnerId/programId — derive from the Link row.
   const link = await db<LinkRow>(TABLES.Link).where({ linkKey: body.data.linkKey }).first();
   if (!link) return res.status(404).json({ error: 'link_not_found' });
 
@@ -57,7 +57,7 @@ clicksRouter.post('/clicks', requireAuth, grantScope('clicks:write'), async (req
       tenantId,
       linkId: link.id,
       partnerId: link.partnerId,
-      campaignId: link.campaignId,
+      programId: link.programId,
       landingUrl: body.data.landingUrl,
       ipHash: body.data.ipHash ?? null,
       userAgent: body.data.userAgent ?? null,

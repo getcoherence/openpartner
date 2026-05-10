@@ -74,26 +74,26 @@ const TABLES_TO_CLEAN = [
   TABLES.Identity,
   TABLES.Click,
   TABLES.Link,
-  TABLES.Campaign,
+  TABLES.Program,
   TABLES.Partner,
   TABLES.Config,
 ];
 
 interface Ids {
   partnerId: string;
-  campaignId: string;
+  programId: string;
   linkId: string;
   clickId: string;
 }
 
 async function seedClick(): Promise<Ids> {
   const partnerId = ulid();
-  const campaignId = ulid();
+  const programId = ulid();
   const linkId = ulid();
   const clickId = ulid();
   await db(TABLES.Partner).insert({ id: partnerId, tenantId: DEFAULT_TENANT_ID, name: 'Test partner', email: `p-${partnerId}@example.com` });
-  await db(TABLES.Campaign).insert({
-    id: campaignId,
+  await db(TABLES.Program).insert({
+    id: programId,
     tenantId: DEFAULT_TENANT_ID,
     name: 'Default',
     attributionModel: 'last_click',
@@ -105,7 +105,7 @@ async function seedClick(): Promise<Ids> {
     id: linkId,
     tenantId: DEFAULT_TENANT_ID,
     partnerId,
-    campaignId,
+    programId,
     linkKey: `lk-${linkId}`,
     destinationUrl: 'https://example.com',
   });
@@ -114,12 +114,12 @@ async function seedClick(): Promise<Ids> {
     tenantId: DEFAULT_TENANT_ID,
     linkId,
     partnerId,
-    campaignId,
+    programId,
     landingUrl: 'https://example.com/landing',
     ipHash: 'h',
     ts: new Date(),
   });
-  return { partnerId, campaignId, linkId, clickId };
+  return { partnerId, programId, linkId, clickId };
 }
 
 beforeAll(async () => {

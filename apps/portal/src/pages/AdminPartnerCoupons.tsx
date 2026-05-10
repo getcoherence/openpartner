@@ -15,7 +15,7 @@ interface Partner {
 interface CouponRow {
   id: string;
   code: string;
-  campaignId: string;
+  programId: string;
   createdAt: string;
   redemptions90d?: number;
   revenue90d?: number;
@@ -44,7 +44,7 @@ export function AdminPartnerCoupons() {
   });
   const campaigns = useQuery({
     queryKey: ['campaigns'],
-    queryFn: () => api<{ campaigns: CampaignBrief[] }>('/campaigns'),
+    queryFn: () => api<{ campaigns: CampaignBrief[] }>('/programs'),
   });
 
   const [pickedCampaign, setPickedCampaign] = useState('');
@@ -54,7 +54,7 @@ export function AdminPartnerCoupons() {
     mutationFn: () =>
       api(`/partners/${partnerId}/coupons`, {
         method: 'POST',
-        body: { campaignId: pickedCampaign, code: customCode.trim() ? customCode.trim().toUpperCase() : undefined },
+        body: { programId: pickedCampaign, code: customCode.trim() ? customCode.trim().toUpperCase() : undefined },
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['partner-coupons', partnerId] });
@@ -67,7 +67,7 @@ export function AdminPartnerCoupons() {
     ? (mint.error.detail as { detail?: string; threshold?: number; existing?: number } | undefined)
     : null;
 
-  const existingCampaignIds = new Set((coupons.data?.coupons ?? []).map((c) => c.campaignId));
+  const existingCampaignIds = new Set((coupons.data?.coupons ?? []).map((c) => c.programId));
   const availableCampaigns = (campaigns.data?.campaigns ?? []).filter((c) => !existingCampaignIds.has(c.id));
   const campaignNameById = new Map((campaigns.data?.campaigns ?? []).map((c) => [c.id, c.name]));
   const partnerName = partner.data?.name ?? '…';
@@ -104,7 +104,7 @@ export function AdminPartnerCoupons() {
                   <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: theme.surface2, border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm }}>
                     <code style={{ fontSize: 14, fontWeight: 500, color: theme.text, flex: 1 }}>{c.code}</code>
                     <span style={{ color: theme.textMuted, fontSize: 12 }}>
-                      {campaignNameById.get(c.campaignId) ?? c.campaignId}
+                      {campaignNameById.get(c.programId) ?? c.programId}
                     </span>
                     <span style={{ color: theme.textMuted, fontSize: 11, whiteSpace: 'nowrap' }}>
                       {(c.redemptions90d ?? 0) > 0
