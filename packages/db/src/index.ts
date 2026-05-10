@@ -1,8 +1,15 @@
 /**
  * Shared database types + connection factory.
+ *
+ * Knex is loaded lazily inside createDb() so that browser consumers
+ * (apps/portal) can import the type-only and pure-function exports
+ * without dragging knex + pg + their `process.env` references into
+ * the client bundle. The dynamic import has a one-time async cost on
+ * the first server-side createDb() call, which is negligible compared
+ * to the connection handshake itself.
  */
 
-import knex, { type Knex } from 'knex';
+import type { Knex } from 'knex';
 import { sslFromConnectionString } from './ssl.js';
 
 export * from './types.js';
@@ -36,7 +43,8 @@ export interface DbConfig {
   bypassRls?: boolean;
 }
 
-export function createDb(config: DbConfig): Knex {
+export async function createDb(config: DbConfig): Promise<Knex> {
+  const { default: knex } = await import('knex');
   const { ssl, url } = sslFromConnectionString(config.connectionString);
   return knex({
     client: 'pg',

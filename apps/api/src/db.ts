@@ -63,11 +63,15 @@ const appUrl = inheritSslMode(rawAppUrl!, adminUrl);
  * Day-to-day API request handling should use req.db (the transaction-bound
  * appDb instance) instead, so RLS is the second line of defense.
  */
-export const db = createDb({ connectionString: adminUrl, bypassRls: true });
+// Top-level await: createDb is async because knex is now lazy-imported
+// (kept out of any browser bundle that imports from @openpartner/db). Node
+// 14+ ESM supports top-level await, so callers see the already-resolved
+// Knex instance with no API-shape change.
+export const db = await createDb({ connectionString: adminUrl, bypassRls: true });
 
 /**
  * Per-tenant pool. Tenant scope is set on each transaction via SET LOCAL
  * app.tenant_id; see tenancy.ts withTenantTransaction. RLS is *not*
  * bypassed on this pool — that's the whole point.
  */
-export const appDb = createDb({ connectionString: appUrl! });
+export const appDb = await createDb({ connectionString: appUrl! });

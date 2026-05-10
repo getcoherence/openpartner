@@ -11,7 +11,7 @@ const PORT = Number(process.env.ROUTER_PORT ?? 4701);
 const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN ?? 'localhost';
 const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 90; // 90 days
 
-const db = createDb({ connectionString: process.env.DATABASE_URL! });
+const db = await createDb({ connectionString: process.env.DATABASE_URL! });
 
 app.get('/health', (c) => c.json({ ok: true, service: 'router' }));
 
