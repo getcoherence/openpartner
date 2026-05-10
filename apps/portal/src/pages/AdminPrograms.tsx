@@ -119,10 +119,13 @@ export function AdminPrograms() {
           }}
         />
       )}
-      {campaigns.isLoading ? (
+      {/* Hide the program list while the edit or create form is open —
+          duplicating the row being edited is just visual noise, and on a
+          single-program tenant it pushes the form off-screen. */}
+      {editing || showCreate ? null : campaigns.isLoading ? (
         <Card>Loading…</Card>
       ) : (campaigns.data?.programs ?? []).length === 0 ? (
-        <EmptyState title="No campaigns yet" hint="A campaign holds the commission rule and attribution settings." icon={<Tag size={28} strokeWidth={1.25} />} />
+        <EmptyState title="No programs yet" hint="A program holds the commission rule and attribution settings." icon={<Tag size={28} strokeWidth={1.25} />} />
       ) : (
         <Table
           columns={['Name', 'Status', 'Destination', 'Commission', 'Window', 'Holdback', 'Model', 'Created', 'Actions']}
