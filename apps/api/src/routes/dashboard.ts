@@ -8,15 +8,15 @@ import { parseUserAgent } from '../ua-parse.js';
 export const dashboardRouter = Router();
 
 /**
- * Event-type buckets for the partner-facing analytics charts.
- *
- * Maps OpenPartner's open-ended event-type taxonomy onto the standard
- * 3-pane funnel creators expect (Clicks / Leads / Sales). Anything not
- * captured here (custom event types) falls into "other" and only shows
- * up on the raw events list, not the chart aggregates — keeps the chart
- * legend stable across brands using different conversion taxonomies.
+ * The timeseries / breakdown endpoints below map OpenPartner's
+ * open-ended event-type taxonomy onto the standard 3-pane funnel
+ * creators expect (Clicks / Leads / Sales). Lead events are
+ * 'signup' and 'trial_started' (inlined into the SQL CASE below);
+ * sales = any event with a positive value. Custom event types
+ * still appear on the raw events list but aren't bucketed in the
+ * chart aggregates — keeps the chart legend stable across brands
+ * using different conversion taxonomies.
  */
-const LEAD_EVENT_TYPES = ['signup', 'trial_started'] as const;
 
 // Partner dashboard — top-line counts, attributed revenue, commission by status.
 // Read-optimized via denormalized partnerId on Click/Attribution/Commission.
@@ -172,60 +172,70 @@ dashboardRouter.get(
     const truncUnit = bucket === 'week' ? 'week' : 'day';
 
     // Three queries in parallel — clicks, events, commissions. Each
-    // bucketed by date_trunc on its primary timestamp column. Joining
-    // them in SQL would be cheaper but uglier; given partner-scoped
-    // tables the row counts here are tiny.
-    const [clicksRows, eventsRows, commissionsRows] = await Promise.all([
-      db(TABLES.Click)
-        .where({ partnerId })
-        .modify((qb) => {
-          if (q.data.programId) qb.andWhere({ programId: q.data.programId });
-        })
-        .andWhere('ts', '>=', since)
-        .andWhere('ts', '<=', until)
-        .groupByRaw(`date_trunc('${truncUnit}', "ts")`)
-        .select(db.raw(`date_trunc('${truncUnit}', "ts") as bucket`))
-        .count<{ bucket: Date; count: string }[]>({ count: '*' }) as unknown as Promise<
-          Array<{ bucket: Date; count: string }>
-        >,
+    // bucketed by date_trunc on its primary timestamp column. Written
+    // as raw SQL because mixing knex's groupByRaw + select(raw) + .count
+    // chain proved fragile (silent SQL errors that surfaced as opaque
+    // 500s). Static SQL with named placeholders is also easier to read
+    // than the equivalent builder chain.
+    //
+    // truncUnit comes from a closed enum (day|week) so interpolating
+    // it directly is safe; partnerId / programId / dates all bind.
+    const programFilter = q.data.programId ? `AND "programId" = :programId` : '';
+    const eventProgramFilter = q.data.programId ? `AND "Attribution"."programId" = :programId` : '';
+    const commissionProgramJoin = q.data.programId
+      ? `JOIN "Attribution" ON "Attribution"."id" = "Commission"."attributionId" AND "Attribution"."programId" = :programId`
+      : '';
 
-      db(TABLES.Attribution)
-        .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
-        .where(`${TABLES.Attribution}.partnerId`, partnerId)
-        .modify((qb) => {
-          if (q.data.programId) qb.andWhere(`${TABLES.Attribution}.programId`, q.data.programId);
-        })
-        .andWhere(`${TABLES.Event}.ts`, '>=', since)
-        .andWhere(`${TABLES.Event}.ts`, '<=', until)
-        .groupByRaw(`date_trunc('${truncUnit}', "Event"."ts")`)
-        .select(db.raw(`date_trunc('${truncUnit}', "Event"."ts") as bucket`))
-        .select(
-          db.raw(
-            `SUM(CASE WHEN "Event".type IN (${LEAD_EVENT_TYPES.map(() => '?').join(',')}) THEN 1 ELSE 0 END) as leads`,
-            LEAD_EVENT_TYPES as unknown as string[],
-          ),
-          db.raw(`SUM(CASE WHEN "Event".value > 0 THEN 1 ELSE 0 END) as sales`),
-          db.raw(`COALESCE(SUM("Event".value * "Attribution".weight), 0) as revenue`),
-        ) as unknown as Promise<
-          Array<{ bucket: Date; leads: string; sales: string; revenue: string }>
-        >,
+    const bindings = q.data.programId
+      ? { partnerId, since, until, programId: q.data.programId }
+      : { partnerId, since, until };
 
-      db(TABLES.Commission)
-        .where({ partnerId })
-        .modify((qb) => {
-          if (q.data.programId) {
-            qb.join(TABLES.Attribution, `${TABLES.Attribution}.id`, `${TABLES.Commission}.attributionId`)
-              .andWhere(`${TABLES.Attribution}.programId`, q.data.programId);
-          }
-        })
-        .andWhere(`${TABLES.Commission}.accruedAt`, '>=', since)
-        .andWhere(`${TABLES.Commission}.accruedAt`, '<=', until)
-        .groupByRaw(`date_trunc('${truncUnit}', "Commission"."accruedAt")`)
-        .select(db.raw(`date_trunc('${truncUnit}', "Commission"."accruedAt") as bucket`))
-        .sum({ earnings: `${TABLES.Commission}.amount` }) as unknown as Promise<
-          Array<{ bucket: Date; earnings: string | null }>
-        >,
+    const [clicksResult, eventsResult, commissionsResult] = await Promise.all([
+      db.raw(
+        `SELECT date_trunc('${truncUnit}', "ts") AS bucket, COUNT(*)::text AS count
+         FROM "Click"
+         WHERE "partnerId" = :partnerId
+           AND "ts" >= :since
+           AND "ts" <= :until
+           ${programFilter}
+         GROUP BY 1`,
+        bindings,
+      ),
+      db.raw(
+        `SELECT date_trunc('${truncUnit}', "Event"."ts") AS bucket,
+                SUM(CASE WHEN "Event"."type" IN ('signup','trial_started') THEN 1 ELSE 0 END)::text AS leads,
+                SUM(CASE WHEN "Event"."value" > 0 THEN 1 ELSE 0 END)::text AS sales,
+                COALESCE(SUM("Event"."value" * "Attribution"."weight"), 0)::text AS revenue
+         FROM "Attribution"
+         JOIN "Event" ON "Event"."id" = "Attribution"."eventId"
+         WHERE "Attribution"."partnerId" = :partnerId
+           AND "Event"."ts" >= :since
+           AND "Event"."ts" <= :until
+           ${eventProgramFilter}
+         GROUP BY 1`,
+        bindings,
+      ),
+      db.raw(
+        `SELECT date_trunc('${truncUnit}', "Commission"."accruedAt") AS bucket,
+                COALESCE(SUM("Commission"."amount"), 0)::text AS earnings
+         FROM "Commission"
+         ${commissionProgramJoin}
+         WHERE "Commission"."partnerId" = :partnerId
+           AND "Commission"."accruedAt" >= :since
+           AND "Commission"."accruedAt" <= :until
+         GROUP BY 1`,
+        bindings,
+      ),
     ]);
+
+    const clicksRows = clicksResult.rows as Array<{ bucket: Date; count: string }>;
+    const eventsRows = eventsResult.rows as Array<{
+      bucket: Date;
+      leads: string;
+      sales: string;
+      revenue: string;
+    }>;
+    const commissionsRows = commissionsResult.rows as Array<{ bucket: Date; earnings: string }>;
 
     // Outer-join the three streams in JS into a dense array — every
     // bucket in [since, until] gets a row, missing values fill as 0 so
