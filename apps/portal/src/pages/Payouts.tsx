@@ -22,7 +22,12 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
   const partnerId = principal.partnerId ?? queryPartnerId;
 
   const runPayouts = useMutation({
-    mutationFn: () => api<{ runId: string; payouts: unknown[] }>('/payouts/run', { method: 'POST' }),
+    mutationFn: () =>
+      api<{
+        runId: string;
+        payouts: unknown[];
+        skippedBelowThreshold: Array<{ partnerId: string; currency: string; amount: number }>;
+      }>('/payouts/run', { method: 'POST' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['payouts'] });
       qc.invalidateQueries({ queryKey: ['commissions'] });
@@ -59,6 +64,12 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
           <div style={{ fontSize: 13, color: theme.accent, fontWeight: 500, marginBottom: 8 }}>
             Run #{shortId(runPayouts.data.runId)} — {runPayouts.data.payouts.length} payout
             {runPayouts.data.payouts.length === 1 ? '' : 's'}
+            {runPayouts.data.skippedBelowThreshold?.length > 0 && (
+              <span style={{ color: theme.textMuted, fontWeight: 400 }}>
+                {' '}
+                · {runPayouts.data.skippedBelowThreshold.length} skipped below threshold
+              </span>
+            )}
           </div>
           <pre
             style={{
@@ -72,7 +83,16 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
               maxHeight: 280,
             }}
           >
-            {JSON.stringify(runPayouts.data.payouts, null, 2)}
+            {JSON.stringify(
+              {
+                payouts: runPayouts.data.payouts,
+                ...(runPayouts.data.skippedBelowThreshold?.length
+                  ? { skippedBelowThreshold: runPayouts.data.skippedBelowThreshold }
+                  : {}),
+              },
+              null,
+              2,
+            )}
           </pre>
         </Card>
       )}

@@ -44,10 +44,34 @@ export interface TenantRow {
    *  cleared. Used to refuse second-and-later trials so a user can't
    *  trial-loop by cancelling and re-subscribing. */
   firstTrialActivatedAt: Date | null;
+  /** Payout rail preference. Null = 'auto' (legacy: pick per-partner at
+   *  payout time). See migration 20260622000000_tenant_payout_settings. */
+  payoutRailPreference: PayoutRailPreference | null;
+  /** Minimum (partner, currency) balance to issue a payout, in cents.
+   *  Null or 0 = no threshold (legacy: pay any amount). */
+  payoutThresholdCents: number | null;
+  /** How often payouts run for this tenant. Null = 'weekly' (legacy:
+   *  every Monday). */
+  payoutCadence: PayoutCadence | null;
 }
 
 export type BillingPlan = 'flex' | 'revshare' | 'enterprise';
 export const BILLING_PLANS: readonly BillingPlan[] = ['flex', 'revshare', 'enterprise'];
+
+export type PayoutRailPreference = 'auto' | 'stripe_connect' | 'manual';
+export const PAYOUT_RAIL_PREFERENCES: readonly PayoutRailPreference[] = [
+  'auto',
+  'stripe_connect',
+  'manual',
+];
+
+export type PayoutCadence = 'weekly' | 'biweekly' | 'monthly' | 'manual';
+export const PAYOUT_CADENCES: readonly PayoutCadence[] = [
+  'weekly',
+  'biweekly',
+  'monthly',
+  'manual',
+];
 
 /** ID of the seeded default tenant — used in single-host mode and during migration backfills. */
 export const DEFAULT_TENANT_ID = '01J0000000DEFAULTTENANT0000';

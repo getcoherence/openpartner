@@ -27,6 +27,8 @@ import {
   type CommissionRow,
   type PartnerRow,
   type PayoutMethod,
+  type PayoutRailPreference,
+  type TenantRow,
 } from '@openpartner/db';
 import { REVSHARE_FEE_BPS, getMode, requireStripe, type OpenPartnerMode } from './stripe.js';
 import { dispatchEvent } from './webhook-dispatcher.js';
@@ -34,6 +36,10 @@ import { dispatchEvent } from './webhook-dispatcher.js';
 export interface PayoutRunResult {
   runId: string;
   mode: OpenPartnerMode;
+  /** Group totals that didn't meet the tenant's payoutThresholdCents are
+   *  reported here instead of in payouts. Commissions stay 'approved' so
+   *  they accumulate to the next run. */
+  skippedBelowThreshold: Array<{ partnerId: string; currency: string; amount: number }>;
   payouts: Array<{
     payoutId: string;
     partnerId: string;
@@ -50,6 +56,12 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
   const mode = getMode();
   const runId = ulid();
 
+  const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first();
+  const railPreference: PayoutRailPreference = tenant?.payoutRailPreference ?? 'auto';
+  // null / 0 / negative all collapse to "no threshold" — keeps the legacy
+  // behavior intact for tenants who haven't touched the setting.
+  const thresholdCents = Math.max(0, tenant?.payoutThresholdCents ?? 0);
+
   const groups = (await db(TABLES.Commission)
     .where({ status: 'approved' })
     .groupBy('partnerId', 'currency')
@@ -57,19 +69,39 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     .sum({ total: 'amount' })) as Array<{ partnerId: string; currency: string; total: string }>;
 
   const results: PayoutRunResult['payouts'] = [];
+  const skipped: PayoutRunResult['skippedBelowThreshold'] = [];
 
   for (const group of groups) {
     const partner = await db<PartnerRow>(TABLES.Partner).where({ id: group.partnerId }).first();
     if (!partner) continue;
 
+    const amount = Number(group.total ?? 0);
+    // Threshold gate: balances below the tenant minimum stay 'approved'
+    // and roll over to the next run. We treat amounts in dollars; cents
+    // are the storage unit on the tenant column so converting once here
+    // keeps the comparison numerically stable across currencies.
+    if (thresholdCents > 0 && Math.round(amount * 100) < thresholdCents) {
+      skipped.push({ partnerId: partner.id, currency: group.currency, amount });
+      continue;
+    }
+
     const commissions = await db<CommissionRow>(TABLES.Commission)
       .where({ partnerId: group.partnerId, currency: group.currency, status: 'approved' });
 
-    const amount = Number(group.total ?? 0);
     const platformFee = mode === 'revshare' ? Math.round(amount * REVSHARE_FEE_BPS) / 10000 : 0;
 
     const payoutId = ulid();
-    const method: PayoutMethod = partner.stripeConnectAccountId ? 'stripe_connect' : 'manual';
+    // Rail preference resolves to a concrete method per partner:
+    //   auto            (legacy) stripe_connect if Connect account exists, else manual
+    //   stripe_connect  always stripe_connect — partners without a Connect
+    //                   account get a 'failed' payout with a clear error
+    //                   instead of silently being paid manually
+    //   manual          force manual — operator handles all transfers off-platform
+    const method: PayoutMethod = (() => {
+      if (railPreference === 'manual') return 'manual';
+      if (railPreference === 'stripe_connect') return 'stripe_connect';
+      return partner.stripeConnectAccountId ? 'stripe_connect' : 'manual';
+    })();
 
     // Preflight: a linked Connect account that hasn't finished onboarding
     // will 400 on transfers.create. Decide up front and take a path that
@@ -81,15 +113,26 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     const canTransfer = method === 'stripe_connect' && partner.stripeConnectAccountId && payoutsReady;
     const onboardingIncomplete =
       method === 'stripe_connect' && partner.stripeConnectAccountId && !payoutsReady;
+    // Tenant forced stripe_connect but the partner never connected an
+    // account. Distinct from onboarding-incomplete (which means an account
+    // exists but isn't payouts-enabled yet); the partner-facing message
+    // is "start connect onboarding" rather than "finish it".
+    const noConnectAccount = method === 'stripe_connect' && !partner.stripeConnectAccountId;
+    const connectBlocked = onboardingIncomplete || noConnectAccount;
+    const blockReason = noConnectAccount
+      ? 'stripe_connect_account_missing'
+      : onboardingIncomplete
+        ? 'stripe_onboarding_incomplete'
+        : null;
 
     // Commissions move to 'paid' ONLY when we have a terminal success
     // signal: either Stripe transfer succeeded, or method=manual (the
-    // operator accepts responsibility out-of-band). Onboarding-incomplete
-    // and Stripe failures leave commissions 'approved' so the next run
-    // picks them up.
+    // operator accepts responsibility out-of-band). Connect-blocked and
+    // Stripe failures leave commissions 'approved' so the next run picks
+    // them up.
     const finalStatus: 'paid' | 'pending' | 'failed' =
       canTransfer ? 'pending' /* flipped to 'paid' after transfer */ :
-      onboardingIncomplete ? 'failed' :
+      connectBlocked ? 'failed' :
       /* manual */ 'pending';
 
     await db(TABLES.Payout).insert({
@@ -104,7 +147,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
         runId,
         platformFee,
         commissionCount: commissions.length,
-        ...(onboardingIncomplete ? { error: 'stripe_onboarding_incomplete' } : {}),
+        ...(blockReason ? { error: blockReason } : {}),
       },
     });
     // Only mark commissions paid on the manual-commit path. Connect
@@ -115,7 +158,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
         .update({ status: 'paid', paidAt: new Date(), payoutId });
     }
 
-    if (onboardingIncomplete) {
+    if (connectBlocked) {
       results.push({
         payoutId,
         partnerId: partner.id,
@@ -124,7 +167,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
         method,
         status: 'pending',
         platformFee: platformFee || undefined,
-        error: 'stripe_onboarding_incomplete',
+        error: blockReason ?? undefined,
       });
       continue;
     }
@@ -229,5 +272,5 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     }
   }
 
-  return { runId, mode, payouts: results };
+  return { runId, mode, payouts: results, skippedBelowThreshold: skipped };
 }

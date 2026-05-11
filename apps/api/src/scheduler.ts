@@ -29,7 +29,7 @@
 
 import { Cron } from 'croner';
 import type { Knex } from 'knex';
-import { TABLES, type TenantRow } from '@openpartner/db';
+import { TABLES, type PayoutCadence, type TenantRow } from '@openpartner/db';
 import { appDb, db } from './db.js';
 import { reportUsageToStripe } from './usage-billing.js';
 import { runPayouts } from './payouts.js';
@@ -82,8 +82,19 @@ const JOBS: ScheduledJob[] = [
   {
     name: 'payouts',
     cronExpr: '0 9 * * 1',
-    description: 'Per tenant: issue Stripe Connect transfers for approved commissions (Monday 09:00 UTC)',
-    handler: async () => forEachActiveTenant((trx, tenantId) => runPayouts(trx, tenantId)),
+    description: 'Per tenant: issue Stripe Connect transfers for approved commissions (Monday 09:00 UTC; cadence-gated per tenant)',
+    handler: async () =>
+      forEachActiveTenant(async (trx, tenantId) => {
+        // Cron ticks every Monday; per-tenant cadence decides whether the
+        // tenant actually runs on this tick. Default (null) treated as
+        // 'weekly' for backwards compat — every tick runs every tenant.
+        const tenant = await trx<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first();
+        const cadence: PayoutCadence = tenant?.payoutCadence ?? 'weekly';
+        if (!shouldRunPayoutsThisTick(cadence, new Date())) {
+          return { skipped: 'cadence', cadence };
+        }
+        return runPayouts(trx, tenantId);
+      }),
   },
   {
     name: 'network-outbox-drain',
@@ -222,6 +233,43 @@ export function startScheduler(): void {
     console.log(`[scheduler] registered ${job.name} (${job.cronExpr}) — ${job.description}`);
   }
   started = true;
+}
+
+/**
+ * Cadence gate for the payouts cron. The cron fires every Monday 09:00 UTC;
+ * this decides whether a given tenant runs on this tick.
+ *
+ *   weekly    every tick (current behavior)
+ *   biweekly  every other tick — even ISO weeks only. Deterministic without
+ *             needing a "last run" column; aligned with the calendar so two
+ *             biweekly tenants always pay on the same Mondays.
+ *   monthly   first Monday of the month — i.e., this Monday's date is in
+ *             [1, 7]
+ *   manual    never automatic; brand triggers payouts from the admin UI
+ */
+export function shouldRunPayoutsThisTick(cadence: PayoutCadence, at: Date): boolean {
+  switch (cadence) {
+    case 'weekly':
+      return true;
+    case 'biweekly':
+      return isoWeekNumber(at) % 2 === 0;
+    case 'monthly':
+      return at.getUTCDate() <= 7;
+    case 'manual':
+      return false;
+  }
+}
+
+/** ISO 8601 week number — Thursday-of-the-week / Monday-start. */
+function isoWeekNumber(d: Date): number {
+  const target = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  // Shift so Sunday=7, Monday=1 (ISO).
+  const dayNr = (target.getUTCDay() + 6) % 7;
+  target.setUTCDate(target.getUTCDate() - dayNr + 3); // Thursday of this week
+  const firstThursday = new Date(Date.UTC(target.getUTCFullYear(), 0, 4));
+  const firstDayNr = (firstThursday.getUTCDay() + 6) % 7;
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDayNr + 3);
+  return 1 + Math.round((target.getTime() - firstThursday.getTime()) / (7 * 24 * 60 * 60 * 1000));
 }
 
 /** Stable two-int advisory-lock key for a job name. The xact-scoped

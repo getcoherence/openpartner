@@ -12,7 +12,16 @@
 import { Router } from 'express';
 import type { Knex } from 'knex';
 import { z } from 'zod';
-import { TABLES, type AdminRow, type ConfigRow, type TenantRow } from '@openpartner/db';
+import {
+  PAYOUT_CADENCES,
+  PAYOUT_RAIL_PREFERENCES,
+  TABLES,
+  type AdminRow,
+  type ConfigRow,
+  type PayoutCadence,
+  type PayoutRailPreference,
+  type TenantRow,
+} from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import {
   MailSettingsValidationError,
@@ -186,6 +195,61 @@ settingsRouter.post('/config/partner-signup', requireAuth, requireAdmin, async (
     .onConflict(['tenantId', 'key'])
     .merge({ value: next as unknown as never, updatedAt: now });
   res.json(next);
+});
+
+// ---------- Payout settings ----------
+
+/**
+ * Per-tenant payout configuration: rail preference, minimum threshold,
+ * cadence. Stored as columns on Tenant (not in Config) because the payout
+ * runner + scheduler read these on every tick; column access is one less
+ * join than a Config lookup.
+ *
+ * All three are nullable in the schema with null = legacy behavior; the
+ * API surfaces the resolved value so the UI never has to special-case null.
+ */
+
+interface PayoutSettings {
+  rail: PayoutRailPreference;
+  thresholdCents: number;
+  cadence: PayoutCadence;
+}
+
+const payoutSettingsSchema = z.object({
+  rail: z.enum(PAYOUT_RAIL_PREFERENCES as readonly [PayoutRailPreference, ...PayoutRailPreference[]]).optional(),
+  // UI sends cents to match the column unit. Cap at $1,000 — anything above
+  // is a misconfiguration, and matches the DB CHECK constraint.
+  thresholdCents: z.number().int().min(0).max(100_000).optional(),
+  cadence: z.enum(PAYOUT_CADENCES as readonly [PayoutCadence, ...PayoutCadence[]]).optional(),
+});
+
+async function readPayoutSettings(db: Knex, tenantId: string): Promise<PayoutSettings> {
+  const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first();
+  return {
+    rail: tenant?.payoutRailPreference ?? 'auto',
+    thresholdCents: tenant?.payoutThresholdCents ?? 0,
+    cadence: tenant?.payoutCadence ?? 'weekly',
+  };
+}
+
+settingsRouter.get('/config/payouts', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  res.json(await readPayoutSettings(db, tenantId));
+});
+
+settingsRouter.post('/config/payouts', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = payoutSettingsSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  const patch: Partial<Pick<TenantRow, 'payoutRailPreference' | 'payoutThresholdCents' | 'payoutCadence'>> = {};
+  if (body.data.rail !== undefined) patch.payoutRailPreference = body.data.rail;
+  if (body.data.thresholdCents !== undefined) patch.payoutThresholdCents = body.data.thresholdCents;
+  if (body.data.cadence !== undefined) patch.payoutCadence = body.data.cadence;
+  if (Object.keys(patch).length > 0) {
+    await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).update(patch);
+  }
+  res.json(await readPayoutSettings(db, tenantId));
 });
 
 // ---------- Network membership ----------

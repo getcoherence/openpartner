@@ -1,9 +1,18 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Settings as SettingsIcon, Mail } from 'lucide-react';
+import { Settings as SettingsIcon, Mail, Wallet } from 'lucide-react';
 import { api } from '../../api.js';
 import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
+
+type PayoutRail = 'auto' | 'stripe_connect' | 'manual';
+type PayoutCadence = 'weekly' | 'biweekly' | 'monthly' | 'manual';
+
+interface PayoutSettings {
+  rail: PayoutRail;
+  thresholdCents: number;
+  cadence: PayoutCadence;
+}
 
 interface ProgramSettings {
   programName: string | null;
@@ -22,8 +31,10 @@ interface PublicMailSettings {
 
 export function AdminSettings() {
   return (
-    <Page title="Settings" subtitle="How the partner portal identifies your brand and how it sends mail.">
+    <Page title="Settings" subtitle="How the partner portal identifies your brand, sends mail, and pays partners.">
       <ProgramSection />
+      <div style={{ height: 18 }} />
+      <PayoutSection />
       <div style={{ height: 18 }} />
       <MailSection />
       <div style={{ height: 18 }} />
@@ -90,6 +101,114 @@ function ProgramSection() {
       <Row>
         <Button onClick={() => mut.mutate()} disabled={mut.isPending}>
           {mut.isPending ? 'Saving…' : 'Save program info'}
+        </Button>
+        {saved && <span style={{ color: theme.success, fontSize: 13 }}>Saved.</span>}
+      </Row>
+    </Card>
+  );
+}
+
+// ---------- payouts ----------
+
+function PayoutSection() {
+  const qc = useQueryClient();
+  const { data, error, isLoading } = useQuery({
+    queryKey: ['payout-settings'],
+    queryFn: () => api<PayoutSettings>('/config/payouts'),
+  });
+
+  const [rail, setRail] = useState<PayoutRail>('auto');
+  // Stored as cents on the server; rendered as dollars in the UI.
+  const [thresholdDollars, setThresholdDollars] = useState('0');
+  const [cadence, setCadence] = useState<PayoutCadence>('weekly');
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (!data) return;
+    setRail(data.rail);
+    setThresholdDollars(String(Math.round(data.thresholdCents) / 100));
+    setCadence(data.cadence);
+  }, [data]);
+
+  const mut = useMutation({
+    mutationFn: () => {
+      const parsed = Number(thresholdDollars);
+      const cents = Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * 100) : 0;
+      return api<PayoutSettings>('/config/payouts', {
+        method: 'POST',
+        body: { rail, thresholdCents: cents, cadence },
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['payout-settings'] });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    },
+  });
+
+  if (isLoading) return <Card>Loading…</Card>;
+
+  return (
+    <Card>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+        <Wallet size={18} color={theme.accent} />
+        <div style={{ fontSize: 15, fontWeight: 500 }}>Payouts</div>
+      </div>
+      <ErrorBanner error={error ?? mut.error} />
+      <Hint>
+        How partner balances turn into transfers. Affects every program. Per-program
+        holdback (refund window) is set on each program.
+      </Hint>
+
+      <div style={{ marginTop: 16, marginBottom: 16 }}>
+        <Label>Payout rail</Label>
+        <Select value={rail} onChange={(e) => setRail(e.target.value as PayoutRail)}>
+          <option value="auto">Auto — Stripe Connect if partner has one, else manual</option>
+          <option value="stripe_connect">Stripe Connect only — require connected account</option>
+          <option value="manual">Manual only — operator transfers off-platform</option>
+        </Select>
+        <Hint>
+          Auto is the default. Forcing Stripe Connect surfaces unconnected partners as
+          failed payouts with a "complete onboarding" message — useful when you want
+          every partner to self-serve their payouts.
+        </Hint>
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <Label>Minimum payout (USD)</Label>
+        <Input
+          type="number"
+          min="0"
+          max="1000"
+          step="1"
+          value={thresholdDollars}
+          onChange={(e) => setThresholdDollars(e.target.value)}
+          style={{ maxWidth: 160 }}
+        />
+        <Hint>
+          Balances below this stay in "approved" status and roll into the next payout
+          run. 0 = no minimum. Common values: $25, $50, $100. Anything above $1000 is
+          probably a misconfiguration and won't save.
+        </Hint>
+      </div>
+
+      <div style={{ marginBottom: 18 }}>
+        <Label>Payout cadence</Label>
+        <Select value={cadence} onChange={(e) => setCadence(e.target.value as PayoutCadence)}>
+          <option value="weekly">Weekly — every Monday 09:00 UTC</option>
+          <option value="biweekly">Biweekly — every other Monday (even ISO weeks)</option>
+          <option value="monthly">Monthly — first Monday of the month</option>
+          <option value="manual">Manual — never automatic, you trigger from the Payouts page</option>
+        </Select>
+        <Hint>
+          Weekly is the default. Manual is for brands that audit every run before paying;
+          set to manual and trigger from the Payouts page when you're ready.
+        </Hint>
+      </div>
+
+      <Row>
+        <Button onClick={() => mut.mutate()} disabled={mut.isPending}>
+          {mut.isPending ? 'Saving…' : 'Save payout settings'}
         </Button>
         {saved && <span style={{ color: theme.success, fontSize: 13 }}>Saved.</span>}
       </Row>
