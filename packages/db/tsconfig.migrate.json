@@ -4,9 +4,10 @@
     "outDir": "dist-migrate",
     "rootDir": ".",
     "module": "CommonJS",
-    "moduleResolution": "node",
+    "moduleResolution": "node10",
     "declaration": false,
-    "declarationMap": false
+    "declarationMap": false,
+    "ignoreDeprecations": "6.0"
   },
   "include": [
     "migrations/**/*.ts",
