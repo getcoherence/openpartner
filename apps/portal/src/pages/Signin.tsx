@@ -15,6 +15,9 @@ export function SigninPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
+  // ?add=1 — user clicked "Add another account" from the identity switcher.
+  // Surfaces a banner so they know they're adding, not replacing.
+  const addMode = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('add') === '1';
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -52,7 +55,12 @@ export function SigninPage() {
   }
 
   return (
-    <AuthFrame title="Sign in" subtitle="Enter your email — we&rsquo;ll send you a sign-in link.">
+    <AuthFrame title={addMode ? 'Add another account' : 'Sign in'} subtitle={addMode ? 'Enter the email for the account you want to add to this browser.' : 'Enter your email — we’ll send you a sign-in link.'}>
+      {addMode && (
+        <div style={{ background: theme.accent + '15', border: `1px solid ${theme.accent}55`, padding: 12, borderRadius: theme.radiusSm, fontSize: 12, color: theme.textMuted, marginBottom: 14 }}>
+          You&rsquo;re adding a second account. Your current account stays signed in &mdash; you&rsquo;ll be able to switch between them from the sidebar.
+        </div>
+      )}
       <form onSubmit={submit}>
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 4 }}>Email</div>

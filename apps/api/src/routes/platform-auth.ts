@@ -11,20 +11,35 @@
 
 import { Router, type Request } from 'express';
 import { z } from 'zod';
-import { TABLES, type AdminRow, type TenantRow } from '@openpartner/db';
+import { TABLES, type AdminRow, type PlatformSessionRow, type TenantRow } from '@openpartner/db';
 import { db, appDb } from '../db.js';
 import { consumeMagicLink, createSession, SESSION_COOKIE_NAME, sessionCookieOptions } from '../auth-sessions.js';
 import {
+  attachSessionToBundle,
+  createPlatformBundle,
   createPlatformSession,
+  findPlatformSessionById,
+  listBundleSessions,
+  PLATFORM_BUNDLE_COOKIE,
   PLATFORM_SESSION_COOKIE,
+  platformBundleCookieOptions,
   platformSessionCookieOptions,
+  platformSessionTokenHash,
+  resolveBundle,
   resolvePlatformSession,
   revokePlatformSession,
+  rotatePlatformSessionToken,
+  touchBundle,
 } from '../platform-sessions.js';
 
 export const platformAuthRouter = Router();
 
 const verifySchema = z.object({ token: z.string().min(8) });
+
+function readBundleCookie(req: Request): string | null {
+  const cookie = (req as unknown as { cookies?: Record<string, string> }).cookies?.[PLATFORM_BUNDLE_COOKIE];
+  return cookie ?? null;
+}
 
 // -------- Verify the platform magic-link token --------
 
@@ -44,7 +59,30 @@ platformAuthRouter.post('/auth/platform-verify', async (req, res) => {
   const email = (token.email || token.principalId).toLowerCase();
 
   const session = await createPlatformSession(db, email);
+
+  // Multi-identity attach: if the browser already has a bundle id cookie
+  // for a valid bundle, attach this new session to it (so "Add another
+  // account" stacks). Otherwise create a fresh bundle and set the cookie.
+  // The dedup rule in attachSessionToBundle revokes any prior alive
+  // session for the same email — re-verifying as the same identity
+  // replaces in place rather than stacking.
+  const existingBundleId = readBundleCookie(req);
+  const existingBundle = await resolveBundle(db, existingBundleId);
+  const bundleId = existingBundle?.id ?? (await createPlatformBundle(db));
+  // Recover the row id we just inserted — createPlatformSession returns
+  // plaintext + expiry but not the row id. Lookup by tokenHash (unique
+  // index) is cheaper than reshaping the create function's return.
+  const created = await db<PlatformSessionRow>(TABLES.PlatformSession)
+    .where({ tokenHash: platformSessionTokenHash(session.plaintext) })
+    .first();
+  if (created) {
+    await attachSessionToBundle(db, created.id, bundleId);
+  }
+
   res.cookie(PLATFORM_SESSION_COOKIE, session.plaintext, platformSessionCookieOptions());
+  if (!existingBundle) {
+    res.cookie(PLATFORM_BUNDLE_COOKIE, bundleId, platformBundleCookieOptions());
+  }
 
   res.json({ ok: true, kind: 'platform', email });
 });
@@ -142,14 +180,166 @@ platformAuthRouter.post('/workspaces/enter', async (req, res) => {
   res.json({ ok: true, tenantSlug: tenant.slug, home: `/t/${tenant.slug}/` });
 });
 
+// -------- Multi-identity: list bundle, switch, remove --------
+
+/** List identities (sibling platform sessions) in the active bundle.
+ *  The "active" session is whichever one the current op_platform_session
+ *  cookie points at; included with isActive=true so the UI can highlight
+ *  it. Returns empty when there's no bundle cookie (legacy sessions). */
+platformAuthRouter.get('/me/identities', async (req, res) => {
+  const bundleId = readBundleCookie(req);
+  const bundle = await resolveBundle(db, bundleId);
+  if (!bundle) return res.json({ bundleId: null, identities: [] });
+
+  // The active session = whatever the current platform-session cookie
+  // resolves to AND is a member of this bundle. Mismatch (cookie points
+  // at a session that doesn't belong to this bundle id) is treated as
+  // "no active session" — the bundle is the source of truth.
+  const currentCookie = readPlatformCookie(req);
+  const current = currentCookie ? await resolvePlatformSession(db, currentCookie) : null;
+  const currentInBundle = current?.bundleId === bundle.id ? current : null;
+
+  const sessions = await listBundleSessions(db, bundle.id);
+  await touchBundle(db, bundle.id);
+
+  res.json({
+    bundleId: bundle.id,
+    identities: sessions.map((s) => ({
+      sessionId: s.id,
+      email: s.email,
+      lastSeenAt: s.lastSeenAt,
+      createdAt: s.createdAt,
+      isActive: s.id === currentInBundle?.id,
+    })),
+  });
+});
+
+const switchSchema = z.object({ sessionId: z.string().min(8) });
+
+/** Switch the active identity within a bundle. Rotates the target session's
+ *  token, sets it as the new op_platform_session cookie, also clears the
+ *  per-tenant op_session cookie so the SPA lands back at /workspaces and
+ *  the user picks which brand to enter as this identity. */
+platformAuthRouter.post('/identities/switch', async (req, res) => {
+  const body = switchSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body' });
+
+  const bundleId = readBundleCookie(req);
+  const bundle = await resolveBundle(db, bundleId);
+  if (!bundle) return res.status(401).json({ error: 'no_bundle' });
+
+  const target = await findPlatformSessionById(db, body.data.sessionId);
+  if (!target || target.bundleId !== bundle.id) {
+    return res.status(404).json({ error: 'session_not_in_bundle' });
+  }
+  if (target.revokedAt) return res.status(401).json({ error: 'session_revoked' });
+  if (target.expiresAt <= new Date()) return res.status(401).json({ error: 'session_expired' });
+
+  const rotated = await rotatePlatformSessionToken(db, target.id);
+  await touchBundle(db, bundle.id);
+
+  res.cookie(PLATFORM_SESSION_COOKIE, rotated.plaintext, platformSessionCookieOptions());
+  // Tenant cookie belongs to the previous identity — clear so the SPA
+  // routes through /workspaces and picks a brand for the new identity.
+  res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
+  res.json({ ok: true, email: target.email, sessionId: target.id });
+});
+
+/** Remove an identity from the bundle. Revokes the session row. If the
+ *  removed session was the active one, falls through to the next-most-
+ *  recently-used session in the bundle (rotates + sets cookie); if the
+ *  bundle is now empty, clears both cookies. */
+platformAuthRouter.delete('/identities/:sessionId', async (req, res) => {
+  const bundleId = readBundleCookie(req);
+  const bundle = await resolveBundle(db, bundleId);
+  if (!bundle) return res.status(401).json({ error: 'no_bundle' });
+
+  const target = await findPlatformSessionById(db, req.params.sessionId);
+  if (!target || target.bundleId !== bundle.id) {
+    return res.status(404).json({ error: 'session_not_in_bundle' });
+  }
+
+  const currentCookie = readPlatformCookie(req);
+  const current = currentCookie ? await resolvePlatformSession(db, currentCookie) : null;
+  const wasActive = current?.id === target.id;
+
+  await revokeSessionRow(target.id);
+
+  if (!wasActive) {
+    return res.json({ ok: true, removed: target.id, fellThroughTo: null });
+  }
+
+  // Removed the active session — find a sibling to promote.
+  const siblings = await listBundleSessions(db, bundle.id);
+  const next = siblings[siblings.length - 1] ?? null;
+  if (!next) {
+    res.clearCookie(PLATFORM_SESSION_COOKIE, platformSessionCookieOptions());
+    res.clearCookie(PLATFORM_BUNDLE_COOKIE, platformBundleCookieOptions());
+    res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
+    return res.json({ ok: true, removed: target.id, fellThroughTo: null });
+  }
+  const rotated = await rotatePlatformSessionToken(db, next.id);
+  await touchBundle(db, bundle.id);
+  res.cookie(PLATFORM_SESSION_COOKIE, rotated.plaintext, platformSessionCookieOptions());
+  res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
+  res.json({ ok: true, removed: target.id, fellThroughTo: next.id });
+});
+
+/** Helper: revoke a single session row without needing its plaintext. */
+async function revokeSessionRow(sessionId: string): Promise<void> {
+  await db<PlatformSessionRow>(TABLES.PlatformSession)
+    .where({ id: sessionId })
+    .update({ revokedAt: new Date() });
+}
+
 // -------- Sign out the platform identity --------
 
+const signoutSchema = z.object({ all: z.boolean().optional() }).optional();
+
 platformAuthRouter.post('/auth/platform-signout', async (req, res) => {
+  const body = signoutSchema.safeParse(req.body) as { success: true; data?: { all?: boolean } } | { success: false };
+  const all = body.success && body.data?.all === true;
+
   const cookie = readPlatformCookie(req);
+  const current = cookie ? await resolvePlatformSession(db, cookie) : null;
+  const bundleId = readBundleCookie(req);
+  const bundle = await resolveBundle(db, bundleId);
+
+  if (all && bundle) {
+    // Sign out every identity in the bundle. Revoke all rows + drop both
+    // cookies.
+    const sessions = await listBundleSessions(db, bundle.id);
+    if (sessions.length > 0) {
+      await db<PlatformSessionRow>(TABLES.PlatformSession)
+        .whereIn('id', sessions.map((s) => s.id))
+        .update({ revokedAt: new Date() });
+    }
+    res.clearCookie(PLATFORM_SESSION_COOKIE, platformSessionCookieOptions());
+    res.clearCookie(PLATFORM_BUNDLE_COOKIE, platformBundleCookieOptions());
+    res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
+    return res.json({ ok: true, signedOutAll: true });
+  }
+
+  // Default: sign out just the active identity. Fall through to the next
+  // bundled identity if any so "sign out" doesn't dump the user to the
+  // login page when they have other accounts stacked.
   if (cookie) await revokePlatformSession(db, cookie);
-  // Mirror cookie attributes from set-time so the browser actually
-  // clears it. See partner-auth's /auth/signout for the same fix
-  // and the underlying Express clearCookie behavior.
+
+  if (bundle && current) {
+    const remaining = (await listBundleSessions(db, bundle.id)).filter((s) => s.id !== current.id);
+    const next = remaining[remaining.length - 1];
+    if (next) {
+      const rotated = await rotatePlatformSessionToken(db, next.id);
+      await touchBundle(db, bundle.id);
+      res.cookie(PLATFORM_SESSION_COOKIE, rotated.plaintext, platformSessionCookieOptions());
+      res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
+      return res.json({ ok: true, fellThroughTo: next.id, email: next.email });
+    }
+  }
+
+  // No bundle or no fall-through — clear everything.
   res.clearCookie(PLATFORM_SESSION_COOKIE, platformSessionCookieOptions());
+  res.clearCookie(PLATFORM_BUNDLE_COOKIE, platformBundleCookieOptions());
+  res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
   res.json({ ok: true });
 });

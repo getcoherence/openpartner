@@ -22,6 +22,7 @@ import {
   ChevronsUpDown,
   Check,
   Plus,
+  X,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { clearApiKey, api, type Principal } from './api.js';
@@ -265,7 +266,7 @@ function Sidebar({ principal }: { principal: Principal }) {
       </div>
 
       {principal.role === 'admin' ? (
-        <WorkspaceSwitcher principal={principal} />
+        <IdentitySwitcher principal={principal} />
       ) : (
         <PrincipalChip principal={principal} />
       )}
@@ -383,17 +384,24 @@ function Sidebar({ principal }: { principal: Principal }) {
 }
 
 /**
- * Admin sidebar chip with a workspace switcher popover.
+ * Admin sidebar chip with a multi-identity switcher popover.
  *
- * Surfaces every Tenant the platform-session email admins. Clicking a
- * workspace POSTs to /workspaces/enter (the same endpoint /workspaces
- * uses on first sign-in), swaps the tenant Session cookie, and reloads
- * into the new workspace's home.
+ * Two layers of switching:
+ *   - Identities: sibling platform sessions in the device-local bundle.
+ *     Listed by email. The active identity (whichever the
+ *     op_platform_session cookie names) sits at the top; clicking another
+ *     rotates that session's token and lands the user on /workspaces to
+ *     pick a brand for it.
+ *   - Workspaces: for the ACTIVE identity, the popover surfaces the
+ *     brands that email admins so the user can switch tenant without
+ *     re-entering the picker.
  *
- * The platform session is identity-level — it survives workspace switches.
- * Falls back gracefully when there's no platform session (e.g. an admin
- * who signed in via API key or before platform-sessions shipped): the
- * popover just shows the current workspace + an "Add brand" link.
+ * "Add another account" goes to /signin — magic-link verify attaches the
+ * new platform session to the existing bundle cookie if present, so the
+ * stacked identity shows up here on next render.
+ *
+ * Degrades when /me/identities returns an empty bundle (legacy session
+ * predating multi-identity): falls back to workspace-only mode.
  */
 interface WorkspaceRow {
   tenantSlug: string;
@@ -407,9 +415,22 @@ interface PlatformMe {
   workspaces: WorkspaceRow[];
 }
 
-function WorkspaceSwitcher({ principal }: { principal: Principal }) {
+interface IdentityRow {
+  sessionId: string;
+  email: string;
+  lastSeenAt: string | null;
+  createdAt: string;
+  isActive: boolean;
+}
+
+interface IdentityList {
+  bundleId: string | null;
+  identities: IdentityRow[];
+}
+
+function IdentitySwitcher({ principal }: { principal: Principal }) {
   const [open, setOpen] = useState(false);
-  const [enteringSlug, setEnteringSlug] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
   const { label, initial, hue } = describePrincipal(principal);
 
   // Best-effort: 401 just means no platform session (admin signed in via
@@ -422,6 +443,18 @@ function WorkspaceSwitcher({ principal }: { principal: Principal }) {
       if (res.status === 401) return { email: null, workspaces: [] as WorkspaceRow[] };
       if (!res.ok) throw new Error(`workspaces: ${res.status}`);
       return (await res.json()) as PlatformMe;
+    },
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  const identities = useQuery({
+    queryKey: ['platform-identities'],
+    queryFn: async () => {
+      const res = await fetch('/api/me/identities', { credentials: 'include' });
+      if (res.status === 401) return { bundleId: null, identities: [] as IdentityRow[] };
+      if (!res.ok) throw new Error(`identities: ${res.status}`);
+      return (await res.json()) as IdentityList;
     },
     staleTime: 60_000,
     retry: false,
@@ -440,7 +473,7 @@ function WorkspaceSwitcher({ principal }: { principal: Principal }) {
       setOpen(false);
       return;
     }
-    setEnteringSlug(slug);
+    setBusyAction(`enter:${slug}`);
     try {
       const res = await fetch('/api/workspaces/enter', {
         method: 'POST',
@@ -458,12 +491,79 @@ function WorkspaceSwitcher({ principal }: { principal: Principal }) {
       // every cache.
       window.location.assign(body.home);
     } catch {
-      setEnteringSlug(null);
+      setBusyAction(null);
+    }
+  }
+
+  async function switchIdentity(sessionId: string): Promise<void> {
+    setBusyAction(`switch:${sessionId}`);
+    try {
+      const res = await fetch('/api/identities/switch', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ sessionId }),
+      });
+      if (!res.ok) throw new Error(`switch: ${res.status}`);
+      // Backend cleared the tenant cookie — land on the workspace picker
+      // so the user chooses which brand to enter as this identity.
+      window.location.assign('/workspaces');
+    } catch {
+      setBusyAction(null);
+    }
+  }
+
+  async function removeIdentity(sessionId: string): Promise<void> {
+    setBusyAction(`remove:${sessionId}`);
+    try {
+      const res = await fetch(`/api/identities/${sessionId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      const body = (await res.json()) as { ok?: boolean; fellThroughTo?: string | null };
+      if (!res.ok || !body.ok) throw new Error(`remove: ${res.status}`);
+      if (body.fellThroughTo) {
+        // Server promoted a sibling; land on workspaces for that identity.
+        window.location.assign('/workspaces');
+      } else {
+        // Was the only identity, or removed a non-active one — refresh
+        // the popover data either way.
+        await identities.refetch();
+        setBusyAction(null);
+      }
+    } catch {
+      setBusyAction(null);
+    }
+  }
+
+  async function signOut(all: boolean): Promise<void> {
+    setBusyAction(all ? 'signout-all' : 'signout');
+    try {
+      const res = await fetch('/api/auth/platform-signout', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ all }),
+      });
+      const body = (await res.json()) as { fellThroughTo?: string };
+      if (res.ok && body.fellThroughTo) {
+        // Auto-fall-through to the next bundled identity — land on the
+        // picker so user enters a workspace as that identity.
+        window.location.assign('/workspaces');
+      } else {
+        clearApiKey();
+        window.location.assign('/signin');
+      }
+    } catch {
+      setBusyAction(null);
     }
   }
 
   const allWorkspaces = workspaces.data?.workspaces ?? [];
   const hasMany = allWorkspaces.length > 1;
+  const identityRows = identities.data?.identities ?? [];
+  const activeIdentity = identityRows.find((i) => i.isActive) ?? null;
+  const otherIdentities = identityRows.filter((i) => !i.isActive);
 
   return (
     <div style={{ position: 'relative', marginBottom: 18 }}>
@@ -521,7 +621,7 @@ function WorkspaceSwitcher({ principal }: { principal: Principal }) {
               textOverflow: 'ellipsis',
             }}
           >
-            {workspaces.data?.email ?? (principal.role === 'admin' ? 'Admin' : '')}
+            {activeIdentity?.email ?? workspaces.data?.email ?? (principal.role === 'admin' ? 'Admin' : '')}
           </div>
         </div>
         <ChevronsUpDown size={14} color={theme.textMuted} />
@@ -554,129 +654,249 @@ function WorkspaceSwitcher({ principal }: { principal: Principal }) {
               overflow: 'auto',
             }}
           >
-            {workspaces.isLoading && (
+            {(workspaces.isLoading || identities.isLoading) && (
               <div style={{ padding: '8px 10px', fontSize: 12, color: theme.textMuted }}>
-                Loading workspaces…
+                Loading…
               </div>
             )}
-            {!workspaces.isLoading && allWorkspaces.length === 0 && (
-              <div style={{ padding: '8px 10px', fontSize: 12, color: theme.textMuted }}>
-                No other workspaces on this device.
-              </div>
-            )}
+
             {!workspaces.isLoading && hasMany && (
-              <div
-                style={{
-                  fontSize: 10,
-                  color: theme.textDim,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.05em',
-                  padding: '8px 10px 4px',
-                }}
-              >
-                Switch brand
-              </div>
+              <SwitcherSectionLabel>Brands for this account</SwitcherSectionLabel>
             )}
             {allWorkspaces.map((w) => {
               const active = w.tenantSlug === currentSlug;
-              const busy = enteringSlug === w.tenantSlug;
+              const busy = busyAction === `enter:${w.tenantSlug}`;
               return (
-                <button
+                <SwitcherRow
                   key={w.tenantSlug}
+                  active={active}
+                  busy={busy}
+                  disabled={busyAction !== null}
                   onClick={() => enter(w.tenantSlug)}
-                  disabled={enteringSlug !== null}
-                  style={{
-                    width: '100%',
-                    background: active ? theme.surface2 : 'transparent',
-                    border: 'none',
-                    borderRadius: 6,
-                    padding: '8px 10px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                    cursor: enteringSlug !== null ? 'wait' : 'pointer',
-                    color: theme.text,
-                    textAlign: 'left',
-                    opacity: enteringSlug !== null && !busy ? 0.5 : 1,
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!active && enteringSlug === null) {
-                      e.currentTarget.style.background = theme.surface2;
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!active) e.currentTarget.style.background = 'transparent';
-                  }}
-                >
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontSize: 13,
-                        fontWeight: 500,
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      {w.tenantDisplayName}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 11,
-                        color: theme.textMuted,
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      /t/{w.tenantSlug}/
-                    </div>
-                  </div>
-                  {busy ? (
-                    <span style={{ fontSize: 11, color: theme.accent }}>Entering…</span>
-                  ) : active ? (
-                    <Check size={14} color={theme.accent} />
-                  ) : null}
-                </button>
+                  title={w.tenantDisplayName}
+                  subtitle={`/t/${w.tenantSlug}/`}
+                  right={busy ? <Spinner /> : active ? <Check size={14} color={theme.accent} /> : null}
+                />
               );
             })}
+
+            {otherIdentities.length > 0 && (
+              <>
+                <SwitcherSectionLabel>Other accounts</SwitcherSectionLabel>
+                {otherIdentities.map((id) => {
+                  const busy = busyAction === `switch:${id.sessionId}` || busyAction === `remove:${id.sessionId}`;
+                  return (
+                    <SwitcherRow
+                      key={id.sessionId}
+                      active={false}
+                      busy={busy}
+                      disabled={busyAction !== null}
+                      onClick={() => switchIdentity(id.sessionId)}
+                      title={id.email}
+                      subtitle="Click to switch"
+                      right={
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (window.confirm(`Sign out ${id.email} from this device?`)) {
+                              void removeIdentity(id.sessionId);
+                            }
+                          }}
+                          disabled={busyAction !== null}
+                          title="Remove account from this device"
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            cursor: busyAction === null ? 'pointer' : 'wait',
+                            color: theme.textDim,
+                            padding: 2,
+                            display: 'flex',
+                          }}
+                        >
+                          {busy ? <Spinner /> : <X size={14} />}
+                        </button>
+                      }
+                    />
+                  );
+                })}
+              </>
+            )}
+
             <div
               style={{
                 borderTop: `1px solid ${theme.borderSubtle}`,
                 marginTop: 4,
                 paddingTop: 4,
+                display: 'flex',
+                flexDirection: 'column',
               }}
             >
               <a
-                href="/signup"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: '8px 10px',
-                  borderRadius: 6,
-                  color: theme.textMuted,
-                  fontSize: 13,
-                  textDecoration: 'none',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = theme.surface2;
-                  e.currentTarget.style.color = theme.text;
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'transparent';
-                  e.currentTarget.style.color = theme.textMuted;
-                }}
+                href="/signin?add=1"
+                style={switcherActionStyle}
+                onMouseEnter={switcherActionHoverOn}
+                onMouseLeave={switcherActionHoverOff}
               >
                 <Plus size={14} />
-                Add another brand
+                Add another account
               </a>
+              <a
+                href="/signup"
+                style={switcherActionStyle}
+                onMouseEnter={switcherActionHoverOn}
+                onMouseLeave={switcherActionHoverOff}
+              >
+                <Plus size={14} />
+                Add another brand to this account
+              </a>
+              <button
+                onClick={() => void signOut(false)}
+                disabled={busyAction !== null}
+                style={{ ...switcherActionStyle, background: 'transparent', cursor: busyAction === null ? 'pointer' : 'wait' }}
+                onMouseEnter={switcherActionHoverOn}
+                onMouseLeave={switcherActionHoverOff}
+              >
+                <LogOut size={14} />
+                Sign out {activeIdentity ? activeIdentity.email : ''}
+              </button>
+              {identityRows.length > 1 && (
+                <button
+                  onClick={() => void signOut(true)}
+                  disabled={busyAction !== null}
+                  style={{ ...switcherActionStyle, background: 'transparent', cursor: busyAction === null ? 'pointer' : 'wait', color: theme.danger }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = theme.surface2;
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = 'transparent';
+                  }}
+                >
+                  <LogOut size={14} />
+                  Sign out all accounts
+                </button>
+              )}
             </div>
           </div>
         </>
       )}
     </div>
   );
+}
+
+// ---------- IdentitySwitcher small pieces ----------
+
+function SwitcherSectionLabel({ children }: { children: ReactNode }) {
+  return (
+    <div
+      style={{
+        fontSize: 10,
+        color: theme.textDim,
+        textTransform: 'uppercase',
+        letterSpacing: '0.05em',
+        padding: '8px 10px 4px',
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function SwitcherRow({
+  active,
+  busy,
+  disabled,
+  onClick,
+  title,
+  subtitle,
+  right,
+}: {
+  active: boolean;
+  busy: boolean;
+  disabled: boolean;
+  onClick: () => void;
+  title: string;
+  subtitle: string;
+  right: ReactNode;
+}) {
+  return (
+    <div
+      onClick={() => {
+        if (!disabled) onClick();
+      }}
+      style={{
+        background: active ? theme.surface2 : 'transparent',
+        borderRadius: 6,
+        padding: '8px 10px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        cursor: disabled ? (busy ? 'wait' : 'not-allowed') : 'pointer',
+        color: theme.text,
+        opacity: disabled && !busy ? 0.5 : 1,
+      }}
+      onMouseEnter={(e) => {
+        if (!active && !disabled) e.currentTarget.style.background = theme.surface2;
+      }}
+      onMouseLeave={(e) => {
+        if (!active) e.currentTarget.style.background = 'transparent';
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            fontSize: 13,
+            fontWeight: 500,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {title}
+        </div>
+        <div
+          style={{
+            fontSize: 11,
+            color: theme.textMuted,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {subtitle}
+        </div>
+      </div>
+      {right}
+    </div>
+  );
+}
+
+function Spinner() {
+  return <span style={{ fontSize: 11, color: theme.accent }}>…</span>;
+}
+
+const switcherActionStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  padding: '8px 10px',
+  borderRadius: 6,
+  color: theme.textMuted,
+  fontSize: 13,
+  textDecoration: 'none',
+  background: 'transparent',
+  border: 'none',
+  textAlign: 'left',
+  cursor: 'pointer',
+  width: '100%',
+};
+
+function switcherActionHoverOn(e: React.MouseEvent<HTMLElement>): void {
+  e.currentTarget.style.background = theme.surface2;
+  e.currentTarget.style.color = theme.text;
+}
+function switcherActionHoverOff(e: React.MouseEvent<HTMLElement>): void {
+  e.currentTarget.style.background = 'transparent';
+  e.currentTarget.style.color = theme.textMuted;
 }
 
 function PrincipalChip({ principal }: { principal: Principal }) {

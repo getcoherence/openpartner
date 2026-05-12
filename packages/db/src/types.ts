@@ -283,6 +283,21 @@ export interface PlatformSessionRow {
   createdAt: Date;
   lastSeenAt: Date | null;
   revokedAt: Date | null;
+  /** Null = legacy session not yet attached to a multi-identity bundle.
+   *  See migration 20260624000000_platform_session_bundle. */
+  bundleId: string | null;
+}
+
+/**
+ * Per-device "wallet" of authenticated identities. One bundle holds N
+ * PlatformSession rows; the active session is whichever one the
+ * op_platform_session cookie names. Switching rotates the target session's
+ * token in place and rewrites the cookie.
+ */
+export interface PlatformSessionBundleRow {
+  id: string;
+  createdAt: Date;
+  lastUsedAt: Date;
 }
 
 export interface AdminRow {

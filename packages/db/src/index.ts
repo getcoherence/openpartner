@@ -89,6 +89,7 @@ export const TABLES = {
   MagicLinkToken: 'MagicLinkToken',
   Session: 'Session',
   PlatformSession: 'PlatformSession',
+  PlatformSessionBundle: 'PlatformSessionBundle',
   WebhookEndpoint: 'WebhookEndpoint',
   WebhookDelivery: 'WebhookDelivery',
   NetworkOutbox: 'NetworkOutbox',
