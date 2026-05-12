@@ -243,7 +243,13 @@ export type MagicLinkPurpose =
   | 'partner_signin'
   | 'admin_invite'
   | 'admin_signin'
-  | 'platform_signin';
+  | 'platform_signin'
+  /** Explicit "add this identity to the existing browser bundle" intent
+   *  (sent when the user clicks Add another account in the identity
+   *  switcher). Differentiates an intentional stack from a fresh sign-in
+   *  by a different user on the same device — the latter must NOT
+   *  silently inherit the prior bundle. */
+  | 'platform_add_account';
 
 export type PrincipalKind = 'partner' | 'admin' | 'platform';
 

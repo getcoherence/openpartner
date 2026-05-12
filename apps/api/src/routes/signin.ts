@@ -26,7 +26,15 @@ import { getTenancyMode } from '../tenancy.js';
 
 export const signinRouter = Router();
 
-const schema = z.object({ email: z.string().trim().email() });
+const schema = z.object({
+  email: z.string().trim().email(),
+  /** When true, the magic link issued is a "add this identity to the
+   *  existing browser bundle" link (purpose=platform_add_account). The
+   *  switcher in the sidebar sets this when the user clicks "Add another
+   *  account". Without it, the verify path treats a different-email
+   *  sign-in as a fresh login that REPLACES the bundle on this device. */
+  add: z.boolean().optional(),
+});
 
 signinRouter.post('/signin', async (req, res) => {
   if (getTenancyMode() !== 'multi') {
@@ -52,7 +60,7 @@ signinRouter.post('/signin', async (req, res) => {
       const issued = await issueMagicLink(db, {
         tenantId: DEFAULT_TENANT_ID, // placeholder — platform tokens aren't tenant-scoped
         email,
-        purpose: 'platform_signin',
+        purpose: body.data.add ? 'platform_add_account' : 'platform_signin',
         principalKind: 'platform',
         principalId: email,
       });

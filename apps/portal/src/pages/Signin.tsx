@@ -27,7 +27,13 @@ export function SigninPage() {
       const res = await fetch('/api/signin', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: email.trim() }),
+        // add=true rides through to the magic link's purpose so the
+        // verify endpoint knows to stack this identity onto the existing
+        // browser bundle instead of replacing it. Without this the
+        // verify path treats a different-email signin as a fresh login
+        // and revokes the prior bundle's sessions.
+        body: JSON.stringify({ email: email.trim(), add: addMode }),
+        credentials: 'include',
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));

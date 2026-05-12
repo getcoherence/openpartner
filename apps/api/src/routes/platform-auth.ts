@@ -51,27 +51,69 @@ platformAuthRouter.post('/auth/platform-verify', async (req, res) => {
   if (!consumed) return res.status(400).json({ error: 'invalid_or_expired_token' });
   const token = consumed.token;
 
-  if (token.purpose !== 'platform_signin' || token.principalKind !== 'platform') {
+  if (
+    (token.purpose !== 'platform_signin' && token.purpose !== 'platform_add_account') ||
+    token.principalKind !== 'platform'
+  ) {
     return res.status(400).json({ error: 'wrong_token_kind' });
   }
 
   // The token's principalId is the email; use it as the canonical identity.
   const email = (token.email || token.principalId).toLowerCase();
+  const isAddIntent = token.purpose === 'platform_add_account';
 
   const session = await createPlatformSession(db, email);
 
-  // Multi-identity attach: if the browser already has a bundle id cookie
-  // for a valid bundle, attach this new session to it (so "Add another
-  // account" stacks). Otherwise create a fresh bundle and set the cookie.
-  // The dedup rule in attachSessionToBundle revokes any prior alive
-  // session for the same email — re-verifying as the same identity
-  // replaces in place rather than stacking.
+  // Bundle resolution. Two intents → two policies:
+  //
+  //   platform_add_account: always attach to existing bundle (or create
+  //                         one if there isn't one). This is the explicit
+  //                         "stack another identity" path from the sidebar
+  //                         switcher.
+  //
+  //   platform_signin:      attach if the email already belongs to the
+  //                         bundle (re-sign-in as same identity). Otherwise
+  //                         REPLACE — revoke prior bundle sessions and
+  //                         create a fresh bundle for this identity.
+  //                         Prevents a second person at the same device
+  //                         from silently inheriting the previous user's
+  //                         stacked accounts.
   const existingBundleId = readBundleCookie(req);
   const existingBundle = await resolveBundle(db, existingBundleId);
-  const bundleId = existingBundle?.id ?? (await createPlatformBundle(db));
-  // Recover the row id we just inserted — createPlatformSession returns
-  // plaintext + expiry but not the row id. Lookup by tokenHash (unique
-  // index) is cheaper than reshaping the create function's return.
+
+  let bundleId: string;
+  let bundleCookieChanged = false;
+  if (existingBundle) {
+    if (isAddIntent) {
+      bundleId = existingBundle.id;
+    } else {
+      const bundleHasThisEmail = await db<PlatformSessionRow>(TABLES.PlatformSession)
+        .where({ bundleId: existingBundle.id, email })
+        .whereNull('revokedAt')
+        .first();
+      if (bundleHasThisEmail) {
+        bundleId = existingBundle.id;
+      } else {
+        // Different-email fresh sign-in. Revoke the prior bundle's
+        // sessions (best-effort — bundle row stays for audit; cookie
+        // gets repointed at a brand-new bundle).
+        const priorSessions = await db<PlatformSessionRow>(TABLES.PlatformSession)
+          .where({ bundleId: existingBundle.id })
+          .whereNull('revokedAt');
+        if (priorSessions.length > 0) {
+          await db<PlatformSessionRow>(TABLES.PlatformSession)
+            .whereIn('id', priorSessions.map((s) => s.id))
+            .update({ revokedAt: new Date() });
+        }
+        bundleId = await createPlatformBundle(db);
+        bundleCookieChanged = true;
+      }
+    }
+  } else {
+    bundleId = await createPlatformBundle(db);
+    bundleCookieChanged = true;
+  }
+
   const created = await db<PlatformSessionRow>(TABLES.PlatformSession)
     .where({ tokenHash: platformSessionTokenHash(session.plaintext) })
     .first();
@@ -80,7 +122,7 @@ platformAuthRouter.post('/auth/platform-verify', async (req, res) => {
   }
 
   res.cookie(PLATFORM_SESSION_COOKIE, session.plaintext, platformSessionCookieOptions());
-  if (!existingBundle) {
+  if (bundleCookieChanged) {
     res.cookie(PLATFORM_BUNDLE_COOKIE, bundleId, platformBundleCookieOptions());
   }
 
