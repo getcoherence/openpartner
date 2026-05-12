@@ -95,4 +95,5 @@ export const TABLES = {
   Coupon: 'Coupon',
   PartnerCommission: 'PartnerCommission',
   PartnerPostback: 'PartnerPostback',
+  BrandAsset: 'BrandAsset',
 } as const;

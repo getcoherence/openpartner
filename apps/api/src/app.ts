@@ -29,6 +29,7 @@ import { adminOverviewRouter } from './routes/admin-overview.js';
 import { funnelRouter } from './routes/funnel.js';
 import { settingsRouter } from './routes/settings.js';
 import { mountStaticUploads, uploadsRouter } from './routes/uploads.js';
+import { brandResourcesRouter } from './routes/brand-resources.js';
 import { adminsRouter } from './routes/admins.js';
 import { installRouter } from './routes/install.js';
 import { fraudReviewRouter } from './routes/fraud-review.js';
@@ -208,6 +209,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(adminsRouter);
   app.use(settingsRouter);
   app.use(uploadsRouter);
+  app.use(brandResourcesRouter);
   app.use(funnelRouter);
   app.use(fraudReviewRouter);
   app.use(webhooksRouter);

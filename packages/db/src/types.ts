@@ -53,6 +53,33 @@ export interface TenantRow {
   /** How often payouts run for this tenant. Null = 'weekly' (legacy:
    *  every Monday). */
   payoutCadence: PayoutCadence | null;
+  /** Hex brand color partners see in the portal. Null = fall back to the
+   *  default accent. See migration 20260623000000_brand_resources. */
+  brandColor: string | null;
+  /** Optional URL to a public terms page for this brand's partner
+   *  program. Rendered as a footer link in the partner portal. */
+  programTermsUrl: string | null;
+}
+
+export type BrandAssetKind = 'image' | 'document' | 'snippet';
+export const BRAND_ASSET_KINDS: readonly BrandAssetKind[] = ['image', 'document', 'snippet'];
+
+/**
+ * Per-tenant marketing asset partners can pull from in the portal.
+ * Image/document have a `url` pointing at object storage; snippet has a
+ * `body` of inline text. The DB CHECK constraint enforces the xor.
+ */
+export interface BrandAssetRow {
+  id: string;
+  tenantId: string;
+  kind: BrandAssetKind;
+  label: string;
+  description: string | null;
+  url: string | null;
+  body: string | null;
+  sortOrder: number;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export type BillingPlan = 'flex' | 'revshare' | 'enterprise';

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Settings as SettingsIcon, Mail, Wallet } from 'lucide-react';
+import { Settings as SettingsIcon, Mail, Wallet, Palette, Image as ImageIcon, Trash2 } from 'lucide-react';
 import { api } from '../../api.js';
 import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
@@ -18,6 +18,22 @@ interface ProgramSettings {
   programName: string | null;
   supportEmail: string | null;
   logoUrl: string | null;
+  brandColor: string | null;
+  programTermsUrl: string | null;
+}
+
+type BrandAssetKind = 'image' | 'snippet';
+
+interface BrandAsset {
+  id: string;
+  kind: BrandAssetKind | 'document';
+  label: string;
+  description: string | null;
+  url: string | null;
+  body: string | null;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 type MailKind = 'smtp' | 'postmark' | 'none';
@@ -33,6 +49,8 @@ export function AdminSettings() {
   return (
     <Page title="Settings" subtitle="How the partner portal identifies your brand, sends mail, and pays partners.">
       <ProgramSection />
+      <div style={{ height: 18 }} />
+      <BrandResourcesSection />
       <div style={{ height: 18 }} />
       <PayoutSection />
       <div style={{ height: 18 }} />
@@ -54,17 +72,24 @@ function ProgramSection() {
 
   const [programName, setProgramName] = useState('');
   const [supportEmail, setSupportEmail] = useState('');
+  const [brandColor, setBrandColor] = useState('');
+  const [programTermsUrl, setProgramTermsUrl] = useState('');
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (!data) return;
     setProgramName(data.programName ?? '');
     setSupportEmail(data.supportEmail ?? '');
+    setBrandColor(data.brandColor ?? '');
+    setProgramTermsUrl(data.programTermsUrl ?? '');
   }, [data]);
 
   const mut = useMutation({
     mutationFn: () =>
-      api<ProgramSettings>('/config/program', { method: 'POST', body: { programName, supportEmail } }),
+      api<ProgramSettings>('/config/program', {
+        method: 'POST',
+        body: { programName, supportEmail, brandColor, programTermsUrl },
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['program-settings'] });
       setSaved(true);
@@ -87,7 +112,7 @@ function ProgramSection() {
         <Input value={programName} onChange={(e) => setProgramName(e.target.value)} placeholder="e.g. Acme" maxLength={120} />
         <Hint>Shown to partners in the portal. Leave blank to fall back to "OpenPartner".</Hint>
       </div>
-      <div style={{ marginBottom: 18 }}>
+      <div style={{ marginBottom: 16 }}>
         <Label>Support email</Label>
         <Input
           type="email"
@@ -98,6 +123,46 @@ function ProgramSection() {
         />
         <Hint>Partners see this in their portal footer.</Hint>
       </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 16 }}>
+        <div>
+          <Label>Brand color</Label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              type="color"
+              value={brandColor || '#16a34a'}
+              onChange={(e) => setBrandColor(e.target.value)}
+              style={{
+                width: 38,
+                height: 38,
+                padding: 0,
+                border: `1px solid ${theme.borderSubtle}`,
+                borderRadius: theme.radiusSm,
+                background: 'transparent',
+                cursor: 'pointer',
+              }}
+            />
+            <Input
+              value={brandColor}
+              onChange={(e) => setBrandColor(e.target.value)}
+              placeholder="#16a34a"
+              maxLength={9}
+              style={{ fontFamily: theme.fontMono }}
+            />
+          </div>
+          <Hint>Hex code. Blank = OpenPartner's default green.</Hint>
+        </div>
+        <div>
+          <Label>Program terms URL</Label>
+          <Input
+            type="url"
+            value={programTermsUrl}
+            onChange={(e) => setProgramTermsUrl(e.target.value)}
+            placeholder="https://yourdomain.com/partner-terms"
+            maxLength={2048}
+          />
+          <Hint>Linked from the partner portal footer. Blank = no terms link shown.</Hint>
+        </div>
+      </div>
       <Row>
         <Button onClick={() => mut.mutate()} disabled={mut.isPending}>
           {mut.isPending ? 'Saving…' : 'Save program info'}
@@ -105,6 +170,359 @@ function ProgramSection() {
         {saved && <span style={{ color: theme.success, fontSize: 13 }}>Saved.</span>}
       </Row>
     </Card>
+  );
+}
+
+// ---------- brand resources (assets library) ----------
+
+function BrandResourcesSection() {
+  const qc = useQueryClient();
+  const { data, error, isLoading } = useQuery({
+    queryKey: ['brand-resources'],
+    queryFn: () =>
+      api<{
+        brand: {
+          displayName: string | null;
+          logoUrl: string | null;
+          brandColor: string | null;
+          programTermsUrl: string | null;
+          supportEmail: string | null;
+        };
+        assets: BrandAsset[];
+      }>('/brand-resources'),
+  });
+
+  if (isLoading) return <Card>Loading…</Card>;
+
+  const assets = data?.assets ?? [];
+
+  return (
+    <Card>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <Palette size={18} color={theme.accent} />
+        <div style={{ fontSize: 15, fontWeight: 500 }}>Brand resources</div>
+      </div>
+      <ErrorBanner error={error} />
+      <Hint>
+        Logos, hero images, and copy snippets partners can pull into their content.
+        Visible to every active partner in the portal under Resources.
+      </Hint>
+
+      <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {assets.length === 0 ? (
+          <div style={{ fontSize: 13, color: theme.textMuted, padding: '14px 0' }}>
+            No resources yet. Upload an image or add a copy snippet below.
+          </div>
+        ) : (
+          assets.map((a) => (
+            <AssetRow
+              key={a.id}
+              asset={a}
+              onChange={() => qc.invalidateQueries({ queryKey: ['brand-resources'] })}
+            />
+          ))
+        )}
+      </div>
+
+      <div style={{ marginTop: 16, borderTop: `1px solid ${theme.borderSubtle}`, paddingTop: 16 }}>
+        <AddImageForm onAdded={() => qc.invalidateQueries({ queryKey: ['brand-resources'] })} />
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <AddSnippetForm onAdded={() => qc.invalidateQueries({ queryKey: ['brand-resources'] })} />
+      </div>
+    </Card>
+  );
+}
+
+function AssetRow({ asset, onChange }: { asset: BrandAsset; onChange: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [label, setLabel] = useState(asset.label);
+  const [description, setDescription] = useState(asset.description ?? '');
+  const [body, setBody] = useState(asset.body ?? '');
+
+  const save = useMutation({
+    mutationFn: () =>
+      api(`/brand-resources/${asset.id}`, {
+        method: 'PATCH',
+        body: {
+          label,
+          description,
+          ...(asset.kind === 'snippet' ? { body } : {}),
+        },
+      }),
+    onSuccess: () => {
+      setEditing(false);
+      onChange();
+    },
+  });
+
+  const del = useMutation({
+    mutationFn: () => api(`/brand-resources/${asset.id}`, { method: 'DELETE' }),
+    onSuccess: onChange,
+  });
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        padding: 12,
+        background: theme.surface2,
+        border: `1px solid ${theme.borderSubtle}`,
+        borderRadius: theme.radiusSm,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        {asset.kind === 'image' && asset.url ? (
+          <img
+            src={asset.url}
+            alt={asset.label}
+            style={{
+              width: 48,
+              height: 48,
+              objectFit: 'contain',
+              borderRadius: 4,
+              background: theme.bg,
+              flexShrink: 0,
+            }}
+          />
+        ) : (
+          <div
+            style={{
+              width: 48,
+              height: 48,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderRadius: 4,
+              background: theme.bg,
+              color: theme.textMuted,
+              flexShrink: 0,
+            }}
+          >
+            <ImageIcon size={18} />
+          </div>
+        )}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 500 }}>{asset.label}</div>
+          <div style={{ fontSize: 11, color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            {asset.kind}
+          </div>
+        </div>
+        <button
+          onClick={() => setEditing((v) => !v)}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: theme.accent,
+            cursor: 'pointer',
+            fontSize: 12,
+            padding: 0,
+          }}
+        >
+          {editing ? 'Cancel' : 'Edit'}
+        </button>
+        <button
+          onClick={() => {
+            if (window.confirm(`Delete "${asset.label}"?`)) del.mutate();
+          }}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            background: 'transparent',
+            border: 'none',
+            color: theme.danger,
+            cursor: 'pointer',
+            fontSize: 12,
+            padding: 0,
+          }}
+        >
+          <Trash2 size={14} />
+        </button>
+      </div>
+      {!editing && asset.kind === 'snippet' && asset.body && (
+        <div style={{ fontSize: 12, color: theme.textMuted, whiteSpace: 'pre-wrap' }}>{asset.body}</div>
+      )}
+      {!editing && asset.description && (
+        <div style={{ fontSize: 11, color: theme.textDim }}>{asset.description}</div>
+      )}
+      {editing && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Label" maxLength={200} />
+          <Input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Description (optional)"
+            maxLength={1000}
+          />
+          {asset.kind === 'snippet' && (
+            <textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              maxLength={4000}
+              rows={3}
+              style={{
+                fontFamily: theme.fontMono,
+                fontSize: 13,
+                padding: 10,
+                background: theme.bg,
+                color: theme.text,
+                border: `1px solid ${theme.borderSubtle}`,
+                borderRadius: theme.radiusSm,
+                resize: 'vertical',
+              }}
+            />
+          )}
+          <ErrorBanner error={save.error} />
+          <Row>
+            <Button onClick={() => save.mutate()} disabled={save.isPending || !label.trim()}>
+              {save.isPending ? 'Saving…' : 'Save'}
+            </Button>
+          </Row>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AddImageForm({ onAdded }: { onAdded: () => void }) {
+  const [label, setLabel] = useState('');
+  const [description, setDescription] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onPick(e: React.ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!label.trim()) {
+      setError('Add a label first so partners know what the image is for.');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setError('Image too large — max 2 MB.');
+      return;
+    }
+    setError(null);
+    setUploading(true);
+    try {
+      const upload = await api<{ url: string }>('/uploads/brand-asset', { method: 'POST', body: file });
+      await api('/brand-resources/images', {
+        method: 'POST',
+        body: { label: label.trim(), description: description.trim() || undefined, url: upload.url },
+      });
+      setLabel('');
+      setDescription('');
+      onAdded();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <Label>Add image</Label>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Input
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="Label (e.g. Hero banner 1200x630)"
+          maxLength={200}
+          style={{ flex: 1 }}
+        />
+        <Input
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Description (optional)"
+          maxLength={1000}
+          style={{ flex: 1 }}
+        />
+        <label style={{ display: 'inline-block' }}>
+          <input
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            onChange={onPick}
+            style={{ display: 'none' }}
+            disabled={uploading}
+          />
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              padding: '8px 14px',
+              background: theme.accent,
+              color: theme.accentInk,
+              borderRadius: theme.radiusSm,
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: uploading ? 'wait' : 'pointer',
+              opacity: uploading ? 0.6 : 1,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {uploading ? 'Uploading…' : 'Upload'}
+          </span>
+        </label>
+      </div>
+      {error && <div style={{ fontSize: 12, color: theme.danger }}>{error}</div>}
+      <Hint>PNG, JPEG, or WebP. Max 2 MB.</Hint>
+    </div>
+  );
+}
+
+function AddSnippetForm({ onAdded }: { onAdded: () => void }) {
+  const [label, setLabel] = useState('');
+  const [body, setBody] = useState('');
+
+  const mut = useMutation({
+    mutationFn: () =>
+      api('/brand-resources/snippets', {
+        method: 'POST',
+        body: { label: label.trim(), body: body.trim() },
+      }),
+    onSuccess: () => {
+      setLabel('');
+      setBody('');
+      onAdded();
+    },
+  });
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <Label>Add copy snippet</Label>
+      <Input
+        value={label}
+        onChange={(e) => setLabel(e.target.value)}
+        placeholder="Label (e.g. One-liner tagline)"
+        maxLength={200}
+      />
+      <textarea
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        placeholder="The snippet text partners can copy verbatim"
+        rows={3}
+        maxLength={4000}
+        style={{
+          fontFamily: theme.fontMono,
+          fontSize: 13,
+          padding: 10,
+          background: theme.bg,
+          color: theme.text,
+          border: `1px solid ${theme.borderSubtle}`,
+          borderRadius: theme.radiusSm,
+          resize: 'vertical',
+        }}
+      />
+      <ErrorBanner error={mut.error} />
+      <Row>
+        <Button onClick={() => mut.mutate()} disabled={mut.isPending || !label.trim() || !body.trim()}>
+          {mut.isPending ? 'Adding…' : 'Add snippet'}
+        </Button>
+      </Row>
+    </div>
   );
 }
 

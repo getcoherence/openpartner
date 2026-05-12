@@ -50,6 +50,14 @@ const CONFIG_KEY = 'program_settings';
 const settingsSchema = z.object({
   programName: z.string().trim().max(120).optional(),
   supportEmail: z.string().trim().email().max(254).optional().or(z.literal('')),
+  // Hex format mirrors the DB CHECK constraint (#RGB / #RRGGBB / #RRGGBBAA).
+  brandColor: z
+    .string()
+    .trim()
+    .regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/)
+    .optional()
+    .or(z.literal('')),
+  programTermsUrl: z.string().trim().url().max(2048).optional().or(z.literal('')),
 });
 
 /** What we persist into the Config row. Logo lives on Tenant; everything
@@ -61,6 +69,8 @@ interface PersistedProgramSettings {
 
 export interface ProgramSettings extends PersistedProgramSettings {
   logoUrl: string | null;
+  brandColor: string | null;
+  programTermsUrl: string | null;
 }
 
 async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings> {
@@ -72,14 +82,18 @@ async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings
   // value so the UI is pre-populated and the onboarding checklist
   // doesn't keep nagging about a thing that's effectively already set.
   let programName = value.programName ?? null;
-  // Logo lives on Tenant (set by /uploads/logo). Always read from there
-  // so the cached Config row never lags the actual upload.
-  const tenant = await db('Tenant').where({ id: tenantId }).first(['displayName', 'logoUrl']);
+  // Logo, brand color, and terms URL live on Tenant. Always read from
+  // there so the cached Config row never lags the actual values.
+  const tenant = await db<TenantRow>(TABLES.Tenant)
+    .where({ id: tenantId })
+    .first(['displayName', 'logoUrl', 'brandColor', 'programTermsUrl']);
   if (!programName && tenant?.displayName) programName = tenant.displayName as string;
   return {
     programName,
     supportEmail: value.supportEmail ?? null,
-    logoUrl: (tenant?.logoUrl as string | null | undefined) ?? null,
+    logoUrl: tenant?.logoUrl ?? null,
+    brandColor: tenant?.brandColor ?? null,
+    programTermsUrl: tenant?.programTermsUrl ?? null,
   };
 }
 
@@ -105,7 +119,20 @@ settingsRouter.post('/config/program', requireAuth, requireAdmin, async (req, re
     .insert({ tenantId, key: CONFIG_KEY, value: next as unknown as never, updatedAt: now })
     .onConflict(['tenantId', 'key'])
     .merge({ value: next as unknown as never, updatedAt: now });
-  // Re-hydrate so the returned shape matches GET (includes logoUrl).
+  // brandColor + programTermsUrl live on Tenant (column-typed, not blob).
+  // Only patch when present so an unrelated POST doesn't clear them.
+  const tenantPatch: Partial<Pick<TenantRow, 'brandColor' | 'programTermsUrl' | 'updatedAt'>> = {};
+  if (body.data.brandColor !== undefined) {
+    tenantPatch.brandColor = body.data.brandColor.trim() || null;
+  }
+  if (body.data.programTermsUrl !== undefined) {
+    tenantPatch.programTermsUrl = body.data.programTermsUrl.trim() || null;
+  }
+  if (Object.keys(tenantPatch).length > 0) {
+    tenantPatch.updatedAt = now;
+    await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).update(tenantPatch);
+  }
+  // Re-hydrate so the returned shape matches GET (includes logoUrl + brand fields).
   res.json(await readSettings(db, tenantId));
 });
 

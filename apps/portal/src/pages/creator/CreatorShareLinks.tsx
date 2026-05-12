@@ -1,10 +1,27 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Copy, Megaphone } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, formatDate, money } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
+
+interface TimeseriesBucket {
+  bucket: string;
+  clicks: number;
+  leads: number;
+  sales: number;
+  revenue: number;
+  earnings: number;
+}
+
+interface Timeseries {
+  partnerId: string;
+  since: string;
+  until: string;
+  bucket: 'day' | 'week';
+  buckets: TimeseriesBucket[];
+}
 
 interface Coupon {
   id: string;
@@ -74,6 +91,34 @@ function PartnershipRow({ partnership }: { partnership: Partnership }) {
   const [editing, setEditing] = useState(false);
   const [slug, setSlug] = useState(partnership.creatorSlug);
   const [copied, setCopied] = useState(false);
+
+  // Per-partnership 30-day rollup — surfaces the "is this link doing
+  // anything?" answer without making the creator click into the program
+  // detail page. Re-uses the existing timeseries proxy that the program
+  // detail page also calls, so the cache is shared.
+  const since30d = useMemo(
+    () => new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+    [],
+  );
+  const ts = useQuery({
+    queryKey: ['creator-program-timeseries', partnership.id, 30],
+    queryFn: () =>
+      creatorApi<Timeseries>(
+        `/creators/me/partnerships/${partnership.id}/timeseries?since=${encodeURIComponent(since30d)}`,
+      ),
+    retry: false,
+    staleTime: 60_000,
+  });
+  const rollup = useMemo(() => {
+    const out = { clicks: 0, leads: 0, sales: 0, earnings: 0 };
+    for (const b of ts.data?.buckets ?? []) {
+      out.clicks += b.clicks;
+      out.leads += b.leads;
+      out.sales += b.sales;
+      out.earnings += b.earnings;
+    }
+    return out;
+  }, [ts.data]);
 
   const save = useMutation({
     mutationFn: () =>
@@ -156,6 +201,7 @@ function PartnershipRow({ partnership }: { partnership: Partnership }) {
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
+      <MetricsRow rollup={rollup} loading={ts.isLoading} />
       <CouponSection partnership={partnership} />
       {/* slug editor block follows below */}
       {editing ? (
@@ -195,6 +241,66 @@ function PartnershipRow({ partnership }: { partnership: Partnership }) {
         </div>
       )}
     </Card>
+  );
+}
+
+/**
+ * Per-partnership 30-day rollup strip. Lives directly under the share-link
+ * row so creators see "is this link working?" without opening the program
+ * detail page. Loading state shows dashes — keeps row height stable so
+ * the page doesn't jump when timeseries resolves a moment after the
+ * partnership list.
+ */
+function MetricsRow({
+  rollup,
+  loading,
+}: {
+  rollup: { clicks: number; leads: number; sales: number; earnings: number };
+  loading: boolean;
+}) {
+  const stat = (n: number) => (loading ? '—' : n.toLocaleString());
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(4, 1fr)',
+        gap: 8,
+        marginBottom: 10,
+      }}
+    >
+      <Stat label="Clicks (30d)" value={stat(rollup.clicks)} />
+      <Stat label="Leads (30d)" value={stat(rollup.leads)} />
+      <Stat label="Sales (30d)" value={stat(rollup.sales)} />
+      <Stat
+        label="Earnings (30d)"
+        value={loading ? '—' : money(rollup.earnings, 'USD')}
+      />
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div
+      style={{
+        background: theme.surface2,
+        border: `1px solid ${theme.borderSubtle}`,
+        borderRadius: theme.radiusSm,
+        padding: '8px 10px',
+      }}
+    >
+      <div
+        style={{
+          fontSize: 10,
+          color: theme.textDim,
+          textTransform: 'uppercase',
+          letterSpacing: '0.05em',
+        }}
+      >
+        {label}
+      </div>
+      <div style={{ fontSize: 16, fontWeight: 500, marginTop: 2 }}>{value}</div>
+    </div>
   );
 }
 

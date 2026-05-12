@@ -117,9 +117,48 @@ export function CreatorProgramDetailPage() {
         <Route path="analytics" element={<AnalyticsTab />} />
         <Route path="events" element={<EventsTab />} />
         <Route path="customers" element={<CustomersTab />} />
+        <Route path="resources" element={<ResourcesTab />} />
       </Route>
     </Routes>
   );
+}
+
+// ---------- Brand-info federation (Resources tab + support footer) ----------
+
+interface BrandAsset {
+  id: string;
+  kind: 'image' | 'document' | 'snippet';
+  label: string;
+  description: string | null;
+  url: string | null;
+  body: string | null;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface BrandInfo {
+  brand: {
+    displayName: string | null;
+    logoUrl: string | null;
+    brandColor: string | null;
+    programTermsUrl: string | null;
+    supportEmail: string | null;
+  };
+  assets: BrandAsset[];
+}
+
+/** Single fetch hook the Resources tab + support footer both consume.
+ *  Cached at module scope by partnershipId so jumping between tabs doesn't
+ *  refire the federation call. */
+function useBrandInfo(partnershipId: string) {
+  return useQuery({
+    queryKey: ['creator-program-brand-info', partnershipId],
+    queryFn: () =>
+      creatorApi<BrandInfo>(`/creators/me/partnerships/${partnershipId}/brand-info`),
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
 }
 
 function ProgramShell() {
@@ -162,7 +201,61 @@ function ProgramShell() {
       <ProgramHeader partnership={partnership} />
       <TabStrip partnershipId={partnership.id} />
       <Outlet context={{ partnership }} />
+      <ProgramSupportFooter partnershipId={partnership.id} vendorName={partnership.vendorName} />
     </Page>
+  );
+}
+
+/** Brand-provided contact + terms link rendered below every tab. The
+ *  vendor sets supportEmail + programTermsUrl in their admin Settings;
+ *  the Network federates them through /brand-info. Renders nothing when
+ *  neither field is set so we don't paint an empty contact card. */
+function ProgramSupportFooter({
+  partnershipId,
+  vendorName,
+}: {
+  partnershipId: string;
+  vendorName: string;
+}) {
+  const info = useBrandInfo(partnershipId);
+  const brand = info.data?.brand;
+  if (!brand) return null;
+  if (!brand.supportEmail && !brand.programTermsUrl) return null;
+
+  return (
+    <div
+      style={{
+        marginTop: 18,
+        paddingTop: 14,
+        borderTop: `1px solid ${theme.borderSubtle}`,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 16,
+        flexWrap: 'wrap',
+        fontSize: 12,
+        color: theme.textMuted,
+      }}
+    >
+      <span>Program support from {vendorName}:</span>
+      {brand.supportEmail && (
+        <a
+          href={`mailto:${brand.supportEmail}`}
+          style={{ color: theme.accent, textDecoration: 'none' }}
+        >
+          {brand.supportEmail}
+        </a>
+      )}
+      {brand.programTermsUrl && (
+        <a
+          href={brand.programTermsUrl}
+          target="_blank"
+          rel="noreferrer noopener"
+          style={{ color: theme.accent, textDecoration: 'none' }}
+        >
+          Program terms ↗
+        </a>
+      )}
+    </div>
   );
 }
 
@@ -226,6 +319,7 @@ function TabStrip({ partnershipId }: { partnershipId: string }) {
     { to: `/creator/programs/${partnershipId}/analytics`, label: 'Analytics' },
     { to: `/creator/programs/${partnershipId}/events`, label: 'Events' },
     { to: `/creator/programs/${partnershipId}/customers`, label: 'Customers' },
+    { to: `/creator/programs/${partnershipId}/resources`, label: 'Resources' },
   ];
   return (
     <div style={{ display: 'flex', gap: 4, borderBottom: `1px solid ${theme.borderSubtle}`, marginBottom: 14 }}>
@@ -666,6 +760,271 @@ function countryFormatter(code: string): string {
     .map((c) => String.fromCodePoint(0x1f1e6 + c.charCodeAt(0) - 65))
     .join('');
   return `${flag} ${upper}`;
+}
+
+// ---------- Resources tab ----------
+//
+// Brand-provided marketing kit: color hex (with copy), logo, downloadable
+// images, and copy snippets the creator can paste verbatim. All federated
+// from the vendor — empty when the brand hasn't uploaded anything yet.
+
+function ResourcesTab() {
+  const partnership = useOutletPartnership();
+  const info = useBrandInfo(partnership.id);
+
+  if (info.isLoading) return <Card>Loading…</Card>;
+
+  const brand = info.data?.brand;
+  const assets = info.data?.assets ?? [];
+  const images = assets.filter((a) => a.kind === 'image' && a.url);
+  const snippets = assets.filter((a) => a.kind === 'snippet' && a.body);
+
+  const hasAnything =
+    !!brand?.brandColor || !!brand?.logoUrl || images.length > 0 || snippets.length > 0;
+
+  if (!hasAnything) {
+    return (
+      <Card>
+        <p style={{ color: theme.textMuted, fontSize: 13, margin: 0 }}>
+          {partnership.vendorName} hasn&rsquo;t shared brand resources yet. Email them at{' '}
+          {brand?.supportEmail ? (
+            <a href={`mailto:${brand.supportEmail}`} style={{ color: theme.accent }}>
+              {brand.supportEmail}
+            </a>
+          ) : (
+            'their support address'
+          )}{' '}
+          to request logos or copy snippets.
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {(brand?.brandColor || brand?.logoUrl) && (
+        <BrandKitCard
+          brandColor={brand?.brandColor ?? null}
+          logoUrl={brand?.logoUrl ?? null}
+          displayName={brand?.displayName ?? partnership.vendorName}
+        />
+      )}
+      {images.length > 0 && (
+        <Card>
+          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10 }}>Images</div>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+              gap: 10,
+            }}
+          >
+            {images.map((a) => (
+              <ImageAssetCard key={a.id} asset={a} />
+            ))}
+          </div>
+        </Card>
+      )}
+      {snippets.length > 0 && (
+        <Card>
+          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10 }}>Copy snippets</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {snippets.map((a) => (
+              <SnippetCard key={a.id} asset={a} />
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function BrandKitCard({
+  brandColor,
+  logoUrl,
+  displayName,
+}: {
+  brandColor: string | null;
+  logoUrl: string | null;
+  displayName: string;
+}) {
+  return (
+    <Card>
+      <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10 }}>Brand kit</div>
+      <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap' }}>
+        {logoUrl && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <img
+              src={logoUrl}
+              alt={`${displayName} logo`}
+              style={{
+                width: 80,
+                height: 80,
+                objectFit: 'contain',
+                background: theme.surface2,
+                border: `1px solid ${theme.borderSubtle}`,
+                borderRadius: theme.radiusSm,
+                padding: 8,
+              }}
+            />
+            <a
+              href={logoUrl}
+              download
+              target="_blank"
+              rel="noreferrer noopener"
+              style={{ fontSize: 11, color: theme.accent, textAlign: 'center', textDecoration: 'none' }}
+            >
+              Download
+            </a>
+          </div>
+        )}
+        {brandColor && <ColorChip color={brandColor} />}
+      </div>
+    </Card>
+  );
+}
+
+function ColorChip({ color }: { color: string }) {
+  const [copied, setCopied] = useState(false);
+  function copy() {
+    navigator.clipboard.writeText(color).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      () => {/* ignore */},
+    );
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-start' }}>
+      <button
+        onClick={copy}
+        title="Copy color"
+        style={{
+          width: 80,
+          height: 80,
+          borderRadius: theme.radiusSm,
+          background: color,
+          border: `1px solid ${theme.borderSubtle}`,
+          cursor: 'pointer',
+        }}
+      />
+      <code
+        onClick={copy}
+        style={{
+          fontSize: 12,
+          fontFamily: theme.fontMono,
+          color: copied ? theme.success : theme.textMuted,
+          cursor: 'pointer',
+        }}
+      >
+        {copied ? 'Copied' : color}
+      </code>
+    </div>
+  );
+}
+
+function ImageAssetCard({ asset }: { asset: BrandAsset }) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        background: theme.surface2,
+        border: `1px solid ${theme.borderSubtle}`,
+        borderRadius: theme.radiusSm,
+        padding: 10,
+      }}
+    >
+      <a href={asset.url ?? '#'} target="_blank" rel="noreferrer noopener">
+        <img
+          src={asset.url ?? ''}
+          alt={asset.label}
+          style={{
+            width: '100%',
+            height: 140,
+            objectFit: 'contain',
+            background: theme.bg,
+            borderRadius: 4,
+          }}
+        />
+      </a>
+      <div style={{ fontSize: 12, fontWeight: 500 }}>{asset.label}</div>
+      {asset.description && (
+        <div style={{ fontSize: 11, color: theme.textMuted }}>{asset.description}</div>
+      )}
+      <a
+        href={asset.url ?? '#'}
+        download
+        target="_blank"
+        rel="noreferrer noopener"
+        style={{ fontSize: 11, color: theme.accent, textDecoration: 'none' }}
+      >
+        Download
+      </a>
+    </div>
+  );
+}
+
+function SnippetCard({ asset }: { asset: BrandAsset }) {
+  const [copied, setCopied] = useState(false);
+  function copy() {
+    navigator.clipboard.writeText(asset.body ?? '').then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      () => {/* ignore */},
+    );
+  }
+  return (
+    <div
+      style={{
+        background: theme.surface2,
+        border: `1px solid ${theme.borderSubtle}`,
+        borderRadius: theme.radiusSm,
+        padding: 12,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 6 }}>
+        <div style={{ fontSize: 12, fontWeight: 500, flex: 1 }}>{asset.label}</div>
+        <button
+          onClick={copy}
+          style={{
+            background: 'transparent',
+            border: `1px solid ${theme.borderSubtle}`,
+            borderRadius: 6,
+            padding: '4px 10px',
+            fontSize: 11,
+            color: copied ? theme.success : theme.textMuted,
+            cursor: 'pointer',
+          }}
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      {asset.description && (
+        <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 6 }}>
+          {asset.description}
+        </div>
+      )}
+      <div
+        style={{
+          fontSize: 13,
+          color: theme.text,
+          fontFamily: theme.fontMono,
+          whiteSpace: 'pre-wrap',
+          background: theme.bg,
+          border: `1px solid ${theme.borderSubtle}`,
+          borderRadius: 4,
+          padding: 10,
+        }}
+      >
+        {asset.body}
+      </div>
+    </div>
+  );
 }
 
 // ---------- Shared components ----------

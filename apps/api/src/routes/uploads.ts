@@ -4,6 +4,7 @@ import { requireAuth, requireAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { sendHeartbeat } from '../network-client.js';
 import { fsStorageDir, getStorage, MAX_UPLOAD_BYTES, newUploadKey, UploadError, validateImageUpload } from '../storage.js';
+import { brandAssetUploadHandler, handleBrandAssetUpload } from './brand-resources.js';
 
 export const uploadsRouter = Router();
 
@@ -60,6 +61,19 @@ uploadsRouter.post(
 
     res.json({ logoUrl: url });
   },
+);
+
+// ---------- Brand asset image upload ----------
+//
+// Same pattern as /uploads/logo but the URL goes back to the client
+// instead of being stamped on Tenant. The client then posts to
+// /brand-resources/images with the URL + a label to attach metadata.
+uploadsRouter.post(
+  '/uploads/brand-asset',
+  brandAssetUploadHandler,
+  requireAuth,
+  requireAdmin,
+  handleBrandAssetUpload,
 );
 
 // ---------- Static handler for FS backend ----------
