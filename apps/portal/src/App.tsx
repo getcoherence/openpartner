@@ -19,7 +19,11 @@ import {
   Megaphone,
   Inbox,
   ChevronRight,
+  ChevronsUpDown,
+  Check,
+  Plus,
 } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { clearApiKey, api, type Principal } from './api.js';
 import { useTenantBase } from './tenant-base.js';
 import { theme } from './theme.js';
@@ -66,7 +70,6 @@ import { CreatorMagicLandingPage } from './pages/creator/CreatorMagicLanding.js'
 import { CreatorShell } from './pages/creator/CreatorShell.js';
 import { CreatorPublicProfilePage } from './pages/creator/CreatorPublicProfile.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
-import { useQuery } from '@tanstack/react-query';
 
 interface AuthState {
   loading: boolean;
@@ -261,7 +264,11 @@ function Sidebar({ principal }: { principal: Principal }) {
         <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>{programName}</div>
       </div>
 
-      <PrincipalChip principal={principal} />
+      {principal.role === 'admin' ? (
+        <WorkspaceSwitcher principal={principal} />
+      ) : (
+        <PrincipalChip principal={principal} />
+      )}
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 14, overflow: 'auto' }}>
         {/* Top-level nav — no header, always visible. */}
@@ -372,6 +379,303 @@ function Sidebar({ principal }: { principal: Principal }) {
         </a>
       )}
     </aside>
+  );
+}
+
+/**
+ * Admin sidebar chip with a workspace switcher popover.
+ *
+ * Surfaces every Tenant the platform-session email admins. Clicking a
+ * workspace POSTs to /workspaces/enter (the same endpoint /workspaces
+ * uses on first sign-in), swaps the tenant Session cookie, and reloads
+ * into the new workspace's home.
+ *
+ * The platform session is identity-level — it survives workspace switches.
+ * Falls back gracefully when there's no platform session (e.g. an admin
+ * who signed in via API key or before platform-sessions shipped): the
+ * popover just shows the current workspace + an "Add brand" link.
+ */
+interface WorkspaceRow {
+  tenantSlug: string;
+  tenantDisplayName: string;
+  adminId: string;
+  activated: boolean;
+}
+
+interface PlatformMe {
+  email: string;
+  workspaces: WorkspaceRow[];
+}
+
+function WorkspaceSwitcher({ principal }: { principal: Principal }) {
+  const [open, setOpen] = useState(false);
+  const [enteringSlug, setEnteringSlug] = useState<string | null>(null);
+  const { label, initial, hue } = describePrincipal(principal);
+
+  // Best-effort: 401 just means no platform session (admin signed in via
+  // api key or pre-platform-sessions session). We still render the chip;
+  // the popover degrades to "current workspace only".
+  const workspaces = useQuery({
+    queryKey: ['platform-workspaces'],
+    queryFn: async () => {
+      const res = await fetch('/api/me/workspaces', { credentials: 'include' });
+      if (res.status === 401) return { email: null, workspaces: [] as WorkspaceRow[] };
+      if (!res.ok) throw new Error(`workspaces: ${res.status}`);
+      return (await res.json()) as PlatformMe;
+    },
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  // Resolve the current workspace by matching the slug in the URL (
+  // /t/<slug>/...). Doing it from URL avoids passing slug through every
+  // layer of the admin tree.
+  const currentSlug = (() => {
+    const m = window.location.pathname.match(/^\/t\/([^/]+)/);
+    return m?.[1] ?? null;
+  })();
+
+  async function enter(slug: string): Promise<void> {
+    if (slug === currentSlug) {
+      setOpen(false);
+      return;
+    }
+    setEnteringSlug(slug);
+    try {
+      const res = await fetch('/api/workspaces/enter', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ slug }),
+      });
+      const body = (await res.json()) as { ok?: boolean; home?: string; error?: string };
+      if (!res.ok || !body.ok || !body.home) {
+        throw new Error(body.error ?? `enter: ${res.status}`);
+      }
+      // Hard reload into the new workspace — the api key + react-query
+      // caches are scoped per-tenant in subtle ways (links, partner ids,
+      // etc.); reload keeps state honest instead of trying to invalidate
+      // every cache.
+      window.location.assign(body.home);
+    } catch {
+      setEnteringSlug(null);
+    }
+  }
+
+  const allWorkspaces = workspaces.data?.workspaces ?? [];
+  const hasMany = allWorkspaces.length > 1;
+
+  return (
+    <div style={{ position: 'relative', marginBottom: 18 }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          width: '100%',
+          background: theme.surface,
+          border: `1px solid ${theme.borderSubtle}`,
+          borderRadius: theme.radiusSm,
+          padding: '10px 12px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          cursor: 'pointer',
+          color: theme.text,
+          textAlign: 'left',
+        }}
+      >
+        <div
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: '50%',
+            background: hue.bg,
+            color: hue.fg,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 12,
+            fontWeight: 600,
+            flexShrink: 0,
+          }}
+        >
+          {initial}
+        </div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div
+            style={{
+              fontSize: 13,
+              fontWeight: 500,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {label}
+          </div>
+          <div
+            style={{
+              fontSize: 11,
+              color: theme.textDim,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {workspaces.data?.email ?? (principal.role === 'admin' ? 'Admin' : '')}
+          </div>
+        </div>
+        <ChevronsUpDown size={14} color={theme.textMuted} />
+      </button>
+
+      {open && (
+        <>
+          {/* Click-outside layer */}
+          <div
+            onClick={() => setOpen(false)}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 40,
+            }}
+          />
+          <div
+            style={{
+              position: 'absolute',
+              top: 'calc(100% + 6px)',
+              left: 0,
+              right: 0,
+              background: theme.surface,
+              border: `1px solid ${theme.borderSubtle}`,
+              borderRadius: theme.radiusSm,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+              padding: 6,
+              zIndex: 41,
+              maxHeight: 360,
+              overflow: 'auto',
+            }}
+          >
+            {workspaces.isLoading && (
+              <div style={{ padding: '8px 10px', fontSize: 12, color: theme.textMuted }}>
+                Loading workspaces…
+              </div>
+            )}
+            {!workspaces.isLoading && allWorkspaces.length === 0 && (
+              <div style={{ padding: '8px 10px', fontSize: 12, color: theme.textMuted }}>
+                No other workspaces on this device.
+              </div>
+            )}
+            {!workspaces.isLoading && hasMany && (
+              <div
+                style={{
+                  fontSize: 10,
+                  color: theme.textDim,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  padding: '8px 10px 4px',
+                }}
+              >
+                Switch brand
+              </div>
+            )}
+            {allWorkspaces.map((w) => {
+              const active = w.tenantSlug === currentSlug;
+              const busy = enteringSlug === w.tenantSlug;
+              return (
+                <button
+                  key={w.tenantSlug}
+                  onClick={() => enter(w.tenantSlug)}
+                  disabled={enteringSlug !== null}
+                  style={{
+                    width: '100%',
+                    background: active ? theme.surface2 : 'transparent',
+                    border: 'none',
+                    borderRadius: 6,
+                    padding: '8px 10px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    cursor: enteringSlug !== null ? 'wait' : 'pointer',
+                    color: theme.text,
+                    textAlign: 'left',
+                    opacity: enteringSlug !== null && !busy ? 0.5 : 1,
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!active && enteringSlug === null) {
+                      e.currentTarget.style.background = theme.surface2;
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!active) e.currentTarget.style.background = 'transparent';
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 500,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {w.tenantDisplayName}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: theme.textMuted,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      /t/{w.tenantSlug}/
+                    </div>
+                  </div>
+                  {busy ? (
+                    <span style={{ fontSize: 11, color: theme.accent }}>Entering…</span>
+                  ) : active ? (
+                    <Check size={14} color={theme.accent} />
+                  ) : null}
+                </button>
+              );
+            })}
+            <div
+              style={{
+                borderTop: `1px solid ${theme.borderSubtle}`,
+                marginTop: 4,
+                paddingTop: 4,
+              }}
+            >
+              <a
+                href="/signup"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: '8px 10px',
+                  borderRadius: 6,
+                  color: theme.textMuted,
+                  fontSize: 13,
+                  textDecoration: 'none',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = theme.surface2;
+                  e.currentTarget.style.color = theme.text;
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent';
+                  e.currentTarget.style.color = theme.textMuted;
+                }}
+              >
+                <Plus size={14} />
+                Add another brand
+              </a>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
