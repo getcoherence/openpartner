@@ -23,11 +23,13 @@ import {
   Check,
   Plus,
   X,
+  Menu,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { clearApiKey, api, type Principal } from './api.js';
 import { useTenantBase } from './tenant-base.js';
 import { theme } from './theme.js';
+import { useIsMobile } from './lib/useMediaQuery.js';
 import { Dashboard } from './pages/Dashboard.js';
 import { LinksPage } from './pages/Links.js';
 import { CommissionsPage } from './pages/Commissions.js';
@@ -149,6 +151,8 @@ function Shell() {
   const [auth, setAuth] = useState<AuthState>({ loading: true, principal: null });
   const location = useLocation();
   const tenantBase = useTenantBase();
+  const isMobile = useIsMobile();
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
     api<Principal>('/auth/whoami')
@@ -156,13 +160,26 @@ function Shell() {
       .catch(() => setAuth({ loading: false, principal: null }));
   }, []);
 
+  // Close the drawer whenever the route changes — a NavItem tap navigates,
+  // which should dismiss the overlay. Also covers backdrop/programmatic nav.
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [location.pathname]);
+
   if (auth.loading) return <CenteredMessage>Loading…</CenteredMessage>;
   if (!auth.principal) return <Navigate to={`${tenantBase}/login`} state={{ from: location }} replace />;
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: theme.bg }}>
-      <Sidebar principal={auth.principal} />
+      {isMobile ? (
+        <MobileDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}>
+          <Sidebar principal={auth.principal} variant="drawer" />
+        </MobileDrawer>
+      ) : (
+        <Sidebar principal={auth.principal} />
+      )}
       <main style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
+        {isMobile && <MobileTopBar onMenu={() => setDrawerOpen(true)} />}
         <Routes>
           <Route index element={<Dashboard principal={auth.principal} />} />
 
@@ -222,7 +239,102 @@ interface ProgramSettings {
   logoUrl: string | null;
 }
 
-function Sidebar({ principal }: { principal: Principal }) {
+/** Mobile-only top bar: hamburger + brand. Sticky so it stays reachable
+ *  while the page scrolls. Reuses the cached 'program-settings' query so
+ *  the brand name/logo match the drawer without a second fetch. */
+function MobileTopBar({ onMenu }: { onMenu: () => void }) {
+  const settings = useQuery({
+    queryKey: ['program-settings'],
+    queryFn: () => api<ProgramSettings>('/config/program'),
+    staleTime: 60_000,
+  });
+  const programName = settings.data?.programName || 'OpenPartner';
+  return (
+    <header
+      style={{
+        position: 'sticky',
+        top: 0,
+        zIndex: 30,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        height: 56,
+        padding: '0 16px',
+        background: theme.sidebar,
+        borderBottom: `1px solid ${theme.borderSubtle}`,
+      }}
+    >
+      <button
+        onClick={onMenu}
+        aria-label="Open menu"
+        style={{
+          background: 'transparent',
+          border: 'none',
+          color: theme.text,
+          cursor: 'pointer',
+          display: 'inline-flex',
+          padding: 6,
+          marginLeft: -6,
+        }}
+      >
+        <Menu size={22} />
+      </button>
+      {settings.data?.logoUrl ? (
+        <img
+          src={settings.data.logoUrl}
+          alt={programName}
+          style={{ width: 24, height: 24, borderRadius: 6, objectFit: 'contain', background: theme.surface2 }}
+        />
+      ) : (
+        <Logo size={24} />
+      )}
+      <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>{programName}</div>
+    </header>
+  );
+}
+
+/** Slide-in drawer shell for the mobile sidebar. Stays mounted so the
+ *  panel can transition in/out; a tap on the backdrop or any nav link
+ *  inside closes it (route-change in Shell also closes it). */
+function MobileDrawer({ open, onClose, children }: { open: boolean; onClose: () => void; children: ReactNode }) {
+  return (
+    <>
+      <div
+        onClick={onClose}
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0,0,0,0.5)',
+          opacity: open ? 1 : 0,
+          pointerEvents: open ? 'auto' : 'none',
+          transition: 'opacity 180ms ease',
+          zIndex: 49,
+        }}
+      />
+      <div
+        onClick={(e) => {
+          if ((e.target as HTMLElement).closest('a')) onClose();
+        }}
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          bottom: 0,
+          width: 'min(280px, 84vw)',
+          transform: open ? 'translateX(0)' : 'translateX(-100%)',
+          transition: 'transform 200ms ease',
+          boxShadow: open ? '0 0 40px rgba(0,0,0,0.5)' : 'none',
+          display: 'flex',
+          zIndex: 50,
+        }}
+      >
+        {children}
+      </div>
+    </>
+  );
+}
+
+function Sidebar({ principal, variant = 'sidebar' }: { principal: Principal; variant?: 'sidebar' | 'drawer' }) {
   const nav = useNavigate();
   const tenantBase = useTenantBase();
   const settings = useQuery({
@@ -233,20 +345,22 @@ function Sidebar({ principal }: { principal: Principal }) {
   });
   const programName = settings.data?.programName || 'OpenPartner';
   const supportEmail = settings.data?.supportEmail || null;
+  const isDrawer = variant === 'drawer';
 
   return (
     <aside
       style={{
-        // Sticky + 100vh pins the aside to the viewport so the middle
-        // nav's overflow:auto actually scrolls. Without this, the
+        // Sidebar: sticky + 100vh pins the aside to the viewport so the
+        // middle nav's overflow:auto actually scrolls. Without this, the
         // aside would grow with the main content and the inner overflow
         // would never trigger.
-        width: 248,
-        height: '100vh',
-        position: 'sticky',
-        top: 0,
+        // Drawer (mobile): the MobileDrawer wrapper owns positioning; the
+        // aside just fills it as a normal flex column.
+        width: isDrawer ? '100%' : 248,
+        height: isDrawer ? '100%' : '100vh',
+        ...(isDrawer ? {} : { position: 'sticky', top: 0 }),
         background: theme.sidebar,
-        borderRight: `1px solid ${theme.borderSubtle}`,
+        borderRight: isDrawer ? 'none' : `1px solid ${theme.borderSubtle}`,
         display: 'flex',
         flexDirection: 'column',
         padding: '20px 14px',

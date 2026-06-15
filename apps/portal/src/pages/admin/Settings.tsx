@@ -123,7 +123,7 @@ function ProgramSection() {
         />
         <Hint>Partners see this in their portal footer.</Hint>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 16 }}>
+      <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 16 }}>
         <div>
           <Label>Brand color</Label>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -751,7 +751,7 @@ function MailSection() {
       )}
       {kind === 'smtp' && (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, marginBottom: 12 }}>
+          <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, marginBottom: 12 }}>
             <div>
               <Label>SMTP host</Label>
               <Input value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="smtp.example.com" />

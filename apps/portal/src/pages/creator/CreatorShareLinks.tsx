@@ -261,6 +261,7 @@ function MetricsRow({
   const stat = (n: number) => (loading ? '—' : n.toLocaleString());
   return (
     <div
+      className="op-grid-collapse"
       style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(4, 1fr)',

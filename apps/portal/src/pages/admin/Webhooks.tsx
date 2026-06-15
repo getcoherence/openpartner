@@ -410,7 +410,7 @@ function CreateEndpoint({
     <Card style={{ marginBottom: 14 }}>
       <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 14 }}>New endpoint</div>
       <ErrorBanner error={mut.error} />
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, marginBottom: 14 }}>
+      <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, marginBottom: 14 }}>
         <div>
           <Label>URL</Label>
           <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://your-server.example/webhooks/openpartner" />

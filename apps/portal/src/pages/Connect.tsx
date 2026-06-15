@@ -74,7 +74,7 @@ export function ConnectPage({ principal }: { principal: Principal }) {
               <code style={{ fontSize: 12, color: theme.textMuted }}>{s.accountId}</code>
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+          <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
             <ChecklistItem label="Details submitted" ok={!!s.detailsSubmitted} />
             <ChecklistItem label="Charges enabled" ok={!!s.chargesEnabled} />
             <ChecklistItem label="Payouts enabled" ok={!!s.payoutsEnabled} />

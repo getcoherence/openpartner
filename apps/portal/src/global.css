@@ -63,6 +63,22 @@ code, pre {
   color: #e6e8eb;
 }
 
+/* Responsive grid collapse.
+ *
+ * The portal styles with inline `style` objects, so multi-column grids set
+ * `grid-template-columns` inline (e.g. '1fr 1fr', '120px 1fr 140px'). There
+ * is no stylesheet rule to hang an @media override on — and a normal class
+ * rule would lose to the inline style. `!important` inside a media query is
+ * the one author-stylesheet declaration that DOES beat a non-important
+ * inline style, so we use it to force these grids to a single column on
+ * phones. Add `className="op-grid-collapse"` to any hardcoded multi-column
+ * grid that would overflow a ~360px viewport. */
+@media (max-width: 768px) {
+  .op-grid-collapse {
+    grid-template-columns: 1fr !important;
+  }
+}
+
 /* Remove default focus ring, add our own */
 *:focus {
   outline: none;

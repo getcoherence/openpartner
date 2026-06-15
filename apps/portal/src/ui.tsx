@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { theme } from './theme.js';
+import { useIsMobile } from './lib/useMediaQuery.js';
 
 // ---------------- Layout ----------------
 
@@ -14,24 +15,28 @@ export function Page({
   actions?: ReactNode;
   children: ReactNode;
 }) {
+  const isMobile = useIsMobile();
   return (
-    <div style={{ padding: '32px 40px', maxWidth: 1280, margin: '0 auto' }}>
+    <div style={{ padding: isMobile ? '20px 16px' : '32px 40px', maxWidth: 1280, margin: '0 auto' }}>
       <header
         style={{
           display: 'flex',
+          // On mobile the title + actions stack so wide action buttons
+          // don't squeeze the heading into an unreadable column.
+          flexDirection: isMobile ? 'column' : 'row',
           justifyContent: 'space-between',
-          alignItems: 'flex-end',
-          marginBottom: 28,
-          gap: 16,
+          alignItems: isMobile ? 'stretch' : 'flex-end',
+          marginBottom: isMobile ? 20 : 28,
+          gap: isMobile ? 14 : 16,
         }}
       >
         <div>
-          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 600, letterSpacing: '-0.01em' }}>{title}</h1>
+          <h1 style={{ margin: 0, fontSize: isMobile ? 21 : 24, fontWeight: 600, letterSpacing: '-0.01em' }}>{title}</h1>
           {subtitle && (
             <div style={{ color: theme.textMuted, fontSize: 14, marginTop: 4 }}>{subtitle}</div>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>{actions}</div>
+        {actions && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{actions}</div>}
       </header>
       {children}
     </div>
@@ -120,7 +125,11 @@ export function Table({
   const cols = columns.map((c) => (typeof c === 'string' ? { label: c, align: 'left' as const } : c));
   return (
     <Card padded={false} style={{ overflow: 'hidden' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+      {/* Horizontal scroll on narrow viewports: data tables routinely have
+          more columns than fit a phone, so let the table scroll inside the
+          card instead of blowing out the page width. */}
+      <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14, minWidth: 'max-content' }}>
         <thead>
           <tr>
             {cols.map((c) => (
@@ -170,6 +179,7 @@ export function Table({
           )}
         </tbody>
       </table>
+      </div>
     </Card>
   );
 }

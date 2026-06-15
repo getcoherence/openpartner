@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { Globe, Inbox, Link2, LogOut, Megaphone, Network, UserCog } from 'lucide-react';
+import { Globe, Inbox, Link2, LogOut, Megaphone, Menu, Network, UserCog } from 'lucide-react';
 import { theme } from '../../theme.js';
+import { useIsMobile } from '../../lib/useMediaQuery.js';
 import { Logo } from '../auth/Shared.js';
 import { creatorApi } from './creator-api.js';
 import { CreatorDiscoverPage } from './CreatorDiscover.js';
@@ -21,12 +22,19 @@ interface Whoami {
 export function CreatorShell() {
   const [auth, setAuth] = useState<{ loading: boolean; creator: Whoami['creator'] | null }>({ loading: true, creator: null });
   const location = useLocation();
+  const isMobile = useIsMobile();
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
     creatorApi<Whoami>('/creators/whoami')
       .then((r) => setAuth({ loading: false, creator: r.creator }))
       .catch(() => setAuth({ loading: false, creator: null }));
   }, []);
+
+  // Dismiss the drawer on navigation (tapping a nav link changes the route).
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [location.pathname]);
 
   if (auth.loading) {
     return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: theme.bg, color: theme.textMuted }}>Loading…</div>;
@@ -37,8 +45,15 @@ export function CreatorShell() {
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: theme.bg }}>
-      <CreatorSidebar creator={auth.creator} />
+      {isMobile ? (
+        <CreatorMobileDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}>
+          <CreatorSidebar creator={auth.creator} variant="drawer" />
+        </CreatorMobileDrawer>
+      ) : (
+        <CreatorSidebar creator={auth.creator} />
+      )}
       <main style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
+        {isMobile && <CreatorMobileTopBar onMenu={() => setDrawerOpen(true)} />}
         <Routes>
           <Route index element={<Navigate to="discover" replace />} />
           <Route path="discover" element={<CreatorDiscoverPage />} />
@@ -57,21 +72,97 @@ export function CreatorShell() {
   );
 }
 
-function CreatorSidebar({ creator }: { creator: NonNullable<Whoami['creator']> }) {
+/** Mobile-only top bar for the creator shell: hamburger + brand. */
+function CreatorMobileTopBar({ onMenu }: { onMenu: () => void }) {
+  return (
+    <header
+      style={{
+        position: 'sticky',
+        top: 0,
+        zIndex: 30,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        height: 56,
+        padding: '0 16px',
+        background: theme.sidebar,
+        borderBottom: `1px solid ${theme.borderSubtle}`,
+      }}
+    >
+      <button
+        onClick={onMenu}
+        aria-label="Open menu"
+        style={{
+          background: 'transparent',
+          border: 'none',
+          color: theme.text,
+          cursor: 'pointer',
+          display: 'inline-flex',
+          padding: 6,
+          marginLeft: -6,
+        }}
+      >
+        <Menu size={22} />
+      </button>
+      <Logo size={24} />
+      <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>OpenPartner</div>
+    </header>
+  );
+}
+
+/** Slide-in drawer shell for the creator mobile sidebar. */
+function CreatorMobileDrawer({ open, onClose, children }: { open: boolean; onClose: () => void; children: ReactNode }) {
+  return (
+    <>
+      <div
+        onClick={onClose}
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0,0,0,0.5)',
+          opacity: open ? 1 : 0,
+          pointerEvents: open ? 'auto' : 'none',
+          transition: 'opacity 180ms ease',
+          zIndex: 49,
+        }}
+      />
+      <div
+        onClick={(e) => {
+          if ((e.target as HTMLElement).closest('a')) onClose();
+        }}
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          bottom: 0,
+          width: 'min(280px, 84vw)',
+          transform: open ? 'translateX(0)' : 'translateX(-100%)',
+          transition: 'transform 200ms ease',
+          boxShadow: open ? '0 0 40px rgba(0,0,0,0.5)' : 'none',
+          display: 'flex',
+          zIndex: 50,
+        }}
+      >
+        {children}
+      </div>
+    </>
+  );
+}
+
+function CreatorSidebar({ creator, variant = 'sidebar' }: { creator: NonNullable<Whoami['creator']>; variant?: 'sidebar' | 'drawer' }) {
   const nav = useNavigate();
+  const isDrawer = variant === 'drawer';
   return (
     <aside
       style={{
-        // Sticky + 100vh pins the aside to the viewport so the middle
-        // nav's overflow:auto actually scrolls (otherwise the aside
-        // grows with the main content and the inner overflow never
-        // triggers).
-        width: 248,
-        height: '100vh',
-        position: 'sticky',
-        top: 0,
+        // Sidebar: sticky + 100vh pins the aside to the viewport so the
+        // middle nav's overflow:auto actually scrolls. Drawer: the
+        // wrapper owns positioning; the aside just fills it.
+        width: isDrawer ? '100%' : 248,
+        height: isDrawer ? '100%' : '100vh',
+        ...(isDrawer ? {} : { position: 'sticky', top: 0 }),
         background: theme.sidebar,
-        borderRight: `1px solid ${theme.borderSubtle}`,
+        borderRight: isDrawer ? 'none' : `1px solid ${theme.borderSubtle}`,
         display: 'flex',
         flexDirection: 'column',
         padding: '20px 14px',

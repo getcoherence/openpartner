@@ -86,7 +86,7 @@ function InviteAdmin({ onClose, onCreated }: { onClose: () => void; onCreated: (
         They'll get an email with a one-time link to activate their account.
       </div>
       <ErrorBanner error={mut.error} />
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
+      <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
         <div>
           <Label>Name</Label>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Taylor Admin" />

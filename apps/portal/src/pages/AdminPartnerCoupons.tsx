@@ -170,7 +170,7 @@ export function AdminPartnerCoupons() {
               </div>
             )}
             {availableCampaigns.length > 0 ? (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'end' }}>
+              <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'end' }}>
                 <div>
                   <Label>Program</Label>
                   <select

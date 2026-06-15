@@ -152,7 +152,7 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
         They'll get an email with a one-time link to set up their dashboard.
       </div>
       <ErrorBanner error={mut.error} />
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
+      <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
         <div>
           <Label>Name</Label>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ada Lovelace" />

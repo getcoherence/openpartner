@@ -334,6 +334,7 @@ function OfferingDetailBody({
 
       {/* Two-column body */}
       <div
+        className="op-grid-collapse"
         style={{
           display: 'grid',
           gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
