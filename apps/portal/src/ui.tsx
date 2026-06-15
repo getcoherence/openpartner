@@ -123,11 +123,82 @@ export function Table({
   empty?: string;
 }) {
   const cols = columns.map((c) => (typeof c === 'string' ? { label: c, align: 'left' as const } : c));
+  const isMobile = useIsMobile();
+
+  // On phones, a multi-column table forces horizontal scrolling and hides
+  // data off-screen. Reflow each row into a stacked "label: value" card so
+  // every field is visible without scrolling sideways. The first column is
+  // treated as the row's title (rendered full-width, larger).
+  if (isMobile) {
+    if (rows.length === 0) {
+      return (
+        <Card style={{ textAlign: 'center', color: theme.textDim, fontSize: 14 }}>{empty}</Card>
+      );
+    }
+    return (
+      <Card padded={false} style={{ overflow: 'hidden' }}>
+        {rows.map((row, i) => (
+          <div
+            key={i}
+            style={{
+              padding: '14px 16px',
+              borderBottom: i < rows.length - 1 ? `1px solid ${theme.borderSubtle}` : 'none',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+            }}
+          >
+            {row.map((cell, j) => {
+              const isTitle = j === 0;
+              return (
+                <div
+                  key={j}
+                  style={
+                    isTitle
+                      ? { fontSize: 15, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }
+                      : {
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'baseline',
+                          gap: 12,
+                        }
+                  }
+                >
+                  {!isTitle && (
+                    <span
+                      style={{
+                        flexShrink: 0,
+                        color: theme.textMuted,
+                        fontSize: 11,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.05em',
+                      }}
+                    >
+                      {cols[j]?.label}
+                    </span>
+                  )}
+                  <span
+                    style={{
+                      minWidth: 0,
+                      textAlign: isTitle ? 'left' : 'right',
+                      fontVariantNumeric: 'tabular-nums',
+                    }}
+                  >
+                    {cell}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </Card>
+    );
+  }
+
   return (
     <Card padded={false} style={{ overflow: 'hidden' }}>
-      {/* Horizontal scroll on narrow viewports: data tables routinely have
-          more columns than fit a phone, so let the table scroll inside the
-          card instead of blowing out the page width. */}
+      {/* Horizontal scroll as a fallback for very wide content on tablet/
+          desktop widths; phones use the stacked card layout above. */}
       <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14, minWidth: 'max-content' }}>
         <thead>

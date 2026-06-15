@@ -232,7 +232,7 @@ function CreatorCard({ creator }: { creator: DirectoryRow }) {
           )}
         </div>
       )}
-      <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
         <Stat label="90d revenue" value={revenue > 0 ? `$${revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'} accent={revenue > 0} />
         <Stat label="90d clicks" value={creator.clicks90d > 0 ? creator.clicks90d.toLocaleString() : '—'} />
       </div>

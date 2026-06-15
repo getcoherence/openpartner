@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Webhook as WebhookIcon, Copy, Check, Trash2, Play } from 'lucide-react';
 import { api } from '../../api.js';
 import { theme } from '../../theme.js';
+import { useIsMobile } from '../../lib/useMediaQuery.js';
 import {
   Button,
   Card,
@@ -172,6 +173,7 @@ function EndpointCard({
   onToggle: () => void;
 }) {
   const qc = useQueryClient();
+  const isMobile = useIsMobile();
   const toggleActive = useMutation({
     mutationFn: () => api(`/webhooks/${endpoint.id}`, { method: 'PATCH', body: { active: !endpoint.active } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['webhooks'] }),
@@ -203,11 +205,19 @@ function EndpointCard({
 
   return (
     <Card>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: isMobile ? 'column' : 'row',
+          justifyContent: 'space-between',
+          alignItems: isMobile ? 'stretch' : 'flex-start',
+          gap: 12,
+        }}
+      >
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
             <WebhookIcon size={14} color={endpoint.active ? theme.accent : theme.textDim} />
-            <code style={{ fontSize: 13, color: theme.text, fontWeight: 500 }}>{endpoint.url}</code>
+            <code style={{ fontSize: 13, color: theme.text, fontWeight: 500, minWidth: 0, overflowWrap: 'anywhere', wordBreak: 'break-all' }}>{endpoint.url}</code>
             <StatusPill status={endpoint.active ? 'connected' : 'pending'} />
           </div>
           <div style={{ fontSize: 12, color: theme.textMuted }}>
@@ -239,7 +249,7 @@ function EndpointCard({
             ))}
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', flexShrink: 0 }}>
           <Button size="sm" variant="secondary" onClick={onToggle}>
             {expanded ? 'Hide' : 'Deliveries'}
           </Button>
