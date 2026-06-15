@@ -389,7 +389,7 @@ function PartnerCard({
         </div>
         {partner.stripeConnected && <StatusPill status="connected" />}
       </div>
-      <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <MiniStat label="Revenue" value={money(partner.revenue)} />
         <MiniStat
           label="Payouts"
