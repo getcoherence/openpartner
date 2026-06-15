@@ -79,6 +79,7 @@ function EarningsBlock({ aff }: { aff: Affiliation }) {
               return (
                 <div
                   key={l.linkKey}
+                  className="op-grid-collapse"
                   style={{
                     display: 'grid',
                     gridTemplateColumns: '1.4fr 1fr 1fr 1fr 1fr',

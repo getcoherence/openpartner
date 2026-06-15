@@ -262,7 +262,7 @@ function EditProgramDates({
         Setting <strong>Ends</strong> to a past date marks the campaign Ended immediately. Past the
         end date, existing share-links keep redirecting but no new commissions accrue.
       </p>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 18 }}>
+      <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 18 }}>
         <div>
           <Label>Starts</Label>
           <Input type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} />
@@ -456,7 +456,7 @@ function CreateProgram({ onClose, onCreated }: { onClose: () => void; onCreated:
           onCategoriesChange={setCategories}
         />
       )}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 14, marginBottom: 16 }}>
+      <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 14, marginBottom: 16 }}>
         <div>
           <Label>Attribution window (days)</Label>
           <Input type="number" value={windowDays} onChange={(e) => setWindowDays(e.target.value)} />
@@ -503,7 +503,7 @@ function CreateProgram({ onClose, onCreated }: { onClose: () => void; onCreated:
           <option value="90">90 days</option>
         </Select>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 16 }}>
+      <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 16 }}>
         <div>
           <Label>Starts (optional)</Label>
           <Input type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} />
@@ -647,6 +647,7 @@ function SubRuleRow({
 
   return (
     <div
+      className="op-grid-collapse"
       style={{
         display: 'grid',
         gridTemplateColumns: '110px 180px 110px 1fr 90px auto',
@@ -943,6 +944,7 @@ function CustomerRewardEditor({
       </div>
       {enabled && reward && (
         <div
+          className="op-grid-collapse"
           style={{
             display: 'grid',
             gridTemplateColumns: '160px 130px 130px 1fr',

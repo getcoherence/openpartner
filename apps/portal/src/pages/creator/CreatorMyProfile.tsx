@@ -500,7 +500,7 @@ function PlatformRowEditor({
   const dirty = handle.trim() !== (existing?.handle ?? '') || (followerCount === '' ? null : Number(followerCount)) !== (existing?.followerCount ?? null);
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr 140px auto', gap: 8, alignItems: 'center' }}>
+    <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '110px 1fr 140px auto', gap: 8, alignItems: 'center' }}>
       <div style={{ fontSize: 13, color: theme.text }}>{label}</div>
       <Input value={handle} onChange={(e) => setHandle(e.target.value)} placeholder={placeholder} style={{ fontFamily: theme.fontMono, fontSize: 13 }} />
       <Input

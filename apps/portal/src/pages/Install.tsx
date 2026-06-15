@@ -147,7 +147,7 @@ export function InstallPage() {
           )}
           {mailKind === 'smtp' && (
             <>
-              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, marginBottom: 12 }}>
+              <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, marginBottom: 12 }}>
                 <div>
                   <Label>SMTP host</Label>
                   <Input value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="smtp.example.com" />

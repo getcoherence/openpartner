@@ -188,7 +188,7 @@ function EditCard({
         Past commissions aren&rsquo;t recomputed — only future events.
       </p>
       <ErrorBanner error={save.error ?? clear.error} />
-      <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr auto', gap: 12, marginBottom: 14, alignItems: 'end' }}>
+      <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '140px 1fr auto', gap: 12, marginBottom: 14, alignItems: 'end' }}>
         <div>
           <Label>Rate type</Label>
           <Select value={type} onChange={(e) => setType(e.target.value as 'percent' | 'fixed')}>

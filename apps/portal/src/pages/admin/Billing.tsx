@@ -323,7 +323,7 @@ function PlanCard({ status }: { status: BillingStatus }) {
 
 function PlanPicker({ onPick, disabled }: { onPick: (plan: Plan) => void; disabled?: boolean }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+    <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
       {(['flex', 'revshare'] as const).map((p) => (
         <button
           key={p}

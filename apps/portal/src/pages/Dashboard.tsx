@@ -257,7 +257,7 @@ function FunnelChart({ funnel }: { funnel: Funnel }) {
           {stages.map((s, i) => {
             const width = `${Math.max(6, (s.value / max) * 100)}%`;
             return (
-              <div key={s.key} style={{ display: 'grid', gridTemplateColumns: '120px 1fr 140px', gap: 12, alignItems: 'center' }}>
+              <div key={s.key} className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '120px 1fr 140px', gap: 12, alignItems: 'center' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: theme.textMuted }}>
                   <span style={{ color: theme.accent, display: 'inline-flex' }}>{s.icon}</span>
                   {s.label}
@@ -389,7 +389,7 @@ function PartnerCard({
         </div>
         {partner.stripeConnected && <StatusPill status="connected" />}
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <MiniStat label="Revenue" value={money(partner.revenue)} />
         <MiniStat
           label="Payouts"
