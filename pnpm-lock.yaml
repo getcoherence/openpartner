@@ -75,8 +75,8 @@ importers:
         specifier: ^3.1.0
         version: 3.2.9(pg@8.20.0)
       nodemailer:
-        specifier: ^8.0.6
-        version: 8.0.6
+        specifier: ^9.0.1
+        version: 9.0.1
       pg:
         specifier: ^8.11.5
         version: 8.20.0
@@ -1093,6 +1093,7 @@ packages:
   '@smithy/core@3.24.1':
     resolution: {integrity: sha512-3mT7o4qQyUWttYnVK3A0Z/u3Xha3E81tXn32Tz6vjZiUXhBrkEivpw1hBYfh84iFF9CSzkBU9Y1DJ3Q6RQ231g==}
     engines: {node: '>=18.0.0'}
+    deprecated: Deprecated due to bug in browser bundling instructions https://github.com/smithy-lang/smithy-typescript/issues/2025
 
   '@smithy/credential-provider-imds@4.3.1':
     resolution: {integrity: sha512-0S/acwHnqX4WrjXzhdiDRxsG2s9SC0cpPIK9nZ1R6UOHd+j7uL28+4bHu22urbLk2TVw3fkp6na/+fkUt/pLNQ==}
@@ -2291,8 +2292,8 @@ packages:
   node-releases@2.0.38:
     resolution: {integrity: sha512-3qT/88Y3FbH/Kx4szpQQ4HzUbVrHPKTLVpVocKiLfoYvw9XSGOX2FmD2d6DrXbVYyAQTF2HeF6My8jmzx7/CRw==}
 
-  nodemailer@8.0.6:
-    resolution: {integrity: sha512-Nm2XeuDwwy2wi5A+8jPWwQwNzcjNjhWdE3pVLoXEusxJqCnAPAgnBGkSmiLknbnWuOF9qraRpYZjfxqtKZ4tPw==}
+  nodemailer@9.0.1:
+    resolution: {integrity: sha512-Gwv8SQewT616ZM/URn0H54b8PWo/Wum7md3EW2aWy1lO27+WZCX+Xyak3J+NlmHUjDh5ME+uesJUDRbR3Ye8Bw==}
     engines: {node: '>=6.0.0'}
 
   object-assign@4.1.1:
@@ -5294,7 +5295,7 @@ snapshots:
 
   node-releases@2.0.38: {}
 
-  nodemailer@8.0.6: {}
+  nodemailer@9.0.1: {}
 
   object-assign@4.1.1: {}
 
