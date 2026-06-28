@@ -43,7 +43,7 @@ import { createApiKeyRow } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
 import { getTenantBillingState } from '../billing-plan.js';
-import { isWhiteLabelEntitled } from '../white-label.js';
+import { isWhiteLabelEntitled, getWhiteLabelState } from '../white-label.js';
 
 export const settingsRouter = Router();
 
@@ -297,6 +297,25 @@ settingsRouter.post('/config/payouts', requireAuth, requireAdmin, async (req, re
 
 // ---------- Network membership ----------
 
+/** White-label tenants are isolated from the OpenPartner Network. When one
+ *  hits a federation-enabling route, send a 409 and return true so the
+ *  handler bails. Data-plane pushes (dispatch/sendHeartbeat in
+ *  network-client) are independently suppressed as defense in depth. */
+async function blockNetworkForWhiteLabel(
+  db: Knex,
+  tenantId: string,
+  res: import('express').Response,
+): Promise<boolean> {
+  if ((await getWhiteLabelState(db, tenantId)).effective) {
+    res.status(409).json({
+      error: 'white_label_network_conflict',
+      detail: 'White-label tenants are isolated from the OpenPartner Network. Disable white-label before joining the Network.',
+    });
+    return true;
+  }
+  return false;
+}
+
 const networkMembershipSchema = z.object({
   enabled: z.boolean().optional(),
   networkUrl: z.string().url().optional().or(z.literal('')),
@@ -317,6 +336,7 @@ settingsRouter.post('/config/network', requireAuth, requireAdmin, async (req, re
   const body = networkMembershipSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
+  if (body.data.enabled === true && (await blockNetworkForWhiteLabel(db, tenantId, res))) return;
   await saveNetworkMembership(db, tenantId, {
     enabled: body.data.enabled,
     networkUrl: body.data.networkUrl === '' ? '' : body.data.networkUrl,
@@ -383,6 +403,7 @@ settingsRouter.post('/config/network/start-connect', requireAuth, requireAdmin, 
   const body = startConnectSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
+  if (await blockNetworkForWhiteLabel(db, tenantId, res)) return;
   const networkUrl = process.env.NETWORK_URL;
   if (!networkUrl) {
     return res.status(503).json({ error: 'network_url_not_configured', detail: 'set NETWORK_URL env to your network endpoint, e.g. https://network.openpartner.dev' });
@@ -450,6 +471,7 @@ settingsRouter.post('/config/network/auto-enroll', requireAuth, requireAdmin, as
     return { ...t, tenantSlug: req.tenantSlug ?? null };
   })();
 
+  if (await blockNetworkForWhiteLabel(db, tenantId, res)) return;
   const networkUrl = process.env.NETWORK_URL;
   const adminToken = process.env.NETWORK_ADMIN_API_KEY;
   if (!networkUrl) return res.status(503).json({ error: 'network_url_not_configured' });
@@ -524,6 +546,7 @@ settingsRouter.post('/config/network/complete-connect', requireAuth, requireAdmi
   const body = completeConnectSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
+  if (await blockNetworkForWhiteLabel(db, tenantId, res)) return;
   const networkUrl = process.env.NETWORK_URL;
   if (!networkUrl) return res.status(503).json({ error: 'network_url_not_configured' });
 

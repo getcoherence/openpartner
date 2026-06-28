@@ -24,6 +24,7 @@ import { ulid } from 'ulid';
 import type { Knex } from 'knex';
 import { TABLES, type NetworkOutboxRow } from '@openpartner/db';
 import { decryptSecret, encryptSecret } from './crypto.js';
+import { getWhiteLabelState } from './white-label.js';
 
 const CONFIG_KEY = 'network_membership';
 // Outbox / fire-and-forget pushes — short timeout, the scheduler retries.
@@ -167,6 +168,10 @@ export async function dispatch<T>(
   op: NetworkOutboxRow['op'],
   payload: Record<string, unknown>,
 ): Promise<T | null> {
+  // White-label tenants are isolated from the Network — never push their
+  // data, even if a stale membership row still says enabled. Source-side
+  // guarantee; the enable routes also 409 (defense in depth).
+  if ((await getWhiteLabelState(db, tenantId)).effective) return null;
   const m = await getNetworkMembership(db, tenantId);
   if (!m || !m.enabled || !m.vendorTokenCiphertext) {
     return null; // Network not configured for this tenant — silent no-op.
@@ -761,6 +766,12 @@ export interface HeartbeatResult {
 }
 
 export async function sendHeartbeat(db: Knex, tenantId: string): Promise<HeartbeatResult> {
+  // White-label tenants are isolated — suppress the liveness heartbeat so
+  // the marketplace prunes them from creator search and never surfaces a
+  // white-label brand.
+  if ((await getWhiteLabelState(db, tenantId)).effective) {
+    return { sent: false, partnerCount: 0, reason: 'white_label_suppressed' };
+  }
   const m = await getNetworkMembership(db, tenantId);
   if (!m || !m.enabled || !m.networkUrl || !m.vendorTokenCiphertext) {
     return { sent: false, partnerCount: 0, reason: 'network_not_configured' };
