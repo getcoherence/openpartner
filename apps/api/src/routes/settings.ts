@@ -42,6 +42,8 @@ import {
 import { createApiKeyRow } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
+import { getTenantBillingState } from '../billing-plan.js';
+import { isWhiteLabelEntitled } from '../white-label.js';
 
 export const settingsRouter = Router();
 
@@ -71,6 +73,10 @@ export interface ProgramSettings extends PersistedProgramSettings {
   logoUrl: string | null;
   brandColor: string | null;
   programTermsUrl: string | null;
+  /** Effective white-label entitlement. The portal keys branding removal
+   *  + Network-surface hiding on this (provisioned flag AND entitling
+   *  billing state — see white-label.ts). */
+  whiteLabel: boolean;
 }
 
 async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings> {
@@ -86,14 +92,24 @@ async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings
   // there so the cached Config row never lags the actual values.
   const tenant = await db<TenantRow>(TABLES.Tenant)
     .where({ id: tenantId })
-    .first(['displayName', 'logoUrl', 'brandColor', 'programTermsUrl']);
+    .first(['displayName', 'logoUrl', 'brandColor', 'programTermsUrl', 'whiteLabel', 'status']);
   if (!programName && tenant?.displayName) programName = tenant.displayName as string;
+  // Effective white-label: the provisioned flag AND an entitling billing
+  // state. Computed here so any authenticated caller (admin or partner)
+  // gets the brand truth — including whether to strip platform branding —
+  // in the same fetch the portal already makes on load.
+  const billing = await getTenantBillingState(db, tenantId);
+  const whiteLabel = isWhiteLabelEntitled(
+    { whiteLabel: tenant?.whiteLabel ?? false, status: tenant?.status ?? 'active' },
+    billing,
+  );
   return {
     programName,
     supportEmail: value.supportEmail ?? null,
     logoUrl: tenant?.logoUrl ?? null,
     brandColor: tenant?.brandColor ?? null,
     programTermsUrl: tenant?.programTermsUrl ?? null,
+    whiteLabel,
   };
 }
 

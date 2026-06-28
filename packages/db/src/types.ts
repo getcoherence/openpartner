@@ -19,6 +19,11 @@ export interface TenantRow {
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
   customDomain: string | null;
+  /** White-label entitlement (provisioned flag). When true AND on an
+   *  entitling billing state, the portal drops all OpenPartner platform
+   *  branding. See apps/api/src/white-label.ts. Hosted-only; inert on
+   *  self-hosted import. */
+  whiteLabel: boolean;
   metadata: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;

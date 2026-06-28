@@ -26,6 +26,7 @@ import type { Knex } from 'knex';
 import nodemailer from 'nodemailer';
 import { resolveMailConfig } from './mail-settings.js';
 import { resolveBrandName } from './brand-name.js';
+import { getWhiteLabelState } from './white-label.js';
 import { TABLES, type ConfigRow } from '@openpartner/db';
 
 export interface Message {
@@ -77,7 +78,16 @@ class RoutingMailer implements Mailer {
     if (cfg.source === 'env' && from) {
       const brandName = await resolveBrandName(ctx.db, ctx.tenantId);
       if (brandName) {
-        from = `"${safeDisplayName(brandName)} via OpenPartner" <${extractAddress(from)}>`;
+        // White-label tenants get a clean brand-only From — no "via
+        // OpenPartner" platform attribution. (Auth is unaffected: the
+        // platform-fallback sender is still on openpartner.dev, which
+        // SPF/DKIM authenticate; only the display name changes. A tenant
+        // wanting the address itself white-labeled configures their own
+        // provider — source='ui' — which skips this block entirely.)
+        const wl = await getWhiteLabelState(ctx.db, ctx.tenantId);
+        from = wl.effective
+          ? `"${safeDisplayName(brandName)}" <${extractAddress(from)}>`
+          : `"${safeDisplayName(brandName)} via OpenPartner" <${extractAddress(from)}>`;
       }
       const supportRow = await ctx.db<ConfigRow>(TABLES.Config)
         .where({ tenantId: ctx.tenantId, key: 'program_settings' })
