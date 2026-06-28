@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { HelpCircle, Plus, Tag, Trash2 } from 'lucide-react';
 import { api } from '../api.js';
 import { theme } from '../theme.js';
+import { useBrand } from '../lib/useBrand.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
 import { PROGRAM_CATEGORIES, categoryLabel } from '@openpartner/db';
@@ -219,6 +220,7 @@ function EditProgramDates({
   const [endsAt, setEndsAt] = useState(campaign.endsAt ? toDateTimeLocal(campaign.endsAt) : '');
   const [rules, setRules] = useState<CommissionSubRule[]>(normalizeRules(campaign.commissionRule));
   const [customerReward, setCustomerReward] = useState<CustomerReward | null>(campaign.customerReward);
+  const { whiteLabel } = useBrand();
   const [shareOnNetwork, setShareOnNetwork] = useState(campaign.shareOnNetwork);
   const [marketplaceDescription, setMarketplaceDescription] = useState(campaign.marketplaceDescription ?? '');
   const [categories, setCategories] = useState<string[]>(campaign.categories ?? []);
@@ -303,14 +305,18 @@ function EditProgramDates({
         enabled={partnersMayCustomizeCode}
         onChange={setPartnersMayCustomizeCode}
       />
-      <MarketplaceFields
-        shareOnNetwork={shareOnNetwork}
-        onShareChange={setShareOnNetwork}
-        description={marketplaceDescription}
-        onDescriptionChange={setMarketplaceDescription}
-        categories={categories}
-        onCategoriesChange={setCategories}
-      />
+      {/* Network listing is a shared-marketplace surface — hidden for
+          white-label tenants, which never appear on the Network. */}
+      {!whiteLabel && (
+        <MarketplaceFields
+          shareOnNetwork={shareOnNetwork}
+          onShareChange={setShareOnNetwork}
+          description={marketplaceDescription}
+          onDescriptionChange={setMarketplaceDescription}
+          categories={categories}
+          onCategoriesChange={setCategories}
+        />
+      )}
       <div style={{ marginBottom: 16 }}>
         <Label>Payout holdback (days)</Label>
         <Select value={holdbackDays} onChange={(e) => setHoldbackDays(e.target.value)}>
@@ -358,7 +364,10 @@ function CreateProgram({ onClose, onCreated }: { onClose: () => void; onCreated:
     queryKey: ['network-membership'],
     queryFn: () => api<NetworkConnectionState>('/config/network'),
   });
-  const networkEnabled = network.data?.enabled ?? false;
+  const { whiteLabel } = useBrand();
+  // White-label tenants are isolated from the Network — treat them as
+  // never enabled so the marketplace fields never render.
+  const networkEnabled = (network.data?.enabled ?? false) && !whiteLabel;
 
   const [name, setName] = useState('');
   const [destinationUrl, setDestinationUrl] = useState('');
