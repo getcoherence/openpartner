@@ -605,3 +605,23 @@ This spec was hardened against three adversarial reviews (Infra/TLS, Auth/CORS/C
 - **Union ask-gate decoupled cert issuance from entitlement (medium)** — eliminated; the dedicated droplet's own `ask` *is* the entitlement gate (§6.1).
 - **Original draft's false "token rotates" claim (low)** — this spec's own draft asserted a property the template lacks; **corrected** to real rotation (§7.6).
 - **Portability of hosted-only fields (low)** — `PortalCustomDomain` documented as an exportable sidecar; `whiteLabel`/Stripe fields exported losslessly and treated as inert no-ops on self-hosted import (§3.3), honoring CLAUDE.md §2/§5.
+
+---
+
+## 12. Phase 0 — implementation status (shipped 2026-06-28)
+
+Branch `feat/white-label-phase0` (4 commits). **Correction to §9:** the multi-tenant foundation AND the branding/billing migrations are already merged into the main line (`feat/mobile-responsive` is 178 commits ahead of the stale `multi-tenant` branch and carries `tenancy.ts`, RLS, `tenant_logo`, `brand_resources`, `tenant_billing_plan`, and the reserved `Tenant.customDomain`). The "cherry-pick branding into multi-tenant" prerequisite was therefore moot — Phase 0 builds directly on the current line; the `multi-tenant` branch is a stale leftover.
+
+**Done & verified** (API typecheck clean, portal typecheck clean, 46 API unit tests green):
+- `Tenant.whiteLabel` migration + `TenantRow` type; billing-aware `isWhiteLabelEntitled()` (`apps/api/src/white-label.ts`) with a DB-free regression test (`apps/api/src/__tests__/white-label.test.ts`) incl. the lapsed-trial-no-sub case.
+- `whiteLabel` (effective) flows through `GET /config/program`; portal reads it via a shared `useBrand()` hook (`apps/portal/src/lib/useBrand.ts`).
+- Portal: brand-identity strings → dynamic `programName`; Network/Discover/marketplace nav + routes hidden when white-label; `BrandMark` renders a neutral monogram instead of the OpenPartner logo for white-label tenants without an uploaded logo.
+- Mailer drops the "via OpenPartner" From suffix for white-label tenants.
+- Network isolation: data-plane suppression in `dispatch()` + `sendHeartbeat()` + 409 guards on all four federation-enabling routes.
+
+**Residual gaps (deferred to Phase 1):**
+- **Login / pre-auth branding** (`apps/portal/src/pages/auth/Shared.tsx`): `/t/:slug/login` still shows "OpenPartner" because `/config/program` requires auth. Closing it needs the **public branding endpoint** that Phase 1's host-based bootstrap (§4.7 / §5.2) introduces.
+- **First-paint flash:** `whiteLabel` defaults false for the sub-second the cached query is in flight (§10 q6).
+- **Unreachable literals left intact (by design):** route/nav-gated Network pages (`partner/Discover`, `admin/Network*`), the cross-tenant creator portal (`creator/*` — the real Network brand), and platform/pre-tenant surfaces (`Landing`, `Workspaces`, `Install`), plus an admin-only mail note.
+
+**Not runnable locally:** the integration tests (multi-tenant isolation, etc.) need a running, migrated Postgres + `DATABASE_URL`; run them in CI / a DB-backed env. The new `whiteLabel` migration must be applied there.
