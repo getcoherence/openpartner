@@ -625,3 +625,37 @@ Branch `feat/white-label-phase0` (4 commits). **Correction to §9:** the multi-t
 - **Unreachable literals left intact (by design):** route/nav-gated Network pages (`partner/Discover`, `admin/Network*`), the cross-tenant creator portal (`creator/*` — the real Network brand), and platform/pre-tenant surfaces (`Landing`, `Workspaces`, `Install`), plus an admin-only mail note.
 
 **Not runnable locally:** the integration tests (multi-tenant isolation, etc.) need a running, migrated Postgres + `DATABASE_URL`; run them in CI / a DB-backed env. The new `whiteLabel` migration must be applied there.
+
+---
+
+## 13. Multi-brand billing + the "add another brand" flow (platform-wide; acute for white-label)
+
+Surfaced while reviewing white-label pricing. Applies to ALL multi-brand customers, but white-label makes it urgent (resellers explicitly run many brands). **Lock this for Phase 1.**
+
+### 13.1 The data model (get the vocabulary right)
+- **There is no "Account" entity / no billing umbrella.** "Account" in the UI = a **platform identity = an email**. `/me/workspaces` (`platform-auth.ts:153-156`) lists every Tenant where `Admin.email = <platform-session email>`.
+- **"Brand" = a Tenant** — its own slug, branding, partners, and **billing**. The Tenant is the *only* billable unit. Billing is strictly per-tenant (`billing-plan.ts`).
+- So "add another brand to **this account**" is misleading: it creates a brand-new independently-billed tenant that merely shares your login — not one that joins an existing bill.
+
+### 13.2 Two defects found
+1. **Billing leak.** Each brand is a separate tenant that starts on a free 14-day trial; nothing forces a plan. The soft trial-gate (`middleware/trial-gate.ts`) deliberately keeps SDK ingest / `POST /attribution/*` / coupon-redeem OPEN after trial (only blocks program *expansion*), and metered billing (`usage-billing.ts reportUsageToStripe`) only fires for tenants with a Stripe customer. Net: additional brands run largely unbilled — fully during trial, core-functionally forever after. RevShare's $0 monthly (bills only 3% of revenue as it earns) makes even *correctly-subscribed* brands look free until revenue flows — the likely source of the customer's "brands aren't charged" confusion.
+2. **Switcher orphaning bug.** "Add another brand to this account" is literally `<a href="/signup">` (`App.tsx:842`) to the **public, unauthenticated** signup form with a **blank email field** (`Signup.tsx:30,142`). It does not reuse the logged-in identity. If the new Tenant's first Admin is created under any email ≠ the platform-session email (typo / different address), the brand is **orphaned from the switcher** (`/me/workspaces` filters by email). Compounding: signup activation via `/auth/magic/verify` mints only a per-tenant session and never attaches the new brand to the platform-identity bundle.
+
+### 13.3 Required rework — Phase 1
+Replace "Add another brand" with a first-class **authenticated add-brand flow** (kills the switcher bug + the billing gap + the misleading UX in one stroke):
+- **a. Reuse the current platform identity's email** for the new Tenant's first Admin — no re-entry, mismatch impossible.
+- **b. Attach the new brand to the platform bundle** on create/activate so it appears in the switcher immediately (create/attach `PlatformSession`; ensure `/me/workspaces` returns it).
+- **c. Require plan selection in the flow** — RevShare or Flex, plus the white-label add-on for white-label brands — creating the Stripe subscription up front (RevShare = a $0-recurring *metered* subscription, so `stripeSubscriptionId` is set).
+- **d. Rename the menu item** to be honest, e.g. "Create a new brand (own plan)".
+
+Plus two guards:
+- **Plan-required backstop gate:** an active plan is required before onboarding the first partner **OR** past trial, whichever comes first. Generalize the trial-gate's `POST /partners` entry from "trial expired" → "no active subscription." Keep SDK ingest open (never lose attribution data).
+- **White-label requires plan + add-on:** block enabling white-label unless the brand carries its own paid plan (parallel to the Network-conflict guard shipped in Phase 0 §7.4).
+
+**Definition of "active plan"** (the gate's check): a live Stripe subscription — Flex ($49/mo) **or** RevShare (metered, $0 recurring) — OR enterprise (sales-led) OR self-host. "RevShare selected but never checked out" does NOT count; that's the loophole being closed.
+
+### 13.4 Client framing
+Each brand = its own fully-isolated, independently-billed program. RevShare = 3% of *that brand's* attributed GMV as it earns (no monthly). Not "unlimited free brands."
+
+### 13.5 Immediate recovery for an already-orphaned brand
+Sign in at `/t/<slug>/login` with the email the brand's admin was actually created under (the inbox that received its activation link). If that differs from the account email, it confirms the mismatch and the brand will appear under a *separate* identity in the switcher.
