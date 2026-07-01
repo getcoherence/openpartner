@@ -124,3 +124,20 @@ export function isTrialGateActive(state: TenantBillingState): boolean {
   if (state.stripeSubscriptionId) return false;
   return state.trialEndsAt != null && state.trialEndsAt <= new Date();
 }
+
+/**
+ * True when the tenant has a billing arrangement that permits onboarding
+ * partners: an active Stripe subscription (Flex, or RevShare's metered
+ * $0-recurring subscription), an enterprise plan (billed out of band), or
+ * self-host (no billing relationship).
+ *
+ * "RevShare selected but never checked out" (a plan column set, but no
+ * `stripeSubscriptionId`) does NOT count — that's exactly the loophole the
+ * per-brand billing policy closes: a brand must actually activate a plan
+ * before it can bring in partners, not merely pick one on a free trial.
+ */
+export function hasActivePlan(state: TenantBillingState): boolean {
+  if (state.mode === 'selfhost') return true;
+  if (state.plan === 'enterprise') return true;
+  return state.stripeSubscriptionId != null;
+}

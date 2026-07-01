@@ -1,12 +1,17 @@
 /**
  * Soft trial-gate.
  *
- * When the brand's 14-day evaluation window has closed and they don't
- * have an active Stripe subscription, this middleware returns 402 on a
- * small allowlist of "expensive" write endpoints. The product keeps
- * working — clicks still get recorded, attribution still runs, the
- * dashboard still renders, the admin can still subscribe — but they
- * can't expand the program until billing is restored.
+ * Two tiers of 402 gating:
+ *   - PLAN_REQUIRED (partner onboarding): needs an ACTIVE subscription
+ *     regardless of trial — a brand must pick a plan before it onboards
+ *     its first partner (each brand is its own separately-billed tenant).
+ *     error = 'plan_required'.
+ *   - TRIAL_GATED (program expansion): soft-blocked only once the 14-day
+ *     trial lapses without a subscription. error = 'trial_expired'.
+ *
+ * Either way the product keeps working — clicks still get recorded,
+ * attribution still runs, the dashboard still renders, the admin can still
+ * subscribe — we only gate the specific write actions listed below.
  *
  * What's gated:
  *   - POST /campaigns                       (create new program)
@@ -37,7 +42,7 @@
 
 import type { NextFunction, Request, Response } from 'express';
 import { tenantOf } from '../tenancy.js';
-import { getTenantBillingState, isTrialGateActive } from '../billing-plan.js';
+import { getTenantBillingState, hasActivePlan, isTrialGateActive } from '../billing-plan.js';
 
 // Methods+path patterns that get the 402. Keep narrow — every entry is
 // a pinch point on the user's program-expansion workflow, not a
@@ -47,27 +52,36 @@ interface GatedRoute {
   test: (path: string) => boolean;
 }
 
-const GATED: GatedRoute[] = [
-  { method: 'POST', test: (p) => p === '/programs' },
+// Partner-onboarding routes require an ACTIVE PLAN (subscription), not just
+// an unexpired trial. A brand can explore during its trial, but must pick a
+// plan (RevShare or Flex) before it brings in its first partner — per the
+// per-brand billing policy (each brand is a separately-billed tenant).
+// Enterprise + self-host are exempt (see hasActivePlan).
+const PLAN_REQUIRED: GatedRoute[] = [
   { method: 'POST', test: (p) => p === '/partners' },
+  { method: 'POST', test: (p) => /^\/admin\/network\/requests\/[^/]+\/approve$/.test(p) },
+];
+
+// Program-expansion routes: soft-gated only AFTER the trial expires without a
+// subscription. During the trial these stay open so the brand can set up.
+const TRIAL_GATED: GatedRoute[] = [
+  { method: 'POST', test: (p) => p === '/programs' },
   { method: 'POST', test: (p) => /^\/partners\/[^/]+\/coupons$/.test(p) },
   { method: 'POST', test: (p) => /^\/partners\/[^/]+\/campaigns$/.test(p) },
   { method: 'POST', test: (p) => p === '/import/partners-csv' },
   { method: 'POST', test: (p) => p === '/admin/network/offerings' },
-  { method: 'POST', test: (p) => /^\/admin\/network\/requests\/[^/]+\/approve$/.test(p) },
 ];
 
 export async function trialGate(req: Request, res: Response, next: NextFunction): Promise<void> {
-  // Match before the more expensive billing-state lookup — most
-  // requests are not gated, and we don't want to add a DB hop to
-  // every read.
-  const matched = GATED.some((g) => g.method === req.method && g.test(req.path));
-  if (!matched) return next();
+  // Match before the more expensive billing-state lookup — most requests are
+  // not gated, and we don't want to add a DB hop to every read.
+  const planRequired = PLAN_REQUIRED.some((g) => g.method === req.method && g.test(req.path));
+  const trialMatched = TRIAL_GATED.some((g) => g.method === req.method && g.test(req.path));
+  if (!planRequired && !trialMatched) return next();
 
-  // Tenant scope is required for the lookup. If the request hasn't
-  // been through tenantMiddleware (mounted globally before this), we
-  // can't evaluate — let it through and rely on auth middleware to
-  // handle it.
+  // Tenant scope is required for the lookup. If the request hasn't been
+  // through tenantMiddleware (mounted globally before this), we can't
+  // evaluate — let it through and rely on auth middleware to handle it.
   let scope: ReturnType<typeof tenantOf> | null = null;
   try {
     scope = tenantOf(req);
@@ -76,13 +90,30 @@ export async function trialGate(req: Request, res: Response, next: NextFunction)
   }
 
   const state = await getTenantBillingState(scope.db, scope.tenantId);
-  if (!isTrialGateActive(state)) return next();
 
-  res.status(402).json({
-    error: 'trial_expired',
-    detail:
-      'Your 14-day evaluation period has ended. Subscribe at /admin/billing to continue inviting partners and accepting applications.',
-    plan: state.plan,
-    trialEndsAt: state.trialEndsAt?.toISOString() ?? null,
-  });
+  // Onboarding a partner requires a real plan — trial or not.
+  if (planRequired && !hasActivePlan(state)) {
+    res.status(402).json({
+      error: 'plan_required',
+      detail: 'Pick a plan (RevShare or Flex) at /admin/billing to start onboarding partners.',
+      plan: state.plan,
+      trialEndsAt: state.trialEndsAt?.toISOString() ?? null,
+    });
+    return;
+  }
+
+  // Program-expansion actions: soft-block only once the trial has lapsed
+  // without a subscription.
+  if (trialMatched && isTrialGateActive(state)) {
+    res.status(402).json({
+      error: 'trial_expired',
+      detail:
+        'Your 14-day evaluation period has ended. Subscribe at /admin/billing to continue expanding your program.',
+      plan: state.plan,
+      trialEndsAt: state.trialEndsAt?.toISOString() ?? null,
+    });
+    return;
+  }
+
+  return next();
 }
