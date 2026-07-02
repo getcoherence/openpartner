@@ -87,6 +87,34 @@ export interface BrandAssetRow {
   updatedAt: Date;
 }
 
+export type PortalDomainStatus = 'pending' | 'verified' | 'failed';
+export type PortalDomainEdgeKind = 'do_native' | 'droplet';
+
+/**
+ * White-label custom-domain registration (sidecar table — exported like
+ * every other table, but carries hosted-edge semantics that are inert on
+ * self-hosted import; a self-hosted instance re-derives its own edge).
+ * See migration 20260702000000_portal_custom_domain.
+ */
+export interface PortalCustomDomainRow {
+  id: string;
+  tenantId: string;
+  /** Globally unique host (e.g. "portal.xispark.com"). */
+  domain: string;
+  /** Hex token the customer publishes as `_openpartner.<domain>` TXT
+   *  (`openpartner-verify=<token>`). Rotated on registration and on every
+   *  failed (re-)verification cycle. */
+  verificationToken: string;
+  /** Not terminal — the re-verification job demotes verified → failed when
+   *  the TXT proof disappears. */
+  status: PortalDomainStatus;
+  edgeKind: PortalDomainEdgeKind;
+  verifiedAt: Date | null;
+  lastCheckedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export type BillingPlan = 'flex' | 'revshare' | 'enterprise';
 export const BILLING_PLANS: readonly BillingPlan[] = ['flex', 'revshare', 'enterprise'];
 

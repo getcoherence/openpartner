@@ -97,4 +97,5 @@ export const TABLES = {
   PartnerCommission: 'PartnerCommission',
   PartnerPostback: 'PartnerPostback',
   BrandAsset: 'BrandAsset',
+  PortalCustomDomain: 'PortalCustomDomain',
 } as const;

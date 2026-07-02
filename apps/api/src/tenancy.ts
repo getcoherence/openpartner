@@ -21,9 +21,10 @@
  * landing pages) are handled by routing them away from the tenant
  * middleware — they use the privileged `db` directly.
  */
+import { timingSafeEqual } from 'node:crypto';
 import type { Knex } from 'knex';
 import type { NextFunction, Request, Response } from 'express';
-import { DEFAULT_TENANT_ID } from '@openpartner/db';
+import { DEFAULT_TENANT_ID, TABLES, type TenantRow } from '@openpartner/db';
 import { appDb } from './db.js';
 
 export type TenancyMode = 'single' | 'multi';
@@ -82,8 +83,122 @@ declare global {
       db?: Knex;
       /** True when a platform admin is acting (rare; gated separately). */
       platformAdmin?: boolean;
+      /** The tenant's verified custom domain, when it has one — set both
+       *  when the tenant was resolved FROM that host and when a path-based
+       *  request's Tenant row carries one (so emailed links always target
+       *  the custom domain). Absent when the tenant has no custom domain. */
+      tenantCustomDomain?: string;
+      /** Effective white-label entitlement for a host-resolved tenant —
+       *  provisioned flag AND entitling billing state. Branding + Network-
+       *  hiding key on this; host resolution itself does NOT (graceful
+       *  degradation on cancellation, spec §8.1). */
+      tenantWhiteLabelEffective?: boolean;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Host-based tenant resolution (white-label custom domains, spec §4.3/§7.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Hosts that must never resolve a tenant by Host header — they are the
+ * platform's own origins, so requests on them take the path-based branch.
+ * Includes the PORTAL_URL host so a misconfigured Tenant.customDomain can't
+ * shadow the platform origin.
+ */
+export function isPlatformHost(host: string): boolean {
+  if (!host) return true;
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
+  if (host.endsWith('.ondigitalocean.app')) return true;
+  if (host === 'openpartner.dev' || host.endsWith('.openpartner.dev')) return true;
+  const portalUrl = process.env.PORTAL_URL;
+  if (portalUrl) {
+    try {
+      if (host === new URL(portalUrl).hostname.toLowerCase()) return true;
+    } catch {
+      // Malformed PORTAL_URL — fall through; the static list above still holds.
+    }
+  }
+  return false;
+}
+
+/** Constant-time string compare that doesn't leak length. */
+export function timingSafeEqualStr(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) {
+    // Still burn a comparison so length mismatch isn't a faster path.
+    timingSafeEqual(ab, ab);
+    return false;
+  }
+  return timingSafeEqual(ab, bb);
+}
+
+/**
+ * True when the request provably transited OUR edge (the Phase-3 white-label
+ * droplet injects X-OP-Edge-Token and rewrites Host → the platform origin).
+ * With no EDGE_TRUST_SECRET configured (MVP DO-native path), nothing is
+ * edge-trusted and X-Forwarded-Host is never honored.
+ */
+/** Minimal request surface for the host decision — keeps the pure header
+ *  logic testable without constructing an Express Request. */
+export interface HeaderReader {
+  header(name: string): string | undefined;
+}
+
+function edgeTrusted(req: HeaderReader): boolean {
+  const secret = process.env.EDGE_TRUST_SECRET ?? '';
+  if (secret.length === 0) return false;
+  return timingSafeEqualStr(req.header('x-op-edge-token') ?? '', secret);
+}
+
+/**
+ * The host the request is really for. X-Forwarded-Host is honored ONLY
+ * behind a valid edge token — otherwise anyone could curl the platform
+ * origin with a forged XFH and get RLS-scoped to another tenant (§7.5).
+ * NEVER use Express req.hostname here: under `trust proxy` it is itself
+ * derived from the client-spoofable X-Forwarded-Host.
+ */
+export function inboundHost(req: HeaderReader): string {
+  const raw = edgeTrusted(req) ? (req.header('x-forwarded-host') ?? '') : (req.header('host') ?? '');
+  return (raw.split(',')[0] ?? '').split(':')[0]!.toLowerCase().trim();
+}
+
+/**
+ * Custom-domain tenant lookup. Deliberately NOT gated on whiteLabel — a
+ * tenant whose add-on lapsed keeps resolving (portal reverts to platform
+ * branding) until the domain/cert is actually revoked; hard-down would break
+ * login mid-cancellation (§8.1). Runs on the privileged pool: this is a
+ * legitimate cross-tenant host → tenant lookup that RLS would block.
+ */
+async function resolveTenantFromHost(
+  req: Request,
+): Promise<{ id: string; slug: string } | null> {
+  const host = inboundHost(req);
+  if (isPlatformHost(host)) return null;
+  const { db } = await import('./db.js');
+  const row = await db<TenantRow>(TABLES.Tenant)
+    .where({ customDomain: host, status: 'active' })
+    .first(['id', 'slug', 'whiteLabel', 'status', 'pendingDeletionAt']);
+  if (!row) return null;
+  if (row.pendingDeletionAt) {
+    const isRecoveryPath =
+      req.url.includes('/account/restore') || req.url.includes('/account/deletion-status');
+    if (!isRecoveryPath) throw new TenantPendingDeletionError(row.slug);
+  }
+  req.tenantCustomDomain = host;
+  // Effective entitlement drives branding + Network-hiding downstream
+  // (surfaced via /branding and /config/program). Computed here once so
+  // pre-auth surfaces see the same truth as authenticated ones.
+  const { getTenantBillingState } = await import('./billing-plan.js');
+  const { isWhiteLabelEntitled } = await import('./white-label.js');
+  const billing = await getTenantBillingState(db, row.id);
+  req.tenantWhiteLabelEffective = isWhiteLabelEntitled(
+    { whiteLabel: !!row.whiteLabel, status: row.status },
+    billing,
+  );
+  return { id: row.id, slug: row.slug };
 }
 
 /**
@@ -131,23 +246,33 @@ export async function tenantMiddleware(
     tenantId = DEFAULT_TENANT_ID;
     tenantSlug = 'default';
   } else {
-    let resolved: Awaited<ReturnType<typeof resolveTenantFromPath>>;
     try {
-      resolved = await resolveTenantFromPath(req);
+      // Host first: a white-label custom domain serves the SPA at / and the
+      // API at root-relative paths, so there is no /t/<slug>/ prefix to
+      // strip. Path-based resolution stays the fallback for the platform
+      // origin. Host wins when both could apply.
+      const fromHost = await resolveTenantFromHost(req);
+      if (fromHost) {
+        tenantId = fromHost.id;
+        tenantSlug = fromHost.slug;
+      } else {
+        const resolved = await resolveTenantFromPath(req);
+        if (resolved) {
+          tenantId = resolved.id;
+          tenantSlug = resolved.slug;
+          if (resolved.customDomain) req.tenantCustomDomain = resolved.customDomain;
+          // Strip the /t/<slug> (or /api/t/<slug>) prefix so the downstream
+          // routers — all mounted at root — match. Express respects req.url
+          // updates; req.originalUrl stays intact for logging.
+          req.url = resolved.remainder;
+        }
+      }
     } catch (err) {
       if (err instanceof TenantPendingDeletionError) {
         res.status(410).json({ error: 'tenant_pending_deletion', slug: err.slug });
         return;
       }
       throw err;
-    }
-    if (resolved) {
-      tenantId = resolved.id;
-      tenantSlug = resolved.slug;
-      // Strip the /t/<slug> (or /api/t/<slug>) prefix so the downstream
-      // routers — all mounted at root — match. Express respects req.url
-      // updates; req.originalUrl stays intact for logging.
-      req.url = resolved.remainder;
     }
   }
 
@@ -260,7 +385,7 @@ export async function tenantMiddleware(
  */
 async function resolveTenantFromPath(
   req: Request,
-): Promise<{ id: string; slug: string; remainder: string } | null> {
+): Promise<{ id: string; slug: string; remainder: string; customDomain: string | null } | null> {
   // Path patterns:
   //   /t/<slug>/...    — portal under a tenant
   //   /api/t/<slug>/...— api under a tenant (note: ingress strips /api)
@@ -279,7 +404,7 @@ async function resolveTenantFromPath(
   // any tenant by slug, not just the current one. RLS would block this
   // on the appDb pool.
   const { db } = await import('./db.js');
-  const row = await db('Tenant').where({ slug, status: 'active' }).first(['id', 'slug', 'pendingDeletionAt']);
+  const row = await db('Tenant').where({ slug, status: 'active' }).first(['id', 'slug', 'pendingDeletionAt', 'customDomain']);
   if (!row) return null;
   // Tenants in the deletion grace window are accessible only via the
   // explicit recovery routes — anything else 410s on the way out so a
@@ -298,5 +423,6 @@ async function resolveTenantFromPath(
     id: row.id as string,
     slug: row.slug as string,
     remainder: match[2] || '/',
+    customDomain: (row.customDomain as string | null) ?? null,
   };
 }
