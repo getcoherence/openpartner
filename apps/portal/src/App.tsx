@@ -67,6 +67,7 @@ import { LandingPage } from './pages/Landing.js';
 import { SignupPage } from './pages/Signup.js';
 import { SigninPage } from './pages/Signin.js';
 import { WorkspacesPage } from './pages/Workspaces.js';
+import { AddBrandPage } from './pages/AddBrand.js';
 import { PlatformMagicLandingPage } from './pages/auth/PlatformMagicLanding.js';
 import { CreatorSignupPage } from './pages/creator/CreatorSignup.js';
 import { CreatorSigninPage } from './pages/creator/CreatorSignin.js';
@@ -115,6 +116,7 @@ export function App() {
             <Route path="/signup" element={<SignupPage />} />
             <Route path="/signin" element={<SigninPage />} />
             <Route path="/workspaces" element={<WorkspacesPage />} />
+            <Route path="/brands/new" element={<AddBrandPage />} />
             {/* Platform-identity magic link (one email regardless of how many brands you admin). */}
             <Route path="/auth/magic" element={<PlatformMagicLandingPage />} />
             {/* Platform-level Creator surfaces — separate auth from vendor admins. */}
@@ -839,14 +841,19 @@ function IdentitySwitcher({ principal }: { principal: Principal }) {
                 <Plus size={14} />
                 Add another account
               </a>
+              {/* Honest label (§13): a new brand is its own independently-
+                  billed tenant that shares this sign-in — not a free
+                  addition to the current bill. The authenticated flow
+                  reuses the platform email so the brand can never be
+                  orphaned from this switcher. */}
               <a
-                href="/signup"
+                href="/brands/new"
                 style={switcherActionStyle}
                 onMouseEnter={switcherActionHoverOn}
                 onMouseLeave={switcherActionHoverOff}
               >
                 <Plus size={14} />
-                Add another brand to this account
+                Create a new brand (own plan)
               </a>
               <button
                 onClick={() => void signOut(false)}

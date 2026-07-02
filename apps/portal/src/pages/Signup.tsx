@@ -50,7 +50,10 @@ export function SignupPage() {
           displayName: displayName.trim(),
           adminEmail: adminEmail.trim().toLowerCase(),
           adminName: adminName.trim(),
-          ...(plan ? { plan } : {}),
+          // Enterprise is sales-led: the API refuses self-declared
+          // enterprise (it would bypass the plan-required gate), so the
+          // CTA only records intent visually; ops set the plan on close.
+          ...(plan && plan !== 'enterprise' ? { plan } : {}),
         }),
       });
       const data = (await res.json()) as Record<string, unknown>;

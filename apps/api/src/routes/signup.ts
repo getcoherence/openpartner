@@ -20,7 +20,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
-import { TABLES, BILLING_PLANS, type AdminRow, type TenantRow } from '@openpartner/db';
+import { TABLES, type AdminRow, type TenantRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { issueMagicLink } from '../auth-sessions.js';
@@ -45,9 +45,11 @@ const signupSchema = z.object({
   adminName: z.string().trim().min(1).max(120),
   /** Optional billing plan picked from the marketing pricing CTAs. Stored
    *  on Tenant.billingPlan; the actual subscription is created when the
-   *  admin completes Stripe Checkout post-activation. Enterprise tenants
-   *  set this for record-keeping but never run through Checkout. */
-  plan: z.enum(BILLING_PLANS as readonly [string, ...string[]]).optional(),
+   *  admin completes Stripe Checkout post-activation. Deliberately NOT
+   *  'enterprise': that plan is sales-led AND `hasActivePlan()` trusts it
+   *  without a Stripe subscription, so accepting it on a public endpoint
+   *  would let anyone self-declare past the plan-required gate (§13). */
+  plan: z.enum(['flex', 'revshare']).optional(),
 });
 
 class SignupGuardError extends Error {
@@ -182,83 +184,95 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
     });
   }
 
-  // Auto-enroll hosted brand on the Network. The hosted value prop
-  // INCLUDES partner discovery; new brands shouldn't have to find a
-  // "connect" button to use what they signed up for. Visibility is
-  // controlled by whether they publish offerings, not by membership.
-  //
-  // If NETWORK_ADMIN_API_KEY is set we take the admin fast path — Network
-  // skips its email verify (we just verified the brand admin via our own
-  // magic link in the next step) and returns the vendorToken inline so
-  // membership is `enabled: true` from t=0.
-  //
-  // Otherwise we fall back to the email-verify flow (used by self-host
-  // and any operator who didn't wire the admin key).
-  let networkStatus: 'active' | 'pending' | 'skipped' | 'failed' = 'skipped';
-  let networkVendorId: string | null = null;
-  const networkUrl = process.env.NETWORK_URL;
-  const networkAdminKey = process.env.NETWORK_ADMIN_API_KEY;
-  if (networkUrl) {
-    try {
-      const { signupWithNetwork } = await import('../network-client.js');
-      const { createApiKeyRow } = await import('../auth.js');
-      const { NETWORK_FEDERATION_SCOPES } = await import('./api-keys.js');
-      const { saveNetworkMembership } = await import('../network-client.js');
-
-      const scoped = await createApiKeyRow(db, {
-        tenantId,
-        scopes: [...NETWORK_FEDERATION_SCOPES],
-        label: 'network_federation',
-      });
-      const protoHost = `${req.protocol}://${req.get('host') ?? ''}`;
-      const signupResult = await signupWithNetwork({
-        networkUrl,
-        // /api comes BEFORE /t/<slug> so the DO App Platform ingress
-        // (/api → api component) actually routes to us. The tenant
-        // middleware accepts both /t/<slug>/* and /api/t/<slug>/* via
-        // its regex, so the api still resolves the tenant correctly.
-        instanceUrl: `${protoHost}/api/t/${slug}`,
-        scopedKey: scoped.plaintext,
-        displayName: body.data.displayName,
-        contactEmail: adminEmail,
-        contactName: body.data.adminName,
-        tier: 'hosted',
-        portalCallbackUrl: `${protoHost}/t/${slug}/admin/network/complete`,
-        adminAuthToken: networkAdminKey,
-      });
-      networkVendorId = signupResult.vendorId;
-      if (signupResult.status === 'active') {
-        await saveNetworkMembership(db, tenantId, {
-          enabled: true,
-          networkUrl,
-          vendorToken: signupResult.vendorToken,
-          scopedKeyId: scoped.id,
-          autoEnroll: true,
-          vendorId: signupResult.vendorId,
-        });
-        networkStatus = 'active';
-      } else {
-        // Email-verify path — vendorToken comes back at complete-connect.
-        await saveNetworkMembership(db, tenantId, {
-          enabled: false,
-          networkUrl,
-          scopedKeyId: scoped.id,
-          autoEnroll: true,
-          vendorId: signupResult.vendorId,
-        });
-        networkStatus = 'pending';
-      }
-    } catch (err) {
-      console.error('[signup] auto-network-register failed', err);
-      networkStatus = 'failed';
-    }
-  }
+  const network = await autoEnrollBrandOnNetwork({
+    tenantId,
+    slug,
+    displayName: body.data.displayName,
+    contactEmail: adminEmail,
+    contactName: body.data.adminName,
+    protoHost: `${req.protocol}://${req.get('host') ?? ''}`,
+  });
 
   res.status(201).json({
     ok: true,
     tenant: { id: tenantId, slug },
     mailDelivered: true,
     createdAt: now,
-    network: { status: networkStatus, vendorId: networkVendorId },
+    network,
   });
 });
+
+/**
+ * Auto-enroll a hosted brand on the Network. The hosted value prop INCLUDES
+ * partner discovery; new brands shouldn't have to find a "connect" button to
+ * use what they signed up for. Visibility is controlled by whether they
+ * publish offerings, not by membership.
+ *
+ * If NETWORK_ADMIN_API_KEY is set we take the admin fast path — Network
+ * skips its email verify and returns the vendorToken inline so membership is
+ * `enabled: true` from t=0. Otherwise we fall back to the email-verify flow
+ * (used by self-host and any operator who didn't wire the admin key).
+ *
+ * Shared by public /signup and the authenticated add-brand flow (§13).
+ */
+export async function autoEnrollBrandOnNetwork(opts: {
+  tenantId: string;
+  slug: string;
+  displayName: string;
+  contactEmail: string;
+  contactName: string;
+  protoHost: string;
+}): Promise<{ status: 'active' | 'pending' | 'skipped' | 'failed'; vendorId: string | null }> {
+  const networkUrl = process.env.NETWORK_URL;
+  const networkAdminKey = process.env.NETWORK_ADMIN_API_KEY;
+  if (!networkUrl) return { status: 'skipped', vendorId: null };
+  try {
+    const { signupWithNetwork, saveNetworkMembership } = await import('../network-client.js');
+    const { createApiKeyRow } = await import('../auth.js');
+    const { NETWORK_FEDERATION_SCOPES } = await import('./api-keys.js');
+
+    const scoped = await createApiKeyRow(db, {
+      tenantId: opts.tenantId,
+      scopes: [...NETWORK_FEDERATION_SCOPES],
+      label: 'network_federation',
+    });
+    const signupResult = await signupWithNetwork({
+      networkUrl,
+      // /api comes BEFORE /t/<slug> so the DO App Platform ingress
+      // (/api → api component) actually routes to us. The tenant
+      // middleware accepts both /t/<slug>/* and /api/t/<slug>/* via
+      // its regex, so the api still resolves the tenant correctly.
+      instanceUrl: `${opts.protoHost}/api/t/${opts.slug}`,
+      scopedKey: scoped.plaintext,
+      displayName: opts.displayName,
+      contactEmail: opts.contactEmail,
+      contactName: opts.contactName,
+      tier: 'hosted',
+      portalCallbackUrl: `${opts.protoHost}/t/${opts.slug}/admin/network/complete`,
+      adminAuthToken: networkAdminKey,
+    });
+    if (signupResult.status === 'active') {
+      await saveNetworkMembership(db, opts.tenantId, {
+        enabled: true,
+        networkUrl,
+        vendorToken: signupResult.vendorToken,
+        scopedKeyId: scoped.id,
+        autoEnroll: true,
+        vendorId: signupResult.vendorId,
+      });
+      return { status: 'active', vendorId: signupResult.vendorId };
+    }
+    // Email-verify path — vendorToken comes back at complete-connect.
+    await saveNetworkMembership(db, opts.tenantId, {
+      enabled: false,
+      networkUrl,
+      scopedKeyId: scoped.id,
+      autoEnroll: true,
+      vendorId: signupResult.vendorId,
+    });
+    return { status: 'pending', vendorId: signupResult.vendorId };
+  } catch (err) {
+    console.error('[signup] auto-network-register failed', err);
+    return { status: 'failed', vendorId: null };
+  }
+}

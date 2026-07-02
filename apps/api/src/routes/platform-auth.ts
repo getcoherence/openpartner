@@ -11,9 +11,14 @@
 
 import { Router, type Request } from 'express';
 import { z } from 'zod';
+import { ulid } from 'ulid';
 import { TABLES, type AdminRow, type PlatformSessionRow, type TenantRow } from '@openpartner/db';
 import { db, appDb } from '../db.js';
 import { consumeMagicLink, createSession, SESSION_COOKIE_NAME, sessionCookieOptions } from '../auth-sessions.js';
+import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
+import { newTrialEnd } from '../billing-plan.js';
+import { ipRateLimit } from '../middleware/rate-limit.js';
+import { autoEnrollBrandOnNetwork } from './signup.js';
 import {
   attachSessionToBundle,
   createPlatformBundle,
@@ -170,6 +175,122 @@ platformAuthRouter.get('/me/workspaces', async (req, res) => {
   }));
 
   res.json({ email: session.email, workspaces });
+});
+
+// -------- Create another brand under this platform identity (§13) --------
+
+const addBrandSchema = z.object({
+  slug: z
+    .string()
+    .trim()
+    .min(3)
+    .max(30)
+    .regex(/^[a-z0-9-]+$/, 'slug must be lowercase alphanumerics or hyphens'),
+  displayName: z.string().trim().min(1).max(120),
+  /** REQUIRED — every brand is its own independently-billed tenant, so the
+   *  flow forces a plan choice up front (§13.3c). Enterprise is sales-led
+   *  and deliberately not self-serve: `hasActivePlan()` trusts it without
+   *  a Stripe subscription, so accepting it here would let anyone
+   *  self-declare past the plan-required gate. */
+  plan: z.enum(['flex', 'revshare']),
+});
+
+class AddBrandError extends Error {
+  constructor(public code: string) {
+    super(code);
+  }
+}
+
+const addBrandLimit = ipRateLimit({ name: 'add-brand', max: 10, windowMs: 60_000 });
+
+/**
+ * Authenticated add-brand. Replaces the old switcher link to the PUBLIC
+ * /signup form, which re-asked for an email and orphaned the new brand from
+ * the switcher whenever the typed email differed from the platform-session
+ * email (/me/workspaces filters by email). Here the first Admin is ALWAYS
+ * the platform identity — mismatch impossible — and the Admin is created
+ * activated (the platform session already proved control of the inbox), so
+ * the brand appears in the switcher and is enterable immediately.
+ */
+platformAuthRouter.post('/me/brands', addBrandLimit, async (req, res) => {
+  if (getTenancyMode() !== 'multi') {
+    return res.status(400).json({ error: 'not_available_in_single_tenant' });
+  }
+  const cookie = readPlatformCookie(req);
+  if (!cookie) return res.status(401).json({ error: 'no_platform_session' });
+  const platform = await resolvePlatformSession(db, cookie);
+  if (!platform) return res.status(401).json({ error: 'invalid_or_expired_session' });
+
+  const body = addBrandSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  const slug = body.data.slug.toLowerCase();
+  if (RESERVED_SLUGS.has(slug)) return res.status(409).json({ error: 'slug_reserved' });
+
+  const email = platform.email;
+  // Reuse the person's display name from any brand they already admin;
+  // fall back to the mailbox name.
+  const prior = await db<AdminRow>(TABLES.Admin)
+    .where({ email })
+    .orderBy('createdAt', 'desc')
+    .first(['name']);
+  const adminName = prior?.name ?? email.split('@')[0]!;
+
+  const tenantId = ulid();
+  const adminId = ulid();
+  const now = new Date();
+  try {
+    await db.transaction(async (trx) => {
+      const existing = await trx<TenantRow>(TABLES.Tenant).where({ slug }).first(['id']);
+      if (existing) throw new AddBrandError('slug_taken');
+      await trx<TenantRow>(TABLES.Tenant).insert({
+        id: tenantId,
+        slug,
+        displayName: body.data.displayName,
+        status: 'active',
+        billingPlan: body.data.plan as TenantRow['billingPlan'],
+        // Same evaluation-window semantics as public signup: the trial
+        // starts now, and firstTrialActivatedAt prevents a second trial
+        // via post-trial Checkout.
+        trialEndsAt: newTrialEnd(),
+        firstTrialActivatedAt: now,
+        metadata: { createdBy: 'add_brand', createdByEmail: email } as unknown as never,
+      });
+      await trx<AdminRow>(TABLES.Admin).insert({
+        id: adminId,
+        tenantId,
+        email,
+        name: adminName,
+        activatedAt: now,
+      });
+    });
+  } catch (err) {
+    if (err instanceof AddBrandError) return res.status(409).json({ error: err.code });
+    if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505') {
+      return res.status(409).json({ error: 'slug_taken' });
+    }
+    throw err;
+  }
+
+  const network = await autoEnrollBrandOnNetwork({
+    tenantId,
+    slug,
+    displayName: body.data.displayName,
+    contactEmail: email,
+    contactName: adminName,
+    protoHost: `${req.protocol}://${req.get('host') ?? ''}`,
+  });
+
+  res.status(201).json({
+    ok: true,
+    tenant: { id: tenantId, slug },
+    home: `/t/${slug}/`,
+    // The brand has a plan CHOICE but not yet a subscription — the SPA
+    // routes to billing checkout next. Partner onboarding stays 402-gated
+    // (plan-required backstop) until checkout completes.
+    checkoutRequired: true,
+    network,
+  });
 });
 
 // -------- Enter a workspace: trade platform session for a tenant Session --------
