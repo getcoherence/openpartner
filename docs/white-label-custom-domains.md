@@ -659,3 +659,26 @@ Each brand = its own fully-isolated, independently-billed program. RevShare = 3%
 
 ### 13.5 Immediate recovery for an already-orphaned brand
 Sign in at `/t/<slug>/login` with the email the brand's admin was actually created under (the inbox that received its activation link). If that differs from the account email, it confirms the mismatch and the brand will appear under a *separate* identity in the switcher.
+
+---
+
+## 14. Phase 1 — implementation status (shipped 2026-07-02)
+
+Branch `feat/white-label-phase0` (7 commits on top of Phase 0). **Verified: API + portal typecheck clean; full test suite 176/176 green including the DB-backed integration tier** (local Postgres migrated with the new migration; test env aligned with CI — see below).
+
+**Shipped (spec § → what landed):**
+- **§3.2/§3.3** `PortalCustomDomain` migration (`20260702000000`) with RLS + `openpartner_app` grant; row type + `TABLES` entry; added to `EXPORTABLE_TABLES` as a documented sidecar.
+- **§4.3/§7.5** Host-based `resolveTenant` in `tenancy.ts`: custom-domain host lookup ahead of path-based resolution; `X-Forwarded-Host` honored only behind a timing-safe `X-OP-Edge-Token` match (`EDGE_TRUST_SECRET`); `isPlatformHost` guard; `req.tenantWhiteLabelEffective`; spoof regression tests. Host resolver NOT gated on `whiteLabel` (graceful cancellation, §8.1).
+- **§4.4/§7.1** `portal-url.ts` `getPortalBaseUrl(tenant)` + `buildMagicLinkUrl(token, tenant)` chokepoint across all **9** callers on this branch (spec said 8 for `multi-tenant`; this line also has `signin.ts`). Middleware stashes `Tenant.customDomain` on both host- and path-resolved requests so links always target the custom domain. Stripe redirect URLs untouched (client-origin-derived).
+- **§4.5** CORS origin callback: seed allowlist ∪ cached verified custom domains (60s TTL, invalidated on verify/revoke, DB failure = deny); boot-throw + no-reflection invariants pinned by test.
+- **§4.1/§4.2/§7.6/§8.1** `portal-domains.ts` lifecycle: public `GET /portal-domain-allowed` ask-gate (verified + fresh + entitled), admin `/config/domain` register/verify/list/delete (effective-entitlement-gated, reserved-host + apex rejection, global-unique, token rotation, verify always re-checks DNS), 7-day staleness TTL, daily re-verification sweep + white-label entitlement sweep (04:45/04:55 UTC; selfhost skips). DO-native edge removal is a logged hook point — **Phase 2 wires the DO API**.
+- **§4.7/§5.2** Public `GET /branding` (tenant by host or path; platform scope → nulls) + portal `usePublicBrand()`; pre-auth login/magic pages now render tenant brand (closes the Phase-0 residual gap; neutral placeholder while loading, monogram for WL-without-logo).
+- **SPA custom-domain routing** (not explicit in spec, required for §4.3+§4.4 atomicity): `/branding` returns `tenantSlug`; on a host-resolved origin the portal mounts `/login`, `/auth/magic`, and the Shell at root instead of the platform landing table.
+- **§13.3** Authenticated add-brand: `POST /me/brands` (platform session; first Admin = session email, created activated; plan **required**, flex|revshare only), portal `/brands/new` page with per-brand billing copy → workspace enter → `admin/billing` checkout; switcher item renamed "Create a new brand (own plan)". Public `/signup` no longer accepts self-declared `enterprise` (it would bypass the plan-required gate).
+- **§7.3** Regression test pinning `sessionCookieOptions()` domain-less. `.env.example`: `EDGE_TRUST_SECRET`, `DO_APP_DOMAIN_ALIAS`, `WHITELABEL_DROPLET_HOST`.
+
+**Test-environment note:** the DB-backed suites previously "passed in CI, unrunnable locally". A vitest setup file now pins `OPENPARTNER_MODE=selfhost` (CI parity — a local `.env` saying `flat` tripped the §13 plan gate) and resets the seeded default tenant's billing columns per file. `docker compose up -d postgres && pnpm migrate` then `pnpm --filter @openpartner/api test` runs the whole suite locally.
+
+**Deferred to Phase 2 (xispark launch):** DO header-capture precondition + e2e (§6.3.1), `app.openpartner.dev` registered as app domain (§6.3.2), registering `portal.xispark.com` on the app, wiring DO-API domain removal into the sweeps/webhook, manual ops step (§9).
+
+**Deferred to Phase 3:** admin domain-wizard UI (the API is ready; no portal Settings surface yet), dedicated droplet, Stripe white-label add-on price + webhook toggle (§8.2), Network read-path filter (§7.4.2), `docs/white-label.md` runbook.
