@@ -26,6 +26,7 @@ import {
 import { getMailer } from '../mailer.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { adminSigninEmail, buildMagicLinkUrl, partnerSigninEmail } from '../email-templates.js';
+import { linkTenantOf } from '../portal-url.js';
 import { tenantOf } from '../tenancy.js';
 
 export const partnerAuthRouter = Router();
@@ -56,7 +57,7 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
       principalKind: 'admin',
       principalId: admin.id,
     });
-    const tmpl = adminSigninEmail(admin.name, buildMagicLinkUrl(issued.plaintext, req.tenantSlug));
+    const tmpl = adminSigninEmail(admin.name, buildMagicLinkUrl(issued.plaintext, linkTenantOf(req)));
     await getMailer().send({ db, tenantId }, {
       to: email,
       subject: tmpl.subject,
@@ -84,7 +85,7 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
     });
     const { resolveBrandName } = await import('../brand-name.js');
     const brandName = await resolveBrandName(db, tenantId);
-    const tmpl = partnerSigninEmail(partner.name, buildMagicLinkUrl(issued.plaintext, req.tenantSlug), brandName);
+    const tmpl = partnerSigninEmail(partner.name, buildMagicLinkUrl(issued.plaintext, linkTenantOf(req)), brandName);
     await getMailer().send({ db, tenantId }, {
       to: email,
       subject: tmpl.subject,

@@ -5,13 +5,18 @@
  * templating engine.
  */
 
-export function buildMagicLinkUrl(token: string, tenantSlug?: string | null): string {
-  const base = (process.env.PORTAL_URL ?? 'http://localhost:5673').replace(/\/$/, '');
-  // In multi-tenant mode the SPA's auth endpoints live under /t/<slug>/.
-  // Pass the slug so the link drops the recipient on the right tenant
-  // path; the SPA's api client uses the URL prefix to scope its calls.
-  const tenantPath = tenantSlug ? `/t/${tenantSlug}` : '';
-  return `${base}${tenantPath}/auth/magic?token=${encodeURIComponent(token)}`;
+import { getPortalBaseUrl, type PortalLinkTenant } from './portal-url.js';
+
+/**
+ * The ONE place magic-link URLs are built (spec §4.4). Tenant-aware: a
+ * white-label tenant's links land on its custom domain (where the host-only
+ * session cookie will be set); path-based tenants get /t/<slug>/ links; the
+ * platform/single-host case gets a bare PORTAL_URL link. Note that a
+ * freshly-signed-up white-label tenant has no customDomain yet — its first
+ * admin invite is necessarily path-based until the domain verifies.
+ */
+export function buildMagicLinkUrl(token: string, tenant?: PortalLinkTenant | null): string {
+  return `${getPortalBaseUrl(tenant)}/auth/magic?token=${encodeURIComponent(token)}`;
 }
 
 export interface EmailTemplate {

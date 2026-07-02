@@ -29,6 +29,7 @@ import { TABLES, type ConfigRow, type PartnerRow } from '@openpartner/db';
 import { issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
 import { buildMagicLinkUrl, partnerInviteEmail } from '../email-templates.js';
+import { linkTenantOf } from '../portal-url.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { tenantOf } from '../tenancy.js';
 import { getNetworkMembership, pushPartnerUpsert } from '../network-client.js';
@@ -163,7 +164,7 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
   });
   const { resolveBrandName } = await import('../brand-name.js');
   const brandName = await resolveBrandName(db, tenantId);
-  const tmpl = partnerInviteEmail(partner.name, buildMagicLinkUrl(issued.plaintext, req.tenantSlug), brandName);
+  const tmpl = partnerInviteEmail(partner.name, buildMagicLinkUrl(issued.plaintext, linkTenantOf(req)), brandName);
   try {
     await getMailer().send({ db, tenantId }, {
       to: email,

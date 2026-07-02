@@ -49,6 +49,7 @@ import { sessionHomeRouter } from './routes/session-home.js';
 import { platformAuthRouter } from './routes/platform-auth.js';
 import { tenantMiddleware } from './tenancy.js';
 import { trialGate } from './middleware/trial-gate.js';
+import { corsOriginDecider } from './cors-origins.js';
 
 export function createApp(options: { enableLogger?: boolean } = {}) {
   const app = express();
@@ -80,9 +81,14 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   if (corsOrigins.length === 0 && process.env.NODE_ENV === 'production') {
     throw new Error('PORTAL_URL must be set in production so CORS has an origin allowlist');
   }
+  // Origin callback = static seed allowlist ∪ cached verified custom
+  // domains (white-label; see cors-origins.ts). Still no `origin: true` —
+  // an origin is echoed back only after it matches one of the two sets;
+  // anything else gets no Access-Control-Allow-Origin at all. Requests
+  // without an Origin header (same-origin, curl) skip the DB entirely.
   app.use(
     cors({
-      origin: corsOrigins,
+      origin: corsOriginDecider(new Set(corsOrigins)),
       credentials: true,
     }),
   );
