@@ -62,3 +62,36 @@ export function useBrand(): Brand {
     isLoading,
   };
 }
+
+/** Shape of the public `GET /branding` bootstrap (no auth). */
+export interface PublicBranding {
+  programName: string | null;
+  logoUrl: string | null;
+  brandColor: string | null;
+  supportEmail: string | null;
+  programTermsUrl: string | null;
+  whiteLabel: boolean;
+}
+
+/**
+ * PRE-AUTH brand accessor for login / magic-link landing pages. Hits the
+ * public `/branding` endpoint, which resolves the tenant by custom-domain
+ * host or the /t/<slug>/ URL prefix — so a white-label tenant's sign-in
+ * page carries its brand before any session exists. On platform-level
+ * pages (no tenant in the URL / platform host) the API returns nulls and
+ * this falls back to the OpenPartner default.
+ */
+export function usePublicBrand(): Brand {
+  const { data, isLoading } = useQuery({
+    queryKey: ['public-branding'],
+    queryFn: () => api<PublicBranding>('/branding'),
+    staleTime: 60_000,
+  });
+  return {
+    programName: data?.programName || DEFAULT_BRAND,
+    logoUrl: data?.logoUrl ?? null,
+    supportEmail: data?.supportEmail || null,
+    whiteLabel: data?.whiteLabel ?? false,
+    isLoading,
+  };
+}

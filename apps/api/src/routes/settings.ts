@@ -119,6 +119,37 @@ settingsRouter.get('/config/program', requireAuth, async (req, res) => {
   res.json(await readSettings(db, tenantId));
 });
 
+/**
+ * PUBLIC brand bootstrap (spec §4.7/§5.2) — deliberately unauthenticated so
+ * pre-auth surfaces (login, magic-link landing) can render the tenant's
+ * brand instead of platform branding. The tenant comes from tenantMiddleware
+ * (custom-domain host or /t/<slug>/ path); a request with no tenant scope
+ * (platform origin, marketing pages) gets platform defaults. Returns brand
+ * fields only for the resolved tenant — the §4.3 edge-trust guard is what
+ * prevents forging a host to read another tenant's brand context.
+ */
+settingsRouter.get('/branding', async (req, res) => {
+  if (!req.db || !req.tenantId) {
+    return res.json({
+      programName: null,
+      logoUrl: null,
+      brandColor: null,
+      supportEmail: null,
+      programTermsUrl: null,
+      whiteLabel: false,
+    });
+  }
+  const s = await readSettings(req.db, req.tenantId);
+  res.json({
+    programName: s.programName,
+    logoUrl: s.logoUrl,
+    brandColor: s.brandColor,
+    supportEmail: s.supportEmail,
+    programTermsUrl: s.programTermsUrl,
+    whiteLabel: s.whiteLabel,
+  });
+});
+
 /** Only admins write. Empty strings clear fields. */
 settingsRouter.post('/config/program', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
