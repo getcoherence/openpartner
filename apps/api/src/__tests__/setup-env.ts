@@ -9,6 +9,10 @@
  * test files that exercise hosted billing set their own mode at module
  * scope, which runs after this.
  */
+// Top-level await needs module status, and dynamic import() alone doesn't
+// confer it (TS1375).
+export {};
+
 process.env.OPENPARTNER_MODE = 'selfhost';
 
 // The DB-backed suites share one Postgres and already wipe product tables
