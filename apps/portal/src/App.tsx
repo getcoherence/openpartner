@@ -103,14 +103,41 @@ export function App() {
     staleTime: Infinity,
   });
 
-  if (install.isLoading) return null;
-  const needsSetup = install.data?.needsSetup ?? false;
+  // White-label custom-domain probe. On portal.<tenant>.com the API
+  // resolves the tenant from the Host header, so a PREFIX-LESS /api/branding
+  // returns the tenant's slug — on the platform origin it returns null.
+  // A host-resolved tenant means the whole origin belongs to that tenant:
+  // mount the Shell at root (like single-tenant) instead of the platform
+  // landing/signup table, so emailed links to /auth/magic and deep links
+  // like /admin/billing work without a /t/<slug>/ prefix.
   const isMultiTenant = install.data?.reason === 'multi_tenant';
+  const hostBrand = useQuery({
+    queryKey: ['host-tenant-probe'],
+    enabled: isMultiTenant,
+    queryFn: async () => {
+      const r = await fetch('/api/branding', { credentials: 'include' });
+      if (!r.ok) return { tenantSlug: null };
+      return (await r.json()) as { tenantSlug: string | null };
+    },
+    staleTime: Infinity,
+  });
+
+  if (install.isLoading) return null;
+  if (isMultiTenant && hostBrand.isPending) return null;
+  const needsSetup = install.data?.needsSetup ?? false;
+  const hostTenantSlug = isMultiTenant ? (hostBrand.data?.tenantSlug ?? null) : null;
 
   return (
     <BrowserRouter>
       <Routes>
-        {isMultiTenant ? (
+        {isMultiTenant && hostTenantSlug ? (
+          <>
+            {/* Custom-domain origin — the whole host is one tenant. */}
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/auth/magic" element={<MagicLandingPage />} />
+            <Route path="/*" element={<Shell />} />
+          </>
+        ) : isMultiTenant ? (
           <>
             <Route path="/" element={<LandingPage />} />
             <Route path="/signup" element={<SignupPage />} />

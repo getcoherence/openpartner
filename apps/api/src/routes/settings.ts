@@ -131,6 +131,7 @@ settingsRouter.get('/config/program', requireAuth, async (req, res) => {
 settingsRouter.get('/branding', async (req, res) => {
   if (!req.db || !req.tenantId) {
     return res.json({
+      tenantSlug: null,
       programName: null,
       logoUrl: null,
       brandColor: null,
@@ -141,6 +142,11 @@ settingsRouter.get('/branding', async (req, res) => {
   }
   const s = await readSettings(req.db, req.tenantId);
   res.json({
+    // The resolved tenant slug. A prefix-less request (the SPA probes bare
+    // /api/branding) only carries a tenant when the HOST resolved one —
+    // i.e. the SPA is being served from a white-label custom domain — so
+    // the portal keys its root-mounted tenant routing on this.
+    tenantSlug: req.tenantSlug ?? null,
     programName: s.programName,
     logoUrl: s.logoUrl,
     brandColor: s.brandColor,
