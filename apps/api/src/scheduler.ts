@@ -37,6 +37,7 @@ import { drainOutbox, reportNetworkPayoutsToNetwork, sendHeartbeat } from './net
 import { getMode } from './stripe.js';
 import { sweepCampaignEndNotifications } from './campaign-end-notifications.js';
 import { autoApproveMatureCommissions } from './commission-auto-approve.js';
+import { reverifyPortalDomains, sweepWhiteLabelEntitlement } from './portal-domains.js';
 
 interface ScheduledJob {
   name: string;
@@ -130,6 +131,28 @@ const JOBS: ScheduledJob[] = [
     cronExpr: '0 9 * * *',
     description: 'Email brand admins + participating partners ~7 days before a campaign ends (daily 09:00 UTC)',
     handler: async () => sweepCampaignEndNotifications(),
+  },
+  {
+    name: 'portal-domain-reverify',
+    cronExpr: '45 4 * * *',
+    description:
+      'Re-check the _openpartner ownership TXT for every verified white-label domain; demote + revoke on missing proof (daily 04:45 UTC)',
+    handler: async () => {
+      // Selfhost has no hosted white-label edge to police — the operator
+      // owns their own domain and branding.
+      if (getMode() === 'selfhost') return { skipped: 'selfhost' };
+      return reverifyPortalDomains(db);
+    },
+  },
+  {
+    name: 'white-label-entitlement-sweep',
+    cronExpr: '55 4 * * *',
+    description:
+      'Revoke custom-domain routing for tenants whose effective white-label entitlement lapsed — incl. trials that expired without subscribing (daily 04:55 UTC)',
+    handler: async () => {
+      if (getMode() === 'selfhost') return { skipped: 'selfhost' };
+      return sweepWhiteLabelEntitlement(db);
+    },
   },
   {
     name: 'commission-auto-approve',
