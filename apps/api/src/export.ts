@@ -28,6 +28,10 @@ export const EXPORTABLE_TABLES = [
   TABLES.Attribution,
   TABLES.Commission,
   TABLES.Payout,
+  // Sidecar (hosted white-label custom domains). Exported losslessly;
+  // edge/billing semantics are inert on self-hosted import — the rows are
+  // domain history, and a self-hosted instance derives its own edge.
+  TABLES.PortalCustomDomain,
 ] as const;
 
 export type ExportableTable = (typeof EXPORTABLE_TABLES)[number];

@@ -44,11 +44,13 @@ import { partnerPostbacksRouter } from './routes/partner-postbacks.js';
 import { onboardingRouter } from './routes/onboarding.js';
 import { creatorPortalRouter } from './routes/creator-portal.js';
 import { signinRouter } from './routes/signin.js';
+import { portalDomainGateRouter, portalDomainsRouter } from './routes/portal-domains.js';
 import { clicksRouter } from './routes/clicks.js';
 import { sessionHomeRouter } from './routes/session-home.js';
 import { platformAuthRouter } from './routes/platform-auth.js';
 import { tenantMiddleware } from './tenancy.js';
 import { trialGate } from './middleware/trial-gate.js';
+import { corsOriginDecider } from './cors-origins.js';
 
 export function createApp(options: { enableLogger?: boolean } = {}) {
   const app = express();
@@ -80,9 +82,14 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   if (corsOrigins.length === 0 && process.env.NODE_ENV === 'production') {
     throw new Error('PORTAL_URL must be set in production so CORS has an origin allowlist');
   }
+  // Origin callback = static seed allowlist ∪ cached verified custom
+  // domains (white-label; see cors-origins.ts). Still no `origin: true` —
+  // an origin is echoed back only after it matches one of the two sets;
+  // anything else gets no Access-Control-Allow-Origin at all. Requests
+  // without an Origin header (same-origin, curl) skip the DB entirely.
   app.use(
     cors({
-      origin: corsOrigins,
+      origin: corsOriginDecider(new Set(corsOrigins)),
       credentials: true,
     }),
   );
@@ -185,6 +192,9 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(sessionHomeRouter);
   app.use(platformAuthRouter);
   app.use(metricsRouter);
+  // Cert/entitlement allow-gate for white-label custom domains — public,
+  // server-to-server (the Phase-3 Caddy droplet's on_demand_tls `ask`).
+  app.use(portalDomainGateRouter);
   // Creator portal is platform-level (no tenant), proxies to Network.
   // Mount before tenantMiddleware so it's reachable from app.openpartner.dev/*
   // without a /t/<slug>/ prefix.
@@ -205,6 +215,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
 
   app.use(authRouter);
   app.use(partnerAuthRouter);
+  app.use(portalDomainsRouter);
   app.use(partnerSignupRouter);
   app.use(adminsRouter);
   app.use(settingsRouter);

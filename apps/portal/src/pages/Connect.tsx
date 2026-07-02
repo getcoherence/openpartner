@@ -2,6 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { CreditCard, CheckCircle2, XCircle } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { theme } from '../theme.js';
+import { useBrand } from '../lib/useBrand.js';
 import { Button, Card, EmptyState, ErrorBanner, Page } from '../ui.js';
 
 interface ConnectStatus {
@@ -14,6 +15,7 @@ interface ConnectStatus {
 
 export function ConnectPage({ principal }: { principal: Principal }) {
   const partnerId = principal.role === 'partner' ? principal.partnerId : null;
+  const { programName } = useBrand();
 
   const status = useQuery({
     queryKey: ['connect-status', partnerId],
@@ -59,7 +61,7 @@ export function ConnectPage({ principal }: { principal: Principal }) {
           <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>Connect an account</div>
           <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 16, maxWidth: 560 }}>
             You'll be redirected to Stripe's hosted onboarding. Once you've finished,
-            OpenPartner will transfer approved commissions directly to your balance.
+            {' '}{programName} will transfer approved commissions directly to your balance.
           </div>
           <Button onClick={() => start.mutate()} disabled={start.isPending}>
             {start.isPending ? 'Preparing…' : 'Connect Stripe'}

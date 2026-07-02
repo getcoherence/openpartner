@@ -17,6 +17,7 @@ import { api, type Principal } from '../api.js';
 import { useTenantBase } from '../tenant-base.js';
 import { TenantLink } from '../tenant-link.js';
 import { theme } from '../theme.js';
+import { useBrand } from '../lib/useBrand.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, SectionHeading, Stat, StatusPill, money } from '../ui.js';
 
 // ---------- Partner ----------
@@ -481,6 +482,7 @@ function PendingApprovalsBanner() {
 
 function BrandOnboarding() {
   const tenantBase = useTenantBase();
+  const { programName, whiteLabel } = useBrand();
   const { data } = useQuery({
     queryKey: ['admin-onboarding-status'],
     queryFn: () => api<BrandOnboardingStatus>('/admin/onboarding-status'),
@@ -501,27 +503,33 @@ function BrandOnboarding() {
       hint: 'Set the destination URL and commission terms.',
       href: `${tenantBase}/admin/programs`,
     },
-    {
-      done: data.networkConnected,
-      label: 'List your brand on the OpenPartner Network',
-      hint: 'Lets creators across the federation discover and apply.',
-      href: `${tenantBase}/admin/network`,
-    },
+    // The Network is the shared cross-tenant marketplace — white-label
+    // tenants are isolated from it, so drop the listing step entirely.
+    ...(whiteLabel
+      ? []
+      : [
+          {
+            done: data.networkConnected,
+            label: 'List your brand on the OpenPartner Network',
+            hint: 'Lets creators across the federation discover and apply.',
+            href: `${tenantBase}/admin/network`,
+          },
+        ]),
     {
       done: data.offeringPublishedCount > 0,
       label: 'Create your first program',
       hint:
-        data.networkConnected
+        data.networkConnected && !whiteLabel
           ? 'Auto-listed on the OpenPartner Network when shareOnNetwork is on.'
           : 'Defines your commission rule + destination URL.',
       href: `${tenantBase}/admin/programs`,
     },
     {
       done: data.partnerCount > 0,
-      label: 'Invite a partner — or wait for Network applications',
+      label: whiteLabel ? 'Invite a partner' : 'Invite a partner — or wait for Network applications',
       href: `${tenantBase}/admin/partners`,
     },
-    buildBillingStep(data, `${tenantBase}/admin/billing`),
+    buildBillingStep(data, `${tenantBase}/admin/billing`, programName),
   ];
   return (
     <Card style={{ marginBottom: 18 }}>
@@ -552,7 +560,7 @@ interface OnboardingStep {
  *  billingReady, it just shows checked. Otherwise the label is
  *  "Subscribe by <date>" and the tone shifts to warning then danger as
  *  the evaluation window closes. */
-function buildBillingStep(data: BrandOnboardingStatus, href: string): OnboardingStep {
+function buildBillingStep(data: BrandOnboardingStatus, href: string, programName: string): OnboardingStep {
   if (data.billingReady) {
     return { done: true, label: 'Set up billing', href };
   }
@@ -563,7 +571,7 @@ function buildBillingStep(data: BrandOnboardingStatus, href: string): Onboarding
   if (days <= 0) {
     return {
       done: false,
-      label: 'Subscribe to keep using OpenPartner',
+      label: `Subscribe to keep using ${programName}`,
       hint: 'Your 14-day evaluation period has ended.',
       href,
       tone: 'danger',

@@ -30,6 +30,7 @@ import { clearApiKey, api, type Principal } from './api.js';
 import { useTenantBase } from './tenant-base.js';
 import { theme } from './theme.js';
 import { useIsMobile } from './lib/useMediaQuery.js';
+import { useBrand } from './lib/useBrand.js';
 import { Dashboard } from './pages/Dashboard.js';
 import { LinksPage } from './pages/Links.js';
 import { CommissionsPage } from './pages/Commissions.js';
@@ -66,6 +67,7 @@ import { LandingPage } from './pages/Landing.js';
 import { SignupPage } from './pages/Signup.js';
 import { SigninPage } from './pages/Signin.js';
 import { WorkspacesPage } from './pages/Workspaces.js';
+import { AddBrandPage } from './pages/AddBrand.js';
 import { PlatformMagicLandingPage } from './pages/auth/PlatformMagicLanding.js';
 import { CreatorSignupPage } from './pages/creator/CreatorSignup.js';
 import { CreatorSigninPage } from './pages/creator/CreatorSignin.js';
@@ -101,19 +103,47 @@ export function App() {
     staleTime: Infinity,
   });
 
-  if (install.isLoading) return null;
-  const needsSetup = install.data?.needsSetup ?? false;
+  // White-label custom-domain probe. On portal.<tenant>.com the API
+  // resolves the tenant from the Host header, so a PREFIX-LESS /api/branding
+  // returns the tenant's slug — on the platform origin it returns null.
+  // A host-resolved tenant means the whole origin belongs to that tenant:
+  // mount the Shell at root (like single-tenant) instead of the platform
+  // landing/signup table, so emailed links to /auth/magic and deep links
+  // like /admin/billing work without a /t/<slug>/ prefix.
   const isMultiTenant = install.data?.reason === 'multi_tenant';
+  const hostBrand = useQuery({
+    queryKey: ['host-tenant-probe'],
+    enabled: isMultiTenant,
+    queryFn: async () => {
+      const r = await fetch('/api/branding', { credentials: 'include' });
+      if (!r.ok) return { tenantSlug: null };
+      return (await r.json()) as { tenantSlug: string | null };
+    },
+    staleTime: Infinity,
+  });
+
+  if (install.isLoading) return null;
+  if (isMultiTenant && hostBrand.isPending) return null;
+  const needsSetup = install.data?.needsSetup ?? false;
+  const hostTenantSlug = isMultiTenant ? (hostBrand.data?.tenantSlug ?? null) : null;
 
   return (
     <BrowserRouter>
       <Routes>
-        {isMultiTenant ? (
+        {isMultiTenant && hostTenantSlug ? (
+          <>
+            {/* Custom-domain origin — the whole host is one tenant. */}
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/auth/magic" element={<MagicLandingPage />} />
+            <Route path="/*" element={<Shell />} />
+          </>
+        ) : isMultiTenant ? (
           <>
             <Route path="/" element={<LandingPage />} />
             <Route path="/signup" element={<SignupPage />} />
             <Route path="/signin" element={<SigninPage />} />
             <Route path="/workspaces" element={<WorkspacesPage />} />
+            <Route path="/brands/new" element={<AddBrandPage />} />
             {/* Platform-identity magic link (one email regardless of how many brands you admin). */}
             <Route path="/auth/magic" element={<PlatformMagicLandingPage />} />
             {/* Platform-level Creator surfaces — separate auth from vendor admins. */}
@@ -152,6 +182,10 @@ function Shell() {
   const location = useLocation();
   const tenantBase = useTenantBase();
   const isMobile = useIsMobile();
+  // White-label tenants are isolated from the shared Network — gate the
+  // Network/Discover routes on this so direct navigation can't reach them
+  // even though the nav links are also hidden.
+  const { whiteLabel } = useBrand();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
@@ -188,17 +222,26 @@ function Shell() {
           <Route path="payouts" element={<PayoutsPage principal={auth.principal} />} />
           <Route path="connect" element={<ConnectPage principal={auth.principal} />} />
 
-          {/* Network discovery — open to anyone signed in (vendor admin can browse too). */}
-          <Route path="network/discover" element={<DiscoverPage />} />
-          <Route path="network/offerings/:id" element={<OfferingDetailPage principal={auth.principal} />} />
-          <Route path="network/vendors/:id" element={<VendorDetailPage />} />
+          {/* Network discovery — open to anyone signed in (vendor admin can
+              browse too). Hidden entirely for white-label tenants. */}
+          {!whiteLabel && (
+            <>
+              <Route path="network/discover" element={<DiscoverPage />} />
+              <Route path="network/offerings/:id" element={<OfferingDetailPage principal={auth.principal} />} />
+              <Route path="network/vendors/:id" element={<VendorDetailPage />} />
+            </>
+          )}
 
           {/* Partner-only Network surfaces. */}
           {auth.principal.role === 'partner' && (
             <>
-              <Route path="network/affiliations" element={<MyAffiliationsPage />} />
-              <Route path="network/requests" element={<MyRequestsPage />} />
-              <Route path="network/profile" element={<MyProfilePage />} />
+              {!whiteLabel && (
+                <>
+                  <Route path="network/affiliations" element={<MyAffiliationsPage />} />
+                  <Route path="network/requests" element={<MyRequestsPage />} />
+                  <Route path="network/profile" element={<MyProfilePage />} />
+                </>
+              )}
               <Route path="postbacks" element={<PartnerPostbacksPage principal={auth.principal} />} />
             </>
           )}
@@ -218,11 +261,16 @@ function Shell() {
               <Route path="admin/admins" element={<AdminAdmins />} />
               <Route path="admin/settings" element={<AdminSettings />} />
               <Route path="admin/billing" element={<AdminBilling />} />
-              <Route path="admin/network" element={<AdminNetwork />} />
-              <Route path="admin/network/complete" element={<AdminNetworkComplete />} />
-              <Route path="admin/network/requests" element={<AdminNetworkRequests />} />
-              <Route path="admin/network/creators" element={<AdminNetworkCreators />} />
-              <Route path="admin/network/billing" element={<AdminNetworkBilling />} />
+              {/* Brand-side Network management — isolated for white-label. */}
+              {!whiteLabel && (
+                <>
+                  <Route path="admin/network" element={<AdminNetwork />} />
+                  <Route path="admin/network/complete" element={<AdminNetworkComplete />} />
+                  <Route path="admin/network/requests" element={<AdminNetworkRequests />} />
+                  <Route path="admin/network/creators" element={<AdminNetworkCreators />} />
+                  <Route path="admin/network/billing" element={<AdminNetworkBilling />} />
+                </>
+              )}
             </>
           )}
 
@@ -233,22 +281,11 @@ function Shell() {
   );
 }
 
-interface ProgramSettings {
-  programName: string | null;
-  supportEmail: string | null;
-  logoUrl: string | null;
-}
-
 /** Mobile-only top bar: hamburger + brand. Sticky so it stays reachable
  *  while the page scrolls. Reuses the cached 'program-settings' query so
  *  the brand name/logo match the drawer without a second fetch. */
 function MobileTopBar({ onMenu }: { onMenu: () => void }) {
-  const settings = useQuery({
-    queryKey: ['program-settings'],
-    queryFn: () => api<ProgramSettings>('/config/program'),
-    staleTime: 60_000,
-  });
-  const programName = settings.data?.programName || 'OpenPartner';
+  const { programName, logoUrl, whiteLabel } = useBrand();
   return (
     <header
       style={{
@@ -279,15 +316,7 @@ function MobileTopBar({ onMenu }: { onMenu: () => void }) {
       >
         <Menu size={22} />
       </button>
-      {settings.data?.logoUrl ? (
-        <img
-          src={settings.data.logoUrl}
-          alt={programName}
-          style={{ width: 24, height: 24, borderRadius: 6, objectFit: 'contain', background: theme.surface2 }}
-        />
-      ) : (
-        <Logo size={24} />
-      )}
+      <BrandMark logoUrl={logoUrl} programName={programName} whiteLabel={whiteLabel} size={24} />
       <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>{programName}</div>
     </header>
   );
@@ -337,14 +366,7 @@ function MobileDrawer({ open, onClose, children }: { open: boolean; onClose: () 
 function Sidebar({ principal, variant = 'sidebar' }: { principal: Principal; variant?: 'sidebar' | 'drawer' }) {
   const nav = useNavigate();
   const tenantBase = useTenantBase();
-  const settings = useQuery({
-    queryKey: ['program-settings'],
-    queryFn: () => api<ProgramSettings>('/config/program'),
-    // Refetch infrequently — admin rarely changes this.
-    staleTime: 60_000,
-  });
-  const programName = settings.data?.programName || 'OpenPartner';
-  const supportEmail = settings.data?.supportEmail || null;
+  const { programName, supportEmail, logoUrl, whiteLabel } = useBrand();
   const isDrawer = variant === 'drawer';
 
   return (
@@ -367,15 +389,7 @@ function Sidebar({ principal, variant = 'sidebar' }: { principal: Principal; var
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 8px', marginBottom: 20 }}>
-        {settings.data?.logoUrl ? (
-          <img
-            src={settings.data.logoUrl}
-            alt={programName}
-            style={{ width: 26, height: 26, borderRadius: 6, objectFit: 'contain', background: theme.surface2 }}
-          />
-        ) : (
-          <Logo />
-        )}
+        <BrandMark logoUrl={logoUrl} programName={programName} whiteLabel={whiteLabel} size={26} />
         <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>{programName}</div>
       </div>
 
@@ -396,7 +410,7 @@ function Sidebar({ principal, variant = 'sidebar' }: { principal: Principal; var
           {principal.role === 'partner' && <NavItem to="/postbacks" icon={<Webhook size={16} />}>Postbacks</NavItem>}
         </div>
 
-        {principal.role === 'partner' && (
+        {principal.role === 'partner' && !whiteLabel && (
           <NavSection title="Network" collapsible storageKey="partner-network">
             <NavItem to="/network/discover" icon={<Globe size={16} />}>Discover programs</NavItem>
             <NavItem to="/network/affiliations" icon={<Megaphone size={16} />}>My partnerships</NavItem>
@@ -420,7 +434,7 @@ function Sidebar({ principal, variant = 'sidebar' }: { principal: Principal; var
           </NavSection>
         )}
 
-        {principal.role === 'admin' && <NetworkNav />}
+        {principal.role === 'admin' && !whiteLabel && <NetworkNav />}
       </div>
 
       <button
@@ -854,14 +868,19 @@ function IdentitySwitcher({ principal }: { principal: Principal }) {
                 <Plus size={14} />
                 Add another account
               </a>
+              {/* Honest label (§13): a new brand is its own independently-
+                  billed tenant that shares this sign-in — not a free
+                  addition to the current bill. The authenticated flow
+                  reuses the platform email so the brand can never be
+                  orphaned from this switcher. */}
               <a
-                href="/signup"
+                href="/brands/new"
                 style={switcherActionStyle}
                 onMouseEnter={switcherActionHoverOn}
                 onMouseLeave={switcherActionHoverOff}
               >
                 <Plus size={14} />
-                Add another brand to this account
+                Create a new brand (own plan)
               </a>
               <button
                 onClick={() => void signOut(false)}
@@ -1241,16 +1260,69 @@ function NavItem({
   );
 }
 
-function Logo({ size = 26 }: { size?: number } = {}) {
+function Logo({ size = 26, alt = 'OpenPartner' }: { size?: number; alt?: string } = {}) {
   return (
     <img
       src="/logo-mark-green.svg"
-      alt="OpenPartner"
+      alt={alt}
       width={size}
       height={size}
       style={{ display: 'block' }}
     />
   );
+}
+
+/**
+ * Brand mark for the portal header. Renders, in order of preference:
+ *   1. the tenant's uploaded logo (`logoUrl`),
+ *   2. for a white-label tenant with no logo, a neutral monogram from the
+ *      brand name — NEVER the OpenPartner mark (that would leak platform
+ *      branding into a white-label portal),
+ *   3. otherwise the OpenPartner logo mark.
+ */
+function BrandMark({
+  logoUrl,
+  programName,
+  whiteLabel,
+  size = 26,
+}: {
+  logoUrl: string | null;
+  programName: string;
+  whiteLabel: boolean;
+  size?: number;
+}) {
+  if (logoUrl) {
+    return (
+      <img
+        src={logoUrl}
+        alt={programName}
+        style={{ width: size, height: size, borderRadius: 6, objectFit: 'contain', background: theme.surface2 }}
+      />
+    );
+  }
+  if (whiteLabel) {
+    const initial = (programName.trim()[0] ?? '?').toUpperCase();
+    return (
+      <div
+        aria-label={programName}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: 6,
+          background: theme.surface2,
+          color: 'inherit',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: Math.round(size * 0.55),
+          fontWeight: 700,
+        }}
+      >
+        {initial}
+      </div>
+    );
+  }
+  return <Logo size={size} alt={programName} />;
 }
 
 function CenteredMessage({ children }: { children: ReactNode }) {

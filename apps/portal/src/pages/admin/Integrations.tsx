@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink } from 'lucide-react';
 import { api, currentTenantSlug } from '../../api.js';
 import { theme } from '../../theme.js';
+import { useBrand } from '../../lib/useBrand.js';
 import { Button, Card, ErrorBanner, Input, Label, Page } from '../../ui.js';
 
 /**
@@ -58,10 +59,11 @@ const INTEGRATION_SCOPES = SCOPE_DESCRIPTIONS.map((s) => s.scope);
 const EVENTS_SCOPE = 'events:write'; // legacy filter on the keys list query
 
 export function AdminIntegrations() {
+  const { programName } = useBrand();
   return (
     <Page
       title="CRM integration"
-      subtitle="Pipe your CRM's conversion events into OpenPartner so partners get attributed for full-funnel deals, not just self-serve signups."
+      subtitle={`Pipe your CRM's conversion events into ${programName} so partners get attributed for full-funnel deals, not just self-serve signups.`}
     >
       <WhyCard />
       <div style={{ height: 18 }} />
@@ -73,6 +75,7 @@ export function AdminIntegrations() {
 }
 
 function WhyCard() {
+  const { programName } = useBrand();
   return (
     <Card>
       <h3 style={{ marginTop: 0, marginBottom: 8, fontSize: 15, fontWeight: 500 }}>
@@ -92,7 +95,7 @@ function WhyCard() {
         <code style={{ background: theme.surface2, padding: '2px 6px', borderRadius: 4, fontSize: 12 }}>
           /attribution/events
         </code>{' '}
-        with the key as a Bearer token. OpenPartner ties the event to the
+        with the key as a Bearer token. {programName} ties the event to the
         originating click via the <code>userId</code> you assigned at
         signup, then accrues commission per the bound campaign&rsquo;s
         rule.
@@ -351,6 +354,7 @@ function PayloadGuide() {
   // URL so admins copy-paste it correctly without thinking.
   const origin = typeof window === 'undefined' ? 'https://your-instance' : window.location.origin;
   const slug = currentTenantSlug();
+  const { programName } = useBrand();
   const apiBase = slug ? `${origin}/t/${slug}` : origin;
   return (
     <Card>
@@ -377,7 +381,7 @@ function PayloadGuide() {
       )}
       <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 12px' }}>
         Send a POST with the key as a Bearer token. <code>userId</code> is the same identifier
-        you assign at signup time so OpenPartner can stitch the event to a click. <code>type</code>{' '}
+        you assign at signup time so {programName} can stitch the event to a click. <code>type</code>{' '}
         can be any string — use <code>opportunity_won</code> for B2B sales,{' '}
         <code>trial_converted</code> for trial→paid, or your own conventions.
       </p>

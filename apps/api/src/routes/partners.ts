@@ -6,6 +6,7 @@ import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '..
 import { issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
 import { buildMagicLinkUrl, partnerInviteEmail, partnerRevokedEmail } from '../email-templates.js';
+import { linkTenantOf } from '../portal-url.js';
 import { tenantOf } from '../tenancy.js';
 import { getNetworkMembership, pushPartnerRevoke, pushPartnerUpsert } from '../network-client.js';
 import { autoMintCouponsForGrants } from './coupons.js';
@@ -206,7 +207,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
     });
     const { resolveBrandName } = await import('../brand-name.js');
     const brandName = await resolveBrandName(db, tenantId);
-    const tmpl = partnerInviteEmail(body.data.name, buildMagicLinkUrl(issued.plaintext, req.tenantSlug), brandName);
+    const tmpl = partnerInviteEmail(body.data.name, buildMagicLinkUrl(issued.plaintext, linkTenantOf(req)), brandName);
     await getMailer().send({ db, tenantId }, {
       to: email,
       subject: tmpl.subject,
@@ -300,7 +301,7 @@ partnersRouter.post('/partners/:id/invite', requireAuth, grantScope('partners:wr
   });
   const { resolveBrandName } = await import('../brand-name.js');
   const brandName = await resolveBrandName(db, tenantId);
-  const tmpl = partnerInviteEmail(partner.name, buildMagicLinkUrl(issued.plaintext, req.tenantSlug), brandName);
+  const tmpl = partnerInviteEmail(partner.name, buildMagicLinkUrl(issued.plaintext, linkTenantOf(req)), brandName);
   // Mail-send failures here mean the partner literally can't get the
   // magic link — the invite genuinely didn't go out. But surface as
   // 422 mail_send_failed (not 500) so the caller can distinguish

@@ -20,6 +20,7 @@ interface ProgramSettings {
   logoUrl: string | null;
   brandColor: string | null;
   programTermsUrl: string | null;
+  whiteLabel: boolean;
 }
 
 type BrandAssetKind = 'image' | 'snippet';
@@ -110,7 +111,10 @@ function ProgramSection() {
       <div style={{ marginBottom: 16 }}>
         <Label>Brand name</Label>
         <Input value={programName} onChange={(e) => setProgramName(e.target.value)} placeholder="e.g. Acme" maxLength={120} />
-        <Hint>Shown to partners in the portal. Leave blank to fall back to "OpenPartner".</Hint>
+        <Hint>
+          Shown to partners in the portal.
+          {data?.whiteLabel ? ' Leave blank to fall back to your workspace name.' : ' Leave blank to fall back to "OpenPartner".'}
+        </Hint>
       </div>
       <div style={{ marginBottom: 16 }}>
         <Label>Support email</Label>
@@ -149,7 +153,7 @@ function ProgramSection() {
               style={{ fontFamily: theme.fontMono }}
             />
           </div>
-          <Hint>Hex code. Blank = OpenPartner's default green.</Hint>
+          <Hint>Hex code. {data?.whiteLabel ? 'Blank uses the default green.' : "Blank = OpenPartner's default green."}</Hint>
         </div>
         <div>
           <Label>Program terms URL</Label>

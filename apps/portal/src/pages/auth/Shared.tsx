@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { theme } from '../../theme.js';
+import { usePublicBrand } from '../../lib/useBrand.js';
 
 export function AuthFrame({
   title,
@@ -13,6 +14,12 @@ export function AuthFrame({
   brand?: string;
   children: ReactNode;
 }) {
+  // Pre-auth brand bootstrap: the public /branding endpoint resolves the
+  // tenant from the custom-domain host or the /t/<slug>/ prefix, so a
+  // white-label tenant's sign-in page never shows platform branding. On
+  // platform pages it returns nulls and we keep the OpenPartner default.
+  const publicBrand = usePublicBrand();
+  const name = brand ?? (publicBrand.isLoading ? '' : publicBrand.programName);
   return (
     <div
       style={{
@@ -35,8 +42,13 @@ export function AuthFrame({
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-          <Logo />
-          <div style={{ fontSize: 18, fontWeight: 600 }}>{brand ?? 'OpenPartner'}</div>
+          <AuthBrandMark
+            logoUrl={publicBrand.logoUrl}
+            programName={name || '?'}
+            whiteLabel={publicBrand.whiteLabel}
+            pending={publicBrand.isLoading}
+          />
+          <div style={{ fontSize: 18, fontWeight: 600 }}>{name}</div>
         </div>
         <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: 4 }}>{title}</div>
         {subtitle && <div style={{ color: theme.textMuted, fontSize: 13, marginBottom: 20 }}>{subtitle}</div>}
@@ -56,6 +68,59 @@ export function Logo({ size = 26 }: { size?: number } = {}) {
       style={{ display: 'block' }}
     />
   );
+}
+
+/**
+ * Pre-auth brand mark. Preference order mirrors the shell's BrandMark:
+ * uploaded logo → neutral monogram for white-label (NEVER the OpenPartner
+ * mark) → OpenPartner logo. While the /branding query is in flight render
+ * a neutral placeholder so a white-label page never flashes the platform
+ * mark.
+ */
+function AuthBrandMark({
+  logoUrl,
+  programName,
+  whiteLabel,
+  pending,
+  size = 26,
+}: {
+  logoUrl: string | null;
+  programName: string;
+  whiteLabel: boolean;
+  pending: boolean;
+  size?: number;
+}) {
+  if (logoUrl) {
+    return (
+      <img
+        src={logoUrl}
+        alt={programName}
+        style={{ width: size, height: size, borderRadius: 6, objectFit: 'contain', background: theme.surface2 }}
+      />
+    );
+  }
+  if (whiteLabel || pending) {
+    const initial = pending ? '' : (programName.trim()[0] ?? '?').toUpperCase();
+    return (
+      <div
+        aria-label={programName}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: 6,
+          background: theme.surface2,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: Math.round(size * 0.55),
+          fontWeight: 700,
+        }}
+      >
+        {initial}
+      </div>
+    );
+  }
+  return <Logo size={size} />;
 }
 
 /**

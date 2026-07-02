@@ -42,6 +42,8 @@ import {
 import { createApiKeyRow } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
+import { getTenantBillingState } from '../billing-plan.js';
+import { isWhiteLabelEntitled, getWhiteLabelState } from '../white-label.js';
 
 export const settingsRouter = Router();
 
@@ -71,6 +73,10 @@ export interface ProgramSettings extends PersistedProgramSettings {
   logoUrl: string | null;
   brandColor: string | null;
   programTermsUrl: string | null;
+  /** Effective white-label entitlement. The portal keys branding removal
+   *  + Network-surface hiding on this (provisioned flag AND entitling
+   *  billing state — see white-label.ts). */
+  whiteLabel: boolean;
 }
 
 async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings> {
@@ -86,14 +92,24 @@ async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings
   // there so the cached Config row never lags the actual values.
   const tenant = await db<TenantRow>(TABLES.Tenant)
     .where({ id: tenantId })
-    .first(['displayName', 'logoUrl', 'brandColor', 'programTermsUrl']);
+    .first(['displayName', 'logoUrl', 'brandColor', 'programTermsUrl', 'whiteLabel', 'status']);
   if (!programName && tenant?.displayName) programName = tenant.displayName as string;
+  // Effective white-label: the provisioned flag AND an entitling billing
+  // state. Computed here so any authenticated caller (admin or partner)
+  // gets the brand truth — including whether to strip platform branding —
+  // in the same fetch the portal already makes on load.
+  const billing = await getTenantBillingState(db, tenantId);
+  const whiteLabel = isWhiteLabelEntitled(
+    { whiteLabel: tenant?.whiteLabel ?? false, status: tenant?.status ?? 'active' },
+    billing,
+  );
   return {
     programName,
     supportEmail: value.supportEmail ?? null,
     logoUrl: tenant?.logoUrl ?? null,
     brandColor: tenant?.brandColor ?? null,
     programTermsUrl: tenant?.programTermsUrl ?? null,
+    whiteLabel,
   };
 }
 
@@ -101,6 +117,43 @@ async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings
 settingsRouter.get('/config/program', requireAuth, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   res.json(await readSettings(db, tenantId));
+});
+
+/**
+ * PUBLIC brand bootstrap (spec §4.7/§5.2) — deliberately unauthenticated so
+ * pre-auth surfaces (login, magic-link landing) can render the tenant's
+ * brand instead of platform branding. The tenant comes from tenantMiddleware
+ * (custom-domain host or /t/<slug>/ path); a request with no tenant scope
+ * (platform origin, marketing pages) gets platform defaults. Returns brand
+ * fields only for the resolved tenant — the §4.3 edge-trust guard is what
+ * prevents forging a host to read another tenant's brand context.
+ */
+settingsRouter.get('/branding', async (req, res) => {
+  if (!req.db || !req.tenantId) {
+    return res.json({
+      tenantSlug: null,
+      programName: null,
+      logoUrl: null,
+      brandColor: null,
+      supportEmail: null,
+      programTermsUrl: null,
+      whiteLabel: false,
+    });
+  }
+  const s = await readSettings(req.db, req.tenantId);
+  res.json({
+    // The resolved tenant slug. A prefix-less request (the SPA probes bare
+    // /api/branding) only carries a tenant when the HOST resolved one —
+    // i.e. the SPA is being served from a white-label custom domain — so
+    // the portal keys its root-mounted tenant routing on this.
+    tenantSlug: req.tenantSlug ?? null,
+    programName: s.programName,
+    logoUrl: s.logoUrl,
+    brandColor: s.brandColor,
+    supportEmail: s.supportEmail,
+    programTermsUrl: s.programTermsUrl,
+    whiteLabel: s.whiteLabel,
+  });
 });
 
 /** Only admins write. Empty strings clear fields. */
@@ -281,6 +334,25 @@ settingsRouter.post('/config/payouts', requireAuth, requireAdmin, async (req, re
 
 // ---------- Network membership ----------
 
+/** White-label tenants are isolated from the OpenPartner Network. When one
+ *  hits a federation-enabling route, send a 409 and return true so the
+ *  handler bails. Data-plane pushes (dispatch/sendHeartbeat in
+ *  network-client) are independently suppressed as defense in depth. */
+async function blockNetworkForWhiteLabel(
+  db: Knex,
+  tenantId: string,
+  res: import('express').Response,
+): Promise<boolean> {
+  if ((await getWhiteLabelState(db, tenantId)).effective) {
+    res.status(409).json({
+      error: 'white_label_network_conflict',
+      detail: 'White-label tenants are isolated from the OpenPartner Network. Disable white-label before joining the Network.',
+    });
+    return true;
+  }
+  return false;
+}
+
 const networkMembershipSchema = z.object({
   enabled: z.boolean().optional(),
   networkUrl: z.string().url().optional().or(z.literal('')),
@@ -301,6 +373,7 @@ settingsRouter.post('/config/network', requireAuth, requireAdmin, async (req, re
   const body = networkMembershipSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
+  if (body.data.enabled === true && (await blockNetworkForWhiteLabel(db, tenantId, res))) return;
   await saveNetworkMembership(db, tenantId, {
     enabled: body.data.enabled,
     networkUrl: body.data.networkUrl === '' ? '' : body.data.networkUrl,
@@ -367,6 +440,7 @@ settingsRouter.post('/config/network/start-connect', requireAuth, requireAdmin, 
   const body = startConnectSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
+  if (await blockNetworkForWhiteLabel(db, tenantId, res)) return;
   const networkUrl = process.env.NETWORK_URL;
   if (!networkUrl) {
     return res.status(503).json({ error: 'network_url_not_configured', detail: 'set NETWORK_URL env to your network endpoint, e.g. https://network.openpartner.dev' });
@@ -434,6 +508,7 @@ settingsRouter.post('/config/network/auto-enroll', requireAuth, requireAdmin, as
     return { ...t, tenantSlug: req.tenantSlug ?? null };
   })();
 
+  if (await blockNetworkForWhiteLabel(db, tenantId, res)) return;
   const networkUrl = process.env.NETWORK_URL;
   const adminToken = process.env.NETWORK_ADMIN_API_KEY;
   if (!networkUrl) return res.status(503).json({ error: 'network_url_not_configured' });
@@ -508,6 +583,7 @@ settingsRouter.post('/config/network/complete-connect', requireAuth, requireAdmi
   const body = completeConnectSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
+  if (await blockNetworkForWhiteLabel(db, tenantId, res)) return;
   const networkUrl = process.env.NETWORK_URL;
   if (!networkUrl) return res.status(503).json({ error: 'network_url_not_configured' });
 

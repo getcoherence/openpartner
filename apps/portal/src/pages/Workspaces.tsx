@@ -124,7 +124,7 @@ export function WorkspacesPage() {
         </div>
         {data?.workspaces.length === 0 && (
           <div style={{ color: theme.textMuted, fontSize: 14 }}>
-            You don&rsquo;t have any brand workspaces. <a href="/signup" style={{ color: theme.accent }}>Create one →</a>
+            You don&rsquo;t have any brand workspaces. <a href="/brands/new" style={{ color: theme.accent }}>Create one →</a>
           </div>
         )}
       </div>
