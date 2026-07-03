@@ -30,11 +30,7 @@ import { getTenantBillingState, priceIdsForPlan } from '../billing-plan.js';
 import { reportUsageToStripe } from '../usage-billing.js';
 import { tenantOf } from '../tenancy.js';
 import { getWhiteLabelState } from '../white-label.js';
-import {
-  applyWhiteLabelFromSubscription,
-  subscriptionHasWhiteLabel,
-  whiteLabelPriceId,
-} from '../white-label-billing.js';
+import { applyWhiteLabelFromSubscription, whiteLabelPriceId } from '../white-label-billing.js';
 
 export const billingRouter = Router();
 
