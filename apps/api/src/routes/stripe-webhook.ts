@@ -15,6 +15,7 @@ import {
 import { appDb, db } from '../db.js';
 import { attributeEvent } from '../attribution.js';
 import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFromStripeSub } from './billing.js';
+import { applyWhiteLabelFromSubscription, subscriptionHasWhiteLabel, whiteLabelPriceId } from '../white-label-billing.js';
 import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
 
 const stripeKey = process.env.STRIPE_SECRET_KEY;
@@ -331,12 +332,25 @@ async function handleConnectEvent(
       if (newPlan) {
         await updateTenantPlanFromStripeSub(trx, tenantId, newPlan);
       }
+      // White-label add-on: the subscription is the source of truth for
+      // hosted flex/revshare tenants — mirror presence of the add-on price
+      // onto Tenant.whiteLabel. Losing the add-on also revokes
+      // custom-domain routing + the DO edge (spec §8.2). No-op when the
+      // add-on price env isn't configured.
+      let wl: 'enabled' | 'disabled' | 'unchanged' = 'unchanged';
+      if (whiteLabelPriceId()) {
+        wl = await applyWhiteLabelFromSubscription(trx, tenantId, subscriptionHasWhiteLabel(priceIds));
+      }
       // Refresh subscriptionId so the local mirror reflects current
       // Stripe state. trialEndsAt stays untouched — it's signup-owned.
       await persistMerchantSubscription(trx, tenantId, {
         stripeSubscriptionId: sub.id,
       });
-      return newPlan ? `subscription_updated_plan_${newPlan}` : 'subscription_updated';
+      const parts = [
+        newPlan ? `subscription_updated_plan_${newPlan}` : 'subscription_updated',
+        ...(wl !== 'unchanged' ? [`white_label_${wl}`] : []),
+      ];
+      return parts.join('+');
     }
     case 'customer.subscription.deleted': {
       // Cancellation (manual via Portal or dunning exhaustion). Clear
@@ -348,7 +362,10 @@ async function handleConnectEvent(
       await persistMerchantSubscription(trx, tenantId, {
         stripeSubscriptionId: null,
       });
-      return `subscription_deleted_${sub.status}`;
+      // The whole subscription is gone — the add-on with it. Revokes
+      // custom-domain routing + DO edge if this was a white-label tenant.
+      const wl = await applyWhiteLabelFromSubscription(trx, tenantId, false);
+      return `subscription_deleted_${sub.status}${wl !== 'unchanged' ? `+white_label_${wl}` : ''}`;
     }
     case 'transfer.updated':
     case 'transfer.reversed': {

@@ -29,6 +29,8 @@ import { REVSHARE_FEE_BPS, requireStripe } from '../stripe.js';
 import { getTenantBillingState, priceIdsForPlan } from '../billing-plan.js';
 import { reportUsageToStripe } from '../usage-billing.js';
 import { tenantOf } from '../tenancy.js';
+import { getWhiteLabelState } from '../white-label.js';
+import { applyWhiteLabelFromSubscription, whiteLabelPriceId } from '../white-label-billing.js';
 
 export const billingRouter = Router();
 
@@ -130,10 +132,112 @@ billingRouter.post('/billing/plan', requireAuth, requireAdmin, async (req, res) 
   res.json({ ok: true, plan: body.data.plan });
 });
 
+// ---------- White-label add-on (spec §8.2) ----------
+
+/**
+ * Add-on status for the admin wizard. `effective` is the runtime
+ * entitlement (provisioned AND entitling billing state) — the same truth
+ * /config/program reports.
+ */
+billingRouter.get('/billing/white-label', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const state = await getTenantBillingState(db, tenantId);
+  const wl = await getWhiteLabelState(db, tenantId);
+  res.json({
+    provisioned: wl.provisioned,
+    effective: wl.effective,
+    plan: state.plan,
+    mode: state.mode,
+    subscribed: !!state.stripeSubscriptionId,
+    priceConfigured: !!whiteLabelPriceId(),
+  });
+});
+
+/**
+ * Enable the add-on. Hosted flex/revshare: attaches the add-on price to
+ * the tenant's ACTIVE subscription as a prorated line item, then mirrors
+ * the flag locally (the webhook re-confirms). Enterprise: flag only —
+ * sales-led, no Stripe item. No subscription → 409; the wizard sends the
+ * admin through plan checkout first (checkout accepts whiteLabel:true to
+ * bundle the add-on from the start).
+ */
+billingRouter.post('/billing/white-label', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const state = await getTenantBillingState(db, tenantId);
+
+  if (state.mode === 'selfhost') {
+    return res.status(400).json({ error: 'no_billing_in_selfhost', detail: 'Self-host installs are always white-label entitled.' });
+  }
+  if (state.plan === 'enterprise') {
+    // Shares the transition path with the webhook so enabling also
+    // withdraws the brand from the shared marketplace.
+    await applyWhiteLabelFromSubscription(db, tenantId, true);
+    return res.json({ ok: true, provisioned: true, billedVia: 'enterprise_contract' });
+  }
+  if (!state.stripeSubscriptionId) {
+    return res.status(409).json({
+      error: 'subscription_required',
+      detail: 'Activate your plan first — the white-label add-on attaches to your subscription.',
+    });
+  }
+  const price = whiteLabelPriceId();
+  if (!price) {
+    return res.status(500).json({ error: 'stripe_price_not_configured', detail: 'STRIPE_WHITELABEL_ADD_ON_PRICE_ID is not set.' });
+  }
+
+  const stripe = requireStripe();
+  const sub = await stripe.subscriptions.retrieve(state.stripeSubscriptionId);
+  const already = sub.items.data.find((it) => it.price.id === price);
+  if (!already) {
+    await stripe.subscriptionItems.create({
+      subscription: sub.id,
+      price,
+      quantity: 1,
+      proration_behavior: 'create_prorations',
+    });
+  }
+  // Optimistic local mirror — the subscription.updated webhook is the
+  // authoritative confirmation and is idempotent with this.
+  await applyWhiteLabelFromSubscription(db, tenantId, true);
+  res.json({ ok: true, provisioned: true, billedVia: already ? 'already_on_subscription' : 'subscription_item_added' });
+});
+
+/**
+ * Disable the add-on: remove the subscription item (prorated credit) and
+ * mirror locally — which also revokes custom-domain routing + the DO edge.
+ */
+billingRouter.delete('/billing/white-label', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const state = await getTenantBillingState(db, tenantId);
+
+  if (state.mode === 'selfhost') {
+    return res.status(400).json({ error: 'no_billing_in_selfhost' });
+  }
+  if (state.plan === 'enterprise') {
+    // Sales-led: flip the flag; contract changes happen out of band.
+    await applyWhiteLabelFromSubscription(db, tenantId, false);
+    return res.json({ ok: true, provisioned: false });
+  }
+  const price = whiteLabelPriceId();
+  if (state.stripeSubscriptionId && price) {
+    const stripe = requireStripe();
+    const sub = await stripe.subscriptions.retrieve(state.stripeSubscriptionId);
+    const item = sub.items.data.find((it) => it.price.id === price);
+    if (item) {
+      await stripe.subscriptionItems.del(item.id, { proration_behavior: 'create_prorations' });
+    }
+  }
+  await applyWhiteLabelFromSubscription(db, tenantId, false);
+  res.json({ ok: true, provisioned: false });
+});
+
 const checkoutSchema = z.object({
   successUrl: z.string().url(),
   cancelUrl: z.string().url(),
   customerEmail: z.string().email().optional(),
+  /** Bundle the white-label add-on into the plan checkout (new brands
+   *  that picked white-label before subscribing). */
+  whiteLabel: z.boolean().optional(),
 });
 
 billingRouter.post('/billing/checkout', requireAuth, requireAdmin, async (req, res) => {
@@ -158,7 +262,7 @@ billingRouter.post('/billing/checkout', requireAuth, requireAdmin, async (req, r
 
   let lineItems: ReturnType<typeof priceIdsForPlan>;
   try {
-    lineItems = priceIdsForPlan(state.plan);
+    lineItems = priceIdsForPlan(state.plan, { whiteLabel: body.data.whiteLabel });
   } catch (err) {
     return res.status(500).json({ error: 'stripe_price_not_configured', detail: err instanceof Error ? err.message : String(err) });
   }

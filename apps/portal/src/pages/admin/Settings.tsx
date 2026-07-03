@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Settings as SettingsIcon, Mail, Wallet, Palette, Image as ImageIcon, Trash2 } from 'lucide-react';
+import { Settings as SettingsIcon, Mail, Wallet, Palette, Image as ImageIcon, Trash2, UserPlus } from 'lucide-react';
 import { api } from '../../api.js';
 import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
@@ -53,12 +53,101 @@ export function AdminSettings() {
       <div style={{ height: 18 }} />
       <BrandResourcesSection />
       <div style={{ height: 18 }} />
+      <PartnerSignupSection />
+      <div style={{ height: 18 }} />
       <PayoutSection />
       <div style={{ height: 18 }} />
       <MailSection />
       <div style={{ height: 18 }} />
       <DangerZone />
     </Page>
+  );
+}
+
+// ---------- partner signups ----------
+
+interface PartnerSignupSettings {
+  policy: 'auto_approve' | 'require_review';
+  disabled: boolean;
+}
+
+/**
+ * Controls the public "become a partner" page (/join on a custom domain,
+ * /t/<slug>/join otherwise) — open vs closed, and whether applications
+ * activate immediately or wait for admin review. Invites always work
+ * regardless of this setting.
+ */
+function PartnerSignupSection() {
+  const qc = useQueryClient();
+  const { data, error, isLoading } = useQuery({
+    queryKey: ['partner-signup-settings'],
+    queryFn: () => api<PartnerSignupSettings>('/config/partner-signup'),
+  });
+  const [saved, setSaved] = useState(false);
+
+  const mut = useMutation({
+    mutationFn: (patch: Partial<PartnerSignupSettings>) =>
+      api<PartnerSignupSettings>('/config/partner-signup', { method: 'POST', body: patch }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['partner-signup-settings'] });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    },
+  });
+
+  // The join page lives at the tenant root: on a custom domain that's
+  // https://<domain>/join; path-based it's /t/<slug>/join. Deriving from
+  // the current URL keeps it correct in both cases.
+  const joinUrl = `${window.location.origin}${window.location.pathname.match(/^\/t\/[^/]+/)?.[0] ?? ''}/join`;
+
+  if (isLoading) return <Card>Loading…</Card>;
+  const settings = data ?? { policy: 'auto_approve' as const, disabled: false };
+
+  return (
+    <Card>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+        <UserPlus size={18} color={theme.accent} />
+        <div style={{ fontSize: 15, fontWeight: 500 }}>Partner signups</div>
+      </div>
+      <ErrorBanner error={error ?? mut.error} />
+      <div style={{ fontSize: 13, color: theme.textMuted, lineHeight: 1.6, marginBottom: 12 }}>
+        Your public application page is{' '}
+        <a href={joinUrl} target="_blank" rel="noreferrer" style={{ color: theme.accent }}>
+          {joinUrl}
+        </a>
+        . Direct invites always work, whatever you choose here.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 560 }}>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 13, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={!settings.disabled}
+            onChange={(e) => mut.mutate({ disabled: !e.target.checked })}
+            style={{ marginTop: 2 }}
+          />
+          <span>
+            <strong>Accept public applications</strong>
+            <span style={{ color: theme.textMuted, display: 'block' }}>
+              Unchecked = the page shows &ldquo;signups closed&rdquo; and only invited partners can join —
+              a fully curated roster.
+            </span>
+          </span>
+        </label>
+        <div>
+          <Label>When someone applies</Label>
+          <Select
+            value={settings.policy}
+            onChange={(e) => mut.mutate({ policy: e.target.value as PartnerSignupSettings['policy'] })}
+            disabled={settings.disabled}
+            style={{ maxWidth: 360 }}
+          >
+            <option value="auto_approve">Approve automatically — they can sign in right away</option>
+            <option value="require_review">Hold for review — an admin approves each application</option>
+          </Select>
+        </div>
+        {saved && <div style={{ color: theme.success, fontSize: 13 }}>Saved.</div>}
+      </div>
+    </Card>
   );
 }
 

@@ -24,6 +24,7 @@ import {
   Plus,
   X,
   Menu,
+  Palette,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { clearApiKey, api, type Principal } from './api.js';
@@ -49,6 +50,7 @@ import { WebhooksPage } from './pages/admin/Webhooks.js';
 import { AdminIntegrations } from './pages/admin/Integrations.js';
 import { AdminSettings } from './pages/admin/Settings.js';
 import { AdminBilling } from './pages/admin/Billing.js';
+import { AdminWhiteLabel } from './pages/admin/WhiteLabel.js';
 import { AdminAdmins } from './pages/admin/Admins.js';
 import { AdminNetwork } from './pages/admin/Network.js';
 import { AdminNetworkComplete } from './pages/admin/NetworkComplete.js';
@@ -68,6 +70,7 @@ import { SignupPage } from './pages/Signup.js';
 import { SigninPage } from './pages/Signin.js';
 import { WorkspacesPage } from './pages/Workspaces.js';
 import { AddBrandPage } from './pages/AddBrand.js';
+import { PartnerJoinPage } from './pages/PartnerJoin.js';
 import { PlatformMagicLandingPage } from './pages/auth/PlatformMagicLanding.js';
 import { CreatorSignupPage } from './pages/creator/CreatorSignup.js';
 import { CreatorSigninPage } from './pages/creator/CreatorSignin.js';
@@ -134,6 +137,7 @@ export function App() {
           <>
             {/* Custom-domain origin — the whole host is one tenant. */}
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/join" element={<PartnerJoinPage />} />
             <Route path="/auth/magic" element={<MagicLandingPage />} />
             <Route path="/*" element={<Shell />} />
           </>
@@ -154,6 +158,7 @@ export function App() {
             {/* Public creator profiles — no auth, browsable from anywhere. */}
             <Route path="/creators/:handle" element={<CreatorPublicProfilePage />} />
             <Route path="/t/:slug/login" element={<LoginPage />} />
+            <Route path="/t/:slug/join" element={<PartnerJoinPage />} />
             <Route path="/t/:slug/auth/magic" element={<MagicLandingPage />} />
             <Route path="/t/:slug/*" element={<Shell />} />
             <Route path="*" element={<Navigate to="/" replace />} />
@@ -168,6 +173,7 @@ export function App() {
           <>
             <Route path="/install" element={<Navigate to="/" replace />} />
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/join" element={<PartnerJoinPage />} />
             <Route path="/auth/magic" element={<MagicLandingPage />} />
             <Route path="/*" element={<Shell />} />
           </>
@@ -261,6 +267,7 @@ function Shell() {
               <Route path="admin/admins" element={<AdminAdmins />} />
               <Route path="admin/settings" element={<AdminSettings />} />
               <Route path="admin/billing" element={<AdminBilling />} />
+              <Route path="admin/white-label" element={<AdminWhiteLabel />} />
               {/* Brand-side Network management — isolated for white-label. */}
               {!whiteLabel && (
                 <>
@@ -363,7 +370,7 @@ function MobileDrawer({ open, onClose, children }: { open: boolean; onClose: () 
   );
 }
 
-function Sidebar({ principal, variant = 'sidebar' }: { principal: Principal; variant?: 'sidebar' | 'drawer' }) {
+export function Sidebar({ principal, variant = 'sidebar' }: { principal: Principal; variant?: 'sidebar' | 'drawer' }) {
   const nav = useNavigate();
   const tenantBase = useTenantBase();
   const { programName, supportEmail, logoUrl, whiteLabel } = useBrand();
@@ -431,6 +438,7 @@ function Sidebar({ principal, variant = 'sidebar' }: { principal: Principal; var
             <NavItem to="/admin/admins" icon={<UserCog size={16} />}>Admins</NavItem>
             <NavItem to="/admin/settings" icon={<Settings size={16} />}>Settings</NavItem>
             <NavItem to="/admin/billing" icon={<CreditCard size={16} />}>Billing</NavItem>
+            <NavItem to="/admin/white-label" icon={<Palette size={16} />}>White label</NavItem>
           </NavSection>
         )}
 
@@ -560,6 +568,12 @@ function IdentitySwitcher({ principal }: { principal: Principal }) {
   const [open, setOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const { label, initial, hue } = describePrincipal(principal);
+  // On a white-label portal the multi-workspace machinery is platform UX
+  // that must not leak: "Add another account" / "Create a new brand" talk
+  // about OUR platform's accounts and plans, and their routes only exist
+  // on the platform origin (dead links on a custom domain). The chip
+  // itself (identity + sign out) stays.
+  const { whiteLabel } = useBrand();
 
   // Best-effort: 401 just means no platform session (admin signed in via
   // api key or pre-platform-sessions session). We still render the chip;
@@ -859,29 +873,33 @@ function IdentitySwitcher({ principal }: { principal: Principal }) {
                 flexDirection: 'column',
               }}
             >
-              <a
-                href="/signin?add=1"
-                style={switcherActionStyle}
-                onMouseEnter={switcherActionHoverOn}
-                onMouseLeave={switcherActionHoverOff}
-              >
-                <Plus size={14} />
-                Add another account
-              </a>
-              {/* Honest label (§13): a new brand is its own independently-
-                  billed tenant that shares this sign-in — not a free
-                  addition to the current bill. The authenticated flow
-                  reuses the platform email so the brand can never be
-                  orphaned from this switcher. */}
-              <a
-                href="/brands/new"
-                style={switcherActionStyle}
-                onMouseEnter={switcherActionHoverOn}
-                onMouseLeave={switcherActionHoverOff}
-              >
-                <Plus size={14} />
-                Create a new brand (own plan)
-              </a>
+              {!whiteLabel && (
+                <>
+                  <a
+                    href="/signin?add=1"
+                    style={switcherActionStyle}
+                    onMouseEnter={switcherActionHoverOn}
+                    onMouseLeave={switcherActionHoverOff}
+                  >
+                    <Plus size={14} />
+                    Add another account
+                  </a>
+                  {/* Honest label (§13): a new brand is its own independently-
+                      billed tenant that shares this sign-in — not a free
+                      addition to the current bill. The authenticated flow
+                      reuses the platform email so the brand can never be
+                      orphaned from this switcher. */}
+                  <a
+                    href="/brands/new"
+                    style={switcherActionStyle}
+                    onMouseEnter={switcherActionHoverOn}
+                    onMouseLeave={switcherActionHoverOff}
+                  >
+                    <Plus size={14} />
+                    Create a new brand (own plan)
+                  </a>
+                </>
+              )}
               <button
                 onClick={() => void signOut(false)}
                 disabled={busyAction !== null}

@@ -30,6 +30,7 @@ import {
 import { parseCommissionRule } from './attribution.js';
 import { getNetworkMembership } from './network-client.js';
 import { networkProxy, NetworkProxyError } from './network-client.js';
+import { getWhiteLabelState } from './white-label.js';
 
 interface OfferingTerms {
   commissionDescription?: string;
@@ -70,6 +71,14 @@ export async function syncCampaignToMarketplace(
   if (!membership?.enabled) {
     // Brand not on the Network — nothing to do. Even a campaign with
     // shareOnNetwork=true is effectively a no-op until they connect.
+    return campaign.networkOfferingId;
+  }
+  // White-label tenants are isolated from the marketplace. Without this,
+  // a program save with a stale shareOnNetwork=true would RE-publish the
+  // offering that withdrawTenantFromMarketplace just unpublished (this
+  // path uses the proxy, which — unlike dispatch() — has no built-in
+  // white-label suppression).
+  if ((await getWhiteLabelState(db, tenantId)).effective) {
     return campaign.networkOfferingId;
   }
 
@@ -146,6 +155,45 @@ function buildTermsPayload(campaign: ProgramRow, derivedSummary: string): Offeri
     categories: campaign.categories ?? [],
     campaignEndsAt: campaign.endsAt ? campaign.endsAt.toISOString() : null,
   };
+}
+
+/**
+ * Unpublish every marketplace offering this tenant has (spec §7.4) —
+ * called when the white-label entitlement turns ON so a previously
+ * federated brand disappears from Discover immediately rather than
+ * waiting for the Network's stale-heartbeat pruning. Offerings are
+ * unpublished, not deleted (history + the path back if the brand later
+ * drops white-label and re-enables sharing). shareOnNetwork flags are
+ * left untouched; the syncCampaignToMarketplace white-label guard keeps
+ * them inert while the entitlement is live. Throws never.
+ */
+export async function withdrawTenantFromMarketplace(
+  db: Knex,
+  tenantId: string,
+): Promise<{ unpublished: number; failed: number }> {
+  const membership = await getNetworkMembership(db, tenantId);
+  if (!membership?.enabled) return { unpublished: 0, failed: 0 };
+  const programs = await db<ProgramRow>(TABLES.Program)
+    .where({ tenantId })
+    .whereNotNull('networkOfferingId')
+    .select(['id', 'networkOfferingId']);
+  let unpublished = 0;
+  let failed = 0;
+  for (const p of programs) {
+    try {
+      await networkProxy.updateOffering(db, tenantId, p.networkOfferingId!, { published: false });
+      unpublished += 1;
+    } catch (err) {
+      logSyncError('unpublish', p.id, err);
+      failed += 1;
+    }
+  }
+  if (failed > 0) {
+    console.error(
+      `[white-label] marketplace withdraw incomplete for tenant ${tenantId}: ${failed} offering(s) still published — hide them on the Network side manually`,
+    );
+  }
+  return { unpublished, failed };
 }
 
 function logSyncError(op: 'create' | 'update' | 'unpublish', programId: string, err: unknown): void {

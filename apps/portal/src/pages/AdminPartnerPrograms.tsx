@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import { theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
 import { Card, ErrorBanner, Page } from '../ui.js';
+import { useBrand } from '../lib/useBrand.js';
 
 interface Partner {
   id: string;
@@ -23,6 +24,10 @@ export function AdminPartnerPrograms() {
   const { id } = useParams<{ id: string }>();
   const partnerId = id ?? '';
   const qc = useQueryClient();
+  // Provenance chip references the shared Network — hide on white-label
+  // portals (grants from pre-white-label federation history still work,
+  // they just don't advertise where they came from).
+  const { whiteLabel } = useBrand();
 
   const partner = useQuery({
     queryKey: ['partner', partnerId],
@@ -95,7 +100,7 @@ export function AdminPartnerPrograms() {
                     <div style={{ fontSize: 14, fontWeight: 500 }}>{c.name}</div>
                     <div style={{ fontSize: 12, color: theme.textMuted, fontFamily: theme.fontMono }}>{c.destinationUrl}</div>
                   </div>
-                  {c.grantSource === 'offering' && (
+                  {c.grantSource === 'offering' && !whiteLabel && (
                     <span style={{ fontSize: 11, color: theme.accent, padding: '3px 8px', background: `${theme.accent}15`, borderRadius: 12 }}>
                       via Network
                     </span>
