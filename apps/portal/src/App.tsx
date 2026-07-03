@@ -564,6 +564,12 @@ function IdentitySwitcher({ principal }: { principal: Principal }) {
   const [open, setOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const { label, initial, hue } = describePrincipal(principal);
+  // On a white-label portal the multi-workspace machinery is platform UX
+  // that must not leak: "Add another account" / "Create a new brand" talk
+  // about OUR platform's accounts and plans, and their routes only exist
+  // on the platform origin (dead links on a custom domain). The chip
+  // itself (identity + sign out) stays.
+  const { whiteLabel } = useBrand();
 
   // Best-effort: 401 just means no platform session (admin signed in via
   // api key or pre-platform-sessions session). We still render the chip;
@@ -863,29 +869,33 @@ function IdentitySwitcher({ principal }: { principal: Principal }) {
                 flexDirection: 'column',
               }}
             >
-              <a
-                href="/signin?add=1"
-                style={switcherActionStyle}
-                onMouseEnter={switcherActionHoverOn}
-                onMouseLeave={switcherActionHoverOff}
-              >
-                <Plus size={14} />
-                Add another account
-              </a>
-              {/* Honest label (§13): a new brand is its own independently-
-                  billed tenant that shares this sign-in — not a free
-                  addition to the current bill. The authenticated flow
-                  reuses the platform email so the brand can never be
-                  orphaned from this switcher. */}
-              <a
-                href="/brands/new"
-                style={switcherActionStyle}
-                onMouseEnter={switcherActionHoverOn}
-                onMouseLeave={switcherActionHoverOff}
-              >
-                <Plus size={14} />
-                Create a new brand (own plan)
-              </a>
+              {!whiteLabel && (
+                <>
+                  <a
+                    href="/signin?add=1"
+                    style={switcherActionStyle}
+                    onMouseEnter={switcherActionHoverOn}
+                    onMouseLeave={switcherActionHoverOff}
+                  >
+                    <Plus size={14} />
+                    Add another account
+                  </a>
+                  {/* Honest label (§13): a new brand is its own independently-
+                      billed tenant that shares this sign-in — not a free
+                      addition to the current bill. The authenticated flow
+                      reuses the platform email so the brand can never be
+                      orphaned from this switcher. */}
+                  <a
+                    href="/brands/new"
+                    style={switcherActionStyle}
+                    onMouseEnter={switcherActionHoverOn}
+                    onMouseLeave={switcherActionHoverOff}
+                  >
+                    <Plus size={14} />
+                    Create a new brand (own plan)
+                  </a>
+                </>
+              )}
               <button
                 onClick={() => void signOut(false)}
                 disabled={busyAction !== null}
