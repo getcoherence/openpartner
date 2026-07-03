@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import { hasActivePlan } from '../billing-plan.js';
 import type { TenantBillingState } from '../billing-plan.js';
+import { isPlanRequiredRoute } from '../middleware/trial-gate.js';
 
 function billing(overrides: Partial<TenantBillingState> = {}): TenantBillingState {
   return {
@@ -50,5 +51,22 @@ describe('hasActivePlan (partner-onboarding gate)', () => {
 
   it('is FALSE during a free trial with no subscription', () => {
     expect(hasActivePlan(billing({ plan: 'flex', inTrial: true, stripeSubscriptionId: null }))).toBe(false);
+  });
+});
+
+describe('plan-required route matching', () => {
+  it('gates every partner-onboarding entry point — including public self-signup', () => {
+    expect(isPlanRequiredRoute('POST', '/partners')).toBe(true);
+    // Without this, a brand with auto_approve on could grow its roster via
+    // creator self-signup without ever activating a plan.
+    expect(isPlanRequiredRoute('POST', '/partner-signup')).toBe(true);
+    expect(isPlanRequiredRoute('POST', '/admin/network/requests/abc123/approve')).toBe(true);
+  });
+
+  it('leaves attribution ingest and reads open (never lose data)', () => {
+    expect(isPlanRequiredRoute('POST', '/attribution/events')).toBe(false);
+    expect(isPlanRequiredRoute('POST', '/coupons/redeem')).toBe(false);
+    expect(isPlanRequiredRoute('GET', '/partners')).toBe(false);
+    expect(isPlanRequiredRoute('POST', '/auth/signin')).toBe(false);
   });
 });

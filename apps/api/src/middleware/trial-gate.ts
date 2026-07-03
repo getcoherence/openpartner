@@ -59,6 +59,11 @@ interface GatedRoute {
 // Enterprise + self-host are exempt (see hasActivePlan).
 const PLAN_REQUIRED: GatedRoute[] = [
   { method: 'POST', test: (p) => p === '/partners' },
+  // Public creator self-signup is partner onboarding too — without this a
+  // brand with auto_approve on could grow its roster forever without ever
+  // activating a plan. The 402 body is partner-facing here; the brand sees
+  // the real cause on its Billing page.
+  { method: 'POST', test: (p) => p === '/partner-signup' },
   { method: 'POST', test: (p) => /^\/admin\/network\/requests\/[^/]+\/approve$/.test(p) },
 ];
 
@@ -72,10 +77,15 @@ const TRIAL_GATED: GatedRoute[] = [
   { method: 'POST', test: (p) => p === '/admin/network/offerings' },
 ];
 
+/** Exported for tests: is this (method, path) behind the plan-required gate? */
+export function isPlanRequiredRoute(method: string, path: string): boolean {
+  return PLAN_REQUIRED.some((g) => g.method === method && g.test(path));
+}
+
 export async function trialGate(req: Request, res: Response, next: NextFunction): Promise<void> {
   // Match before the more expensive billing-state lookup — most requests are
   // not gated, and we don't want to add a DB hop to every read.
-  const planRequired = PLAN_REQUIRED.some((g) => g.method === req.method && g.test(req.path));
+  const planRequired = isPlanRequiredRoute(req.method, req.path);
   const trialMatched = TRIAL_GATED.some((g) => g.method === req.method && g.test(req.path));
   if (!planRequired && !trialMatched) return next();
 
