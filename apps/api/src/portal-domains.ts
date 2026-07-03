@@ -122,15 +122,22 @@ export async function isDomainAllowed(
 }
 
 /**
- * Edge revocation hook. On the MVP DO-native path this is where the DO API
- * call to remove the custom domain from the App Platform app goes (Phase 2
- * wiring, spec §6.3); until then, clearing Tenant.customDomain already
- * stops host resolution and the log line is the operator's signal to remove
- * the domain in the DO console.
+ * Edge revocation (spec §6.3): remove the domain from the DO App Platform
+ * app so the cert stops renewing and the host stops resolving at the edge.
+ * Clearing Tenant.customDomain (done by the callers) already stops tenant
+ * resolution; this closes the TLS side. When the DO automation isn't
+ * configured or errors, the warning is the operator's signal to remove the
+ * domain in the DO console by hand.
  */
 async function revokeEdge(domain: string, why: string): Promise<void> {
+  const { removeAppDomain } = await import('./do-app-domains.js');
+  const edge = await removeAppDomain(domain);
+  if (edge === 'removed' || edge === 'absent') {
+    console.warn(`[white-label] custom domain ${domain} revoked (${why}) — DO edge: ${edge}`);
+    return;
+  }
   console.warn(
-    `[white-label] custom domain ${domain} revoked (${why}) — remove it from the DO App Platform app (automated in Phase 2)`,
+    `[white-label] custom domain ${domain} revoked (${why}) — DO edge ${edge}: remove it from the DO App Platform app manually (console → Settings → Domains)`,
   );
 }
 

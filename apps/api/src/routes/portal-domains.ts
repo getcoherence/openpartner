@@ -34,6 +34,7 @@ import {
   newVerificationToken,
   txtRecordName,
 } from '../portal-domains.js';
+import { getDoNativeCnameTarget, registerAppDomain, removeAppDomain } from '../do-app-domains.js';
 
 // ---------------------------------------------------------------------------
 // Public allow-gate
@@ -68,15 +69,19 @@ const registerSchema = z.object({
 });
 
 /** What the customer must put in DNS. The CNAME target depends on the
- *  edge: DO-native domains alias the App Platform app; droplet domains
- *  point at the dedicated white-label edge. The TXT is OpenPartner's OWN
+ *  edge: DO-native domains alias the App Platform app (`doNativeTarget`,
+ *  resolved via DO_APP_DOMAIN_ALIAS or the DO API); droplet domains point
+ *  at the dedicated white-label edge. The TXT is OpenPartner's OWN
  *  ongoing ownership proof (independent of DO's cert validation) and must
  *  REMAIN in place permanently — removal demotes the domain (§7.6). */
-function dnsInstructions(row: Pick<PortalCustomDomainRow, 'domain' | 'verificationToken' | 'edgeKind'>) {
+function dnsInstructions(
+  row: Pick<PortalCustomDomainRow, 'domain' | 'verificationToken' | 'edgeKind'>,
+  doNativeTarget: string,
+) {
   const cnameTarget =
     row.edgeKind === 'droplet'
       ? (process.env.WHITELABEL_DROPLET_HOST ?? 'portal-router.openpartner.dev')
-      : (process.env.DO_APP_DOMAIN_ALIAS ?? '<your-app>.ondigitalocean.app');
+      : doNativeTarget;
   return {
     cname: { name: row.domain, target: cnameTarget },
     txt: { name: txtRecordName(row.domain), value: expectedTxtValue(row.verificationToken) },
@@ -84,7 +89,7 @@ function dnsInstructions(row: Pick<PortalCustomDomainRow, 'domain' | 'verificati
   };
 }
 
-function publicRow(row: PortalCustomDomainRow) {
+function publicRow(row: PortalCustomDomainRow, doNativeTarget: string) {
   return {
     id: row.id,
     domain: row.domain,
@@ -93,7 +98,7 @@ function publicRow(row: PortalCustomDomainRow) {
     verifiedAt: row.verifiedAt,
     lastCheckedAt: row.lastCheckedAt,
     createdAt: row.createdAt,
-    dnsInstructions: dnsInstructions(row),
+    dnsInstructions: dnsInstructions(row, doNativeTarget),
   };
 }
 
@@ -111,7 +116,8 @@ portalDomainsRouter.get('/config/domain', requireAuth, requireAdmin, async (req,
     'createdAt',
     'desc',
   );
-  res.json({ domains: rows.map(publicRow) });
+  const target = await getDoNativeCnameTarget();
+  res.json({ domains: rows.map((r) => publicRow(r, target)) });
 });
 
 portalDomainsRouter.post('/config/domain', requireAuth, requireAdmin, async (req, res) => {
@@ -137,7 +143,10 @@ portalDomainsRouter.post('/config/domain', requireAuth, requireAdmin, async (req
     const existing = await tdb<PortalCustomDomainRow>(TABLES.PortalCustomDomain)
       .where({ id: taken.id })
       .first();
-    return res.status(409).json({ error: 'domain_already_registered', domain: existing ? publicRow(existing) : undefined });
+    return res.status(409).json({
+      error: 'domain_already_registered',
+      domain: existing ? publicRow(existing, await getDoNativeCnameTarget()) : undefined,
+    });
   }
 
   const now = new Date();
@@ -162,7 +171,7 @@ portalDomainsRouter.post('/config/domain', requireAuth, requireAdmin, async (req
     }
     throw err;
   }
-  res.status(201).json(publicRow(row));
+  res.status(201).json(publicRow(row, await getDoNativeCnameTarget()));
 });
 
 portalDomainsRouter.post('/config/domain/:id/verify', requireAuth, requireAdmin, async (req, res) => {
@@ -190,9 +199,10 @@ portalDomainsRouter.post('/config/domain/:id/verify', requireAuth, requireAdmin,
         updatedAt: now,
       })
       .returning('*');
-    return res
-      .status(422)
-      .json({ error: 'verification_failed', domain: publicRow(updated as PortalCustomDomainRow) });
+    return res.status(422).json({
+      error: 'verification_failed',
+      domain: publicRow(updated as PortalCustomDomainRow, await getDoNativeCnameTarget()),
+    });
   }
 
   const [updated] = await tdb<PortalCustomDomainRow>(TABLES.PortalCustomDomain)
@@ -208,7 +218,16 @@ portalDomainsRouter.post('/config/domain/:id/verify', requireAuth, requireAdmin,
       .update({ customDomain: row.domain, updatedAt: now });
   }
   invalidateCustomDomainOrigins();
-  res.json(publicRow(updated as PortalCustomDomainRow));
+  // Sync the DO edge: register the domain on the App Platform app so DO
+  // provisions the cert (idempotent; §4.2). 'skipped' = automation not
+  // configured, 'failed' = DO API error — either way verification stands
+  // and the response tells the operator the edge needs manual attention.
+  const edge =
+    row.edgeKind === 'do_native' ? await registerAppDomain(row.domain) : 'not_applicable';
+  res.json({
+    ...publicRow(updated as PortalCustomDomainRow, await getDoNativeCnameTarget()),
+    edge,
+  });
 });
 
 portalDomainsRouter.delete('/config/domain/:id', requireAuth, requireAdmin, async (req, res) => {
@@ -223,5 +242,6 @@ portalDomainsRouter.delete('/config/domain/:id', requireAuth, requireAdmin, asyn
     .where({ id: tenantId, customDomain: row.domain })
     .update({ customDomain: null, updatedAt: new Date() });
   invalidateCustomDomainOrigins();
-  res.json({ ok: true });
+  const edge = row.edgeKind === 'do_native' ? await removeAppDomain(row.domain) : 'not_applicable';
+  res.json({ ok: true, edge });
 });
