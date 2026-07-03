@@ -682,3 +682,18 @@ Branch `feat/white-label-phase0` (7 commits on top of Phase 0). **Verified: API 
 **Deferred to Phase 2 (xispark launch):** DO header-capture precondition + e2e (§6.3.1), `app.openpartner.dev` registered as app domain (§6.3.2), registering `portal.xispark.com` on the app, wiring DO-API domain removal into the sweeps/webhook, manual ops step (§9).
 
 **Deferred to Phase 3:** admin domain-wizard UI (the API is ready; no portal Settings surface yet), dedicated droplet, Stripe white-label add-on price + webhook toggle (§8.2), Network read-path filter (§7.4.2), `docs/white-label.md` runbook.
+
+---
+
+## 15. Phase 2 + Phase 3 self-serve slice — implementation status (shipped 2026-07-03)
+
+**Phase 2 (DO edge automation):** `do-app-domains.ts` — DO Apps API read-modify-write (no per-domain endpoint exists; domains are part of the app spec). Verify registers the domain on the app (`edge` field in the response); the sweeps, the webhook transition, and admin domain-delete remove it. `DO_API_TOKEN` + `DO_APP_ID` gate the automation (unset = manual console mode with logged warnings). Customer CNAME target derived from the app's `default_ingress` (`DO_APP_DOMAIN_ALIAS` overrides). `.do/app.yaml` now carries a hard warning never to declare `domains:` (a spec push would clobber dynamically-managed customer domains). `docs/white-label-onboarding-runbook.md` is the ops guide.
+
+**Phase 3 — self-serve slice (§8.2 + wizard):**
+- `STRIPE_WHITELABEL_ADD_ON_PRICE_ID` (+ boot probe). `priceIdsForPlan(plan, {whiteLabel})` bundles the add-on into plan Checkout; `/billing/checkout` accepts `whiteLabel: true`.
+- `GET/POST/DELETE /billing/white-label`: status; enable = add-on Stripe subscription item with proration (enterprise = flag only, sales-led; no subscription = 409 `subscription_required`); disable = item removed + custom-domain routing/DO edge revoked.
+- Webhook: `customer.subscription.updated` mirrors add-on presence onto `Tenant.whiteLabel` (no-op when the price env is unset — protects manually-provisioned deployments); `customer.subscription.deleted` disables + revokes. Shared `applyWhiteLabelFromSubscription` / `revokeTenantCustomDomainRouting` keep webhook, sweeps, and admin-disable on one code path.
+- Portal: **admin → White label** wizard (`pages/admin/WhiteLabel.tsx`) — add-on enable/disable, domain register, CNAME+TXT records with copy buttons, verify (surfaces the DO `edge` result), delete, and TXT-rotation guidance on failed verification.
+- Runbook updated: self-serve is the primary onboarding path; curl equivalents kept for concierge/debugging.
+
+**Still deferred (not needed for xispark):** dedicated white-label Caddy droplet (§6.1 — the `EDGE_TRUST_SECRET` code path exists in `resolveTenant`; no droplet provisioned), Network read-path filter (§7.4.2 — Network-repo change), marketing-site pricing copy, first-paint `__BRAND__` injection (§10.6).

@@ -1,10 +1,15 @@
 # White-Label Custom Domain — Onboarding Runbook
 
-Ops sequence for putting a hosted tenant's portal on their own domain
-(first customer: **xispark** → `portal.xispark.com`). MVP edge is
+Sequence for putting a hosted tenant's portal on their own domain (first
+customer: **xispark** → `portal.xispark.com`). MVP edge is
 **DO App-Platform-native** (spec §6.3): DigitalOcean terminates TLS and the
-API resolves the tenant from the Host header. There is no self-serve UI for
-this yet (Phase 3) — the OpenPartner half is curl/SQL.
+API resolves the tenant from the Host header.
+
+**Preferred path (Phase 3, self-serve):** the tenant admin does steps 1–4
+themselves in **admin → White label** — enable the add-on (attaches the
+Stripe price to their subscription), register the domain, publish the two
+DNS records, hit Verify. The curl/SQL commands below hit the SAME
+endpoints and exist for concierge onboarding and debugging.
 
 Throughout: `<SLUG>` = tenant slug (`xispark`), `<DOMAIN>` = customer host
 (`portal.xispark.com`), `<APP-ALIAS>` = the DO app's
@@ -20,6 +25,7 @@ Throughout: `<SLUG>` = tenant slug (`xispark`), `<DOMAIN>` = customer host
 | `PORTAL_URL=https://app.openpartner.dev` on the api component | DO console → api component → env vars |
 | `DO_API_TOKEN` (apps read/write) + `DO_APP_ID` on the api component | Same place. Enables automatic DO domain sync: verify registers the domain on the app, revocation removes it, and the customer CNAME target is derived from the API. Without them every DO-side step in this runbook is manual (console → Settings → Domains) and the API responses say `edge: "skipped"` |
 | `DO_APP_DOMAIN_ALIAS` — optional | Only needed to override the derived `<APP-ALIAS>` CNAME target (e.g. no DO token configured) |
+| `STRIPE_WHITELABEL_ADD_ON_PRICE_ID` on the api component | Monthly recurring price created in Stripe (proposed $99/mo, intro coupon separate). Required for the self-serve add-on toggle; without it the enable endpoint 500s `stripe_price_not_configured` |
 | `EDGE_TRUST_SECRET` **unset** | DO-native path trusts only the genuine Host header; the secret exists for the Phase-3 droplet edge |
 | `PortalCustomDomain` migration applied | Api entrypoint migrates on boot; confirm the deploy after PR #29 succeeded |
 
@@ -27,25 +33,42 @@ Throughout: `<SLUG>` = tenant slug (`xispark`), `<DOMAIN>` = customer host
 > replaces the whole spec — a spec-managed domain list would wipe every
 > dynamically-added customer domain (see the comment in `.do/app.yaml`).
 
-## 1. Entitle the tenant
+## 1. Enable the add-on (Stripe-billed)
 
-White-label endpoints refuse (`402`) unless the tenant is **effectively**
-entitled: `whiteLabel=true` AND (active Stripe subscription OR in-trial OR
-enterprise). Confirm the billing side first (a lapsed trial without a
-subscription will 402), then provision the flag:
+Precondition: the tenant has an **active plan subscription** (Flex or
+RevShare — the add-on attaches to it; `STRIPE_WHITELABEL_ADD_ON_PRICE_ID`
+must be set on the api component).
 
-```sql
-update "Tenant" set "whiteLabel" = true, "updatedAt" = now()
-where slug = '<SLUG>';
+**Self-serve:** tenant admin → **White label** → *Enable white-label
+add-on*. This adds the add-on price to their subscription as a prorated
+line item and flips `Tenant.whiteLabel`; the `customer.subscription.updated`
+webhook re-confirms it. (A brand that hasn't subscribed yet gets a
+`subscription_required` nudge to Billing first — or bundles the add-on
+into plan checkout via `whiteLabel: true` on `/billing/checkout`.)
+
+**Concierge equivalent:**
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
+  https://app.openpartner.dev/api/t/<SLUG>/billing/white-label | jq .
+# → { ok: true, provisioned: true, billedVia: "subscription_item_added" }
 ```
 
-Sanity-check the *effective* state (as an admin of the tenant):
+Sanity-check the *effective* state:
 
 ```bash
 curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
-  https://app.openpartner.dev/api/t/<SLUG>/config/program | jq .whiteLabel
-# → true  (false = billing state is not entitling; fix billing first)
+  https://app.openpartner.dev/api/t/<SLUG>/billing/white-label | jq '{provisioned, effective}'
+# → both true  (effective=false = billing state is not entitling)
 ```
+
+Enterprise tenants: same endpoint sets the flag directly — no Stripe item,
+the add-on is encoded in the negotiated contract (§8.3). Disabling
+(`DELETE /billing/white-label`, or the UI's *Disable add-on*) removes the
+subscription item with a prorated credit AND revokes custom-domain
+routing + the DO edge. Cancelling the whole subscription or letting the
+add-on lapse does the same via webhook/sweep — nobody keeps white-label
+without paying for it.
 
 ## 2. Network isolation assertion (spec §7.4 — before the domain goes live)
 
@@ -61,6 +84,11 @@ select value from "Config" where "tenantId" = (select id from "Tenant" where slu
 ```
 
 ## 3. Register the domain in OpenPartner
+
+**Self-serve:** admin → White label → *Custom domain* → enter the
+subdomain → Register. The page shows both DNS records with copy buttons.
+
+**Concierge equivalent:**
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
@@ -82,9 +110,10 @@ proof.** A daily job re-checks it; deleting it disables the domain (§7.6).
 Subdomains only in v1 — an apex (`xispark.com`) is rejected with
 `subdomain_required`.
 
-## 4. Verify in OpenPartner (auto-registers the domain on the DO app)
+## 4. Verify (auto-registers the domain on the DO app)
 
-Once both DNS records resolve:
+**Self-serve:** the *Verify* button on the White label page.
+**Concierge equivalent**, once both DNS records resolve:
 
 ```bash
 # id = the domain row id from step 3 (or GET /config/domain to list)

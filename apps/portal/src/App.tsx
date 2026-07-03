@@ -24,6 +24,7 @@ import {
   Plus,
   X,
   Menu,
+  Palette,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { clearApiKey, api, type Principal } from './api.js';
@@ -49,6 +50,7 @@ import { WebhooksPage } from './pages/admin/Webhooks.js';
 import { AdminIntegrations } from './pages/admin/Integrations.js';
 import { AdminSettings } from './pages/admin/Settings.js';
 import { AdminBilling } from './pages/admin/Billing.js';
+import { AdminWhiteLabel } from './pages/admin/WhiteLabel.js';
 import { AdminAdmins } from './pages/admin/Admins.js';
 import { AdminNetwork } from './pages/admin/Network.js';
 import { AdminNetworkComplete } from './pages/admin/NetworkComplete.js';
@@ -261,6 +263,7 @@ function Shell() {
               <Route path="admin/admins" element={<AdminAdmins />} />
               <Route path="admin/settings" element={<AdminSettings />} />
               <Route path="admin/billing" element={<AdminBilling />} />
+              <Route path="admin/white-label" element={<AdminWhiteLabel />} />
               {/* Brand-side Network management — isolated for white-label. */}
               {!whiteLabel && (
                 <>
@@ -431,6 +434,7 @@ function Sidebar({ principal, variant = 'sidebar' }: { principal: Principal; var
             <NavItem to="/admin/admins" icon={<UserCog size={16} />}>Admins</NavItem>
             <NavItem to="/admin/settings" icon={<Settings size={16} />}>Settings</NavItem>
             <NavItem to="/admin/billing" icon={<CreditCard size={16} />}>Billing</NavItem>
+            <NavItem to="/admin/white-label" icon={<Palette size={16} />}>White label</NavItem>
           </NavSection>
         )}
 

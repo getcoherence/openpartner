@@ -181,11 +181,35 @@ export async function reverifyPortalDomains(
 }
 
 /**
+ * Revoke a tenant's custom-domain ROUTING: clear Tenant.customDomain (host
+ * resolution + links + CORS stop) and remove the domain from the DO edge
+ * (cert stops renewing). The PortalCustomDomain row keeps its verified
+ * status so re-subscribing restores service without a DNS round-trip.
+ * No-op when the tenant has no custom domain. Shared by the entitlement
+ * sweep and the Stripe webhook's add-on-removed transition.
+ */
+export async function revokeTenantCustomDomainRouting(
+  db: Knex,
+  tenantId: string,
+  why: string,
+): Promise<string | null> {
+  const tenant = await db<TenantRow>(TABLES.Tenant)
+    .where({ id: tenantId })
+    .first(['customDomain']);
+  const domain = tenant?.customDomain;
+  if (!domain) return null;
+  await db<TenantRow>(TABLES.Tenant)
+    .where({ id: tenantId })
+    .update({ customDomain: null, updatedAt: new Date() });
+  await revokeEdge(domain, why);
+  invalidateCustomDomainOrigins();
+  return domain;
+}
+
+/**
  * Daily entitlement sweep (§8.1): a tenant whose trial lapsed without ever
  * subscribing emits no Stripe webhook, so this is what actually revokes
- * white-label routing for them. Only touches routing (customDomain); the
- * PortalCustomDomain row keeps its verified status so re-subscribing
- * restores service without a DNS round-trip.
+ * white-label routing for them.
  */
 export async function sweepWhiteLabelEntitlement(
   db: Knex,
@@ -194,18 +218,17 @@ export async function sweepWhiteLabelEntitlement(
     .whereNotNull('customDomain')
     .select(['id', 'slug', 'customDomain', 'whiteLabel', 'status']);
   const revoked: string[] = [];
-  const now = new Date();
   for (const tenant of tenants) {
     const billing = await getTenantBillingState(db, tenant.id);
     if (isWhiteLabelEntitled({ whiteLabel: !!tenant.whiteLabel, status: tenant.status }, billing)) {
       continue;
     }
-    await db<TenantRow>(TABLES.Tenant)
-      .where({ id: tenant.id })
-      .update({ customDomain: null, updatedAt: now });
-    await revokeEdge(tenant.customDomain!, `tenant ${tenant.slug} no longer white-label entitled`);
-    revoked.push(tenant.customDomain!);
+    const domain = await revokeTenantCustomDomainRouting(
+      db,
+      tenant.id,
+      `tenant ${tenant.slug} no longer white-label entitled`,
+    );
+    if (domain) revoked.push(domain);
   }
-  if (revoked.length > 0) invalidateCustomDomainOrigins();
   return { checked: tenants.length, revoked };
 }

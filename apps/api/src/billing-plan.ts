@@ -87,21 +87,32 @@ export function planToMode(plan: BillingPlan | null): OpenPartnerMode {
 
 /** Stripe price IDs for a given plan. Returns the line items to pass
  *  to Stripe Checkout. Enterprise returns null — those tenants don't
- *  get a Stripe subscription (sales-led billing). */
-export function priceIdsForPlan(plan: BillingPlan): Array<{ price: string; quantity?: number }> | null {
+ *  get a Stripe subscription (sales-led billing; the white-label add-on
+ *  is encoded in the negotiated contract, not a Checkout line item). */
+export function priceIdsForPlan(
+  plan: BillingPlan,
+  opts: { whiteLabel?: boolean } = {},
+): Array<{ price: string; quantity?: number }> | null {
   if (plan === 'enterprise') return null;
+  let items: Array<{ price: string; quantity?: number }>;
   if (plan === 'flex') {
     const base = process.env.STRIPE_FLAT_PRICE_ID;
     const usage = process.env.STRIPE_FLAT_USAGE_PRICE_ID;
     if (!base) throw new Error('STRIPE_FLAT_PRICE_ID not configured');
-    const items: Array<{ price: string; quantity?: number }> = [{ price: base, quantity: 1 }];
+    items = [{ price: base, quantity: 1 }];
     if (usage) items.push({ price: usage });
-    return items;
+  } else {
+    // revshare: metered only.
+    const usage = process.env.STRIPE_REVSHARE_USAGE_PRICE_ID;
+    if (!usage) throw new Error('STRIPE_REVSHARE_USAGE_PRICE_ID not configured');
+    items = [{ price: usage }];
   }
-  // revshare: metered only.
-  const usage = process.env.STRIPE_REVSHARE_USAGE_PRICE_ID;
-  if (!usage) throw new Error('STRIPE_REVSHARE_USAGE_PRICE_ID not configured');
-  return [{ price: usage }];
+  if (opts.whiteLabel) {
+    const addOn = process.env.STRIPE_WHITELABEL_ADD_ON_PRICE_ID;
+    if (!addOn) throw new Error('STRIPE_WHITELABEL_ADD_ON_PRICE_ID not configured');
+    items.push({ price: addOn, quantity: 1 });
+  }
+  return items;
 }
 
 /** Trial end timestamp `TRIAL_DAYS` days from now, normalized to the

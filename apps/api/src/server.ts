@@ -19,6 +19,7 @@ console.log(JSON.stringify({
   flatPriceIdLen: (process.env.STRIPE_FLAT_PRICE_ID ?? '').length,
   flatUsagePriceIdLen: (process.env.STRIPE_FLAT_USAGE_PRICE_ID ?? '').length,
   revsharePriceIdLen: (process.env.STRIPE_REVSHARE_USAGE_PRICE_ID ?? '').length,
+  whitelabelAddOnPriceIdLen: (process.env.STRIPE_WHITELABEL_ADD_ON_PRICE_ID ?? '').length,
   networkPriceIdLen: (process.env.STRIPE_NETWORK_PRICE_ID ?? '').length,
   networkUsagePriceIdLen: (process.env.STRIPE_NETWORK_USAGE_PRICE_ID ?? '').length,
   // Mail
@@ -33,6 +34,9 @@ console.log(JSON.stringify({
   databaseUrlLen: (process.env.DATABASE_URL ?? '').length,
   databaseUrlAppLen: (process.env.DATABASE_URL_APP ?? '').length,
   portalUrlLen: (process.env.PORTAL_URL ?? '').length,
+  // White-label DO domain automation
+  doApiTokenLen: (process.env.DO_API_TOKEN ?? '').length,
+  doAppIdLen: (process.env.DO_APP_ID ?? '').length,
 }));
 
 const app = createApp();
