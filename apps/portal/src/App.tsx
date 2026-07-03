@@ -70,6 +70,7 @@ import { SignupPage } from './pages/Signup.js';
 import { SigninPage } from './pages/Signin.js';
 import { WorkspacesPage } from './pages/Workspaces.js';
 import { AddBrandPage } from './pages/AddBrand.js';
+import { PartnerJoinPage } from './pages/PartnerJoin.js';
 import { PlatformMagicLandingPage } from './pages/auth/PlatformMagicLanding.js';
 import { CreatorSignupPage } from './pages/creator/CreatorSignup.js';
 import { CreatorSigninPage } from './pages/creator/CreatorSignin.js';
@@ -136,6 +137,7 @@ export function App() {
           <>
             {/* Custom-domain origin — the whole host is one tenant. */}
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/join" element={<PartnerJoinPage />} />
             <Route path="/auth/magic" element={<MagicLandingPage />} />
             <Route path="/*" element={<Shell />} />
           </>
@@ -156,6 +158,7 @@ export function App() {
             {/* Public creator profiles — no auth, browsable from anywhere. */}
             <Route path="/creators/:handle" element={<CreatorPublicProfilePage />} />
             <Route path="/t/:slug/login" element={<LoginPage />} />
+            <Route path="/t/:slug/join" element={<PartnerJoinPage />} />
             <Route path="/t/:slug/auth/magic" element={<MagicLandingPage />} />
             <Route path="/t/:slug/*" element={<Shell />} />
             <Route path="*" element={<Navigate to="/" replace />} />
@@ -170,6 +173,7 @@ export function App() {
           <>
             <Route path="/install" element={<Navigate to="/" replace />} />
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/join" element={<PartnerJoinPage />} />
             <Route path="/auth/magic" element={<MagicLandingPage />} />
             <Route path="/*" element={<Shell />} />
           </>
