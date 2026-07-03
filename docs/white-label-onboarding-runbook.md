@@ -72,9 +72,16 @@ without paying for it.
 
 ## 2. Network isolation assertion (spec §7.4 — before the domain goes live)
 
-A white-label tenant must not be discoverable on the Network. The code
-suppresses federation at the source, but assert there's no pre-existing
-`Vendor` row:
+A white-label tenant must not be discoverable on the Network. Enabling the
+add-on now does this automatically: it **unpublishes every Network
+offering** the brand had (immediate marketplace removal), and ongoing
+pushes/heartbeats are suppressed while the entitlement is live. Program
+saves can't re-publish (guard in the marketplace sync). Watch api logs for
+`marketplace withdraw incomplete` — that means a Network call failed and
+the listed offerings must be hidden on the Network side by hand.
+
+Belt-and-suspenders assert (mandatory for SQL-provisioned tenants, cheap
+for everyone):
 
 ```sql
 select value from "Config" where "tenantId" = (select id from "Tenant" where slug = '<SLUG>')

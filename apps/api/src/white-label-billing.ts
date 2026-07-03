@@ -57,5 +57,11 @@ export async function applyWhiteLabelFromSubscription(
     );
     return 'disabled';
   }
+  // Turning white-label ON withdraws the brand from the shared marketplace
+  // (spec §7.4): unpublish any Network offerings a previously federated
+  // brand still has, so it disappears from Discover immediately instead of
+  // waiting for stale-heartbeat pruning. Never throws.
+  const { withdrawTenantFromMarketplace } = await import('./campaign-marketplace-sync.js');
+  await withdrawTenantFromMarketplace(db, tenantId);
   return 'enabled';
 }

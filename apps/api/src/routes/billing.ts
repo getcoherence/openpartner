@@ -173,9 +173,9 @@ billingRouter.post('/billing/white-label', requireAuth, requireAdmin, async (req
     return res.status(400).json({ error: 'no_billing_in_selfhost', detail: 'Self-host installs are always white-label entitled.' });
   }
   if (state.plan === 'enterprise') {
-    await db<TenantRow>(TABLES.Tenant)
-      .where({ id: tenantId })
-      .update({ whiteLabel: true, updatedAt: new Date() });
+    // Shares the transition path with the webhook so enabling also
+    // withdraws the brand from the shared marketplace.
+    await applyWhiteLabelFromSubscription(db, tenantId, true);
     return res.json({ ok: true, provisioned: true, billedVia: 'enterprise_contract' });
   }
   if (!state.stripeSubscriptionId) {
