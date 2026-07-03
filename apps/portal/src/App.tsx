@@ -370,7 +370,7 @@ function MobileDrawer({ open, onClose, children }: { open: boolean; onClose: () 
   );
 }
 
-function Sidebar({ principal, variant = 'sidebar' }: { principal: Principal; variant?: 'sidebar' | 'drawer' }) {
+export function Sidebar({ principal, variant = 'sidebar' }: { principal: Principal; variant?: 'sidebar' | 'drawer' }) {
   const nav = useNavigate();
   const tenantBase = useTenantBase();
   const { programName, supportEmail, logoUrl, whiteLabel } = useBrand();
