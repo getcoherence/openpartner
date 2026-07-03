@@ -232,14 +232,18 @@ ingress:
       component:
         name: router
 
-# Wire custom domains once the app is up. Set these in the App Platform
-# UI, or uncomment + fill below and `doctl apps update`.
+# Domains: managed in the DO console/API — DELIBERATELY not declared here.
 #
-# domains:
-#   - domain: partners.yourdomain.com
-#     type: PRIMARY
-#   - domain: go.yourdomain.com
-#     type: ALIAS
-#     minimum_tls_version: '1.2'
-#     # route go.yourdomain.com at the router component:
-#     zone: yourdomain.com
+# `doctl apps update --spec` REPLACES the whole app spec, domains included.
+# The live app's domain list contains entries this file must never own:
+#   - app.openpartner.dev (PRIMARY, DO-managed zone) — added via console
+#   - white-label customer domains (portal.<tenant>.com, type ALIAS, no
+#     zone — customer-owned DNS), added per tenant at onboarding and
+#     removed on entitlement lapse (docs/white-label-onboarding-runbook.md)
+# Declaring a domains block here and running `doctl apps update --spec`
+# would wipe every dynamically-added customer domain: certs revoked,
+# white-label portals down. Keep ALL domains in the console/API.
+#
+# (For a fresh self-hosted fork with no white-label customers, adding a
+# domains block is fine — the hazard is only mixing declarative spec
+# updates with dynamically-managed customer domains.)
