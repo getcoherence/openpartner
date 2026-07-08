@@ -82,17 +82,29 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   if (corsOrigins.length === 0 && process.env.NODE_ENV === 'production') {
     throw new Error('PORTAL_URL must be set in production so CORS has an origin allowlist');
   }
+  // /attribution/identify is the browser SDK's stitch call, made from the
+  // BRAND'S OWN website origin (acme.com) — an origin we can never
+  // allowlist ahead of time. It gets analytics-collector CORS: any origin,
+  // NO credentials (the endpoint is deliberately unauthenticated,
+  // rate-limited, reads no cookies, and returns nothing sensitive — see
+  // routes/identify.ts). Mounted BEFORE the global CORS so it also owns
+  // the OPTIONS preflight for this path; the global middleware runs after
+  // but never unsets headers, so the open ACAO survives for this route
+  // only. Everything else keeps the strict allowlist + credentials.
+  const IDENTIFY_PATH = /^(?:\/(?:api\/)?t\/[a-z0-9-]+)?\/attribution\/identify\/?$/;
+  const identifyCors = cors({ origin: true, credentials: false });
+  app.use((req, res, next) => (IDENTIFY_PATH.test(req.path) ? identifyCors(req, res, next) : next()));
+
   // Origin callback = static seed allowlist ∪ cached verified custom
   // domains (white-label; see cors-origins.ts). Still no `origin: true` —
   // an origin is echoed back only after it matches one of the two sets;
   // anything else gets no Access-Control-Allow-Origin at all. Requests
   // without an Origin header (same-origin, curl) skip the DB entirely.
-  app.use(
-    cors({
-      origin: corsOriginDecider(new Set(corsOrigins)),
-      credentials: true,
-    }),
-  );
+  const strictCors = cors({
+    origin: corsOriginDecider(new Set(corsOrigins)),
+    credentials: true,
+  });
+  app.use((req, res, next) => (IDENTIFY_PATH.test(req.path) ? next() : strictCors(req, res, next)));
   app.use(cookieParser());
 
   // CSRF: we deliberately do NOT mount a CSRF-token middleware. Defense
