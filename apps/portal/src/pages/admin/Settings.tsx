@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Settings as SettingsIcon, Mail, Wallet, Palette, Image as ImageIcon, Trash2, UserPlus } from 'lucide-react';
-import { api } from '../../api.js';
+import { api, ApiError } from '../../api.js';
 import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
 
@@ -794,6 +794,19 @@ function MailSection() {
     },
   });
 
+  // Tests the SAVED settings (what partner invites will actually use), so a
+  // bad host/password surfaces here with the transport's own error text.
+  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const test = useMutation({
+    mutationFn: () => api<{ ok: boolean; to: string; transport: string }>('/config/mail/test', { method: 'POST' }),
+    onSuccess: (r) => setTestResult({ ok: true, text: `Sent to ${r.to} via ${r.transport} — check your inbox (and spam).` }),
+    onError: (err) =>
+      setTestResult({
+        ok: false,
+        text: err instanceof ApiError ? String(err.message) : 'Test failed — could not reach the API.',
+      }),
+  });
+
   if (isLoading) return <Card>Loading…</Card>;
 
   const hasStoredSmtpPassword = data?.smtp?.hasPassword ?? false;
@@ -905,8 +918,24 @@ function MailSection() {
         <Button onClick={() => mut.mutate()} disabled={mut.isPending}>
           {mut.isPending ? 'Saving…' : 'Save mail settings'}
         </Button>
+        <Button
+          variant="secondary"
+          onClick={() => {
+            setTestResult(null);
+            test.mutate();
+          }}
+          disabled={test.isPending || mut.isPending}
+        >
+          {test.isPending ? 'Sending…' : 'Send test email'}
+        </Button>
         {saved && <span style={{ color: theme.success, fontSize: 13 }}>Saved.</span>}
       </Row>
+      {testResult && (
+        <div style={{ color: testResult.ok ? theme.success : theme.danger, fontSize: 13, marginTop: 10 }}>
+          {testResult.text}
+          {!testResult.ok && ' — unsaved changes aren’t tested; save first, then retry.'}
+        </div>
+      )}
     </Card>
   );
 }
