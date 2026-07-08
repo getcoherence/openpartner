@@ -29,6 +29,7 @@ import {
   saveMailSettings,
   type MailTransportKind,
 } from '../mail-settings.js';
+import { getMailer } from '../mailer.js';
 import {
   backfillPartners,
   completeNetworkConnect,
@@ -237,6 +238,60 @@ settingsRouter.post('/config/mail', requireAuth, requireAdmin, async (req, res) 
     throw err;
   }
   res.json(await getPublicMailSettings(db, tenantId));
+});
+
+/**
+ * Send a test message through the SAVED mail settings so a typo'd SMTP
+ * host/password surfaces here — not when a partner invite silently fails
+ * days later. Defaults to the signed-in admin's inbox; API-key admins
+ * (no inbox on file) pass an explicit `to`.
+ */
+const mailTestSchema = z.object({ to: z.string().trim().email().max(254).optional() });
+settingsRouter.post('/config/mail/test', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = mailTestSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  let to = body.data.to ?? null;
+  if (!to && req.principal?.role === 'admin' && req.principal.source === 'session') {
+    const admin = await db<AdminRow>(TABLES.Admin).where({ id: req.principal.adminId }).first(['email']);
+    to = (admin?.email as string | undefined) ?? null;
+  }
+  if (!to) {
+    return res.status(400).json({
+      error: 'recipient_required',
+      detail: 'No inbox on file for this credential — pass { "to": "you@example.com" }.',
+    });
+  }
+
+  const settings = await getPublicMailSettings(db, tenantId);
+  const transport = settings.kind ?? 'env fallback';
+  try {
+    await getMailer().send(
+      { db, tenantId },
+      {
+        to,
+        subject: 'Test email from your partner portal',
+        text: [
+          'This is a test message confirming your email delivery settings work.',
+          '',
+          `Transport: ${transport}`,
+          '',
+          'Partner invites and sign-in links will be delivered the same way.',
+        ].join('\n'),
+        tag: 'mail_test',
+        metadata: { purpose: 'mail_test' },
+      },
+    );
+  } catch (err) {
+    // Surface the transport error verbatim — "ECONNREFUSED", "535 auth
+    // failed", etc. is exactly what the admin needs to fix their config.
+    return res.status(502).json({
+      error: 'mail_test_failed',
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+  res.json({ ok: true, to, transport });
 });
 
 // ---------- Partner signup policy ----------
