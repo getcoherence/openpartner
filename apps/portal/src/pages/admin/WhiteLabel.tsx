@@ -271,10 +271,11 @@ function DomainRowView({ row, onChanged }: { row: DomainRow; onChanged: () => vo
       setVerifyNote(null);
       setError(
         err instanceof ApiError && String(err.message).includes('verification_failed')
-          ? 'DNS records not visible yet. Note: the TXT value ROTATES on each failed attempt — copy the current value below before retrying.'
+          ? row.status === 'verified'
+            ? 'Ownership record not visible right now — the domain stays active, and ownership is re-checked daily.'
+            : 'DNS records not visible yet — propagation can take a few minutes. The values below are unchanged; retry shortly.'
           : friendlyDomainError(err),
       );
-      onChanged(); // token rotated server-side — refresh the shown TXT value
     },
   });
   const remove = useMutation({

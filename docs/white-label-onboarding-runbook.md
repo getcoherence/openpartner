@@ -128,9 +128,10 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_API_KEY" \
   https://app.openpartner.dev/api/t/<SLUG>/config/domain/<id>/verify \
   | jq '{status, edge}'
 # → { "status": "verified", "edge": "added" }
-#   422 verification_failed = TXT not visible yet; the token ROTATES on
-#   failure — re-read dnsInstructions from the response and make sure the
-#   customer published the CURRENT value.
+#   422 verification_failed = TXT not visible yet. Retry-safe: the token
+#   does NOT change on a failed attempt (rotation only happens when the
+#   daily job demotes a previously-verified domain, §7.6), so just wait
+#   for DNS propagation and retry with the same published records.
 ```
 
 Success stamps `Tenant.customDomain` (host-based tenant resolution,
