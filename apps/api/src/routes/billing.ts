@@ -301,6 +301,9 @@ billingRouter.post('/billing/checkout', requireAuth, requireAdmin, async (req, r
     customer: customerId,
     line_items: lineItems,
     payment_method_collection: 'always',
+    // Show the promo-code field so sales-issued codes (e.g. first-month
+    // white-label discounts) are self-serve at checkout.
+    allow_promotion_codes: true,
     success_url: body.data.successUrl,
     cancel_url: body.data.cancelUrl,
     metadata: {
