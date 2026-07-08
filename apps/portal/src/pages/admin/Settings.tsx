@@ -882,7 +882,7 @@ function MailSection() {
               type="password"
               value={smtpPass}
               onChange={(e) => setSmtpPass(e.target.value)}
-              placeholder={hasStoredSmtpPassword ? '•••••••• (leave blank to keep)' : ''}
+              placeholder={hasStoredSmtpPassword ? 'Saved — leave blank to keep, type to replace' : ''}
             />
           </div>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.textMuted, marginBottom: 16 }}>
@@ -904,7 +904,7 @@ function MailSection() {
               type="password"
               value={pmToken}
               onChange={(e) => setPmToken(e.target.value)}
-              placeholder={hasStoredPmToken ? '•••••••• (leave blank to keep)' : ''}
+              placeholder={hasStoredPmToken ? 'Saved — leave blank to keep, type to replace' : ''}
             />
           </div>
           <div style={{ marginBottom: 16 }}>
