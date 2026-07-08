@@ -85,10 +85,13 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
     onSuccess: refresh,
     onError: (err) => {
       if (err instanceof ApiError && String(err.message).includes('subscription_required')) {
-        setError('Activate your plan first — the add-on attaches to your subscription. Head to Billing, then come back.');
+        // Shouldn't happen (the button routes unsubscribed tenants through
+        // Checkout instead) — but a race with a just-cancelled sub can.
+        setError('Your plan subscription is inactive — use the subscribe button to restart it with white-label included.');
       } else {
         setError(err instanceof ApiError ? err.message : 'Could not enable the add-on.');
       }
+      refresh();
     },
   });
   const disable = useMutation({
@@ -96,8 +99,35 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
     onSuccess: refresh,
     onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not disable the add-on.'),
   });
+  // No active subscription: don't bounce the admin to Billing and back —
+  // one Checkout with the plan AND the add-on bundled (the webhook flips
+  // whiteLabel on completion, so the page is active when they return).
+  const subscribeWithAddOn = useMutation({
+    mutationFn: () =>
+      api<{ url: string }>('/billing/checkout', {
+        method: 'POST',
+        body: {
+          successUrl: `${window.location.origin}${window.location.pathname}?checkout=success`,
+          cancelUrl: window.location.href,
+          whiteLabel: true,
+        },
+      }),
+    onSuccess: (r) => {
+      window.location.href = r.url;
+    },
+    onError: (err) => {
+      if (err instanceof ApiError && String(err.message).includes('no_plan_chosen')) {
+        setError('Pick a plan on the Billing page first — then subscribing here bundles the add-on in.');
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Could not start checkout.');
+      }
+    },
+  });
 
   const selfhost = billing.mode === 'selfhost';
+  // Enterprise has no Checkout; direct-enable is correct there. Everyone
+  // else needs a live subscription for the add-on item to attach to.
+  const needsCheckout = !billing.subscribed && billing.plan !== 'enterprise';
 
   return (
     <Card>
@@ -118,6 +148,13 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
               disabled={disable.isPending}
             >
               {disable.isPending ? 'Disabling…' : 'Disable add-on'}
+            </Button>
+          ) : needsCheckout ? (
+            <Button
+              onClick={() => subscribeWithAddOn.mutate()}
+              disabled={subscribeWithAddOn.isPending || !billing.priceConfigured}
+            >
+              {subscribeWithAddOn.isPending ? 'Opening checkout…' : 'Subscribe with white-label included'}
             </Button>
           ) : (
             <Button onClick={() => enable.mutate()} disabled={enable.isPending || !billing.priceConfigured}>
@@ -148,6 +185,12 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
             Removes OpenPartner branding from your partner portal and emails, hides the shared Network, and
             serves everything from your own domain (e.g. <code>partners.yourbrand.com</code>). Billed monthly as
             an add-on to your plan subscription{billing.priceConfigured ? '' : ' — pricing not yet configured on this deployment; contact support'}.
+            {needsCheckout && billing.priceConfigured && (
+              <>
+                {' '}Your plan subscription isn&rsquo;t active yet — one checkout starts it with the add-on
+                included.
+              </>
+            )}
           </>
         )}
       </div>
