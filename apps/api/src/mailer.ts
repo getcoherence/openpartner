@@ -118,6 +118,15 @@ class RoutingMailer implements Mailer {
           cfg.smtp.user && cfg.smtp.password
             ? { user: cfg.smtp.user, pass: cfg.smtp.password }
             : undefined,
+        // Nodemailer's default connection timeout is 2 MINUTES — longer
+        // than the platform gateway's ~60s, so a misconfigured host (wrong
+        // hostname, filtered port) surfaced as an opaque 504 instead of
+        // our clean ETIMEDOUT/ECONNREFUSED error, and a real send (partner
+        // invite, signup) could pin its request just as long. Fail fast:
+        // a healthy SMTP handshake completes in single-digit seconds.
+        connectionTimeout: 10_000,
+        greetingTimeout: 10_000,
+        socketTimeout: 30_000,
       });
       await transporter.sendMail({
         from,

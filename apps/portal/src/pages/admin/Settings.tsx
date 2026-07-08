@@ -882,7 +882,7 @@ function MailSection() {
               type="password"
               value={smtpPass}
               onChange={(e) => setSmtpPass(e.target.value)}
-              placeholder={hasStoredSmtpPassword ? '•••••••• (leave blank to keep)' : ''}
+              placeholder={hasStoredSmtpPassword ? 'Saved — leave blank to keep, type to replace' : ''}
             />
           </div>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.textMuted, marginBottom: 16 }}>
@@ -904,7 +904,7 @@ function MailSection() {
               type="password"
               value={pmToken}
               onChange={(e) => setPmToken(e.target.value)}
-              placeholder={hasStoredPmToken ? '•••••••• (leave blank to keep)' : ''}
+              placeholder={hasStoredPmToken ? 'Saved — leave blank to keep, type to replace' : ''}
             />
           </div>
           <div style={{ marginBottom: 16 }}>
@@ -933,7 +933,8 @@ function MailSection() {
       {testResult && (
         <div style={{ color: testResult.ok ? theme.success : theme.danger, fontSize: 13, marginTop: 10 }}>
           {testResult.text}
-          {!testResult.ok && ' — unsaved changes aren’t tested; save first, then retry.'}
+          {!testResult.ok &&
+            ' — check the host/port/credentials above (a connection timeout usually means a wrong hostname or filtered port). The test uses the last SAVED settings, so save any edits before retrying.'}
         </div>
       )}
     </Card>
