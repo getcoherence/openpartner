@@ -933,7 +933,8 @@ function MailSection() {
       {testResult && (
         <div style={{ color: testResult.ok ? theme.success : theme.danger, fontSize: 13, marginTop: 10 }}>
           {testResult.text}
-          {!testResult.ok && ' — unsaved changes aren’t tested; save first, then retry.'}
+          {!testResult.ok &&
+            ' — check the host/port/credentials above (a connection timeout usually means a wrong hostname or filtered port). The test uses the last SAVED settings, so save any edits before retrying.'}
         </div>
       )}
     </Card>
