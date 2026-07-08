@@ -184,23 +184,37 @@ portalDomainsRouter.post('/config/domain/:id/verify', requireAuth, requireAdmin,
     .first();
   if (!row) return res.status(404).json({ error: 'not_found' });
 
-  // ALWAYS re-check DNS — no {already:true} short-circuit. A verified row
-  // that re-verifies just freshens lastCheckedAt; one that fails demotes.
+  // ALWAYS re-check DNS — no {already:true} short-circuit.
   const now = new Date();
   const ok = await checkDomainTxt(row.domain, row.verificationToken);
   if (!ok) {
-    // Rotate the token on failure so a stale value can't be replayed later.
+    // The token deliberately does NOT rotate here. Rotation exists to
+    // force fresh ownership proof when a domain's proof DISAPPEARS or the
+    // domain changes hands (the daily re-verification job rotates on
+    // demotion, §7.6) — rotating on a failed button click would protect
+    // nothing (same admin, same claim) while making DNS-propagation lag
+    // unrecoverable: every retry would invalidate the record the customer
+    // just published.
+    if (row.status === 'verified') {
+      // A live domain failing a MANUAL freshness check keeps serving —
+      // demotion/revocation authority stays with the daily job, so a
+      // transient DNS blip during a hand-run check can't take a customer
+      // portal down. lastCheckedAt is untouched (it records the last
+      // SUCCESSFUL proof and feeds the staleness TTL).
+      return res.status(422).json({
+        error: 'verification_failed',
+        detail:
+          'Ownership TXT record not currently visible. The domain stays active; ownership is re-checked daily and the domain is disabled if the record stays missing.',
+        domain: publicRow(row, await getDoNativeCnameTarget()),
+      });
+    }
     const [updated] = await tdb<PortalCustomDomainRow>(TABLES.PortalCustomDomain)
       .where({ id: row.id })
-      .update({
-        status: 'failed',
-        verificationToken: newVerificationToken(),
-        lastCheckedAt: now,
-        updatedAt: now,
-      })
+      .update({ status: 'failed', lastCheckedAt: now, updatedAt: now })
       .returning('*');
     return res.status(422).json({
       error: 'verification_failed',
+      detail: 'DNS records not visible yet — propagation can take a few minutes. The values to publish are unchanged; retry once DNS has updated.',
       domain: publicRow(updated as PortalCustomDomainRow, await getDoNativeCnameTarget()),
     });
   }
