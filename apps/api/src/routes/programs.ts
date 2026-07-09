@@ -19,6 +19,7 @@ import {
 import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { campaignAcceptsNewActivity } from '../campaign-lifecycle.js';
+import { getWhiteLabelState } from '../white-label.js';
 
 /**
  * Commission rule schema. The wire format is an array of triggered sub-rules.
@@ -262,8 +263,14 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
   // Smart default: shareOnNetwork=true when the brand is on the Network so
   // the common case is "create campaign, immediately listed." Brand can opt
   // out per-campaign by passing false explicitly (VIP / private programs).
-  const shareOnNetwork =
-    body.data.shareOnNetwork ?? (await defaultShareOnNetwork(db, tenantId));
+  // White-label tenants are isolated from the marketplace: force false even
+  // when a (stale) client sends true, and before the marketplace-description
+  // requirement below — otherwise it's an invisible 400 for a surface their
+  // UI correctly hides.
+  const whiteLabelEffective = (await getWhiteLabelState(db, tenantId)).effective;
+  const shareOnNetwork = whiteLabelEffective
+    ? false
+    : (body.data.shareOnNetwork ?? (await defaultShareOnNetwork(db, tenantId)));
 
   // Marketplace description is required when shareOnNetwork=true. The
   // public marketplace card is the brand's only sales surface for cold
@@ -376,6 +383,14 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
   if (body.data.categories !== undefined) patch.categories = body.data.categories;
   if (body.data.partnersMayCustomizeCode !== undefined) {
     patch.partnersMayCustomizeCode = body.data.partnersMayCustomizeCode;
+  }
+
+  // White-label tenants are isolated from the marketplace — pin the flag
+  // false on every edit (also normalizes pre-white-label rows still
+  // carrying true, so a lapsed add-on can't resurrect a stale listing) and
+  // skip the marketplace-description requirement their UI can't satisfy.
+  if ((await getWhiteLabelState(db, tenantId)).effective) {
+    patch.shareOnNetwork = false;
   }
 
   // Marketplace description is required when shareOnNetwork=true.

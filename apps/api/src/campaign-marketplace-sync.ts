@@ -208,8 +208,13 @@ function logSyncError(op: 'create' | 'update' | 'unpublish', programId: string, 
 
 /** Default for new-campaign shareOnNetwork when the caller didn't specify.
  *  True when the brand is on the Network so the common case is one-click
- *  publish; false otherwise. */
+ *  publish; false otherwise. White-label tenants always default false —
+ *  their (deliberately retained) membership row must not resurrect
+ *  marketplace behavior: with the toggle hidden in their UI, a true
+ *  default made the marketplace-description requirement an invisible,
+ *  unfixable 400 on every campaign create. */
 export async function defaultShareOnNetwork(db: Knex, tenantId: string): Promise<boolean> {
+  if ((await getWhiteLabelState(db, tenantId)).effective) return false;
   const membership = await getNetworkMembership(db, tenantId);
   return Boolean(membership?.enabled);
 }
