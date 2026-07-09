@@ -33,22 +33,25 @@ uploadsRouter.post(
     // accidental array form, vs req.headers[name] which is typed as
     // string | string[] | undefined and creates a parameter-tampering
     // hazard if a client sends multiple Content-Type headers.
-    // Prove the body is a Buffer BEFORE reading .length — with express.raw
-    // a mismatched Content-Type leaves req.body as {} (and CodeQL rightly
-    // wants the type check ahead of the read).
-    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+    // Bind the raw body to a local and type-guard it BEFORE any .length
+    // read — with express.raw a mismatched Content-Type leaves req.body as
+    // {}, and CodeQL doesn't narrow req.body through the guard, so only
+    // the guarded local is used below (js/type-confusion otherwise re-fires
+    // on every fresh req.body read).
+    const body: unknown = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
       return res.status(400).json({ error: 'empty_body' });
     }
     let validated;
     try {
-      validated = validateImageUpload(req.header('content-type'), req.body.length);
+      validated = validateImageUpload(req.header('content-type'), body.length);
     } catch (err) {
       if (err instanceof UploadError) return res.status(400).json({ error: err.code, detail: err.message });
       throw err;
     }
 
     const key = newUploadKey(`tenants/${tenantId}/logos`, validated.ext);
-    await getStorage().put(key, req.body, { contentType: validated.contentType });
+    await getStorage().put(key, body, { contentType: validated.contentType });
     const url = getStorage().publicUrl(key);
 
     await db(TABLES.Tenant).where({ id: tenantId }).update({ logoUrl: url, updatedAt: new Date() });
@@ -82,21 +85,24 @@ uploadsRouter.post(
   requireAdmin,
   async (req, res) => {
     const { db, tenantId } = tenantOf(req);
-    // Prove the body is a Buffer BEFORE reading .length — with express.raw
-    // a mismatched Content-Type leaves req.body as {} (and CodeQL rightly
-    // wants the type check ahead of the read).
-    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+    // Bind the raw body to a local and type-guard it BEFORE any .length
+    // read — with express.raw a mismatched Content-Type leaves req.body as
+    // {}, and CodeQL doesn't narrow req.body through the guard, so only
+    // the guarded local is used below (js/type-confusion otherwise re-fires
+    // on every fresh req.body read).
+    const body: unknown = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
       return res.status(400).json({ error: 'empty_body' });
     }
     let validated;
     try {
-      validated = validateImageUpload(req.header('content-type'), req.body.length);
+      validated = validateImageUpload(req.header('content-type'), body.length);
     } catch (err) {
       if (err instanceof UploadError) return res.status(400).json({ error: err.code, detail: err.message });
       throw err;
     }
     const key = newUploadKey(`tenants/${tenantId}/favicons`, validated.ext);
-    await getStorage().put(key, req.body, { contentType: validated.contentType });
+    await getStorage().put(key, body, { contentType: validated.contentType });
     const url = getStorage().publicUrl(key);
     await db(TABLES.Tenant).where({ id: tenantId }).update({ faviconUrl: url, updatedAt: new Date() });
     res.json({ faviconUrl: url });
