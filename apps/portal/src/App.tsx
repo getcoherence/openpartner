@@ -71,6 +71,7 @@ import { SigninPage } from './pages/Signin.js';
 import { WorkspacesPage } from './pages/Workspaces.js';
 import { AddBrandPage } from './pages/AddBrand.js';
 import { PartnerJoinPage } from './pages/PartnerJoin.js';
+import { BrandDocument } from './lib/BrandDocument.js';
 import { PlatformMagicLandingPage } from './pages/auth/PlatformMagicLanding.js';
 import { CreatorSignupPage } from './pages/creator/CreatorSignup.js';
 import { CreatorSigninPage } from './pages/creator/CreatorSignin.js';
@@ -132,6 +133,7 @@ export function App() {
 
   return (
     <BrowserRouter>
+      <BrandDocument />
       <Routes>
         {isMultiTenant && hostTenantSlug ? (
           <>
