@@ -34,7 +34,8 @@ function makeClient(whiteLabel: boolean): QueryClient {
   });
   // Seed the caches useBrand()/usePublicBrand() read so no fetch happens.
   qc.setQueryData(['program-settings'], { ...BRAND, whiteLabel });
-  qc.setQueryData(['public-branding'], { ...BRAND, whiteLabel, tenantSlug: 'acme' });
+  // usePublicBrand keys by the /t/<slug>/ URL prefix; jsdom runs at '/'.
+  qc.setQueryData(['public-branding', null], { ...BRAND, whiteLabel, tenantSlug: 'acme' });
   return qc;
 }
 

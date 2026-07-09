@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { api } from '../api.js';
+import { api, currentTenantSlug } from '../api.js';
 
 /**
  * Shape of `GET /config/program`. Mirrors the API's `ProgramSettings`
@@ -81,9 +81,12 @@ export interface PublicBranding {
  * pages (no tenant in the URL / platform host) the API returns nulls and
  * this falls back to the OpenPartner default.
  */
-export function usePublicBrand(): Brand {
+export function usePublicBrand(): Brand & { brandColor: string | null } {
+  // api() scopes by the /t/<slug>/ URL prefix at call time — key the cache
+  // by it too, or an SPA navigation from a platform page (nulls) into a
+  // tenant page would keep serving the platform's empty branding.
   const { data, isLoading } = useQuery({
-    queryKey: ['public-branding'],
+    queryKey: ['public-branding', currentTenantSlug()],
     queryFn: () => api<PublicBranding>('/branding'),
     staleTime: 60_000,
   });
@@ -92,6 +95,7 @@ export function usePublicBrand(): Brand {
     logoUrl: data?.logoUrl ?? null,
     supportEmail: data?.supportEmail || null,
     whiteLabel: data?.whiteLabel ?? false,
+    brandColor: data?.brandColor ?? null,
     isLoading,
   };
 }
