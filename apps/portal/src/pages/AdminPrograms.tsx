@@ -387,6 +387,15 @@ function CreateProgram({ onClose, onCreated }: { onClose: () => void; onCreated:
   const [endsAt, setEndsAt] = useState('');
   const [grantToAllPartners, setGrantToAllPartners] = useState(false);
 
+  // The API requires a full URL (z.string().url()) — surface that next to
+  // the field instead of a bare 400 after submit. First real-world trip-up:
+  // typing "yourbrand.com" without the scheme, so offer the one-click fix.
+  const urlProblem = destinationUrlProblem(destinationUrl);
+  const schemeFix =
+    urlProblem && /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(destinationUrl.trim())
+      ? `https://${destinationUrl.trim()}`
+      : null;
+
   const mut = useMutation({
     mutationFn: () =>
       api<Program>('/programs', {
@@ -434,9 +443,27 @@ function CreateProgram({ onClose, onCreated }: { onClose: () => void; onCreated:
           onChange={(e) => setDestinationUrl(e.target.value)}
           placeholder="https://yourbrand.com/landing-page"
         />
-        <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
-          Where partner share-links for this campaign land. Partners can&rsquo;t change this unless you allow deep links below.
-        </div>
+        {urlProblem ? (
+          <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>
+            {urlProblem}
+            {schemeFix && (
+              <>
+                {' '}
+                <button
+                  type="button"
+                  onClick={() => setDestinationUrl(schemeFix)}
+                  style={{ background: 'none', border: 'none', color: theme.accent, cursor: 'pointer', padding: 0, fontSize: 12, textDecoration: 'underline' }}
+                >
+                  Use {schemeFix}
+                </button>
+              </>
+            )}
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+            Where partner share-links for this campaign land. Partners can&rsquo;t change this unless you allow deep links below.
+          </div>
+        )}
       </div>
       <div style={{ marginBottom: 14 }}>
         <Label>Allowed deep-link domains (optional)</Label>
@@ -550,6 +577,7 @@ function CreateProgram({ onClose, onCreated }: { onClose: () => void; onCreated:
             rules.length === 0 ||
             rules.some((r) => !r.value) ||
             !destinationUrl ||
+            urlProblem != null ||
             (networkEnabled && shareOnNetwork && !marketplaceDescription.trim()) ||
             mut.isPending
           }
@@ -1046,6 +1074,22 @@ function CustomerRewardEditor({
  *  native `title` attribute so we don't need a tooltip library — the
  *  browser handles positioning, multi-line via \n. Help text should be
  *  plain prose; no HTML. */
+/** Mirror of the API's z.string().url() so the form explains the rule
+ *  instead of bouncing a 400. Null = fine (empty is gated separately). */
+function destinationUrlProblem(value: string): string | null {
+  const v = value.trim();
+  if (!v) return null;
+  try {
+    const url = new URL(v);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      return 'Must be an http(s) address.';
+    }
+    return null;
+  } catch {
+    return 'Must be a full URL starting with https:// — e.g. https://yourbrand.com/landing.';
+  }
+}
+
 function LabelWithHelp({ label, help }: { label: string; help: string }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
