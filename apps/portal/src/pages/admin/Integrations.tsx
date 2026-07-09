@@ -366,8 +366,8 @@ function PayloadGuide() {
           style={{
             margin: '0 0 12px',
             padding: 10,
-            background: `${theme.accent}10`,
-            border: `1px solid ${theme.accent}55`,
+            background: `${theme.accentA10}`,
+            border: `1px solid ${theme.accentA55}`,
             borderRadius: 6,
             fontSize: 12,
             color: theme.text,

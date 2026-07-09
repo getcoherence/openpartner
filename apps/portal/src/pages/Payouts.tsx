@@ -60,7 +60,7 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
       <ErrorBanner error={runPayouts.error ?? payouts.error} />
 
       {runPayouts.data && (
-        <Card style={{ marginBottom: 14, borderColor: `${theme.accent}55` }}>
+        <Card style={{ marginBottom: 14, borderColor: `${theme.accentA55}` }}>
           <div style={{ fontSize: 13, color: theme.accent, fontWeight: 500, marginBottom: 8 }}>
             Run #{shortId(runPayouts.data.runId)} — {runPayouts.data.payouts.length} payout
             {runPayouts.data.payouts.length === 1 ? '' : 's'}

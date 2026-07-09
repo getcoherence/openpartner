@@ -181,7 +181,7 @@ export function CreatorOfferingDetailPage() {
       <ErrorBanner error={error} />
       {isLoading && <Card>Loading…</Card>}
       {invitation && invitation.status === 'pending' && (
-        <Card style={{ marginBottom: 14, background: `${theme.accent}10`, borderColor: `${theme.accent}55` }}>
+        <Card style={{ marginBottom: 14, background: `${theme.accentA10}`, borderColor: `${theme.accentA55}` }}>
           <div style={{ fontSize: 14, fontWeight: 500, color: theme.accent, marginBottom: 4 }}>
             ✓ {invitation.vendorDisplayName ?? 'A brand'} invited you to apply
           </div>

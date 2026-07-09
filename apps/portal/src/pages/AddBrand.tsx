@@ -136,7 +136,7 @@ export function AddBrandPage() {
                   onClick={() => setPlan(p.key)}
                   style={{
                     textAlign: 'left',
-                    background: active ? `${theme.accent}15` : theme.surface,
+                    background: active ? `${theme.accentA15}` : theme.surface,
                     border: `1px solid ${active ? theme.accent : theme.borderSubtle}`,
                     borderRadius: theme.radiusSm,
                     padding: '12px 14px',

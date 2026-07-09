@@ -63,6 +63,40 @@ uploadsRouter.post(
   },
 );
 
+// ---------- Favicon upload ----------
+//
+// Same flow as /uploads/logo, stamped onto Tenant.faviconUrl. Kept as a
+// separate field because logos are lockups/wordmarks while favicons are
+// square marks — one image rarely works as both. PNG/JPEG/WebP only (no
+// SVG/ICO: SVG is a script vector and browsers render PNG favicons fine).
+uploadsRouter.post(
+  '/uploads/favicon',
+  express.raw({
+    type: ['image/jpeg', 'image/png', 'image/webp'],
+    limit: MAX_UPLOAD_BYTES,
+  }),
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    const { db, tenantId } = tenantOf(req);
+    let validated;
+    try {
+      validated = validateImageUpload(req.header('content-type'), req.body?.length ?? 0);
+    } catch (err) {
+      if (err instanceof UploadError) return res.status(400).json({ error: err.code, detail: err.message });
+      throw err;
+    }
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).json({ error: 'empty_body' });
+    }
+    const key = newUploadKey(`tenants/${tenantId}/favicons`, validated.ext);
+    await getStorage().put(key, req.body, { contentType: validated.contentType });
+    const url = getStorage().publicUrl(key);
+    await db(TABLES.Tenant).where({ id: tenantId }).update({ faviconUrl: url, updatedAt: new Date() });
+    res.json({ faviconUrl: url });
+  },
+);
+
 // ---------- Brand asset image upload ----------
 //
 // Same pattern as /uploads/logo but the URL goes back to the client

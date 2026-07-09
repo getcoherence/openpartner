@@ -174,7 +174,7 @@ function VerifyErrorBox({ error }: { error: ApiError }) {
 
 function StatusChip({ status }: { status: DomainStatus }) {
   const palette: Record<DomainStatus, { bg: string; fg: string; label: string }> = {
-    pending: { bg: `${theme.accent}15`, fg: theme.accent, label: 'Pending verification' },
+    pending: { bg: `${theme.accentA15}`, fg: theme.accent, label: 'Pending verification' },
     verified: { bg: theme.successSoft, fg: theme.success, label: 'Verified' },
     failed: { bg: `${theme.danger}15`, fg: theme.danger, label: 'Failed' },
   };
