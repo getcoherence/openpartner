@@ -65,6 +65,10 @@ export function useBrand(): Brand {
 
 /** Shape of the public `GET /branding` bootstrap (no auth). */
 export interface PublicBranding {
+  /** Slug of the tenant resolved for the request — on a prefix-less call
+   *  it's non-null only when the HOST resolved it (custom domain), or
+   *  'default' on single-tenant installs. */
+  tenantSlug: string | null;
   programName: string | null;
   logoUrl: string | null;
   faviconUrl: string | null;
@@ -82,7 +86,11 @@ export interface PublicBranding {
  * pages (no tenant in the URL / platform host) the API returns nulls and
  * this falls back to the OpenPartner default.
  */
-export function usePublicBrand(): Brand & { brandColor: string | null; faviconUrl: string | null } {
+export function usePublicBrand(): Brand & {
+  brandColor: string | null;
+  faviconUrl: string | null;
+  tenantSlug: string | null;
+} {
   // api() scopes by the /t/<slug>/ URL prefix at call time — key the cache
   // by it too, or an SPA navigation from a platform page (nulls) into a
   // tenant page would keep serving the platform's empty branding.
@@ -98,6 +106,7 @@ export function usePublicBrand(): Brand & { brandColor: string | null; faviconUr
     supportEmail: data?.supportEmail || null,
     whiteLabel: data?.whiteLabel ?? false,
     brandColor: data?.brandColor ?? null,
+    tenantSlug: data?.tenantSlug ?? null,
     isLoading,
   };
 }
