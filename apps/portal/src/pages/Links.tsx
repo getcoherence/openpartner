@@ -1,10 +1,61 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link2, Plus, ArrowRight } from 'lucide-react';
-import { api, type Principal } from '../api.js';
+import { Link2, Plus, ArrowRight, Check, Copy } from 'lucide-react';
+import { api, currentTenantSlug, type Principal } from '../api.js';
 import { theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
+import { usePublicBrand } from '../lib/useBrand.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
+
+/**
+ * The full share URL for a link key, matching how the router resolves it:
+ *   platform origin (path-based tenant) → https://app…/r/<slug>/<key>
+ *   white-label custom domain           → https://portal.brand.com/r/<key>
+ *   single-tenant self-host             → null (the portal origin doesn't
+ *     necessarily serve /r; show the relative key and let the operator's
+ *     own router URL apply)
+ */
+function useShareUrlBase(): string | null {
+  const pathSlug = currentTenantSlug();
+  const { tenantSlug } = usePublicBrand();
+  if (pathSlug) return `${window.location.origin}/r/${pathSlug}`;
+  if (tenantSlug && tenantSlug !== 'default') return `${window.location.origin}/r`;
+  return null;
+}
+
+function CopyableShareLink({ linkKey, base }: { linkKey: string; base: string | null }) {
+  const [copied, setCopied] = useState(false);
+  if (!base) return <code style={{ color: theme.accent }}>/r/{linkKey}</code>;
+  const url = `${base}/${linkKey}`;
+  return (
+    <button
+      type="button"
+      title="Copy share link"
+      onClick={() => {
+        void navigator.clipboard.writeText(url).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        });
+      }}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        background: 'transparent',
+        border: 'none',
+        padding: 0,
+        cursor: 'pointer',
+        fontFamily: theme.fontMono,
+        fontSize: 13,
+        color: theme.accent,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {url.replace(/^https?:\/\//, '')}
+      {copied ? <Check size={13} style={{ color: theme.success }} /> : <Copy size={13} style={{ color: theme.textDim }} />}
+    </button>
+  );
+}
 
 interface LinkRow {
   id: string;
@@ -82,6 +133,7 @@ function AdminLinksHub() {
 function PartnerLinks({ partnerId, readOnly }: { partnerId: string; readOnly: boolean }) {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
+  const shareBase = useShareUrlBase();
 
   const links = useQuery({
     queryKey: ['links', partnerId],
@@ -139,7 +191,7 @@ function PartnerLinks({ partnerId, readOnly }: { partnerId: string; readOnly: bo
             const campaign = campaigns.data?.programs.find((c) => c.id === l.programId);
             const dest = l.destinationUrl ?? campaign?.destinationUrl ?? '—';
             return [
-              <code style={{ color: theme.accent }}>/r/{l.linkKey}</code>,
+              <CopyableShareLink linkKey={l.linkKey} base={shareBase} />,
               <span style={{ color: theme.textMuted, fontSize: 13 }}>
                 {dest}
                 {l.destinationUrl && (

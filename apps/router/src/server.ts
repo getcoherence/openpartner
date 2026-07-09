@@ -19,26 +19,55 @@ app.get('/health', (c) => c.json({ ok: true, service: 'router' }));
 //   /r/:slug/:linkKey  — multi-tenant, slug disambiguates per-tenant
 //                        unique linkKeys. The shared share-URL format
 //                        Network's deriveShareUrl produces.
-//   /r/:linkKey        — single-tenant fallback. linkKey is globally
-//                        unique here, so no slug needed. Self-host
-//                        deployments use this.
+//   /r/:linkKey        — key-only. Single-tenant deployments (globally
+//                        unique keys), AND white-label custom domains,
+//                        where the Host header resolves the tenant so the
+//                        key is scoped without a slug in the URL.
 //
-// Both resolve → insert Click → set first-party cookie → 302.
-app.get('/r/:slug/:linkKey', async (c) => {
-  const { slug, linkKey } = c.req.param();
+// Every shape is ALSO mounted without the /r prefix: DO App Platform's
+// ingress strips the matched `/r` path prefix before forwarding (same as
+// it strips /api for the api component), so in production the router
+// receives `/<key>`, not `/r/<key>`. The prefixed routes stay for dev,
+// self-host reverse proxies that preserve the path, and direct hits.
+//
+// All resolve → insert Click → set first-party cookie → 302.
+async function handleSlugKey(c: Context): Promise<Response> {
+  const { slug, linkKey } = c.req.param() as { slug: string; linkKey: string };
   const tenant = (await db('Tenant').where({ slug, status: 'active' }).first(['id'])) as
     | { id: string }
     | undefined;
   if (!tenant) return c.text('Tenant not found', 404);
   const link = await db<LinkRow>(TABLES.Link).where({ tenantId: tenant.id, linkKey }).first();
   return resolveLink(c, link);
-});
+}
 
-app.get('/r/:linkKey', async (c) => {
+async function handleKeyOnly(c: Context): Promise<Response> {
   const linkKey = c.req.param('linkKey');
+  // White-label custom domain: the Host header names the tenant, so scope
+  // the lookup — two tenants may use the same key. Falls through to the
+  // global lookup for single-tenant installs (and any host we don't know).
+  const host = (c.req.header('host') ?? '').split(':')[0]!.toLowerCase().trim();
+  if (host) {
+    const tenant = (await db('Tenant')
+      .where({ customDomain: host, status: 'active' })
+      .first(['id'])) as { id: string } | undefined;
+    if (tenant) {
+      const link = await db<LinkRow>(TABLES.Link)
+        .where({ tenantId: tenant.id, linkKey })
+        .first();
+      return resolveLink(c, link);
+    }
+  }
   const link = await db<LinkRow>(TABLES.Link).where({ linkKey }).first();
   return resolveLink(c, link);
-});
+}
+
+app.get('/r/:slug/:linkKey', handleSlugKey);
+app.get('/r/:linkKey', handleKeyOnly);
+// Prefix-stripped variants (DO ingress). Registered after /health, and
+// Hono prefers static routes over params, so /health stays unaffected.
+app.get('/:slug/:linkKey', handleSlugKey);
+app.get('/:linkKey', handleKeyOnly);
 
 async function resolveLink(c: Context, link: LinkRow | undefined) {
   if (!link) {
