@@ -93,8 +93,8 @@ export function SignupPage() {
       {plan && (
         <div
           style={{
-            background: `${theme.accent}10`,
-            border: `1px solid ${theme.accent}55`,
+            background: `${theme.accentA10}`,
+            border: `1px solid ${theme.accentA55}`,
             borderRadius: theme.radiusSm,
             padding: '10px 12px',
             marginBottom: 14,

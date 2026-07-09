@@ -18,6 +18,7 @@ interface ProgramSettings {
   programName: string | null;
   supportEmail: string | null;
   logoUrl: string | null;
+  faviconUrl: string | null;
   brandColor: string | null;
   programTermsUrl: string | null;
   whiteLabel: boolean;
@@ -196,7 +197,21 @@ function ProgramSection() {
         <div style={{ fontSize: 15, fontWeight: 500 }}>Brand info</div>
       </div>
       <ErrorBanner error={error ?? mut.error} />
-      <LogoUploader logoUrl={data?.logoUrl ?? null} brandName={data?.programName ?? null} />
+      <BrandImageUploader
+        endpoint="/uploads/logo"
+        currentUrl={data?.logoUrl ?? null}
+        brandName={data?.programName ?? null}
+        label="Brand logo"
+        hint="PNG, JPEG, or WebP. Max 2 MB. Square images render best in the sidebar (we display ~28×28)."
+      />
+      <BrandImageUploader
+        endpoint="/uploads/favicon"
+        currentUrl={data?.faviconUrl ?? null}
+        brandName={data?.programName ?? null}
+        label="Favicon (browser-tab icon)"
+        hint="A square simplified mark — usually not your full logo. PNG/WebP, 64×64 or larger. Falls back to your logo when unset."
+        previewSize={32}
+      />
       <div style={{ marginBottom: 16 }}>
         <Label>Brand name</Label>
         <Input value={programName} onChange={(e) => setProgramName(e.target.value)} placeholder="e.g. Acme" maxLength={120} />
@@ -949,15 +964,29 @@ function Hint({ children }: { children: ReactNode }) {
   return <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>{children}</div>;
 }
 
-function LogoUploader({ logoUrl, brandName }: { logoUrl: string | null; brandName: string | null }) {
+function BrandImageUploader({
+  endpoint,
+  currentUrl,
+  brandName,
+  label,
+  hint,
+  previewSize = 56,
+}: {
+  endpoint: string;
+  currentUrl: string | null;
+  brandName: string | null;
+  label: string;
+  hint: string;
+  previewSize?: number;
+}) {
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const upload = useMutation({
-    mutationFn: (file: File) =>
-      api<{ logoUrl: string }>('/uploads/logo', { method: 'POST', body: file }),
+    mutationFn: (file: File) => api<Record<string, string>>(endpoint, { method: 'POST', body: file }),
     onSuccess: () => {
       setError(null);
       qc.invalidateQueries({ queryKey: ['program-settings'] });
+      qc.invalidateQueries({ queryKey: ['public-branding'] });
       qc.invalidateQueries({ queryKey: ['session-home'] });
     },
     onError: (err) => setError(err instanceof Error ? err.message : 'upload failed'),
@@ -978,8 +1007,8 @@ function LogoUploader({ logoUrl, brandName }: { logoUrl: string | null; brandNam
     <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 14 }}>
       <div
         style={{
-          width: 56,
-          height: 56,
+          width: previewSize,
+          height: previewSize,
           borderRadius: theme.radiusSm,
           background: theme.surface2,
           border: `1px solid ${theme.borderSubtle}`,
@@ -990,16 +1019,16 @@ function LogoUploader({ logoUrl, brandName }: { logoUrl: string | null; brandNam
           flexShrink: 0,
         }}
       >
-        {logoUrl ? (
-          <img src={logoUrl} alt={brandName ?? 'Brand logo'} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+        {currentUrl ? (
+          <img src={currentUrl} alt={brandName ?? label} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
         ) : (
-          <span style={{ fontSize: 22, fontWeight: 600, color: theme.accent }}>
+          <span style={{ fontSize: Math.round(previewSize * 0.4), fontWeight: 600, color: theme.accent }}>
             {brandName?.charAt(0).toUpperCase() ?? '?'}
           </span>
         )}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <Label>Brand logo</Label>
+        <Label>{label}</Label>
         <div>
           <label style={{ display: 'inline-block' }}>
             <input
@@ -1022,11 +1051,11 @@ function LogoUploader({ logoUrl, brandName }: { logoUrl: string | null; brandNam
                 opacity: upload.isPending ? 0.6 : 1,
               }}
             >
-              {upload.isPending ? 'Uploading…' : logoUrl ? 'Replace logo' : 'Upload logo'}
+              {upload.isPending ? 'Uploading…' : currentUrl ? 'Replace image' : 'Upload image'}
             </span>
           </label>
         </div>
-        <Hint>PNG, JPEG, or WebP. Max 2 MB. Square images render best in the sidebar (we display ~28×28).</Hint>
+        <Hint>{hint}</Hint>
         {error && <div style={{ marginTop: 6, fontSize: 12, color: theme.danger }}>{error}</div>}
       </div>
     </div>

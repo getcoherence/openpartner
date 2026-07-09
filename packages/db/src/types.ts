@@ -37,6 +37,9 @@ export interface TenantRow {
   /** Public URL for the tenant's brand logo, set via the upload endpoint.
    *  Null when the brand hasn't uploaded one — UI falls back to text. */
   logoUrl: string | null;
+  /** Browser-tab icon, distinct from the logo (square mark vs lockup).
+   *  Null = fall back to logoUrl, then a generated monogram. */
+  faviconUrl: string | null;
   /** Per-tenant billing tier. Null = legacy tenant predating per-tenant
    *  pricing (resolver falls back to OPENPARTNER_MODE). 'enterprise' has
    *  no Stripe subscription; billed out of band. */

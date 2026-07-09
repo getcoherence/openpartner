@@ -101,7 +101,7 @@ export function AdminPartnerPrograms() {
                     <div style={{ fontSize: 12, color: theme.textMuted, fontFamily: theme.fontMono }}>{c.destinationUrl}</div>
                   </div>
                   {c.grantSource === 'offering' && !whiteLabel && (
-                    <span style={{ fontSize: 11, color: theme.accent, padding: '3px 8px', background: `${theme.accent}15`, borderRadius: 12 }}>
+                    <span style={{ fontSize: 11, color: theme.accent, padding: '3px 8px', background: `${theme.accentA15}`, borderRadius: 12 }}>
                       via Network
                     </span>
                   )}

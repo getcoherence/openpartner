@@ -33,19 +33,25 @@ uploadsRouter.post(
     // accidental array form, vs req.headers[name] which is typed as
     // string | string[] | undefined and creates a parameter-tampering
     // hazard if a client sends multiple Content-Type headers.
+    // Bind the raw body to a local and type-guard it BEFORE any .length
+    // read — with express.raw a mismatched Content-Type leaves req.body as
+    // {}, and CodeQL doesn't narrow req.body through the guard, so only
+    // the guarded local is used below (js/type-confusion otherwise re-fires
+    // on every fresh req.body read).
+    const body: unknown = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      return res.status(400).json({ error: 'empty_body' });
+    }
     let validated;
     try {
-      validated = validateImageUpload(req.header('content-type'), req.body?.length ?? 0);
+      validated = validateImageUpload(req.header('content-type'), body.length);
     } catch (err) {
       if (err instanceof UploadError) return res.status(400).json({ error: err.code, detail: err.message });
       throw err;
     }
-    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-      return res.status(400).json({ error: 'empty_body' });
-    }
 
     const key = newUploadKey(`tenants/${tenantId}/logos`, validated.ext);
-    await getStorage().put(key, req.body, { contentType: validated.contentType });
+    await getStorage().put(key, body, { contentType: validated.contentType });
     const url = getStorage().publicUrl(key);
 
     await db(TABLES.Tenant).where({ id: tenantId }).update({ logoUrl: url, updatedAt: new Date() });
@@ -60,6 +66,46 @@ uploadsRouter.post(
     });
 
     res.json({ logoUrl: url });
+  },
+);
+
+// ---------- Favicon upload ----------
+//
+// Same flow as /uploads/logo, stamped onto Tenant.faviconUrl. Kept as a
+// separate field because logos are lockups/wordmarks while favicons are
+// square marks — one image rarely works as both. PNG/JPEG/WebP only (no
+// SVG/ICO: SVG is a script vector and browsers render PNG favicons fine).
+uploadsRouter.post(
+  '/uploads/favicon',
+  express.raw({
+    type: ['image/jpeg', 'image/png', 'image/webp'],
+    limit: MAX_UPLOAD_BYTES,
+  }),
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    const { db, tenantId } = tenantOf(req);
+    // Bind the raw body to a local and type-guard it BEFORE any .length
+    // read — with express.raw a mismatched Content-Type leaves req.body as
+    // {}, and CodeQL doesn't narrow req.body through the guard, so only
+    // the guarded local is used below (js/type-confusion otherwise re-fires
+    // on every fresh req.body read).
+    const body: unknown = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      return res.status(400).json({ error: 'empty_body' });
+    }
+    let validated;
+    try {
+      validated = validateImageUpload(req.header('content-type'), body.length);
+    } catch (err) {
+      if (err instanceof UploadError) return res.status(400).json({ error: err.code, detail: err.message });
+      throw err;
+    }
+    const key = newUploadKey(`tenants/${tenantId}/favicons`, validated.ext);
+    await getStorage().put(key, body, { contentType: validated.contentType });
+    const url = getStorage().publicUrl(key);
+    await db(TABLES.Tenant).where({ id: tenantId }).update({ faviconUrl: url, updatedAt: new Date() });
+    res.json({ faviconUrl: url });
   },
 );
 

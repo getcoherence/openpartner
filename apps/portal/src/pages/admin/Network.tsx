@@ -203,7 +203,7 @@ function ConnectedPanel({ membership }: { membership: NetworkMembership }) {
           style={{
             background: 'transparent',
             color: theme.accent,
-            border: `1px solid ${theme.accent}55`,
+            border: `1px solid ${theme.accentA55}`,
             borderRadius: 6,
             padding: '6px 12px',
             fontSize: 12,

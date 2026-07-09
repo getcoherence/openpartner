@@ -199,7 +199,15 @@ export interface ValidatedUpload {
   ext: string;
 }
 
-export function validateImageUpload(contentType: string | undefined, byteLength: number): ValidatedUpload {
+export function validateImageUpload(
+  rawContentType: string | string[] | undefined,
+  byteLength: number,
+): ValidatedUpload {
+  // Accept the raw header union and normalize the array case explicitly —
+  // duplicate Content-Type headers must not sneak a second value past the
+  // allowlist, and the explicit Array.isArray branch is what CodeQL's
+  // js/type-confusion query recognizes as the sanitizer.
+  const contentType = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
   if (!contentType || !ALLOWED_CONTENT_TYPES.has(contentType)) {
     throw new UploadError(`unsupported_content_type`, `Content-Type must be one of: ${[...ALLOWED_CONTENT_TYPES].join(', ')}`);
   }

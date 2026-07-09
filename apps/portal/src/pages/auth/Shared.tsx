@@ -27,7 +27,7 @@ export function AuthFrame({
         alignItems: 'center',
         justifyContent: 'center',
         minHeight: '100vh',
-        background: `radial-gradient(1200px 800px at 50% -20%, ${theme.accentSoft}40, transparent), ${theme.bg}`,
+        background: `radial-gradient(1200px 800px at 50% -20%, ${theme.accentSoftA40}, transparent), ${theme.bg}`,
         padding: 24,
       }}
     >

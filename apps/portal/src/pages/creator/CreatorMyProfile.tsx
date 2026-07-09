@@ -349,7 +349,7 @@ function CategoryChips({ selected, onChange }: { selected: string[]; onChange: (
               padding: '5px 10px',
               borderRadius: 14,
               border: `1px solid ${on ? theme.accent : theme.borderSubtle}`,
-              background: on ? `${theme.accent}22` : theme.surface2,
+              background: on ? `${theme.accentA22}` : theme.surface2,
               color: on ? theme.accent : theme.textMuted,
               fontSize: 12,
               cursor: 'pointer',
