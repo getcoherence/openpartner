@@ -225,8 +225,8 @@ function PlanCard({ status }: { status: BillingStatus }) {
             <>
               <div
                 style={{
-                  background: `${theme.accent}10`,
-                  border: `1px solid ${theme.accent}55`,
+                  background: `${theme.accentA10}`,
+                  border: `1px solid ${theme.accentA55}`,
                   borderRadius: theme.radiusSm,
                   padding: 12,
                   marginBottom: 14,
@@ -245,8 +245,8 @@ function PlanCard({ status }: { status: BillingStatus }) {
             <>
               <div
                 style={{
-                  background: `${theme.accent}10`,
-                  border: `1px solid ${theme.accent}55`,
+                  background: `${theme.accentA10}`,
+                  border: `1px solid ${theme.accentA55}`,
                   borderRadius: theme.radiusSm,
                   padding: 12,
                   marginBottom: 14,
@@ -269,8 +269,8 @@ function PlanCard({ status }: { status: BillingStatus }) {
           {daysLeftInTrial !== null && (
             <div
               style={{
-                background: `${theme.accent}10`,
-                border: `1px solid ${theme.accent}55`,
+                background: `${theme.accentA10}`,
+                border: `1px solid ${theme.accentA55}`,
                 borderRadius: theme.radiusSm,
                 padding: 12,
                 marginBottom: 14,

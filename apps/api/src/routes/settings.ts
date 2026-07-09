@@ -72,6 +72,7 @@ interface PersistedProgramSettings {
 
 export interface ProgramSettings extends PersistedProgramSettings {
   logoUrl: string | null;
+  faviconUrl: string | null;
   brandColor: string | null;
   programTermsUrl: string | null;
   /** Effective white-label entitlement. The portal keys branding removal
@@ -93,7 +94,7 @@ async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings
   // there so the cached Config row never lags the actual values.
   const tenant = await db<TenantRow>(TABLES.Tenant)
     .where({ id: tenantId })
-    .first(['displayName', 'logoUrl', 'brandColor', 'programTermsUrl', 'whiteLabel', 'status']);
+    .first(['displayName', 'logoUrl', 'faviconUrl', 'brandColor', 'programTermsUrl', 'whiteLabel', 'status']);
   if (!programName && tenant?.displayName) programName = tenant.displayName as string;
   // Effective white-label: the provisioned flag AND an entitling billing
   // state. Computed here so any authenticated caller (admin or partner)
@@ -108,6 +109,7 @@ async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings
     programName,
     supportEmail: value.supportEmail ?? null,
     logoUrl: tenant?.logoUrl ?? null,
+    faviconUrl: tenant?.faviconUrl ?? null,
     brandColor: tenant?.brandColor ?? null,
     programTermsUrl: tenant?.programTermsUrl ?? null,
     whiteLabel,
@@ -135,6 +137,7 @@ settingsRouter.get('/branding', async (req, res) => {
       tenantSlug: null,
       programName: null,
       logoUrl: null,
+      faviconUrl: null,
       brandColor: null,
       supportEmail: null,
       programTermsUrl: null,
@@ -150,6 +153,7 @@ settingsRouter.get('/branding', async (req, res) => {
     tenantSlug: req.tenantSlug ?? null,
     programName: s.programName,
     logoUrl: s.logoUrl,
+    faviconUrl: s.faviconUrl,
     brandColor: s.brandColor,
     supportEmail: s.supportEmail,
     programTermsUrl: s.programTermsUrl,

@@ -288,8 +288,8 @@ function EditProgramDates({
         style={{
           margin: '6px 0 12px',
           padding: 10,
-          background: `${theme.accent}10`,
-          border: `1px solid ${theme.accent}55`,
+          background: `${theme.accentA10}`,
+          border: `1px solid ${theme.accentA55}`,
           borderRadius: 6,
           fontSize: 12,
           color: theme.text,
@@ -638,7 +638,7 @@ function CompoundRuleEditor({
         onClick={add}
         style={{
           background: 'transparent',
-          border: `1px dashed ${theme.accent}88`,
+          border: `1px dashed ${theme.accentA88}`,
           borderRadius: 6,
           padding: '6px 12px',
           color: theme.accent,
@@ -927,7 +927,7 @@ function MarketplaceFields({
                     borderRadius: 999,
                     cursor: disabled ? 'not-allowed' : 'pointer',
                     opacity: disabled ? 0.4 : 1,
-                    background: selected ? `${theme.accent}25` : 'transparent',
+                    background: selected ? `${theme.accentA25}` : 'transparent',
                     color: selected ? theme.accent : theme.textMuted,
                     border: `1px solid ${selected ? theme.accent : theme.borderSubtle}`,
                   }}
@@ -1109,7 +1109,7 @@ function ProgramStatusPill({ campaign }: { campaign: Pick<Program, 'startsAt' | 
   const status = statusOf(campaign);
   const palette: Record<ProgramStatus, { bg: string; fg: string; label: string }> = {
     active: { bg: theme.successSoft, fg: theme.success, label: 'Active' },
-    scheduled: { bg: `${theme.accent}15`, fg: theme.accent, label: 'Scheduled' },
+    scheduled: { bg: `${theme.accentA15}`, fg: theme.accent, label: 'Scheduled' },
     ended: { bg: theme.surface2, fg: theme.textMuted, label: 'Ended' },
   };
   const { bg, fg, label } = palette[status];

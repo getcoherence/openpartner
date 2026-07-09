@@ -285,9 +285,19 @@ export async function handleBrandAssetUpload(
   res: express.Response,
 ): Promise<void> {
   const { tenantId } = tenantOf(req);
+  // Bind the raw body to a local and type-guard it BEFORE any .length
+  // read — with express.raw a mismatched Content-Type leaves req.body as
+  // {}, and CodeQL doesn't narrow req.body through the guard, so only
+  // the guarded local is used below (js/type-confusion otherwise re-fires
+  // on every fresh req.body read).
+  const body: unknown = req.body;
+  if (!Buffer.isBuffer(body) || body.length === 0) {
+    res.status(400).json({ error: 'empty_body' });
+    return;
+  }
   let validated;
   try {
-    validated = validateImageUpload(req.header('content-type'), req.body?.length ?? 0);
+    validated = validateImageUpload(req.header('content-type'), body.length);
   } catch (err) {
     if (err instanceof UploadError) {
       res.status(400).json({ error: err.code, detail: err.message });
@@ -295,12 +305,8 @@ export async function handleBrandAssetUpload(
     }
     throw err;
   }
-  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-    res.status(400).json({ error: 'empty_body' });
-    return;
-  }
   const key = newUploadKey(`tenants/${tenantId}/brand-assets`, validated.ext);
-  await getStorage().put(key, req.body, { contentType: validated.contentType });
+  await getStorage().put(key, body, { contentType: validated.contentType });
   const url = getStorage().publicUrl(key);
   res.json({ url });
 }

@@ -232,7 +232,7 @@ export function CreatorDiscoverPage() {
             type="button"
             onClick={() => setShowFilters((s) => !s)}
             style={{
-              background: showFilters ? `${theme.accent}15` : 'transparent',
+              background: showFilters ? `${theme.accentA15}` : 'transparent',
               border: `1px solid ${showFilters ? theme.accent : theme.border}`,
               borderRadius: theme.radiusSm,
               color: showFilters ? theme.accent : theme.text,
@@ -631,9 +631,9 @@ function OfferingChips({
               fontWeight: isLead ? 600 : 500,
               padding: isLead ? '4px 10px' : '3px 8px',
               borderRadius: 999,
-              background: isLead || isAccent ? `${theme.accent}15` : theme.surface2,
+              background: isLead || isAccent ? `${theme.accentA15}` : theme.surface2,
               color: isLead || isAccent ? theme.accent : theme.textMuted,
-              border: `1px solid ${isLead || isAccent ? `${theme.accent}55` : theme.borderSubtle}`,
+              border: `1px solid ${isLead || isAccent ? `${theme.accentA55}` : theme.borderSubtle}`,
               whiteSpace: isLead ? 'normal' : 'nowrap',
               maxWidth: '100%',
             }}

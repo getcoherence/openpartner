@@ -63,7 +63,7 @@ export function SigninPage() {
   return (
     <AuthFrame title={addMode ? 'Add another account' : 'Sign in'} subtitle={addMode ? 'Enter the email for the account you want to add to this browser.' : 'Enter your email — we’ll send you a sign-in link.'}>
       {addMode && (
-        <div style={{ background: theme.accent + '15', border: `1px solid ${theme.accent}55`, padding: 12, borderRadius: theme.radiusSm, fontSize: 12, color: theme.textMuted, marginBottom: 14 }}>
+        <div style={{ background: theme.accent + '15', border: `1px solid ${theme.accentA55}`, padding: 12, borderRadius: theme.radiusSm, fontSize: 12, color: theme.textMuted, marginBottom: 14 }}>
           You&rsquo;re adding a second account. Your current account stays signed in &mdash; you&rsquo;ll be able to switch between them from the sidebar.
         </div>
       )}

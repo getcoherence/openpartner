@@ -67,6 +67,7 @@ export function useBrand(): Brand {
 export interface PublicBranding {
   programName: string | null;
   logoUrl: string | null;
+  faviconUrl: string | null;
   brandColor: string | null;
   supportEmail: string | null;
   programTermsUrl: string | null;
@@ -81,7 +82,7 @@ export interface PublicBranding {
  * pages (no tenant in the URL / platform host) the API returns nulls and
  * this falls back to the OpenPartner default.
  */
-export function usePublicBrand(): Brand & { brandColor: string | null } {
+export function usePublicBrand(): Brand & { brandColor: string | null; faviconUrl: string | null } {
   // api() scopes by the /t/<slug>/ URL prefix at call time — key the cache
   // by it too, or an SPA navigation from a platform page (nulls) into a
   // tenant page would keep serving the platform's empty branding.
@@ -93,6 +94,7 @@ export function usePublicBrand(): Brand & { brandColor: string | null } {
   return {
     programName: data?.programName || DEFAULT_BRAND,
     logoUrl: data?.logoUrl ?? null,
+    faviconUrl: data?.faviconUrl ?? null,
     supportEmail: data?.supportEmail || null,
     whiteLabel: data?.whiteLabel ?? false,
     brandColor: data?.brandColor ?? null,
