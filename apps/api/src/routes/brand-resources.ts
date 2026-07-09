@@ -285,19 +285,22 @@ export async function handleBrandAssetUpload(
   res: express.Response,
 ): Promise<void> {
   const { tenantId } = tenantOf(req);
+  // Prove the body is a Buffer BEFORE reading .length — with express.raw
+  // a mismatched Content-Type leaves req.body as {} (and CodeQL rightly
+  // wants the type check ahead of the read).
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+    res.status(400).json({ error: 'empty_body' });
+    return;
+  }
   let validated;
   try {
-    validated = validateImageUpload(req.header('content-type'), req.body?.length ?? 0);
+    validated = validateImageUpload(req.header('content-type'), req.body.length);
   } catch (err) {
     if (err instanceof UploadError) {
       res.status(400).json({ error: err.code, detail: err.message });
       return;
     }
     throw err;
-  }
-  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-    res.status(400).json({ error: 'empty_body' });
-    return;
   }
   const key = newUploadKey(`tenants/${tenantId}/brand-assets`, validated.ext);
   await getStorage().put(key, req.body, { contentType: validated.contentType });

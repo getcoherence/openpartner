@@ -33,15 +33,18 @@ uploadsRouter.post(
     // accidental array form, vs req.headers[name] which is typed as
     // string | string[] | undefined and creates a parameter-tampering
     // hazard if a client sends multiple Content-Type headers.
+    // Prove the body is a Buffer BEFORE reading .length — with express.raw
+    // a mismatched Content-Type leaves req.body as {} (and CodeQL rightly
+    // wants the type check ahead of the read).
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).json({ error: 'empty_body' });
+    }
     let validated;
     try {
-      validated = validateImageUpload(req.header('content-type'), req.body?.length ?? 0);
+      validated = validateImageUpload(req.header('content-type'), req.body.length);
     } catch (err) {
       if (err instanceof UploadError) return res.status(400).json({ error: err.code, detail: err.message });
       throw err;
-    }
-    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-      return res.status(400).json({ error: 'empty_body' });
     }
 
     const key = newUploadKey(`tenants/${tenantId}/logos`, validated.ext);
@@ -79,15 +82,18 @@ uploadsRouter.post(
   requireAdmin,
   async (req, res) => {
     const { db, tenantId } = tenantOf(req);
+    // Prove the body is a Buffer BEFORE reading .length — with express.raw
+    // a mismatched Content-Type leaves req.body as {} (and CodeQL rightly
+    // wants the type check ahead of the read).
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).json({ error: 'empty_body' });
+    }
     let validated;
     try {
-      validated = validateImageUpload(req.header('content-type'), req.body?.length ?? 0);
+      validated = validateImageUpload(req.header('content-type'), req.body.length);
     } catch (err) {
       if (err instanceof UploadError) return res.status(400).json({ error: err.code, detail: err.message });
       throw err;
-    }
-    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-      return res.status(400).json({ error: 'empty_body' });
     }
     const key = newUploadKey(`tenants/${tenantId}/favicons`, validated.ext);
     await getStorage().put(key, req.body, { contentType: validated.contentType });
