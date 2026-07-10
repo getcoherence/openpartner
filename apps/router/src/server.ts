@@ -140,6 +140,10 @@ async function resolveLink(c: Context, link: LinkRow | undefined) {
 
   await db(TABLES.Click).insert({
     id: clickId,
+    // Clicks inherit the tenant from the Link (NOT NULL since the DB
+    // dropped the single-tenant column default) — the router runs on
+    // the privileged pool, so nothing else stamps it.
+    tenantId: link.tenantId,
     linkId: link.id,
     partnerId: link.partnerId,
     programId: link.programId,
