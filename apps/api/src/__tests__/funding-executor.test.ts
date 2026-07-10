@@ -388,7 +388,7 @@ describe.skipIf(skipIntegration)('funding webhook handling', () => {
   it('transfer.reversed records the reversal ledger and derives payout state', async () => {
     const partnerId = await seedPartner();
     const commissionIds = await seedCommissions(partnerId, 1, '50.00');
-    const batch = await fundedBatch(partnerId, commissionIds, 5000);
+    await fundedBatch(partnerId, commissionIds, 5000);
     const { stripe } = mockStripe();
     await runTransferExecutor(db, { stripe });
     const intent = await db(TABLES.HostedFundingTransfer).where({ partnerId }).first();
