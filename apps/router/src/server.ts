@@ -83,16 +83,16 @@ async function resolveLink(c: Context, link: LinkRow | undefined) {
   const partnerRevoked = !!partner?.revokedAt;
 
   // Destination resolution: per-Link override (deep link) wins; otherwise
-  // inherit from the Campaign. This is the source-of-truth flip — brands
-  // own the destination via Campaign.destinationUrl, partners only get
-  // an override when the Campaign explicitly allows deep-linking.
+  // inherit from the Program. This is the source-of-truth flip — brands
+  // own the destination via Program.destinationUrl, partners only get
+  // an override when the Program explicitly allows deep-linking.
   let destinationUrl = link.destinationUrl;
   if (!destinationUrl) {
-    const campaign = (await db('Campaign').where({ id: link.programId }).first()) as
+    const program = (await db(TABLES.Program).where({ id: link.programId }).first()) as
       | { destinationUrl: string }
       | undefined;
-    if (!campaign) return c.text('Campaign not found', 410);
-    destinationUrl = campaign.destinationUrl;
+    if (!program) return c.text('Program not found', 410);
+    destinationUrl = program.destinationUrl;
   }
 
   const clickId = ulid();
