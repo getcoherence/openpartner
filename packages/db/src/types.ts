@@ -223,7 +223,9 @@ export type AttributionModel = 'last_click' | 'first_click' | 'linear' | 'positi
 
 export type CommissionStatus = 'accrued' | 'approved' | 'paid' | 'reversed';
 
-export type PayoutStatus = 'pending' | 'paid' | 'failed';
+// partially_reversed / reversed are DERIVED from PayoutReversal rows
+// (spec §4, finding 11) — never set except by the reversal handler.
+export type PayoutStatus = 'pending' | 'paid' | 'failed' | 'partially_reversed' | 'reversed';
 
 export type PayoutMethod = 'stripe_connect' | 'manual' | 'external';
 

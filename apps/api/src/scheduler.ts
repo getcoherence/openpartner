@@ -143,6 +143,16 @@ const JOBS: ScheduledJob[] = [
     },
   },
   {
+    name: 'funding-executor',
+    cronExpr: '*/5 * * * *',
+    description:
+      'Execute partner transfers for funded batches: intent rows with frozen idempotency keys, source_transaction-linked transfers, Payout + commission.paid on confirm, reconcile-by-listing for ambiguous posts (every 5 minutes)',
+    handler: async () => {
+      const { runTransferExecutor } = await import('./funding/executor.js');
+      return runTransferExecutor(db);
+    },
+  },
+  {
     name: 'portal-domain-reverify',
     cronExpr: '45 4 * * *',
     description:

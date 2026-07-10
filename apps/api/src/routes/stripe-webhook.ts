@@ -17,6 +17,7 @@ import { attributeEvent } from '../attribution.js';
 import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFromStripeSub } from './billing.js';
 import { applyWhiteLabelFromSubscription, subscriptionHasWhiteLabel, whiteLabelPriceId } from '../white-label-billing.js';
 import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
+import { handleFundingEvent } from '../funding/webhook.js';
 
 const stripeKey = process.env.STRIPE_SECRET_KEY;
 // STRIPE_WEBHOOK_SECRET accepts either a single secret or a comma-separated
@@ -75,6 +76,15 @@ stripeWebhookRouter.post(
       }
     }
     if (!event) return res.status(400).json({ error: 'invalid_signature' });
+
+    // Funding-pipeline events (PaymentIntents/charges/transfers stamped
+    // with our funding metadata) are platform-money events, not merchant
+    // conversion events — they route to the funding state machine on the
+    // privileged pool and never reach attribution. Runs regardless of
+    // HOSTED_FUNDING_ENABLED: a late webhook after a flag flip must still
+    // land in the inbox and CAS safely.
+    const funding = await handleFundingEvent(db, stripe, event);
+    if (funding) return res.json({ ok: true, funding });
 
     const tenantId = await resolveTenantForEvent(event);
     if (!tenantId) {
