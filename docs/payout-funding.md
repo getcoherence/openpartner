@@ -1,258 +1,312 @@
-# Hosted Payout Funding — Implementation Spec (DRAFT, pre-review)
+# Hosted Payout Funding — Implementation Spec (v2, post-adversarial-review)
 
-**Status:** Draft for adversarial review · **Author:** Lead architect · **Date:** 2026-07-10
-**Tracking:** issue #45 · **Interim guard:** PR #44 (hosted Connect payouts fail closed)
-**Audit basis:** two independent reviews (in-repo trace + external Codex audit of `main@5440ee3`), both CONFIRMED.
+**Status:** Amended per adversarial review · **Author:** Lead architect · **Reviewer:** external audit (Codex), 14 findings — 5 blockers, 8 must-fix, 1 consider — all incorporated · **Date:** 2026-07-10
+**Tracking:** issue #45 · **Interim guard:** PR #44 (hosted Connect payouts fail closed) — stays until this ships
+**Verdict adopted:** invoice/charge-before-transfer is the right architecture; the *guarantee* is corrected: **OpenPartner collects principal before transferring, while retaining residual payment-return and chargeback exposure** (blocker 4). "Nothing is fronted" was overclaimed and is retracted.
 
 ---
 
 ## 1. Problem
 
-On the hosted `stripe_connect` rail, `runPayouts` (`apps/api/src/payouts.ts`) transfers the
-**full commission principal from the platform's Stripe balance** to partners' Connect
-Standard accounts. The only money ever collected from the brand is the metered service fee
-(Flex 1.5% / RevShare 3% of attributed GMV). Nothing collects the principal.
+On the hosted `stripe_connect` rail, `runPayouts` transfers the **full commission
+principal from the platform's Stripe balance**; only the metered service fee (Flex 1.5% /
+RevShare 3% of GMV) is ever billed to the brand. RevShare example, $100 GMV at 20%
+commission: brand billed $3, platform sends $20 → **≈ −$17 per conversion**. Self-host is
+unaffected (platform account = brand's own account).
 
-Worked example (RevShare, $100 GMV, 20% partner commission):
+The same code path carries an integrity cluster (per-attempt idempotency keys, one DB
+transaction wrapping Stripe calls, boolean reversal semantics, manual-rail
+"paid-on-faith"). This spec rebuilds the runner around a durable state machine and fixes
+those in the same rework.
 
-| Flow | Amount |
-|---|---|
-| Brand billed (3% × GMV, metered) | **+$3.00** |
-| Platform → partner transfer | **−$20.00** |
-| `Payout.metadata.platformFee` (recorded, never billed) | $0.60 |
-| **Net platform cash per conversion** | **≈ −$17** |
+## 2. Constraints and the honest guarantee
 
-Self-host is unaffected: there the "platform" Stripe account *is* the brand's own account,
-so the transfer is correctly funded. The gap is exclusive to hosted multi-tenant.
+1. **Connect Standard only**; never merchant of record for brand consumer revenue.
+2. **Portability**: all funding state lives in hosted-only sidecar tables; core tables
+   gain only portable, generic changes (a unique index; ledger-compatible statuses).
+3. **The guarantee**: money is *collected before it is transferred*, and every state is
+   crash-replayable — but a funding payment can later be refunded, returned (ACH), or
+   disputed (SEPA up to 13 months). That residual exposure is managed (risk controls,
+   reversal attempts, receivables ledger — §8), not eliminated. Launch posture: hosted
+   funding is **USD-only** and fee-absorbing, with an explicit operating reserve.
+4. Per-tenant knobs stay meaningful: `payoutRailPreference`, `payoutThresholdCents`
+   (plus a **$25 platform floor** per batch), `payoutCadence`. Manual rail continues,
+   with confirmation semantics fixed (§11).
 
-The audit also identified an integrity cluster in the same code path (double-pay risks,
-DB transactions held across Stripe calls, reversal handling, manual-rail semantics). This
-spec fixes those **in the same rework** because the funding flow forces the payout runner
-to be rebuilt around a durable state machine anyway.
+## 3. Architecture
 
-## 2. Constraints (non-negotiable)
-
-1. **Connect Standard only** (CLAUDE.md §4). No Express/Custom accounts.
-2. **Not merchant of record for brand consumer revenue** (CLAUDE.md non-goals). The
-   funding charge is a separate B2B payment from the brand to the platform — it does not
-   route the brand's consumer sales through us.
-3. **Portability** (CLAUDE.md §2/§5): all new tables are hosted-only **sidecars**. No
-   Stripe IDs or funding state on core tables. A hosted export re-imports into self-host
-   with funding rows inert (self-host never runs the funding flow).
-4. The existing per-tenant knobs stay meaningful: `payoutRailPreference`,
-   `payoutThresholdCents`, `payoutCadence`. Manual rail keeps working (with one semantic
-   fix, §7).
-
-## 3. Design overview — invoice-before-transfer
+**Collection primitive: a dedicated off-session `PaymentIntent`, not a Stripe Invoice**
+(review finding 6/3: invoice semantics are too permissive — pending-item attachment to
+subscription invoices, discountable items, customer-credit satisfaction, out-of-band
+"paid" all create funding that isn't money). A PI has none of those; dunning is a simple
+owned retry schedule; the brand-facing record is a "Partner payout funding" entry in
+Billing plus Stripe's receipt email. (If invoice UX is later wanted, it can render *from*
+the PI — presentation, not collection.)
 
 ```
-approved commissions
-   │  (Monday cadence tick, per tenant × currency)
-   ▼
-[reserve] HostedFundingBatch + allocations        ← short DB trx, FOR UPDATE
-   │
-   ▼
-[invoice] Stripe Invoice to the brand's existing customer
-   │        line item: "Partner commission funding — <period>"
-   │        auto-collect, off-session, metadata.openpartner_funding_batch_id
-   ▼
-[funded]  invoice.paid webhook (settled money — ACH included)
-   │
-   ▼
-[transfer] executor job: per-partner transfers.create
-   │        source_transaction = funding charge, transfer_group = batch id
-   │        deterministic idempotency key, one short DB trx per transfer
-   ▼
-[paid]    Payout rows paid, commissions paid, webhooks fire
+approved commissions ──(cadence tick)──▶ RESERVE batch + allocations   (§5)
+        ▼
+  create funding PaymentIntent (off-session, deterministic intents)    (§5)
+        ▼  payment_intent.succeeded + charge verification              (§6)
+      FUNDED
+        ▼  executor: per-partner HostedFundingTransfer intents →
+           transfers.create(source_transaction, transfer_group)        (§6)
+     SETTLED            — or SETTLED_WITH_RESIDUAL (§7)
 ```
 
-The state machine (persisted on the batch):
+### Batch states (normative table in §9)
 
-```
-reserved → funding_pending → funded → transferring → settled
-   │             │
-   │             └── funding_failed ──→ released   (allocations freed,
-   └──────────────────────────────────→ released    commissions → approved)
-```
+`reserved → invoicing → payment_processing → funded → transferring →
+settled | settled_with_residual`, with exception states `funding_failed`,
+`release_requested → released`, `funding_disputed`, `recovery_required`.
 
-Money only ever moves **after** money has arrived. A batch that never gets funded
-releases its commissions back to `approved` — nothing is lost, nothing is fronted.
+### Allocation states (finding 5/9 — allocations own their lifecycle)
 
-## 4. Data model (sidecar tables, hosted-only)
+`reserved | canceled | transfer_pending | transferred | released | recovery_required`
+
+## 4. Data model
+
+All sidecar tables: RLS tenant-isolation, `openpartner_app` grants, documented exports,
+inert on self-host import. **All money columns are integer minor units** with canonical
+lowercase currency (finding 12); launch is USD-only, so exponent handling is trivial and
+asserted.
 
 ### `HostedFundingBatch`
-
-| column | type | notes |
-|---|---|---|
-| `id` | ulid pk | also the `transfer_group` |
-| `tenantId` | fk Tenant, cascade | |
-| `currency` | text | one batch per tenant × currency per run |
-| `principal` | numeric | frozen sum of allocated commissions |
-| `status` | text | the state machine above; CHECK-constrained |
-| `stripeInvoiceId` | text nullable, unique | |
-| `stripeChargeId` | text nullable | the funding charge; `source_transaction` for transfers |
-| `failureReason` | text nullable | |
-| `fundedAt` / `settledAt` / `releasedAt` | timestamps nullable | |
-| `createdAt` / `updatedAt` | timestamps | |
+`id` (ulid, also `transfer_group`) · `tenantId` · `currency` · `principalMinor` bigint ·
+`status` (CHECK) · `stripePaymentIntentId` unique nullable · `stripeChargeId` nullable ·
+`residualMinor` bigint default 0 · `failureReason` · timestamps per transition.
 
 ### `HostedFundingAllocation`
+`id` · `batchId` · `commissionId` · `partnerId` · `amountMinor` · `state` (CHECK) ·
+**partial unique index on `commissionId` WHERE state NOT IN ('released','canceled')**.
+Release is a *protocol* (§7), not a flag-flip — the index prevents live/live double
+reservation; the release protocol prevents the released/late-payment race (blocker 1).
 
-| column | type | notes |
-|---|---|---|
-| `id` | ulid pk | |
-| `batchId` | fk HostedFundingBatch, cascade | |
-| `commissionId` | fk Commission | **UNIQUE among live batches** (partial unique index `WHERE released = false`) — a commission can only ever be reserved once |
-| `partnerId` | fk Partner | denormalized for the per-partner transfer grouping |
-| `amount` | numeric | frozen at reservation |
-| `released` | boolean default false | set on batch release |
+### `HostedFundingTransfer` (finding 2 — the transfer intent)
+Created and committed **before** any `transfers.create` call:
+`id` · `batchId` · `partnerId` · `currency` · `amountMinor` · `destinationAccountId`
+(snapshotted — changing destination under a retained key is a Stripe parameter-mismatch
+error) · `idempotencyKey` (`fbt:<transferIntentId>`, frozen) · `state`
+(`pending | posted | confirmed | failed | reconcile_required`) · `stripeTransferId`
+unique nullable · `postedAt` · unique `(batchId, partnerId, currency)`.
 
-RLS on both tables, same tenant-isolation policy as every tenanted table. Grants for
-`openpartner_app`. Both are exported as documented sidecars (like `PortalCustomDomain`);
-importers ignore them on self-host.
+**Retry discipline (finding 2):** within Stripe's idempotency window, retry the same key.
+After an ambiguous outcome older than ~24h (keys are pruned) or any lost-response case,
+the intent moves to `reconcile_required`: resolve by listing transfers by
+`transfer_group` + metadata (`openpartner_transfer_intent_id`, tenant, batch) — **never
+blindly POST again**. Every Stripe object we create carries those metadata keys, which
+also fixes webhook tenant-resolution for transfers (finding 7).
 
-**Core-table changes (portable, minimal):**
-- `Payout.stripeTransferId` gains a **unique index** (audit: nothing prevented double
-  recording). Already a plain column today.
-- `Payout.status` gains `'reversed'` (audit: reversal currently recorded as `failed`
-  while commissions stay `paid`). `CommissionStatus` already has `'reversed'`.
-- No new columns on `Commission`. Reservation lives entirely in the allocation table —
-  the partial unique index is the mutual exclusion, and "approved AND not allocated to a
-  live batch" is the selectable set.
+### `PayoutReversal` (finding 11)
+`id` · `payoutId` · `stripeReversalId` unique · `amountMinor` · `reason` ·
+`balanceTransactionId` · `createdAt`. Payout state is **derived**: `partially_reversed`
+when `Σ reversals < amount`, `reversed` when equal. Commissions are never flipped
+`paid → reversed` in place; a compensating `CommissionAdjustment` row records the
+clawback (consistent with the existing ledger's compensating-entry doctrine), and
+re-payout requires the prior allocation epoch explicitly closed.
 
-## 5. Phase 1 — reserve + invoice (cadence tick)
+### `StripeWebhookInbox` (finding 7)
+`stripeEventId` pk · `type` · `processedAt` · `outcome`. Every funding-relevant webhook
+is recorded here first; duplicates and replays become no-ops. All state transitions are
+compare-and-set (`UPDATE … WHERE status = <expected>`); a stale or out-of-order event
+that loses the CAS re-fetches the live Stripe object before deciding (finding 7's
+regression sequence).
 
-Replaces the transfer half of today's `runPayouts` for hosted Connect tenants. Runs from
-the existing Monday scheduler tick (per-tenant cadence gate unchanged) and from the admin
-"run payouts" endpoint — both **serialized by the same pg advisory lock** keyed
-`payouts:<tenantId>` (audit: admin + scheduler could double-run; today's lock only covers
-scheduler-vs-scheduler).
+### `HostedBillingState` (finding 13)
+Webhook-mirrored subscription status per tenant: `status`
+(`active|trialing|past_due|unpaid|paused|canceled`) · `delinquentFundingCount` ·
+timestamps. `hasActivePlan` upgrades from "subscription id non-null" to this mirror.
+**Funding eligibility is separate from service eligibility**: new batches require
+`active|trialing` AND no delinquent/`release_requested` funding; already-`funded`
+batches always finish transferring regardless of subscription state.
 
-Per tenant × currency, in **one short committed transaction**:
+### Core-table changes (portable)
+- `Payout.stripeTransferId`: **unique index**.
+- `CommissionAdjustment` table (generic ledger table — compensating entries; useful to
+  self-host too, so it is core and portable).
+- No new Commission columns; no Stripe IDs on core tables.
 
-1. `SELECT … FOR UPDATE SKIP LOCKED` the `approved` commissions with no live allocation,
-   grouped as today (threshold gate, rail resolution, Connect-readiness preflight all
-   unchanged — groups that are connect-blocked or below threshold are skipped exactly as
-   now, before reservation).
-2. Insert `HostedFundingBatch{status:'reserved', principal}` + one allocation per
-   commission. The partial unique index makes a concurrent duplicate reservation a
-   constraint violation, not a double-spend.
-3. Commit. **No Stripe call inside this transaction.**
+## 5. Phase 1 — reserve + collect
 
-Then, outside the transaction (state-machine step, idempotent):
+Runs on the existing cadence tick and the admin endpoint, both serialized by a pg
+advisory lock `payouts:<tenantId>` (covers admin-vs-scheduler, finding from audit).
+**At most one non-terminal batch per tenant × currency** (founder decision): eligible
+commissions accumulate while a batch is open.
 
-4. Create the Stripe Invoice on the brand's existing `stripeCustomerId`:
-   - one invoice item: principal, description "Partner commission funding — <n> partners,
-     <period>", `metadata.openpartner_funding_batch_id`
-   - `collection_method: 'charge_automatically'`, off-session against the subscription's
-     default payment method
-   - idempotency key `funding_invoice:<batchId>` — a crashed worker retries into the
-     same invoice, never a second one
-5. Stamp `stripeInvoiceId`, move batch → `funding_pending`. If invoice creation itself
-   fails permanently (no payment method, deleted customer), batch → `funding_failed`.
+**Reservation (finding 10 — corrected SQL):** in one short transaction:
+1. Take the advisory xact lock.
+2. `SELECT c.* FROM "Commission" c LEFT JOIN live_alloc a ON a."commissionId" = c.id
+   WHERE c.status='approved' AND a.id IS NULL ORDER BY c.id FOR UPDATE OF c SKIP LOCKED`
+   — row locks on plain rows; grouping/threshold/floor math happens in application code
+   over the locked set (no `FOR UPDATE` with `GROUP BY`).
+3. Apply rail resolution + Connect preflight + `payoutThresholdCents` + the $25 floor;
+   below-floor groups are simply not reserved (roll forward).
+4. Insert batch (`reserved`, exact `principalMinor = Σ amountMinor`) + allocations
+   (`reserved`). A unique-allocation conflict aborts and retries cleanly — never a
+   partially created batch (the insert is atomic in this transaction).
+5. Commit. **No Stripe call inside.**
 
-**Batch sizing:** one batch per tenant × currency per tick covering *all* eligible
-commissions — not per partner. One funding charge fans out to N partner transfers
-(Stripe allows multiple transfers against one `source_transaction` up to its amount,
-same currency).
+**Collection (finding 6 — every external step has its own intent):**
+1. CAS batch `reserved → invoicing`.
+2. `paymentIntents.create` — amount `principalMinor`, currency, customer, default
+   payment method, `off_session: true`, `confirm: true`,
+   `setup_future_usage` untouched, metadata `{openpartner_funding_batch_id, tenantId}`,
+   idempotency key `fbpi:<batchId>` (frozen; ambiguous-after-window ⇒ reconcile by
+   metadata search, never re-POST).
+3. Stamp `stripePaymentIntentId`; CAS `invoicing → payment_processing`.
+   - Immediate card success may race the webhook — the webhook's CAS handles either
+     order.
+   - Hard synchronous failure (no payment method, card declined, `authentication_required`
+     off-session): schedule owned retries (day 1, 3, 7 — notify brand admin each time via
+     the mailer); after `FUNDING_TIMEOUT_DAYS` (10) → `funding_failed` → release protocol.
 
-## 6. Phase 2 — fund + transfer (webhook + executor)
+## 6. Phase 2 — verify funding, transfer
 
-### Funding confirmation
+**Funding confirmation** (`payment_intent.succeeded`, gated by batch metadata, recorded
+in the inbox): before CAS `payment_processing → funded`, verify against the live PI
+(finding 3): status `succeeded`; `amount_received === principalMinor`; currency matches;
+latest charge exists, is `paid`, not refunded/disputed; **no** out-of-band or
+customer-balance satisfaction (impossible with a PI, asserted anyway). Stamp
+`stripeChargeId` from the latest charge.
 
-`stripe-webhook.ts` gains a branch **ahead of** the conversion-event mapping: an
-`invoice.paid` carrying `metadata.openpartner_funding_batch_id` is a funding settlement,
-not an attribution event (today's handler would try to map it — the metadata gate keeps
-the two worlds separate; same guard on `invoice.payment_failed` → increment dunning
-count, and on final failure → `funding_failed`). On funding: stamp `stripeChargeId` from
-the invoice's charge, batch → `funded`.
+**Executor** (scheduler job, every 5 min, advisory-locked, `protect: true`): for each
+`funded`/`transferring` batch:
+1. CAS batch → `transferring`.
+2. Per allocation group: **re-verify the commissions are still `approved`-frozen** — i.e.
+   allocation still `reserved` and no reversal/refund/fraud adjustment touched them
+   (finding 5; those paths gain allocation-aware interlocks, §8). CAS allocation
+   `reserved → transfer_pending`; create the `HostedFundingTransfer` intent row; commit.
+3. `transfers.create({amountMinor, currency, destination, source_transaction:
+   stripeChargeId, transfer_group: batchId, metadata})` with the frozen key.
+4. **New short transaction per result**: intent → `confirmed` + `stripeTransferId`;
+   insert `Payout{paid, stripeTransferId}` (unique index); allocation → `transferred`;
+   commissions → `paid`; enqueue `commission.paid` on the **transactional outbox**
+   (delivered by the existing webhook-dispatcher after commit — never fired inside the
+   transaction; finding 7).
+5. All allocations `transferred` → batch `settled`. Any allocation stuck
+   `transfer_pending` past `TRANSFER_DEADLINE_DAYS` (14) escalates (§7).
 
-`invoice.paid` is the **settled** signal for both cards (instant) and ACH/SEPA debit
-(fires after actual settlement), which is exactly the property we need before releasing
-transfers.
+Multiple transfers against one `source_transaction` are valid up to the charge amount in
+the same currency (verified). The invariant is asserted before every transfer:
 
-### Transfer executor
+```
+principalMinor(funded) = Σ transferredMinor + Σ pendingMinor + residualMinor + refundedMinor
+```
 
-New scheduler job (every 5 minutes, advisory-locked, `protect: true`): for each `funded`
-batch, per partner allocation group:
+## 7. Release protocol and residuals (blockers 1, 9)
 
-1. Deterministic idempotency key: `fb:<batchId>:p:<partnerId>:<currency>`. **Never
-   regenerated** — a retry after any ambiguous failure replays the same key and Stripe
-   returns the original transfer instead of creating a second one (audit: today's key is
-   a fresh Payout id per attempt).
-2. `transfers.create({ amount, currency, destination, source_transaction: stripeChargeId,
-   transfer_group: batchId })`. `source_transaction` ties the transfer to settled funding
-   money rather than the general platform balance.
-3. **One short DB transaction per transfer result** (audit: today the whole tenant run
-   shares one transaction around all Stripe calls): insert `Payout{status:'paid',
-   stripeTransferId}` (unique index makes double-recording impossible), flip the
-   allocation's commissions → `paid`, fire `commission.paid` webhooks.
-4. When every allocation in the batch is paid → batch `settled`.
-5. A transfer failure records the error on the batch and leaves that allocation for the
-   next executor tick — same key, so retries are safe. A partner whose Connect account
-   broke *after* reservation stays in `transferring` until fixed or manually released.
+Releasing reserved money is where the double-pay race lived. The protocol:
 
-### Reversals
+1. Any release path (funding timeout, cancellation, operator action) first CAS-es the
+   batch to `release_requested`. Allocations are **not** touched yet.
+2. Terminalize the money side: cancel the PaymentIntent
+   (`paymentIntents.cancel`, idempotent). **If cancellation races a success** — the PI
+   reports `succeeded` — the release LOSES: batch CAS `release_requested → funded` and
+   proceeds to transfer. A late `payment_intent.succeeded` webhook against a
+   `release_requested` batch does the same. Money that arrived is never orphaned.
+3. Only after the PI is terminally `canceled` do allocations flip `reserved → released`
+   and the batch `release_requested → released`. Released allocations never change
+   Commission status (reservation never changed it — commissions were `approved`
+   throughout and simply become selectable again).
+4. **Residuals** (funded but a specific allocation can't transfer): release of a
+   funded-but-untransferred allocation requires an explicit disposition recorded on the
+   batch: `refund` (partial refund of the funding charge), `manual_payout`
+   (operator pays out-of-band, confirmation required), or `credit_next_batch`
+   (residualMinor offsets the tenant's next funding PI). Batch ends
+   `settled_with_residual`; the same commission cannot re-batch until the residual
+   disposition is closed (blocker-1 variant and finding 9).
 
-`transfer.reversed` webhook: Payout → `'reversed'` **and its commissions → `'reversed'`**
-(audit: today commissions stay `paid`, blocking any retry while asserting payment). The
-admin review queue shows reversed payouts; re-approval is an explicit human action.
+## 8. Refunds, disputes, fraud (blocker 4, finding 5)
 
-## 7. Failure and edge semantics
+- Webhooks on the funding charge (`charge.refunded`, `charge.dispute.*` scoped by batch
+  metadata): batch → `funding_disputed`; attempt deterministic transfer reversals for its
+  transfers; every unrecovered cent lands in a **brand receivables ledger**
+  (`residualMinor`/adjustment entries) and an ops alert. Dispute on a settled batch does
+  not silently rewrite partner history — reversals + compensating adjustments only.
+- **Risk controls** (launch defaults): hosted funding per-tenant caps — new tenants
+  (< 60 days or < 2 clean funding cycles) capped at $500/batch and $1,500/month on the
+  Connect rail, manual rail above that; caps lift with clean history. Funding PIs run
+  with Radar; 3DS if required. High-risk/new brands can be pinned to manual rail
+  entirely.
+- **Commission lifecycle interlocks** (finding 5): the admin reverse endpoint, the
+  consumer-refund reversal path, and fraud flag/unflag all gain an allocation check —
+  a commission in a live allocation state (`reserved`/`transfer_pending`) cannot be
+  status-flipped; the operation instead cancels the allocation (pre-funding) or records
+  a compensating adjustment + recovery entry (post-funding). `transferred` commissions
+  are immutable history; adjustments only.
 
-| Case | Behavior |
+## 9. Normative transition table
+
+Any (state, event) pair not listed is an explicit logged no-op. All transitions are CAS.
+
+| State | Event | → | Side effects |
+|---|---|---|---|
+| reserved | collector picks up | invoicing | — |
+| invoicing | PI created | payment_processing | stamp PI id |
+| invoicing | PI creation hard-fails | funding_failed | schedule release |
+| payment_processing | verified `payment_intent.succeeded` | funded | stamp charge id |
+| payment_processing | `payment_intent.payment_failed` | payment_processing | owned retry schedule; count++ |
+| payment_processing | retries exhausted / timeout | funding_failed | schedule release |
+| payment_processing | release requested | release_requested | cancel PI |
+| release_requested | PI canceled confirmed | released | allocations → released |
+| release_requested | PI turns out succeeded | funded | release loses; proceed |
+| funded | executor starts | transferring | — |
+| funded / any | funding charge refunded/disputed | funding_disputed | reversals + receivables |
+| transferring | all allocations transferred | settled | — |
+| transferring | deadline residual disposition chosen | settled_with_residual | record disposition |
+| transferring | transfer intent ambiguous > window | (allocation) reconcile_required | reconcile by group/metadata |
+| funding_failed | release protocol completes | released | — |
+| settled / settled_with_residual | `transfer.reversed` | (payout) derived partial/reversed | PayoutReversal + adjustments |
+
+Late `payment_intent.succeeded` on `released` is the one designed-impossible event (PI
+was confirmed canceled first); if Stripe ever delivers it, it CAS-fails, alerts, and
+lands in `recovery_required` for a human.
+
+## 10. Brand & partner surface
+
+- **Billing page**: "Partner payout funding" card — open batch, amount, payment state,
+  failed-funding warnings; funding charges appear on the card statement as
+  `OPENPARTNER PAYOUTS` (statement descriptor suffix).
+- **Partner side** (founder decision): commissions in a batch awaiting brand funding
+  show as `awaiting brand funding` — visibly the brand's obligation, not silently
+  missing and not an OpenPartner debt. ToS language added: commissions are obligations
+  of the brand; the platform facilitates collection and disbursement.
+- **Manual rail fix**: manual payouts stay `pending` until
+  `POST /payouts/:id/confirm` (admin, idempotent, audited); only then commissions →
+  `paid` + webhooks. Unblocks Network payout metering for manual tenants.
+
+## 11. Reconciliation, rollout, tests (finding 14)
+
+- **Daily reconciliation job**: per batch, compare Stripe (PI, charge, transfers by
+  `transfer_group`, reversals) against DB; alert on any invariant breach (transferred >
+  funded; allocation states inconsistent with intents; inbox gaps). Age alerts:
+  `reserved`>2d, `payment_processing`>10d, `transferring`>14d.
+- **Rollout**: behind `HOSTED_FUNDING_ENABLED` (default off; #44 guard authoritative
+  until removal). Staging with Stripe test clocks through: card + ACH success, dunning →
+  release, cancel-vs-payment race, duplicate/permuted webhooks, >24h-old idempotency
+  retry, partial refund, partial reversal, dispute after settle, fraud flag while
+  reserved/funded/transferring, manual-confirm idempotency + authz. Two supervised prod
+  cycles (xispark first), then remove flag + guard.
+- **Counsel review before prod enable** (founder-approved): custodial window,
+  off-session authorization, bank-debit mandates, chargeback allocation, residual/
+  unclaimed funds, licensing implications of collect-and-forward. Does not block #43/#44.
+
+## 12. Decisions recorded
+
+| Question | Decision |
 |---|---|
-| Funding invoice unpaid (dunning) | Stripe retries per its schedule. After `FUNDING_TIMEOUT_DAYS` (default 10) or final `invoice.payment_failed`, batch → `funding_failed` → `released`; allocations freed; commissions back in the pool. The invoice is voided. Brand's admin Billing page shows the failed funding invoice loudly. |
-| Brand cancels subscription with reserved/funded batches | Reserved/funding_pending → released + invoice voided. **Funded batches always finish transferring** — money already collected belongs to partners. Cancellation stops *new* batches (the hosted rail requires `hasActivePlan`, which this rework also tightens to check the webhook-mirrored subscription status, closing the audit's past-due gap). |
-| Partial executor crash | Deterministic keys + per-transfer transactions: replay-safe from any point. |
-| Currency mismatch / FX | Batch is per-currency; funding invoice and transfers share the currency. No FX inside the flow. |
-| Manual rail | Unchanged flow, one semantic fix: manual payouts are created `pending` and commissions stay `approved` until an admin hits the new `POST /payouts/:id/confirm` ("I paid this out-of-band") which flips both to paid. Fixes the audit's "paid on faith" finding and unblocks Network payout metering for manual tenants. |
-| Self-host | Entire funding flow is bypassed: `mode === 'selfhost'` keeps today's direct-transfer path (their account, their money), plus the idempotency/transaction fixes which apply everywhere. |
-| Guard interaction | PR #44's fail-closed guard is replaced by the reservation flow; the env escape hatch is removed. |
+| Processing fees | Absorb at launch; explicit fee/dispute operating reserve; no ACH nudge until return-recovery exists; later nudge established brands only |
+| Cadence | Per payout tick; max one open batch per tenant × currency; eligible commissions roll forward |
+| Batch floor | $25 USD platform floor (in addition to partner thresholds); revisit $50; hosted funding launches USD-only |
+| Unfunded obligations | ToS language + partner-visible `awaiting brand funding` status |
+| Collection primitive | PaymentIntent (invoice semantics too permissive); invoice rendering later if wanted, presentation-only |
+| High-risk fallback | Manual rail (or future direct-charge-on-partner-account) for tenants above risk caps |
 
-## 8. Brand-facing surface
+## 13. Rejected alternatives (unchanged from v1, plus)
 
-- **Billing page**: funding invoices appear in the existing invoice list (they're normal
-  Stripe invoices); a new "Partner payouts" card shows pending/funded batches and the
-  next expected payout date, with plain copy: *"Commission payouts are collected from
-  your payment method first, then sent to your partners — typically within X days."*
-- **Partner-facing**: no change; payouts arrive as today, slightly later (card funding:
-  minutes; ACH: days). Payout timeline copy in partner docs updated.
-- **Docs**: `docs/brands/billing` gains a "How partner payouts are funded" section;
-  white-label setup guide unaffected.
-
-## 9. Rollout
-
-1. Migrations + code behind `HOSTED_FUNDING_ENABLED=1` (default off) — the #44 guard
-   stays authoritative until the flag flips.
-2. Enable on a staging tenant; run the full loop with Stripe test clocks (card + ACH,
-   dunning path, reversal path).
-3. Enable in prod; first real batch supervised. Remove the flag + the #44 guard after
-   two clean weekly cycles.
-
-## 10. Open questions (founder)
-
-1. **Stripe processing fees on the funding charge** (~2.9% + 30¢ card / 0.8% capped
-   ACH): absorb, or pass through as an invoice line? Proposal: absorb at launch, revisit
-   with volume; nudge brands to ACH/SEPA for funding.
-2. **Funding cadence**: per payout tick (weekly-ish, small invoices) vs monthly
-   consolidated (fewer invoices, longer partner wait)? Proposal: per tick.
-3. **Minimum batch principal** to avoid $3 invoices (fold into the existing per-tenant
-   threshold, or a platform floor like $25)?
-4. **Brand refuses to pay / churns with owed commissions**: partners were promised money
-   the brand never funded. Terms-of-service language needed ("commissions are obligations
-   of the brand; the platform facilitates"), and a partner-facing status so unfunded ≠
-   silently missing.
-5. **Legal review**: collecting-then-forwarding funds is not MoR for consumer sales, but
-   brief counsel review of the custodial window (funds settle to platform, transfer out
-   within minutes/hours) per Stripe's own guidance.
-
-## 11. Explicitly rejected alternatives
-
-- **Prepaid tenant wallet** — more custody/reconciliation/refund complexity and a worse
-  brand UX (idle cash) for no correctness gain at current volume. Revisit at scale.
-- **Direct charges on each partner's Standard account** — zero-custody but pushes
-  payment/SCA/tax/invoicing complexity onto every partner relationship and breaks batch
-  UX. Wrong trade at our stage.
-- **Destination charges on consumer revenue** — violates the not-MoR constraint outright.
-- **Express accounts / embedded payouts** — different feature (white-label onboarding
-  UX), separately tracked; doesn't solve funding and crosses the Standard-only line.
+Prepaid wallet (custody complexity); direct charges on partner Standard accounts (kept
+as documented **high-risk fallback**, not default — per-partner payment/SCA/tax burden);
+destination charges on consumer revenue (violates not-MoR); Express/embedded (different
+feature, crosses Standard-only). **Stripe Invoice as the collection primitive** — demoted
+by review findings 3/6 (pending-item leakage, discountable items, credit-balance and
+out-of-band satisfaction all decouple "invoice paid" from "money arrived").
