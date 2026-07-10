@@ -33,6 +33,12 @@ import {
 import { REVSHARE_FEE_BPS, requireStripe, type OpenPartnerMode } from './stripe.js';
 import { getTenantBillingState } from './billing-plan.js';
 import { dispatchEvent } from './webhook-dispatcher.js';
+import { fundingEnabled, tryTenantPayoutLock } from './funding/state.js';
+import {
+  getFundingAuthorization,
+  reserveFundingBatch,
+  type ReservationCandidate,
+} from './funding/reserve.js';
 
 export interface PayoutRunResult {
   runId: string;
@@ -60,6 +66,21 @@ export interface PayoutRunResult {
 }
 
 export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunResult> {
+  // Serialize every payout actor for this tenant — the weekly scheduler
+  // tick, the admin run-payouts endpoint, and funding reservation — on one
+  // advisory xact lock (audit: concurrent runs could double-transfer).
+  // Callers always run inside a transaction (scheduler + tenantMiddleware),
+  // so the xact-scoped lock self-releases.
+  if (db.isTransaction && !(await tryTenantPayoutLock(db as Knex.Transaction, tenantId))) {
+    return {
+      runId: 'locked',
+      mode: 'flat',
+      payouts: [],
+      skippedBelowThreshold: [],
+      skippedUnfunded: [],
+    };
+  }
+
   // Per-TENANT billing mode, not the global env — on the hosted deployment
   // OPENPARTNER_MODE says 'flat' while individual tenants are on revshare,
   // which zeroed platformFee for every hosted revshare payout (audit
@@ -83,6 +104,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
   const results: PayoutRunResult['payouts'] = [];
   const skipped: PayoutRunResult['skippedBelowThreshold'] = [];
   const skippedUnfunded: PayoutRunResult['skippedUnfunded'] = [];
+  const fundingCandidates: Array<{ currency: string; candidate: ReservationCandidate }> = [];
 
   for (const group of groups) {
     const partner = await db<PartnerRow>(TABLES.Partner).where({ id: group.partnerId }).first();
@@ -116,21 +138,37 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
       return partner.stripeConnectAccountId ? 'stripe_connect' : 'manual';
     })();
 
-    // FAIL-CLOSED FUNDING GUARD (hosted only). On hosted tenants a Connect
-    // transfer spends the PLATFORM's Stripe balance, and no mechanism
-    // exists yet to collect the commission principal from the brand — the
-    // percentage fee metering covers the service fee, not the money being
-    // sent. Until the funding-batch flow ships, refuse the transfer, keep
-    // the commissions 'approved', and write no Payout row. Self-host is
-    // unaffected: there the platform account IS the brand's own Stripe.
-    // Escape hatch for a deliberate operator decision only.
+    // HOSTED CONNECT = FUNDED FLOW OR NOTHING. On hosted tenants a Connect
+    // transfer spends the PLATFORM's Stripe balance, so it only happens
+    // through the funding pipeline (reserve → charge the brand → transfer
+    // after settlement; docs/payout-funding.md). Eligible groups are
+    // handed to reservation below; tenants without funding enabled +
+    // authorized stay on the fail-closed guard (commissions 'approved',
+    // no Payout row). Self-host is unaffected: the platform account IS
+    // the brand's own Stripe. Escape hatch = deliberate operator override.
     if (
       method === 'stripe_connect' &&
       mode !== 'selfhost' &&
       process.env.OPENPARTNER_ALLOW_UNFUNDED_CONNECT_PAYOUTS !== '1'
     ) {
+      // Connect-readiness preflight applies to funding too — a partner
+      // who can't receive transfers shouldn't have money collected for
+      // them (it would strand as a residual, spec §7).
+      const meta = (partner.metadata as { stripe?: { payoutsEnabled?: boolean } }).stripe;
+      const transferReady = !!partner.stripeConnectAccountId && meta?.payoutsEnabled === true;
+      if (fundingEnabled() && transferReady) {
+        fundingCandidates.push({
+          currency: group.currency,
+          candidate: {
+            partnerId: partner.id,
+            commissionIds: commissions.map((c) => c.id),
+            amountMinor: Math.round(amount * 100),
+          },
+        });
+        continue;
+      }
       console.error(
-        `[payouts] REFUSED unfunded Connect payout: tenant=${tenantId} partner=${partner.id} ${group.currency} ${amount.toFixed(2)} — commission principal has no brand funding mechanism; commissions remain approved`,
+        `[payouts] REFUSED unfunded Connect payout: tenant=${tenantId} partner=${partner.id} ${group.currency} ${amount.toFixed(2)} — funding ${fundingEnabled() ? 'not available for this partner' : 'disabled'}; commissions remain approved`,
       );
       skippedUnfunded.push({ partnerId: partner.id, currency: group.currency, amount });
       continue;
@@ -302,6 +340,44 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
         status: 'pending',
         platformFee: platformFee || undefined,
       });
+    }
+  }
+
+  // Funding reservation (hosted Connect groups). Requires the tenant's
+  // funding authorization; without one, groups fall back to the guard so
+  // behavior is identical to funding-disabled. Reservation is DB-only —
+  // the collector job charges the brand OUTSIDE any transaction, and
+  // transfers happen only after the payment settles.
+  if (fundingCandidates.length > 0 && db.isTransaction) {
+    const auth = await getFundingAuthorization(db, tenantId);
+    const byCurrency = new Map<string, ReservationCandidate[]>();
+    for (const { currency, candidate } of fundingCandidates) {
+      const list = byCurrency.get(currency) ?? [];
+      list.push(candidate);
+      byCurrency.set(currency, list);
+    }
+    for (const [currency, candidates] of byCurrency) {
+      if (!auth) {
+        for (const c of candidates) {
+          skippedUnfunded.push({ partnerId: c.partnerId, currency, amount: c.amountMinor / 100 });
+        }
+        console.error(
+          `[payouts] funding enabled but tenant ${tenantId} has no funding authorization — ${candidates.length} group(s) held`,
+        );
+        continue;
+      }
+      const reserved = await reserveFundingBatch(db as Knex.Transaction, tenantId, currency, candidates);
+      if (reserved.batchId) {
+        console.log(
+          `[funding] reserved batch ${reserved.batchId}: tenant=${tenantId} ${currency} ${reserved.principalMinor} minor across ${reserved.reservedCommissions} commissions`,
+        );
+      } else if (reserved.skipped && reserved.skipped !== 'open_batch_exists') {
+        for (const c of candidates) {
+          skippedUnfunded.push({ partnerId: c.partnerId, currency, amount: c.amountMinor / 100 });
+        }
+      }
+      // open_batch_exists: eligible commissions roll forward silently —
+      // they'll reserve on the tick after the current batch terminalizes.
     }
   }
 
