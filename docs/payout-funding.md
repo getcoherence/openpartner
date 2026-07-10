@@ -28,7 +28,8 @@ those in the same rework.
    crash-replayable — but a funding payment can later be refunded, returned (ACH), or
    disputed (SEPA up to 13 months). That residual exposure is managed (risk controls,
    reversal attempts, receivables ledger — §8), not eliminated. Launch posture: hosted
-   funding is **USD-only** and fee-absorbing, with an explicit operating reserve.
+   funding is **USD-only and bank-debit-only** (§12); an explicit operating reserve covers
+   ACH failed-payment/dispute fees ($4/$15, tracked as rail cost) and dispute exposure.
 4. Per-tenant knobs stay meaningful: `payoutRailPreference`, `payoutThresholdCents`
    (plus a **$25 platform floor** per batch), `payoutCadence`. Manual rail continues,
    with confirmation semantics fixed (§11).
@@ -74,6 +75,10 @@ asserted.
 ### `HostedFundingBatch`
 `id` (ulid, also `transfer_group`) · `tenantId` · `currency` · `principalMinor` bigint ·
 `status` (CHECK) · `stripePaymentIntentId` unique nullable · `stripeChargeId` nullable ·
+`grossChargeMinor` bigint (= principal + any funding fee; launch: equals principal) ·
+`quotedFeeMinor` bigint default 0 · `actualStripeFeeMinor` bigint nullable (from the
+charge's `balance_transaction.fee`, recorded at funding confirmation for rail-cost
+tracking and any future true-up) · `paymentMethodType` text · `pricingVersion` text ·
 `residualMinor` bigint default 0 · `failureReason` · timestamps per transition.
 
 ### `HostedFundingAllocation`
@@ -148,8 +153,10 @@ commissions accumulate while a batch is open.
 
 **Collection (finding 6 — every external step has its own intent):**
 1. CAS batch `reserved → invoicing`.
-2. `paymentIntents.create` — amount `principalMinor`, currency, customer, default
-   payment method, `off_session: true`, `confirm: true`,
+2. `paymentIntents.create` — amount `grossChargeMinor` (at launch = `principalMinor`:
+   bank-debit-only, no funding fee — §12), currency, customer, the tenant's **bank-debit
+   payment method** (`payment_method_types: ['us_bank_account']` at launch; card path is
+   counsel-gated, §12), `off_session: true`, `confirm: true`,
    `setup_future_usage` untouched, metadata `{openpartner_funding_batch_id, tenantId}`,
    idempotency key `fbpi:<batchId>` (frozen; ambiguous-after-window ⇒ reconcile by
    metadata search, never re-POST).
@@ -164,7 +171,7 @@ commissions accumulate while a batch is open.
 
 **Funding confirmation** (`payment_intent.succeeded`, gated by batch metadata, recorded
 in the inbox): before CAS `payment_processing → funded`, verify against the live PI
-(finding 3): status `succeeded`; `amount_received === principalMinor`; currency matches;
+(finding 3): status `succeeded`; `amount_received === grossChargeMinor`; currency matches;
 latest charge exists, is `paid`, not refunded/disputed; **no** out-of-band or
 customer-balance satisfaction (impossible with a PI, asserted anyway). Stamp
 `stripeChargeId` from the latest charge.
@@ -264,9 +271,11 @@ lands in `recovery_required` for a human.
 
 ## 10. Brand & partner surface
 
-- **Billing page**: "Partner payout funding" card — open batch, amount, payment state,
-  failed-funding warnings; funding charges appear on the card statement as
-  `OPENPARTNER PAYOUTS` (statement descriptor suffix).
+- **Billing page**: "Partner payout funding" card — open batch, exact dollar amount
+  (principal and, when a fee path exists, the fee as its own line) shown BEFORE the
+  authorization step and after collection; failed-funding warnings; an OpenPartner-
+  generated receipt per funding charge (PaymentIntents have no invoice-style line
+  items); bank statement shows `OPENPARTNER PAYOUTS` (statement descriptor suffix).
 - **Partner side** (founder decision): commissions in a batch awaiting brand funding
   show as `awaiting brand funding` — visibly the brand's obligation, not silently
   missing and not an OpenPartner debt. ToS language added: commissions are obligations
@@ -297,7 +306,7 @@ lands in `recovery_required` for a human.
 
 | Question | Decision |
 |---|---|
-| Processing fees | **Rail-differentiated, at cost (founder-revised twice):** bank-debit funding absorbed (ACH is 0.8% capped at $5/charge — negligible); **card funding carries a "payment processing (at cost)" line of 2.9% + $0.30** on the PaymentIntent (`chargedMinor = principalMinor + processingFeeMinor`; the §6 invariant applies to the principal portion). At-cost (not the earlier flat 3%) keeps the live pricing-page promise "passed through directly and not marked up" true; premium/international-card variance above 2.9% is absorbed. Rationale for not absorbing card fees at all: processing cost scales with commission principal while fee revenue scales with GMV — absorbing burns `2.9% × commissionRate / feeRate` of revenue (~97% of Flex's 1.5% on a 50%-commission program). Framed as at-cost processing pass-through, not a card "surcharge" (counsel checklist §11). Dispute/return operating reserve kept regardless |
+| Processing fees | **ACH-first (founder-revised ×2, review-corrected):** launch is **bank-debit-only** — no funding fee, Stripe's ACH cost (0.8% capped $5, plus $4 failed-payment / $15 dispute fees) absorbed and **tracked explicitly as rail cost** via `actualStripeFeeMinor`. The **card path is disabled at launch** and hard-gated on counsel (surcharge classification: credit-vs-debit rules, disclosure, network registration, caps). If/when enabled it uses either exact gross-up `F = (0.029·P + 0.30)/(1 − 0.029)` **plus** a `balance_transaction.fee` true-up on the next batch, or a published fixed "card funding fee" with **no "at cost"/"no markup" language** — the naive principal-based 2.9%+30¢ under-collects (Stripe's percentage applies to the gross charge: ~$8.42 short on a $10k batch) and premium/international variance makes "at cost" unkeepable. Fee shown in dollars before any authorization; every funding charge gets an OpenPartner-generated receipt (a PaymentIntent has no line items) |
 | Funding authorization & disclosure | **One-time per-tenant authorization gate** before the first funding batch: an admin explicitly accepts "collect commission funding from my payment method" in Billing (stored: adminId, timestamp, terms version) — satisfies Stripe's off-session prior-agreement requirement and covers EXISTING tenants (xispark) whose cards were saved before this feature. New brands additionally accept ToS at plan Checkout (`consent_collection.terms_of_service: 'required'`). No funding batch is ever created for a tenant without a recorded authorization |
 | Cadence | Per payout tick; max one open batch per tenant × currency; eligible commissions roll forward |
 | Batch floor | $25 USD platform floor (in addition to partner thresholds); revisit $50; hosted funding launches USD-only |
