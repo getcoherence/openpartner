@@ -782,7 +782,8 @@ export interface HostedFundingTransferRow {
 export interface HostedFundingAuthorizationRow {
   id: string;
   tenantId: string;
-  adminId: string;
+  /** Null = authorized via the env operator key (no Admin row). */
+  adminId: string | null;
   termsVersion: string;
   stripePaymentMethodId: string;
   paymentMethodType: string;
