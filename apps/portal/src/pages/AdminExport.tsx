@@ -4,7 +4,7 @@ import { getApiKey } from '../api.js';
 import { theme } from '../theme.js';
 import { Button, Card, Page, SectionHeading } from '../ui.js';
 
-const TABLES = ['Partner', 'Campaign', 'Link', 'Click', 'Identity', 'Event', 'Attribution', 'Commission', 'Payout'];
+const TABLES = ['Partner', 'Program', 'Link', 'Click', 'Identity', 'Event', 'Attribution', 'Commission', 'Payout'];
 
 export function AdminExport() {
   const key = getApiKey() ?? '';

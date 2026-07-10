@@ -35,7 +35,7 @@ export async function sweepCampaignEndNotifications(): Promise<SweepResult> {
   // past the 7.5-day window — admin extended, so a future reminder
   // should fire when the new end date approaches.
   const { rowCount: clearedCount } = (await db.raw(
-    `update "Campaign"
+    `update "Program"
        set "endNotificationSentAt" = null
      where "endNotificationSentAt" is not null
        and "endsAt" is not null
