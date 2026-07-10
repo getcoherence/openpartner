@@ -69,8 +69,9 @@ settled | settled_with_residual`, with exception states `funding_failed`,
 
 All sidecar tables: RLS tenant-isolation, `openpartner_app` grants, documented exports,
 inert on self-host import. **All money columns are integer minor units** with canonical
-lowercase currency (finding 12); launch is USD-only, so exponent handling is trivial and
-asserted.
+lowercase currency (finding 12); launch currencies are USD (ACH) with GBP (Bacs)
+as the designed-in fast-follow — both 2-decimal, so exponent handling stays trivial and
+asserted; the currency column and rail selection are scheme-aware from day one.
 
 ### `HostedFundingBatch`
 `id` (ulid, also `transfer_group`) · `tenantId` · `currency` · `principalMinor` bigint ·
@@ -307,7 +308,8 @@ lands in `recovery_required` for a human.
 | Question | Decision |
 |---|---|
 | Processing fees | **ACH-first (founder-revised ×2, review-corrected):** launch is **bank-debit-only** — no funding fee, Stripe's ACH cost (0.8% capped $5, plus $4 failed-payment / $15 dispute fees) absorbed and **tracked explicitly as rail cost** via `actualStripeFeeMinor`. The **card path is disabled at launch** and hard-gated on counsel (surcharge classification: credit-vs-debit rules, disclosure, network registration, caps). If/when enabled it uses either exact gross-up `F = (0.029·P + 0.30)/(1 − 0.029)` **plus** a `balance_transaction.fee` true-up on the next batch, or a published fixed "card funding fee" with **no "at cost"/"no markup" language** — the naive principal-based 2.9%+30¢ under-collects (Stripe's percentage applies to the gross charge: ~$8.42 short on a $10k batch) and premium/international variance makes "at cost" unkeepable. Fee shown in dollars before any authorization; every funding charge gets an OpenPartner-generated receipt (a PaymentIntent has no line items) |
-| Funding authorization & disclosure | **One-time per-tenant authorization gate** before the first funding batch: an admin explicitly accepts "collect commission funding from my payment method" in Billing (stored: adminId, timestamp, terms version) — satisfies Stripe's off-session prior-agreement requirement and covers EXISTING tenants (xispark) whose cards were saved before this feature. New brands additionally accept ToS at plan Checkout (`consent_collection.terms_of_service: 'required'`). No funding batch is ever created for a tenant without a recorded authorization |
+| Funding authorization & disclosure | **One-time per-tenant authorization gate** before the first funding batch: an admin (a) explicitly accepts "collect commission funding from my payment method" in Billing (stored: adminId, timestamp, terms version) and (b) **completes bank-debit setup** — subscriptions are card-paid, so no tenant has a bank account on file: ACH via Stripe Financial Connections SetupIntent, Bacs via mandate flow. Satisfies off-session prior-agreement + scheme mandate requirements and covers EXISTING tenants whose cards predate the feature. New brands additionally accept ToS at plan Checkout (`consent_collection.terms_of_service: 'required'`). No funding batch without recorded authorization + verified funding instrument |
+| Funding rails & regions | Rail is selected per **(brand bank country × batch currency)**: launch = **ACH/USD** (US brands); **Bacs Direct Debit/GBP is the designed-in fast-follow** (UK brands — ~1% capped ~£4; Direct Debit Guarantee indemnity window added to the dispute-exposure model and counsel list). A brand with no bank-debit rail for its batch currency (e.g. UK brand, USD commissions) stays on the **manual rail**, or — for supervised early runs on known brands — cost-absorbed card funding at operator discretion (per review recommendation), pending the counsel-gated card path. **xispark launches on the manual rail** regardless; funding onboards them once their currency/rail pairing is confirmed |
 | Cadence | Per payout tick; max one open batch per tenant × currency; eligible commissions roll forward |
 | Batch floor | $25 USD platform floor (in addition to partner thresholds); revisit $50; hosted funding launches USD-only |
 | Unfunded obligations | ToS language + partner-visible `awaiting brand funding` status |
