@@ -289,13 +289,15 @@ lands in `recovery_required` for a human.
   cycles (xispark first), then remove flag + guard.
 - **Counsel review before prod enable** (founder-approved): custodial window,
   off-session authorization, bank-debit mandates, chargeback allocation, residual/
-  unclaimed funds, licensing implications of collect-and-forward. Does not block #43/#44.
+  unclaimed funds, licensing implications of collect-and-forward, and whether the flat
+  card "funding processing fee" line (§12) is compliant as a platform fee vs. card-network
+  surcharge rules in target jurisdictions. Does not block #43/#44.
 
 ## 12. Decisions recorded
 
 | Question | Decision |
 |---|---|
-| Processing fees | Absorb at launch; explicit fee/dispute operating reserve; no ACH nudge until return-recovery exists; later nudge established brands only |
+| Processing fees | **Rail-differentiated (founder-revised):** bank-debit funding absorbed (ACH is 0.8% capped at $5/charge — negligible at any batch size); **card funding carries a flat 3% "funding processing fee" line** on the PaymentIntent (`chargedMinor = principalMinor + processingFeeMinor`; the invariant in §6 applies to the principal portion only, the fee portion is platform revenue offsetting Stripe's cut). Rationale: processing cost scales with commission principal while our fee revenue scales with GMV, so absorbing card fees burns `2.9% × commissionRate / feeRate` of revenue — ~97% of the Flex 1.5% on a 50%-commission program. Framed and priced as a platform processing FEE, not a card "surcharge" (network/state surcharge rules — added to the counsel checklist §11). Dispute/return operating reserve kept regardless |
 | Cadence | Per payout tick; max one open batch per tenant × currency; eligible commissions roll forward |
 | Batch floor | $25 USD platform floor (in addition to partner thresholds); revisit $50; hosted funding launches USD-only |
 | Unfunded obligations | ToS language + partner-visible `awaiting brand funding` status |
