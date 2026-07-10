@@ -133,6 +133,16 @@ const JOBS: ScheduledJob[] = [
     handler: async () => sweepCampaignEndNotifications(),
   },
   {
+    name: 'funding-collector',
+    cronExpr: '*/5 * * * *',
+    description:
+      'Advance hosted funding batches: create/retry funding PaymentIntents, poll as webhook-loss backstop, release timed-out batches (every 5 minutes; no-op unless HOSTED_FUNDING_ENABLED=1)',
+    handler: async () => {
+      const { runFundingCollector } = await import('./funding/collect.js');
+      return runFundingCollector(db);
+    },
+  },
+  {
     name: 'portal-domain-reverify',
     cronExpr: '45 4 * * *',
     description:
