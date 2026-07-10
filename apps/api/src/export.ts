@@ -32,6 +32,9 @@ export const EXPORTABLE_TABLES = [
   // edge/billing semantics are inert on self-hosted import — the rows are
   // domain history, and a self-hosted instance derives its own edge.
   TABLES.PortalCustomDomain,
+  // Core compensating-entry ledger (clawbacks/corrections against paid
+  // commissions). Ordered after Commission for FK-safe import.
+  TABLES.CommissionAdjustment,
 ] as const;
 
 export type ExportableTable = (typeof EXPORTABLE_TABLES)[number];
