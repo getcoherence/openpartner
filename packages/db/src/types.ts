@@ -692,3 +692,137 @@ export interface CouponRow {
   deactivatedAt: Date | null;
   createdAt: Date;
 }
+
+// ---------------------------------------------------------------------------
+// Hosted payout funding (docs/payout-funding.md §4). Hosted-only sidecars —
+// exported losslessly, inert on self-hosted import. All *Minor columns are
+// integer minor units with canonical lowercase currency.
+// ---------------------------------------------------------------------------
+
+export type FundingBatchStatus =
+  | 'reserved'
+  | 'invoicing'
+  | 'payment_processing'
+  | 'funded'
+  | 'transferring'
+  | 'settled'
+  | 'settled_with_residual'
+  | 'funding_failed'
+  | 'funding_disputed'
+  | 'release_requested'
+  | 'released'
+  | 'recovery_required';
+
+export type FundingAllocationState =
+  | 'reserved'
+  | 'canceled'
+  | 'transfer_pending'
+  | 'transferred'
+  | 'released'
+  | 'recovery_required';
+
+export type FundingTransferState = 'pending' | 'posted' | 'confirmed' | 'failed' | 'reconcile_required';
+
+export interface HostedFundingBatchRow {
+  id: string;
+  tenantId: string;
+  currency: string;
+  principalMinor: string; // bigint columns surface as strings via pg
+  grossChargeMinor: string;
+  quotedFeeMinor: string;
+  actualStripeFeeMinor: string | null;
+  paymentMethodType: string | null;
+  pricingVersion: string;
+  status: FundingBatchStatus;
+  stripePaymentIntentId: string | null;
+  stripeChargeId: string | null;
+  residualMinor: string;
+  residualDisposition: 'refund' | 'manual_payout' | 'credit_next_batch' | null;
+  failureReason: string | null;
+  fundingAttempts: number;
+  fundedAt: Date | null;
+  settledAt: Date | null;
+  releasedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface HostedFundingAllocationRow {
+  id: string;
+  tenantId: string;
+  batchId: string;
+  commissionId: string;
+  partnerId: string;
+  amountMinor: string;
+  state: FundingAllocationState;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface HostedFundingTransferRow {
+  id: string;
+  tenantId: string;
+  batchId: string;
+  partnerId: string;
+  currency: string;
+  amountMinor: string;
+  destinationAccountId: string;
+  idempotencyKey: string;
+  state: FundingTransferState;
+  stripeTransferId: string | null;
+  payoutId: string | null;
+  lastError: string | null;
+  postedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface HostedFundingAuthorizationRow {
+  id: string;
+  tenantId: string;
+  adminId: string;
+  termsVersion: string;
+  stripePaymentMethodId: string;
+  paymentMethodType: string;
+  acceptedAt: Date;
+  revokedAt: Date | null;
+}
+
+export interface HostedBillingStateRow {
+  tenantId: string;
+  subscriptionStatus: 'active' | 'trialing' | 'past_due' | 'unpaid' | 'paused' | 'canceled' | null;
+  delinquentFundingCount: number;
+  updatedAt: Date;
+}
+
+export interface StripeWebhookInboxRow {
+  stripeEventId: string;
+  type: string;
+  outcome: string | null;
+  processedAt: Date;
+}
+
+export interface PayoutReversalRow {
+  id: string;
+  tenantId: string;
+  payoutId: string;
+  stripeReversalId: string;
+  amountMinor: string;
+  reason: string | null;
+  balanceTransactionId: string | null;
+  createdAt: Date;
+}
+
+/** CORE + portable: compensating-entry ledger. Paid commissions are
+ *  immutable history — clawbacks and corrections append here. */
+export interface CommissionAdjustmentRow {
+  id: string;
+  tenantId: string;
+  commissionId: string;
+  amount: string; // decimal, major units (core-table convention)
+  currency: string;
+  reason: 'transfer_reversed' | 'funding_disputed' | 'admin_correction' | 'refund_clawback';
+  actorAdminId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+}

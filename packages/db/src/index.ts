@@ -98,4 +98,12 @@ export const TABLES = {
   PartnerPostback: 'PartnerPostback',
   BrandAsset: 'BrandAsset',
   PortalCustomDomain: 'PortalCustomDomain',
+  HostedFundingBatch: 'HostedFundingBatch',
+  HostedFundingAllocation: 'HostedFundingAllocation',
+  HostedFundingTransfer: 'HostedFundingTransfer',
+  HostedFundingAuthorization: 'HostedFundingAuthorization',
+  HostedBillingState: 'HostedBillingState',
+  StripeWebhookInbox: 'StripeWebhookInbox',
+  PayoutReversal: 'PayoutReversal',
+  CommissionAdjustment: 'CommissionAdjustment',
 } as const;
