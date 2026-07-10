@@ -23,6 +23,7 @@ import { exportRouter } from './routes/export.js';
 import { importPartnersRouter } from './routes/import-partners.js';
 import { couponsRouter } from './routes/coupons.js';
 import { billingRouter } from './routes/billing.js';
+import { fundingRouter } from './routes/funding.js';
 import { authRouter } from './routes/auth.js';
 import { partnerAuthRouter } from './routes/partner-auth.js';
 import { adminOverviewRouter } from './routes/admin-overview.js';
@@ -251,6 +252,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(importPartnersRouter);
   app.use(couponsRouter);
   app.use(billingRouter);
+  app.use(fundingRouter);
   app.use(adminOverviewRouter);
   app.use(networkPartnerRouter);
   app.use(accountDeletionRouter);

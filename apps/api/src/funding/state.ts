@@ -17,6 +17,10 @@ export const TRANSFER_DEADLINE_DAYS = 14;
 export const BATCH_FLOOR_MINOR = 2_500; // $25.00
 /** Launch is USD + ACH only (spec §12). */
 export const LAUNCH_CURRENCY = 'usd';
+/** Version stamp recorded on HostedFundingAuthorization.termsVersion.
+ *  Bump when the funding terms copy changes — existing authorizations
+ *  keep their accepted version; re-acceptance is a product decision. */
+export const FUNDING_TERMS_VERSION = 'funding-terms-2026-07-v1';
 
 export function fundingEnabled(): boolean {
   return process.env.HOSTED_FUNDING_ENABLED === '1';

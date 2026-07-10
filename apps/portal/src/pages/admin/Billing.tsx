@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CreditCard, ExternalLink } from 'lucide-react';
+import { Banknote, CreditCard, ExternalLink } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
 import { theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Page } from '../../ui.js';
@@ -73,6 +73,12 @@ export function AdminBilling() {
       ) : status.data ? (
         <>
           <PlanCard status={status.data} />
+          {status.data.mode !== 'selfhost' && (
+            <>
+              <div style={{ height: 16 }} />
+              <FundingCard />
+            </>
+          )}
           <div style={{ height: 16 }} />
           {(invoices.data?.invoices ?? []).length > 0 && (
             <InvoicesCard invoices={invoices.data?.invoices ?? []} />
@@ -315,6 +321,232 @@ function PlanCard({ status }: { status: BillingStatus }) {
               Metered fee: {status.feeRate} of attributed GMV.
             </p>
           )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+interface FundingBatch {
+  id: string;
+  status: string;
+  currency: string;
+  principal: string;
+  grossCharge: string;
+  residual: string;
+  createdAt: string;
+  fundedAt: string | null;
+  settledAt: string | null;
+}
+
+interface FundingStatus {
+  available: boolean;
+  reason?: string;
+  enabled?: boolean;
+  termsVersion?: string;
+  currency?: string;
+  authorization: { acceptedAt: string; termsVersion: string; paymentMethodType: string } | null;
+  batches?: FundingBatch[];
+}
+
+const BATCH_STATUS_LABELS: Record<string, string> = {
+  reserved: 'Reserved',
+  invoicing: 'Collecting',
+  payment_processing: 'Collecting',
+  funded: 'Funded',
+  transferring: 'Paying partners',
+  settled: 'Settled',
+  settled_with_residual: 'Settled (residual)',
+  funding_failed: 'Payment failed',
+  funding_disputed: 'Disputed',
+  release_requested: 'Releasing',
+  released: 'Released',
+  recovery_required: 'Needs support',
+};
+
+/**
+ * Commission funding: the brand authorizes OpenPartner to debit their
+ * bank account (ACH) for approved partner commissions before transfers
+ * go out. Setup = accept terms + a Stripe Checkout setup-mode redirect
+ * that collects the bank mandate; the return leg posts the session id
+ * to /billing/funding/complete which verifies it server-side.
+ */
+function FundingCard() {
+  const qc = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+
+  const funding = useQuery({
+    queryKey: ['billing-funding'],
+    queryFn: () => api<FundingStatus>('/billing/funding'),
+  });
+
+  const complete = useMutation({
+    mutationFn: (sessionId: string) =>
+      api<{ ok: boolean }>('/billing/funding/complete', { method: 'POST', body: { sessionId } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['billing-funding'] }),
+    onError: (err) => setError(err instanceof ApiError ? err.message : 'setup completion failed'),
+  });
+
+  // Return leg of the Checkout setup redirect.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = params.get('session_id');
+    if (params.get('funding_setup') === 'success' && sessionId) {
+      complete.mutate(sessionId);
+      params.delete('funding_setup');
+      params.delete('session_id');
+      const qs = params.toString();
+      window.history.replaceState({}, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const setup = useMutation({
+    mutationFn: () =>
+      api<{ url: string }>('/billing/funding/setup', {
+        method: 'POST',
+        body: {
+          successUrl: `${window.location.origin}${window.location.pathname}?funding_setup=success&session_id={CHECKOUT_SESSION_ID}`,
+          cancelUrl: window.location.href,
+          termsVersion: funding.data?.termsVersion,
+        },
+      }),
+    onSuccess: (r) => {
+      window.location.href = r.url;
+    },
+    onError: (err) => setError(err instanceof ApiError ? err.message : 'setup failed'),
+  });
+
+  const revoke = useMutation({
+    mutationFn: () => api<{ ok: boolean }>('/billing/funding/revoke', { method: 'POST', body: {} }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['billing-funding'] }),
+    onError: (err) => setError(err instanceof ApiError ? err.message : 'revoke failed'),
+  });
+
+  if (funding.isLoading || !funding.data?.available) return null;
+  const f = funding.data;
+  const batches = f.batches ?? [];
+
+  return (
+    <Card>
+      <SectionHeader icon={<Banknote size={18} />} title="Commission funding" />
+      <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 14px' }}>
+        Automated partner payouts collect the commission total from your bank account (ACH debit)
+        first — partner transfers only go out after your payment settles. Without funding set up,
+        payouts run on the manual rail: you transfer to partners yourself and confirm each payout.
+      </p>
+      {error && <ErrorBanner error={error} />}
+      {complete.isPending && (
+        <p style={{ fontSize: 12, color: theme.textMuted }}>Finishing bank setup…</p>
+      )}
+
+      {f.authorization ? (
+        <>
+          <div
+            style={{
+              background: `${theme.success}10`,
+              border: `1px solid ${theme.success}55`,
+              borderRadius: theme.radiusSm,
+              padding: 12,
+              marginBottom: 14,
+              fontSize: 13,
+              color: theme.text,
+            }}
+          >
+            <strong style={{ color: theme.success }}>Bank account connected.</strong> Funding
+            authorized on {new Date(f.authorization.acceptedAt).toLocaleDateString()} (terms{' '}
+            <code>{f.authorization.termsVersion}</code>).
+            {!f.enabled && ' Automated funding is not switched on for this deployment yet — payouts stay on the manual rail until it is.'}
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Button variant="secondary" onClick={() => setup.mutate()} disabled={setup.isPending}>
+              {setup.isPending ? 'Opening Stripe…' : 'Replace bank account'}
+            </Button>
+            <Button variant="danger" onClick={() => revoke.mutate()} disabled={revoke.isPending}>
+              {revoke.isPending ? 'Revoking…' : 'Revoke authorization'}
+            </Button>
+          </div>
+          <p style={{ marginTop: 8, fontSize: 12, color: theme.textDim }}>
+            Revoking stops new funding collections. Batches already in progress finish under the
+            authorization they started with.
+          </p>
+        </>
+      ) : (
+        <>
+          <label
+            style={{
+              display: 'flex',
+              gap: 8,
+              alignItems: 'flex-start',
+              fontSize: 13,
+              color: theme.text,
+              marginBottom: 12,
+              cursor: 'pointer',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={termsAccepted}
+              onChange={(e) => setTermsAccepted(e.target.checked)}
+              style={{ marginTop: 2 }}
+            />
+            <span>
+              I authorize OpenPartner to debit our bank account for approved partner commission
+              batches, per the{' '}
+              <a
+                href="https://openpartner.dev/terms"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: theme.accent }}
+              >
+                funding terms
+              </a>
+              . Debits happen only for commissions we approved; every batch is itemized here.
+            </span>
+          </label>
+          <Button onClick={() => setup.mutate()} disabled={!termsAccepted || setup.isPending}>
+            {setup.isPending ? 'Opening Stripe…' : 'Connect bank account (US ACH)'}
+          </Button>
+          <p style={{ marginTop: 8, fontSize: 12, color: theme.textDim }}>
+            US bank accounts only at launch; UK/EU bank debit is on the roadmap. Until funding is
+            set up, use Settings → Payout settings → rail “Manual”.
+          </p>
+        </>
+      )}
+
+      {batches.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Recent funding batches</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {batches.map((b) => (
+              <div
+                key={b.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: '8px 12px',
+                  background: theme.surface2,
+                  border: `1px solid ${theme.borderSubtle}`,
+                  borderRadius: theme.radiusSm,
+                }}
+              >
+                <span style={{ fontSize: 12, fontFamily: theme.fontMono, color: theme.textMuted }}>
+                  {b.id.slice(-8)}
+                </span>
+                <span style={{ fontSize: 13, color: theme.textMuted }}>
+                  {new Date(b.createdAt).toLocaleDateString()}
+                </span>
+                <span style={{ flex: 1, fontSize: 13, color: theme.text }}>
+                  {b.grossCharge} {b.currency.toUpperCase()}
+                </span>
+                <span style={{ fontSize: 11, color: theme.textMuted, textTransform: 'uppercase', fontWeight: 600 }}>
+                  {BATCH_STATUS_LABELS[b.status] ?? b.status}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </Card>
