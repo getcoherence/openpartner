@@ -133,10 +133,73 @@ async function collectBatch(
       }
       const sinceLast = now.getTime() - new Date(batch.updatedAt).getTime();
       if (sinceLast < fundingRetryDueMs(batch.fundingAttempts)) return;
+      // Retry CONFIRMS the existing PI — re-creating under the frozen
+      // key would just replay the original creation response (the PI
+      // object), not retry the payment. Only a batch whose PI creation
+      // itself hard-failed (no PI stamped) goes back through create.
+      if (batch.stripePaymentIntentId) {
+        await retryFundingPaymentIntent(db, batch, stripe, result);
+        return;
+      }
       const claimed = await casBatch(db, batch.id, 'funding_failed', 'invoicing');
       if (claimed) await createFundingPaymentIntent(db, claimed, stripe, result);
       return;
     }
+  }
+}
+
+/**
+ * Retry a failed payment by confirming the SAME PaymentIntent with the
+ * tenant's authorized payment method. Per-attempt idempotency key — each
+ * scheduled retry is a distinct, deliberate attempt.
+ */
+async function retryFundingPaymentIntent(
+  db: Knex,
+  batch: HostedFundingBatchRow,
+  stripe: Stripe,
+  result: CollectorResult,
+): Promise<void> {
+  const pi = await stripe.paymentIntents.retrieve(batch.stripePaymentIntentId!);
+  if (pi.status === 'succeeded') {
+    const { confirmFundingFromPaymentIntent } = await import('./confirm.js');
+    // Payment-wins CAS covers payment_processing/release_requested; a
+    // funding_failed batch whose PI actually succeeded moves through
+    // payment_processing first so the same verified path applies.
+    await casBatch(db, batch.id, 'funding_failed', 'payment_processing');
+    await confirmFundingFromPaymentIntent(db, batch.id, pi);
+    result.advanced.push(batch.id);
+    return;
+  }
+  if (pi.status === 'canceled') {
+    if ((await releaseBatch(db, stripe, batch, 'pi_canceled')) === 'released') result.released.push(batch.id);
+    return;
+  }
+  if (pi.status !== 'requires_payment_method' && pi.status !== 'requires_confirmation') {
+    return; // processing — leave it alone until it terminalizes
+  }
+  const auth = await getFundingAuthorization(db, batch.tenantId);
+  if (!auth) {
+    console.error(`[funding] retry impossible: tenant ${batch.tenantId} authorization revoked (batch ${batch.id})`);
+    return; // timeout will release it
+  }
+  const attempt = batch.fundingAttempts + 1;
+  try {
+    await stripe.paymentIntents.confirm(
+      pi.id,
+      { payment_method: auth.stripePaymentMethodId },
+      { idempotencyKey: `fbpc:${batch.id}:${attempt}` },
+    );
+    await casBatch(db, batch.id, 'funding_failed', 'payment_processing', {
+      fundingAttempts: attempt,
+    });
+    result.advanced.push(batch.id);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await db(TABLES.HostedFundingBatch)
+      .where({ id: batch.id, status: 'funding_failed' })
+      .update({ failureReason: message.slice(0, 500), fundingAttempts: attempt, updatedAt: new Date() });
+    console.error(`[funding] retry confirm failed for batch ${batch.id}: ${message}`);
+    result.failed.push(batch.id);
   }
 }
 
