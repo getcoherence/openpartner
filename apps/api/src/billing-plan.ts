@@ -27,9 +27,21 @@ import { getMode, type OpenPartnerMode } from './stripe.js';
 
 export const TRIAL_DAYS = 14;
 
+export type MirroredSubscriptionStatus =
+  | 'active'
+  | 'trialing'
+  | 'past_due'
+  | 'unpaid'
+  | 'paused'
+  | 'canceled';
+
 export interface TenantBillingState {
   /** The plan column on Tenant. Null for legacy or selfhost. */
   plan: BillingPlan | null;
+  /** Webhook-mirrored Stripe subscription status (HostedBillingState,
+   *  spec §4 finding 13). Null when no mirror row exists yet — tenants
+   *  predating the mirror are grandfathered by hasActivePlan. */
+  subscriptionStatus: MirroredSubscriptionStatus | null;
   /** Mode the rest of the billing layer should switch on. Same shape
    *  as the legacy getMode() return so existing callers can swap in
    *  with no changes. */
@@ -51,6 +63,9 @@ export async function getTenantBillingState(db: Knex, tenantId: string): Promise
   const tenant = await db<TenantRow>(TABLES.Tenant)
     .where({ id: tenantId })
     .first(['billingPlan', 'trialEndsAt', 'firstTrialActivatedAt', 'stripeCustomerId', 'stripeSubscriptionId']);
+  const mirror = (await db(TABLES.HostedBillingState)
+    .where({ tenantId })
+    .first(['subscriptionStatus'])) as { subscriptionStatus: MirroredSubscriptionStatus | null } | undefined;
   const plan = (tenant?.billingPlan as BillingPlan | null) ?? null;
   const hasUsedTrial = !!tenant?.firstTrialActivatedAt;
   const stripeSubscriptionId = tenant?.stripeSubscriptionId ?? null;
@@ -64,6 +79,7 @@ export async function getTenantBillingState(db: Knex, tenantId: string): Promise
     !stripeSubscriptionId;
   return {
     plan,
+    subscriptionStatus: mirror?.subscriptionStatus ?? null,
     mode: planToMode(plan),
     trialEndsAt: tenant?.trialEndsAt ? new Date(tenant.trialEndsAt) : null,
     inTrial: tenant?.trialEndsAt ? new Date(tenant.trialEndsAt) > new Date() : false,
@@ -150,5 +166,28 @@ export function isTrialGateActive(state: TenantBillingState): boolean {
 export function hasActivePlan(state: TenantBillingState): boolean {
   if (state.mode === 'selfhost') return true;
   if (state.plan === 'enterprise') return true;
-  return state.stripeSubscriptionId != null;
+  if (state.stripeSubscriptionId == null) return false;
+  // Upgrade (spec §4 finding 13): "subscription id non-null" alone let a
+  // deeply-delinquent subscription keep full service. The webhook-mirrored
+  // status refines it — past_due keeps service (Stripe is still dunning);
+  // unpaid/paused/canceled do not. No mirror row = legacy tenant,
+  // grandfathered on the id check until the next subscription webhook.
+  if (state.subscriptionStatus == null) return true;
+  return ['active', 'trialing', 'past_due'].includes(state.subscriptionStatus);
+}
+
+/**
+ * Mirror a Stripe subscription status onto HostedBillingState. Called from
+ * the subscription webhooks; the mirror is what hasActivePlan and funding
+ * eligibility read instead of live Stripe calls.
+ */
+export async function mirrorHostedBillingState(
+  db: Knex,
+  tenantId: string,
+  status: MirroredSubscriptionStatus,
+): Promise<void> {
+  await db(TABLES.HostedBillingState)
+    .insert({ tenantId, subscriptionStatus: status, delinquentFundingCount: 0, updatedAt: new Date() })
+    .onConflict('tenantId')
+    .merge({ subscriptionStatus: status, updatedAt: new Date() });
 }

@@ -23,6 +23,7 @@ function billing(overrides: Partial<TenantBillingState> = {}): TenantBillingStat
     stripeCustomerId: null,
     stripeSubscriptionId: null,
     trialExpiredWithoutSubscription: false,
+    subscriptionStatus: null,
     ...overrides,
   };
 }
@@ -51,6 +52,22 @@ describe('hasActivePlan (partner-onboarding gate)', () => {
 
   it('is FALSE during a free trial with no subscription', () => {
     expect(hasActivePlan(billing({ plan: 'flex', inTrial: true, stripeSubscriptionId: null }))).toBe(false);
+  });
+
+  // HostedBillingState mirror upgrade (payout-funding spec §4 finding 13):
+  // a subscription id alone no longer proves service eligibility.
+  it('mirror: past_due keeps service (Stripe still dunning); unpaid/paused/canceled lose it', () => {
+    const base = { plan: 'flex' as const, stripeSubscriptionId: 'sub_1' };
+    expect(hasActivePlan(billing({ ...base, subscriptionStatus: 'active' }))).toBe(true);
+    expect(hasActivePlan(billing({ ...base, subscriptionStatus: 'trialing' }))).toBe(true);
+    expect(hasActivePlan(billing({ ...base, subscriptionStatus: 'past_due' }))).toBe(true);
+    expect(hasActivePlan(billing({ ...base, subscriptionStatus: 'unpaid' }))).toBe(false);
+    expect(hasActivePlan(billing({ ...base, subscriptionStatus: 'paused' }))).toBe(false);
+    expect(hasActivePlan(billing({ ...base, subscriptionStatus: 'canceled' }))).toBe(false);
+  });
+
+  it('mirror: no mirror row grandfathers legacy tenants on the id check', () => {
+    expect(hasActivePlan(billing({ plan: 'flex', stripeSubscriptionId: 'sub_1', subscriptionStatus: null }))).toBe(true);
   });
 });
 

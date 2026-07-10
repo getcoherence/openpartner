@@ -16,6 +16,7 @@ import { TABLES, type AttributionRow, type ProgramRow, type CommissionRow } from
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
 import { tenantOf } from '../tenancy.js';
+import { interlockCommissionReversal } from '../funding/interlocks.js';
 
 const listQuerySchema = z.object({
   status: z.enum(['accrued', 'approved', 'paid', 'reversed']).optional(),
@@ -145,6 +146,16 @@ commissionsRouter.post('/commissions/:id/approve', requireAuth, requireAdmin, as
 
 commissionsRouter.post('/commissions/:id/reverse', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
+  // Funding interlock (spec §8): a commission whose money is mid-transfer
+  // cannot be flipped; one still in a reserved allocation gets the
+  // allocation canceled first so no charge/transfer fires for it.
+  const interlock = await interlockCommissionReversal(db, [req.params.id!]);
+  if (interlock.held.length > 0) {
+    return res.status(409).json({
+      error: 'commission_in_transfer',
+      detail: 'a partner transfer for this commission is executing; retry after it settles, then claw back via adjustment',
+    });
+  }
   const updated = await db<CommissionRow>(TABLES.Commission)
     .where({ id: req.params.id })
     .whereIn('status', ['accrued', 'approved'])

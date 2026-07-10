@@ -349,7 +349,24 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
   // the collector job charges the brand OUTSIDE any transaction, and
   // transfers happen only after the payment settles.
   if (fundingCandidates.length > 0 && db.isTransaction) {
-    const auth = await getFundingAuthorization(db, tenantId);
+    // Funding eligibility ≠ service eligibility (spec §4 finding 13): a
+    // NEW batch needs healthy billing (mirror active/trialing, or no
+    // mirror yet) and no funding already in trouble. Already-funded
+    // batches always finish transferring regardless — that's the
+    // executor's job, unaffected here.
+    const billingHealthy =
+      billing.subscriptionStatus == null ||
+      ['active', 'trialing'].includes(billing.subscriptionStatus);
+    const troubled = await db(TABLES.HostedFundingBatch)
+      .where({ tenantId })
+      .whereIn('status', ['funding_failed', 'funding_disputed', 'release_requested', 'recovery_required'])
+      .first(['id', 'status']);
+    const auth = billingHealthy && !troubled ? await getFundingAuthorization(db, tenantId) : null;
+    if (!billingHealthy || troubled) {
+      console.error(
+        `[funding] tenant ${tenantId} ineligible for new batches: ${!billingHealthy ? `billing ${billing.subscriptionStatus}` : `batch ${(troubled as { id: string }).id} is ${(troubled as { status: string }).status}`}`,
+      );
+    }
     const byCurrency = new Map<string, ReservationCandidate[]>();
     for (const { currency, candidate } of fundingCandidates) {
       const list = byCurrency.get(currency) ?? [];

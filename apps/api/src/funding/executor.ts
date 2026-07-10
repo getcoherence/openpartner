@@ -100,7 +100,12 @@ async function executeBatch(
 
   // Funding invariant (spec §6) — asserted before any money moves:
   // every funded cent is accounted for by allocation state + residual.
-  const stateSum = allocations.reduce((s, a) => s + Number(a.amountMinor), 0);
+  // `released` allocations shrank the principal with them (pre-charge
+  // interlock cancels) and are excluded; `canceled` ones are frozen money
+  // heading for a residual and still count.
+  const stateSum = allocations
+    .filter((a) => a.state !== 'released')
+    .reduce((s, a) => s + Number(a.amountMinor), 0);
   const expected = Number(batch.principalMinor);
   if (stateSum !== expected) {
     console.error(
@@ -123,15 +128,39 @@ async function executeBatch(
     await executePartnerTransfer(db, stripe, batch, partnerId, group, now(), result);
   }
 
-  // Settlement check: every allocation terminal-transferred → settled.
-  const remaining = (await db(TABLES.HostedFundingAllocation)
+  // Settlement check: every allocation terminal → settled. Allocations
+  // canceled AFTER the charge amount froze (reversal interlock on an
+  // in-flight batch) are funded-but-untransferred money: the batch closes
+  // settled_with_residual and the residual awaits an operator disposition
+  // (refund / manual payout / credit next batch — spec §7).
+  const terminalStates = (await db(TABLES.HostedFundingAllocation)
     .where({ batchId: batch.id })
-    .whereNotIn('state', ['transferred', 'canceled', 'released'])
-    .count<{ count: string }[]>('* as count')
-    .first()) as { count: string } | undefined;
-  if (Number(remaining?.count ?? 1) === 0) {
-    const settled = await casBatch(db, batch.id, 'transferring', 'settled', { settledAt: new Date() });
-    if (settled) result.settled.push(batch.id);
+    .select('state')
+    .sum({ total: 'amountMinor' })
+    .groupBy('state')) as Array<{ state: string; total: string }>;
+  const openMinor = terminalStates
+    .filter((r) => !['transferred', 'canceled', 'released'].includes(r.state))
+    .reduce((s, r) => s + Number(r.total), 0);
+  if (openMinor === 0) {
+    const canceledMinor = terminalStates
+      .filter((r) => r.state === 'canceled')
+      .reduce((s, r) => s + Number(r.total), 0);
+    const residual = canceledMinor > 0;
+    const settled = await casBatch(
+      db,
+      batch.id,
+      'transferring',
+      residual ? 'settled_with_residual' : 'settled',
+      { settledAt: new Date(), ...(residual ? { residualMinor: canceledMinor } : {}) },
+    );
+    if (settled) {
+      result.settled.push(batch.id);
+      if (residual) {
+        console.error(
+          `[funding] ALERT: batch ${batch.id} settled with ${canceledMinor} minor residual — operator disposition required`,
+        );
+      }
+    }
   } else {
     // Deadline escalation (§7): allocations stuck past the transfer window
     // need an operator-recorded residual disposition (build 4 surfaces it).

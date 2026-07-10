@@ -18,6 +18,8 @@ import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFro
 import { applyWhiteLabelFromSubscription, subscriptionHasWhiteLabel, whiteLabelPriceId } from '../white-label-billing.js';
 import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
 import { handleFundingEvent } from '../funding/webhook.js';
+import { mirrorHostedBillingState, type MirroredSubscriptionStatus } from '../billing-plan.js';
+import { interlockCommissionReversal } from '../funding/interlocks.js';
 
 const stripeKey = process.env.STRIPE_SECRET_KEY;
 // STRIPE_WEBHOOK_SECRET accepts either a single secret or a comma-separated
@@ -356,6 +358,9 @@ async function handleConnectEvent(
       await persistMerchantSubscription(trx, tenantId, {
         stripeSubscriptionId: sub.id,
       });
+      // HostedBillingState mirror (spec §4 finding 13): hasActivePlan and
+      // funding eligibility read this instead of live Stripe calls.
+      await mirrorHostedBillingState(trx, tenantId, sub.status as MirroredSubscriptionStatus);
       const parts = [
         newPlan ? `subscription_updated_plan_${newPlan}` : 'subscription_updated',
         ...(wl !== 'unchanged' ? [`white_label_${wl}`] : []),
@@ -375,6 +380,7 @@ async function handleConnectEvent(
       // The whole subscription is gone — the add-on with it. Revokes
       // custom-domain routing + DO edge if this was a white-label tenant.
       const wl = await applyWhiteLabelFromSubscription(trx, tenantId, false);
+      await mirrorHostedBillingState(trx, tenantId, 'canceled');
       return `subscription_deleted_${sub.status}${wl !== 'unchanged' ? `+white_label_${wl}` : ''}`;
     }
     case 'transfer.updated':
@@ -489,7 +495,7 @@ async function mapStripeEvent(
       // we don't claw back funds that have already left the platform.
       const reversal = invoiceId
         ? await reverseCommissionsForInvoice(trx, invoiceId)
-        : { reversed: 0, alreadyPaid: 0 };
+        : { reversed: 0, alreadyPaid: 0, heldInTransfer: 0 };
 
       return {
         userId,
@@ -502,6 +508,7 @@ async function mapStripeEvent(
           amountRefunded: charge.amount_refunded,
           reversedCommissions: reversal.reversed,
           alreadyPaidCommissions: reversal.alreadyPaid,
+          ...(reversal.heldInTransfer > 0 ? { heldInTransferCommissions: reversal.heldInTransfer } : {}),
         },
       };
     }
@@ -567,21 +574,38 @@ async function mapStripeEvent(
 async function reverseCommissionsForInvoice(
   trx: Knex.Transaction,
   invoiceId: string,
-): Promise<{ reversed: number; alreadyPaid: number }> {
+): Promise<{ reversed: number; alreadyPaid: number; heldInTransfer: number }> {
   const sourceEvents = await trx<EventRow>(TABLES.Event)
     .whereRaw(`"metadata"->>'stripeInvoiceId' = ?`, [invoiceId])
     .where('type', 'invoice_paid');
-  if (sourceEvents.length === 0) return { reversed: 0, alreadyPaid: 0 };
+  if (sourceEvents.length === 0) return { reversed: 0, alreadyPaid: 0, heldInTransfer: 0 };
 
   const eventIds = sourceEvents.map((e) => e.id);
   const attributions = await trx<AttributionRow>(TABLES.Attribution).whereIn('eventId', eventIds);
-  if (attributions.length === 0) return { reversed: 0, alreadyPaid: 0 };
+  if (attributions.length === 0) return { reversed: 0, alreadyPaid: 0, heldInTransfer: 0 };
   const attributionIds = attributions.map((a) => a.id);
 
-  const reversed = await trx<CommissionRow>(TABLES.Commission)
+  // Funding interlock (spec §8): commissions in a live allocation can't be
+  // silently flipped — reserved allocations are canceled first (no charge
+  // fires for them), mid-transfer ones are held and surfaced like
+  // already-paid rows (the money is moving; claw back via adjustment).
+  const candidates = (await trx<CommissionRow>(TABLES.Commission)
     .whereIn('attributionId', attributionIds)
     .whereIn('status', ['accrued', 'approved'])
-    .update({ status: 'reversed' });
+    .select('id')) as Array<{ id: string }>;
+  const interlock = await interlockCommissionReversal(trx, candidates.map((c) => c.id));
+  if (interlock.held.length > 0) {
+    console.error(
+      `[funding] invoice ${invoiceId} refund: ${interlock.held.length} commission(s) mid-transfer — held for post-settlement adjustment`,
+    );
+  }
+
+  const reversed = interlock.flippable.length === 0
+    ? 0
+    : await trx<CommissionRow>(TABLES.Commission)
+        .whereIn('id', interlock.flippable)
+        .whereIn('status', ['accrued', 'approved'])
+        .update({ status: 'reversed' });
 
   const alreadyPaidRow = (await trx<CommissionRow>(TABLES.Commission)
     .whereIn('attributionId', attributionIds)
@@ -590,7 +614,7 @@ async function reverseCommissionsForInvoice(
     .first()) as { c: string | number } | undefined;
   const alreadyPaid = Number(alreadyPaidRow?.c ?? 0);
 
-  return { reversed, alreadyPaid };
+  return { reversed, alreadyPaid, heldInTransfer: interlock.held.length };
 }
 
 async function resolveUserIdFromCustomer(
