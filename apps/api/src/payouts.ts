@@ -30,7 +30,8 @@ import {
   type PayoutRailPreference,
   type TenantRow,
 } from '@openpartner/db';
-import { REVSHARE_FEE_BPS, getMode, requireStripe, type OpenPartnerMode } from './stripe.js';
+import { REVSHARE_FEE_BPS, requireStripe, type OpenPartnerMode } from './stripe.js';
+import { getTenantBillingState } from './billing-plan.js';
 import { dispatchEvent } from './webhook-dispatcher.js';
 
 export interface PayoutRunResult {
@@ -40,6 +41,12 @@ export interface PayoutRunResult {
    *  reported here instead of in payouts. Commissions stay 'approved' so
    *  they accumulate to the next run. */
   skippedBelowThreshold: Array<{ partnerId: string; currency: string; amount: number }>;
+  /** Hosted-tenant Connect payouts refused because there is no mechanism
+   *  funding the commission principal — transfers would spend the
+   *  PLATFORM's Stripe balance with no way to collect from the brand
+   *  (audit 2026-07-10). Commissions stay 'approved'; no Payout row is
+   *  written so retries don't accumulate failure rows. */
+  skippedUnfunded: Array<{ partnerId: string; currency: string; amount: number }>;
   payouts: Array<{
     payoutId: string;
     partnerId: string;
@@ -53,7 +60,12 @@ export interface PayoutRunResult {
 }
 
 export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunResult> {
-  const mode = getMode();
+  // Per-TENANT billing mode, not the global env — on the hosted deployment
+  // OPENPARTNER_MODE says 'flat' while individual tenants are on revshare,
+  // which zeroed platformFee for every hosted revshare payout (audit
+  // finding). Also drives the funding guard below.
+  const billing = await getTenantBillingState(db, tenantId);
+  const mode = billing.mode;
   const runId = ulid();
 
   const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first();
@@ -70,6 +82,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
 
   const results: PayoutRunResult['payouts'] = [];
   const skipped: PayoutRunResult['skippedBelowThreshold'] = [];
+  const skippedUnfunded: PayoutRunResult['skippedUnfunded'] = [];
 
   for (const group of groups) {
     const partner = await db<PartnerRow>(TABLES.Partner).where({ id: group.partnerId }).first();
@@ -102,6 +115,26 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
       if (railPreference === 'stripe_connect') return 'stripe_connect';
       return partner.stripeConnectAccountId ? 'stripe_connect' : 'manual';
     })();
+
+    // FAIL-CLOSED FUNDING GUARD (hosted only). On hosted tenants a Connect
+    // transfer spends the PLATFORM's Stripe balance, and no mechanism
+    // exists yet to collect the commission principal from the brand — the
+    // percentage fee metering covers the service fee, not the money being
+    // sent. Until the funding-batch flow ships, refuse the transfer, keep
+    // the commissions 'approved', and write no Payout row. Self-host is
+    // unaffected: there the platform account IS the brand's own Stripe.
+    // Escape hatch for a deliberate operator decision only.
+    if (
+      method === 'stripe_connect' &&
+      mode !== 'selfhost' &&
+      process.env.OPENPARTNER_ALLOW_UNFUNDED_CONNECT_PAYOUTS !== '1'
+    ) {
+      console.error(
+        `[payouts] REFUSED unfunded Connect payout: tenant=${tenantId} partner=${partner.id} ${group.currency} ${amount.toFixed(2)} — commission principal has no brand funding mechanism; commissions remain approved`,
+      );
+      skippedUnfunded.push({ partnerId: partner.id, currency: group.currency, amount });
+      continue;
+    }
 
     // Preflight: a linked Connect account that hasn't finished onboarding
     // will 400 on transfers.create. Decide up front and take a path that
@@ -272,5 +305,5 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     }
   }
 
-  return { runId, mode, payouts: results, skippedBelowThreshold: skipped };
+  return { runId, mode, payouts: results, skippedBelowThreshold: skipped, skippedUnfunded };
 }
