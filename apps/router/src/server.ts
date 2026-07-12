@@ -33,9 +33,12 @@ app.get('/health', (c) => c.json({ ok: true, service: 'router' }));
 // All resolve → insert Click → set first-party cookie → 302.
 async function handleSlugKey(c: Context): Promise<Response> {
   const { slug, linkKey } = c.req.param() as { slug: string; linkKey: string };
-  const tenant = (await db('Tenant').where({ slug, status: 'active' }).first(['id'])) as
-    | { id: string }
-    | undefined;
+  // Only 'approved' brands serve clicks — a pending (or rejected) brand
+  // collects no attribution data. Backfilled/self-host tenants are
+  // 'approved', so this is a no-op there. See migration 20260712000000.
+  const tenant = (await db('Tenant')
+    .where({ slug, status: 'active', approvalStatus: 'approved' })
+    .first(['id'])) as { id: string } | undefined;
   if (!tenant) return c.text('Tenant not found', 404);
   const link = await db<LinkRow>(TABLES.Link).where({ tenantId: tenant.id, linkKey }).first();
   return resolveLink(c, link);
@@ -49,7 +52,7 @@ async function handleKeyOnly(c: Context): Promise<Response> {
   const host = (c.req.header('host') ?? '').split(':')[0]!.toLowerCase().trim();
   if (host) {
     const tenant = (await db('Tenant')
-      .where({ customDomain: host, status: 'active' })
+      .where({ customDomain: host, status: 'active', approvalStatus: 'approved' })
       .first(['id'])) as { id: string } | undefined;
     if (tenant) {
       const link = await db<LinkRow>(TABLES.Link)

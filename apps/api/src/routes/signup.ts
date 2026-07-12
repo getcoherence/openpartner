@@ -28,6 +28,7 @@ import { getMailer } from '../mailer.js';
 import { adminInviteEmail, buildMagicLinkUrl } from '../email-templates.js';
 import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
 import { newTrialEnd } from '../billing-plan.js';
+import { findBlockingEntry, notifyOpsNewBrand } from '../brand-review.js';
 
 export const signupRouter = Router();
 
@@ -73,6 +74,15 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
     return res.status(409).json({ error: 'slug_reserved' });
   }
 
+  // Signup blocklist (anti-spam): a banned admin email or email domain is
+  // refused before any Tenant row is created. Deliberately a generic 403 —
+  // we don't confirm to the sender that they're specifically banned.
+  const blocked = await findBlockingEntry(db, adminEmail);
+  if (blocked) {
+    console.warn('[signup] blocked signup', { adminEmail, rule: `${blocked.type}:${blocked.value}` });
+    return res.status(403).json({ error: 'signup_unavailable' });
+  }
+
   let tenantId = ulid();
   const adminId = ulid();
   const now = new Date();
@@ -103,6 +113,11 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
         await trx(TABLES.Config).where({ tenantId, key: 'network_membership' }).del();
         await trx<TenantRow>(TABLES.Tenant).where({ id: tenantId }).update({
           displayName: body.data.displayName,
+          // Reclaiming an abandoned signup re-enters the review queue.
+          approvalStatus: 'pending',
+          approvalReason: null,
+          reviewedAt: null,
+          reviewedByEmail: null,
           // Refresh the plan choice on recovery — the user may have come
           // back via a different pricing CTA than their first attempt.
           ...(body.data.plan ? { billingPlan: body.data.plan as TenantRow['billingPlan'] } : {}),
@@ -118,6 +133,10 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
           slug,
           displayName: body.data.displayName,
           status: 'active',
+          // Public signups land in the review queue — they can sign in and
+          // configure, but stay 403-gated from going live and serve no
+          // clicks until a platform operator approves (anti-spam).
+          approvalStatus: 'pending',
           billingPlan: (body.data.plan ?? null) as TenantRow['billingPlan'],
           // Trial starts at signup, not at Stripe Checkout — brands get a
           // 14-day evaluation window from t=0. firstTrialActivatedAt is
@@ -191,6 +210,14 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
     contactEmail: adminEmail,
     contactName: body.data.adminName,
     protoHost: `${req.protocol}://${req.get('host') ?? ''}`,
+  });
+
+  // Tell the platform-ops inbox a new brand is waiting for review.
+  // Best-effort — a mailer blip must not fail the signup.
+  await notifyOpsNewBrand(db, {
+    brandName: body.data.displayName,
+    slug,
+    adminEmail,
   });
 
   res.status(201).json({

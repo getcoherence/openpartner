@@ -170,6 +170,122 @@ export function campaignEndingPartnerEmail(
   return { subject, text, html: wrap(text, programUrl, 'View program') };
 }
 
+// ---------------------------------------------------------------------------
+// Brand review (approval gate) — brand-facing + platform-ops-facing.
+// ---------------------------------------------------------------------------
+
+/** Brand admin: your brand cleared review and is live. */
+export function brandApprovedEmail(
+  adminName: string,
+  brandName: string,
+  enterUrl: string,
+): EmailTemplate {
+  const subject = `${brandName} is approved — you're live`;
+  const text = [
+    `Hi ${adminName},`,
+    ``,
+    `Good news — ${brandName} has been approved on OpenPartner. Your`,
+    `partner links now redirect, and you can invite partners and go live.`,
+    ``,
+    `Jump back into your dashboard:`,
+    ``,
+    enterUrl,
+  ].join('\n');
+  return { subject, text, html: wrap(text, enterUrl, 'Open dashboard') };
+}
+
+/** Brand admin: your brand was rejected. Only sent when the operator opts
+ *  to notify — spam/phishing rejections are silent by default. No CTA:
+ *  there's nowhere to send them. */
+export function brandRejectedEmail(brandName: string, reason: string | null): EmailTemplate {
+  const subject = `Your ${brandName} application wasn't approved`;
+  const text = [
+    `Hello,`,
+    ``,
+    `After review, we're unable to approve ${brandName} for OpenPartner at`,
+    `this time.`,
+    ...(reason ? [``, `Reason: ${reason}`] : []),
+    ``,
+    `If you believe this was a mistake, reply to this email and our team`,
+    `will take another look.`,
+  ].join('\n');
+  const html = plainHtml(text);
+  return { subject, text, html };
+}
+
+/** Platform operator: magic-link sign-in to the ops console. */
+export function platformAdminSigninEmail(link: string): EmailTemplate {
+  const subject = `Your OpenPartner ops sign-in link`;
+  const text = [
+    `Click the link below to sign in to the OpenPartner platform-ops console:`,
+    ``,
+    link,
+    ``,
+    `This link is good for 15 minutes. If you didn't request it, ignore this`,
+    `email — someone may have mistyped their address.`,
+  ].join('\n');
+  return { subject, text, html: wrap(text, link, 'Sign in to ops') };
+}
+
+/** Platform ops: a new brand signed up and is waiting for review. */
+export function opsBrandNeedsReviewEmail(
+  brandName: string,
+  slug: string,
+  adminEmail: string,
+  reviewUrl: string,
+): EmailTemplate {
+  const subject = `[Review] ${brandName} (${slug}) signed up`;
+  const text = [
+    `A new brand is waiting for review:`,
+    ``,
+    `  Brand:  ${brandName}`,
+    `  Slug:   ${slug}`,
+    `  Admin:  ${adminEmail}`,
+    ``,
+    `Approve or reject it in the ops console:`,
+    ``,
+    reviewUrl,
+  ].join('\n');
+  return { subject, text, html: wrap(text, reviewUrl, 'Review brand') };
+}
+
+/** Platform ops: a decision was recorded (audit copy to the ops inbox). */
+export function opsBrandDecisionEmail(
+  brandName: string,
+  slug: string,
+  decision: 'approved' | 'rejected' | 'reinstated',
+  operatorEmail: string,
+  reason: string | null,
+): EmailTemplate {
+  const subject = `[${decision}] ${brandName} (${slug})`;
+  const text = [
+    `${brandName} (${slug}) was ${decision} by ${operatorEmail}.`,
+    ...(reason ? [``, `Reason: ${reason}`] : []),
+  ].join('\n');
+  return { subject, text, html: plainHtml(text) };
+}
+
+/** Plain-text-in-HTML wrapper for templates with no call-to-action button. */
+function plainHtml(text: string): string {
+  return `<!DOCTYPE html>
+<html>
+  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#f4f4f5; padding:24px 0; margin:0;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+      <tr><td align="center">
+        <table role="presentation" width="520" cellspacing="0" cellpadding="0" border="0" style="background:#ffffff; border-radius:8px; overflow:hidden;">
+          <tr><td style="padding:28px 32px; color:#1f2937; font-size:14px; line-height:1.6;">
+            ${text
+              .split('\n')
+              .map((l) => l.replace(/</g, '&lt;').replace(/>/g, '&gt;'))
+              .join('<br>')}
+          </td></tr>
+        </table>
+      </td></tr>
+    </table>
+  </body>
+</html>`;
+}
+
 function wrap(text: string, cta: string, ctaLabel: string): string {
   const escaped = text
     .split('\n')

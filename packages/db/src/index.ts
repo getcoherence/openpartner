@@ -73,6 +73,9 @@ export async function createDb(config: DbConfig): Promise<Knex> {
 export const TABLES = {
   Tenant: 'Tenant',
   PlatformAdmin: 'PlatformAdmin',
+  PlatformAdminSession: 'PlatformAdminSession',
+  SignupBlocklist: 'SignupBlocklist',
+  PlatformAuditLog: 'PlatformAuditLog',
   Partner: 'Partner',
   Program: 'Program',
   PartnerProgram: 'PartnerProgram',
