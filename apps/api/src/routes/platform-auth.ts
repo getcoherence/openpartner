@@ -19,6 +19,7 @@ import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
 import { newTrialEnd } from '../billing-plan.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { autoEnrollBrandOnNetwork } from './signup.js';
+import { notifyOpsNewBrand } from '../brand-review.js';
 import {
   attachSessionToBundle,
   createPlatformBundle,
@@ -236,6 +237,19 @@ platformAuthRouter.post('/me/brands', addBrandLimit, async (req, res) => {
     .first(['name']);
   const adminName = prior?.name ?? email.split('@')[0]!;
 
+  // Trust heuristic: an operator who ALREADY runs an approved brand has
+  // cleared review once — auto-approve their next brand so returning
+  // customers aren't re-queued. A first-time add (no approved brand yet)
+  // still goes through review, same as public signup.
+  const hasApprovedBrand = await db(TABLES.Admin)
+    .join(TABLES.Tenant, `${TABLES.Tenant}.id`, `${TABLES.Admin}.tenantId`)
+    .where(`${TABLES.Admin}.email`, email)
+    .whereNull(`${TABLES.Admin}.revokedAt`)
+    .andWhere(`${TABLES.Tenant}.approvalStatus`, 'approved')
+    .andWhere(`${TABLES.Tenant}.status`, 'active')
+    .first(`${TABLES.Tenant}.id`);
+  const approvalStatus: TenantRow['approvalStatus'] = hasApprovedBrand ? 'approved' : 'pending';
+
   const tenantId = ulid();
   const adminId = ulid();
   const now = new Date();
@@ -248,6 +262,7 @@ platformAuthRouter.post('/me/brands', addBrandLimit, async (req, res) => {
         slug,
         displayName: body.data.displayName,
         status: 'active',
+        approvalStatus,
         billingPlan: body.data.plan as TenantRow['billingPlan'],
         // Same evaluation-window semantics as public signup: the trial
         // starts now, and firstTrialActivatedAt prevents a second trial
@@ -281,10 +296,16 @@ platformAuthRouter.post('/me/brands', addBrandLimit, async (req, res) => {
     protoHost: `${req.protocol}://${req.get('host') ?? ''}`,
   });
 
+  // A first-time brand that lands pending goes into the ops review queue.
+  if (approvalStatus === 'pending') {
+    await notifyOpsNewBrand(db, { brandName: body.data.displayName, slug, adminEmail: email });
+  }
+
   res.status(201).json({
     ok: true,
     tenant: { id: tenantId, slug },
     home: `/t/${slug}/`,
+    approvalStatus,
     // The brand has a plan CHOICE but not yet a subscription — the SPA
     // routes to billing checkout next. Partner onboarding stays 402-gated
     // (plan-required backstop) until checkout completes.

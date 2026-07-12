@@ -49,8 +49,10 @@ import { portalDomainGateRouter, portalDomainsRouter } from './routes/portal-dom
 import { clicksRouter } from './routes/clicks.js';
 import { sessionHomeRouter } from './routes/session-home.js';
 import { platformAuthRouter } from './routes/platform-auth.js';
+import { platformAdminRouter } from './routes/platform-admin.js';
 import { tenantMiddleware } from './tenancy.js';
 import { trialGate } from './middleware/trial-gate.js';
+import { approvalGate } from './middleware/approval-gate.js';
 import { corsOriginDecider } from './cors-origins.js';
 
 export function createApp(options: { enableLogger?: boolean } = {}) {
@@ -204,6 +206,9 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(signinRouter);
   app.use(sessionHomeRouter);
   app.use(platformAuthRouter);
+  // Platform-ops console (brand review). Cross-tenant, privileged-pool,
+  // its own operator auth — must sit before tenantMiddleware.
+  app.use(platformAdminRouter);
   app.use(metricsRouter);
   // Cert/entitlement allow-gate for white-label custom domains — public,
   // server-to-server (the Phase-3 Caddy droplet's on_demand_tls `ask`).
@@ -224,6 +229,14 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   // endpoints when the tenant's trial expired without conversion. Reads,
   // SDK callbacks, click ingestion, billing routes, and auth all stay
   // open. Mounted right after tenantMiddleware so it has tenant scope.
+  // Brand-approval gate. 403s the "go live" write actions (invite partner,
+  // creator self-signup, roster import, marketplace publish, creator-app
+  // approval) while a brand is still pending review. Config + reads stay
+  // open so the brand can set up. Mounted BEFORE trialGate so a pending
+  // brand hears "you're under review" rather than "pick a plan" — approval
+  // is the earlier gate. Both run after tenantMiddleware for tenant scope.
+  app.use(approvalGate);
+
   app.use(trialGate);
 
   app.use(authRouter);

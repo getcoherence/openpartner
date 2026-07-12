@@ -16,6 +16,20 @@ export interface TenantRow {
   slug: string;
   displayName: string;
   status: 'active' | 'suspended' | 'cancelled';
+  /** Brand-review decision, orthogonal to billing `status`. New signups
+   *  land 'pending' and can configure but not go live (router serves no
+   *  clicks, partner onboarding is 403-gated) until a platform operator
+   *  approves. 'rejected' brands are also status='suspended' (fully dark).
+   *  Existing/seeded/self-host tenants backfilled to 'approved'. See
+   *  migration 20260712000000_tenant_approval + approval-gate.ts. */
+  approvalStatus: 'pending' | 'approved' | 'rejected';
+  /** Rejection reason / review note, shown in the ops console + optionally
+   *  emailed to the brand on rejection. Null until reviewed. */
+  approvalReason: string | null;
+  /** When the last approve/reject/reinstate decision was made. */
+  reviewedAt: Date | null;
+  /** Email of the platform operator who made the last decision. */
+  reviewedByEmail: string | null;
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
   customDomain: string | null;
@@ -282,6 +296,10 @@ export type MagicLinkPurpose =
   | 'admin_invite'
   | 'admin_signin'
   | 'platform_signin'
+  /** Sign-in link for the platform-ops console (brand review). Consumed by
+   *  /auth/platform-admin-verify → PlatformAdminSession. Distinct from
+   *  platform_signin, which is the customer multi-brand identity. */
+  | 'platform_admin_signin'
   /** Explicit "add this identity to the existing browser bundle" intent
    *  (sent when the user clicks Add another account in the identity
    *  switcher). Differentiates an intentional stack from a fresh sign-in
@@ -371,6 +389,50 @@ export interface PlatformAdminRow {
   role: 'support' | 'admin';
   createdAt: Date;
   revokedAt: Date | null;
+}
+
+/**
+ * Cross-tenant operator session for the platform-ops console (brand
+ * review). Magic-link issued, cookie-backed (op_platform_admin_session).
+ * Platform-scoped — no tenantId, no RLS; only the privileged pool touches
+ * it. See apps/api/src/platform-admin-sessions.ts.
+ */
+export interface PlatformAdminSessionRow {
+  id: string;
+  prefix: string;
+  tokenHash: string;
+  platformAdminId: string;
+  email: string;
+  /** Snapshot of PlatformAdmin.role at issue time. 'support' = read-only,
+   *  'admin' = may approve/reject/ban. */
+  role: 'support' | 'admin';
+  expiresAt: Date;
+  revokedAt: Date | null;
+  lastSeenAt: Date | null;
+  createdAt: Date;
+}
+
+/** Signup blocklist entry. `type='email'` matches a full address exactly;
+ *  `type='domain'` matches the part after @. Checked in POST /signup. */
+export interface SignupBlocklistRow {
+  id: string;
+  type: 'email' | 'domain';
+  value: string;
+  reason: string | null;
+  createdByEmail: string | null;
+  createdAt: Date;
+}
+
+/** Append-only record of a platform-operator action for accountability. */
+export interface PlatformAuditLogRow {
+  id: string;
+  platformAdminId: string | null;
+  platformAdminEmail: string;
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  detail: Record<string, unknown>;
+  createdAt: Date;
 }
 
 export interface ProgramRow {

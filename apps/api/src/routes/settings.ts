@@ -142,9 +142,15 @@ settingsRouter.get('/branding', async (req, res) => {
       supportEmail: null,
       programTermsUrl: null,
       whiteLabel: false,
+      approvalStatus: null,
     });
   }
   const s = await readSettings(req.db, req.tenantId);
+  // Approval state drives the "pending review" banner in the brand portal.
+  // A tenant can read its own Tenant row under RLS (tenant_self policy).
+  const tenantRow = await req.db<TenantRow>(TABLES.Tenant)
+    .where({ id: req.tenantId })
+    .first('approvalStatus');
   res.json({
     // The resolved tenant slug. A prefix-less request (the SPA probes bare
     // /api/branding) only carries a tenant when the HOST resolved one —
@@ -158,6 +164,7 @@ settingsRouter.get('/branding', async (req, res) => {
     supportEmail: s.supportEmail,
     programTermsUrl: s.programTermsUrl,
     whiteLabel: s.whiteLabel,
+    approvalStatus: tenantRow?.approvalStatus ?? null,
   });
 });
 

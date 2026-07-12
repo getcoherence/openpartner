@@ -76,6 +76,9 @@ export interface PublicBranding {
   supportEmail: string | null;
   programTermsUrl: string | null;
   whiteLabel: boolean;
+  /** Brand approval state for the platform-ops review gate. Null on
+   *  single-tenant installs and any deploy that predates the gate. */
+  approvalStatus?: 'pending' | 'approved' | 'rejected' | null;
 }
 
 /**
@@ -90,6 +93,7 @@ export function usePublicBrand(): Brand & {
   brandColor: string | null;
   faviconUrl: string | null;
   tenantSlug: string | null;
+  approvalStatus: 'pending' | 'approved' | 'rejected' | null;
 } {
   // api() scopes by the /t/<slug>/ URL prefix at call time — key the cache
   // by it too, or an SPA navigation from a platform page (nulls) into a
@@ -107,6 +111,7 @@ export function usePublicBrand(): Brand & {
     whiteLabel: data?.whiteLabel ?? false,
     brandColor: data?.brandColor ?? null,
     tenantSlug: data?.tenantSlug ?? null,
+    approvalStatus: data?.approvalStatus ?? null,
     isLoading,
   };
 }
