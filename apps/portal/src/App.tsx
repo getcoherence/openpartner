@@ -25,13 +25,14 @@ import {
   X,
   Menu,
   Palette,
+  AlertTriangle,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { clearApiKey, api, type Principal } from './api.js';
 import { useTenantBase } from './tenant-base.js';
 import { theme } from './theme.js';
 import { useIsMobile } from './lib/useMediaQuery.js';
-import { useBrand } from './lib/useBrand.js';
+import { useBrand, usePublicBrand } from './lib/useBrand.js';
 import { Dashboard } from './pages/Dashboard.js';
 import { LinksPage } from './pages/Links.js';
 import { CommissionsPage } from './pages/Commissions.js';
@@ -73,6 +74,9 @@ import { AddBrandPage } from './pages/AddBrand.js';
 import { PartnerJoinPage } from './pages/PartnerJoin.js';
 import { BrandDocument } from './lib/BrandDocument.js';
 import { PlatformMagicLandingPage } from './pages/auth/PlatformMagicLanding.js';
+import { PlatformLoginPage } from './pages/platform/PlatformLogin.js';
+import { PlatformAuthPage } from './pages/platform/PlatformAuth.js';
+import { PlatformConsole } from './pages/platform/PlatformConsole.js';
 import { CreatorSignupPage } from './pages/creator/CreatorSignup.js';
 import { CreatorSigninPage } from './pages/creator/CreatorSignin.js';
 import { CreatorMagicLandingPage } from './pages/creator/CreatorMagicLanding.js';
@@ -152,6 +156,10 @@ export function App() {
             <Route path="/brands/new" element={<AddBrandPage />} />
             {/* Platform-identity magic link (one email regardless of how many brands you admin). */}
             <Route path="/auth/magic" element={<PlatformMagicLandingPage />} />
+            {/* Platform-ops console — OpenPartner staff, separate operator session. */}
+            <Route path="/platform/login" element={<PlatformLoginPage />} />
+            <Route path="/platform/auth" element={<PlatformAuthPage />} />
+            <Route path="/platform/*" element={<PlatformConsole />} />
             {/* Platform-level Creator surfaces — separate auth from vendor admins. */}
             <Route path="/creator/signup" element={<CreatorSignupPage />} />
             <Route path="/creator/login" element={<CreatorSigninPage />} />
@@ -194,7 +202,13 @@ function Shell() {
   // Network/Discover routes on this so direct navigation can't reach them
   // even though the nav links are also hidden.
   const { whiteLabel } = useBrand();
+  // Brand approval gate: /branding carries the tenant's approvalStatus.
+  // usePublicBrand hits it through api() so it's tenant-scoped under the
+  // /t/<slug>/ prefix (a prefix-less fetch would resolve to the platform
+  // origin and never see the tenant's status).
+  const { approvalStatus } = usePublicBrand();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [reviewBannerDismissed, setReviewBannerDismissed] = useState(false);
 
   useEffect(() => {
     api<Principal>('/auth/whoami')
@@ -222,6 +236,9 @@ function Shell() {
       )}
       <main style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
         {isMobile && <MobileTopBar onMenu={() => setDrawerOpen(true)} />}
+        {auth.principal.role === 'admin' && approvalStatus === 'pending' && !reviewBannerDismissed && (
+          <PendingReviewBanner isMobile={isMobile} onDismiss={() => setReviewBannerDismissed(true)} />
+        )}
         <Routes>
           <Route index element={<Dashboard principal={auth.principal} />} />
 
@@ -1343,6 +1360,52 @@ function BrandMark({
     );
   }
   return <Logo size={size} alt={programName} />;
+}
+
+/**
+ * Slim amber banner shown to a brand admin while their workspace is awaiting
+ * platform-ops approval. They can build out the program, but partner links
+ * won't redirect and they can't invite partners until an operator approves.
+ * Only for approvalStatus === 'pending' (see Shell); never for partners.
+ */
+function PendingReviewBanner({ isMobile, onDismiss }: { isMobile: boolean; onDismiss: () => void }) {
+  return (
+    <div style={{ maxWidth: 1280, margin: '0 auto', padding: isMobile ? '16px 16px 0' : '24px 40px 0' }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 12,
+          background: theme.warnSoft,
+          border: `1px solid ${theme.warn}55`,
+          borderRadius: theme.radiusMd,
+          padding: '12px 14px',
+        }}
+      >
+        <AlertTriangle size={18} color={theme.warn} style={{ flexShrink: 0, marginTop: 1 }} />
+        <div style={{ flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.5, color: theme.text }}>
+          <strong style={{ color: theme.warn }}>Your brand is under review.</strong>{' '}
+          You can set up your program now, but partner links won&rsquo;t redirect and you can&rsquo;t invite
+          partners until an OpenPartner operator approves your account.
+        </div>
+        <button
+          onClick={onDismiss}
+          aria-label="Dismiss"
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: theme.textMuted,
+            cursor: 'pointer',
+            padding: 2,
+            display: 'inline-flex',
+            flexShrink: 0,
+          }}
+        >
+          <X size={16} />
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function CenteredMessage({ children }: { children: ReactNode }) {
