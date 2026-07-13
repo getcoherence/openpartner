@@ -15,6 +15,7 @@ import {
   DEFAULT_TENANT_ID,
   TABLES,
   type AdminRow,
+  type ProgramRow,
   type SignupBlocklistRow,
   type TenantRow,
 } from '@openpartner/db';
@@ -360,4 +361,50 @@ export async function rejectBrand(
   });
 
   return { bannedEmail, bannedDomain };
+}
+
+// --------------------------------------------------------------------------
+// Program-level moderation (takedown without removing the brand)
+// --------------------------------------------------------------------------
+
+/** Block a single program — its partner links stop redirecting (enforced in
+ *  the router) while the brand stays live. Reversible via unblockProgram. */
+export async function blockProgram(
+  db: Knex,
+  program: Pick<ProgramRow, 'id' | 'tenantId' | 'name' | 'blockedAt'>,
+  actor: OpsActor,
+  reason: string | null,
+): Promise<void> {
+  await db<ProgramRow>(TABLES.Program).where({ id: program.id }).update({
+    blockedAt: new Date(),
+    blockedReason: reason?.trim() || null,
+    blockedByEmail: actor.email,
+  });
+  await writeAudit(db, {
+    actor,
+    action: 'program.block',
+    targetType: 'program',
+    targetId: program.id,
+    detail: { tenantId: program.tenantId, name: program.name, reason: reason?.trim() || null },
+  });
+}
+
+/** Lift a program block — links redirect again. */
+export async function unblockProgram(
+  db: Knex,
+  program: Pick<ProgramRow, 'id' | 'tenantId' | 'name'>,
+  actor: OpsActor,
+): Promise<void> {
+  await db<ProgramRow>(TABLES.Program).where({ id: program.id }).update({
+    blockedAt: null,
+    blockedReason: null,
+    blockedByEmail: null,
+  });
+  await writeAudit(db, {
+    actor,
+    action: 'program.unblock',
+    targetType: 'program',
+    targetId: program.id,
+    detail: { tenantId: program.tenantId, name: program.name },
+  });
 }

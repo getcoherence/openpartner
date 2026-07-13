@@ -92,10 +92,35 @@ async function tenantBySlug(slug: string): Promise<TenantRow | undefined> {
 async function purgeSlug(slug: string): Promise<void> {
   const t = await tenantBySlug(slug);
   if (!t) return;
-  for (const table of [TABLES.Admin, TABLES.MagicLinkToken, TABLES.Session, TABLES.Config, TABLES.ApiKey]) {
+  // FK order: children before Tenant.
+  for (const table of [
+    TABLES.Link,
+    TABLES.PartnerProgram,
+    TABLES.Program,
+    TABLES.Partner,
+    TABLES.Admin,
+    TABLES.MagicLinkToken,
+    TABLES.Session,
+    TABLES.Config,
+    TABLES.ApiKey,
+  ]) {
     await db(table).where({ tenantId: t.id }).del();
   }
   await db(TABLES.Tenant).where({ id: t.id }).del();
+}
+
+async function seedProgram(tenantId: string, destinationUrl: string): Promise<string> {
+  const id = ulid();
+  await db(TABLES.Program).insert({
+    id,
+    tenantId,
+    name: 'Test Program',
+    commissionRule: JSON.stringify([{ trigger: 'every', type: 'percent', value: 20 }]),
+    destinationUrl,
+    attributionWindowDays: 60,
+    attributionModel: 'last_click',
+  });
+  return id;
 }
 
 beforeAll(async () => {
@@ -259,6 +284,55 @@ describe.skipIf(skipIntegration)('brand approval — operator console', () => {
     const cookie = await makeOperator('support');
     const res = await request(app)
       .post(`/platform-admin/brands/${t!.id}/approve`)
+      .set('Cookie', cookie)
+      .send({});
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('read_only_operator');
+  });
+});
+
+describe.skipIf(skipIntegration)('program moderation', () => {
+  it('lists a brand programs (with destination) and blocks/unblocks one', async () => {
+    const { slug } = await signup();
+    const t = (await tenantBySlug(slug))!;
+    const dest = 'https://scam.example.test/verify';
+    const programId = await seedProgram(t.id, dest);
+    const cookie = await makeOperator('admin');
+
+    const list = await request(app).get(`/platform-admin/brands/${t.id}/programs`).set('Cookie', cookie);
+    expect(list.status).toBe(200);
+    const prog = (list.body.programs as Array<{ id: string; destinationUrl: string; blockedAt: string | null }>).find(
+      (p) => p.id === programId,
+    );
+    expect(prog?.destinationUrl).toBe(dest); // the phishing tell is visible
+    expect(prog?.blockedAt).toBeNull();
+
+    const block = await request(app)
+      .post(`/platform-admin/programs/${programId}/block`)
+      .set('Cookie', cookie)
+      .send({ reason: 'phishing destination' });
+    expect(block.status).toBe(200);
+    let row = await db(TABLES.Program).where({ id: programId }).first();
+    expect(row!.blockedAt).not.toBeNull();
+    expect(row!.blockedReason).toBe('phishing destination');
+    expect(row!.blockedByEmail).toBe('ops@openpartner.test');
+
+    const unblock = await request(app)
+      .post(`/platform-admin/programs/${programId}/unblock`)
+      .set('Cookie', cookie)
+      .send({});
+    expect(unblock.status).toBe(200);
+    row = await db(TABLES.Program).where({ id: programId }).first();
+    expect(row!.blockedAt).toBeNull();
+  });
+
+  it('a support operator cannot block a program', async () => {
+    const { slug } = await signup();
+    const t = (await tenantBySlug(slug))!;
+    const programId = await seedProgram(t.id, 'https://x.test');
+    const cookie = await makeOperator('support');
+    const res = await request(app)
+      .post(`/platform-admin/programs/${programId}/block`)
       .set('Cookie', cookie)
       .send({});
     expect(res.status).toBe(403);

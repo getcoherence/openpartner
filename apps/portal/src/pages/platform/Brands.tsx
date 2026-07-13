@@ -9,6 +9,7 @@ import {
   type ApprovalStatus,
   type PlatformBrand,
   type PlatformOperator,
+  type PlatformProgram,
 } from './lib.js';
 
 type Filter = ApprovalStatus | 'all';
@@ -167,6 +168,7 @@ function BrandCard({
   // 'reject' for a pending brand, 'remove' for a retroactive takedown of an
   // already-approved brand — both hit the reject endpoint.
   const [form, setForm] = useState<null | 'reject' | 'remove'>(null);
+  const [showPrograms, setShowPrograms] = useState(false);
 
   return (
     <Card>
@@ -247,7 +249,164 @@ function BrandCard({
           onSubmit={(v) => onReject(v, { onSuccess: () => setForm(null) })}
         />
       )}
+
+      <div style={{ marginTop: 14, borderTop: `1px solid ${theme.borderSubtle}`, paddingTop: 12 }}>
+        <button
+          onClick={() => setShowPrograms((v) => !v)}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: theme.textMuted,
+            cursor: 'pointer',
+            fontSize: 13,
+            fontWeight: 500,
+            padding: 0,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          {showPrograms ? '▾' : '▸'} Programs ({brand.programCount})
+          {brand.blockedProgramCount > 0 && (
+            <span style={{ color: theme.danger, fontWeight: 600 }}>· {brand.blockedProgramCount} blocked</span>
+          )}
+        </button>
+        {showPrograms && <ProgramsSection brandId={brand.id} canWrite={canWrite} />}
+      </div>
     </Card>
+  );
+}
+
+/**
+ * Lazy-loaded list of a brand's programs. The destination URL is shown as
+ * plain text (never a live link — it may point at a phishing page) so the
+ * operator can judge intent. Admins can block/unblock a single program
+ * without touching the brand.
+ */
+function ProgramsSection({ brandId, canWrite }: { brandId: string; canWrite: boolean }) {
+  const qc = useQueryClient();
+  const programs = useQuery({
+    queryKey: ['platform-brand-programs', brandId],
+    queryFn: () => papi<{ programs: PlatformProgram[] }>(`/platform-admin/brands/${brandId}/programs`),
+  });
+
+  const refresh = () => {
+    void qc.invalidateQueries({ queryKey: ['platform-brand-programs', brandId] });
+    void qc.invalidateQueries({ queryKey: ['platform-brands'] }); // keep the blocked count fresh
+  };
+
+  const block = useMutation({
+    mutationFn: (v: { id: string; reason: string }) =>
+      papi(`/platform-admin/programs/${v.id}/block`, { method: 'POST', body: { reason: v.reason || undefined } }),
+    onSuccess: refresh,
+  });
+  const unblock = useMutation({
+    mutationFn: (id: string) => papi(`/platform-admin/programs/${id}/unblock`, { method: 'POST' }),
+    onSuccess: refresh,
+  });
+
+  if (programs.isLoading) {
+    return <div style={{ padding: '10px 0', fontSize: 13, color: theme.textDim }}>Loading programs…</div>;
+  }
+  if (programs.isError) {
+    return <ErrorBanner error={friendlyPlatformError(programs.error)} />;
+  }
+  const rows = programs.data?.programs ?? [];
+  if (rows.length === 0) {
+    return <div style={{ padding: '10px 0', fontSize: 13, color: theme.textDim }}>No programs yet.</div>;
+  }
+
+  return (
+    <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {(block.error || unblock.error) && (
+        <ErrorBanner error={friendlyPlatformError(block.error ?? unblock.error)} />
+      )}
+      {rows.map((p) => {
+        const blocked = !!p.blockedAt;
+        const busy =
+          (block.isPending && block.variables?.id === p.id) || (unblock.isPending && unblock.variables === p.id);
+        return (
+          <div
+            key={p.id}
+            style={{
+              background: theme.surface2,
+              border: `1px solid ${blocked ? `${theme.danger}55` : theme.borderSubtle}`,
+              borderRadius: theme.radiusSm,
+              padding: '10px 12px',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 600 }}>{p.name}</span>
+                  {blocked && (
+                    <span
+                      style={{
+                        fontSize: 10.5,
+                        fontWeight: 700,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.04em',
+                        color: theme.danger,
+                        background: `${theme.danger}1a`,
+                        borderRadius: 4,
+                        padding: '2px 6px',
+                      }}
+                    >
+                      Blocked
+                    </span>
+                  )}
+                  {p.shareOnNetwork && !blocked && (
+                    <span style={{ fontSize: 11, color: theme.textDim }}>· on marketplace</span>
+                  )}
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    fontFamily: theme.fontMono,
+                    color: blocked ? theme.textDim : theme.text,
+                    marginTop: 4,
+                    wordBreak: 'break-all',
+                    textDecoration: blocked ? 'line-through' : 'none',
+                  }}
+                >
+                  {p.destinationUrl}
+                </div>
+                <div style={{ fontSize: 11.5, color: theme.textDim, marginTop: 4 }}>
+                  {p.linkCount} link{p.linkCount === 1 ? '' : 's'}
+                  {blocked && p.blockedReason ? ` · reason: ${p.blockedReason}` : ''}
+                  {blocked && p.blockedByEmail ? ` · by ${p.blockedByEmail}` : ''}
+                </div>
+              </div>
+              {canWrite && (
+                <div style={{ flexShrink: 0 }}>
+                  {blocked ? (
+                    <Button size="sm" disabled={busy} onClick={() => unblock.mutate(p.id)}>
+                      {busy ? 'Working…' : 'Unblock'}
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => {
+                        const reason = window.prompt(
+                          `Block "${p.name}"? Its partner links will stop redirecting.\n\nReason (optional, stored on the record):`,
+                          '',
+                        );
+                        // null = cancelled; empty string = block with no reason.
+                        if (reason !== null) block.mutate({ id: p.id, reason });
+                      }}
+                    >
+                      {busy ? 'Working…' : 'Block'}
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

@@ -497,6 +497,14 @@ export interface ProgramRow {
    *  the first successful federation upsert; subsequent edits PATCH
    *  this id instead of creating a new offering. */
   networkOfferingId: string | null;
+  /** Platform-operator takedown (anti-spam). When set, the router refuses
+   *  to serve this program's partner links regardless of the brand's
+   *  approvalStatus — a per-program removal that leaves the brand live.
+   *  Null = normal. See migration 20260712020000_program_moderation. */
+  blockedAt: Date | null;
+  blockedReason: string | null;
+  /** Email of the operator who blocked it. */
+  blockedByEmail: string | null;
   createdAt: Date;
 }
 

@@ -28,6 +28,7 @@ import {
   type AdminRow,
   type PlatformAdminRow,
   type PlatformAuditLogRow,
+  type ProgramRow,
   type SignupBlocklistRow,
   type TenantRow,
 } from '@openpartner/db';
@@ -41,8 +42,10 @@ import { getTenancyMode } from '../tenancy.js';
 import {
   addBlocklistEntry,
   approveBrand,
+  blockProgram,
   type OpsActor,
   rejectBrand,
+  unblockProgram,
   writeAudit,
 } from '../brand-review.js';
 import {
@@ -273,6 +276,22 @@ platformAdminRouter.get('/platform-admin/brands', requirePlatformAdmin, async (r
     if (!primaryByTenant.has(a.tenantId)) primaryByTenant.set(a.tenantId, { email: a.email, name: a.name });
   }
 
+  // Program counts per tenant — a quick "how much is set up" + "any blocked"
+  // signal for the queue without expanding each card.
+  const programCounts = ids.length
+    ? ((await db(TABLES.Program)
+        .whereIn('tenantId', ids)
+        .groupBy('tenantId')
+        .select('tenantId')
+        .count({ total: '*' })
+        .count({ blocked: db.raw('case when "blockedAt" is not null then 1 end') })) as Array<{
+        tenantId: string;
+        total: string | number;
+        blocked: string | number;
+      }>)
+    : [];
+  const countsByTenant = new Map(programCounts.map((r) => [r.tenantId, r]));
+
   res.json({
     brands: tenants.map((t) => ({
       id: t.id,
@@ -288,6 +307,8 @@ platformAdminRouter.get('/platform-admin/brands', requirePlatformAdmin, async (r
       createdBy: (t.metadata as { createdBy?: string } | null)?.createdBy ?? null,
       adminEmail: primaryByTenant.get(t.id)?.email ?? null,
       adminName: primaryByTenant.get(t.id)?.name ?? null,
+      programCount: Number(countsByTenant.get(t.id)?.total ?? 0),
+      blockedProgramCount: Number(countsByTenant.get(t.id)?.blocked ?? 0),
     })),
   });
 });
@@ -349,6 +370,84 @@ platformAdminRouter.post(
     if (!tenant) return res.status(404).json({ error: 'brand_not_found' });
     await approveBrand(db, tenant, req.platformAdminActor!, { reinstate: true });
     res.json({ ok: true, approvalStatus: 'approved' });
+  },
+);
+
+// --------------------------------------------------------------------------
+// Program moderation (per-program takedown; the brand stays live)
+// --------------------------------------------------------------------------
+
+/** List a brand's programs for review. destinationUrl is the phishing tell —
+ *  a cloaked/scam landing page shows here even when the brand itself looks
+ *  legit. Annotated with the partner-link count (reach) + block state. */
+platformAdminRouter.get('/platform-admin/brands/:id/programs', requirePlatformAdmin, async (req, res) => {
+  const tenant = await loadTenant(req.params.id!);
+  if (!tenant) return res.status(404).json({ error: 'brand_not_found' });
+
+  const programs = await db<ProgramRow>(TABLES.Program)
+    .where({ tenantId: tenant.id })
+    .orderBy('createdAt', 'desc')
+    .select(
+      'id',
+      'name',
+      'destinationUrl',
+      'deepLinkAllowedDomains',
+      'marketplaceDescription',
+      'categories',
+      'shareOnNetwork',
+      'endsAt',
+      'blockedAt',
+      'blockedReason',
+      'blockedByEmail',
+      'createdAt',
+    );
+
+  const ids = programs.map((p) => p.id);
+  const linkRows = ids.length
+    ? ((await db(TABLES.Link)
+        .whereIn('programId', ids)
+        .groupBy('programId')
+        .select('programId')
+        .count({ n: '*' })) as Array<{ programId: string; n: string | number }>)
+    : [];
+  const linkCountByProgram = new Map(linkRows.map((r) => [r.programId, Number(r.n)]));
+
+  res.json({
+    brand: { id: tenant.id, slug: tenant.slug, displayName: tenant.displayName },
+    programs: programs.map((p) => ({ ...p, linkCount: linkCountByProgram.get(p.id) ?? 0 })),
+  });
+});
+
+async function loadProgram(id: string): Promise<ProgramRow | null> {
+  const row = await db<ProgramRow>(TABLES.Program).where({ id }).first();
+  return row ?? null;
+}
+
+const blockProgramSchema = z.object({ reason: z.string().trim().max(1000).optional() });
+
+platformAdminRouter.post(
+  '/platform-admin/programs/:id/block',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = blockProgramSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body' });
+    const program = await loadProgram(req.params.id!);
+    if (!program) return res.status(404).json({ error: 'program_not_found' });
+    await blockProgram(db, program, req.platformAdminActor!, body.data.reason ?? null);
+    res.json({ ok: true, blocked: true });
+  },
+);
+
+platformAdminRouter.post(
+  '/platform-admin/programs/:id/unblock',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const program = await loadProgram(req.params.id!);
+    if (!program) return res.status(404).json({ error: 'program_not_found' });
+    await unblockProgram(db, program, req.platformAdminActor!);
+    res.json({ ok: true, blocked: false });
   },
 );
 

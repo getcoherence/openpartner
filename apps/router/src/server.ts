@@ -85,18 +85,23 @@ async function resolveLink(c: Context, link: LinkRow | undefined) {
     | undefined;
   const partnerRevoked = !!partner?.revokedAt;
 
+  // Always resolve the Program — even for a per-Link deep-link override —
+  // so a platform-operator takedown (Program.blockedAt) is enforced here:
+  // a blocked program's partner links stop redirecting regardless of
+  // whether they carry their own destination.
+  const program = (await db(TABLES.Program)
+    .where({ id: link.programId })
+    .first(['destinationUrl', 'blockedAt'])) as
+    | { destinationUrl: string; blockedAt: Date | null }
+    | undefined;
+  if (!program) return c.text('Program not found', 410);
+  if (program.blockedAt) return c.text('Link unavailable', 410);
+
   // Destination resolution: per-Link override (deep link) wins; otherwise
   // inherit from the Program. This is the source-of-truth flip — brands
   // own the destination via Program.destinationUrl, partners only get
   // an override when the Program explicitly allows deep-linking.
-  let destinationUrl = link.destinationUrl;
-  if (!destinationUrl) {
-    const program = (await db(TABLES.Program).where({ id: link.programId }).first()) as
-      | { destinationUrl: string }
-      | undefined;
-    if (!program) return c.text('Program not found', 410);
-    destinationUrl = program.destinationUrl;
-  }
+  const destinationUrl = link.destinationUrl || program.destinationUrl;
 
   const clickId = ulid();
   const destination = new URL(destinationUrl);
