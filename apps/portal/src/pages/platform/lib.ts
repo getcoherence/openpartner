@@ -30,6 +30,25 @@ export interface PlatformBrand {
   createdBy: string | null;
   adminEmail: string | null;
   adminName: string | null;
+  programCount: number;
+  blockedProgramCount: number;
+}
+
+export interface PlatformProgram {
+  id: string;
+  name: string;
+  /** Where the program's partner links land — the phishing/spam tell. */
+  destinationUrl: string;
+  deepLinkAllowedDomains: string | null;
+  marketplaceDescription: string | null;
+  categories: string[];
+  shareOnNetwork: boolean;
+  endsAt: string | null;
+  blockedAt: string | null;
+  blockedReason: string | null;
+  blockedByEmail: string | null;
+  createdAt: string;
+  linkCount: number;
 }
 
 export interface BlocklistEntry {
