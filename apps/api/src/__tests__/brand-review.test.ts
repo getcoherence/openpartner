@@ -15,6 +15,8 @@
  * Skipped when DATABASE_URL is unset, like the rest of the integration suite.
  */
 
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { ulid } from 'ulid';
@@ -123,13 +125,59 @@ async function seedProgram(tenantId: string, destinationUrl: string): Promise<st
   return id;
 }
 
+// In-process stand-in for the Network coordinator, so we can assert that a
+// takedown actually propagates across the federation boundary.
+interface NetCall { method: string; path: string; authorization?: string; body: unknown }
+let netServer: Server;
+let netUrl = '';
+let netCalls: NetCall[] = [];
+
 beforeAll(async () => {
   if (skipIntegration) return;
   await db.raw('select 1');
+  await new Promise<void>((resolve) => {
+    netServer = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        netCalls.push({
+          method: req.method ?? '',
+          path: req.url ?? '',
+          authorization: req.headers.authorization,
+          body: chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : null,
+        });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+    }).listen(0, '127.0.0.1', () => {
+      netUrl = `http://127.0.0.1:${(netServer.address() as AddressInfo).port}`;
+      resolve();
+    });
+  });
 });
+
+/** Federate a tenant to the fake Network so moderation has somewhere to go.
+ *  The vendorToken is what the offering PATCH authenticates with (the vendor
+ *  rail); the brand-level suspend goes over the admin key instead. */
+async function federate(tenantId: string, vendorId: string): Promise<void> {
+  const { encryptSecret } = await import('../crypto.js');
+  const value = {
+    enabled: true,
+    networkUrl: netUrl,
+    vendorId,
+    vendorTokenCiphertext: encryptSecret('vntok_test'),
+    autoEnroll: true,
+    scopedKeyId: null,
+  };
+  await db(TABLES.Config)
+    .insert({ tenantId, key: 'network_membership', value: value as unknown as never, updatedAt: new Date() })
+    .onConflict(['tenantId', 'key'])
+    .merge({ value: value as unknown as never, updatedAt: new Date() });
+}
 
 afterEach(async () => {
   if (skipIntegration) return;
+  netCalls = [];
   for (const slug of createdSlugs.splice(0)) await purgeSlug(slug);
   if (createdBlocklistValues.length) {
     await db(TABLES.SignupBlocklist).whereIn('value', createdBlocklistValues.splice(0)).del();
@@ -137,6 +185,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  if (netServer) await new Promise<void>((r) => netServer.close(() => r()));
   if (!skipIntegration) {
     // Clean every operator this suite touched — the ops@ bootstrap row is
     // also created implicitly by the verify test via env-allowlist upsert.
@@ -278,6 +327,37 @@ describe.skipIf(skipIntegration)('brand approval — operator console', () => {
     expect(reSignup.status).toBe(403);
   });
 
+  it('rejecting a brand suspends its Vendor on the Network (pulls the marketplace listing)', async () => {
+    process.env.NETWORK_ADMIN_API_KEY = 'netadm_test_key_0123456789abcdef';
+    const { slug } = await signup();
+    const t = (await tenantBySlug(slug))!;
+    await federate(t.id, 'vnd_spam');
+
+    const cookie = await makeOperator('admin');
+    await request(app)
+      .post(`/platform-admin/brands/${t.id}/reject`)
+      .set('Cookie', cookie)
+      .send({ reason: 'phishing', notifyBrand: false })
+      .expect(200);
+
+    // Local suspend alone leaves the brand listed on the marketplace — the
+    // Network has to be told, or the spam listing keeps taking applications.
+    const suspend = netCalls.find((c) => c.path === '/admin/vendors/vnd_spam/suspend');
+    expect(suspend, 'expected the Network vendor to be suspended').toBeDefined();
+    expect(suspend!.method).toBe('POST');
+    expect(suspend!.authorization).toBe('Bearer netadm_test_key_0123456789abcdef');
+    expect((suspend!.body as { reason: string }).reason).toBe('phishing');
+
+    // Reinstating puts them back.
+    netCalls = [];
+    await request(app)
+      .post(`/platform-admin/brands/${t.id}/reinstate`)
+      .set('Cookie', cookie)
+      .send({})
+      .expect(200);
+    expect(netCalls.find((c) => c.path === '/admin/vendors/vnd_spam/reactivate')).toBeDefined();
+  });
+
   it('a support operator is read-only', async () => {
     const { slug } = await signup();
     const t = await tenantBySlug(slug);
@@ -324,6 +404,28 @@ describe.skipIf(skipIntegration)('program moderation', () => {
     expect(unblock.status).toBe(200);
     row = await db(TABLES.Program).where({ id: programId }).first();
     expect(row!.blockedAt).toBeNull();
+  });
+
+  it('blocking a program unpublishes its marketplace offering', async () => {
+    const { slug } = await signup();
+    const t = (await tenantBySlug(slug))!;
+    await federate(t.id, 'vnd_prog');
+    const programId = await seedProgram(t.id, 'https://scam.example.test/verify');
+    // Program is listed on the marketplace.
+    await db(TABLES.Program).where({ id: programId }).update({ networkOfferingId: 'off_123', shareOnNetwork: true });
+
+    const cookie = await makeOperator('admin');
+    await request(app)
+      .post(`/platform-admin/programs/${programId}/block`)
+      .set('Cookie', cookie)
+      .send({ reason: 'phishing' })
+      .expect(200);
+
+    // The offering must be unpublished on the Network — otherwise the dead
+    // program keeps taking creator applications from the marketplace.
+    const patch = netCalls.find((c) => c.path.includes('/offerings/off_123'));
+    expect(patch, 'expected a PATCH to the offering').toBeDefined();
+    expect((patch!.body as { published: boolean }).published).toBe(false);
   });
 
   it('a support operator cannot block a program', async () => {

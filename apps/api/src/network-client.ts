@@ -584,6 +584,54 @@ export const networkProxy = {
     callNetwork<{ ok: boolean }>(db, tenantId, 'POST', '/vendors/me/delete'),
 };
 
+/**
+ * Platform-operator moderation calls, authenticated with the Network's
+ * ADMIN_API_KEY (we hold it as NETWORK_ADMIN_API_KEY). These are how a
+ * brand-level takedown in the /platform ops console reaches the marketplace:
+ * a suspended Vendor's offerings are excluded from GET /offerings and its
+ * detail pages 404 (the Network already filters `Vendor.status='active'`),
+ * and its vendorToken stops working.
+ *
+ * Best-effort by contract — callers log and continue. A brand must still go
+ * dark locally even if the Network is unreachable; the operator can re-run
+ * the action to retry the propagation.
+ */
+async function callNetworkAdmin(
+  networkUrl: string,
+  path: string,
+  body: Record<string, unknown>,
+): Promise<void> {
+  const adminKey = process.env.NETWORK_ADMIN_API_KEY;
+  if (!adminKey) throw new Error('NETWORK_ADMIN_API_KEY not set — cannot moderate on the Network');
+  const url = `${networkUrl.replace(/\/$/, '')}${path}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${adminKey}`,
+      'user-agent': 'OpenPartner-Vendor/1',
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`network admin call failed (${res.status}): ${text.slice(0, 300)}`);
+  }
+}
+
+/** Suspend the brand's Vendor on the Network — pulls every offering it has
+ *  published off the marketplace immediately. */
+export async function adminSuspendVendor(networkUrl: string, vendorId: string, reason: string): Promise<void> {
+  await callNetworkAdmin(networkUrl, `/admin/vendors/${encodeURIComponent(vendorId)}/suspend`, { reason });
+}
+
+/** Undo adminSuspendVendor — the brand's offerings become listable again
+ *  (subject to their own published flags). */
+export async function adminReactivateVendor(networkUrl: string, vendorId: string): Promise<void> {
+  await callNetworkAdmin(networkUrl, `/admin/vendors/${encodeURIComponent(vendorId)}/reactivate`, {});
+}
+
 export async function adminRestoreVendor(networkUrl: string, vendorId: string): Promise<{ vendorId: string; vendorToken: string }> {
   const adminKey = process.env.NETWORK_ADMIN_API_KEY;
   if (!adminKey) throw new Error('NETWORK_ADMIN_API_KEY not set — cannot restore vendor');
