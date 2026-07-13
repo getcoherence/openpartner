@@ -371,6 +371,55 @@ describe.skipIf(skipIntegration)('brand approval — operator console', () => {
   });
 });
 
+describe.skipIf(skipIntegration)('creator moderation (Network-proxied)', () => {
+  // Scope NETWORK_URL to this block — leaving it set would make the signup
+  // tests start auto-enrolling brands against the fake Network.
+  afterEach(() => {
+    delete process.env.NETWORK_URL;
+  });
+
+  it('lists creators and blocks/unblocks one via the Network admin API', async () => {
+    process.env.NETWORK_URL = netUrl;
+    process.env.NETWORK_ADMIN_API_KEY = 'netadm_test_key_0123456789abcdef';
+    const cookie = await makeOperator('admin');
+
+    const list = await request(app).get('/platform-admin/creators').set('Cookie', cookie);
+    expect(list.status).toBe(200);
+    // The fake Network replies {ok:true}; we only assert the call shape.
+    expect(netCalls.find((c) => c.method === 'GET' && c.path.startsWith('/admin/creators'))).toBeDefined();
+
+    netCalls = [];
+    const block = await request(app)
+      .post('/platform-admin/creators/crt_123/block')
+      .set('Cookie', cookie)
+      .send({ reason: 'spam profile' });
+    expect(block.status).toBe(200);
+    const call = netCalls.find((c) => c.path === '/admin/creators/crt_123/block');
+    expect(call).toBeDefined();
+    expect(call!.authorization).toBe('Bearer netadm_test_key_0123456789abcdef');
+    expect(call!.body).toMatchObject({ reason: 'spam profile', blockedByEmail: 'ops@openpartner.test' });
+
+    netCalls = [];
+    await request(app)
+      .post('/platform-admin/creators/crt_123/unblock')
+      .set('Cookie', cookie)
+      .send({})
+      .expect(200);
+    expect(netCalls.find((c) => c.path === '/admin/creators/crt_123/unblock')).toBeDefined();
+  });
+
+  it('a support operator cannot block a creator', async () => {
+    process.env.NETWORK_URL = netUrl;
+    const cookie = await makeOperator('support');
+    const res = await request(app)
+      .post('/platform-admin/creators/crt_x/block')
+      .set('Cookie', cookie)
+      .send({ reason: 'spam' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('read_only_operator');
+  });
+});
+
 describe.skipIf(skipIntegration)('program moderation', () => {
   it('lists a brand programs (with destination) and blocks/unblocks one', async () => {
     const { slug } = await signup();

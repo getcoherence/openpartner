@@ -49,6 +49,12 @@ import {
   writeAudit,
 } from '../brand-review.js';
 import {
+  adminBlockCreator,
+  adminListCreators,
+  adminUnblockCreator,
+  platformNetworkUrl,
+} from '../network-client.js';
+import {
   createPlatformAdminSession,
   PLATFORM_ADMIN_SESSION_COOKIE,
   platformAdminSessionCookieOptions,
@@ -447,6 +453,98 @@ platformAdminRouter.post(
     const program = await loadProgram(req.params.id!);
     if (!program) return res.status(404).json({ error: 'program_not_found' });
     await unblockProgram(db, program, req.platformAdminActor!);
+    res.json({ ok: true, blocked: false });
+  },
+);
+
+// --------------------------------------------------------------------------
+// Creator (partner) moderation — Network-owned, so these proxy the Network's
+// admin API with NETWORK_ADMIN_API_KEY.
+// --------------------------------------------------------------------------
+//
+// A creator is ONE identity across every brand on the Network, so blocking
+// one is a network-level act. (A brand removing a partner from its own
+// roster is the separate, tenant-scoped POST /partners/:id/revoke.)
+// Blocking hides them from marketplace discovery + their public profile and
+// logs them out everywhere.
+
+/** Resolve the Network origin, or 503 with an actionable message. */
+function networkOr503(res: Response): string | null {
+  const url = platformNetworkUrl();
+  if (!url) {
+    res.status(503).json({
+      error: 'network_not_configured',
+      detail: 'NETWORK_URL is not set — creator moderation lives on the Network coordinator.',
+    });
+    return null;
+  }
+  return url;
+}
+
+function networkErrorBody(err: unknown): { error: string; detail: string } {
+  const detail = err instanceof Error ? err.message : String(err);
+  return { error: 'network_call_failed', detail };
+}
+
+platformAdminRouter.get('/platform-admin/creators', requirePlatformAdmin, async (_req, res) => {
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  try {
+    const creators = await adminListCreators(networkUrl);
+    res.json({ creators });
+  } catch (err) {
+    res.status(502).json(networkErrorBody(err));
+  }
+});
+
+const blockCreatorSchema = z.object({ reason: z.string().trim().min(1).max(500) });
+
+platformAdminRouter.post(
+  '/platform-admin/creators/:id/block',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = blockCreatorSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    const actor = req.platformAdminActor!;
+    try {
+      await adminBlockCreator(networkUrl, req.params.id!, body.data.reason, actor.email);
+    } catch (err) {
+      return res.status(502).json(networkErrorBody(err));
+    }
+    await writeAudit(db, {
+      actor,
+      action: 'creator.block',
+      targetType: 'creator',
+      targetId: req.params.id!,
+      detail: { reason: body.data.reason },
+    });
+    res.json({ ok: true, blocked: true });
+  },
+);
+
+platformAdminRouter.post(
+  '/platform-admin/creators/:id/unblock',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    const actor = req.platformAdminActor!;
+    try {
+      await adminUnblockCreator(networkUrl, req.params.id!);
+    } catch (err) {
+      return res.status(502).json(networkErrorBody(err));
+    }
+    await writeAudit(db, {
+      actor,
+      action: 'creator.unblock',
+      targetType: 'creator',
+      targetId: req.params.id!,
+      detail: {},
+    });
     res.json({ ok: true, blocked: false });
   },
 );

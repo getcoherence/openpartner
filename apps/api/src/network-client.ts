@@ -596,40 +596,105 @@ export const networkProxy = {
  * dark locally even if the Network is unreachable; the operator can re-run
  * the action to retry the propagation.
  */
-async function callNetworkAdmin(
+async function callNetworkAdmin<T = void>(
   networkUrl: string,
+  method: 'GET' | 'POST',
   path: string,
-  body: Record<string, unknown>,
-): Promise<void> {
+  body?: Record<string, unknown>,
+): Promise<T> {
   const adminKey = process.env.NETWORK_ADMIN_API_KEY;
   if (!adminKey) throw new Error('NETWORK_ADMIN_API_KEY not set — cannot moderate on the Network');
   const url = `${networkUrl.replace(/\/$/, '')}${path}`;
   const res = await fetch(url, {
-    method: 'POST',
+    method,
     headers: {
       'content-type': 'application/json',
       authorization: `Bearer ${adminKey}`,
       'user-agent': 'OpenPartner-Vendor/1',
     },
-    body: JSON.stringify(body),
+    body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(10_000),
   });
+  const text = await res.text();
   if (!res.ok) {
-    const text = await res.text();
     throw new Error(`network admin call failed (${res.status}): ${text.slice(0, 300)}`);
   }
+  return (text ? JSON.parse(text) : undefined) as T;
+}
+
+/** The platform-level Network origin. Creator moderation is cross-tenant, so
+ *  it uses the env URL rather than any one brand's membership Config. */
+export function platformNetworkUrl(): string | null {
+  const v = (process.env.NETWORK_URL ?? '').trim();
+  return v.length > 0 ? v : null;
 }
 
 /** Suspend the brand's Vendor on the Network — pulls every offering it has
  *  published off the marketplace immediately. */
 export async function adminSuspendVendor(networkUrl: string, vendorId: string, reason: string): Promise<void> {
-  await callNetworkAdmin(networkUrl, `/admin/vendors/${encodeURIComponent(vendorId)}/suspend`, { reason });
+  await callNetworkAdmin(networkUrl, 'POST', `/admin/vendors/${encodeURIComponent(vendorId)}/suspend`, { reason });
 }
 
 /** Undo adminSuspendVendor — the brand's offerings become listable again
  *  (subject to their own published flags). */
 export async function adminReactivateVendor(networkUrl: string, vendorId: string): Promise<void> {
-  await callNetworkAdmin(networkUrl, `/admin/vendors/${encodeURIComponent(vendorId)}/reactivate`, {});
+  await callNetworkAdmin(networkUrl, 'POST', `/admin/vendors/${encodeURIComponent(vendorId)}/reactivate`, {});
+}
+
+// ---------- Creator moderation (platform-ops console) ----------
+//
+// Creators/partners are Network-owned — a creator is one identity across
+// every brand, so blocking one is a NETWORK-level act, not a per-tenant one
+// (a brand revoking a partner from its own roster is the separate,
+// tenant-scoped POST /partners/:id/revoke). These wrap the Network's
+// ADMIN_API_KEY-gated /admin/creators endpoints.
+
+export interface NetworkCreatorSummary {
+  id: string;
+  email: string;
+  name: string;
+  handle: string | null;
+  status: 'active' | 'suspended' | 'blocked';
+  avatarUrl: string | null;
+  bio: string | null;
+  categories: string[];
+  blockedAt: string | null;
+  blockedReason: string | null;
+  blockedByEmail: string | null;
+  lastSignInAt: string | null;
+  createdAt: string;
+  affiliationCount: number;
+  platformCount: number;
+  /** False when the creator hasn't met the discovery bar (avatar + bio +
+   *  category + a connected platform) — they're hidden from the marketplace
+   *  until they do. */
+  profileComplete: boolean;
+  profileMissing: Array<{ field: string; label: string }>;
+}
+
+export async function adminListCreators(networkUrl: string): Promise<NetworkCreatorSummary[]> {
+  const body = await callNetworkAdmin<{ creators: NetworkCreatorSummary[] }>(
+    networkUrl,
+    'GET',
+    '/admin/creators?limit=500',
+  );
+  return body.creators ?? [];
+}
+
+export async function adminBlockCreator(
+  networkUrl: string,
+  creatorId: string,
+  reason: string,
+  blockedByEmail: string,
+): Promise<void> {
+  await callNetworkAdmin(networkUrl, 'POST', `/admin/creators/${encodeURIComponent(creatorId)}/block`, {
+    reason,
+    blockedByEmail,
+  });
+}
+
+export async function adminUnblockCreator(networkUrl: string, creatorId: string): Promise<void> {
+  await callNetworkAdmin(networkUrl, 'POST', `/admin/creators/${encodeURIComponent(creatorId)}/unblock`, {});
 }
 
 export async function adminRestoreVendor(networkUrl: string, vendorId: string): Promise<{ vendorId: string; vendorToken: string }> {
