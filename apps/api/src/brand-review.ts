@@ -270,6 +270,10 @@ export async function approveBrand(
     targetId: tenant.id,
     detail: { slug: tenant.slug, priorApprovalStatus: tenant.approvalStatus },
   });
+  // Undo any Network-side suspension from a prior rejection so the brand's
+  // marketplace listings can come back.
+  await reactivateBrandOnNetwork(db, tenant.id);
+
   await notifyBrandApproved(db, { ...tenant, status: 'active', approvalStatus: 'approved' });
   await notifyOpsDecision(db, {
     brandName: tenant.displayName,
@@ -349,6 +353,11 @@ export async function rejectBrand(
     },
   });
 
+  // Suspend the brand's Vendor on the Network. This is what actually pulls
+  // its programs off the public marketplace — a local suspend alone leaves
+  // the listing up and still accepting creator applications.
+  await suspendBrandOnNetwork(db, tenant.id, reason ?? `brand rejected by ${actor.email}`);
+
   if (opts.notifyBrand) {
     await notifyBrandRejected(db, tenant, reason);
   }
@@ -364,14 +373,86 @@ export async function rejectBrand(
 }
 
 // --------------------------------------------------------------------------
+// Network (marketplace) propagation
+// --------------------------------------------------------------------------
+//
+// Offerings live on the Network — a separate service. Taking a brand or a
+// program dark LOCALLY (suspending the tenant, blocking the program's links)
+// does nothing to its public marketplace listing, so without these calls a
+// rejected spam brand stays listed and keeps taking creator applications.
+//
+// The Network already filters `Offering.published = true AND
+// Vendor.status = 'active'` on both the marketplace list and the offering
+// detail page — it just has to be TOLD. Brand reject → suspend the Vendor
+// (pulls every offering at once); program block → unpublish that offering.
+//
+// All best-effort: a Network outage must not block a local takedown. We log
+// and continue; re-running the action retries the propagation.
+
+/** The brand's Network identity, when it's actually federated. */
+async function networkVendorOf(
+  db: Knex,
+  tenantId: string,
+): Promise<{ networkUrl: string; vendorId: string } | null> {
+  try {
+    const { getNetworkMembership } = await import('./network-client.js');
+    const m = await getNetworkMembership(db, tenantId);
+    if (!m?.networkUrl || !m.vendorId) return null;
+    return { networkUrl: m.networkUrl, vendorId: m.vendorId };
+  } catch {
+    return null;
+  }
+}
+
+/** Pull the brand off the marketplace entirely (all offerings, all at once). */
+async function suspendBrandOnNetwork(db: Knex, tenantId: string, reason: string): Promise<void> {
+  const v = await networkVendorOf(db, tenantId);
+  if (!v) return;
+  try {
+    const { adminSuspendVendor } = await import('./network-client.js');
+    await adminSuspendVendor(v.networkUrl, v.vendorId, reason);
+  } catch (err) {
+    console.error('[brand-review] network vendor suspend failed', { tenantId, err });
+  }
+}
+
+/** Undo suspendBrandOnNetwork on approve/reinstate. */
+async function reactivateBrandOnNetwork(db: Knex, tenantId: string): Promise<void> {
+  const v = await networkVendorOf(db, tenantId);
+  if (!v) return;
+  try {
+    const { adminReactivateVendor } = await import('./network-client.js');
+    await adminReactivateVendor(v.networkUrl, v.vendorId);
+  } catch (err) {
+    console.error('[brand-review] network vendor reactivate failed', { tenantId, err });
+  }
+}
+
+/** Flip a single offering's published flag (program-level takedown). */
+async function setOfferingPublished(
+  db: Knex,
+  tenantId: string,
+  offeringId: string,
+  published: boolean,
+): Promise<void> {
+  try {
+    const { networkProxy } = await import('./network-client.js');
+    await networkProxy.updateOffering(db, tenantId, offeringId, { published });
+  } catch (err) {
+    console.error('[brand-review] network offering publish flip failed', { tenantId, offeringId, published, err });
+  }
+}
+
+// --------------------------------------------------------------------------
 // Program-level moderation (takedown without removing the brand)
 // --------------------------------------------------------------------------
 
 /** Block a single program — its partner links stop redirecting (enforced in
- *  the router) while the brand stays live. Reversible via unblockProgram. */
+ *  the router) AND its marketplace offering is unpublished, while the brand
+ *  stays live. Reversible via unblockProgram. */
 export async function blockProgram(
   db: Knex,
-  program: Pick<ProgramRow, 'id' | 'tenantId' | 'name' | 'blockedAt'>,
+  program: ProgramRow,
   actor: OpsActor,
   reason: string | null,
 ): Promise<void> {
@@ -385,14 +466,25 @@ export async function blockProgram(
     action: 'program.block',
     targetType: 'program',
     targetId: program.id,
-    detail: { tenantId: program.tenantId, name: program.name, reason: reason?.trim() || null },
+    detail: {
+      tenantId: program.tenantId,
+      name: program.name,
+      reason: reason?.trim() || null,
+      networkOfferingId: program.networkOfferingId,
+    },
   });
+  // Pull the marketplace listing — otherwise the program keeps taking
+  // creator applications from the Network even though its links are dead.
+  if (program.networkOfferingId) {
+    await setOfferingPublished(db, program.tenantId, program.networkOfferingId, false);
+  }
 }
 
-/** Lift a program block — links redirect again. */
+/** Lift a program block — links redirect again, and the marketplace listing
+ *  comes back if the brand had it shared. */
 export async function unblockProgram(
   db: Knex,
-  program: Pick<ProgramRow, 'id' | 'tenantId' | 'name'>,
+  program: ProgramRow,
   actor: OpsActor,
 ): Promise<void> {
   await db<ProgramRow>(TABLES.Program).where({ id: program.id }).update({
@@ -407,4 +499,8 @@ export async function unblockProgram(
     targetId: program.id,
     detail: { tenantId: program.tenantId, name: program.name },
   });
+  // Only re-list if the brand actually wants it on the marketplace.
+  if (program.networkOfferingId && program.shareOnNetwork) {
+    await setOfferingPublished(db, program.tenantId, program.networkOfferingId, true);
+  }
 }
