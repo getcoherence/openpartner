@@ -51,6 +51,30 @@ export interface PlatformProgram {
   linkCount: number;
 }
 
+/** A Network creator (partner). Network-owned — one identity across every
+ *  brand — so blocking is a network-level act, not per-tenant. */
+export interface NetworkCreator {
+  id: string;
+  email: string;
+  name: string;
+  handle: string | null;
+  status: 'active' | 'suspended' | 'blocked';
+  avatarUrl: string | null;
+  bio: string | null;
+  categories: string[];
+  blockedAt: string | null;
+  blockedReason: string | null;
+  blockedByEmail: string | null;
+  lastSignInAt: string | null;
+  createdAt: string;
+  affiliationCount: number;
+  platformCount: number;
+  /** False = below the discovery bar, so they're hidden from the marketplace
+   *  until they fill their profile in. */
+  profileComplete: boolean;
+  profileMissing: Array<{ field: string; label: string }>;
+}
+
 export interface BlocklistEntry {
   id: string;
   type: 'email' | 'domain';
