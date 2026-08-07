@@ -17,7 +17,6 @@ import { appDb, db } from '../db.js';
 import { attributeEvent } from '../attribution.js';
 import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFromStripeSub } from './billing.js';
 import {
-  TERMINAL_SUBSCRIPTION_STATUSES,
   handleCancellationScheduleChanged,
   handleTenantSubscriptionEnded,
   notifyTenantInvoicePaymentFailed,
@@ -388,17 +387,20 @@ async function handleConnectEvent(
       // to the attribution path, not clobber the tenant's billing mirror.
       const ids = await tenantBillingIds(trx, tenantId);
       if (!isOwnBilling(ids, extractCustomerId(sub), sub.id)) return null;
-      // Staleness: after a cancel + resubscribe the OLD sub can still emit
-      // (late retries, out-of-order deliveries — checkout reuses the same
-      // Customer). Never let a sub that isn't the tenant's current one
-      // overwrite plan/white-label/mirror state, and never ADOPT a
-      // terminal sub into an empty pointer (the final updated event of a
-      // deleted sub can arrive after deleted already cleared it).
-      if (ids.stripeSubscriptionId && ids.stripeSubscriptionId !== sub.id) {
-        return 'subscription_updated_stale_ignored';
-      }
-      if (!ids.stripeSubscriptionId && TERMINAL_SUBSCRIPTION_STATUSES.has(sub.status)) {
-        return 'subscription_updated_terminal_ignored';
+      // Staleness: an updated may touch billing state ONLY when it refers to
+      // the tenant's CURRENT subscription. Stripe guarantees no event
+      // ordering, so after a cancel the pointer can be null (deleted already
+      // cleared it) or point at a replacement sub — in both cases a
+      // late/resent/out-of-order updated for the old sub must not resurrect
+      // or overwrite state. A null pointer is only re-established by
+      // checkout.session.completed on a real (re)subscribe, so an updated
+      // never legitimately needs to adopt one from null (regardless of the
+      // snapshot's status — an active stale snapshot is exactly the
+      // resurrection case).
+      if (ids.stripeSubscriptionId !== sub.id) {
+        return ids.stripeSubscriptionId
+          ? 'subscription_updated_stale_ignored'
+          : 'subscription_updated_no_pointer_ignored';
       }
       const priceIds = sub.items.data.map((it) => it.price.id);
       const newPlan = inferPlanFromPriceIds(priceIds);

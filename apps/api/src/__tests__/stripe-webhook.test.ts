@@ -723,6 +723,41 @@ describe.skipIf(skipIntegration)('stripe webhook — tenant billing lifecycle', 
     expect(sentMail).toHaveLength(0);
   });
 
+  it('a late ACTIVE subscription.updated arriving after deletion (null pointer) does not resurrect the sub', async () => {
+    // Post-deletion state: pointer cleared, white-label revoked. Stripe
+    // guarantees no ordering, so an older active update for the now-gone
+    // sub can still land. It must not re-establish the pointer or re-enable
+    // white-label — only checkout.session.completed may set a new pointer.
+    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({
+      stripeSubscriptionId: null,
+      whiteLabel: false,
+    });
+
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'customer.subscription.updated',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: TENANT_SUB,
+          object: 'subscription',
+          customer: TENANT_CUS,
+          status: 'active',
+          cancel_at_period_end: false,
+          items: { data: [{ price: { id: 'price_unknown_plan' } }] },
+        },
+        previous_attributes: { default_payment_method: 'pm_x' },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.connect).toBe('subscription_updated_no_pointer_ignored');
+    const tenant = await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first();
+    expect(tenant!.stripeSubscriptionId).toBeNull();
+    expect(tenant!.whiteLabel).toBe(false);
+    expect(sentMail).toHaveLength(0);
+  });
+
   it('a stale subscription.deleted for a since-replaced sub cannot cancel the current one', async () => {
     const res = await postWebhook({
       id: `evt_${ulid()}`,
