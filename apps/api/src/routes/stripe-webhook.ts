@@ -11,10 +11,16 @@ import {
   type IdentityRow,
   type PartnerRow,
   type PayoutRow,
+  type TenantRow,
 } from '@openpartner/db';
 import { appDb, db } from '../db.js';
 import { attributeEvent } from '../attribution.js';
 import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFromStripeSub } from './billing.js';
+import {
+  handleCancellationScheduleChanged,
+  handleTenantSubscriptionEnded,
+  notifyTenantInvoicePaymentFailed,
+} from '../billing-lifecycle.js';
 import { applyWhiteLabelFromSubscription, subscriptionHasWhiteLabel, whiteLabelPriceId } from '../white-label-billing.js';
 import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
 import { handleFundingEvent } from '../funding/webhook.js';
@@ -280,6 +286,23 @@ function extractCustomerId(obj: { customer?: unknown; id?: string; object?: stri
   return null;
 }
 
+/**
+ * Is this Stripe Customer the tenant's OWN billing customer — the one
+ * /billing/checkout created to subscribe the brand to OpenPartner? A
+ * merchant end-customer's events resolve to the same tenant (via the
+ * Identity chain), and must go through attribution, never the
+ * tenant-billing state paths.
+ */
+async function isTenantBillingCustomer(
+  trx: Knex.Transaction,
+  tenantId: string,
+  customerId: string | null,
+): Promise<boolean> {
+  if (!customerId) return false;
+  const row = await trx<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first(['stripeCustomerId']);
+  return !!row?.stripeCustomerId && row.stripeCustomerId === customerId;
+}
+
 // Connect-side events. These don't produce attribution Events — they update
 // Partner (onboarding progress) and Payout (transfer resolution) rows.
 async function handleConnectEvent(
@@ -339,6 +362,12 @@ async function handleConnectEvent(
       // third-party additions (e.g. one-off line items) shouldn't
       // reclassify the tenant.
       const sub = event.data.object as Stripe.Subscription;
+      // Only the tenant's OWN plan subscription (the Customer created by
+      // /billing/checkout) may drive plan / white-label / mirror state.
+      // Subscription events for a merchant's END-CUSTOMERS also resolve
+      // to this tenant (via the Identity chain) — those must fall through
+      // to the attribution path, not clobber the tenant's billing mirror.
+      if (!(await isTenantBillingCustomer(trx, tenantId, extractCustomerId(sub)))) return null;
       const priceIds = sub.items.data.map((it) => it.price.id);
       const newPlan = inferPlanFromPriceIds(priceIds);
       if (newPlan) {
@@ -361,27 +390,42 @@ async function handleConnectEvent(
       // HostedBillingState mirror (spec §4 finding 13): hasActivePlan and
       // funding eligibility read this instead of live Stripe calls.
       await mirrorHostedBillingState(trx, tenantId, sub.status as MirroredSubscriptionStatus);
+      // Cancellation (un)scheduling — previous_attributes carries the old
+      // value only when cancel_at_period_end actually changed in this
+      // event, so this fires exactly once per (un)schedule and alerts ops
+      // weeks before the subscription actually ends.
+      const prev = event.data.previous_attributes as Partial<Stripe.Subscription> | undefined;
+      let cancelNote: string | null = null;
+      if (prev && 'cancel_at_period_end' in prev && !!prev.cancel_at_period_end !== !!sub.cancel_at_period_end) {
+        cancelNote = await handleCancellationScheduleChanged(trx, tenantId, sub);
+      }
       const parts = [
         newPlan ? `subscription_updated_plan_${newPlan}` : 'subscription_updated',
         ...(wl !== 'unchanged' ? [`white_label_${wl}`] : []),
+        ...(cancelNote ? [cancelNote] : []),
       ];
       return parts.join('+');
     }
     case 'customer.subscription.deleted': {
-      // Cancellation (manual via Portal or dunning exhaustion). Clear
-      // the local subscription pointer; Tenant stays active so the admin
-      // can re-subscribe via /billing/checkout without losing data.
-      // trialEndsAt stays put — it's the original signup-set evaluation
-      // deadline, not Stripe's trial state.
+      // Cancellation (manual via Portal or dunning exhaustion). The shared
+      // transition clears the local subscription pointer, disables white-
+      // label (revoking custom-domain routing + DO edge), mirrors
+      // 'canceled', and alerts ops. Tenant stays active so the admin can
+      // re-subscribe via /billing/checkout without losing data.
       const sub = event.data.object as Stripe.Subscription;
-      await persistMerchantSubscription(trx, tenantId, {
-        stripeSubscriptionId: null,
-      });
-      // The whole subscription is gone — the add-on with it. Revokes
-      // custom-domain routing + DO edge if this was a white-label tenant.
-      const wl = await applyWhiteLabelFromSubscription(trx, tenantId, false);
-      await mirrorHostedBillingState(trx, tenantId, 'canceled');
+      if (!(await isTenantBillingCustomer(trx, tenantId, extractCustomerId(sub)))) return null;
+      const wl = await handleTenantSubscriptionEnded(trx, tenantId, 'webhook');
       return `subscription_deleted_${sub.status}${wl !== 'unchanged' ? `+white_label_${wl}` : ''}`;
+    }
+    case 'invoice.payment_failed': {
+      // Dunning on the tenant's own OpenPartner invoice → ops alert (and
+      // short-circuit: our own billing invoice is not a merchant
+      // conversion event). A merchant end-customer's failed invoice falls
+      // through to the attribution audit path instead.
+      const invoice = event.data.object as Stripe.Invoice;
+      if (!(await isTenantBillingCustomer(trx, tenantId, extractCustomerId(invoice)))) return null;
+      await notifyTenantInvoicePaymentFailed(trx, tenantId, invoice);
+      return 'tenant_invoice_payment_failed';
     }
     case 'transfer.updated':
     case 'transfer.reversed': {
