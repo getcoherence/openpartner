@@ -547,7 +547,7 @@ describe.skipIf(skipIntegration)('stripe webhook — tenant billing lifecycle', 
           cancellation_details: { comment: 'switching tools' },
           items: { data: [{ price: { id: 'price_unknown_plan' } }] },
         },
-        previous_attributes: { cancel_at_period_end: false },
+        previous_attributes: { cancel_at_period_end: false, cancel_at: null },
       },
     });
 
@@ -661,12 +661,161 @@ describe.skipIf(skipIntegration)('stripe webhook — tenant billing lifecycle', 
     });
 
     expect(res.status).toBe(200);
-    expect(res.body.connect).toBe('tenant_invoice_payment_failed');
+    expect(res.body.connect).toBe('tenant_invoice_payment_failed_notified');
     const failMail = sentMail.find((m) => m.tag === 'ops_tenant_invoice_payment_failed');
     expect(failMail).toBeTruthy();
     expect(failMail!.subject).toContain('41.06');
     const events = await db(TABLES.Event);
     expect(events).toHaveLength(0);
+  });
+
+  it('invoice.payment_failed redelivery of the same attempt stays silent; a new attempt notifies', async () => {
+    const invoiceId = `in_${ulid()}`;
+    const payload = (attemptCount: number) => ({
+      id: `evt_${ulid()}`,
+      type: 'invoice.payment_failed',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: invoiceId,
+          object: 'invoice',
+          customer: TENANT_CUS,
+          amount_due: 4106,
+          currency: 'usd',
+          attempt_count: attemptCount,
+          hosted_invoice_url: 'https://invoice.stripe.com/i/test',
+        },
+      },
+    });
+
+    await postWebhook(payload(1));
+    const retry = await postWebhook(payload(1));
+    expect(retry.body.connect).toBe('tenant_invoice_payment_failed_duplicate');
+    expect(sentMail.filter((m) => m.tag === 'ops_tenant_invoice_payment_failed')).toHaveLength(1);
+
+    const nextAttempt = await postWebhook(payload(2));
+    expect(nextAttempt.body.connect).toBe('tenant_invoice_payment_failed_notified');
+    expect(sentMail.filter((m) => m.tag === 'ops_tenant_invoice_payment_failed')).toHaveLength(2);
+  });
+
+  it('a stale subscription.updated for a since-replaced sub cannot overwrite billing state', async () => {
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'customer.subscription.updated',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: 'sub_old_replaced',
+          object: 'subscription',
+          customer: TENANT_CUS,
+          status: 'active',
+          cancel_at_period_end: true,
+          items: { data: [{ price: { id: 'price_unknown_plan' } }] },
+        },
+        previous_attributes: { cancel_at_period_end: false },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.connect).toBe('subscription_updated_stale_ignored');
+    const tenant = await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first();
+    expect(tenant!.stripeSubscriptionId).toBe(TENANT_SUB);
+    expect(sentMail).toHaveLength(0);
+  });
+
+  it('a stale subscription.deleted for a since-replaced sub cannot cancel the current one', async () => {
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'customer.subscription.deleted',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: 'sub_old_replaced',
+          object: 'subscription',
+          customer: TENANT_CUS,
+          status: 'canceled',
+          items: { data: [] },
+        },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.connect).toBe('subscription_deleted_stale_ignored');
+    const tenant = await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first();
+    expect(tenant!.stripeSubscriptionId).toBe(TENANT_SUB);
+    expect(tenant!.whiteLabel).toBe(true);
+    expect(sentMail).toHaveLength(0);
+  });
+
+  it('a redelivered subscription.deleted does not double-clear or double-mail', async () => {
+    const payload = {
+      id: `evt_${ulid()}`,
+      type: 'customer.subscription.deleted',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: TENANT_SUB,
+          object: 'subscription',
+          customer: TENANT_CUS,
+          status: 'canceled',
+          items: { data: [] },
+        },
+      },
+    };
+
+    const first = await postWebhook(payload);
+    expect(first.body.connect).toContain('subscription_deleted_canceled');
+    const retry = await postWebhook({ ...payload, id: `evt_${ulid()}` });
+    expect(retry.body.connect).toBe('subscription_deleted_stale_ignored');
+    expect(sentMail.filter((m) => m.tag === 'ops_tenant_subscription_ended')).toHaveLength(1);
+  });
+
+  it('a redelivered cancel-scheduled update does not double-mail (Config marker dedupe)', async () => {
+    const payload = () => ({
+      id: `evt_${ulid()}`,
+      type: 'customer.subscription.updated',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: TENANT_SUB,
+          object: 'subscription',
+          customer: TENANT_CUS,
+          status: 'active',
+          cancel_at_period_end: true,
+          cancel_at: Math.floor(Date.now() / 1000) + 14 * 86400,
+          items: { data: [{ price: { id: 'price_unknown_plan' } }] },
+        },
+        previous_attributes: { cancel_at_period_end: false, cancel_at: null },
+      },
+    });
+
+    await postWebhook(payload());
+    await postWebhook(payload());
+    expect(sentMail.filter((m) => m.tag === 'ops_tenant_cancellation_scheduled')).toHaveLength(1);
+  });
+
+  it('a cancellation scheduled via bare cancel_at (no cancel_at_period_end) also notifies', async () => {
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'customer.subscription.updated',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: TENANT_SUB,
+          object: 'subscription',
+          customer: TENANT_CUS,
+          status: 'active',
+          cancel_at_period_end: false,
+          cancel_at: Math.floor(Date.now() / 1000) + 30 * 86400,
+          items: { data: [{ price: { id: 'price_unknown_plan' } }] },
+        },
+        previous_attributes: { cancel_at: null },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.connect).toContain('cancel_scheduled');
+    expect(sentMail.filter((m) => m.tag === 'ops_tenant_cancellation_scheduled')).toHaveLength(1);
   });
 
   it('invoice.payment_failed for a merchant END-customer still records the audit Event, no ops mail', async () => {

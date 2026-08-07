@@ -17,9 +17,11 @@ import { appDb, db } from '../db.js';
 import { attributeEvent } from '../attribution.js';
 import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFromStripeSub } from './billing.js';
 import {
+  TERMINAL_SUBSCRIPTION_STATUSES,
   handleCancellationScheduleChanged,
   handleTenantSubscriptionEnded,
   notifyTenantInvoicePaymentFailed,
+  subscriptionCancelScheduled,
 } from '../billing-lifecycle.js';
 import { applyWhiteLabelFromSubscription, subscriptionHasWhiteLabel, whiteLabelPriceId } from '../white-label-billing.js';
 import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
@@ -286,21 +288,38 @@ function extractCustomerId(obj: { customer?: unknown; id?: string; object?: stri
   return null;
 }
 
+interface TenantBillingIds {
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+}
+
+async function tenantBillingIds(trx: Knex.Transaction, tenantId: string): Promise<TenantBillingIds> {
+  const row = await trx<TenantRow>(TABLES.Tenant)
+    .where({ id: tenantId })
+    .first(['stripeCustomerId', 'stripeSubscriptionId']);
+  return {
+    stripeCustomerId: row?.stripeCustomerId ?? null,
+    stripeSubscriptionId: row?.stripeSubscriptionId ?? null,
+  };
+}
+
 /**
- * Is this Stripe Customer the tenant's OWN billing customer — the one
+ * Is this event about the tenant's OWN billing — the Customer that
  * /billing/checkout created to subscribe the brand to OpenPartner? A
  * merchant end-customer's events resolve to the same tenant (via the
  * Identity chain), and must go through attribution, never the
- * tenant-billing state paths.
+ * tenant-billing state paths. The subscription-id fallback covers legacy /
+ * concierge-provisioned tenants whose stripeCustomerId was never persisted
+ * but whose subscription pointer is on file.
  */
-async function isTenantBillingCustomer(
-  trx: Knex.Transaction,
-  tenantId: string,
+function isOwnBilling(
+  ids: TenantBillingIds,
   customerId: string | null,
-): Promise<boolean> {
-  if (!customerId) return false;
-  const row = await trx<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first(['stripeCustomerId']);
-  return !!row?.stripeCustomerId && row.stripeCustomerId === customerId;
+  subscriptionId?: string,
+): boolean {
+  if (ids.stripeCustomerId && customerId && ids.stripeCustomerId === customerId) return true;
+  if (subscriptionId && ids.stripeSubscriptionId && ids.stripeSubscriptionId === subscriptionId) return true;
+  return false;
 }
 
 // Connect-side events. These don't produce attribution Events — they update
@@ -367,7 +386,20 @@ async function handleConnectEvent(
       // Subscription events for a merchant's END-CUSTOMERS also resolve
       // to this tenant (via the Identity chain) — those must fall through
       // to the attribution path, not clobber the tenant's billing mirror.
-      if (!(await isTenantBillingCustomer(trx, tenantId, extractCustomerId(sub)))) return null;
+      const ids = await tenantBillingIds(trx, tenantId);
+      if (!isOwnBilling(ids, extractCustomerId(sub), sub.id)) return null;
+      // Staleness: after a cancel + resubscribe the OLD sub can still emit
+      // (late retries, out-of-order deliveries — checkout reuses the same
+      // Customer). Never let a sub that isn't the tenant's current one
+      // overwrite plan/white-label/mirror state, and never ADOPT a
+      // terminal sub into an empty pointer (the final updated event of a
+      // deleted sub can arrive after deleted already cleared it).
+      if (ids.stripeSubscriptionId && ids.stripeSubscriptionId !== sub.id) {
+        return 'subscription_updated_stale_ignored';
+      }
+      if (!ids.stripeSubscriptionId && TERMINAL_SUBSCRIPTION_STATUSES.has(sub.status)) {
+        return 'subscription_updated_terminal_ignored';
+      }
       const priceIds = sub.items.data.map((it) => it.price.id);
       const newPlan = inferPlanFromPriceIds(priceIds);
       if (newPlan) {
@@ -391,13 +423,23 @@ async function handleConnectEvent(
       // funding eligibility read this instead of live Stripe calls.
       await mirrorHostedBillingState(trx, tenantId, sub.status as MirroredSubscriptionStatus);
       // Cancellation (un)scheduling — previous_attributes carries the old
-      // value only when cancel_at_period_end actually changed in this
-      // event, so this fires exactly once per (un)schedule and alerts ops
-      // weeks before the subscription actually ends.
+      // values only when they actually changed in this event, so this
+      // fires on real transitions and alerts ops weeks before the
+      // subscription actually ends. Both scheduling mechanisms count:
+      // cancel_at_period_end (Customer Portal) and a bare cancel_at
+      // (dashboard "cancel at a date" / Subscription Schedules). Redelivery
+      // of the same event stays silent via the Config marker inside
+      // handleCancellationScheduleChanged.
       const prev = event.data.previous_attributes as Partial<Stripe.Subscription> | undefined;
       let cancelNote: string | null = null;
-      if (prev && 'cancel_at_period_end' in prev && !!prev.cancel_at_period_end !== !!sub.cancel_at_period_end) {
-        cancelNote = await handleCancellationScheduleChanged(trx, tenantId, sub);
+      if (prev && ('cancel_at_period_end' in prev || 'cancel_at' in prev)) {
+        const scheduledNow = subscriptionCancelScheduled(sub);
+        const scheduledBefore =
+          ('cancel_at_period_end' in prev ? !!prev.cancel_at_period_end : !!sub.cancel_at_period_end) ||
+          ('cancel_at' in prev ? prev.cancel_at != null : sub.cancel_at != null);
+        if (scheduledNow !== scheduledBefore) {
+          cancelNote = await handleCancellationScheduleChanged(trx, tenantId, sub, scheduledNow);
+        }
       }
       const parts = [
         newPlan ? `subscription_updated_plan_${newPlan}` : 'subscription_updated',
@@ -411,21 +453,28 @@ async function handleConnectEvent(
       // transition clears the local subscription pointer, disables white-
       // label (revoking custom-domain routing + DO edge), mirrors
       // 'canceled', and alerts ops. Tenant stays active so the admin can
-      // re-subscribe via /billing/checkout without losing data.
+      // re-subscribe via /billing/checkout without losing data. The
+      // conditional clear inside handleTenantSubscriptionEnded makes this
+      // safe against retries and stale events for a since-replaced sub —
+      // those return null and are acknowledged without touching state.
       const sub = event.data.object as Stripe.Subscription;
-      if (!(await isTenantBillingCustomer(trx, tenantId, extractCustomerId(sub)))) return null;
-      const wl = await handleTenantSubscriptionEnded(trx, tenantId, 'webhook');
+      const ids = await tenantBillingIds(trx, tenantId);
+      if (!isOwnBilling(ids, extractCustomerId(sub), sub.id)) return null;
+      const wl = await handleTenantSubscriptionEnded(trx, tenantId, 'webhook', sub.id);
+      if (wl === null) return 'subscription_deleted_stale_ignored';
       return `subscription_deleted_${sub.status}${wl !== 'unchanged' ? `+white_label_${wl}` : ''}`;
     }
     case 'invoice.payment_failed': {
       // Dunning on the tenant's own OpenPartner invoice → ops alert (and
       // short-circuit: our own billing invoice is not a merchant
       // conversion event). A merchant end-customer's failed invoice falls
-      // through to the attribution audit path instead.
+      // through to the attribution audit path instead. Deduped per
+      // (invoice, attempt) inside so Stripe redeliveries don't re-mail.
       const invoice = event.data.object as Stripe.Invoice;
-      if (!(await isTenantBillingCustomer(trx, tenantId, extractCustomerId(invoice)))) return null;
-      await notifyTenantInvoicePaymentFailed(trx, tenantId, invoice);
-      return 'tenant_invoice_payment_failed';
+      const ids = await tenantBillingIds(trx, tenantId);
+      if (!isOwnBilling(ids, extractCustomerId(invoice))) return null;
+      const outcome = await notifyTenantInvoicePaymentFailed(trx, tenantId, invoice);
+      return `tenant_invoice_payment_failed_${outcome}`;
     }
     case 'transfer.updated':
     case 'transfer.reversed': {

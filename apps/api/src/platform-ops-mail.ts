@@ -22,10 +22,13 @@ export function platformOpsEmail(): string | null {
 }
 
 /** Best-effort send to the ops inbox — never throws; an alert failure must
- *  not fail the webhook / job that triggered it. */
-export async function sendOpsEmail(db: Knex, tmpl: EmailTemplate, tag: string): Promise<void> {
+ *  not fail the webhook / job that triggered it. Returns whether the send
+ *  can be considered handled: true on success (or when no ops address is
+ *  configured — nothing to retry), false on a transport failure so callers
+ *  with a dedupe marker can leave it unset and retry on the next pass. */
+export async function sendOpsEmail(db: Knex, tmpl: EmailTemplate, tag: string): Promise<boolean> {
   const to = platformOpsEmail();
-  if (!to) return;
+  if (!to) return true;
   try {
     await getMailer().send(
       { db, tenantId: DEFAULT_TENANT_ID },
@@ -38,7 +41,9 @@ export async function sendOpsEmail(db: Knex, tmpl: EmailTemplate, tag: string): 
         metadata: { channel: 'platform_ops' },
       },
     );
+    return true;
   } catch (err) {
     console.error('[platform-ops-mail] ops notify failed', err);
+    return false;
   }
 }

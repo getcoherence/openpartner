@@ -96,15 +96,65 @@ describe.skipIf(skipIntegration)('billing-subscription-reconcile', () => {
     expect(again).toMatchObject({ checked: 0 });
   });
 
-  it('resource_missing (pruned/bad id) heals the same way', async () => {
+  it('resource_missing NEVER heals — a wrong key/account must not mass-revoke live tenants', async () => {
+    // Canceled subs stay retrievable forever, so "missing" means the key
+    // cannot see the id (test-mode key, wrong account). Treating it as
+    // canceled would clear + revoke every tenant on a config mistake.
     const stripe = fakeStripe(async () => {
       throw Object.assign(new Error('No such subscription'), { code: 'resource_missing' });
     });
     const result = await reconcileTenantSubscriptions(db, stripe);
 
-    expect((result as { ended: string[] }).ended).toHaveLength(1);
+    expect((result as { ended: string[] }).ended).toHaveLength(0);
+    expect((result as { errors: string[] }).errors).toHaveLength(1);
     const tenant = await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first();
-    expect(tenant!.stripeSubscriptionId).toBeNull();
+    expect(tenant!.stripeSubscriptionId).toBe(TENANT_SUB);
+    expect(tenant!.whiteLabel).toBe(true);
+    expect(sentMail).toHaveLength(0);
+  });
+
+  it('a resubscribe racing the poll is not clobbered (conditional pointer clear)', async () => {
+    // Stripe says the snapshotted sub is canceled, but by the time the heal
+    // runs the tenant has already resubscribed under a NEW sub id — the
+    // conditional clear must miss and leave the new subscription alone.
+    const stripe = fakeStripe(async () => {
+      await db(TABLES.Tenant)
+        .where({ id: DEFAULT_TENANT_ID })
+        .update({ stripeSubscriptionId: 'sub_new_after_resubscribe' });
+      return liveSub({ status: 'canceled' });
+    });
+    const result = await reconcileTenantSubscriptions(db, stripe);
+
+    expect((result as { ended: string[] }).ended).toHaveLength(0);
+    const tenant = await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first();
+    expect(tenant!.stripeSubscriptionId).toBe('sub_new_after_resubscribe');
+    expect(tenant!.whiteLabel).toBe(true);
+    expect(sentMail.filter((m) => m.tag === 'ops_tenant_subscription_ended')).toHaveLength(0);
+  });
+
+  it('a failed cancel-scheduled email is retried on the next pass (marker only written on success)', async () => {
+    const stripe = fakeStripe(async () =>
+      liveSub({ cancel_at_period_end: true, cancel_at: Math.floor(Date.now() / 1000) + 7 * 86400 }),
+    );
+
+    __setMailerForTests({
+      send: async () => {
+        throw new Error('smtp down');
+      },
+    });
+    await reconcileTenantSubscriptions(db, stripe);
+    const markerAfterFailure = await db(TABLES.Config)
+      .where({ tenantId: DEFAULT_TENANT_ID, key: 'billing_cancel_scheduled_notice' })
+      .first();
+    expect(markerAfterFailure).toBeUndefined();
+
+    __setMailerForTests({
+      send: async (_ctx, msg) => {
+        sentMail.push({ to: msg.to, subject: msg.subject, tag: msg.tag });
+      },
+    });
+    await reconcileTenantSubscriptions(db, stripe);
+    expect(sentMail.filter((m) => m.tag === 'ops_tenant_cancellation_scheduled')).toHaveLength(1);
   });
 
   it('a newly discovered cancel_at_period_end notifies ops once, not nightly', async () => {
