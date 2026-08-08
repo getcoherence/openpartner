@@ -153,6 +153,33 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
   // fresh — and overlapping — window.
   const pending = await getConfig<PendingUsageReport>(db, tenantId, CONFIG_KEYS.PendingUsageReport);
   if (pending) {
+    // Staleness guard: Stripe rejects meter events with a timestamp beyond
+    // its ~35-day window, so a pending row left by a multi-week outage can
+    // never be resent — it would block this tenant's reporting forever. And
+    // past Stripe's ≥24h dedup guarantee a resend risks double-billing. Once
+    // it's this old, abandon it: advance past the window and ALERT for manual
+    // reconciliation rather than double-bill or wedge the tenant. (Trades a
+    // rare, loud under-report for a silent double-charge — the safe direction
+    // for billing.)
+    const STALE_PENDING_MS = 30 * 24 * 60 * 60 * 1000;
+    if (Date.now() - new Date(pending.rangeEndIso).getTime() > STALE_PENDING_MS) {
+      console.error(
+        `[usage] ALERT: abandoning stale pending usage report tenant=${tenantId} ` +
+          `rangeEnd=${pending.rangeEndIso} amount=${pending.amount} — reconcile in Stripe manually`,
+      );
+      await setConfig(db, tenantId, CONFIG_KEYS.LastUsageReportedAt, pending.rangeEndIso);
+      await deleteConfig(db, tenantId, CONFIG_KEYS.PendingUsageReport);
+      return {
+        mode,
+        meterEventName: pending.meterEventName,
+        customerId: pending.customerId,
+        amount: pending.amount,
+        rangeStart: pending.rangeStartIso ? new Date(pending.rangeStartIso) : null,
+        rangeEnd: new Date(pending.rangeEndIso),
+        reported: false,
+        reason: 'stale_pending_abandoned',
+      };
+    }
     await stripe.billing.meterEvents.create({
       event_name: pending.meterEventName,
       payload: { stripe_customer_id: pending.customerId, value: pending.amount.toFixed(2) },
@@ -195,11 +222,14 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
     };
   }
 
-  // Freeze the report BEFORE calling Stripe. The identifier is Stripe's
-  // dedup key; tenantId + rangeEnd keep it unique per period. Because the
-  // frozen bounds+amount+identifier are persisted, a crash after Stripe
-  // accepts but before the mark advances re-sends this exact row above.
-  const identifier = `op-usage-${mode}-${tenantId}-${rangeEnd.toISOString()}`;
+  // Freeze the report BEFORE calling Stripe. The identifier is Stripe's dedup
+  // key, keyed on the period START (the high-water mark), NOT rangeEnd:
+  // rangeStart is identical for two runs racing the same period (scheduler +
+  // manual trigger, or two replicas), so they produce the SAME identifier and
+  // Stripe dedupes the double-submit; distinct periods have distinct starts.
+  // Persisting the frozen bounds+amount+identifier also lets a crash after
+  // Stripe accepts (but before the mark advances) re-send this exact row above.
+  const identifier = `op-usage-${mode}-${tenantId}-${rangeStart ? rangeStart.toISOString() : 'genesis'}`;
   const frozen: PendingUsageReport = {
     rangeStartIso: rangeStart ? rangeStart.toISOString() : null,
     rangeEndIso: rangeEnd.toISOString(),

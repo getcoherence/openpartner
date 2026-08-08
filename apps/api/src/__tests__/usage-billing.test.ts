@@ -39,7 +39,7 @@ vi.mock('../stripe.js', async () => {
 
 const { db } = await import('../db.js');
 const { reportUsageToStripe } = await import('../usage-billing.js');
-const { getConfig, CONFIG_KEYS } = await import('../config.js');
+const { getConfig, setConfig, CONFIG_KEYS } = await import('../config.js');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 
@@ -119,5 +119,34 @@ describe.skipIf(skipIntegration)('reportUsageToStripe exactly-once', () => {
     expect(h.calls[1]!.identifier).toBe(h.calls[0]!.identifier);
     expect(h.calls[1]!.value).toBe('80.00');
     expect(await getConfig(db, DEFAULT_TENANT_ID, CONFIG_KEYS.PendingUsageReport)).toBeNull();
+  });
+
+  it('keys the identifier on the period start so concurrent runs dedupe', async () => {
+    await seedGmv(30);
+    const res = await reportUsageToStripe(db, DEFAULT_TENANT_ID);
+    expect(res.reported).toBe(true);
+    // First period: rangeStart is null → deterministic "genesis" suffix, so
+    // two runs racing the same (still-open) period produce the same key.
+    expect(h.calls[0]!.identifier).toMatch(/-genesis$/);
+    expect(h.calls[0]!.identifier).not.toContain(res.rangeEnd.toISOString());
+  });
+
+  it('abandons a too-stale pending report instead of wedging the tenant', async () => {
+    const staleEnd = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
+    await setConfig(db, DEFAULT_TENANT_ID, CONFIG_KEYS.PendingUsageReport, {
+      rangeStartIso: null,
+      rangeEndIso: staleEnd,
+      amount: 12.5,
+      identifier: 'op-usage-revshare-stale',
+      meterEventName: 'openpartner_attributed_gmv',
+      customerId: CUSTOMER,
+    });
+
+    const res = await reportUsageToStripe(db, DEFAULT_TENANT_ID);
+    expect(res.reason).toBe('stale_pending_abandoned');
+    expect(h.calls).toHaveLength(0); // never re-sent to Stripe
+    expect(await getConfig(db, DEFAULT_TENANT_ID, CONFIG_KEYS.PendingUsageReport)).toBeNull();
+    // Mark advanced past the abandoned window so the tenant isn't stuck.
+    expect(await getConfig(db, DEFAULT_TENANT_ID, CONFIG_KEYS.LastUsageReportedAt)).toBe(staleEnd);
   });
 });
