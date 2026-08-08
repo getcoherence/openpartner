@@ -27,13 +27,21 @@ export async function autoApproveMatureCommissions(
   //
   // Single statement so two scheduler ticks racing don't double-
   // process the same row.
+  //
+  // PartnerCommission is keyed on the partner via the Attribution row
+  // (a."partnerId"), NOT the UPDATE target c."partnerId": Postgres forbids
+  // referencing an UPDATE's target table inside its FROM-clause join
+  // conditions ("invalid reference to FROM-clause entry for table c").
+  // c."attributionId" = a.id already pairs them, and a commission's
+  // partnerId equals its attribution's partnerId by construction, so the
+  // two are equivalent — but only the a. form is legal here.
   const result = (await db.raw(
     `
     update "${TABLES.Commission}" c
        set status = 'approved'
       from "${TABLES.Attribution}" a
       join "${TABLES.Program}" cp on a."programId" = cp.id
-      left join "${TABLES.PartnerCommission}" pc on pc."partnerId" = c."partnerId"
+      left join "${TABLES.PartnerCommission}" pc on pc."partnerId" = a."partnerId"
      where c.status = 'accrued'
        and c."attributionId" = a.id
        and coalesce(pc."holdbackDays", cp."holdbackDays") is not null
