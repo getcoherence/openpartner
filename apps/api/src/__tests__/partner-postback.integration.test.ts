@@ -25,12 +25,17 @@ const ADMIN_KEY = 'op_test_postback_admin_0123456789abcdef0123';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
 process.env.OPENPARTNER_TENANCY = 'single';
 process.env.OPENPARTNER_MODE = 'selfhost';
-// The capturing receiver binds 127.0.0.1; the SSRF guard blocks private IPs
-// by default. Self-host-only escape hatch (mode=selfhost + tenancy=single).
-process.env.OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS = '127.0.0.1/32,::1/128';
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
+
+// The capturing receiver binds 127.0.0.1. Partner postbacks use the HARDENED
+// policy (no private-CIDR escape hatch — even the self-host env var doesn't
+// apply to them), so a localhost receiver would be blocked. Force a
+// permissive policy for this delivery-mechanics test; the security split
+// itself is covered in outbound-guard.test.ts.
+const { __setOutboundPolicyForTests } = await import('../outbound-guard.js');
+const ipaddrForTests = (await import('ipaddr.js')).default;
 
 interface CapturedCall {
   url: string;
@@ -61,6 +66,7 @@ const TABLES_TO_CLEAN = [
 
 beforeAll(async () => {
   if (skipIntegration) return;
+  __setOutboundPolicyForTests({ allowedPorts: null, privateCidrs: [ipaddrForTests.parseCIDR('127.0.0.1/32')] });
   await db.raw('select 1');
   await new Promise<void>((resolve) => {
     receiver = createServer((req, res) => {
@@ -76,6 +82,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  __setOutboundPolicyForTests(null);
   if (receiver) await new Promise<void>((r) => receiver.close(() => r()));
   if (!skipIntegration) {
     for (const t of TABLES_TO_CLEAN) await db(t).del();

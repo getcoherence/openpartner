@@ -1,5 +1,6 @@
 import { createApp } from './app.js';
 import { startScheduler } from './scheduler.js';
+import { outboundPolicy } from './outbound-guard.js';
 
 const PORT = Number(process.env.API_PORT ?? 4601);
 const MODE = process.env.OPENPARTNER_MODE ?? 'selfhost';
@@ -38,6 +39,10 @@ console.log(JSON.stringify({
   doApiTokenLen: (process.env.DO_API_TOKEN ?? '').length,
   doAppIdLen: (process.env.DO_APP_ID ?? '').length,
 }));
+
+// Validate the outbound (SSRF) guard config now so a bad
+// OPENPARTNER_OUTBOUND_* value fails startup rather than every delivery.
+outboundPolicy();
 
 const app = createApp();
 app.listen(PORT, () => {

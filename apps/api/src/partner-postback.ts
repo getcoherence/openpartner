@@ -134,6 +134,8 @@ async function fireOne(row: PartnerPostbackRow, ctx: PostbackContext): Promise<v
       method: 'GET',
       headers: { 'user-agent': 'OpenPartner-Postback/1' },
       timeoutMs: POSTBACK_TIMEOUT_MS,
+      // Partner-controlled URL: hardened policy — never the escape hatch.
+      trust: 'partner',
     });
     status = res.status;
     if (!res.ok) {

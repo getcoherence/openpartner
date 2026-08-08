@@ -159,4 +159,29 @@ describe('safeFetch against a live server', () => {
     expect(res.ok).toBe(true); // 204 is within 200–299
     expect(hits).toBe(before + 1);
   });
+
+  it('trust split: admin honors the escape hatch, partner does NOT', async () => {
+    // Derive the policy from env (no explicit policy arg) so the trust split
+    // is exercised. Self-host + single admits the private CIDR for admin.
+    process.env.OPENPARTNER_MODE = 'selfhost';
+    process.env.OPENPARTNER_TENANCY = 'single';
+    process.env.OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS = '127.0.0.1/32';
+    __resetOutboundPolicyForTests();
+    try {
+      const before = hits;
+      // admin: escape hatch applies → reaches localhost.
+      const admin = await safeFetch(`http://127.0.0.1:${port}/`, { trust: 'admin' });
+      expect(admin.status).toBe(204);
+      expect(hits).toBe(before + 1);
+
+      // partner: escape hatch stripped → blocked before any socket.
+      await expect(
+        safeFetch(`http://127.0.0.1:${port}/`, { trust: 'partner' }),
+      ).rejects.toBeInstanceOf(OutboundBlockedError);
+      expect(hits).toBe(before + 1); // unchanged — partner never connected
+    } finally {
+      delete process.env.OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS;
+      __resetOutboundPolicyForTests();
+    }
+  });
 });

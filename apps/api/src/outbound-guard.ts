@@ -52,18 +52,42 @@ export interface OutboundPolicy {
 }
 
 let cached: OutboundPolicy | null = null;
+let testOverride: OutboundPolicy | null = null;
 
-/** Build (once) and return the deployment's outbound policy. Throws at first
- *  use on misconfiguration — fail closed rather than silently permissive. */
+/** Build (once) and return the deployment's outbound policy. Throws on
+ *  misconfiguration — call once at boot (server.ts) so a bad config fails
+ *  startup rather than every delivery. */
 export function outboundPolicy(): OutboundPolicy {
   if (!cached) cached = buildPolicy();
   return cached;
+}
+
+/**
+ * Partner-controlled destinations (postbacks) get a hardened view of the
+ * policy: the private-CIDR escape hatch is stripped (a partner must never
+ * reach operator-allowlisted internal ranges — that would hand every
+ * partner a scan oracle), and ports are never left unrestricted (fall back
+ * to 80/443 when the operator set no explicit allowlist). Admin-managed
+ * webhook endpoints keep the full deployment policy.
+ */
+function partnerStrict(base: OutboundPolicy): OutboundPolicy {
+  return {
+    allowedPorts: base.allowedPorts ?? new Set([80, 443]),
+    privateCidrs: [],
+  };
 }
 
 /** Test hook: drop the cached policy so a test can rebuild it after changing
  *  the relevant env vars. */
 export function __resetOutboundPolicyForTests(): void {
   cached = null;
+}
+
+/** Test hook: force the effective policy for every safeFetch (both trust
+ *  levels), so an app-level integration test can reach a localhost receiver.
+ *  Pass null to clear. */
+export function __setOutboundPolicyForTests(policy: OutboundPolicy | null): void {
+  testOverride = policy;
 }
 
 function buildPolicy(): OutboundPolicy {
@@ -211,6 +235,10 @@ export interface SafeFetchInit {
   headers?: Record<string, string>;
   body?: string;
   timeoutMs?: number;
+  /** Trust level of whoever configured the URL. 'partner' (default) gets the
+   *  hardened policy; 'admin' gets the full deployment policy (may use the
+   *  private-CIDR escape hatch). */
+  trust?: 'admin' | 'partner';
 }
 
 export interface SafeFetchResult {
@@ -227,8 +255,14 @@ export interface SafeFetchResult {
 export async function safeFetch(
   rawUrl: string,
   init: SafeFetchInit = {},
-  policy: OutboundPolicy = outboundPolicy(),
+  policyArg?: OutboundPolicy,
 ): Promise<SafeFetchResult> {
+  // Precedence: explicit arg (unit tests) > test override (app-level e2e) >
+  // trust-derived (production). Default trust is the hardened partner policy.
+  const policy =
+    policyArg ??
+    testOverride ??
+    (init.trust === 'admin' ? outboundPolicy() : partnerStrict(outboundPolicy()));
   const url = validateUrl(rawUrl, policy);
   const pins = await resolveAndValidate(url, policy);
   const pin = pins[0]!;

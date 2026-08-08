@@ -286,6 +286,9 @@ async function attemptDelivery(deliveryId: string, endpoint: WebhookEndpointRow,
       },
       body,
       timeoutMs: 10_000,
+      // Admin-configured endpoint: full deployment policy (may use the
+      // operator's private-CIDR escape hatch on self-host).
+      trust: 'admin',
     });
     const ok = res.ok;
     await db<WebhookDeliveryRow>(TABLES.WebhookDelivery)
