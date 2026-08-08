@@ -25,6 +25,9 @@ const ADMIN_KEY = 'op_test_postback_admin_0123456789abcdef0123';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
 process.env.OPENPARTNER_TENANCY = 'single';
 process.env.OPENPARTNER_MODE = 'selfhost';
+// The capturing receiver binds 127.0.0.1; the SSRF guard blocks private IPs
+// by default. Self-host-only escape hatch (mode=selfhost + tenancy=single).
+process.env.OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS = '127.0.0.1/32,::1/128';
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
