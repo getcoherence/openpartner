@@ -39,6 +39,7 @@ vi.mock('stripe', async () => {
 
 const { db } = await import('../db.js');
 const { createApp } = await import('../app.js');
+const { TABLES, DEFAULT_TENANT_ID } = await import('@openpartner/db');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
@@ -98,9 +99,48 @@ describe.skipIf(skipIntegration)('stripe webhook — secret-family enforcement',
     expect(res.body.reason).not.toBe('secret_family_mismatch');
   });
 
+  it('treats transfer.* as PLATFORM family (platform secret passes, connect secret rejects)', async () => {
+    // We create Connect transfers with the platform key, so transfer.* fire
+    // on the platform account and arrive on Destination A.
+    const onPlatform = await post(evt('transfer.reversed', { id: `tr_${ulid()}`, object: 'transfer', metadata: {} }), PLATFORM_SECRET);
+    expect(onPlatform.status).toBe(200);
+    expect(onPlatform.body.reason).not.toBe('secret_family_mismatch');
+
+    const onConnect = await post(evt('transfer.reversed', { id: `tr_${ulid()}`, object: 'transfer', metadata: {} }), CONNECT_SECRET);
+    expect(onConnect.status).toBe(200);
+    expect(onConnect.body.reason).toBe('secret_family_mismatch');
+  });
+
   it('rejects a signature made with an unknown secret', async () => {
     const res = await post(evt('invoice.paid', { id: `in_${ulid()}`, customer: `cus_${ulid()}` }), 'whsec_not_configured');
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('invalid_signature');
+  });
+
+  it('account.updated does NOT let forged metadata re-point another partner (payout hijack)', async () => {
+    const acctA = `acct_${ulid()}`;
+    const acctB = `acct_${ulid()}`;
+    const partnerA = ulid();
+    const partnerB = ulid();
+    await db(TABLES.Partner).insert([
+      { id: partnerA, tenantId: DEFAULT_TENANT_ID, name: 'A', email: `a-${partnerA}@x.com`, stripeConnectAccountId: acctA },
+      { id: partnerB, tenantId: DEFAULT_TENANT_ID, name: 'B', email: `b-${partnerB}@x.com`, stripeConnectAccountId: acctB },
+    ]);
+    try {
+      // account.updated for A's account, but metadata forged to claim B.
+      const res = await post(
+        evt('account.updated', { id: acctA, object: 'account', metadata: { openpartner_partner_id: partnerB }, charges_enabled: true, payouts_enabled: true, details_submitted: true }),
+        CONNECT_SECRET,
+      );
+      expect(res.status).toBe(200);
+      // Resolved by account id → updated A (not B).
+      expect(res.body.connect).toBe('account_updated');
+      const b = await db(TABLES.Partner).where({ id: partnerB }).first();
+      expect(b.stripeConnectAccountId).toBe(acctB); // untouched — not hijacked
+      const a = await db(TABLES.Partner).where({ id: partnerA }).first();
+      expect(a.stripeConnectAccountId).toBe(acctA);
+    } finally {
+      await db(TABLES.Partner).whereIn('id', [partnerA, partnerB]).del();
+    }
   });
 });

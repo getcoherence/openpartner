@@ -103,8 +103,16 @@ const PLATFORM_EVENT_TYPES = new Set([
   'payment_intent.succeeded',
   'payment_intent.payment_failed',
   'payment_intent.canceled',
+  // transfer.* are PLATFORM-account events: we create Connect transfers with
+  // the platform key (funding/executor.ts), so Stripe fires transfer.updated
+  // / transfer.reversed on the platform account — they arrive on Destination
+  // A, NOT the connected-account destination.
+  'transfer.updated',
+  'transfer.reversed',
 ]);
-const CONNECT_EVENT_TYPES = new Set(['account.updated', 'transfer.updated', 'transfer.reversed']);
+// Only account.updated is a genuine connected-account event (event.account
+// set, delivered via the Connect destination).
+const CONNECT_EVENT_TYPES = new Set(['account.updated']);
 function expectedFamilyForType(type: string): SecretFamily | null {
   if (PLATFORM_EVENT_TYPES.has(type)) return 'platform';
   if (CONNECT_EVENT_TYPES.has(type)) return 'connect';
@@ -285,19 +293,13 @@ async function resolveTenantForEvent(event: Stripe.Event, family: SecretFamily):
   switch (event.type) {
     case 'account.updated': {
       const account = event.data.object as Stripe.Account;
-      // Resolve by the connected-account id itself (authoritative), then fall
-      // back to our own partner-id stamp for accounts predating the
-      // stripeConnectAccountId column.
+      // Resolve by the connected-account id only (authoritative) — the link
+      // is always established server-side at /connect/start, so we never need
+      // (and must not trust) account.metadata to pick the tenant.
       const linked = await db<PartnerRow>(TABLES.Partner)
         .where({ stripeConnectAccountId: account.id })
         .first(['tenantId']);
-      if (linked) return linked.tenantId;
-      const partnerId = account.metadata?.openpartner_partner_id;
-      if (partnerId) {
-        const row = await db<PartnerRow>(TABLES.Partner).where({ id: partnerId }).first(['tenantId']);
-        if (row) return row.tenantId;
-      }
-      return null;
+      return linked?.tenantId ?? null;
     }
     case 'transfer.updated':
     case 'transfer.reversed': {
@@ -384,12 +386,21 @@ async function handleConnectEvent(
   switch (event.type) {
     case 'account.updated': {
       const account = event.data.object as Stripe.Account;
-      const partnerId = account.metadata?.openpartner_partner_id;
-      if (!partnerId) return 'account_updated_no_partner_id';
+      // Resolve the target partner by the connected-account id — NEVER by
+      // account.metadata. The partner↔account link is established
+      // server-side at /connect/start (accounts.create → persist
+      // stripeConnectAccountId), so the partner is always already linked by
+      // the time account.updated fires. A Standard account can influence its
+      // own metadata, so selecting the partner from
+      // account.metadata.openpartner_partner_id would let one partner
+      // re-point another's stripeConnectAccountId and hijack their payouts.
+      const target = await trx<PartnerRow>(TABLES.Partner)
+        .where({ stripeConnectAccountId: account.id })
+        .first(['id']);
+      if (!target) return 'account_updated_unlinked_account';
       await trx<PartnerRow>(TABLES.Partner)
-        .where({ id: partnerId })
+        .where({ id: target.id })
         .update({
-          stripeConnectAccountId: account.id,
           metadata: trx.raw(
             `jsonb_set(coalesce("metadata", '{}'::jsonb), '{stripe}', ?::jsonb, true)`,
             [

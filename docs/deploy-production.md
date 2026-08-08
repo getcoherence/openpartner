@@ -142,14 +142,18 @@ from connected-account events:
 ### Destination A — platform events
 
 - URL: `https://app.openpartner.dev/api/webhooks/stripe`
-- Events: `checkout.session.completed`, `customer.created`, `customer.subscription.created`, `invoice.paid`, `invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`
+- Events: `checkout.session.completed`, `customer.created`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`, `transfer.updated`, `transfer.reversed`
 - Save → copy the **Signing secret** (`whsec_...`)
+
+> `transfer.*` belong here, NOT on Destination B: we create Connect transfers
+> with the platform key, so Stripe fires those events on the **platform**
+> account. (`payment_intent.*` also arrive here when hosted funding is on.)
 
 ### Destination B — connected accounts
 
 - URL: same — `https://app.openpartner.dev/api/webhooks/stripe`
 - Type: **Connected accounts**
-- Events: `account.updated`, `transfer.updated`, `transfer.reversed`
+- Events: `account.updated`
 - Save → copy the **Signing secret**
 
 Set the two **family-bound** signing-secret vars (recommended — binds each
