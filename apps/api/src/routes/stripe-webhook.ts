@@ -22,20 +22,94 @@ import { mirrorHostedBillingState, type MirroredSubscriptionStatus } from '../bi
 import { interlockCommissionReversal } from '../funding/interlocks.js';
 
 const stripeKey = process.env.STRIPE_SECRET_KEY;
-// STRIPE_WEBHOOK_SECRET accepts either a single secret or a comma-separated
-// list. Stripe's new "Event destinations" UI splits platform-account events
-// (checkout.*, invoice.*, customer.*) and connected-account events
-// (account.updated, transfer.*) into separate destinations, each with its own
-// signing secret. Both destinations point at the same /webhooks/stripe URL —
-// we just need to verify against any configured secret.
-const webhookSecrets = (process.env.STRIPE_WEBHOOK_SECRET ?? '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
+
+// Webhook signing secrets, bound to the Stripe "Event destination" that
+// issued them so a secret from one destination can't authorize an event
+// family from the other (confused-deputy hardening — spec review #11):
+//   - STRIPE_WEBHOOK_SECRET_PLATFORM → Destination A: platform-account events
+//     (checkout.*, customer.*, invoice.*, charge.*, payment_intent.*)
+//   - STRIPE_WEBHOOK_SECRET_CONNECT  → Destination B: connected-account events
+//     (account.updated, transfer.*)
+// Each accepts a comma-separated list (multiple endpoints / rotation).
+// STRIPE_WEBHOOK_SECRET is the LEGACY combined var: when the split vars are
+// unset it verifies BOTH families (unchanged behavior) and family
+// enforcement is skipped for it. Migrate to the split vars to turn on
+// enforcement — see docs/deploy-production.md.
+function parseSecrets(v: string | undefined): string[] {
+  return (v ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+const platformWebhookSecrets = parseSecrets(process.env.STRIPE_WEBHOOK_SECRET_PLATFORM);
+const connectWebhookSecrets = parseSecrets(process.env.STRIPE_WEBHOOK_SECRET_CONNECT);
+const legacyWebhookSecrets = parseSecrets(process.env.STRIPE_WEBHOOK_SECRET);
+const anyWebhookSecret =
+  platformWebhookSecrets.length + connectWebhookSecrets.length + legacyWebhookSecrets.length > 0;
+
+if (
+  legacyWebhookSecrets.length > 0 &&
+  platformWebhookSecrets.length === 0 &&
+  connectWebhookSecrets.length === 0
+) {
+  console.warn(
+    '[stripe-webhook] using legacy STRIPE_WEBHOOK_SECRET for all event families; set ' +
+      'STRIPE_WEBHOOK_SECRET_PLATFORM + STRIPE_WEBHOOK_SECRET_CONNECT to enable secret-family enforcement.',
+  );
+}
 
 const stripe = stripeKey ? new Stripe(stripeKey) : null;
 
 export const stripeWebhookRouter = Router();
+
+type SecretFamily = 'platform' | 'connect' | 'legacy';
+
+/** Verify the signature against each configured secret, returning which
+ *  destination family the matching secret belongs to. */
+function verifyWebhook(
+  stripeClient: Stripe,
+  body: Buffer,
+  sig: string,
+): { event: Stripe.Event; family: SecretFamily } | null {
+  const groups: Array<[SecretFamily, string[]]> = [
+    ['platform', platformWebhookSecrets],
+    ['connect', connectWebhookSecrets],
+    ['legacy', legacyWebhookSecrets],
+  ];
+  for (const [family, secrets] of groups) {
+    for (const secret of secrets) {
+      try {
+        return { event: stripeClient.webhooks.constructEvent(body, sig, secret), family };
+      } catch {
+        // Not this secret — try the next.
+      }
+    }
+  }
+  return null;
+}
+
+// The destination family each handled event type must arrive on. Types not
+// listed here are unconstrained (the handlers skip anything they don't map).
+const PLATFORM_EVENT_TYPES = new Set([
+  'checkout.session.completed',
+  'customer.created',
+  'customer.subscription.created',
+  'customer.subscription.updated',
+  'customer.subscription.deleted',
+  'invoice.paid',
+  'invoice.payment_failed',
+  'charge.refunded',
+  'charge.dispute.created',
+  'payment_intent.succeeded',
+  'payment_intent.payment_failed',
+  'payment_intent.canceled',
+]);
+const CONNECT_EVENT_TYPES = new Set(['account.updated', 'transfer.updated', 'transfer.reversed']);
+function expectedFamilyForType(type: string): SecretFamily | null {
+  if (PLATFORM_EVENT_TYPES.has(type)) return 'platform';
+  if (CONNECT_EVENT_TYPES.has(type)) return 'connect';
+  return null;
+}
 
 /**
  * Stripe webhook → raw event log.
@@ -61,23 +135,33 @@ stripeWebhookRouter.post(
   '/webhooks/stripe',
   raw({ type: 'application/json' }),
   async (req, res) => {
-    if (!stripe || webhookSecrets.length === 0) {
+    if (!stripe || !anyWebhookSecret) {
       return res.status(503).json({ error: 'stripe_not_configured' });
     }
 
     const sig = req.header('stripe-signature');
     if (!sig) return res.status(400).json({ error: 'missing_signature' });
 
-    let event: Stripe.Event | null = null;
-    for (const secret of webhookSecrets) {
-      try {
-        event = stripe.webhooks.constructEvent(req.body, sig, secret);
-        break;
-      } catch {
-        // Try the next secret. If none match we'll fall through to 400.
+    const verified = verifyWebhook(stripe, req.body, sig);
+    if (!verified) return res.status(400).json({ error: 'invalid_signature' });
+    const { event, family } = verified;
+
+    // Confused-deputy guard: a secret bound to one destination must not
+    // authorize an event type belonging to the other (e.g. the Connect
+    // secret carrying a forged checkout.session.completed). Skipped for the
+    // legacy combined secret, which has no family binding. 2xx so Stripe
+    // stops retrying a permanently-rejected event.
+    if (family !== 'legacy') {
+      const expected = expectedFamilyForType(event.type);
+      if (expected !== null && expected !== family) {
+        console.warn('[stripe-webhook] secret-family mismatch', {
+          type: event.type,
+          verifiedFamily: family,
+          expectedFamily: expected,
+        });
+        return res.json({ ok: true, skipped: event.type, reason: 'secret_family_mismatch' });
       }
     }
-    if (!event) return res.status(400).json({ error: 'invalid_signature' });
 
     // Funding-pipeline events (PaymentIntents/charges/transfers stamped
     // with our funding metadata) are platform-money events, not merchant
@@ -88,7 +172,7 @@ stripeWebhookRouter.post(
     const funding = await handleFundingEvent(db, stripe, event);
     if (funding) return res.json({ ok: true, funding });
 
-    const tenantId = await resolveTenantForEvent(event);
+    const tenantId = await resolveTenantForEvent(event, family);
     if (!tenantId) {
       // Genuinely unresolvable — most likely a connected-account event for
       // an account we don't recognize. 2xx so Stripe stops retrying.
@@ -186,24 +270,34 @@ async function runInTenant<T>(tenantId: string, fn: (trx: Knex.Transaction) => P
  *   3. If neither yields a tenant, return null and the caller skips the
  *      event with 2xx so Stripe stops retrying.
  */
-async function resolveTenantForEvent(event: Stripe.Event): Promise<string | null> {
-  const obj = event.data.object as { metadata?: Record<string, string> | null };
-  const direct = obj?.metadata?.openpartner_tenant_id;
-  if (direct) return direct;
+async function resolveTenantForEvent(event: Stripe.Event, family: SecretFamily): Promise<string | null> {
+  // The openpartner_tenant_id metadata stamp is authoritative only for
+  // objects WE create in our platform account (platform/legacy families).
+  // A connected account can influence its own object metadata, so connect
+  // events resolve purely from the connected-account id / our payout id
+  // below — metadata may confirm a mapping, never establish one.
+  if (family !== 'connect') {
+    const obj = event.data.object as { metadata?: Record<string, string> | null };
+    const direct = obj?.metadata?.openpartner_tenant_id;
+    if (direct) return direct;
+  }
 
   switch (event.type) {
     case 'account.updated': {
       const account = event.data.object as Stripe.Account;
+      // Resolve by the connected-account id itself (authoritative), then fall
+      // back to our own partner-id stamp for accounts predating the
+      // stripeConnectAccountId column.
+      const linked = await db<PartnerRow>(TABLES.Partner)
+        .where({ stripeConnectAccountId: account.id })
+        .first(['tenantId']);
+      if (linked) return linked.tenantId;
       const partnerId = account.metadata?.openpartner_partner_id;
       if (partnerId) {
         const row = await db<PartnerRow>(TABLES.Partner).where({ id: partnerId }).first(['tenantId']);
         if (row) return row.tenantId;
       }
-      // Last-resort: any partner with this stripeConnectAccountId.
-      const linked = await db<PartnerRow>(TABLES.Partner)
-        .where({ stripeConnectAccountId: account.id })
-        .first(['tenantId']);
-      return linked?.tenantId ?? null;
+      return null;
     }
     case 'transfer.updated':
     case 'transfer.reversed': {
