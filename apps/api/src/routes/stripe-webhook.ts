@@ -490,12 +490,19 @@ async function mapStripeEvent(
       const rawInvoice = (charge as unknown as { invoice?: string | { id: string } | null }).invoice;
       const invoiceId = typeof rawInvoice === 'string' ? rawInvoice : rawInvoice?.id ?? null;
 
-      // Auto-reverse non-paid Commissions linked to the original invoice.
-      // Commissions already in 'paid' status are flagged for admin review —
-      // we don't claw back funds that have already left the platform.
-      const reversal = invoiceId
-        ? await reverseCommissionsForInvoice(trx, invoiceId)
-        : { reversed: 0, alreadyPaid: 0, heldInTransfer: 0 };
+      // Stopgap for partial-refund over-clawback: the old path reversed 100%
+      // of an invoice's commissions on ANY refund, and charge.amount_refunded
+      // is cumulative — so a $1 refund on a $100 order wiped the whole
+      // commission, and successive partials mis-stated. Only auto-reverse on
+      // a FULL refund; partials are recorded for the audit trail and left for
+      // manual handling (proportional clawback is a separate ledger change).
+      // Commissions already 'paid' are flagged, not clawed back.
+      const chargeAmount = typeof charge.amount === 'number' ? charge.amount : null;
+      const isFullRefund = chargeAmount != null && chargeAmount > 0 && charge.amount_refunded >= chargeAmount;
+      const reversal =
+        invoiceId && isFullRefund
+          ? await reverseCommissionsForInvoice(trx, invoiceId)
+          : { reversed: 0, alreadyPaid: 0, heldInTransfer: 0 };
 
       return {
         userId,
@@ -506,6 +513,10 @@ async function mapStripeEvent(
           stripeChargeId: charge.id,
           ...(invoiceId ? { stripeInvoiceId: invoiceId } : {}),
           amountRefunded: charge.amount_refunded,
+          ...(chargeAmount != null ? { chargeAmount } : {}),
+          fullRefund: isFullRefund,
+          // Surfaces a partial refund that needs manual commission handling.
+          ...(invoiceId && !isFullRefund ? { partialRefundReversalSkipped: true } : {}),
           reversedCommissions: reversal.reversed,
           alreadyPaidCommissions: reversal.alreadyPaid,
           ...(reversal.heldInTransfer > 0 ? { heldInTransferCommissions: reversal.heldInTransfer } : {}),
