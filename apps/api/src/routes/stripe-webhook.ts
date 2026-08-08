@@ -497,8 +497,15 @@ async function mapStripeEvent(
       // a FULL refund; partials are recorded for the audit trail and left for
       // manual handling (proportional clawback is a separate ledger change).
       // Commissions already 'paid' are flagged, not clawed back.
-      const chargeAmount = typeof charge.amount === 'number' ? charge.amount : null;
-      const isFullRefund = chargeAmount != null && chargeAmount > 0 && charge.amount_refunded >= chargeAmount;
+      //
+      // "Full" is measured against what was actually COLLECTED
+      // (charge.amount_captured), NOT the intended charge.amount: a $100 auth
+      // captured for $60 and then fully refunded ($60) is a full refund even
+      // though amount_refunded (6000) < amount (10000). Fall back to
+      // charge.amount when amount_captured is absent.
+      const captured = typeof charge.amount_captured === 'number' ? charge.amount_captured : null;
+      const collected = captured ?? (typeof charge.amount === 'number' ? charge.amount : null);
+      const isFullRefund = collected != null && collected > 0 && charge.amount_refunded >= collected;
       const reversal =
         invoiceId && isFullRefund
           ? await reverseCommissionsForInvoice(trx, invoiceId)
@@ -513,7 +520,7 @@ async function mapStripeEvent(
           stripeChargeId: charge.id,
           ...(invoiceId ? { stripeInvoiceId: invoiceId } : {}),
           amountRefunded: charge.amount_refunded,
-          ...(chargeAmount != null ? { chargeAmount } : {}),
+          ...(collected != null ? { chargeCollected: collected } : {}),
           fullRefund: isFullRefund,
           // Surfaces a partial refund that needs manual commission handling.
           ...(invoiceId && !isFullRefund ? { partialRefundReversalSkipped: true } : {}),
