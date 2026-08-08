@@ -23,7 +23,7 @@
 
 import type { Knex } from 'knex';
 import { TABLES, type EventRow } from '@openpartner/db';
-import { CONFIG_KEYS, getConfig, setConfig } from './config.js';
+import { CONFIG_KEYS, deleteConfig, getConfig, setConfig } from './config.js';
 import { requireStripe } from './stripe.js';
 import { getTenantBillingState } from './billing-plan.js';
 
@@ -145,6 +145,34 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
     };
   }
 
+  const stripe = requireStripe();
+
+  // Recovery path: a report was frozen but the run crashed before advancing
+  // the high-water mark. Re-send it VERBATIM (same identifier ⇒ Stripe's
+  // Meter Events API dedupes, so no double-count) rather than aggregating a
+  // fresh — and overlapping — window.
+  const pending = await getConfig<PendingUsageReport>(db, tenantId, CONFIG_KEYS.PendingUsageReport);
+  if (pending) {
+    await stripe.billing.meterEvents.create({
+      event_name: pending.meterEventName,
+      payload: { stripe_customer_id: pending.customerId, value: pending.amount.toFixed(2) },
+      identifier: pending.identifier,
+      timestamp: Math.floor(new Date(pending.rangeEndIso).getTime() / 1000),
+    });
+    await setConfig(db, tenantId, CONFIG_KEYS.LastUsageReportedAt, pending.rangeEndIso);
+    await deleteConfig(db, tenantId, CONFIG_KEYS.PendingUsageReport);
+    return {
+      mode,
+      meterEventName: pending.meterEventName,
+      customerId: pending.customerId,
+      amount: pending.amount,
+      rangeStart: pending.rangeStartIso ? new Date(pending.rangeStartIso) : null,
+      rangeEnd: new Date(pending.rangeEndIso),
+      reported: true,
+      reason: 'resent frozen report (crash recovery)',
+    };
+  }
+
   const lastReportedAtIso = await getConfig<string>(db, tenantId, CONFIG_KEYS.LastUsageReportedAt);
   const rangeStart = lastReportedAtIso ? new Date(lastReportedAtIso) : null;
   const rangeEnd = new Date();
@@ -152,7 +180,8 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
 
   if (amount <= 0) {
     // Still advance the high-water mark — we've "reported" zero usage for
-    // the period and don't want to re-scan the same window forever.
+    // the period and don't want to re-scan the same window forever. No
+    // Stripe call, so no exactly-once concern here.
     await setConfig(db, tenantId, CONFIG_KEYS.LastUsageReportedAt, rangeEnd.toISOString());
     return {
       mode,
@@ -166,24 +195,30 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
     };
   }
 
-  const stripe = requireStripe();
-  // identifier is Stripe's idempotency key for meter events. Tying it to the
-  // window end means a re-run within the same second is deduped on Stripe's
-  // side, which is what we want when an admin double-clicks the report
-  // button or a cron job retries on transient failure. Include tenantId so
-  // two tenants reporting in the same second don't collide.
+  // Freeze the report BEFORE calling Stripe. The identifier is Stripe's
+  // dedup key; tenantId + rangeEnd keep it unique per period. Because the
+  // frozen bounds+amount+identifier are persisted, a crash after Stripe
+  // accepts but before the mark advances re-sends this exact row above.
   const identifier = `op-usage-${mode}-${tenantId}-${rangeEnd.toISOString()}`;
+  const frozen: PendingUsageReport = {
+    rangeStartIso: rangeStart ? rangeStart.toISOString() : null,
+    rangeEndIso: rangeEnd.toISOString(),
+    amount,
+    identifier,
+    meterEventName,
+    customerId,
+  };
+  await setConfig(db, tenantId, CONFIG_KEYS.PendingUsageReport, frozen);
+
   await stripe.billing.meterEvents.create({
     event_name: meterEventName,
-    payload: {
-      stripe_customer_id: customerId,
-      value: amount.toFixed(2),
-    },
+    payload: { stripe_customer_id: customerId, value: amount.toFixed(2) },
     identifier,
     timestamp: Math.floor(rangeEnd.getTime() / 1000),
   });
 
   await setConfig(db, tenantId, CONFIG_KEYS.LastUsageReportedAt, rangeEnd.toISOString());
+  await deleteConfig(db, tenantId, CONFIG_KEYS.PendingUsageReport);
   return {
     mode,
     meterEventName,
@@ -193,4 +228,13 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
     rangeEnd,
     reported: true,
   };
+}
+
+interface PendingUsageReport {
+  rangeStartIso: string | null;
+  rangeEndIso: string;
+  amount: number;
+  identifier: string;
+  meterEventName: string;
+  customerId: string;
 }
