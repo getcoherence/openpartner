@@ -497,3 +497,60 @@ describe.skipIf(skipIntegration)('api integration', () => {
     expect(unauth.status).toBe(401);
   });
 });
+
+describe.skipIf(skipIntegration)('audit safe-fixes', () => {
+  it('POST /billing/plan rejects enterprise (sales-led), accepts flex', async () => {
+    // enterprise counts as active + white-label with no Stripe sub, so it
+    // must not be self-assignable through this authenticated setter.
+    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ billingPlan: null });
+    try {
+      const bad = await request(app)
+        .post('/billing/plan')
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ plan: 'enterprise' });
+      expect(bad.status).toBe(400);
+
+      const ok = await request(app)
+        .post('/billing/plan')
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ plan: 'flex' });
+      expect(ok.status).toBe(200);
+    } finally {
+      await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ billingPlan: null });
+    }
+  });
+
+  it('a click that happened AFTER the event does not attribute it (negative age)', async () => {
+    const partnerId = (
+      await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email: `fut-${ulid()}@x.com`, name: 'Fut' })
+    ).body.id;
+    const programId = (
+      await request(app).post('/programs').set('Authorization', `Bearer ${ADMIN_KEY}`).send({
+        name: 'Fut',
+        commissionRule: { type: 'percent', value: 20 },
+        destinationUrl: 'https://example.com/signup',
+      })
+    ).body.id;
+    const linkId = (
+      await request(app).post(`/partners/${partnerId}/links`).set('Authorization', `Bearer ${ADMIN_KEY}`).send({ linkKey: `fut_${ulid()}`, programId })
+    ).body.id;
+
+    // Click NOW; the conversion event is backdated to before it.
+    const clickId = ulid();
+    await db(TABLES.Click).insert({
+      id: clickId, tenantId: DEFAULT_TENANT_ID, linkId, partnerId, programId,
+      landingUrl: 'https://example.com/signup', ipHash: 'h', userAgent: 't', referer: null, ts: new Date(),
+    });
+    const userId = `u_${ulid()}`;
+    await request(app).post('/attribution/identify').send({ cref: clickId, userId });
+    const eventRes = await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId, type: 'invoice_paid', value: 100, currency: 'USD', ts: new Date(Date.now() - 3600_000).toISOString() });
+
+    expect(eventRes.status).toBe(200);
+    expect(eventRes.body.attribution.status).toBe('outside_window');
+    const attributions = await db(TABLES.Attribution).where({ partnerId });
+    expect(attributions).toHaveLength(0);
+  });
+});

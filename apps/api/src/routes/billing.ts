@@ -23,7 +23,7 @@
 import { Router } from 'express';
 import type { Knex } from 'knex';
 import { z } from 'zod';
-import { TABLES, BILLING_PLANS, type BillingPlan, type TenantRow } from '@openpartner/db';
+import { TABLES, type BillingPlan, type TenantRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { REVSHARE_FEE_BPS, requireStripe } from '../stripe.js';
 import { getTenantBillingState, priceIdsForPlan } from '../billing-plan.js';
@@ -109,7 +109,11 @@ billingRouter.get('/billing/status', requireAuth, requireAdmin, async (req, res)
  * IDs change in lockstep with our local mirror.
  */
 const setPlanSchema = z.object({
-  plan: z.enum(BILLING_PLANS as readonly [string, ...string[]]),
+  // Enterprise is sales-led and billed out of band: it counts as "active"
+  // with no Stripe subscription and can enable white-label directly. It must
+  // never be self-assignable through this authenticated setter (signup
+  // already excludes it) — only flex/revshare go through self-serve.
+  plan: z.enum(['flex', 'revshare']),
 });
 billingRouter.post('/billing/plan', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);

@@ -78,4 +78,25 @@ describe('isWhiteLabelEntitled', () => {
       ),
     ).toBe(false);
   });
+
+  it('stays entitled while past_due (Stripe is still dunning)', () => {
+    expect(
+      isWhiteLabelEntitled(
+        { whiteLabel: true, status: 'active' },
+        billing({ stripeSubscriptionId: 'sub_1', subscriptionStatus: 'past_due' }),
+      ),
+    ).toBe(true);
+  });
+
+  it.each(['unpaid', 'paused', 'canceled'] as const)(
+    'is FALSE for a delinquent subscription (status=%s) despite a non-null sub id',
+    (status) => {
+      expect(
+        isWhiteLabelEntitled(
+          { whiteLabel: true, status: 'active' },
+          billing({ stripeSubscriptionId: 'sub_1', subscriptionStatus: status }),
+        ),
+      ).toBe(false);
+    },
+  );
 });

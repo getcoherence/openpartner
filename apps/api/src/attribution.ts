@@ -91,7 +91,11 @@ export async function attributeEvent(
     const campaign = campaignsById.get(click.programId);
     if (!campaign) continue;
     const windowMs = campaign.attributionWindowDays * 24 * 60 * 60 * 1000;
-    if (new Date(event.ts).getTime() - new Date(click.ts).getTime() > windowMs) continue;
+    const ageMs = new Date(event.ts).getTime() - new Date(click.ts).getTime();
+    // Outside the window OR a click that happened AFTER the event: a later
+    // click must never attribute an earlier conversion (backlog / backdated
+    // events made negative ages pass the old one-sided check).
+    if (ageMs < 0 || ageMs > windowMs) continue;
     eligible.push({ ...click, campaign });
   }
   if (eligible.length === 0) return { status: 'outside_window' };
