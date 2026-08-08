@@ -44,6 +44,7 @@ export async function autoApproveMatureCommissions(
       left join "${TABLES.PartnerCommission}" pc on pc."partnerId" = a."partnerId"
      where c.status = 'accrued'
        and c."attributionId" = a.id
+       and c."partnerId" = a."partnerId"
        and coalesce(pc."holdbackDays", cp."holdbackDays") is not null
        and coalesce(pc."holdbackDays", cp."holdbackDays") > 0
        and c."accruedAt" + (coalesce(pc."holdbackDays", cp."holdbackDays") * interval '1 day') <= now()
