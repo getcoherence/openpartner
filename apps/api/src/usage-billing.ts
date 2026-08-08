@@ -27,11 +27,22 @@ import { CONFIG_KEYS, getConfig, setConfig } from './config.js';
 import { requireStripe } from './stripe.js';
 import { getTenantBillingState } from './billing-plan.js';
 
-// Events we count toward attributed GMV. We sum Event.value for these,
-// scoped to events that have a corresponding Attribution row (i.e. credit
-// actually went to a partner). The signup event has no value and is
-// excluded by the SUM (NULL handling).
-const REVENUE_EVENT_TYPES = ['invoice_paid', 'subscription_created'];
+// The explicit billable-GMV semantic: event types whose Event.value counts
+// toward attributed GMV (summed over events that have an Attribution — i.e.
+// credit actually went to a partner). Defaults to Stripe-native revenue
+// events; extend via OPENPARTNER_BILLABLE_EVENT_TYPES_EXTRA (comma-separated)
+// when a merchant reports revenue under CUSTOM type names (e.g. order_paid) —
+// otherwise those conversions accrue partner commissions but escape the
+// platform %. Set to the exact custom types you consider revenue; do NOT add
+// non-revenue events, whose value would be billed as GMV.
+const DEFAULT_REVENUE_EVENT_TYPES = ['invoice_paid', 'subscription_created'];
+const REVENUE_EVENT_TYPES: string[] = (() => {
+  const extra = (process.env.OPENPARTNER_BILLABLE_EVENT_TYPES_EXTRA ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set([...DEFAULT_REVENUE_EVENT_TYPES, ...extra])];
+})();
 
 // Mode → meter event_name. Network access uses a separate meter for
 // Network-originated payouts; that's reported by the payout runner, not here.
@@ -90,9 +101,10 @@ export async function aggregateAttributedGmv(
   db: Knex,
   since: Date | null,
   until: Date,
+  eventTypes: string[] = REVENUE_EVENT_TYPES,
 ): Promise<number> {
   const q = db<EventRow>(TABLES.Event)
-    .whereIn('type', REVENUE_EVENT_TYPES)
+    .whereIn('type', eventTypes)
     .where('ts', '<=', until)
     .whereExists((qb) => {
       qb.select(db.raw('1')).from(TABLES.Attribution).whereRaw('"Attribution"."eventId" = "Event"."id"');
