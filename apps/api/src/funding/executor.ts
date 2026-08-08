@@ -409,10 +409,22 @@ async function reconcileIntent(
   intent: HostedFundingTransferRow,
   result: ExecutorResult,
 ): Promise<void> {
-  const listed = await stripe.transfers.list({ transfer_group: batch.id, limit: 100 });
-  const match = listed.data.find(
-    (t) => t.metadata?.openpartner_transfer_intent_id === intent.id,
-  );
+  // Page through the ENTIRE transfer_group, not just the first 100 — a batch
+  // with >100 transfers whose match sits on a later page would otherwise look
+  // "absent" and get re-posted as a DUPLICATE transfer. Follow has_more to
+  // exhaustion, stopping early once we find our metadata stamp.
+  let match: Stripe.Transfer | undefined;
+  let startingAfter: string | undefined;
+  for (;;) {
+    const page = await stripe.transfers.list({
+      transfer_group: batch.id,
+      limit: 100,
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+    });
+    match = page.data.find((t) => t.metadata?.openpartner_transfer_intent_id === intent.id);
+    if (match || !page.has_more || page.data.length === 0) break;
+    startingAfter = page.data[page.data.length - 1]!.id;
+  }
   if (match) {
     const group = (await db(TABLES.HostedFundingAllocation)
       .where({ batchId: batch.id, partnerId: intent.partnerId })
