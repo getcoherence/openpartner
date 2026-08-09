@@ -16,7 +16,7 @@
  */
 
 import type { Knex } from 'knex';
-import { TABLES } from '@openpartner/db';
+import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 
 /** Bundle format version. Bumped when the table set or row shape changes.
  *  v1 → v2 (Aug 2026): added PartnerProgram, PartnerCommission, Coupon;
@@ -116,6 +116,16 @@ function isJsonType(type: string | undefined): boolean {
   return type === 'json' || type === 'jsonb';
 }
 
+function isTimestampType(type: string | undefined): boolean {
+  return (
+    type === 'timestamp with time zone' ||
+    type === 'timestamp without time zone' ||
+    type === 'timestamptz' ||
+    type === 'timestamp' ||
+    type === 'date'
+  );
+}
+
 export async function exportAll(db: Knex): Promise<Record<string, unknown[]>> {
   const out: Record<string, unknown[]> = {};
   for (const { table } of EXPORT_TABLES) {
@@ -183,6 +193,26 @@ export interface SqlDumpOptions {
 const TENANT_PLACEHOLDER = ":'tenant_id'";
 
 /**
+ * Tenant ids are ULIDs we generate. Anything else is refused rather than
+ * escaped: this value reaches a psql `\set` and a `--` comment, and psql
+ * meta-commands are line-oriented, so a newline in it would let the caller
+ * inject `\!` (shell command on the restoring machine) or arbitrary SQL.
+ */
+export function isSafeTenantId(tenantId: string): boolean {
+  return /^[A-Za-z0-9_-]{1,64}$/.test(tenantId);
+}
+
+export function assertSafeTenantId(tenantId: string): void {
+  if (!isSafeTenantId(tenantId)) throw new Error('invalid tenant id');
+}
+
+/** Defence in depth for the header lines: never let a value break out of
+ *  its comment, even one that should already be safe. */
+function commentSafe(v: string): string {
+  return v.replace(/[\r\n]+/g, ' ').slice(0, 200);
+}
+
+/**
  * Render a bundle as a re-importable SQL dump.
  *
  * Every statement is `ON CONFLICT (pk) DO NOTHING`, so a restore is
@@ -192,33 +222,46 @@ const TENANT_PLACEHOLDER = ":'tenant_id'";
  */
 export function buildSqlDump(bundle: ImportBundle, opts: SqlDumpOptions = {}): string {
   const chunkSize = opts.chunkSize ?? 500;
+  if (opts.tenantId !== undefined) assertSafeTenantId(opts.tenantId);
   const tenantExpr = opts.tenantId === undefined ? TENANT_PLACEHOLDER : sqlLiteral(opts.tenantId);
   const out: string[] = [];
 
   out.push(`-- OpenPartner export — schemaVersion ${SCHEMA_VERSION}`);
-  out.push(`-- exported ${opts.exportedAt ?? new Date().toISOString()}${opts.sourceTenantId ? ` from tenant ${opts.sourceTenantId}` : ''}`);
+  // Only ever comment values that cannot contain a newline. A comment is
+  // NOT a safe place for arbitrary text: one embedded newline ends the
+  // comment, and a line starting with a backslash is a psql meta-command
+  // (`\!` runs a shell command on the machine doing the restore).
+  out.push(`-- exported ${commentSafe(opts.exportedAt ?? new Date().toISOString())}${opts.sourceTenantId ? ` from tenant ${commentSafe(opts.sourceTenantId)}` : ''}`);
   out.push('--');
   if (opts.tenantId === undefined) {
     out.push('-- Restore into a self-hosted instance:');
-    out.push('--   psql "$DATABASE_URL" -v tenant_id=default -f openpartner-export.sql');
+    out.push(`--   psql "$DATABASE_URL" -v tenant_id=${DEFAULT_TENANT_ID} -f openpartner-export.sql`);
     out.push('--');
     out.push('-- Every row is inserted under :tenant_id, so this file restores into any');
     out.push('-- tenant. Re-running it is safe: every statement is ON CONFLICT DO NOTHING.');
   } else {
-    out.push(`-- Rows are pinned to tenant ${opts.tenantId}. Re-running is safe:`);
+    out.push(`-- Rows are pinned to tenant ${commentSafe(opts.tenantId)}. Re-running is safe:`);
     out.push('-- every statement is ON CONFLICT DO NOTHING.');
   }
   out.push('');
   if (opts.tenantId === undefined) {
     // psql meta-commands, stripped by nothing else — they never reach the
-    // server. Default to the self-host tenant when -v wasn't passed.
+    // server. Default to the self-host tenant when -v wasn't passed. This
+    // is the tenant's PRIMARY KEY, not its slug: rows carry `tenantId`,
+    // which is a foreign key to Tenant.id, so 'default' would fail the FK.
     out.push('\\if :{?tenant_id}');
     out.push('\\else');
-    out.push("\\set tenant_id 'default'");
+    out.push(`\\set tenant_id '${DEFAULT_TENANT_ID}'`);
     out.push('\\endif');
     out.push('');
   }
   out.push('BEGIN;');
+  // Pin the string-literal mode the escaping in sqlLiteral() assumes. On
+  // by default since PG 9.1, but a server with it OFF would treat a
+  // backslash in exported data as an escape and let a crafted value break
+  // out of its literal — so the dump states the assumption instead of
+  // trusting it.
+  out.push('SET LOCAL standard_conforming_strings = on;');
   // Makes the restore work on the RLS-scoped app role too, not just the
   // privileged migration role: the policies read this GUC.
   out.push(`SELECT set_config('app.tenant_id', ${tenantExpr}, true);`);
@@ -360,7 +403,12 @@ function normalizeRow(
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(row)) {
-    if (typeof v === 'string' && isIsoDate(v)) {
+    // Only revive a string as a Date when the COLUMN is a timestamp.
+    // Matching on shape alone corrupted ordinary text that happens to look
+    // like one — a partner named "2026-08-09T00:00:00", a userId, a coupon
+    // code — and could fail the import outright on a lookalike that isn't
+    // a valid date.
+    if (typeof v === 'string' && isTimestampType(types[k]) && isIsoDate(v)) {
       out[k] = new Date(v);
     } else if (isJsonType(types[k]) && v !== null && typeof v === 'object') {
       // Serialize json/jsonb ourselves. The driver renders a bare JS array

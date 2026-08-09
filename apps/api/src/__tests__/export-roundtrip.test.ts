@@ -19,6 +19,7 @@ import {
   exportAll,
   exportColumnTypes,
   importBundle,
+  isSafeTenantId,
   primaryKeyOf,
 } from '../export.js';
 
@@ -225,6 +226,15 @@ function asPsqlWould(dump: string, tenantId: string): string {
     .replace(/:'tenant_id'/g, `'${tenantId}'`);
 }
 
+/** What psql does with NO `-v` at all: the file's own `\set` fallback
+ *  supplies the value. Exercises the default restore path, which is the
+ *  one the docs tell operators to use. */
+function asPsqlWouldWithoutVar(dump: string): string {
+  const fallback = /^\\set tenant_id '([^']*)'$/m.exec(dump);
+  if (!fallback) throw new Error('dump has no \\set tenant_id fallback');
+  return asPsqlWould(dump, fallback[1]!);
+}
+
 beforeEach(async () => {
   if (skipIntegration) return;
   await wipe();
@@ -359,7 +369,7 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
     const dump = buildSqlDump(bundle, { sourceTenantId: 'acme', columnTypes: await exportColumnTypes(db) });
 
     // Portable form carries the psql preamble and no baked tenant id.
-    expect(dump).toContain("\\set tenant_id 'default'");
+    expect(dump).toContain(`\\set tenant_id '${DEFAULT_TENANT_ID}'`);
     expect(dump).toContain(":'tenant_id'");
 
     await wipe();
@@ -399,5 +409,88 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
     expect(dump).toContain(`-- ${TABLES.Partner}: no rows`);
     expect(dump).toContain('BEGIN;');
     expect(dump.trimEnd().endsWith('COMMIT;')).toBe(true);
+  });
+});
+
+// ---- Restore safety (Codex review, 2026-08-09) -----------------------------
+
+describe.skipIf(skipIntegration)('SQL dump restore safety', () => {
+  it('the no -v path works: the built-in fallback is the tenant PRIMARY KEY', async () => {
+    // Regression: the fallback used to be the tenant SLUG ('default'), so
+    // the documented `psql -f dump.sql` restore failed the tenantId → Tenant.id
+    // foreign key on the very first row.
+    await seedEverything();
+    const before = await counts();
+    const dump = buildSqlDump(await exportAll(db), { columnTypes: await exportColumnTypes(db) });
+    expect(dump).toContain(`\\set tenant_id '${TENANT}'`);
+
+    await wipe();
+    await runSql(asPsqlWouldWithoutVar(dump));
+
+    expect(await counts()).toEqual(before);
+    expect((await db(TABLES.Partner).first()).tenantId).toBe(TENANT);
+  });
+
+  it('pins the string-literal mode its escaping assumes', async () => {
+    const dump = buildSqlDump({}, { tenantId: TENANT });
+    expect(dump).toContain('SET LOCAL standard_conforming_strings = on;');
+  });
+
+  it('refuses a tenant id that could carry a psql meta-command', () => {
+    // `\!` at the start of a line makes psql run a shell command on the
+    // machine doing the restore. The value reaches a `\set` and a comment,
+    // so it is validated rather than escaped.
+    expect(isSafeTenantId(TENANT)).toBe(true);
+    expect(isSafeTenantId("x\n\\! rm -rf /\n--")).toBe(false);
+    expect(isSafeTenantId("x'; drop table \"Partner\"; --")).toBe(false);
+    expect(isSafeTenantId('')).toBe(false);
+    expect(isSafeTenantId('a'.repeat(65))).toBe(false);
+    expect(() => buildSqlDump({}, { tenantId: "x\n\\! calc" })).toThrow(/invalid tenant id/);
+  });
+
+  it('never lets a header comment be broken out of', () => {
+    const dump = buildSqlDump({}, { tenantId: TENANT, sourceTenantId: 'acme\n\\! calc\n--' });
+    for (const line of dump.split('\n')) {
+      // Every line before BEGIN; is either a comment, a psql meta-command
+      // the generator itself emitted, or blank.
+      if (line.startsWith('BEGIN;')) break;
+      const isOwnMetaCommand =
+        line === '\\if :{?tenant_id}' ||
+        line === '\\else' ||
+        line === '\\endif' ||
+        line.startsWith('\\set tenant_id ');
+      expect(line === '' || line.startsWith('--') || isOwnMetaCommand).toBe(true);
+    }
+  });
+
+  it('backslashes and quotes in row data survive the SQL round-trip', async () => {
+    const { partnerId } = await seedEverything();
+    await db(TABLES.Partner)
+      .where({ id: partnerId })
+      .update({ name: `back\\slash '; select pg_sleep(0); -- and "quotes"` });
+    const before = await counts();
+    const dump = buildSqlDump(await exportAll(db), {
+      tenantId: TENANT,
+      columnTypes: await exportColumnTypes(db),
+    });
+
+    await wipe();
+    await runSql(dump);
+
+    expect(await counts()).toEqual(before);
+    const partner = await db(TABLES.Partner).where({ id: partnerId }).first();
+    expect(partner.name).toBe(`back\\slash '; select pg_sleep(0); -- and "quotes"`);
+  });
+
+  it('text that merely looks like a timestamp stays text', async () => {
+    // normalizeRow used to revive ANY ISO-shaped string as a Date.
+    const { partnerId } = await seedEverything();
+    await db(TABLES.Partner).where({ id: partnerId }).update({ name: '2026-08-09T00:00:00' });
+    const bundle = await exportAll(db);
+    await wipe();
+    await importBundle(db, TENANT, bundle);
+
+    const partner = await db(TABLES.Partner).where({ id: partnerId }).first();
+    expect(partner.name).toBe('2026-08-09T00:00:00');
   });
 });

@@ -5,6 +5,7 @@ import {
   SCHEMA_VERSION,
   SUPPORTED_IMPORT_VERSIONS,
   buildSqlDump,
+  isSafeTenantId,
   exportAll,
   exportColumnTypes,
   exportTable,
@@ -41,6 +42,8 @@ exportRouter.get('/export/:table.:format', requireAuth, requireAdmin, async (req
     return res.send(rowsToCsv(rows as Record<string, unknown>[]));
   }
   if (format === 'sql') {
+    const pinned = literalTenant(req.query);
+    if (!pinned) return res.status(400).json({ error: 'invalid_tenant_id' });
     res.setHeader('Content-Type', 'application/sql');
     res.setHeader('Content-Disposition', `attachment; filename="${table}.sql"`);
     return res.send(
@@ -49,7 +52,7 @@ exportRouter.get('/export/:table.:format', requireAuth, requireAdmin, async (req
         {
           sourceTenantId: tenantId,
           columnTypes: { [table]: await tableColumnTypes(db, table) },
-          ...literalTenant(req.query),
+          ...pinned,
         },
       ),
     );
@@ -73,13 +76,18 @@ exportRouter.get('/export.json', requireAuth, requireAdmin, async (req, res) => 
  * Full tenant dump as SQL. Portable by default: rows are written under a
  * psql variable, so the file restores into any instance —
  *
- *   psql "$DATABASE_URL" -v tenant_id=default -f openpartner-export.sql
+ *   psql "$DATABASE_URL" -v tenant_id=<destination tenant id> -f openpartner-export.sql
+ *
+ * (the tenant's PRIMARY KEY, not its slug — `tenantId` is a foreign key to
+ * `Tenant.id`). Omit `-v` and it defaults to the seeded self-host tenant.
  *
  * `?tenantId=<id>` bakes a literal instead, for clients that don't speak
  * psql meta-commands.
  */
 exportRouter.get('/export.sql', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
+  const pinned = literalTenant(req.query);
+  if (!pinned) return res.status(400).json({ error: 'invalid_tenant_id' });
   const bundle = await exportAll(db);
   res.setHeader('Content-Type', 'application/sql');
   res.setHeader('Content-Disposition', 'attachment; filename="openpartner-export.sql"');
@@ -87,15 +95,29 @@ exportRouter.get('/export.sql', requireAuth, requireAdmin, async (req, res) => {
     buildSqlDump(bundle, {
       sourceTenantId: tenantId,
       columnTypes: await exportColumnTypes(db),
-      ...literalTenant(req.query),
+      ...pinned,
     }),
   );
 });
 
-/** `?tenantId=` (present and non-empty) switches the dump to literal mode. */
-function literalTenant(query: unknown): { tenantId?: string } {
+/**
+ * `?tenantId=` (present and non-empty) switches the dump to literal mode.
+ *
+ * The value is VALIDATED, not escaped. It ends up in a psql `\set` and in
+ * a `--` header comment, and psql meta-commands are line-oriented — a
+ * newline in it would let an authenticated admin plant `\! <shell
+ * command>` in a file that an operator later restores on their own
+ * machine. Anything that isn't id-shaped is refused.
+ *
+ * Returns null when the parameter is present but invalid, so the caller
+ * can 400. (Express 4 doesn't forward async throws, so this reports
+ * rather than throws.)
+ */
+function literalTenant(query: unknown): { tenantId?: string } | null {
   const raw = (query as Record<string, unknown> | undefined)?.tenantId;
-  return typeof raw === 'string' && raw.length > 0 ? { tenantId: raw } : {};
+  if (typeof raw !== 'string' || raw.length === 0) return {};
+  if (!isSafeTenantId(raw)) return null;
+  return { tenantId: raw };
 }
 
 const importSchema = z.object({

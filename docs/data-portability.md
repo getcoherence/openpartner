@@ -83,16 +83,27 @@ The dump is portable by default: rows are written under a psql variable,
 so one file restores into any instance.
 
 ```bash
-psql "$DATABASE_URL" -v tenant_id=default -f openpartner-export.sql
+# The destination tenant's PRIMARY KEY — not its slug.
+psql "$DATABASE_URL" -v tenant_id=01J0000000DEFAULTTENANT0000 -f openpartner-export.sql
 ```
 
-Omit `-v` and it defaults to `default` (the self-host tenant). The file
-opens a transaction, sets `app.tenant_id` so it works on the RLS-scoped
-app role as well as the privileged role, and inserts every table in the
-order above with `ON CONFLICT DO NOTHING`.
+Omit `-v` entirely and the file falls back to that same id, which is the
+seeded self-host tenant (`DEFAULT_TENANT_ID`). Pass the **id**, never the
+slug: every row carries `tenantId`, which is a foreign key to `Tenant.id`,
+so `-v tenant_id=default` fails on the first row and rolls the whole
+restore back.
+
+The file opens a transaction, pins `standard_conforming_strings` (the
+string-literal mode its escaping assumes), sets `app.tenant_id` so it
+works on the RLS-scoped app role as well as the privileged role, and
+inserts every table in the order above with `ON CONFLICT DO NOTHING`.
 
 `?tenantId=<id>` bakes a literal tenant id instead of the psql variable —
-plain SQL for clients that don't run psql meta-commands.
+plain SQL for clients that don't run psql meta-commands. The value must be
+id-shaped (`[A-Za-z0-9_-]{1,64}`) and is **rejected**, not escaped, if it
+isn't: it lands in a psql `\set` and a header comment, and psql
+meta-commands are line-oriented, so a newline in it would let the caller
+plant `\! <shell command>` in a file someone else later restores.
 
 Per-table dumps: `GET /export/<Table>.sql` (also `.json`, `.csv`).
 

@@ -119,7 +119,7 @@ v1. End-to-end attribution, payouts, and export are working; API surface is stab
 
 - Scoped API keys (`partners:write`, `links:write`, `commissions:read`, …) — the federation contract that lets an external creator-network service provision Partner + Link rows on this instance over REST
 - `@openpartner/sdk` on npm with browser and server entries
-- Portable JSON + CSV + SQL export per table; full bundle round-trippable via `POST /import`, or restore the SQL dump straight into a self-hosted instance with `psql -v tenant_id=default -f openpartner-export.sql`
+- Portable JSON + CSV + SQL export per table; full bundle round-trippable via `POST /import`, or restore the SQL dump straight into a self-hosted instance with `psql -v tenant_id=<destination tenant id> -f openpartner-export.sql`
 
 **Operations**
 
