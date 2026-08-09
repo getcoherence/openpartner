@@ -84,9 +84,23 @@ intent ──preflight fails──▶ canceled   (nothing was ever sent to Strip
   sum to the frozen amount, and that the partner is still Connect-ready. Any
   drift cancels the intent and releases the claims so the next planning run
   regroups what remains.
+- Preflight can only catch drift *before* the first POST, so the frozen
+  commissions are also protected from the other side: `interlockCommissionReversal`
+  holds any commission claimed by an open intent, which is what makes the
+  admin reverse endpoint and the refund clawback refuse it with a 409
+  instead of shrinking a set Stripe is about to be paid for.
+- A **409 idempotency conflict** or a **429** is treated as ambiguous, not
+  as proof of absence: another request may be mid-flight with the same key.
+  Releasing the claims on those would let the planner regroup under a new
+  key while the first transfer lands — a double-pay.
 - A transfer that comes back **reversed** is never recorded as paid: the
   intent closes, the payout stays `failed`, and its commissions stay claimed
-  for an operator decision (an ALERT is logged).
+  for an operator decision (an ALERT is logged). See *Disposing of a reversed
+  payout* below — this is the one case with no automatic path back.
+- Any attempt past the first **re-reads the transfer from Stripe** before
+  finalizing. A retried idempotency key replays the response Stripe stored
+  at creation time, so `reversed` in that body is stale by definition;
+  believing it would overwrite a reversal with "paid".
 
 ## Who runs the executor
 
@@ -118,8 +132,22 @@ create a transfer by hand for it — that is the one action the whole design
 exists to prevent. If you must, first confirm via
 `stripe transfers list --transfer-group <payoutId>` that none exists.
 
-**Releasing an intent manually** (only when Stripe listing proves no transfer
-exists and you want the commissions back in the pool):
+**Disposing of a reversed payout.** When a transfer is reversed, the payout
+is `failed`, the intent is `confirmed`, and its commissions stay `approved`
+**and claimed** — deliberately, so nothing re-pays money that came back. They
+are invisible to the planner until an operator decides. Two dispositions:
+
+- *The partner should still be paid* (the reversal was a mistake): release
+  the claims with the SQL below; the next run plans a fresh intent.
+- *The partner should not be paid*: reverse the commissions
+  (`POST /commissions/:id/reverse` — release the claims first, or the
+  in-flight interlock refuses) or record a `CommissionAdjustment`.
+
+Doing nothing is also a decision, and a safe one: the money is not moving.
+The commissions simply sit out of the payable pool until someone acts.
+
+**Releasing an intent manually** (when Stripe listing proves no transfer
+exists, or after disposing of a reversed payout as above):
 
 ```sql
 update "Payout"

@@ -175,6 +175,17 @@ async function advanceIntent(
     }
     // Inside the window: re-POSTing the frozen key is safe — Stripe
     // replays the original outcome rather than creating a second transfer.
+    // Take the retry as a LEASE first, though. The swap is on the exact
+    // postedAt we read, so of two workers scanning together only one wins;
+    // the loser sees a fresh timestamp and backs off on the cooldown
+    // instead of POSTing the same key concurrently (which Stripe answers
+    // with a 409 that tells us nothing about the first request's outcome).
+    const leased = await leaseRetry(db, payout.id, meta.postedAt, now, (meta.attempts ?? 0) + 1);
+    if (!leased) {
+      result.skipped += 1;
+      return;
+    }
+    payout = leased;
   }
 
   if (meta.transferState === 'intent') {
@@ -260,9 +271,10 @@ async function postTransfer(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (isDefiniteStripeError(err)) {
-      // Stripe answered with 4xx semantics. Either this was the first
-      // POST (no transfer exists) or it's a replay of an earlier 4xx —
-      // both mean no money moved, so releasing the claim is safe.
+      // Stripe answered with semantics that prove no transfer exists —
+      // either the first POST was rejected outright, or this is a replay
+      // of that same rejection. Concurrency (409) and throttling (429)
+      // are excluded; see isDefiniteStripeError.
       await failIntent(db, payout, message, result);
       return;
     }
@@ -278,7 +290,7 @@ async function postTransfer(
     return;
   }
 
-  await finalizeTransfer(db, payout, transfer, result);
+  await finalizeTransfer(db, stripe, payout, transfer, result);
 }
 
 /**
@@ -288,10 +300,30 @@ async function postTransfer(
  */
 async function finalizeTransfer(
   db: Knex,
+  stripe: Stripe,
   payout: PayoutRow,
   transfer: Stripe.Transfer,
   result: PayoutTransferResult,
 ): Promise<void> {
+  // A REPLAYED transfer object is stale. Stripe answers a retried
+  // idempotency key with the response it stored at creation time, so
+  // `reversed` there is always false even if the transfer has since been
+  // clawed back — and finalizing on that would overwrite a reversal
+  // webhook's `failed` with `paid`. Any attempt past the first therefore
+  // re-reads the live object before believing it (audit review).
+  const attempts = Number((payout.metadata as { attempts?: number }).attempts ?? 1);
+  if (attempts > 1) {
+    try {
+      transfer = await stripe.transfers.retrieve(transfer.id);
+    } catch (err) {
+      // Couldn't confirm ⇒ don't finalize. The intent stays posted and
+      // the next tick tries again; nothing is recorded on a guess.
+      console.error(`[payouts] intent ${payout.id}: could not re-read transfer ${transfer.id}`, err);
+      result.ambiguous.push(payout.id);
+      return;
+    }
+  }
+
   // The transfer exists but has been (partly) reversed — an operator
   // clawback in the Stripe dashboard, or a reversal webhook that beat us
   // here. Recording "paid" would be a lie and would mark the commissions
@@ -376,7 +408,7 @@ async function reconcileIntent(
     });
     const match = listed.data.find((t) => t.metadata?.openpartner_payout_id === payout.id);
     if (match) {
-      await finalizeTransfer(db, payout, match, result);
+      await finalizeTransfer(db, stripe, payout, match, result);
       return;
     }
     if (!listed.has_more || listed.data.length === 0) break;
@@ -450,6 +482,35 @@ function mergeMeta(db: Knex, patch: Record<string, unknown>): Knex.Raw {
 }
 
 /**
+ * Claim the right to re-POST an already-`posted` intent, by swapping the
+ * exact `postedAt` we read for a fresh one. Unlike a plain state CAS this
+ * is genuinely exclusive: `posted → posted` matches for every worker, but
+ * only one can swap a given timestamp.
+ *
+ * Returns the updated row on a win, null when someone else got there.
+ */
+async function leaseRetry(
+  db: Knex,
+  payoutId: string,
+  expectedPostedAt: string | undefined,
+  now: Date,
+  attempts: number,
+): Promise<PayoutRow | null> {
+  const q = db(TABLES.Payout)
+    .where({ id: payoutId })
+    .whereRaw(`("metadata"->>'transferState') = 'posted'`);
+  if (expectedPostedAt === undefined) {
+    q.whereRaw(`("metadata"->>'postedAt') is null`);
+  } else {
+    q.whereRaw(`("metadata"->>'postedAt') = ?`, [expectedPostedAt]);
+  }
+  const [row] = (await q
+    .update({ metadata: mergeMeta(db, { postedAt: now.toISOString(), attempts }) })
+    .returning('*')) as PayoutRow[];
+  return row ?? null;
+}
+
+/**
  * Compare-and-set on `metadata.transferState`. Returns the updated row on
  * a win, null on a loss (someone else moved it first — the caller must
  * NOT proceed as if it owned the intent).
@@ -474,9 +535,25 @@ async function casTransferState(
   return row ?? null;
 }
 
-/** A definite error is one where Stripe RESPONDED (4xx semantics) — the
- *  transfer certainly does not exist. Network/timeout errors are ambiguous. */
+/**
+ * A DEFINITE error is one that proves the transfer does not exist, so the
+ * intent can be failed and its commissions released.
+ *
+ * Not every 4xx qualifies, and getting this wrong double-pays (audit
+ * review): a **409 idempotency conflict** means another request is using
+ * this key *right now* — its transfer may well succeed — and a **429**
+ * means Stripe throttled us before doing anything but may also arrive
+ * mid-flight. Releasing the claims on either lets the planner regroup the
+ * commissions under a NEW key while the first transfer lands.
+ *
+ * Both are therefore treated as ambiguous: the intent stays `posted` and
+ * the retry replays the frozen key (or reconciles by listing past the
+ * window), which is the only way to learn what really happened.
+ */
 function isDefiniteStripeError(err: unknown): boolean {
-  const e = err as { type?: string; statusCode?: number };
-  return typeof e?.statusCode === 'number' && e.statusCode >= 400 && e.statusCode < 500;
+  const e = err as { type?: string; code?: string; statusCode?: number };
+  if (e?.type === 'idempotency_error' || e?.code === 'idempotency_key_in_use') return false;
+  if (typeof e?.statusCode !== 'number') return false;
+  if (e.statusCode === 409 || e.statusCode === 429) return false;
+  return e.statusCode >= 400 && e.statusCode < 500;
 }

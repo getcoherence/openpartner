@@ -16,6 +16,7 @@ import { TABLES, DEFAULT_TENANT_ID } from '@openpartner/db';
 import { db } from '../db.js';
 import { runPayouts } from '../payouts.js';
 import { executePayoutTransfers } from '../payout-transfers.js';
+import { interlockCommissionReversal } from '../funding/interlocks.js';
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const TENANT = DEFAULT_TENANT_ID;
@@ -555,5 +556,146 @@ describe.skipIf(skipIntegration)('payout transfer executor', () => {
 
     await executePayoutTransfers(db, { stripe, tenantId: 'some-other-tenant' });
     expect(transfersCreate).not.toHaveBeenCalled();
+  });
+});
+
+// ---- Adversarial-review fixes (Codex, 2026-08-09) --------------------------
+
+describe.skipIf(skipIntegration)('concurrency and staleness hardening', () => {
+  /** Stripe's answer when a second request uses a key the first still holds. */
+  function idempotencyConflict(): Error {
+    return Object.assign(new Error('There is currently another in-progress request using this Idempotent Key'), {
+      statusCode: 409,
+      type: 'idempotency_error',
+      code: 'idempotency_key_in_use',
+    });
+  }
+
+  it('an idempotency conflict does NOT release the claim (it would double-pay)', async () => {
+    // 409 means another request holds the key RIGHT NOW — its transfer may
+    // land. Releasing here let the planner regroup under a new key while
+    // the first transfer succeeded.
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    const transfersCreate = vi.fn(async () => {
+      throw idempotencyConflict();
+    });
+    const stripe = { transfers: { create: transfersCreate, list: vi.fn() } } as unknown as Stripe;
+
+    const result = await executePayoutTransfers(db, { stripe });
+    expect(result.failed).toHaveLength(0);
+    expect(result.ambiguous).toEqual([payoutId]);
+
+    const payout = await payoutOf(payoutId);
+    expect(payout.status).toBe('pending');
+    expect(payout.metadata.transferState).toBe('posted'); // held, not canceled
+    const commission = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(commission.payoutId).toBe(payoutId); // still frozen
+    expect((await plan()).payouts).toHaveLength(0); // cannot be re-planned
+  });
+
+  it('a rate-limit answer is ambiguous too', async () => {
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const transfersCreate = vi.fn(async () => {
+      throw Object.assign(new Error('Too many requests'), { statusCode: 429, type: 'rate_limit_error' });
+    });
+    const stripe = { transfers: { create: transfersCreate, list: vi.fn() } } as unknown as Stripe;
+
+    const result = await executePayoutTransfers(db, { stripe });
+    expect(result.ambiguous).toEqual([payouts[0]!.payoutId]);
+    expect((await payoutOf(payouts[0]!.payoutId)).metadata.transferState).toBe('posted');
+  });
+
+  it('two workers retrying one posted intent: only one POSTs', async () => {
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    // An intent posted 10 minutes ago: past the cooldown, inside the window.
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'posted', postedAt: hoursAgo(0.17).toISOString() }),
+        ]),
+      });
+    const { stripe, transfersCreate } = mockStripe({
+      onCreate: () => {
+        const until = Date.now() + 50;
+        while (Date.now() < until) {
+          /* hold the key in flight */
+        }
+      },
+    });
+
+    await Promise.all([
+      executePayoutTransfers(db, { stripe }),
+      executePayoutTransfers(db, { stripe }),
+    ]);
+
+    // The retry lease swaps the exact postedAt it read, so only one worker
+    // can claim it — the other backs off rather than racing the key.
+    expect(transfersCreate).toHaveBeenCalledOnce();
+  });
+
+  it('a retry re-reads the transfer instead of trusting the replayed body', async () => {
+    // Stripe replays the response it STORED at creation time, so a
+    // transfer reversed since then still says reversed:false there.
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'posted', postedAt: hoursAgo(0.17).toISOString(), attempts: 1 }),
+        ]),
+      });
+
+    const staleReplay = { id: 'tr_replay', amount: 5000, currency: 'usd', reversed: false, metadata: {} };
+    const liveRetrieve = vi.fn(async () => ({ ...staleReplay, reversed: true, amount_reversed: 5000 }));
+    const stripe = {
+      transfers: { create: vi.fn(async () => staleReplay), list: vi.fn(), retrieve: liveRetrieve },
+    } as unknown as Stripe;
+
+    const result = await executePayoutTransfers(db, { stripe });
+    expect(liveRetrieve).toHaveBeenCalledWith('tr_replay');
+    expect(result.failed).toEqual([{ payoutId, error: 'transfer_reversed' }]);
+
+    const payout = await payoutOf(payoutId);
+    expect(payout.status).toBe('failed'); // NOT resurrected as paid
+    const commission = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(commission.status).toBe('approved'); // never marked paid
+  });
+
+  it('a commission frozen on an open intent cannot be reversed out from under it', async () => {
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 2, '40.00');
+    await plan();
+
+    const interlock = await interlockCommissionReversal(db, commissionIds);
+    expect(interlock.held.sort()).toEqual([...commissionIds].sort());
+    expect(interlock.flippable).toHaveLength(0);
+  });
+
+  it('once the intent is done with them, commissions are reversible again', async () => {
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const transfersCreate = vi.fn(async () => {
+      throw definiteError();
+    });
+    const stripe = { transfers: { create: transfersCreate, list: vi.fn() } } as unknown as Stripe;
+    await executePayoutTransfers(db, { stripe });
+
+    // Intent canceled, claims released → reversal is allowed once more.
+    expect((await payoutOf(payouts[0]!.payoutId)).metadata.transferState).toBe('canceled');
+    const interlock = await interlockCommissionReversal(db, commissionIds);
+    expect(interlock.flippable).toEqual(commissionIds);
   });
 });

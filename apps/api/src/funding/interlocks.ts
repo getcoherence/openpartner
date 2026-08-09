@@ -19,6 +19,14 @@
  * `transferred` allocations never reach here in a flippable state —
  * their commissions are 'paid', which the reversal paths already treat
  * as immutable history (adjustments only).
+ *
+ * The DIRECT-Connect rail has the same hazard without any allocation: a
+ * committed Payout intent freezes its commissions by stamping
+ * `Commission.payoutId` while the status stays 'approved' (payouts.ts).
+ * Reversing one of those out from under a posted intent means Stripe
+ * still receives the frozen amount while fewer commissions are marked
+ * paid, so those are HELD too — checked here so every reversal path gets
+ * the guard for free.
  */
 
 import type { Knex } from 'knex';
@@ -48,11 +56,29 @@ export async function interlockCommissionReversal(
     .whereIn('state', ['reserved', 'transfer_pending'])) as HostedFundingAllocationRow[];
   const byCommission = new Map(live.map((a) => [a.commissionId, a]));
 
+  // Direct-Connect rail: commissions frozen onto a Payout intent that has
+  // not terminalized. `canceled`/`confirmed` intents are past — the
+  // planner can regroup released commissions, and paid ones are 'paid'
+  // and never reach here as flippable.
+  const claimed = (await db(TABLES.Commission)
+    .whereIn(`${TABLES.Commission}.id`, commissionIds)
+    .whereNotNull(`${TABLES.Commission}.payoutId`)
+    .join(TABLES.Payout, `${TABLES.Payout}.id`, `${TABLES.Commission}.payoutId`)
+    .whereRaw(
+      `("${TABLES.Payout}"."metadata"->>'transferState') = any('{intent,posted,reconcile_required}'::text[])`,
+    )
+    .select(`${TABLES.Commission}.id`)) as Array<{ id: string }>;
+  const heldByIntent = new Set(claimed.map((c) => c.id));
+
   const flippable: string[] = [];
   const held: string[] = [];
   const canceledByBatch = new Map<string, { minor: number; allocationIds: string[] }>();
 
   for (const id of commissionIds) {
+    if (heldByIntent.has(id)) {
+      held.push(id);
+      continue;
+    }
     const allocation = byCommission.get(id);
     if (!allocation) {
       flippable.push(id);

@@ -153,7 +153,8 @@ commissionsRouter.post('/commissions/:id/reverse', requireAuth, requireAdmin, as
   if (interlock.held.length > 0) {
     return res.status(409).json({
       error: 'commission_in_transfer',
-      detail: 'a partner transfer for this commission is executing; retry after it settles, then claw back via adjustment',
+      detail:
+        'a payout for this commission is in flight (funding transfer, or a committed Connect payout intent); retry once it settles, then claw back via adjustment',
     });
   }
   const updated = await db<CommissionRow>(TABLES.Commission)
