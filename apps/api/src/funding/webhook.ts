@@ -24,7 +24,7 @@ import {
   type PayoutRow,
 } from '@openpartner/db';
 import { casBatch, toMinor } from './state.js';
-import { claimInboxEvent, stampInboxOutcome } from './inbox.js';
+import { claimInboxEvent, releaseInboxClaim, stampInboxOutcome } from './inbox.js';
 import { confirmFundingFromPaymentIntent } from './confirm.js';
 import { releaseBatch } from './release.js';
 
@@ -65,6 +65,10 @@ export async function handleFundingEvent(
   const intentId = event.type === 'transfer.reversed' ? transferIntentIdOf(event) : null;
   if (!batchId && !intentId) return null; // not ours — merchant-side event
 
+  // The claim is a lease: it blocks replays of an event we FINISHED, and
+  // blocks concurrent workers, but a claim whose worker died is taken
+  // over by a later redelivery instead of swallowing the event forever
+  // (inbox.ts).
   if (!(await claimInboxEvent(db, event.id, event.type))) {
     return 'inbox_replay';
   }
@@ -73,10 +77,10 @@ export async function handleFundingEvent(
   try {
     outcome = await routeFundingEvent(db, stripe, event, batchId, intentId);
   } catch (err) {
-    // Stamp what happened, then rethrow → 5xx → Stripe redelivers. The
-    // inbox row stays claimed; the redelivery path below re-runs handlers
-    // that are all idempotent, so we clear the claim to let it through.
-    await db(TABLES.StripeWebhookInbox).where({ stripeEventId: event.id }).del();
+    // Drop the claim, then rethrow → 5xx → Stripe redelivers, and the
+    // redelivery is processed at once rather than waiting out the lease.
+    // Every handler is idempotent, so re-running is safe.
+    await releaseInboxClaim(db, event.id);
     throw err;
   }
   await stampInboxOutcome(db, event.id, outcome);
@@ -161,7 +165,7 @@ async function routeFundingEvent(
  * are never flipped paid → reversed — a compensating CommissionAdjustment
  * records the clawback when the payout is fully reversed.
  */
-async function handleTransferReversed(
+export async function handleTransferReversed(
   db: Knex,
   transfer: Stripe.Transfer,
   intentId: string,

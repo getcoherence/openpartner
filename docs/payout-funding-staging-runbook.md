@@ -91,6 +91,24 @@ Every row: state before → action → expected state after. Verify in DB
 | G1 | Clean staging ledger, run `funding-reconcile` | Zero violations |
 | G2 | Manually corrupt an allocation (delete a row) | Invariant violation alert names the batch |
 | G3 | Batch stuck `transferring` past 14d | Stuck alert |
+| G4 | Inbox row with `outcome IS NULL` older than 1h | `unfinishedInboxEvents` alert names the event id (replay it from the Stripe dashboard) |
+
+### H. Races (audit #12)
+
+The three scenarios below are the ones that cost real money, and none of
+them can be observed by reading the happy path. Each has unit coverage in
+`funding-races.test.ts`; staging is where the Stripe half gets proven.
+
+| # | Scenario | How to force it | Expected |
+|---|---|---|---|
+| H1 | **Ambiguous PI create.** Response lost after Stripe made the intent | Point the API at a proxy that drops the response to `POST /v1/payment_intents`; let the collector run | Batch `funding_failed`, no PI stamped. Then: set `updatedAt` back a day so the retry is due, restore the proxy. The retry must **search** and adopt the existing PI — `create` must NOT be called again, and **Stripe must show exactly one PaymentIntent for the batch** |
+| H2 | Same, but past the idempotency window | As H1, then advance the test clock >24h before the retry | Still one PI. (Inside 24h the frozen key would have saved us; past it, only the search does) |
+| H3 | **Create that fails with an intent** (declined bank account) | Use a test account that declines | Batch `funding_failed` **with `stripePaymentIntentId` stamped**; the next retry CONFIRMS that intent (`fbpc:` key), never creates a second |
+| H4 | **Release vs in-flight create.** Batch released while a PI creation is in flight | Add a breakpoint/sleep inside the create call (or use a slow proxy), and trigger a release from another process while it hangs | The PI is **canceled** and never stamped on the released batch. If Stripe refuses to cancel (already `processing`), batch → `recovery_required` with `failureReason=orphan_payment_intent:<pi>` and an ALERT |
+| H5 | **Release with an unstamped PI at Stripe** | Blank `stripePaymentIntentId` on a batch that has a real PI, then run a release | Release searches, finds it, terminalizes it, and only then frees allocations. Allocations must NOT be `released` while the PI lives |
+| H6 | Same, but Stripe search is down | Block `/v1/payment_intents/search` | Release returns `pi_not_terminal` and **leaves allocations reserved** — never frees on "I don't know" |
+| H7 | **Webhook crash mid-handler** | Kill the API between the inbox claim and the handler finishing (breakpoint, then SIGKILL) | The inbox row exists with `outcome IS NULL`. Stripe's redelivery (after the 5-minute lease) must **process it**, not `inbox_replay` it. Before this fix the event was lost forever |
+| H8 | Concurrent delivery of the same event | Fire two deliveries at once (Stripe CLI `resend` twice) | One processes, the other returns `inbox_replay`; exactly one state transition |
 
 ## Rollout order (founder-approved)
 
@@ -108,4 +126,20 @@ Every row: state before → action → expected state after. Verify in DB
 - Flag: `HOSTED_FUNDING_ENABLED=1` (API service). The ONLY funding env var.
 - Jobs: `funding-collector` (*/5), `funding-executor` (*/5), `funding-reconcile` (05:30 UTC daily).
 - Admin surface: Billing → Commission funding (authorize / revoke / batch history).
+
+**Invariants worth re-reading before touching this pipeline** (each one is a
+race that was found in review, not a hypothetical):
+
+- A PaymentIntent is never created for a batch that has attempted one until
+  Stripe has been **asked** whether one exists. "No id on the row" is not
+  evidence of "no charge at Stripe".
+- Allocations are never freed while a PaymentIntent could be alive —
+  including one whose id was never stamped. A failed lookup means *don't
+  know*, and *don't know* means *don't free*.
+- The PI stamp is status-predicated. Losing that CAS means a release took
+  the batch, and the intent we just created must be canceled (or the batch
+  frozen for an operator).
+- The webhook inbox is a **lease**, not a tombstone: only a stamped outcome
+  makes an event terminal, so a crashed handler is retried rather than
+  swallowed.
 - Terms version constant: `FUNDING_TERMS_VERSION` in `apps/api/src/funding/state.ts`.

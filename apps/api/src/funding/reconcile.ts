@@ -8,16 +8,19 @@
  *   1. Ledger invariant per non-terminal batch (allocations vs principal)
  *   2. Stuck-state detection (funded/transferring past the deadline,
  *      reconcile_required intents, recovery_required / funding_disputed
- *      batches, settled_with_residual awaiting a disposition)
- *   3. actualStripeFeeMinor backfill from the charge's balance
- *      transaction when the confirm path didn't get it expanded
+ *      batches, settled_with_residual awaiting a disposition, webhook
+ *      claims that were never completed)
+ *   3. A live-Stripe sweep over settled money: rail-fee backfill AND
+ *      refunds / disputes / transfer reversals that happened at Stripe
+ *      but whose webhook never arrived. Everything else here reads local
+ *      state, which by definition cannot see a lost webhook.
  */
 
 import type Stripe from 'stripe';
 import type { Knex } from 'knex';
 import { TABLES, type HostedFundingBatchRow } from '@openpartner/db';
 import { requireStripe } from '../stripe.js';
-import { TRANSFER_DEADLINE_DAYS } from './state.js';
+import { casBatch, TRANSFER_DEADLINE_DAYS } from './state.js';
 
 export interface ReconcileDeps {
   stripe?: Stripe;
@@ -32,7 +35,20 @@ export interface ReconcileReport {
   residualsAwaitingDisposition: string[];
   reconcileRequiredIntents: string[];
   feeBackfilled: string[];
+  /** Webhook claims that were never finished and never redelivered. */
+  unfinishedInboxEvents: string[];
+  /** Funding charges refunded/disputed at Stripe with no webhook received. */
+  missedRefunds: string[];
+  /** Partner transfers reversed at Stripe with no webhook received. */
+  missedReversals: string[];
 }
+
+/** A claimed-but-unfinished webhook older than this had its worker die
+ *  AND never got a redelivery — nothing will pick it up on its own. */
+const INBOX_STUCK_MS = 60 * 60 * 1000;
+/** Per-run cap on live Stripe reads. Anything beyond it is logged, not
+ *  silently dropped — an unchecked batch must never look like a clean one. */
+const STRIPE_SWEEP_LIMIT = 50;
 
 export async function runFundingReconciliation(
   db: Knex,
@@ -47,6 +63,9 @@ export async function runFundingReconciliation(
     residualsAwaitingDisposition: [],
     reconcileRequiredIntents: [],
     feeBackfilled: [],
+    unfinishedInboxEvents: [],
+    missedRefunds: [],
+    missedReversals: [],
   };
 
   // 1. Invariant: for every batch that reserved money, its allocations
@@ -111,35 +130,105 @@ export async function runFundingReconciliation(
     );
   }
 
-  // 3. Fee telemetry backfill — funded+ batches missing actualStripeFeeMinor.
-  const missingFee = open.filter(
+  // 2c. Webhook events claimed but never finished. A crashed handler
+  // normally gets picked up by Stripe's redelivery (the inbox claim is a
+  // lease). One that's still unfinished an hour later never got that
+  // redelivery — the transition it carried is simply missing, and only a
+  // manual replay from the Stripe dashboard will apply it.
+  const stuckEvents = (await db(TABLES.StripeWebhookInbox)
+    .whereNull('outcome')
+    .where('processedAt', '<', new Date(now().getTime() - INBOX_STUCK_MS))
+    .select('stripeEventId', 'type')) as Array<{ stripeEventId: string; type: string }>;
+  report.unfinishedInboxEvents = stuckEvents.map((e) => e.stripeEventId);
+  for (const e of stuckEvents) {
+    console.error(
+      `[funding-reconcile] ALERT: webhook ${e.stripeEventId} (${e.type}) was claimed but never completed and never redelivered — replay it from the Stripe dashboard`,
+    );
+  }
+
+  // 3. Live-Stripe sweep over settled money. Two jobs, one charge fetch:
+  // backfill the rail fee, and — the reason this is not optional — notice
+  // a refund or dispute whose webhook we never received. Everything else
+  // here reads local state, so a LOST webhook is invisible to it: the
+  // batch stays unfrozen and its payouts stay recorded as paid while the
+  // money has gone back to the brand.
+  const funded = open.filter(
     (b) =>
       b.stripeChargeId &&
-      b.actualStripeFeeMinor == null &&
       ['funded', 'transferring', 'settled', 'settled_with_residual'].includes(b.status),
   );
-  if (missingFee.length > 0) {
-    let stripe: Stripe;
+  let stripe: Stripe | null = null;
+  try {
+    stripe = deps.stripe ?? requireStripe();
+  } catch {
+    return report; // no Stripe configured (selfhost) — nothing to sweep
+  }
+
+  if (funded.length > STRIPE_SWEEP_LIMIT) {
+    console.warn(
+      `[funding-reconcile] ${funded.length} funded batches, sweeping the oldest ${STRIPE_SWEEP_LIMIT} — ${funded.length - STRIPE_SWEEP_LIMIT} not checked this run`,
+    );
+  }
+  for (const batch of funded.slice(0, STRIPE_SWEEP_LIMIT)) {
     try {
-      stripe = deps.stripe ?? requireStripe();
-    } catch {
-      return report; // no Stripe configured (selfhost) — skip backfill
-    }
-    for (const batch of missingFee.slice(0, 50)) {
-      try {
-        const charge = await stripe.charges.retrieve(batch.stripeChargeId!, {
-          expand: ['balance_transaction'],
-        });
-        const tx = typeof charge.balance_transaction === 'object' ? charge.balance_transaction : null;
-        if (tx) {
-          await db(TABLES.HostedFundingBatch)
-            .where({ id: batch.id })
-            .update({ actualStripeFeeMinor: tx.fee, updatedAt: new Date() });
-          report.feeBackfilled.push(batch.id);
-        }
-      } catch (err) {
-        console.error(`[funding-reconcile] fee backfill failed for batch ${batch.id}`, err);
+      const charge = await stripe.charges.retrieve(batch.stripeChargeId!, {
+        expand: ['balance_transaction'],
+      });
+      const tx = typeof charge.balance_transaction === 'object' ? charge.balance_transaction : null;
+      if (tx && batch.actualStripeFeeMinor == null) {
+        await db(TABLES.HostedFundingBatch)
+          .where({ id: batch.id })
+          .update({ actualStripeFeeMinor: tx.fee, updatedAt: new Date() });
+        report.feeBackfilled.push(batch.id);
       }
+      const clawedBack = charge.refunded || (charge.amount_refunded ?? 0) > 0 || charge.disputed;
+      if (clawedBack && batch.status !== 'funding_disputed') {
+        // Same transition the webhook would have made (webhook.ts) — the
+        // executor only consumes funded/transferring, so this stops any
+        // further transfer out of money that came back.
+        const moved = await casBatch(
+          db,
+          batch.id,
+          ['funded', 'transferring', 'settled', 'settled_with_residual'],
+          'funding_disputed',
+          { failureReason: 'reconcile_detected_refund_or_dispute' },
+        );
+        report.missedRefunds.push(batch.id);
+        console.error(
+          `[funding-reconcile] ALERT: funding charge ${charge.id} for batch ${batch.id} is refunded/disputed but no webhook ever arrived — batch ${moved ? 'frozen as funding_disputed' : 'NOT transitioned'}; operator action required`,
+        );
+      }
+    } catch (err) {
+      console.error(`[funding-reconcile] charge sweep failed for batch ${batch.id}`, err);
+    }
+  }
+
+  // 3b. Same argument for the transfer side: a missed `transfer.reversed`
+  // leaves a Payout recorded `paid` on money that was clawed back.
+  const confirmed = (await db(TABLES.HostedFundingTransfer)
+    .where({ state: 'confirmed' })
+    .whereNotNull('stripeTransferId')
+    .orderBy('updatedAt', 'desc')
+    .limit(STRIPE_SWEEP_LIMIT)) as Array<{ id: string; stripeTransferId: string; payoutId: string | null }>;
+  for (const intent of confirmed) {
+    try {
+      const payout = intent.payoutId
+        ? ((await db(TABLES.Payout).where({ id: intent.payoutId }).first(['status'])) as
+            | { status: string }
+            | undefined)
+        : undefined;
+      // Already recorded as reversed locally — the ledger knows.
+      if (payout && ['reversed', 'partially_reversed'].includes(payout.status)) continue;
+      const transfer = await stripe.transfers.retrieve(intent.stripeTransferId);
+      if (!transfer.reversed && (transfer.amount_reversed ?? 0) === 0) continue;
+      const { handleTransferReversed } = await import('./webhook.js');
+      const outcome = await handleTransferReversed(db, transfer, intent.id);
+      report.missedReversals.push(intent.id);
+      console.error(
+        `[funding-reconcile] ALERT: transfer ${transfer.id} (intent ${intent.id}) is reversed at Stripe but no webhook ever arrived — recorded now (${outcome})`,
+      );
+    } catch (err) {
+      console.error(`[funding-reconcile] transfer sweep failed for intent ${intent.id}`, err);
     }
   }
 
