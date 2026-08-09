@@ -11,8 +11,13 @@
  *                   attributed GMV since last report and reports to Stripe
  *                   Billing meters.
  *   - payouts:      every Monday at 09:00 UTC. Per active tenant, runs
- *                   runPayouts() to issue Stripe Connect transfers for
- *                   approved commissions.
+ *                   runPayouts() to PLAN payouts (manual-rail rows +
+ *                   committed Connect transfer intents), then posts those
+ *                   intents' transfers once every planning transaction has
+ *                   committed.
+ *   - payout-transfers: every 15 minutes. Retries/reconciles Connect
+ *                   transfer intents left open by a crash, an ambiguous
+ *                   Stripe response, or a partner who wasn't ready.
  *
  * Both jobs are no-ops in selfhost mode for usage-report. Payouts run in
  * every mode (a self-host operator with no approved commissions just gets
@@ -30,7 +35,8 @@
 import { Cron } from 'croner';
 import type { Knex } from 'knex';
 import { TABLES, type PayoutCadence, type TenantRow } from '@openpartner/db';
-import { appDb, db } from './db.js';
+import { db } from './db.js';
+import { withTenantTransaction } from './tenancy.js';
 import { reportUsageToStripe } from './usage-billing.js';
 import { runPayouts } from './payouts.js';
 import { drainOutbox, reportNetworkPayoutsToNetwork, sendHeartbeat } from './network-client.js';
@@ -47,7 +53,8 @@ interface ScheduledJob {
 }
 
 /**
- * Run `fn` once per active tenant inside a tenant-scoped appDb transaction.
+ * Run `fn` once per active tenant inside a tenant-scoped transaction
+ * (`withTenantTransaction` — appDb + `app.tenant_id`, so RLS applies).
  * Failures in one tenant don't stop the iteration — each tenant gets its own
  * try/catch and the aggregate result lists per-tenant outcomes.
  */
@@ -58,10 +65,7 @@ async function forEachActiveTenant<T>(
   const out: Array<{ tenantId: string; ok: boolean; result?: T; error?: string }> = [];
   for (const t of tenants) {
     try {
-      const result = await appDb.transaction(async (trx) => {
-        await trx.raw(`set local app.tenant_id = '${t.id.replace(/'/g, "''")}'`);
-        return fn(trx, t.id);
-      });
+      const result = await withTenantTransaction(t.id, (trx) => fn(trx, t.id));
       out.push({ tenantId: t.id, ok: true, result });
     } catch (err) {
       out.push({ tenantId: t.id, ok: false, error: err instanceof Error ? err.message : String(err) });
@@ -83,9 +87,9 @@ const JOBS: ScheduledJob[] = [
   {
     name: 'payouts',
     cronExpr: '0 9 * * 1',
-    description: 'Per tenant: issue Stripe Connect transfers for approved commissions (Monday 09:00 UTC; cadence-gated per tenant)',
-    handler: async () =>
-      forEachActiveTenant(async (trx, tenantId) => {
+    description: 'Per tenant: plan payouts — write Connect transfer intents + manual-rail rows for approved commissions (Monday 09:00 UTC; cadence-gated per tenant)',
+    handler: async () => {
+      const planned = await forEachActiveTenant(async (trx, tenantId) => {
         // Cron ticks every Monday; per-tenant cadence decides whether the
         // tenant actually runs on this tick. Default (null) treated as
         // 'weekly' for backwards compat — every tick runs every tenant.
@@ -95,7 +99,25 @@ const JOBS: ScheduledJob[] = [
           return { skipped: 'cadence', cadence };
         }
         return runPayouts(trx, tenantId);
-      }),
+      });
+      // Every planning transaction is committed by now, so the intents are
+      // durable and their transfers can be posted (audit #10). Doing it
+      // here rather than waiting for the 15-minute executor tick keeps the
+      // weekly run a single visible operation.
+      const { executePayoutTransfers } = await import('./payout-transfers.js');
+      const transfers = await executePayoutTransfers(db);
+      return { planned, transfers };
+    },
+  },
+  {
+    name: 'payout-transfers',
+    cronExpr: '*/15 * * * *',
+    description:
+      'Post Stripe transfers for committed direct-Connect payout intents: frozen idempotency key per intent, reconcile-by-transfer_group past the 24h key window, release claims on definite failure (every 15 minutes)',
+    handler: async () => {
+      const { executePayoutTransfers } = await import('./payout-transfers.js');
+      return executePayoutTransfers(db);
+    },
   },
   {
     name: 'network-outbox-drain',

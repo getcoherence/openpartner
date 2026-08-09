@@ -1,9 +1,28 @@
 /**
- * Payout runner.
+ * Payout PLANNER.
  *
- * Finds approved commissions, groups by (partner, currency), creates a Stripe
- * transfer from the platform balance to each partner's Connect Standard
- * account, writes a Payout row, and marks the commissions paid.
+ * Finds approved commissions, groups by (partner, currency), and writes a
+ * Payout row per group. Manual-rail payouts are complete when this returns
+ * (the operator owns the transfer). Connect-rail payouts are written as
+ * durable *intents* — `metadata.transferState = 'intent'` — and the money
+ * is moved later by `executePayoutTransfers` (payout-transfers.ts), which
+ * runs OUTSIDE any transaction.
+ *
+ * Why the split (audit #10): this function runs inside the caller's tenant
+ * transaction (scheduler tick / request middleware). Calling Stripe from
+ * in here meant a transfer could succeed and the surrounding commit then
+ * fail — the Payout row rolled back, the money gone, and the next run
+ * minted a NEW payoutId, hence a NEW idempotency key, hence a DUPLICATE
+ * transfer. Same for an ambiguous (timeout) Stripe error. The fix mirrors
+ * `funding/executor.ts`: freeze the intent (its id, and with it its
+ * idempotency key `payout_<payoutId>`) and its commission set in the DB,
+ * COMMIT, and only then talk to Stripe.
+ *
+ * The commission set is frozen by claiming the rows — `Commission.payoutId`
+ * is stamped while `status` stays 'approved'. Claimed rows are invisible to
+ * the next planning run (every lookup here filters `payoutId is null`), so
+ * a retry re-uses the same intent instead of regrouping a larger set under
+ * a new key. Claims are released if the intent is abandoned.
  *
  * Mode semantics:
  *   - selfhost / flat   → no platform fee; transfer the full amount.
@@ -11,9 +30,6 @@
  *                         sends the full commission amount to the partner;
  *                         the 3% is reconciled against merchant billing (tracked
  *                         on Payout.metadata.platformFee for the ledger).
- *
- * Idempotency: we stamp the transfer's idempotency key with the Payout id
- * (generated up front) so a retry after a crash does not double-transfer.
  *
  * Multi-tenant: takes (db, tenantId). Pass req.db from a route handler, or
  * the privileged db with app.tenant_id pinned in the calling transaction
@@ -30,7 +46,8 @@ import {
   type PayoutRailPreference,
   type TenantRow,
 } from '@openpartner/db';
-import { REVSHARE_FEE_BPS, requireStripe, type OpenPartnerMode } from './stripe.js';
+import { REVSHARE_FEE_BPS, type OpenPartnerMode } from './stripe.js';
+import type { PayoutTransferMeta } from './payout-transfers.js';
 import { getTenantBillingState } from './billing-plan.js';
 import { dispatchEvent } from './webhook-dispatcher.js';
 import { fundingEnabled, tryTenantPayoutLock } from './funding/state.js';
@@ -53,6 +70,10 @@ export interface PayoutRunResult {
    *  (audit 2026-07-10). Commissions stay 'approved'; no Payout row is
    *  written so retries don't accumulate failure rows. */
   skippedUnfunded: Array<{ partnerId: string; currency: string; amount: number }>;
+  /** Connect-rail rows come back 'pending': the Payout intent is written
+   *  and its commissions are frozen, but the transfer is posted later by
+   *  `executePayoutTransfers`. Manual-rail rows are 'pending' too (the
+   *  operator confirms out-of-band). */
   payouts: Array<{
     payoutId: string;
     partnerId: string;
@@ -95,11 +116,16 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
   // behavior intact for tenants who haven't touched the setting.
   const thresholdCents = Math.max(0, tenant?.payoutThresholdCents ?? 0);
 
+  // `payoutId is null` is the un-claimed filter: a commission already
+  // frozen onto an open transfer intent must NOT be regrouped, or the
+  // retry would pay it twice under a different idempotency key (audit
+  // #10). Claims are stamped by this function and released by the
+  // executor when an intent is abandoned.
   const groups = (await db(TABLES.Commission)
     .where({ status: 'approved' })
+    .whereNull('payoutId')
     .groupBy('partnerId', 'currency')
-    .select('partnerId', 'currency')
-    .sum({ total: 'amount' })) as Array<{ partnerId: string; currency: string; total: string }>;
+    .select('partnerId', 'currency')) as Array<{ partnerId: string; currency: string }>;
 
   const results: PayoutRunResult['payouts'] = [];
   const skipped: PayoutRunResult['skippedBelowThreshold'] = [];
@@ -110,18 +136,25 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     const partner = await db<PartnerRow>(TABLES.Partner).where({ id: group.partnerId }).first();
     if (!partner) continue;
 
-    const amount = Number(group.total ?? 0);
+    // Read the exact rows first and derive the total from them, in minor
+    // units. The group total and a later SELECT can disagree under READ
+    // COMMITTED (each statement takes a fresh snapshot), and the transfer
+    // amount must equal the sum of the commissions we actually claim —
+    // never a stale aggregate.
+    const commissions = await db<CommissionRow>(TABLES.Commission)
+      .where({ partnerId: group.partnerId, currency: group.currency, status: 'approved' })
+      .whereNull('payoutId');
+    if (commissions.length === 0) continue;
+    const amountMinor = commissions.reduce((s, c) => s + Math.round(Number(c.amount) * 100), 0);
+    const amount = amountMinor / 100;
+
     // Threshold gate: balances below the tenant minimum stay 'approved'
-    // and roll over to the next run. We treat amounts in dollars; cents
-    // are the storage unit on the tenant column so converting once here
-    // keeps the comparison numerically stable across currencies.
-    if (thresholdCents > 0 && Math.round(amount * 100) < thresholdCents) {
+    // and roll over to the next run. Cents are the storage unit on the
+    // tenant column, so the comparison happens in minor units.
+    if (thresholdCents > 0 && amountMinor < thresholdCents) {
       skipped.push({ partnerId: partner.id, currency: group.currency, amount });
       continue;
     }
-
-    const commissions = await db<CommissionRow>(TABLES.Commission)
-      .where({ partnerId: group.partnerId, currency: group.currency, status: 'approved' });
 
     const platformFee = mode === 'revshare' ? Math.round(amount * REVSHARE_FEE_BPS) / 10000 : 0;
 
@@ -162,7 +195,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
           candidate: {
             partnerId: partner.id,
             commissionIds: commissions.map((c) => c.id),
-            amountMinor: Math.round(amount * 100),
+            amountMinor,
           },
         });
         continue;
@@ -202,7 +235,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     // Stripe failures leave commissions 'approved' so the next run picks
     // them up.
     const finalStatus: 'paid' | 'pending' | 'failed' =
-      canTransfer ? 'pending' /* flipped to 'paid' after transfer */ :
+      canTransfer ? 'pending' /* flipped to 'paid' by the executor */ :
       connectBlocked ? 'failed' :
       /* manual */ 'pending';
 
@@ -219,6 +252,18 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
         platformFee,
         commissionCount: commissions.length,
         ...(blockReason ? { error: blockReason } : {}),
+        // The transfer intent (audit #10). Everything the executor needs
+        // to post the transfer is frozen here, so the amount and the
+        // destination can't drift between planning and execution.
+        ...(canTransfer
+          ? ({
+              transferState: 'intent',
+              destinationAccountId: partner.stripeConnectAccountId!,
+              amountMinor,
+              mode,
+              attempts: 0,
+            } satisfies PayoutTransferMeta)
+          : {}),
       },
     });
     // Only mark commissions paid on the manual-commit path. Connect
@@ -244,72 +289,35 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     }
 
     if (canTransfer) {
-      try {
-        const stripe = requireStripe();
-        const transfer = await stripe.transfers.create(
-          {
-            amount: Math.round(amount * 100),
-            currency: group.currency.toLowerCase(),
-            destination: partner.stripeConnectAccountId!,
-            metadata: { openpartner_payout_id: payoutId, openpartner_tenant_id: tenantId, mode },
-          },
-          { idempotencyKey: `payout_${payoutId}` },
+      // Freeze the commission set onto the intent. The rows stay
+      // 'approved' (they are not paid yet) but become invisible to the
+      // next planning run, so a retry re-uses THIS payoutId — and with
+      // it this idempotency key — instead of minting a new one over a
+      // possibly larger set. `whereNull('payoutId')` makes the claim a
+      // compare-and-set; a short count means someone else claimed a row
+      // and the whole run aborts (nothing has reached Stripe yet, so the
+      // rollback is free).
+      const claimed = await db(TABLES.Commission)
+        .whereIn('id', commissions.map((c) => c.id))
+        .where({ status: 'approved' })
+        .whereNull('payoutId')
+        .update({ payoutId });
+      if (claimed !== commissions.length) {
+        throw new Error(
+          `payout intent ${payoutId}: claimed ${claimed}/${commissions.length} commissions for partner ${partner.id} — concurrent payout run; aborting`,
         );
-
-        await db(TABLES.Payout).where({ id: payoutId }).update({
-          stripeTransferId: transfer.id,
-          status: 'paid',
-          completedAt: new Date(),
-        });
-        await db(TABLES.Commission)
-          .whereIn('id', commissions.map((c) => c.id))
-          .update({ status: 'paid', paidAt: new Date(), payoutId });
-
-        // Webhooks fire only after the success is durable.
-        dispatchEvent(tenantId, 'payout.created', {
-          payoutId,
-          partnerId: partner.id,
-          amount: amount.toFixed(2),
-          currency: group.currency,
-          method,
-          commissionIds: commissions.map((c) => c.id),
-          platformFee: platformFee || undefined,
-        });
-        for (const c of commissions) {
-          dispatchEvent(tenantId, 'commission.paid', {
-            commissionId: c.id,
-            partnerId: c.partnerId,
-            amount: c.amount,
-            currency: c.currency,
-            payoutId,
-          });
-        }
-
-        results.push({
-          payoutId,
-          partnerId: partner.id,
-          amount,
-          currency: group.currency,
-          method,
-          status: 'paid',
-          platformFee: platformFee || undefined,
-        });
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        await db(TABLES.Payout).where({ id: payoutId }).update({ status: 'failed' });
-        // Commissions were never flipped to paid in the Connect path, so
-        // no rollback is needed — they're still 'approved' and will be
-        // retried on the next runPayouts().
-        results.push({
-          payoutId,
-          partnerId: partner.id,
-          amount,
-          currency: group.currency,
-          method,
-          status: 'failed',
-          error: message,
-        });
       }
+      // No webhook here — the money hasn't moved. payout.created and
+      // commission.paid fire from the executor once the transfer lands.
+      results.push({
+        payoutId,
+        partnerId: partner.id,
+        amount,
+        currency: group.currency,
+        method,
+        status: 'pending',
+        platformFee: platformFee || undefined,
+      });
     } else {
       // Manual path: commissions are already marked paid in the tx above.
       // Fire webhooks now — the operator owns the out-of-band transfer.

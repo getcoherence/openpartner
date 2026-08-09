@@ -1,15 +1,50 @@
 import { Router } from 'express';
 import { TABLES, type PayoutRow } from '@openpartner/db';
 import { requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
+import { db as privilegedDb } from '../db.js';
 import { runPayouts } from '../payouts.js';
-import { tenantOf } from '../tenancy.js';
+import { executePayoutTransfers } from '../payout-transfers.js';
+import { tenantOf, withTenantTransaction } from '../tenancy.js';
 
 export const payoutsRouter = Router();
 
+/**
+ * Admin "run payouts". Deliberately does NOT use `req.db`: the request
+ * transaction stays open until the response is written, and money must
+ * never move inside a transaction that can still roll back (audit #10 —
+ * a failed commit after a successful transfer used to re-run under a new
+ * payout id, i.e. a new idempotency key, i.e. a double-pay).
+ *
+ * So: plan in a transaction of its own and COMMIT the intents, then post
+ * the transfers outside any transaction, then report the merged outcome.
+ */
 payoutsRouter.post('/payouts/run', requireAuth, requireAdmin, async (req, res) => {
-  const { db, tenantId } = tenantOf(req);
-  const result = await runPayouts(db, tenantId);
-  res.json(result);
+  const { tenantId } = tenantOf(req);
+  const result = await withTenantTransaction(tenantId, (trx) => runPayouts(trx, tenantId));
+  // Intents are committed now. Post their transfers on the privileged
+  // pool (no transaction can span a Stripe call), scoped to this tenant
+  // so an admin's click can't advance another tenant's payouts.
+  const transfers = await executePayoutTransfers(privilegedDb, { tenantId });
+  // Fold the executor's verdict back into the planner's rows so the
+  // response still answers "what happened to each payout".
+  for (const p of result.payouts) {
+    if (transfers.confirmed.some((c) => c.payoutId === p.payoutId)) {
+      p.status = 'paid';
+      continue;
+    }
+    const failed = transfers.failed.find((f) => f.payoutId === p.payoutId);
+    if (failed) {
+      p.status = 'failed';
+      p.error = failed.error;
+      continue;
+    }
+    const canceled = transfers.canceled.find((c) => c.payoutId === p.payoutId);
+    if (canceled) {
+      p.status = 'failed';
+      p.error = canceled.reason;
+    }
+  }
+  res.json({ ...result, transfers });
 });
 
 /**
