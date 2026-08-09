@@ -1,14 +1,14 @@
 # Payment/subscription audit — remaining work (handoff)
 
-This is a self-contained handoff for the **three items left** from the Aug 2026
-payment/subscription + whole-app audit. Everything else the audit surfaced has
-shipped as PRs #60–#71 (see the list at the bottom). The remaining three were
-deliberately **not** rushed because they are money-path reworks or a
-data-format design that deserve a focused, staged effort.
+**Status (2026-08-09): all three items are implemented.** #10 → PR #73,
+#8 → PR #74, #12 → PR #75. What's left is not code: staging exercises
+against Stripe test mode, and the two post-merge prod actions at the
+bottom. The original briefs are kept below so the reasoning stays with
+the record — read them before touching any of this code.
 
-Read this top to bottom before touching code. All three are real (verified
-twice by adversarial Codex review). Two of them move real money — treat them
-accordingly.
+Everything the Aug 2026 payment/subscription + whole-app audit surfaced is
+now covered by PRs #60–#75. Two of these three items move real money;
+neither is proven until the staging checklist next to it passes.
 
 ---
 
@@ -21,7 +21,7 @@ accordingly.
   `OPENPARTNER_MODE=flat`. `doctl` is authenticated; prod run logs:
   `doctl apps logs 3aa2e624-... api --type run` (~36h buffer).
 - **Prod migrations do NOT auto-run.** After merging any migration, run
-  `pnpm migrate` against prod manually.
+  `pnpm migrate` against prod manually. (None of #73–#75 add one.)
 - **Payouts in prod are on the MANUAL rail.** `HOSTED_FUNDING_ENABLED` is OFF
   and there's a fail-closed guard on unfunded hosted Connect payouts. So the
   funding pipeline (`apps/api/src/funding/*`) does not execute in prod today,
@@ -32,8 +32,7 @@ accordingly.
   `docker compose up -d` then `pnpm migrate`). Tests skip themselves when
   `DATABASE_URL` is unset.
 - **Branch/PR convention**: one focused branch per fix off `main`, a PR with a
-  clear body, tests included. End commit messages with
-  `Co-Authored-By: Claude <noreply@anthropic.com>`.
+  clear body, tests included.
 - The full audit ledger lives in the session memory
   `payment-audit-2026-08` (`.claude/.../memory/project_payment_audit_2026_08.md`).
 
@@ -41,16 +40,17 @@ accordingly.
 
 ## Item A — #10: direct-Connect transfer fires before DB commit (double-pay)
 
+**SHIPPED — PR #73** (`fix/payout-transfer-intent`). 16 tests, no migration.
+Operator doc + staging checklist: `docs/direct-connect-payouts.md`.
+
 **Severity:** HIGH (real money). **Where it bites:** self-host Connect payouts
 and the unfunded-hosted override. Not behind the funding flag — this is a
 *live* path for self-hosters.
 
 ### The bug
-`apps/api/src/payouts.ts` (`runPayouts`, the `canTransfer` block, ~lines
-246–297) calls `stripe.transfers.create({ ... }, { idempotencyKey: `payout_${payoutId}` })`
-**inside the caller's DB transaction** (callers wrap `runPayouts` in a tenant
-transaction — see `apps/api/src/tenancy.ts` `withTenantTransaction` and
-`apps/api/src/scheduler.ts`). `payoutId` is a fresh ULID per run.
+`apps/api/src/payouts.ts` (`runPayouts`, the `canTransfer` block) called
+`stripe.transfers.create({ ... }, { idempotencyKey: `payout_${payoutId}` })`
+**inside the caller's DB transaction**. `payoutId` was a fresh ULID per run.
 
 Two double-pay paths:
 1. **Commit fails after the transfer succeeds** → the Payout insert +
@@ -58,136 +58,123 @@ Two double-pay paths:
    run generates a **new** `payoutId` → **new idempotency key** → duplicate
    transfer.
 2. **Ambiguous Stripe error** (network/timeout — the transfer may or may not
-   have been created): the catch marks the Payout `failed`, commissions stay
-   `approved`, and the next run retries with a **new** key → duplicate.
+   have been created): the catch marked the Payout `failed`, commissions stayed
+   `approved`, and the next run retried with a **new** key → duplicate.
 
-### Do NOT take the tempting shortcut
+### The shortcut that was rejected
 Making the idempotency key deterministic over the commission set (e.g.
 `hash(sorted(commissionIds))`) is **fragile**: if any commission gets approved
 for that partner **between** the failed attempt and the retry, the set changes
 → new key → a second transfer for the larger amount while the first already
-paid the overlap → **double-pay of the overlap**. Rejected for that reason.
+paid the overlap → **double-pay of the overlap**.
 
-### The correct fix (mirror the funded path)
-`apps/api/src/funding/executor.ts` **already implements exactly the right
-pattern** for the funded path — read it first; it's the reference:
-- A transfer-intent row is **created and COMMITTED before any Stripe call**,
-  carrying a **frozen** idempotency key (`fbt:<intentId>`) and a frozen set of
-  allocations.
-- Stripe is called **outside** the DB transaction, one short transaction per
-  step.
-- An ambiguous outcome past Stripe's ~24h key-pruning window is resolved by
-  **listing transfers by `transfer_group` + matching our metadata stamp** —
-  never a blind re-POST. (This reconcile now paginates — PR #71.)
+### What shipped
+`payouts.ts` is now a **planner** and `payout-transfers.ts` an **executor**,
+mirroring `funding/executor.ts`:
+- The Payout row is committed as an intent (`metadata.transferState='intent'`,
+  frozen `amountMinor` + destination) before any Stripe call, so
+  `payout_<payoutId>` is durable across retries.
+- Its commission set is frozen by claiming the rows — `Commission.payoutId`
+  stamped while `status` stays `approved`; every planner lookup filters
+  `payoutId is null`, so a claimed commission can never be regrouped.
+- Transfers post **outside** any transaction, with `transfer_group = payoutId`.
+  Ambiguous outcomes stay `posted` (a retry inside 24h replays the frozen key);
+  past the window the intent goes `reconcile_required` and is resolved by
+  paging `transfers.list({transfer_group})` — never a blind re-POST.
+- Definite 4xx fails the payout and releases the claims. A transfer that comes
+  back reversed is never recorded paid.
+- New `payout-transfers` scheduler job (*/15) retries and reconciles.
 
-Apply the same shape to the legacy `payouts.ts` Connect path:
-1. In a short committed transaction: create the `Payout` intent
-   (`status='pending'`) with its **frozen** `payoutId` and link the exact
-   commission set (they're already grouped). Set `transfer_group = payoutId`
-   (or a stable id) and stamp `metadata.openpartner_payout_id`.
-2. **Outside** that transaction, call `stripe.transfers.create` with
-   `idempotencyKey = 'payout_' + payoutId` (now durable because the intent is
-   committed and the same payoutId is reused on retry).
-3. Before creating, if the intent is being retried, **reconcile**: page
-   `stripe.transfers.list({ transfer_group })` for our
-   `openpartner_payout_id` stamp; if found, finalize with it instead of
-   re-POSTing.
-4. Finalize (`status='paid'`, mark commissions `paid`, dispatch events) in a
-   separate short transaction. On a definite 4xx, mark `failed`; on an
-   ambiguous error, leave the intent for the reconcile path (don't re-POST
-   blind).
-
-Restructuring the transaction boundary is the crux — `runPayouts` currently
-receives the transaction as its `db`. You'll need to split "create intents"
-(inside a txn) from "execute transfers" (outside), like the executor's
-`executePartnerTransfer`.
-
-### Tests + staging
-- Unit tests with a Stripe mock: commit-fails-after-transfer → retry reconciles
-  (no second create); ambiguous error → retry reconciles; definite 4xx →
-  failed, commissions stay approved; the set-change scenario → the frozen
-  intent prevents a double-pay.
-- **Staging**: exercise against Stripe test mode with an injected
-  commit-failure and an injected timeout before enabling for any real payout.
+### Still to do (not code)
+Run the 6-step staging checklist in `docs/direct-connect-payouts.md` against
+Stripe **test mode** — injected commit failure, injected timeout, past-window
+reconcile, set change, definite failure — before this pays anyone real money.
 
 ---
 
 ## Item B — rest of #12: funding-pipeline races (flag OFF, pre-launch)
 
+**SHIPPED — PR #75** (`fix/funding-race-hardening`). 19 tests, no migration.
+Staging scenarios: section **H** of `docs/payout-funding-staging-runbook.md`.
+
 **Severity:** CRITICAL-when-enabled, but `HOSTED_FUNDING_ENABLED` is OFF, so
-latent. The whole funding effort is already gated on a staging matrix + counsel
-(see memory `project_payout_funding_gap`). The **pagination** subfix shipped
-(PR #71); the rest belong to the holistic funding-hardening pass.
+latent. The **pagination** subfix shipped earlier (PR #71).
 
-Three remaining races (all in `apps/api/src/funding/`):
-1. **Ambiguous PaymentIntent creation re-creates instead of searching**
-   (`collect.ts` ~125 create, ~225 the ambiguous→`funding_failed` demotion).
-   After Stripe prunes the idempotency key (~24h), the retry can create a
-   **second** charge to the brand. Fix: before re-creating, search for an
-   existing PI by our funding-batch metadata (the executor's
-   reconcile-by-listing is the model), like the transfer path does.
-2. **Release-vs-in-flight-create race** (`release.ts` ~31 claim / ~72 free;
-   `collect.ts` ~249 stamps the PI without a status predicate). Release can
-   claim `invoicing`, see no persisted PI, and free allocations while a PI is
-   mid-creation. Fix: the PI-stamp write needs a status predicate so it loses
-   to a release that already moved the batch (CAS), and/or release must not
-   free a batch that could still be mid-create.
-3. **Inbox claim-before-process** (`funding/inbox.ts` ~18 marks `processedAt`
-   before the handler runs; `funding/webhook.ts` ~68 processing is not in the
-   same transaction). A crash after the claim makes every Stripe redelivery a
-   **permanent replay** (the event is never handled). Fix: either process in
-   the same transaction as the claim, or claim-then-process with the outcome
-   stamped only on success (and redelivery re-runs unhandled events).
+Three races, all in `apps/api/src/funding/`, all now closed:
+1. **Ambiguous PaymentIntent creation re-created instead of searching.** After
+   Stripe prunes the idempotency key (~24h), the retry could create a **second**
+   charge to the brand. Now: once a batch has attempted at all, the retry
+   searches by funding-batch metadata and adopts what it finds. A create that
+   throws *with* an intent attached (declines) now records that id so the retry
+   confirms it instead of making another.
+2. **Release-vs-in-flight-create.** Release could claim `invoicing`, see no
+   persisted PI, and free allocations while a PI was mid-creation. Now: the PI
+   stamp is status-predicated (losing that CAS cancels the orphaned PI, or
+   freezes the batch `recovery_required` if Stripe won't cancel it), and release
+   asks Stripe before freeing anything — a failed search means *don't know*,
+   which means *don't free*.
+3. **Inbox claim-before-process.** A crash after the claim made every Stripe
+   redelivery a **permanent replay**. The claim is now a lease: only a stamped
+   outcome is terminal, an unfinished claim older than 5 minutes can be taken
+   over by a redelivery, and one still unfinished after an hour is alerted by
+   the daily reconcile.
 
-Also worth confirming during that pass: refunds/disputes/transfer-reversals
-have no live-Stripe polling backstop (the daily reconcile only inspects locally
-flagged intents) — a missed reversal webhook can leave a payout recorded paid
-and its batch unfrozen.
+Also closed in the same pass: refunds/disputes/transfer-reversals had **no
+live-Stripe polling backstop**, so a missed webhook left a payout recorded paid
+and its batch unfrozen. The daily reconcile now sweeps settled money against
+Stripe (bounded, and it logs what it didn't reach).
 
-**Do this as one coherent pass with the funding staging matrix**, not piecemeal
-— partial patches to a money state machine give false confidence.
+### Still to do (not code)
+The whole funding effort remains gated on the staging matrix + counsel (see
+memory `project_payout_funding_gap`). Section H of the runbook is the part
+that proves these three races specifically.
 
 ---
 
 ## Item C — #8: export portability is incomplete (violates the promise)
 
+**SHIPPED — PR #74** (`fix/export-portability`). 11 tests, no migration.
+Format contract: `docs/data-portability.md`.
+
 **Severity:** HIGH (product-promise gap), **not** money-risky. CLAUDE.md +
 README promise every table exportable to CSV/JSON/SQL with a re-importable
 round-trip.
 
-### Gaps (`apps/api/src/export.ts`, `apps/api/src/routes/export.ts`)
-- The exported table list (`export.ts` ~21) **omits** `PartnerProgram`,
-  `Coupon`, and `PartnerCommission` — so partner↔program grants, coupon
-  attribution, and snapshotted commission rules don't round-trip.
-- Routes expose **JSON/CSV only** (`routes/export.ts` ~10) — no SQL dump,
-  though the contract promises it.
-- Import hardcodes the conflict key `id` (`export.ts` ~116), but
-  `PartnerCommission`'s primary key is **`partnerId`** (see
-  `packages/db/migrations/20260612000000_partner_commission.ts`), so naively
-  adding it would break import.
+### The gaps
+- The exported table list **omitted** `PartnerProgram`, `Coupon`, and
+  `PartnerCommission` — so partner↔program grants, coupon attribution, and
+  snapshotted commission rules didn't round-trip.
+- Routes exposed **JSON/CSV only** — no SQL dump, though the contract
+  promises it.
+- Import hardcoded the conflict key `id`, but `PartnerCommission`'s primary
+  key is **`partnerId`**, so naively adding it would break import.
 
-### The work
-- Add the missing tables with a **per-table primary-key** map and a correct
-  **import order** (respect FKs: Tenant → Partner/Program → PartnerProgram/
-  Coupon/PartnerCommission → Click → Identity → Event → Attribution →
-  Commission → Payout).
-- Bump the export `schemaVersion`.
-- Define + implement a **tenant-scoped SQL dump** format that the self-host
-  OSS build can re-import (the portability guarantee is architectural — see
-  CLAUDE.md principle #2).
-- Round-trip test: export a seeded tenant → wipe → import → assert every table
-  (incl. the three added) matches.
+### What shipped
+- All 14 tables with a per-table primary key and an FK-safe import order;
+  `schemaVersion` 2, with v1 bundles still accepted.
+- `GET /export.sql` + `GET /export/<Table>.sql`. Portable by default: rows are
+  written under a psql variable, so
+  `psql "$DATABASE_URL" -v tenant_id=default -f openpartner-export.sql`
+  restores into any instance. Idempotent (`ON CONFLICT DO NOTHING`), sets
+  `app.tenant_id` so it works on the RLS-scoped role too.
+- Round-trip test: seed every table → export → wipe → import → compare, once
+  through JSON and once through the SQL dump executed against Postgres.
+- Two live bugs the round-trip test found: a JS array is ambiguous (`jsonb`
+  array vs `text[]`), so **importing any program with compound commission
+  rules failed**, and the dump mis-typed `text[]` as jsonb. Both paths now
+  read the live column types.
 
 ---
 
-## The 12 shipped audit PRs (context)
+## The audit PRs
 
 `#60` cancellation-sync · `#61` coupons/clicks authz · `#62` PartnerProgram RLS
 · `#63` auto-approve SQL · `#64` SSRF guard · `#65` Node 22 · `#66` safe-fixes
 (enterprise self-assign, delinquent white-label, future-click, upload ENOENT) ·
 `#67` partial-refund stopgap · `#68` webhook secret-family binding · `#69`
 usage exactly-once · `#70` metering billable-types · `#71` funding reconcile
-pagination.
+pagination · `#72` this doc · **`#73` payout transfer intent (#10)** ·
+**`#74` export portability (#8)** · **`#75` funding race hardening (#12)**.
 
 **Outstanding post-merge actions:** `#62` → run `pnpm migrate` on prod;
 `#63` → run the auto-approve job once and check for the accrued-commission
