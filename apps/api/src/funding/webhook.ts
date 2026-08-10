@@ -163,7 +163,7 @@ async function routeFundingEvent(
       return recordFundingChargeClawback(db, batchId!, event.type);
     }
     case 'transfer.reversed': {
-      return handleTransferReversed(db, event.data.object as Stripe.Transfer, intentId!);
+      return handleTransferReversed(db, stripe, event.data.object as Stripe.Transfer, intentId!);
     }
     default:
       return 'unhandled';
@@ -238,13 +238,11 @@ export async function recordFundingChargeClawback(
  * records the clawback when the payout is fully reversed.
  */
 async function allReversalsOf(
-  db: Knex,
+  stripe: Stripe,
   transfer: Stripe.Transfer,
 ): Promise<Stripe.TransferReversal[]> {
   const embedded = transfer.reversals?.data ?? [];
   if (!transfer.reversals?.has_more) return embedded;
-  const { requireStripe } = await import('../stripe.js');
-  const stripe = requireStripe();
   const all = [...embedded];
   let startingAfter = embedded[embedded.length - 1]?.id;
   for (let page = 0; page < 20 && startingAfter; page += 1) {
@@ -264,6 +262,7 @@ async function allReversalsOf(
 
 export async function handleTransferReversed(
   db: Knex,
+  stripe: Stripe,
   transfer: Stripe.Transfer,
   intentId: string,
 ): Promise<string> {
@@ -285,7 +284,7 @@ export async function handleTransferReversed(
   // clawback adjustments get written at all. Page the full list when
   // Stripe says there is more (same lesson as the transfer-listing
   // pagination in #71).
-  const reversals = await allReversalsOf(db, transfer);
+  const reversals = await allReversalsOf(stripe, transfer);
   let recorded = 0;
   for (const reversal of reversals) {
     const inserted = await db(TABLES.PayoutReversal)

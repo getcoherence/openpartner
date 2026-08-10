@@ -297,7 +297,7 @@ export async function runFundingReconciliation(
       const transfer = await stripe.transfers.retrieve(intent.stripeTransferId);
       if (!transfer.reversed && (transfer.amount_reversed ?? 0) === 0) continue;
       const { handleTransferReversed } = await import('./webhook.js');
-      const outcome = await handleTransferReversed(db, transfer, intent.id);
+      const outcome = await handleTransferReversed(db, stripe, transfer, intent.id);
       report.missedReversals.push(intent.id);
       console.error(
         `[funding-reconcile] ALERT: transfer ${transfer.id} (intent ${intent.id}) is reversed at Stripe but no webhook ever arrived — recorded now (${outcome})`,
