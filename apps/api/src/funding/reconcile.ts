@@ -25,6 +25,8 @@ import { casBatch, TRANSFER_DEADLINE_DAYS } from './state.js';
 export interface ReconcileDeps {
   stripe?: Stripe;
   now?: () => Date;
+  /** Test seam for the per-run live-Stripe read cap. */
+  sweepLimit?: number;
 }
 
 export interface ReconcileReport {
@@ -41,20 +43,27 @@ export interface ReconcileReport {
   missedRefunds: string[];
   /** Partner transfers reversed at Stripe with no webhook received. */
   missedReversals: string[];
+  /** Inside the horizon but past the per-run cap — NOT checked this run. */
+  sweepSkipped: string[];
 }
 
 /** A claimed-but-unfinished webhook older than this had its worker die
  *  AND never got a redelivery — nothing will pick it up on its own. */
 const INBOX_STUCK_MS = 60 * 60 * 1000;
-/** Per-run cap on live Stripe reads. Anything beyond it is logged, not
- *  silently dropped — an unchecked batch must never look like a clean one. */
+/** Per-run cap on live Stripe reads. Anything beyond it is reported AND
+ *  named in the log — an unchecked batch must never look like a clean one. */
 const STRIPE_SWEEP_LIMIT = 50;
+/** How far back a refund, dispute or reversal can still appear. Stripe's
+ *  dispute window is 120 days; 180 gives margin. Money older than this is
+ *  settled history and does not need re-checking every night. */
+const REVERSAL_HORIZON_DAYS = 180;
 
 export async function runFundingReconciliation(
   db: Knex,
   deps: ReconcileDeps = {},
 ): Promise<ReconcileReport> {
   const now = deps.now ?? (() => new Date());
+  const sweepLimit = deps.sweepLimit ?? STRIPE_SWEEP_LIMIT;
   const report: ReconcileReport = {
     batchesChecked: 0,
     invariantViolations: [],
@@ -66,6 +75,7 @@ export async function runFundingReconciliation(
     unfinishedInboxEvents: [],
     missedRefunds: [],
     missedReversals: [],
+    sweepSkipped: [],
   };
 
   // 1. Invariant: for every batch that reserved money, its allocations
@@ -110,6 +120,19 @@ export async function runFundingReconciliation(
         `[funding-reconcile] ALERT: batch ${batch.id} requires human attention (${batch.status})`,
       );
     }
+    // A release that can't finish (Stripe unreachable, PI not cancelable)
+    // leaves the batch here with its allocations frozen. The collector
+    // retries it every tick, so a batch still stuck a day later means
+    // something is durably wrong.
+    if (
+      batch.status === 'release_requested' &&
+      new Date(batch.updatedAt) < new Date(now().getTime() - 24 * 60 * 60 * 1000)
+    ) {
+      report.attentionBatches.push(batch.id);
+      console.error(
+        `[funding-reconcile] ALERT: batch ${batch.id} has been release_requested for over a day — its PaymentIntent is not terminalizing and its allocations stay frozen`,
+      );
+    }
     if (batch.status === 'settled_with_residual' && !batch.residualDisposition) {
       report.residualsAwaitingDisposition.push(batch.id);
       console.error(
@@ -152,10 +175,18 @@ export async function runFundingReconciliation(
   // here reads local state, so a LOST webhook is invisible to it: the
   // batch stays unfrozen and its payouts stay recorded as paid while the
   // money has gone back to the brand.
+  // Bounded by AGE, not by an arbitrary page: a refund or dispute can only
+  // appear within Stripe's dispute window, so everything inside that
+  // horizon gets checked every run and nothing older needs to be. Slicing
+  // the oldest N of an ever-growing list (the first version) meant the
+  // same 50 batches were re-checked forever while newer ones — the only
+  // ones that can still change — were never looked at.
+  const horizon = new Date(now().getTime() - REVERSAL_HORIZON_DAYS * 24 * 60 * 60 * 1000);
   const funded = open.filter(
     (b) =>
       b.stripeChargeId &&
-      ['funded', 'transferring', 'settled', 'settled_with_residual'].includes(b.status),
+      ['funded', 'transferring', 'settled', 'settled_with_residual'].includes(b.status) &&
+      new Date(b.fundedAt ?? b.createdAt) >= horizon,
   );
   let stripe: Stripe | null = null;
   try {
@@ -164,12 +195,15 @@ export async function runFundingReconciliation(
     return report; // no Stripe configured (selfhost) — nothing to sweep
   }
 
-  if (funded.length > STRIPE_SWEEP_LIMIT) {
-    console.warn(
-      `[funding-reconcile] ${funded.length} funded batches, sweeping the oldest ${STRIPE_SWEEP_LIMIT} — ${funded.length - STRIPE_SWEEP_LIMIT} not checked this run`,
+  if (funded.length > sweepLimit) {
+    // Never let a cap look like a clean bill of health.
+    const skipped = funded.slice(sweepLimit);
+    report.sweepSkipped.push(...skipped.map((b) => b.id));
+    console.error(
+      `[funding-reconcile] ALERT: ${funded.length} batches inside the ${REVERSAL_HORIZON_DAYS}d reversal horizon exceeds the ${sweepLimit}/run cap — NOT checked this run: ${skipped.map((b) => b.id).join(', ')}`,
     );
   }
-  for (const batch of funded.slice(0, STRIPE_SWEEP_LIMIT)) {
+  for (const batch of funded.slice(0, sweepLimit)) {
     try {
       const charge = await stripe.charges.retrieve(batch.stripeChargeId!, {
         expand: ['balance_transaction'],
@@ -205,11 +239,25 @@ export async function runFundingReconciliation(
 
   // 3b. Same argument for the transfer side: a missed `transfer.reversed`
   // leaves a Payout recorded `paid` on money that was clawed back.
-  const confirmed = (await db(TABLES.HostedFundingTransfer)
+  // Same horizon argument as the charge sweep: reversals land within the
+  // window, so bound by age and check everything inside it.
+  const confirmedAll = (await db(TABLES.HostedFundingTransfer)
     .where({ state: 'confirmed' })
     .whereNotNull('stripeTransferId')
-    .orderBy('updatedAt', 'desc')
-    .limit(STRIPE_SWEEP_LIMIT)) as Array<{ id: string; stripeTransferId: string; payoutId: string | null }>;
+    .where('updatedAt', '>=', horizon)
+    .orderBy('updatedAt', 'desc')) as Array<{
+    id: string;
+    stripeTransferId: string;
+    payoutId: string | null;
+  }>;
+  const confirmed = confirmedAll.slice(0, sweepLimit);
+  if (confirmedAll.length > sweepLimit) {
+    const skipped = confirmedAll.slice(sweepLimit);
+    report.sweepSkipped.push(...skipped.map((i) => i.id));
+    console.error(
+      `[funding-reconcile] ALERT: ${confirmedAll.length} confirmed transfers inside the ${REVERSAL_HORIZON_DAYS}d horizon exceeds the ${sweepLimit}/run cap — NOT checked this run: ${skipped.map((i) => i.id).join(', ')}`,
+    );
+  }
   for (const intent of confirmed) {
     try {
       const payout = intent.payoutId
@@ -217,8 +265,11 @@ export async function runFundingReconciliation(
             | { status: string }
             | undefined)
         : undefined;
-      // Already recorded as reversed locally — the ledger knows.
-      if (payout && ['reversed', 'partially_reversed'].includes(payout.status)) continue;
+      // Only a FULLY reversed payout is finished. Skipping
+      // `partially_reversed` too meant that once a partial landed, the
+      // webhook completing the reversal could be lost and this sweep —
+      // the only backstop — would never look again.
+      if (payout?.status === 'reversed') continue;
       const transfer = await stripe.transfers.retrieve(intent.stripeTransferId);
       if (!transfer.reversed && (transfer.amount_reversed ?? 0) === 0) continue;
       const { handleTransferReversed } = await import('./webhook.js');

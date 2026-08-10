@@ -108,7 +108,11 @@ them can be observed by reading the happy path. Each has unit coverage in
 | H5 | **Release with an unstamped PI at Stripe** | Blank `stripePaymentIntentId` on a batch that has a real PI, then run a release | Release searches, finds it, terminalizes it, and only then frees allocations. Allocations must NOT be `released` while the PI lives |
 | H6 | Same, but Stripe search is down | Block `/v1/payment_intents/search` | Release returns `pi_not_terminal` and **leaves allocations reserved** — never frees on "I don't know" |
 | H7 | **Webhook crash mid-handler** | Kill the API between the inbox claim and the handler finishing (breakpoint, then SIGKILL) | The inbox row exists with `outcome IS NULL`. Stripe's redelivery (after the 5-minute lease) must **process it**, not `inbox_replay` it. Before this fix the event was lost forever |
-| H8 | Concurrent delivery of the same event | Fire two deliveries at once (Stripe CLI `resend` twice) | One processes, the other returns `inbox_replay`; exactly one state transition |
+| H8 | Concurrent delivery of the same event | Fire two deliveries at once (Stripe CLI `resend` twice) | One processes; the other gets **409 `event_in_flight`** — NOT a 2xx — so Stripe redelivers rather than considering it done. Exactly one state transition |
+| H9 | **Crash + redelivery inside the lease** | As H7, but replay from the dashboard within 5 minutes | The redelivery is refused with 409 (the lease is still held), and the delivery *after* the lease expires takes over and processes it. A 2xx here was the residual hole in the first version of this fix: it ended delivery for an event nobody had processed |
+| H10 | **Release stopped halfway** | Block `/v1/payment_intents/search` and trigger a timeout release | Batch sits `release_requested` with allocations still `reserved`; the **next collector tick resumes it** once Stripe is reachable. A batch still `release_requested` a day later is alerted by the daily reconcile |
+| H11 | **Payment wins the release** | Let the PI succeed while a release is in flight | Batch → `funded` **with `stripeChargeId` and `fundedAt` stamped** (it goes through the verified confirm path). A bare CAS left the charge id null and the executor froze it as `recovery_required` on the next tick |
+| H12 | **Batch frozen mid-transfer** | While the executor is working through a multi-partner batch, fire `charge.refunded` on the funding charge | The executor re-reads the batch status before each partner and **stops**; no further transfers leave the frozen batch |
 
 ## Rollout order (founder-approved)
 
@@ -141,5 +145,13 @@ race that was found in review, not a hypothetical):
   frozen for an operator).
 - The webhook inbox is a **lease**, not a tombstone: only a stamped outcome
   makes an event terminal, so a crashed handler is retried rather than
-  swallowed.
+  swallowed. "Someone else holds it" is answered with a **409, never a
+  2xx** — acknowledging an event nobody has processed ends Stripe's
+  redelivery, which is the same loss with extra steps. The claim carries an
+  owner token so a resurrected predecessor can't stamp or delete the new
+  owner's work.
+- Reconciliation is bounded by the **dispute horizon**, not by a page
+  number, and it reports the ids of anything the per-run cap left
+  unchecked. A cap that silently truncates makes an unchecked batch look
+  like a clean one.
 - Terms version constant: `FUNDING_TERMS_VERSION` in `apps/api/src/funding/state.ts`.

@@ -38,8 +38,17 @@ export async function runFundingCollector(db: Knex, deps: CollectorDeps = {}): P
   if (!fundingEnabled()) return result;
   const now = deps.now ?? (() => new Date());
 
+  // `release_requested` is in scope so a release that stopped halfway (a
+  // Stripe call failed) gets resumed on the next tick. Without it the
+  // batch was terminal-by-accident: allocations frozen, nothing looking.
   const batches = (await db(TABLES.HostedFundingBatch)
-    .whereIn('status', ['reserved', 'invoicing', 'payment_processing', 'funding_failed'])
+    .whereIn('status', [
+      'reserved',
+      'invoicing',
+      'payment_processing',
+      'funding_failed',
+      'release_requested',
+    ])
     .orderBy('createdAt', 'asc')) as HostedFundingBatchRow[];
 
   for (const batch of batches) {
@@ -108,6 +117,14 @@ async function collectBatch(
           if ((await releaseBatch(db, stripe, batch, 'pi_canceled')) === 'released') result.released.push(batch.id);
         }
       }
+      return;
+    }
+    case 'release_requested': {
+      // A previous release stopped before the PI was terminal. Re-enter it
+      // (releaseBatch accepts release_requested as a source state) so the
+      // batch finishes releasing instead of sitting frozen forever.
+      const outcome = await releaseBatch(db, stripe, batch, batch.failureReason ?? 'release_resumed');
+      if (outcome === 'released') result.released.push(batch.id);
       return;
     }
     case 'funding_failed': {
@@ -360,8 +377,32 @@ async function abandonOrphanPaymentIntent(
       'recovery_required',
       { failureReason: `orphan_payment_intent:${pi.id}` },
     );
+    // The release already freed this batch's allocations, and a live debit
+    // now exists for them. Reclaim the ones nothing else has picked up
+    // yet, so the commissions can't also be charged by a NEW batch — that
+    // would debit the brand twice for the same money.
+    const reclaimed = await reclaimReleasedAllocations(db, batch.id);
     console.error(
-      `[funding] ALERT: batch ${batch.id} was released while PaymentIntent ${pi.id} was in flight and the PI could not be canceled (${message}) — funds may arrive with no batch to own them; operator reconciliation required`,
+      `[funding] ALERT: batch ${batch.id} was released while PaymentIntent ${pi.id} was in flight and the PI could not be canceled (${message}) — batch frozen recovery_required, ${reclaimed} allocation(s) reclaimed; operator reconciliation required`,
     );
   }
+}
+
+/**
+ * Pull a released batch's allocations back under it. Only rows whose
+ * commission isn't already live somewhere else are taken — if a newer
+ * batch has already reserved one, that batch owns it and an operator has
+ * to untangle the overlap (the alert above says so).
+ */
+async function reclaimReleasedAllocations(db: Knex, batchId: string): Promise<number> {
+  return db(TABLES.HostedFundingAllocation)
+    .where({ batchId, state: 'released' })
+    .whereNotExists(function () {
+      this.select('*')
+        .from(`${TABLES.HostedFundingAllocation} as other`)
+        .whereRaw(`"other"."commissionId" = "${TABLES.HostedFundingAllocation}"."commissionId"`)
+        .whereRaw(`"other"."batchId" <> ?`, [batchId])
+        .whereNotIn('other.state', ['released', 'canceled']);
+    })
+    .update({ state: 'reserved', updatedAt: new Date() });
 }

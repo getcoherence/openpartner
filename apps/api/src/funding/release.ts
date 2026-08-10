@@ -31,10 +31,16 @@ export async function releaseBatch(
 ): Promise<ReleaseOutcome> {
   // Step 1 — claim the release. Losing the CAS means another actor moved
   // the batch (e.g. a funding webhook landed): re-read and defer to it.
+  //
+  // `release_requested` is included as a source state on purpose: this
+  // protocol can stop halfway (a Stripe call fails → 'pi_not_terminal'),
+  // and without re-entry that batch would sit in release_requested with
+  // nothing able to pick it up again — no collector state matched it and
+  // a second releaseBatch call just lost the CAS.
   const claimed = await casBatch(
     db,
     batch.id,
-    ['reserved', 'invoicing', 'payment_processing', 'funding_failed'],
+    ['reserved', 'invoicing', 'payment_processing', 'funding_failed', 'release_requested'],
     'release_requested',
     { failureReason: reason },
   );
@@ -85,11 +91,30 @@ export async function releaseBatch(
     }
     if (pi.status === 'succeeded') {
       // The race the protocol exists for: money arrived. Release LOSES.
-      await casBatch(db, batch.id, 'release_requested', 'funded', {
-        failureReason: null,
+      //
+      // Go through the ONE verified funding transition rather than CASing
+      // to `funded` directly: confirm re-reads the live PI, checks amount
+      // and currency, and stamps stripeChargeId + fundedAt. A bare CAS
+      // left the batch funded with no charge id, and the executor then
+      // froze it as recovery_required on the very next tick.
+      const live = await stripe.paymentIntents.retrieve(pi.id, {
+        expand: ['latest_charge.balance_transaction'],
       });
-      console.warn(`[funding] release lost to successful payment — batch ${batch.id} proceeds to transfer`);
-      return 'payment_won';
+      const { confirmFundingFromPaymentIntent } = await import('./confirm.js');
+      const outcome = await confirmFundingFromPaymentIntent(db, batch.id, live);
+      if (outcome === 'funded') {
+        console.warn(`[funding] release lost to successful payment — batch ${batch.id} proceeds to transfer`);
+        return 'payment_won';
+      }
+      // Verification refused the payment (amount/currency/charge mismatch).
+      // Neither release nor fund on a guess — freeze for an operator.
+      await casBatch(db, batch.id, 'release_requested', 'recovery_required', {
+        failureReason: `payment_won_but_unverifiable:${outcome}`,
+      });
+      console.error(
+        `[funding] ALERT: batch ${batch.id} raced a succeeded PaymentIntent that failed verification (${outcome}) — frozen for operator review`,
+      );
+      return 'pi_not_terminal';
     }
     if (pi.status !== 'canceled') {
       try {

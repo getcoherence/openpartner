@@ -21,7 +21,7 @@ import { db } from '../db.js';
 import { runFundingCollector } from '../funding/collect.js';
 import { releaseBatch } from '../funding/release.js';
 import { claimInboxEvent, releaseInboxClaim, stampInboxOutcome } from '../funding/inbox.js';
-import { handleFundingEvent } from '../funding/webhook.js';
+import { handleFundingEvent, InboxEventHeldError } from '../funding/webhook.js';
 import { runFundingReconciliation } from '../funding/reconcile.js';
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
@@ -449,25 +449,29 @@ describe.skipIf(skipIntegration)('webhook inbox claim lease', () => {
 
   it('a finished event never re-runs', async () => {
     const id = evt();
-    expect(await claimInboxEvent(db, id, 'payment_intent.succeeded')).toBe(true);
+    const claim = await claimInboxEvent(db, id, 'payment_intent.succeeded');
+    expect(claim.status).toBe('claimed');
     await stampInboxOutcome(db, id, 'confirm:funded');
-    expect(await claimInboxEvent(db, id, 'payment_intent.succeeded')).toBe(false);
+    expect((await claimInboxEvent(db, id, 'payment_intent.succeeded')).status).toBe('done');
     // Not even after any amount of time — outcome is terminal.
     await db(TABLES.StripeWebhookInbox)
       .where({ stripeEventId: id })
       .update({ processedAt: new Date(Date.now() - 24 * 60 * 60 * 1000) });
-    expect(await claimInboxEvent(db, id, 'payment_intent.succeeded')).toBe(false);
+    expect((await claimInboxEvent(db, id, 'payment_intent.succeeded')).status).toBe('done');
   });
 
-  it('a live claim blocks a concurrent worker', async () => {
+  it('a live claim reports HELD, not done — the difference decides the HTTP status', async () => {
+    // 'held' must never be acknowledged to Stripe: the holder may die, and
+    // then the redelivery we refused was the only thing that would have
+    // processed the event.
     const id = evt();
-    expect(await claimInboxEvent(db, id, 'charge.refunded')).toBe(true);
-    expect(await claimInboxEvent(db, id, 'charge.refunded')).toBe(false);
+    expect((await claimInboxEvent(db, id, 'charge.refunded')).status).toBe('claimed');
+    expect((await claimInboxEvent(db, id, 'charge.refunded')).status).toBe('held');
   });
 
   it('a claim whose worker died is taken over by the redelivery', async () => {
     const id = evt();
-    expect(await claimInboxEvent(db, id, 'payment_intent.succeeded')).toBe(true);
+    expect((await claimInboxEvent(db, id, 'payment_intent.succeeded')).status).toBe('claimed');
     // …worker crashes here: no outcome was ever stamped.
     await db(TABLES.StripeWebhookInbox)
       .where({ stripeEventId: id })
@@ -475,16 +479,58 @@ describe.skipIf(skipIntegration)('webhook inbox claim lease', () => {
 
     // Before this fix the row said "seen" and every redelivery no-opped
     // forever — the transition it carried was lost.
-    expect(await claimInboxEvent(db, id, 'payment_intent.succeeded')).toBe(true);
+    expect((await claimInboxEvent(db, id, 'payment_intent.succeeded')).status).toBe('claimed');
     const row = await db(TABLES.StripeWebhookInbox).where({ stripeEventId: id }).first();
     expect(row.outcome).toBeNull();
   });
 
+  it('a worker whose lease was taken over cannot stamp or delete the new owner claim', async () => {
+    const id = evt();
+    const first = await claimInboxEvent(db, id, 'payment_intent.succeeded');
+    expect(first.status).toBe('claimed');
+    const staleToken = first.status === 'claimed' ? first.token : '';
+
+    // Lease expires; a redelivery takes over.
+    await db(TABLES.StripeWebhookInbox)
+      .where({ stripeEventId: id })
+      .update({ processedAt: new Date(Date.now() - 10 * 60 * 1000) });
+    const second = await claimInboxEvent(db, id, 'payment_intent.succeeded');
+    expect(second.status).toBe('claimed');
+
+    // The resurrected predecessor must not be able to finish, or delete,
+    // work it no longer owns.
+    expect(await stampInboxOutcome(db, id, 'stale_outcome', staleToken)).toBe(false);
+    await releaseInboxClaim(db, id, staleToken);
+    const row = await db(TABLES.StripeWebhookInbox).where({ stripeEventId: id }).first();
+    expect(row).toBeDefined();
+    expect(row.outcome).toBeNull();
+
+    // The real owner still can.
+    const token = second.status === 'claimed' ? second.token : '';
+    expect(await stampInboxOutcome(db, id, 'confirm:funded', token)).toBe(true);
+  });
+
   it('releasing a claim lets the redelivery through immediately', async () => {
     const id = evt();
-    expect(await claimInboxEvent(db, id, 'charge.dispute.created')).toBe(true);
-    await releaseInboxClaim(db, id);
-    expect(await claimInboxEvent(db, id, 'charge.dispute.created')).toBe(true);
+    const claim = await claimInboxEvent(db, id, 'charge.dispute.created');
+    expect(claim.status).toBe('claimed');
+    await releaseInboxClaim(db, id, claim.status === 'claimed' ? claim.token : undefined);
+    expect((await claimInboxEvent(db, id, 'charge.dispute.created')).status).toBe('claimed');
+  });
+
+  it('a held event is refused, not acknowledged', async () => {
+    const batch = await seedBatch({ status: 'payment_processing' });
+    const event = {
+      id: evt(),
+      type: 'payment_intent.succeeded',
+      data: { object: { id: 'pi_held', metadata: { openpartner_funding_batch_id: batch.id } } },
+    } as unknown as Stripe.Event;
+    // Someone else is already mid-handler on it.
+    expect((await claimInboxEvent(db, event.id, event.type)).status).toBe('claimed');
+
+    await expect(handleFundingEvent(db, mockStripe().stripe, event)).rejects.toBeInstanceOf(
+      InboxEventHeldError,
+    );
   });
 
   it('a handler that throws leaves the event replayable', async () => {
@@ -665,5 +711,138 @@ describe.skipIf(skipIntegration)('reconciliation catches what webhooks lost', ()
 
     expect(transferRetrieve).not.toHaveBeenCalled();
     expect(report.missedReversals).toHaveLength(0);
+  });
+});
+
+// ---- Adversarial-review fixes (Codex, 2026-08-09) --------------------------
+
+describe.skipIf(skipIntegration)('review follow-ups', () => {
+  it('a partially-reversed payout is still swept — the completing reversal is not missed', async () => {
+    // Skipping `partially_reversed` meant that once a partial landed, a
+    // lost webhook completing the reversal was invisible forever.
+    const batch = await seedBatch({ status: 'settled', stripeChargeId: 'ch_p', fundedAt: new Date() });
+    const { commissionId, partnerId } = await seedCommission();
+    const payoutId = ulid();
+    await db(TABLES.Payout).insert({
+      id: payoutId,
+      tenantId: TENANT,
+      partnerId,
+      amount: '80.00',
+      currency: 'USD',
+      method: 'stripe_connect',
+      status: 'partially_reversed',
+      stripeTransferId: 'tr_partial',
+      metadata: {},
+    });
+    await db(TABLES.Commission).where({ id: commissionId }).update({ status: 'paid', payoutId });
+    const intentId = ulid();
+    await db(TABLES.HostedFundingTransfer).insert({
+      id: intentId,
+      tenantId: TENANT,
+      batchId: batch.id,
+      partnerId,
+      currency: 'usd',
+      amountMinor: 8000,
+      destinationAccountId: 'acct_x',
+      idempotencyKey: `fbt:${intentId}`,
+      state: 'confirmed',
+      stripeTransferId: 'tr_partial',
+      payoutId,
+    });
+    const { stripe } = mockStripe({
+      transfer: {
+        reversed: true,
+        amount_reversed: 8000,
+        reversals: {
+          data: [
+            { id: 'trr_a', amount: 3000, created: Math.floor(Date.now() / 1000), balance_transaction: null },
+            { id: 'trr_b', amount: 5000, created: Math.floor(Date.now() / 1000), balance_transaction: null },
+          ],
+        },
+      },
+    });
+
+    const report = await runFundingReconciliation(db, { stripe });
+
+    expect(report.missedReversals).toContain(intentId);
+    expect((await db(TABLES.Payout).where({ id: payoutId }).first()).status).toBe('reversed');
+  });
+
+  it('reports what the per-run cap left unchecked instead of looking clean', async () => {
+    const batches: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const b = await seedBatch({ status: 'settled', stripeChargeId: `ch_${i}`, fundedAt: new Date() });
+      batches.push(b.id);
+    }
+    const { stripe } = mockStripe();
+
+    const report = await runFundingReconciliation(db, { stripe, sweepLimit: 2 });
+
+    expect(report.sweepSkipped).toHaveLength(1);
+    expect(batches).toContain(report.sweepSkipped[0]);
+  });
+
+  it('a release that could not finish is resumed by the next collector tick', async () => {
+    // release_requested used to be terminal by accident: no collector
+    // state matched it and a second releaseBatch call just lost the CAS.
+    const batch = await seedBatch({ status: 'invoicing' });
+    const allocationId = await seedAllocation(batch.id);
+    const failing = mockStripe({ searchThrows: new Error('stripe down') });
+    expect(await releaseBatch(db, failing.stripe, batch, 'funding_timeout')).toBe('pi_not_terminal');
+    expect((await reload(batch.id)).status).toBe('release_requested');
+
+    // Stripe recovers; the collector picks the batch back up.
+    const healthy = mockStripe({ searchResult: [] });
+    const result = await runFundingCollector(db, { stripe: healthy.stripe });
+
+    expect(result.released).toContain(batch.id);
+    expect((await reload(batch.id)).status).toBe('released');
+    expect((await db(TABLES.HostedFundingAllocation).where({ id: allocationId }).first()).state).toBe(
+      'released',
+    );
+  });
+
+  it('a stuck release_requested batch is alerted after a day', async () => {
+    const batch = await seedBatch({
+      status: 'release_requested',
+      updatedAt: new Date(Date.now() - 30 * 60 * 60 * 1000),
+    });
+    await seedAllocation(batch.id);
+    const { stripe } = mockStripe();
+
+    const report = await runFundingReconciliation(db, { stripe });
+    expect(report.attentionBatches).toContain(batch.id);
+  });
+
+  it('payment-wins goes through verified confirm, so the charge id is stamped', async () => {
+    // A bare CAS to `funded` left stripeChargeId null and the executor
+    // froze the batch as recovery_required on the next tick.
+    const batch = await seedBatch({ status: 'payment_processing', stripePaymentIntentId: 'pi_won2' });
+    await seedAllocation(batch.id);
+    const { stripe } = mockStripe({ retrieveStatus: 'succeeded' });
+
+    expect(await releaseBatch(db, stripe, batch, 'funding_timeout')).toBe('payment_won');
+
+    const after = await reload(batch.id);
+    expect(after.status).toBe('funded');
+    expect(after.stripeChargeId).toBe('ch_pi_won2');
+    expect(after.fundedAt).not.toBeNull();
+  });
+
+  it('the executor stops mid-batch when the batch is frozen under it', async () => {
+    const batch = await seedBatch({
+      status: 'transferring',
+      stripeChargeId: 'ch_freeze',
+      fundedAt: new Date(),
+    });
+    await seedAllocation(batch.id);
+    await db(TABLES.HostedFundingBatch).where({ id: batch.id }).update({ status: 'funding_disputed' });
+
+    const transfersCreate = vi.fn();
+    const stripe = { transfers: { create: transfersCreate, list: vi.fn() } } as unknown as Stripe;
+    const { runTransferExecutor } = await import('../funding/executor.js');
+    await runTransferExecutor(db, { stripe });
+
+    expect(transfersCreate).not.toHaveBeenCalled();
   });
 });

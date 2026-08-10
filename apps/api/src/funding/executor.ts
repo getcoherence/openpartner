@@ -125,6 +125,20 @@ async function executeBatch(
   }
 
   for (const [partnerId, group] of byPartner) {
+    // Re-read the batch status before EACH transfer. A dispute webhook or
+    // the reconcile sweep can freeze the batch (→ funding_disputed) while
+    // we're working through its partners; the in-memory row we CASed to
+    // `transferring` at the top would otherwise keep paying money out of
+    // a charge that has been clawed back.
+    const live = (await db(TABLES.HostedFundingBatch)
+      .where({ id: batch.id })
+      .first(['status'])) as { status: string } | undefined;
+    if (live?.status !== 'transferring') {
+      console.warn(
+        `[funding] batch ${batch.id} left 'transferring' mid-run (now ${live?.status ?? 'missing'}) — stopping before partner ${partnerId}`,
+      );
+      return;
+    }
     await executePartnerTransfer(db, stripe, batch, partnerId, group, now(), result);
   }
 

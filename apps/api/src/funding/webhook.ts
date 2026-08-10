@@ -39,6 +39,18 @@ const FUNDING_EVENT_TYPES = new Set([
   'transfer.reversed',
 ]);
 
+/**
+ * Another worker holds an unfinished claim on this event. The caller must
+ * turn this into a non-2xx so Stripe redelivers — acknowledging would end
+ * delivery for an event that is not yet processed.
+ */
+export class InboxEventHeldError extends Error {
+  constructor(public stripeEventId: string) {
+    super(`funding webhook ${stripeEventId} is being processed by another worker`);
+    this.name = 'InboxEventHeldError';
+  }
+}
+
 function fundingBatchIdOf(event: Stripe.Event): string | null {
   const obj = event.data.object as { metadata?: Record<string, string> | null };
   return obj?.metadata?.openpartner_funding_batch_id ?? null;
@@ -69,8 +81,15 @@ export async function handleFundingEvent(
   // blocks concurrent workers, but a claim whose worker died is taken
   // over by a later redelivery instead of swallowing the event forever
   // (inbox.ts).
-  if (!(await claimInboxEvent(db, event.id, event.type))) {
-    return 'inbox_replay';
+  const claim = await claimInboxEvent(db, event.id, event.type);
+  if (claim.status === 'done') return 'inbox_replay';
+  if (claim.status === 'held') {
+    // Unfinished and owned by someone else. Do NOT acknowledge: a 2xx
+    // here tells Stripe the event is delivered, and if that worker dies
+    // the redelivery we're refusing is the only thing that would ever
+    // process it. Throwing → 5xx → Stripe retries later, by which point
+    // the lease has either completed or expired for takeover.
+    throw new InboxEventHeldError(event.id);
   }
 
   let outcome: string;
@@ -80,10 +99,12 @@ export async function handleFundingEvent(
     // Drop the claim, then rethrow → 5xx → Stripe redelivers, and the
     // redelivery is processed at once rather than waiting out the lease.
     // Every handler is idempotent, so re-running is safe.
-    await releaseInboxClaim(db, event.id);
+    await releaseInboxClaim(db, event.id, claim.token);
     throw err;
   }
-  await stampInboxOutcome(db, event.id, outcome);
+  // Scoped to our token: if our lease expired and another worker took
+  // over, this loses and THEY own the outcome.
+  await stampInboxOutcome(db, event.id, outcome, claim.token);
   return outcome;
 }
 
@@ -220,19 +241,26 @@ export async function handleTransferReversed(
     const commissions = (await db(TABLES.Commission)
       .where({ payoutId: payout.id })) as CommissionRow[];
     for (const c of commissions) {
-      const already = await db(TABLES.CommissionAdjustment)
-        .where({ commissionId: c.id, reason: 'transfer_reversed' })
-        .first(['id']);
-      if (already) continue;
-      await db(TABLES.CommissionAdjustment).insert({
-        id: ulid(),
-        tenantId: c.tenantId,
-        commissionId: c.id,
-        amount: `-${c.amount}`,
-        currency: c.currency,
-        reason: 'transfer_reversed',
-        metadata: { stripeTransferId: transfer.id },
-        createdAt: new Date(),
+      // check-then-insert is only safe under a lock: this handler can run
+      // concurrently with itself (a redelivery taking over an expired
+      // lease) and with the reconcile sweep, and CommissionAdjustment has
+      // no unique constraint to catch a duplicate clawback.
+      await db.transaction(async (trx) => {
+        await trx(TABLES.Commission).where({ id: c.id }).forUpdate().first(['id']);
+        const already = await trx(TABLES.CommissionAdjustment)
+          .where({ commissionId: c.id, reason: 'transfer_reversed' })
+          .first(['id']);
+        if (already) return;
+        await trx(TABLES.CommissionAdjustment).insert({
+          id: ulid(),
+          tenantId: c.tenantId,
+          commissionId: c.id,
+          amount: `-${c.amount}`,
+          currency: c.currency,
+          reason: 'transfer_reversed',
+          metadata: { stripeTransferId: transfer.id },
+          createdAt: new Date(),
+        });
       });
     }
   } else {
