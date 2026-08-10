@@ -846,3 +846,114 @@ describe.skipIf(skipIntegration)('review follow-ups', () => {
     expect(transfersCreate).not.toHaveBeenCalled();
   });
 });
+
+// ---- Round-2 review fixes (Codex, 2026-08-09) ------------------------------
+
+describe.skipIf(skipIntegration)('round-2 hardening', () => {
+  it('reclaims allocations even when the batch cannot be frozen', async () => {
+    // The blocker: the status escalation ran BEFORE the reclaim, and
+    // moving a released batch back to a non-terminal status raises on the
+    // one-open-batch unique index whenever a newer batch exists. The throw
+    // skipped the reclaim entirely — leaving a live debit AND freed
+    // commissions, i.e. the double-charge this path exists to prevent.
+    await seedAuthorization();
+    const batch = await seedBatch({ status: 'reserved' });
+    const allocationId = await seedAllocation(batch.id);
+    const { stripe, cancel } = mockStripe({
+      duringCreate: async () => {
+        // Release frees the allocations and closes the batch…
+        await db(TABLES.HostedFundingAllocation)
+          .where({ batchId: batch.id })
+          .update({ state: 'released' });
+        await db(TABLES.HostedFundingBatch)
+          .where({ id: batch.id })
+          .update({ status: 'released', releasedAt: new Date() });
+        // …and a NEWER batch for the same tenant/currency opens.
+        await seedBatch({ status: 'reserved' });
+      },
+      cancelThrows: new Error('PaymentIntent is processing and cannot be canceled'),
+    });
+
+    await runFundingCollector(db, { stripe });
+
+    expect(cancel).toHaveBeenCalledOnce();
+    // The allocation is back under the batch that has the live debit.
+    const allocation = await db(TABLES.HostedFundingAllocation).where({ id: allocationId }).first();
+    expect(allocation.state).toBe('reserved');
+    // And the PI is recorded so an operator can find the money.
+    expect((await reload(batch.id)).stripePaymentIntentId).toMatch(/^pi_/);
+  });
+
+  it('a refund on an already-settled batch is recorded, not forced into the open-batch index', async () => {
+    const settled = await seedBatch({
+      status: 'settled',
+      stripeChargeId: 'ch_settled',
+      fundedAt: new Date(),
+      settledAt: new Date(),
+    });
+    // A newer batch is open for the same tenant/currency.
+    await seedBatch({ status: 'reserved' });
+
+    const { recordFundingChargeClawback } = await import('../funding/webhook.js');
+    const outcome = await recordFundingChargeClawback(db, settled.id, 'charge.refunded');
+
+    expect(outcome).toMatch(/^clawback_on_settled:/);
+    const after = await reload(settled.id);
+    expect(after.status).toBe('settled'); // not dragged back into the index
+    expect(after.failureReason).toBe('charge.refunded');
+  });
+
+  it('a non-terminal batch is still frozen by the same path', async () => {
+    const batch = await seedBatch({ status: 'funded', stripeChargeId: 'ch_f', fundedAt: new Date() });
+    const { recordFundingChargeClawback } = await import('../funding/webhook.js');
+
+    expect(await recordFundingChargeClawback(db, batch.id, 'charge.dispute.created')).toBe(
+      'funding_disputed',
+    );
+    expect((await reload(batch.id)).status).toBe('funding_disputed');
+  });
+
+  it('the sweep rotates, so a capped run covers different rows on different days', async () => {
+    for (let i = 0; i < 4; i += 1) {
+      const b = await seedBatch({ status: 'settled', stripeChargeId: `ch_r${i}`, fundedAt: new Date() });
+      await seedAllocation(b.id);
+    }
+    const { stripe } = mockStripe();
+
+    const dayOne = await runFundingReconciliation(db, {
+      stripe,
+      sweepLimit: 2,
+      now: () => new Date('2026-08-10T05:30:00Z'),
+    });
+    const dayTwo = await runFundingReconciliation(db, {
+      stripe,
+      sweepLimit: 2,
+      now: () => new Date('2026-08-11T05:30:00Z'),
+    });
+
+    expect(dayOne.sweepSkipped).toHaveLength(2);
+    expect(dayTwo.sweepSkipped).toHaveLength(2);
+    // Different days deal a different hand, so nothing is starved forever.
+    expect(dayOne.sweepSkipped).not.toEqual(dayTwo.sweepSkipped);
+  });
+
+  it('resuming a release does not reset the clock that detects a stuck one', async () => {
+    // casBatch bumps updatedAt, and reconcile decides "stuck" from
+    // updatedAt — so a release retrying every tick used to refresh its own
+    // alert forever.
+    const batch = await seedBatch({ status: 'invoicing' });
+    await seedAllocation(batch.id);
+    const failing = mockStripe({ searchThrows: new Error('stripe down') });
+    await releaseBatch(db, failing.stripe, batch, 'funding_timeout');
+    await db(TABLES.HostedFundingBatch)
+      .where({ id: batch.id })
+      .update({ updatedAt: new Date(Date.now() - 30 * 60 * 60 * 1000) });
+
+    // The collector resumes it and fails again…
+    await runFundingCollector(db, { stripe: failing.stripe });
+
+    // …and reconcile still sees it as stuck.
+    const report = await runFundingReconciliation(db, { stripe: mockStripe().stripe });
+    expect(report.attentionBatches).toContain(batch.id);
+  });
+});

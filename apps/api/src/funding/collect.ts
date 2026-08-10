@@ -370,20 +370,41 @@ async function abandonOrphanPaymentIntent(
     await db(TABLES.HostedFundingBatch)
       .where({ id: batch.id })
       .update({ stripePaymentIntentId: pi.id, updatedAt: new Date() });
-    await casBatch(
-      db,
-      batch.id,
-      ['released', 'release_requested', 'funding_failed', 'payment_processing'],
-      'recovery_required',
-      { failureReason: `orphan_payment_intent:${pi.id}` },
-    );
-    // The release already freed this batch's allocations, and a live debit
-    // now exists for them. Reclaim the ones nothing else has picked up
-    // yet, so the commissions can't also be charged by a NEW batch — that
-    // would debit the brand twice for the same money.
+
+    // ORDER MATTERS. Reclaiming the allocations is the part that actually
+    // prevents a second debit, so it runs FIRST and unconditionally. The
+    // status escalation below can legitimately fail — moving a released
+    // batch back to a non-terminal status violates the one-open-batch
+    // unique index if a newer batch already exists — and casBatch raises
+    // on that rather than returning null. Doing the escalation first meant
+    // the throw skipped the reclaim entirely, leaving a live debit and
+    // freed commissions: exactly the double-charge this path exists to
+    // stop.
     const reclaimed = await reclaimReleasedAllocations(db, batch.id);
+    const stillFree = await db(TABLES.HostedFundingAllocation)
+      .where({ batchId: batch.id, state: 'released' })
+      .count<{ count: string }[]>('* as count')
+      .first();
+    const unreclaimed = Number((stillFree as { count?: string } | undefined)?.count ?? 0);
+
+    let frozen = false;
+    try {
+      frozen = !!(await casBatch(
+        db,
+        batch.id,
+        ['released', 'release_requested', 'funding_failed', 'payment_processing'],
+        'recovery_required',
+        { failureReason: `orphan_payment_intent:${pi.id}` },
+      ));
+    } catch (casErr) {
+      // Almost certainly the open-batch unique index: a newer batch for
+      // this tenant/currency is already live. The batch stays `released`
+      // and reconciliation skips released batches, so the alert below is
+      // the only thing that will surface it.
+      console.error(`[funding] batch ${batch.id}: could not freeze as recovery_required`, casErr);
+    }
     console.error(
-      `[funding] ALERT: batch ${batch.id} was released while PaymentIntent ${pi.id} was in flight and the PI could not be canceled (${message}) — batch frozen recovery_required, ${reclaimed} allocation(s) reclaimed; operator reconciliation required`,
+      `[funding] ALERT: batch ${batch.id} was released while PaymentIntent ${pi.id} was in flight and the PI could not be canceled (${message}) — ${reclaimed} allocation(s) reclaimed, ${unreclaimed} already taken by a newer batch, batch ${frozen ? 'frozen recovery_required' : 'STILL RELEASED (could not freeze — a newer batch is open)'}; operator reconciliation required${unreclaimed > 0 ? ' — COMMISSIONS MAY BE DOUBLE-CHARGED' : ''}`,
     );
   }
 }

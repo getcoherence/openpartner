@@ -160,17 +160,7 @@ async function routeFundingEvent(
       // funding_disputed stops the executor cold (it only consumes
       // funded/transferring). Transfer reversals + the receivables ledger
       // are an operator flow — this handler makes the state loud and safe.
-      const moved = await casBatch(
-        db,
-        batchId!,
-        ['payment_processing', 'funded', 'transferring', 'settled', 'settled_with_residual'],
-        'funding_disputed',
-        { failureReason: event.type },
-      );
-      console.error(
-        `[funding] ALERT: funding charge ${event.type} on batch ${batchId} — batch ${moved ? 'frozen as funding_disputed' : `NOT transitioned (stale CAS)`}; operator action required`,
-      );
-      return moved ? 'funding_disputed' : 'dispute_stale_cas';
+      return recordFundingChargeClawback(db, batchId!, event.type);
     }
     case 'transfer.reversed': {
       return handleTransferReversed(db, event.data.object as Stripe.Transfer, intentId!);
@@ -181,11 +171,97 @@ async function routeFundingEvent(
 }
 
 /**
+ * The brand's funding charge was refunded or disputed.
+ *
+ * Non-terminal batches are FROZEN as `funding_disputed`, which stops the
+ * executor (it only consumes funded/transferring).
+ *
+ * Terminal ones — `settled` / `settled_with_residual` — are deliberately
+ * NOT moved. `funding_disputed` is inside the "one open batch per
+ * tenant/currency" unique index, so dragging a historical batch back into
+ * it fails outright whenever a newer batch is open, and the failure took
+ * the whole handler down with it (webhook 500s, sweep logged an
+ * exception). Nothing is gained by the transition either: a settled batch
+ * has already transferred, so there is nothing left to stop. The clawback
+ * is recorded on the row and alerted for operator recovery instead.
+ *
+ * Shared by the webhook and the daily reconcile sweep so both behave
+ * identically.
+ */
+export async function recordFundingChargeClawback(
+  db: Knex,
+  batchId: string,
+  reason: string,
+): Promise<string> {
+  const moved = await casBatch(
+    db,
+    batchId,
+    ['payment_processing', 'funded', 'transferring'],
+    'funding_disputed',
+    { failureReason: reason },
+  );
+  if (moved) {
+    console.error(
+      `[funding] ALERT: funding charge ${reason} on batch ${batchId} — batch frozen as funding_disputed; operator action required`,
+    );
+    return 'funding_disputed';
+  }
+
+  const batch = (await db(TABLES.HostedFundingBatch)
+    .where({ id: batchId })
+    .first(['status', 'failureReason'])) as
+    | { status: string; failureReason: string | null }
+    | undefined;
+  if (!batch) return 'batch_not_found';
+
+  if (['settled', 'settled_with_residual'].includes(batch.status)) {
+    // Record without changing status — see the note above.
+    await db(TABLES.HostedFundingBatch)
+      .where({ id: batchId })
+      .update({ failureReason: reason, updatedAt: new Date() });
+    console.error(
+      `[funding] ALERT: funding charge ${reason} on ALREADY-SETTLED batch ${batchId} — money was already transferred to partners; recovery is a receivable, operator action required`,
+    );
+    return `clawback_on_settled:${batch.status}`;
+  }
+
+  console.error(
+    `[funding] ALERT: funding charge ${reason} on batch ${batchId} (${batch.status}) — no transition applied; operator action required`,
+  );
+  return `dispute_stale_cas:${batch.status}`;
+}
+
+/**
  * A partner-bound transfer was reversed (spec §4 PayoutReversal, finding
  * 11). Payout state is DERIVED from the reversal ledger; Commission rows
  * are never flipped paid → reversed — a compensating CommissionAdjustment
  * records the clawback when the payout is fully reversed.
  */
+async function allReversalsOf(
+  db: Knex,
+  transfer: Stripe.Transfer,
+): Promise<Stripe.TransferReversal[]> {
+  const embedded = transfer.reversals?.data ?? [];
+  if (!transfer.reversals?.has_more) return embedded;
+  const { requireStripe } = await import('../stripe.js');
+  const stripe = requireStripe();
+  const all = [...embedded];
+  let startingAfter = embedded[embedded.length - 1]?.id;
+  for (let page = 0; page < 20 && startingAfter; page += 1) {
+    const next = await stripe.transfers.listReversals(transfer.id, {
+      limit: 100,
+      starting_after: startingAfter,
+    });
+    all.push(...next.data);
+    if (!next.has_more || next.data.length === 0) break;
+    startingAfter = next.data[next.data.length - 1]!.id;
+  }
+  console.warn(
+    `[funding] transfer ${transfer.id} had more than one page of reversals — paged ${all.length} total`,
+  );
+  return all;
+}
+
 export async function handleTransferReversed(
   db: Knex,
   transfer: Stripe.Transfer,
@@ -202,7 +278,14 @@ export async function handleTransferReversed(
   if (!payout) return 'payout_not_found';
 
   // Record every reversal exactly once (unique stripeReversalId).
-  const reversals = transfer.reversals?.data ?? [];
+  //
+  // The embedded list is only the ten most recent, so a transfer reversed
+  // in many small pieces would be under-counted — and under-counting is
+  // what decides `partially_reversed` vs `reversed`, i.e. whether the
+  // clawback adjustments get written at all. Page the full list when
+  // Stripe says there is more (same lesson as the transfer-listing
+  // pagination in #71).
+  const reversals = await allReversalsOf(db, transfer);
   let recorded = 0;
   for (const reversal of reversals) {
     const inserted = await db(TABLES.PayoutReversal)

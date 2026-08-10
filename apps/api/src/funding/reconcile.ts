@@ -16,6 +16,7 @@
  *      state, which by definition cannot see a lost webhook.
  */
 
+import { createHash } from 'node:crypto';
 import type Stripe from 'stripe';
 import type { Knex } from 'knex';
 import { TABLES, type HostedFundingBatchRow } from '@openpartner/db';
@@ -57,6 +58,22 @@ const STRIPE_SWEEP_LIMIT = 50;
  *  dispute window is 120 days; 180 gives margin. Money older than this is
  *  settled history and does not need re-checking every night. */
 const REVERSAL_HORIZON_DAYS = 180;
+
+/**
+ * Deterministic per-day shuffle. Every row's position depends on its id
+ * AND the date, so a capped sweep checks a different slice each run and
+ * covers the whole set over time — instead of re-checking one prefix
+ * forever. Deterministic within a day so a re-run is idempotent.
+ */
+function rotateForSweep<T>(rows: T[], idOf: (row: T) => string, now: Date): T[] {
+  const day = now.toISOString().slice(0, 10);
+  return [...rows].sort((a, b) =>
+    createHash('sha1').update(day + idOf(a)).digest('hex') <
+    createHash('sha1').update(day + idOf(b)).digest('hex')
+      ? -1
+      : 1,
+  );
+}
 
 export async function runFundingReconciliation(
   db: Knex,
@@ -195,15 +212,20 @@ export async function runFundingReconciliation(
     return report; // no Stripe configured (selfhost) — nothing to sweep
   }
 
-  if (funded.length > sweepLimit) {
-    // Never let a cap look like a clean bill of health.
-    const skipped = funded.slice(sweepLimit);
+  // ROTATE, don't just cap. A fixed order plus a fixed prefix meant the
+  // same head of the list was re-checked every night while everything
+  // behind it was never checked at all — reporting the skipped ids made
+  // that visible but didn't fix the scheduling. Ordering by a per-day
+  // hash gives every row a turn, so coverage is eventually complete.
+  const rotated = rotateForSweep(funded, (b) => b.id, now());
+  if (rotated.length > sweepLimit) {
+    const skipped = rotated.slice(sweepLimit);
     report.sweepSkipped.push(...skipped.map((b) => b.id));
     console.error(
-      `[funding-reconcile] ALERT: ${funded.length} batches inside the ${REVERSAL_HORIZON_DAYS}d reversal horizon exceeds the ${sweepLimit}/run cap — NOT checked this run: ${skipped.map((b) => b.id).join(', ')}`,
+      `[funding-reconcile] ${rotated.length} batches inside the ${REVERSAL_HORIZON_DAYS}d reversal horizon exceeds the ${sweepLimit}/run cap — deferred to a later run: ${skipped.map((b) => b.id).join(', ')}`,
     );
   }
-  for (const batch of funded.slice(0, sweepLimit)) {
+  for (const batch of rotated.slice(0, sweepLimit)) {
     try {
       const charge = await stripe.charges.retrieve(batch.stripeChargeId!, {
         expand: ['balance_transaction'],
@@ -217,19 +239,19 @@ export async function runFundingReconciliation(
       }
       const clawedBack = charge.refunded || (charge.amount_refunded ?? 0) > 0 || charge.disputed;
       if (clawedBack && batch.status !== 'funding_disputed') {
-        // Same transition the webhook would have made (webhook.ts) — the
-        // executor only consumes funded/transferring, so this stops any
-        // further transfer out of money that came back.
-        const moved = await casBatch(
+        // Exactly what the webhook would have done — shared so the two
+        // paths can't drift, and so the settled case (which must NOT be
+        // dragged back into the open-batch unique index) is handled the
+        // same way in both.
+        const { recordFundingChargeClawback } = await import('./webhook.js');
+        const outcome = await recordFundingChargeClawback(
           db,
           batch.id,
-          ['funded', 'transferring', 'settled', 'settled_with_residual'],
-          'funding_disputed',
-          { failureReason: 'reconcile_detected_refund_or_dispute' },
+          'reconcile_detected_refund_or_dispute',
         );
         report.missedRefunds.push(batch.id);
         console.error(
-          `[funding-reconcile] ALERT: funding charge ${charge.id} for batch ${batch.id} is refunded/disputed but no webhook ever arrived — batch ${moved ? 'frozen as funding_disputed' : 'NOT transitioned'}; operator action required`,
+          `[funding-reconcile] ALERT: funding charge ${charge.id} for batch ${batch.id} is refunded/disputed but no webhook ever arrived (${outcome})`,
         );
       }
     } catch (err) {
@@ -239,23 +261,25 @@ export async function runFundingReconciliation(
 
   // 3b. Same argument for the transfer side: a missed `transfer.reversed`
   // leaves a Payout recorded `paid` on money that was clawed back.
-  // Same horizon argument as the charge sweep: reversals land within the
-  // window, so bound by age and check everything inside it.
+  // NO age horizon on this side. Refunds have a documented deadline;
+  // transfer reversals do not — Stripe places no age limit on reversing a
+  // transfer, so cutting the sweep off at 180 days would simply stop
+  // looking at money that can still come back. Rotation is what keeps the
+  // unbounded set affordable.
   const confirmedAll = (await db(TABLES.HostedFundingTransfer)
     .where({ state: 'confirmed' })
-    .whereNotNull('stripeTransferId')
-    .where('updatedAt', '>=', horizon)
-    .orderBy('updatedAt', 'desc')) as Array<{
+    .whereNotNull('stripeTransferId')) as Array<{
     id: string;
     stripeTransferId: string;
     payoutId: string | null;
   }>;
-  const confirmed = confirmedAll.slice(0, sweepLimit);
-  if (confirmedAll.length > sweepLimit) {
-    const skipped = confirmedAll.slice(sweepLimit);
+  const rotatedTransfers = rotateForSweep(confirmedAll, (i) => i.id, now());
+  const confirmed = rotatedTransfers.slice(0, sweepLimit);
+  if (rotatedTransfers.length > sweepLimit) {
+    const skipped = rotatedTransfers.slice(sweepLimit);
     report.sweepSkipped.push(...skipped.map((i) => i.id));
     console.error(
-      `[funding-reconcile] ALERT: ${confirmedAll.length} confirmed transfers inside the ${REVERSAL_HORIZON_DAYS}d horizon exceeds the ${sweepLimit}/run cap — NOT checked this run: ${skipped.map((i) => i.id).join(', ')}`,
+      `[funding-reconcile] ${rotatedTransfers.length} confirmed transfers exceeds the ${sweepLimit}/run cap — deferred to a later run: ${skipped.map((i) => i.id).join(', ')}`,
     );
   }
   for (const intent of confirmed) {

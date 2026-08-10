@@ -37,13 +37,25 @@ export async function releaseBatch(
   // and without re-entry that batch would sit in release_requested with
   // nothing able to pick it up again — no collector state matched it and
   // a second releaseBatch call just lost the CAS.
-  const claimed = await casBatch(
-    db,
-    batch.id,
-    ['reserved', 'invoicing', 'payment_processing', 'funding_failed', 'release_requested'],
-    'release_requested',
-    { failureReason: reason },
-  );
+  //
+  // Re-entry must NOT rewrite the row. `casBatch` bumps `updatedAt`, and
+  // reconcile decides a release is stuck from `updatedAt` — so a release
+  // that fails every five-minute tick would refresh its own alert clock
+  // forever and never be reported. When we're already in
+  // release_requested there is nothing to transition anyway: just carry
+  // on to the money side.
+  const claimed =
+    batch.status === 'release_requested'
+      ? ((await db(TABLES.HostedFundingBatch)
+          .where({ id: batch.id, status: 'release_requested' })
+          .first()) as HostedFundingBatchRow | undefined) ?? null
+      : await casBatch(
+          db,
+          batch.id,
+          ['reserved', 'invoicing', 'payment_processing', 'funding_failed'],
+          'release_requested',
+          { failureReason: reason },
+        );
   if (!claimed) return 'lost_cas';
 
   // Step 1b — "no PI on the row" does NOT mean "no PI at Stripe". A
