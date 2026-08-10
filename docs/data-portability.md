@@ -106,10 +106,10 @@ destination already baked in and no meta-commands at all.
 
 `?tenantId=<id>` bakes a literal tenant id instead of the psql variable —
 plain SQL for clients that don't run psql meta-commands. The value must be
-id-shaped (`[A-Za-z0-9_-]{1,64}`) and is **rejected**, not escaped, if it
-isn't: it lands in a psql `\set` and a header comment, and psql
-meta-commands are line-oriented, so a newline in it would let the caller
-plant `\! <shell command>` in a file someone else later restores.
+id-shaped (`[A-Za-z0-9_-]{1,64}`) and is **rejected with a 400**, not
+escaped, if it isn't. It lands in a header comment of a file that psql
+executes, and psql's meta-commands are line-oriented, so a newline would
+end the comment and start a line the restoring machine obeys.
 
 Per-table dumps: `GET /export/<Table>.sql` (also `.json`, `.csv`).
 
@@ -130,6 +130,36 @@ correctly — `'[{"type":"percent"}]'` versus `'{"saas","devtools"}'` — and
 the importer serializes json/jsonb columns itself instead of letting the
 driver guess. Before that, any program with compound commission rules
 failed to re-import.
+
+## What is deliberately NOT in the bundle
+
+Being explicit matters more than being complete here: a promise the code
+doesn't keep is worse than a documented gap.
+
+**Never exported** (credentials and operational state, not customer data):
+`Session`, `MagicLinkToken`, `ApiKey`, `PlatformSession*`, `PlatformAdmin*`,
+`WebhookDelivery`, `NetworkOutbox`, `StripeWebhookInbox`.
+
+**Not exported yet — known gaps, not decisions:**
+
+- `Tenant` — brand name, logo, colours, payout settings. The destination
+  tenant row has to exist before an import can run, so restoring one needs
+  a merge strategy rather than an insert.
+- `Config` — program name, support email and other UI-managed settings.
+- `PartnerPostback`, `BrandAsset` — customer-configured integration and
+  content.
+- The hosted funding sidecars (`HostedFundingBatch`, `HostedFundingAllocation`,
+  `HostedFundingTransfer`, `HostedFundingAuthorization`, `HostedBillingState`)
+  and `PayoutReversal`. `docs/payout-funding.md` §4 says these are
+  exportable sidecars, and today they are not — `PayoutReversal` is the
+  material one, since payout status is *derived* from it, so a restored
+  database can hold a `reversed` payout with no reversal ledger behind it.
+  Exporting them needs an FK decision first:
+  `HostedFundingAuthorization.adminId` references `Admin`, which is
+  deliberately never exported.
+
+Until those land, an export is a complete record of **attribution and the
+commission/payout ledger**, not of hosted billing operations.
 
 ## Adding a table to the bundle
 

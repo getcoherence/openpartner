@@ -9,9 +9,11 @@
  */
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import request from 'supertest';
 import { ulid } from 'ulid';
 import { TABLES, DEFAULT_TENANT_ID } from '@openpartner/db';
 import { db } from '../db.js';
+import { createApp } from '../app.js';
 import {
   EXPORT_TABLES,
   SCHEMA_VERSION,
@@ -438,8 +440,8 @@ describe.skipIf(skipIntegration)('SQL dump restore safety', () => {
 
   it('refuses a tenant id that could carry a psql meta-command', () => {
     // `\!` at the start of a line makes psql run a shell command on the
-    // machine doing the restore. The value reaches a `\set` and a comment,
-    // so it is validated rather than escaped.
+    // machine doing the restore. The value lands in a header comment of a
+    // file psql executes, so it is validated rather than escaped.
     expect(isSafeTenantId(TENANT)).toBe(true);
     expect(isSafeTenantId("x\n\\! rm -rf /\n--")).toBe(false);
     expect(isSafeTenantId("x'; drop table \"Partner\"; --")).toBe(false);
@@ -492,5 +494,32 @@ describe.skipIf(skipIntegration)('SQL dump restore safety', () => {
 
     const partner = await db(TABLES.Partner).where({ id: partnerId }).first();
     expect(partner.name).toBe('2026-08-09T00:00:00');
+  });
+});
+
+describe.skipIf(skipIntegration)('SQL route validation', () => {
+  const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+
+  it('400s a malformed tenantId rather than quietly ignoring it', async () => {
+    const app = createApp();
+    // A repeated parameter parses as an array. Treating "present but not a
+    // string" as absent returned a portable 200 dump instead of the 400
+    // the contract promises.
+    const repeated = await request(app)
+      .get('/export.sql?tenantId=a&tenantId=b')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(repeated.status).toBe(400);
+
+    const newline = await request(app)
+      .get(`/export.sql?tenantId=${encodeURIComponent('x\n\\! whoami')}`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(newline.status).toBe(400);
+
+    // …and a well-formed one still works.
+    const ok = await request(app)
+      .get(`/export.sql?tenantId=${TENANT}`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(ok.status).toBe(200);
+    expect(ok.text).toContain('BEGIN;');
   });
 });

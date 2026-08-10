@@ -114,8 +114,13 @@ exportRouter.get('/export.sql', requireAuth, requireAdmin, async (req, res) => {
  */
 function literalTenant(query: unknown): { tenantId?: string } | null {
   const raw = (query as Record<string, unknown> | undefined)?.tenantId;
-  if (typeof raw !== 'string' || raw.length === 0) return {};
-  if (!isSafeTenantId(raw)) return null;
+  if (raw === undefined) return {};
+  // PRESENT but not a scalar string — `?tenantId=a&tenantId=b` parses as
+  // an array — is a malformed request, not an absent parameter. Treating
+  // it as absent quietly returned a portable dump instead of the promised
+  // 400.
+  if (typeof raw !== 'string') return null;
+  if (raw.length === 0 || !isSafeTenantId(raw)) return null;
   return { tenantId: raw };
 }
 

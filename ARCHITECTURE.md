@@ -123,7 +123,7 @@ Every core table round-trips through `GET /export.json`. Two guarantees:
 1. **Stable schema.** Column shapes don't change within a major version. Additions are allowed; renames or removals are migrations with explicit export-compat handling.
 2. **No hosted-only fields on core tables.** If the hosted version needs metadata (billing customer IDs, rate-limit tokens), it goes in a sidecar table clearly labeled as optional. Self-host imports ignore it.
 
-Import is `POST /import` (selfhost-only — importing into a shared hosted DB would collide primary keys). Each table uses `onConflict('id').ignore()`, so partial-then-resumed imports and re-imports of the same bundle are no-ops.
+Import is `POST /import` (selfhost-only — importing into a shared hosted DB would collide primary keys). Each table uses its OWN primary key as the conflict target with `.ignore()` (`PartnerCommission` is keyed on `partnerId`, not `id`), so partial-then-resumed imports and re-imports of the same bundle are no-ops.
 
 ## Observability
 
