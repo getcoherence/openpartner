@@ -16,7 +16,6 @@
  *      state, which by definition cannot see a lost webhook.
  */
 
-import { createHash } from 'node:crypto';
 import type Stripe from 'stripe';
 import type { Knex } from 'knex';
 import { TABLES, type HostedFundingBatchRow } from '@openpartner/db';
@@ -60,19 +59,29 @@ const STRIPE_SWEEP_LIMIT = 50;
 const REVERSAL_HORIZON_DAYS = 180;
 
 /**
- * Deterministic per-day shuffle. Every row's position depends on its id
- * AND the date, so a capped sweep checks a different slice each run and
- * covers the whole set over time — instead of re-checking one prefix
- * forever. Deterministic within a day so a re-run is idempotent.
+ * Pick this run's slice as a sliding WINDOW over a stable ordering, so
+ * coverage is complete rather than probabilistic.
+ *
+ * The first attempt at this was a per-day hash shuffle, which sounds
+ * like rotation but isn't: each day re-deals independently, so at 10k
+ * rows and 50/day an individual row had a ~40% chance of never being
+ * checked at all. A window advancing one step per day visits every row
+ * within ceil(total/limit) days, by construction.
+ *
+ * No persisted cursor needed — the day number IS the cursor, which also
+ * means two workers on the same day pick the same slice.
  */
-function rotateForSweep<T>(rows: T[], idOf: (row: T) => string, now: Date): T[] {
-  const day = now.toISOString().slice(0, 10);
-  return [...rows].sort((a, b) =>
-    createHash('sha1').update(day + idOf(a)).digest('hex') <
-    createHash('sha1').update(day + idOf(b)).digest('hex')
-      ? -1
-      : 1,
-  );
+function sweepWindow<T>(rows: T[], idOf: (row: T) => string, limit: number, now: Date): {
+  due: T[];
+  deferred: T[];
+} {
+  if (rows.length <= limit) return { due: rows, deferred: [] };
+  const ordered = [...rows].sort((a, b) => (idOf(a) < idOf(b) ? -1 : 1));
+  const windows = Math.ceil(ordered.length / limit);
+  const day = Math.floor(now.getTime() / (24 * 60 * 60 * 1000));
+  const start = (day % windows) * limit;
+  const due = ordered.slice(start, start + limit);
+  return { due, deferred: ordered.filter((r) => !due.includes(r)) };
 }
 
 export async function runFundingReconciliation(
@@ -80,6 +89,10 @@ export async function runFundingReconciliation(
   deps: ReconcileDeps = {},
 ): Promise<ReconcileReport> {
   const now = deps.now ?? (() => new Date());
+  // One instant for the whole run. The job takes minutes; calling now()
+  // per use let a UTC day boundary split a single run across two sweep
+  // windows, which is exactly when coverage reasoning breaks down.
+  const runAt = now();
   const sweepLimit = deps.sweepLimit ?? STRIPE_SWEEP_LIMIT;
   const report: ReconcileReport = {
     batchesChecked: 0,
@@ -120,7 +133,7 @@ export async function runFundingReconciliation(
   }
 
   // 2a. Batches funded but not settled past the transfer deadline.
-  const deadline = new Date(now().getTime() - TRANSFER_DEADLINE_DAYS * 24 * 60 * 60 * 1000);
+  const deadline = new Date(runAt.getTime() - TRANSFER_DEADLINE_DAYS * 24 * 60 * 60 * 1000);
   for (const batch of open) {
     if (
       ['funded', 'transferring'].includes(batch.status) &&
@@ -143,7 +156,7 @@ export async function runFundingReconciliation(
     // something is durably wrong.
     if (
       batch.status === 'release_requested' &&
-      new Date(batch.updatedAt) < new Date(now().getTime() - 24 * 60 * 60 * 1000)
+      new Date(batch.updatedAt) < new Date(runAt.getTime() - 24 * 60 * 60 * 1000)
     ) {
       report.attentionBatches.push(batch.id);
       console.error(
@@ -156,6 +169,33 @@ export async function runFundingReconciliation(
         `[funding-reconcile] ALERT: batch ${batch.id} settled with ${batch.residualMinor} minor residual and no disposition`,
       );
     }
+  }
+
+  // 2a-bis. Live allocations under a TERMINAL batch. The orphan-PI
+  // recovery path can leave one: it reclaims allocations back to
+  // `reserved` and then fails to re-open the batch (the one-open-batch
+  // index refuses when a newer batch exists). Reservation won't re-take
+  // those commissions (the live-allocation index blocks it) and the
+  // invariant loop above skips released batches — so nothing surfaced it
+  // and the partner simply never got paid.
+  const orphanedAllocations = (await db(TABLES.HostedFundingAllocation)
+    .join(
+      TABLES.HostedFundingBatch,
+      `${TABLES.HostedFundingBatch}.id`,
+      `${TABLES.HostedFundingAllocation}.batchId`,
+    )
+    .whereIn(`${TABLES.HostedFundingAllocation}.state`, ['reserved', 'transfer_pending'])
+    .whereIn(`${TABLES.HostedFundingBatch}.status`, ['released', 'settled', 'settled_with_residual'])
+    .select(
+      `${TABLES.HostedFundingAllocation}.id as allocationId`,
+      `${TABLES.HostedFundingBatch}.id as batchId`,
+      `${TABLES.HostedFundingBatch}.status as batchStatus`,
+    )) as Array<{ allocationId: string; batchId: string; batchStatus: string }>;
+  for (const row of orphanedAllocations) {
+    report.attentionBatches.push(row.batchId);
+    console.error(
+      `[funding-reconcile] ALERT: allocation ${row.allocationId} is live under ${row.batchStatus} batch ${row.batchId} — its commission can never be re-reserved and will never be paid; operator action required`,
+    );
   }
 
   // 2b. Transfer intents needing reconciliation (the executor also
@@ -177,7 +217,7 @@ export async function runFundingReconciliation(
   // manual replay from the Stripe dashboard will apply it.
   const stuckEvents = (await db(TABLES.StripeWebhookInbox)
     .whereNull('outcome')
-    .where('processedAt', '<', new Date(now().getTime() - INBOX_STUCK_MS))
+    .where('processedAt', '<', new Date(runAt.getTime() - INBOX_STUCK_MS))
     .select('stripeEventId', 'type')) as Array<{ stripeEventId: string; type: string }>;
   report.unfinishedInboxEvents = stuckEvents.map((e) => e.stripeEventId);
   for (const e of stuckEvents) {
@@ -198,7 +238,7 @@ export async function runFundingReconciliation(
   // the oldest N of an ever-growing list (the first version) meant the
   // same 50 batches were re-checked forever while newer ones — the only
   // ones that can still change — were never looked at.
-  const horizon = new Date(now().getTime() - REVERSAL_HORIZON_DAYS * 24 * 60 * 60 * 1000);
+  const horizon = new Date(runAt.getTime() - REVERSAL_HORIZON_DAYS * 24 * 60 * 60 * 1000);
   const funded = open.filter(
     (b) =>
       b.stripeChargeId &&
@@ -217,15 +257,14 @@ export async function runFundingReconciliation(
   // behind it was never checked at all — reporting the skipped ids made
   // that visible but didn't fix the scheduling. Ordering by a per-day
   // hash gives every row a turn, so coverage is eventually complete.
-  const rotated = rotateForSweep(funded, (b) => b.id, now());
-  if (rotated.length > sweepLimit) {
-    const skipped = rotated.slice(sweepLimit);
-    report.sweepSkipped.push(...skipped.map((b) => b.id));
-    console.error(
-      `[funding-reconcile] ${rotated.length} batches inside the ${REVERSAL_HORIZON_DAYS}d reversal horizon exceeds the ${sweepLimit}/run cap — deferred to a later run: ${skipped.map((b) => b.id).join(', ')}`,
+  const chargeSlice = sweepWindow(funded, (b) => b.id, sweepLimit, runAt);
+  if (chargeSlice.deferred.length > 0) {
+    report.sweepSkipped.push(...chargeSlice.deferred.map((b) => b.id));
+    console.warn(
+      `[funding-reconcile] ${funded.length} batches inside the ${REVERSAL_HORIZON_DAYS}d reversal horizon exceeds the ${sweepLimit}/run cap — ${chargeSlice.deferred.length} deferred to a later window (every batch is checked within ${Math.ceil(funded.length / sweepLimit)} days)`,
     );
   }
-  for (const batch of rotated.slice(0, sweepLimit)) {
+  for (const batch of chargeSlice.due) {
     try {
       const charge = await stripe.charges.retrieve(batch.stripeChargeId!, {
         expand: ['balance_transaction'],
@@ -273,13 +312,12 @@ export async function runFundingReconciliation(
     stripeTransferId: string;
     payoutId: string | null;
   }>;
-  const rotatedTransfers = rotateForSweep(confirmedAll, (i) => i.id, now());
-  const confirmed = rotatedTransfers.slice(0, sweepLimit);
-  if (rotatedTransfers.length > sweepLimit) {
-    const skipped = rotatedTransfers.slice(sweepLimit);
-    report.sweepSkipped.push(...skipped.map((i) => i.id));
-    console.error(
-      `[funding-reconcile] ${rotatedTransfers.length} confirmed transfers exceeds the ${sweepLimit}/run cap — deferred to a later run: ${skipped.map((i) => i.id).join(', ')}`,
+  const transferSlice = sweepWindow(confirmedAll, (i) => i.id, sweepLimit, runAt);
+  const confirmed = transferSlice.due;
+  if (transferSlice.deferred.length > 0) {
+    report.sweepSkipped.push(...transferSlice.deferred.map((i) => i.id));
+    console.warn(
+      `[funding-reconcile] ${confirmedAll.length} confirmed transfers exceeds the ${sweepLimit}/run cap — ${transferSlice.deferred.length} deferred to a later window (every intent is checked within ${Math.ceil(confirmedAll.length / sweepLimit)} days)`,
     );
   }
   for (const intent of confirmed) {

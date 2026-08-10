@@ -44,6 +44,11 @@ const FUNDING_EVENT_TYPES = new Set([
  * turn this into a non-2xx so Stripe redelivers — acknowledging would end
  * delivery for an event that is not yet processed.
  */
+/** Pages of reversals we're willing to walk before giving up and asking
+ *  for a human. Deliberately finite — but a truncated result is reported,
+ *  never used to derive state. */
+const REVERSAL_PAGE_CAP = 20;
+
 export class InboxEventHeldError extends Error {
   constructor(public stripeEventId: string) {
     super(`funding webhook ${stripeEventId} is being processed by another worker`);
@@ -193,10 +198,16 @@ export async function recordFundingChargeClawback(
   batchId: string,
   reason: string,
 ): Promise<string> {
+  // EVERY non-terminal state, not just the mid-flight ones. Stripe does
+  // not order webhooks, so a refund can arrive while the batch sits in
+  // `reserved`, `invoicing`, `funding_failed` or `release_requested` —
+  // and confirm.ts explicitly allows release_requested → funded, so an
+  // acked-but-unapplied clawback could be followed by the batch funding
+  // and paying out normally.
   const moved = await casBatch(
     db,
     batchId,
-    ['payment_processing', 'funded', 'transferring'],
+    ['reserved', 'invoicing', 'payment_processing', 'funding_failed', 'release_requested', 'funded', 'transferring'],
     'funding_disputed',
     { failureReason: reason },
   );
@@ -240,24 +251,28 @@ export async function recordFundingChargeClawback(
 async function allReversalsOf(
   stripe: Stripe,
   transfer: Stripe.Transfer,
-): Promise<Stripe.TransferReversal[]> {
+): Promise<{ reversals: Stripe.TransferReversal[]; complete: boolean }> {
   const embedded = transfer.reversals?.data ?? [];
-  if (!transfer.reversals?.has_more) return embedded;
+  if (!transfer.reversals?.has_more) return { reversals: embedded, complete: true };
   const all = [...embedded];
   let startingAfter = embedded[embedded.length - 1]?.id;
-  for (let page = 0; page < 20 && startingAfter; page += 1) {
+  let complete = false;
+  for (let page = 0; page < REVERSAL_PAGE_CAP && startingAfter; page += 1) {
     const next = await stripe.transfers.listReversals(transfer.id, {
       limit: 100,
       starting_after: startingAfter,
     });
     all.push(...next.data);
-    if (!next.has_more || next.data.length === 0) break;
+    if (!next.has_more || next.data.length === 0) {
+      complete = true;
+      break;
+    }
     startingAfter = next.data[next.data.length - 1]!.id;
   }
   console.warn(
-    `[funding] transfer ${transfer.id} had more than one page of reversals — paged ${all.length} total`,
+    `[funding] transfer ${transfer.id} had more than one page of reversals — paged ${all.length}${complete ? ' (complete)' : ' (TRUNCATED)'}`,
   );
-  return all;
+  return { reversals: all, complete };
 }
 
 export async function handleTransferReversed(
@@ -284,7 +299,16 @@ export async function handleTransferReversed(
   // clawback adjustments get written at all. Page the full list when
   // Stripe says there is more (same lesson as the transfer-listing
   // pagination in #71).
-  const reversals = await allReversalsOf(stripe, transfer);
+  const { reversals, complete } = await allReversalsOf(stripe, transfer);
+  if (!complete) {
+    // Deriving `reversed` vs `partially_reversed` from a truncated ledger
+    // writes a terminal state that never self-corrects — every later run
+    // re-reads the same truncated prefix. Record nothing and escalate.
+    console.error(
+      `[funding] ALERT: transfer ${transfer.id} has more reversals than this job will page — payout state NOT derived; operator reconciliation required`,
+    );
+    return 'reversal_list_truncated';
+  }
   let recorded = 0;
   for (const reversal of reversals) {
     const inserted = await db(TABLES.PayoutReversal)

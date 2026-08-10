@@ -778,8 +778,8 @@ describe.skipIf(skipIntegration)('review follow-ups', () => {
 
     const report = await runFundingReconciliation(db, { stripe, sweepLimit: 2 });
 
-    expect(report.sweepSkipped).toHaveLength(1);
-    expect(batches).toContain(report.sweepSkipped[0]);
+    expect(report.sweepSkipped.length).toBeGreaterThan(0);
+    for (const id of report.sweepSkipped) expect(batches).toContain(id);
   });
 
   it('a release that could not finish is resumed by the next collector tick', async () => {
@@ -913,28 +913,53 @@ describe.skipIf(skipIntegration)('round-2 hardening', () => {
     expect((await reload(batch.id)).status).toBe('funding_disputed');
   });
 
-  it('the sweep rotates, so a capped run covers different rows on different days', async () => {
-    for (let i = 0; i < 4; i += 1) {
+  it('the sweep window covers EVERY row within ceil(total/limit) days', async () => {
+    // The first version of this was a per-day hash shuffle, which re-deals
+    // independently each day: at scale an individual row had a large
+    // chance of never being checked at all. Asserting "two days differ"
+    // passed for that too. This asserts the property that actually
+    // matters — complete coverage — by running the whole cycle.
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i += 1) {
       const b = await seedBatch({ status: 'settled', stripeChargeId: `ch_r${i}`, fundedAt: new Date() });
       await seedAllocation(b.id);
+      ids.push(b.id);
     }
-    const { stripe } = mockStripe();
+    const limit = 2;
+    const windows = Math.ceil(ids.length / limit); // 3 days to see all 5
 
-    const dayOne = await runFundingReconciliation(db, {
-      stripe,
-      sweepLimit: 2,
-      now: () => new Date('2026-08-10T05:30:00Z'),
-    });
-    const dayTwo = await runFundingReconciliation(db, {
-      stripe,
-      sweepLimit: 2,
-      now: () => new Date('2026-08-11T05:30:00Z'),
-    });
+    const everChecked = new Set<string>();
+    for (let day = 0; day < windows; day += 1) {
+      const { stripe, chargeRetrieve } = mockStripe();
+      const at = new Date(Date.UTC(2026, 7, 10 + day, 5, 30));
+      await runFundingReconciliation(db, { stripe, sweepLimit: limit, now: () => at });
+      for (const call of chargeRetrieve.mock.calls) {
+        const chargeId = call[0] as string;
+        const batch = await db(TABLES.HostedFundingBatch).where({ stripeChargeId: chargeId }).first();
+        if (batch) everChecked.add(batch.id);
+      }
+    }
 
-    expect(dayOne.sweepSkipped).toHaveLength(2);
-    expect(dayTwo.sweepSkipped).toHaveLength(2);
-    // Different days deal a different hand, so nothing is starved forever.
-    expect(dayOne.sweepSkipped).not.toEqual(dayTwo.sweepSkipped);
+    expect([...everChecked].sort()).toEqual([...ids].sort());
+  });
+
+  it('the same day always picks the same slice, so two workers agree', async () => {
+    for (let i = 0; i < 5; i += 1) {
+      const b = await seedBatch({ status: 'settled', stripeChargeId: `ch_s${i}`, fundedAt: new Date() });
+      await seedAllocation(b.id);
+    }
+    const at = new Date(Date.UTC(2026, 7, 12, 5, 30));
+    const first = await runFundingReconciliation(db, {
+      stripe: mockStripe().stripe,
+      sweepLimit: 2,
+      now: () => at,
+    });
+    const second = await runFundingReconciliation(db, {
+      stripe: mockStripe().stripe,
+      sweepLimit: 2,
+      now: () => at,
+    });
+    expect(second.sweepSkipped.sort()).toEqual(first.sweepSkipped.sort());
   });
 
   it('resuming a release does not reset the clock that detects a stuck one', async () => {
@@ -955,5 +980,113 @@ describe.skipIf(skipIntegration)('round-2 hardening', () => {
     // …and reconcile still sees it as stuck.
     const report = await runFundingReconciliation(db, { stripe: mockStripe().stripe });
     expect(report.attentionBatches).toContain(batch.id);
+  });
+});
+
+// ---- Round-3 review fixes (Codex, 2026-08-10) ------------------------------
+
+describe.skipIf(skipIntegration)('round-3 hardening', () => {
+  it('an out-of-order clawback freezes a batch that is only release_requested', async () => {
+    // confirm.ts allows release_requested → funded, so a refund that
+    // arrived while the batch sat there used to be acked without effect —
+    // and the batch could then fund and pay out normally.
+    const batch = await seedBatch({ status: 'release_requested' });
+    await seedAllocation(batch.id);
+    const { recordFundingChargeClawback } = await import('../funding/webhook.js');
+
+    expect(await recordFundingChargeClawback(db, batch.id, 'charge.refunded')).toBe('funding_disputed');
+    expect((await reload(batch.id)).status).toBe('funding_disputed');
+  });
+
+  it('a truncated reversal list never derives payout state', async () => {
+    const batch = await seedBatch({ status: 'settled', stripeChargeId: 'ch_t', fundedAt: new Date() });
+    const { commissionId, partnerId } = await seedCommission();
+    const payoutId = ulid();
+    await db(TABLES.Payout).insert({
+      id: payoutId,
+      tenantId: TENANT,
+      partnerId,
+      amount: '80.00',
+      currency: 'USD',
+      method: 'stripe_connect',
+      status: 'paid',
+      stripeTransferId: 'tr_trunc',
+      metadata: {},
+    });
+    await db(TABLES.Commission).where({ id: commissionId }).update({ status: 'paid', payoutId });
+    const intentId = ulid();
+    await db(TABLES.HostedFundingTransfer).insert({
+      id: intentId,
+      tenantId: TENANT,
+      batchId: batch.id,
+      partnerId,
+      currency: 'usd',
+      amountMinor: 8000,
+      destinationAccountId: 'acct_x',
+      idempotencyKey: `fbt:${intentId}`,
+      state: 'confirmed',
+      stripeTransferId: 'tr_trunc',
+      payoutId,
+    });
+
+    // Every page still says there's more — the ledger can't be completed.
+    const listReversals = vi.fn(async () => ({
+      data: [{ id: `trr_${Math.random()}`, amount: 1, created: 0, balance_transaction: null }],
+      has_more: true,
+    }));
+    const stripe = {
+      transfers: { listReversals },
+      paymentIntents: { search: vi.fn(), retrieve: vi.fn() },
+    } as unknown as Stripe;
+    const { handleTransferReversed } = await import('../funding/webhook.js');
+
+    const outcome = await handleTransferReversed(
+      db,
+      stripe,
+      {
+        id: 'tr_trunc',
+        reversed: true,
+        amount_reversed: 8000,
+        reversals: { data: [{ id: 'trr_0', amount: 1, created: 0 }], has_more: true },
+      } as unknown as Stripe.Transfer,
+      intentId,
+    );
+
+    expect(outcome).toBe('reversal_list_truncated');
+    // Untouched: no terminal state written from an incomplete ledger.
+    expect((await db(TABLES.Payout).where({ id: payoutId }).first()).status).toBe('paid');
+    expect(await db(TABLES.PayoutReversal).where({ payoutId }).first()).toBeUndefined();
+  });
+
+  it('a live allocation under a terminal batch is alerted, not silently stranded', async () => {
+    const batch = await seedBatch({ status: 'released', releasedAt: new Date() });
+    await seedAllocation(batch.id); // stays 'reserved'
+    const { stripe } = mockStripe();
+
+    const report = await runFundingReconciliation(db, { stripe });
+
+    expect(report.attentionBatches).toContain(batch.id);
+  });
+
+  it('a batch frozen mid-run cannot have a new transfer intent committed', async () => {
+    const batch = await seedBatch({
+      status: 'transferring',
+      stripeChargeId: 'ch_gate',
+      fundedAt: new Date(),
+    });
+    await seedAllocation(batch.id);
+    const { runTransferExecutor } = await import('../funding/executor.js');
+    const transfersCreate = vi.fn();
+    const stripe = {
+      transfers: { create: transfersCreate, list: vi.fn() },
+    } as unknown as Stripe;
+
+    // Freeze the batch AFTER the executor's own status read would have
+    // passed — the intent-creation transaction is the real gate.
+    await db(TABLES.HostedFundingBatch).where({ id: batch.id }).update({ status: 'funding_disputed' });
+    await runTransferExecutor(db, { stripe });
+
+    expect(transfersCreate).not.toHaveBeenCalled();
+    expect(await db(TABLES.HostedFundingTransfer).where({ batchId: batch.id }).first()).toBeUndefined();
   });
 });

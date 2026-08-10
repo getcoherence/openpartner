@@ -60,6 +60,12 @@ fundingRouter.get('/billing/funding', requireAuth, requireAdmin, async (req, res
       createdAt: b.createdAt,
       fundedAt: b.fundedAt,
       settledAt: b.settledAt,
+      // A refund or dispute on an ALREADY-SETTLED batch records itself
+      // here without changing status (moving a terminal batch back into
+      // the non-terminal set collides with the one-open-batch index). If
+      // this isn't surfaced, such a batch renders as a plain healthy
+      // "Settled" and the clawback is invisible to the operator.
+      failureReason: b.failureReason,
     })),
   });
 });

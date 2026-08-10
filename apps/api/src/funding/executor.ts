@@ -226,6 +226,22 @@ async function executePartnerTransfer(
     }
 
     intent = await db.transaction(async (trx) => {
+      // The batch must STILL be transferring at the moment we commit the
+      // intent. The per-partner status read before this is only a check;
+      // this is the gate. Without it a dispute could freeze the batch
+      // between the two and we would still create an intent — and then
+      // transfer — out of a charge that has been clawed back.
+      const live = (await trx(TABLES.HostedFundingBatch)
+        .where({ id: batch.id })
+        .forUpdate()
+        .first(['status'])) as { status: string } | undefined;
+      if (live?.status !== 'transferring') {
+        console.warn(
+          `[funding] batch ${batch.id} left 'transferring' before the intent for partner ${partnerId} was committed (now ${live?.status ?? 'missing'}) — not creating it`,
+        );
+        return undefined;
+      }
+
       // Re-verify (finding 5): commissions must still be 'approved' and
       // untouched by reversal/refund/fraud since reservation.
       const commissionIds = group.map((a) => a.commissionId);

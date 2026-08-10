@@ -337,6 +337,7 @@ interface FundingBatch {
   createdAt: string;
   fundedAt: string | null;
   settledAt: string | null;
+  failureReason?: string | null;
 }
 
 interface FundingStatus {
@@ -541,8 +542,21 @@ function FundingCard() {
                 <span style={{ flex: 1, fontSize: 13, color: theme.text }}>
                   {b.grossCharge} {b.currency.toUpperCase()}
                 </span>
-                <span style={{ fontSize: 11, color: theme.textMuted, textTransform: 'uppercase', fontWeight: 600 }}>
+                <span
+                  style={{
+                    fontSize: 11,
+                    // A settled batch whose funding charge was later
+                    // refunded or disputed keeps its terminal status but
+                    // carries a reason. Rendering it as a plain "Settled"
+                    // hid the clawback completely.
+                    color: b.failureReason ? theme.danger : theme.textMuted,
+                    textTransform: 'uppercase',
+                    fontWeight: 600,
+                  }}
+                  title={b.failureReason ?? undefined}
+                >
                   {BATCH_STATUS_LABELS[b.status] ?? b.status}
+                  {b.failureReason ? ' ⚠' : ''}
                 </span>
               </div>
             ))}
