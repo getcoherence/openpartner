@@ -699,3 +699,62 @@ describe.skipIf(skipIntegration)('concurrency and staleness hardening', () => {
     expect(interlock.flippable).toEqual(commissionIds);
   });
 });
+
+describe.skipIf(skipIntegration)('the idempotency window survives repeated retries', () => {
+  it('retrying does not push the 24h window out — it still reconciles', async () => {
+    // Regression: the retry lease bumped `postedAt`, which is also what
+    // the window is measured from. A steadily-retried intent refreshed its
+    // own window forever, never reconciled, and would eventually re-POST a
+    // key Stripe had pruned — creating a SECOND transfer.
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+
+    // First post was 25h ago; a retry claimed it 2 minutes ago.
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({
+            transferState: 'posted',
+            postedAt: hoursAgo(25).toISOString(),
+            leaseAt: hoursAgo(0.03).toISOString(),
+            attempts: 4,
+          }),
+        ]),
+      });
+    const { stripe, transfersCreate, transfersList } = mockStripe({ listed: [] });
+
+    await executePayoutTransfers(db, { stripe });
+
+    // Past the window ⇒ reconcile by listing, never a blind re-POST.
+    expect(transfersList).toHaveBeenCalledOnce();
+    expect(transfersCreate).not.toHaveBeenCalled();
+    expect((await payoutOf(payoutId)).metadata.transferState).toBe('intent'); // proven absent, re-armed
+  });
+
+  it('the cooldown reads the lease clock, not the first post', async () => {
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    // Posted 3h ago (inside the window), last attempt 5 seconds ago.
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({
+            transferState: 'posted',
+            postedAt: hoursAgo(3).toISOString(),
+            leaseAt: new Date(Date.now() - 5_000).toISOString(),
+          }),
+        ]),
+      });
+    const { stripe, transfersCreate } = mockStripe();
+
+    const result = await executePayoutTransfers(db, { stripe });
+    expect(transfersCreate).not.toHaveBeenCalled(); // cooling down
+    expect(result.skipped).toBe(1);
+  });
+});

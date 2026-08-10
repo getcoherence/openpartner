@@ -70,7 +70,12 @@ export interface PayoutTransferMeta {
   amountMinor: number;
   mode: string;
   attempts: number;
+  /** When the frozen key was FIRST posted. Anchors Stripe's ~24h
+   *  idempotency window and never moves. */
   postedAt?: string;
+  /** When the last attempt claimed the intent. Moves on every retry and
+   *  is the compare-and-swap token that keeps two workers off one key. */
+  leaseAt?: string;
   lastError?: string;
 }
 
@@ -158,9 +163,15 @@ async function advanceIntent(
   }
 
   if (meta.transferState === 'posted') {
+    // TWO clocks, deliberately. `postedAt` is when the key was FIRST used
+    // and never moves — it's what Stripe's ~24h retention is measured
+    // against. `leaseAt` is the last attempt and moves on every retry.
+    // Measuring the window from a value the retry bumps would refresh it
+    // forever: the intent would never reconcile, and once Stripe pruned
+    // the key a re-POST would create a SECOND transfer.
     const postedAt = new Date(meta.postedAt ?? payout.createdAt).getTime();
-    const age = now.getTime() - postedAt;
-    if (age > IDEMPOTENCY_WINDOW_MS) {
+    const leaseAt = new Date(meta.leaseAt ?? meta.postedAt ?? payout.createdAt).getTime();
+    if (now.getTime() - postedAt > IDEMPOTENCY_WINDOW_MS) {
       // The key may have been pruned, so a re-POST could create a SECOND
       // transfer. Find out what really happened instead.
       const moved = await casTransferState(db, payout.id, 'posted', 'reconcile_required');
@@ -169,18 +180,18 @@ async function advanceIntent(
       await reconcileIntent(db, stripe, moved, result);
       return;
     }
-    if (age < POST_COOLDOWN_MS) {
+    if (now.getTime() - leaseAt < POST_COOLDOWN_MS) {
       result.skipped += 1;
       return;
     }
     // Inside the window: re-POSTing the frozen key is safe — Stripe
     // replays the original outcome rather than creating a second transfer.
     // Take the retry as a LEASE first, though. The swap is on the exact
-    // postedAt we read, so of two workers scanning together only one wins;
+    // leaseAt we read, so of two workers scanning together only one wins;
     // the loser sees a fresh timestamp and backs off on the cooldown
     // instead of POSTing the same key concurrently (which Stripe answers
     // with a 409 that tells us nothing about the first request's outcome).
-    const leased = await leaseRetry(db, payout.id, meta.postedAt, now, (meta.attempts ?? 0) + 1);
+    const leased = await leaseRetry(db, payout.id, meta.leaseAt, now, (meta.attempts ?? 0) + 1);
     if (!leased) {
       result.skipped += 1;
       return;
@@ -198,6 +209,7 @@ async function advanceIntent(
     }
     const moved = await casTransferState(db, payout.id, 'intent', 'posted', {
       postedAt: now.toISOString(),
+      leaseAt: now.toISOString(),
       attempts: (meta.attempts ?? 0) + 1,
     });
     if (!moved) return; // another worker claimed it
@@ -417,7 +429,10 @@ async function reconcileIntent(
   console.error(
     `[payouts] intent ${payout.id}: no transfer found in group after the idempotency window — re-arming for a fresh post`,
   );
-  await casTransferState(db, payout.id, 'reconcile_required', 'intent', { postedAt: undefined });
+  await casTransferState(db, payout.id, 'reconcile_required', 'intent', {
+    postedAt: undefined,
+    leaseAt: undefined,
+  });
 }
 
 /** Definite failure: release the frozen commissions so the next planning
@@ -492,20 +507,22 @@ function mergeMeta(db: Knex, patch: Record<string, unknown>): Knex.Raw {
 async function leaseRetry(
   db: Knex,
   payoutId: string,
-  expectedPostedAt: string | undefined,
+  expectedLeaseAt: string | undefined,
   now: Date,
   attempts: number,
 ): Promise<PayoutRow | null> {
   const q = db(TABLES.Payout)
     .where({ id: payoutId })
     .whereRaw(`("metadata"->>'transferState') = 'posted'`);
-  if (expectedPostedAt === undefined) {
-    q.whereRaw(`("metadata"->>'postedAt') is null`);
+  if (expectedLeaseAt === undefined) {
+    q.whereRaw(`("metadata"->>'leaseAt') is null`);
   } else {
-    q.whereRaw(`("metadata"->>'postedAt') = ?`, [expectedPostedAt]);
+    q.whereRaw(`("metadata"->>'leaseAt') = ?`, [expectedLeaseAt]);
   }
+  // postedAt is deliberately NOT touched — it anchors the idempotency
+  // window and must survive every retry.
   const [row] = (await q
-    .update({ metadata: mergeMeta(db, { postedAt: now.toISOString(), attempts }) })
+    .update({ metadata: mergeMeta(db, { leaseAt: now.toISOString(), attempts }) })
     .returning('*')) as PayoutRow[];
   return row ?? null;
 }
