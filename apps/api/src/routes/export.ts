@@ -103,11 +103,10 @@ exportRouter.get('/export.sql', requireAuth, requireAdmin, async (req, res) => {
 /**
  * `?tenantId=` (present and non-empty) switches the dump to literal mode.
  *
- * The value is VALIDATED, not escaped. It ends up in a psql `\set` and in
- * a `--` header comment, and psql meta-commands are line-oriented — a
- * newline in it would let an authenticated admin plant `\! <shell
- * command>` in a file that an operator later restores on their own
- * machine. Anything that isn't id-shaped is refused.
+ * The value is VALIDATED, not escaped. It is written into a `--` header
+ * comment of a file that psql later executes, and psql's meta-commands are
+ * line-oriented — a newline would end the comment and start a line the
+ * restoring machine obeys. Anything that isn't id-shaped is refused.
  *
  * Returns null when the parameter is present but invalid, so the caller
  * can 400. (Express 4 doesn't forward async throws, so this reports

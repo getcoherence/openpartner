@@ -98,6 +98,12 @@ string-literal mode its escaping assumes), sets `app.tenant_id` so it
 works on the RLS-scoped app role as well as the privileged role, and
 inserts every table in the order above with `ON CONFLICT DO NOTHING`.
 
+**Requires psql 10 or newer.** The `-v`-or-default behaviour uses `\if`,
+which older clients don't understand — they'd skip the conditional and
+apply the default unconditionally, overwriting the tenant you passed. If
+you're stuck on an older psql, use `?tenantId=<id>` to get a dump with the
+destination already baked in and no meta-commands at all.
+
 `?tenantId=<id>` bakes a literal tenant id instead of the psql variable —
 plain SQL for clients that don't run psql meta-commands. The value must be
 id-shaped (`[A-Za-z0-9_-]{1,64}`) and is **rejected**, not escaped, if it

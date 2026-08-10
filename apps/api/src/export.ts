@@ -172,7 +172,7 @@ export interface SqlDumpOptions {
    * emits `:'tenant_id'` and a psql `\set` fallback so one file restores
    * into any instance:
    *
-   *   psql "$DATABASE_URL" -v tenant_id=default -f openpartner-export.sql
+   *   psql "$DATABASE_URL" -v tenant_id=<destination tenant id> -f openpartner-export.sql
    *
    * Baking a literal produces plain SQL any client can run — used when the
    * caller already knows the destination.
@@ -194,9 +194,14 @@ const TENANT_PLACEHOLDER = ":'tenant_id'";
 
 /**
  * Tenant ids are ULIDs we generate. Anything else is refused rather than
- * escaped: this value reaches a psql `\set` and a `--` comment, and psql
- * meta-commands are line-oriented, so a newline in it would let the caller
- * inject `\!` (shell command on the restoring machine) or arbitrary SQL.
+ * escaped.
+ *
+ * In portable mode the `\set` line carries a constant, so the risk is the
+ * literal mode: the value is written into a `--` header comment, and the
+ * file it lands in is executed by psql, whose meta-commands are
+ * line-oriented. A newline would end the comment and start a line the
+ * restoring machine obeys. Validation is the guard; `commentSafe` below
+ * is the belt to its braces.
  */
 export function isSafeTenantId(tenantId: string): boolean {
   return /^[A-Za-z0-9_-]{1,64}$/.test(tenantId);

@@ -404,7 +404,7 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
   });
 
   it('emits a header and a no-rows marker for empty tables', () => {
-    const dump = buildSqlDump({}, { tenantId: 'default', exportedAt: '2026-08-09T00:00:00.000Z' });
+    const dump = buildSqlDump({}, { tenantId: TENANT, exportedAt: '2026-08-09T00:00:00.000Z' });
     expect(dump).toContain('-- exported 2026-08-09T00:00:00.000Z');
     expect(dump).toContain(`-- ${TABLES.Partner}: no rows`);
     expect(dump).toContain('BEGIN;');
