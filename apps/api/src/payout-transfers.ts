@@ -73,6 +73,10 @@ export type PayoutTransferState =
  *  advanced only through `casTransferState`. */
 export interface PayoutTransferMeta {
   transferState: PayoutTransferState;
+  /** Bumped only when a listing has PROVEN no transfer exists, so the
+   *  next attempt gets a key Stripe has never seen. Absent = 0 = the
+   *  original `payout_<id>`. */
+  keyGeneration?: number;
   /** Frozen at plan time — the destination can't drift mid-flight. */
   destinationAccountId: string;
   /** Frozen at plan time; equals the sum of the claimed commissions. */
@@ -109,6 +113,25 @@ export interface PayoutTransferResult {
 
 const OPEN_STATES: PayoutTransferState[] = ['intent', 'posted', 'reconcile_required'];
 
+/** Generation 0 keeps the original key so anything already posted under
+ *  it still replays. */
+export function idempotencyKeyFor(payoutId: string, generation = 0): string {
+  return generation > 0 ? `payout_${payoutId}_g${generation}` : `payout_${payoutId}`;
+}
+
+/** Test seam. The CAS is where the ABA guard lives, and calling it
+ *  directly is the only way to stage "a stale worker acts on a row that
+ *  has since been re-armed and re-posted". */
+export function __testCasTransferState(
+  db: Knex,
+  payoutId: string,
+  from: PayoutTransferState | PayoutTransferState[],
+  to: PayoutTransferState,
+  expect: { postedAt?: string } = {},
+): Promise<PayoutRow | null> {
+  return casTransferState(db, payoutId, from, to, {}, {}, expect);
+}
+
 /**
  * Advance every open Connect payout intent.
  *
@@ -139,8 +162,19 @@ export async function executePayoutTransfers(
     // old intents monopolize every pass — including other tenants' — since
     // the scan is global and capped. Every attempt bumps leaseAt, so a
     // stuck intent naturally falls to the back of the queue.
+    // All three keys rendered in the SAME ISO shape before comparing.
+    // `"createdAt"::text` renders as `2026-08-09 20:04:15.501+00` — space,
+    // no `T`, offset suffix — and a space sorts before `T`, so every
+    // never-attempted row jumped ahead of every attempted row sharing a
+    // date regardless of the actual times. With a 500-row cap that is
+    // queue starvation, not just cosmetics. to_char also pins UTC, which
+    // the session timezone otherwise wouldn't.
     .orderByRaw(
-      `coalesce("metadata"->>'leaseAt', "metadata"->>'postedAt', "createdAt"::text) asc`,
+      `coalesce(
+         "metadata"->>'leaseAt',
+         "metadata"->>'postedAt',
+         to_char("createdAt" at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+       ) asc`,
     )
     .limit(500)) as PayoutRow[];
 
@@ -205,7 +239,15 @@ async function advanceIntent(
     if (now.getTime() - postedAt >= IDEMPOTENCY_WINDOW_MS - KEY_SAFETY_MARGIN_MS) {
       // The key may have been pruned, so a re-POST could create a SECOND
       // transfer. Find out what really happened instead.
-      const moved = await casTransferState(db, payout.id, 'posted', 'reconcile_required');
+      //
+      // Scoped to the postedAt we READ, not just to the state. Without
+      // that this is an ABA: a worker holding a stale scan snapshot can
+      // arrive after the intent has been reconciled, re-armed and posted
+      // afresh by someone else, see `posted` again, and steal that new
+      // generation out from under a live transfers.create.
+      const moved = await casTransferState(db, payout.id, 'posted', 'reconcile_required', {}, {}, {
+        postedAt: meta.postedAt,
+      });
       if (!moved) return;
       result.reconciled.push(payout.id);
       await reconcileIntent(db, stripe, moved, result);
@@ -305,7 +347,7 @@ async function postTransfer(
           mode: meta.mode ?? '',
         },
       },
-      { idempotencyKey: `payout_${payout.id}` },
+      { idempotencyKey: idempotencyKeyFor(payout.id, meta.keyGeneration) },
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -363,8 +405,12 @@ async function finalizeTransfer(
       // once retrying has clearly stopped helping. There is no automatic
       // way out — a transfer we cannot read is an operator's problem.
       const message = err instanceof Error ? err.message : String(err);
+      // Only while WE still hold it: another worker may have finalized
+      // and cleared lastError, and writing a stale failure onto a
+      // confirmed payout would be a false diagnostic on a paid row.
       await db(TABLES.Payout)
         .where({ id: payout.id })
+        .whereRaw(`("metadata"->>'transferState') = 'posted'`)
         .update({ metadata: mergeMeta(db, { lastError: `retrieve_failed:${message}`.slice(0, 500) }) });
       if (attempts >= RETRIEVE_ALERT_ATTEMPTS) {
         console.error(
@@ -468,12 +514,22 @@ async function reconcileIntent(
     if (!listed.has_more || listed.data.length === 0) break;
     startingAfter = listed.data[listed.data.length - 1]!.id;
   }
+  // Bump the key generation. Clearing our own clocks does NOT give us a
+  // fresh key: Stripe's retention is anchored to when `payout_<id>` was
+  // FIRST used, so a re-armed POST inside that retention replays the
+  // stored outcome (including a stored failure) instead of doing
+  // anything — and the local window restarts, so it could loop forever.
+  // Listing just proved no transfer exists, which is exactly the evidence
+  // needed to make a new key safe.
+  const meta = payout.metadata as unknown as PayoutTransferMeta;
+  const nextGeneration = (meta.keyGeneration ?? 0) + 1;
   console.error(
-    `[payouts] intent ${payout.id}: no transfer found in group after the idempotency window — re-arming for a fresh post`,
+    `[payouts] intent ${payout.id}: no transfer found in group after the idempotency window — re-arming under key generation ${nextGeneration}`,
   );
   await casTransferState(db, payout.id, 'reconcile_required', 'intent', {
     postedAt: undefined,
     leaseAt: undefined,
+    keyGeneration: nextGeneration,
   });
 }
 
@@ -584,11 +640,23 @@ async function casTransferState(
   to: PayoutTransferState,
   patch: Record<string, unknown> = {},
   columns: Record<string, unknown> = {},
+  /** Extra equality predicates on the metadata the caller OBSERVED.
+   *  Without these the state alone is an ABA: a row can leave and
+   *  re-enter a state between a worker's read and its write. */
+  expect: { postedAt?: string } = {},
 ): Promise<PayoutRow | null> {
   const fromList = Array.isArray(from) ? from : [from];
-  const [row] = (await db(TABLES.Payout)
+  const q = db(TABLES.Payout)
     .where({ id: payoutId })
-    .whereRaw(`("metadata"->>'transferState') = any(?::text[])`, [`{${fromList.join(',')}}`])
+    .whereRaw(`("metadata"->>'transferState') = any(?::text[])`, [`{${fromList.join(',')}}`]);
+  if ('postedAt' in expect) {
+    if (expect.postedAt == null) {
+      q.whereRaw(`("metadata"->>'postedAt') is null`);
+    } else {
+      q.whereRaw(`("metadata"->>'postedAt') = ?`, [expect.postedAt]);
+    }
+  }
+  const [row] = (await q
     .update({
       ...columns,
       metadata: mergeMeta(db, { ...patch, transferState: to }),

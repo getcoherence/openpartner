@@ -619,7 +619,23 @@ async function reverseCommissionsForInvoice(
     .first()) as { c: string | number } | undefined;
   const alreadyPaid = Number(alreadyPaidRow?.c ?? 0);
 
-  return { reversed, alreadyPaid, heldInTransfer: interlock.held.length };
+  // Commissions the guarded UPDATE refused because a payout intent
+  // claimed them AFTER the interlock read. They are neither reversed nor
+  // counted as held by the interlock, so without this they vanished from
+  // the report entirely: the refund looked fully handled while a
+  // commission for refunded revenue stayed payable.
+  const lateHeld = interlock.flippable.length - reversed;
+  if (lateHeld > 0) {
+    console.error(
+      `[funding] ALERT: invoice ${invoiceId} refund: ${lateHeld} commission(s) were claimed by a payout intent between the interlock check and the reversal — refunded revenue may still be paid out; operator action required`,
+    );
+  }
+
+  return {
+    reversed,
+    alreadyPaid,
+    heldInTransfer: interlock.held.length + lateHeld,
+  };
 }
 
 async function resolveUserIdFromCustomer(

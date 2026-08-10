@@ -15,7 +15,11 @@ import { ulid } from 'ulid';
 import { TABLES, DEFAULT_TENANT_ID } from '@openpartner/db';
 import { db } from '../db.js';
 import { runPayouts } from '../payouts.js';
-import { executePayoutTransfers } from '../payout-transfers.js';
+import {
+  executePayoutTransfers,
+  idempotencyKeyFor,
+  __testCasTransferState,
+} from '../payout-transfers.js';
 import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
@@ -159,7 +163,14 @@ async function payoutOf(payoutId: string) {
     status: string;
     stripeTransferId: string | null;
     amount: string;
-    metadata: { transferState?: string; amountMinor?: number; postedAt?: string; lastError?: string };
+    metadata: {
+      transferState?: string;
+      amountMinor?: number;
+      postedAt?: string;
+      leaseAt?: string;
+      keyGeneration?: number;
+      lastError?: string;
+    };
   };
   return row;
 }
@@ -902,5 +913,120 @@ describe.skipIf(skipIntegration)('round-2 hardening', () => {
     // row exists — it sorts first because it has no lease timestamp.
     expect(transfersCreate).toHaveBeenCalledOnce();
     expect((await payoutOf(freshPayouts[0]!.payoutId)).status).toBe('paid');
+  });
+});
+
+// ---- Round-3 review fixes (Codex, 2026-08-10) ------------------------------
+
+describe.skipIf(skipIntegration)('round-3 hardening', () => {
+  it('a stale worker cannot steal a freshly re-armed generation (ABA)', async () => {
+    // Worker B reads an expired `posted` row. Before B acts, the intent is
+    // reconciled, re-armed and posted afresh by someone else. B's CAS
+    // checked only the state, so it stole the new generation out from
+    // under a live transfers.create — and that transfer was then never
+    // recorded.
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+
+    const stalePostedAt = hoursAgo(30).toISOString();
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'posted', postedAt: stalePostedAt, leaseAt: stalePostedAt }),
+        ]),
+      });
+
+    // …the row is re-armed and re-posted by another generation…
+    const freshPostedAt = new Date().toISOString();
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'posted', postedAt: freshPostedAt, leaseAt: freshPostedAt }),
+        ]),
+      });
+
+    // …and now the stale worker tries to reconcile what it read earlier.
+    const stolen = await __testCasTransferState(db, payoutId, 'posted', 'reconcile_required', {
+      postedAt: stalePostedAt,
+    });
+    expect(stolen).toBeNull();
+    expect((await payoutOf(payoutId)).metadata.transferState).toBe('posted');
+  });
+
+  it('a proven-absent re-arm mints a NEW key, not the one Stripe still retains', async () => {
+    // Clearing our own clocks does not give a fresh key: Stripe's
+    // retention is anchored to the key's FIRST use. Re-posting the same
+    // key inside that retention replays the stored outcome forever.
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({
+            transferState: 'posted',
+            postedAt: hoursAgo(25).toISOString(),
+            leaseAt: hoursAgo(25).toISOString(),
+          }),
+        ]),
+      });
+    const { stripe, transfersCreate } = mockStripe({ listed: [] });
+
+    await executePayoutTransfers(db, { stripe }); // proves absence, re-arms
+    expect((await payoutOf(payoutId)).metadata.keyGeneration).toBe(1);
+
+    await executePayoutTransfers(db, { stripe }); // posts under the new key
+    const [, options] = transfersCreate.mock.calls[0]! as unknown as [
+      Record<string, unknown>,
+      { idempotencyKey: string },
+    ];
+    expect(options.idempotencyKey).toBe(`payout_${payoutId}_g1`);
+  });
+
+  it('generation 0 keeps the original key so an existing post still replays', () => {
+    expect(idempotencyKeyFor('01ABC')).toBe('payout_01ABC');
+    expect(idempotencyKeyFor('01ABC', 0)).toBe('payout_01ABC');
+    expect(idempotencyKeyFor('01ABC', 2)).toBe('payout_01ABC_g2');
+  });
+
+  it('an unknown transferState fails CLOSED for reversal', async () => {
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    // A state this version doesn't know (rolling deploy, hand-edited row).
+    await db(TABLES.Payout)
+      .where({ id: payouts[0]!.payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [JSON.stringify({ transferState: 'posting' })]),
+      });
+
+    const interlock = await interlockCommissionReversal(db, commissionIds);
+    expect(interlock.held).toEqual(commissionIds);
+
+    const reversed = await whereNotClaimedByOpenIntent(
+      db,
+      db(TABLES.Commission).where({ [`${TABLES.Commission}.id`]: commissionIds[0]! }).whereIn('status', ['accrued', 'approved']),
+    ).update({ status: 'reversed' });
+    expect(reversed).toBe(0);
+  });
+
+  it('a terminal intent releases the hold', async () => {
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    await db(TABLES.Payout)
+      .where({ id: payouts[0]!.payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [JSON.stringify({ transferState: 'canceled' })]),
+      });
+
+    const interlock = await interlockCommissionReversal(db, commissionIds);
+    expect(interlock.flippable).toEqual(commissionIds);
   });
 });

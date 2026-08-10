@@ -38,8 +38,13 @@ import {
 import { casBatch } from './state.js';
 
 /** Intent states that mean "a transfer for this commission is still on
- *  the table". Terminal ones (confirmed/canceled) release their hold. */
+ *  the table". */
 export const OPEN_INTENT_STATES = ['intent', 'posted', 'reconcile_required'] as const;
+/** The only states that RELEASE the hold. Everything else — including a
+ *  value this version doesn't recognise, from a rolling deploy or a
+ *  hand-edited row — is treated as open, so an unknown state fails
+ *  closed rather than letting a reversal through. */
+export const TERMINAL_INTENT_STATES = ['confirmed', 'canceled'] as const;
 
 /**
  * Narrow a reversal UPDATE so it cannot flip a commission that an open
@@ -63,8 +68,8 @@ export function whereNotClaimedByOpenIntent<T extends Knex.QueryBuilder>(db: Kne
         .whereRaw(`"${TABLES.Payout}"."id" = "${TABLES.Commission}"."payoutId"`)
         .whereRaw(
           `(("${TABLES.Payout}"."metadata"->>'transferState') is null
-            or ("${TABLES.Payout}"."metadata"->>'transferState') <> all(?::text[]))`,
-          [`{${OPEN_INTENT_STATES.join(',')}}`],
+            or ("${TABLES.Payout}"."metadata"->>'transferState') = any(?::text[]))`,
+          [`{${TERMINAL_INTENT_STATES.join(',')}}`],
         );
     });
   });
@@ -107,8 +112,9 @@ export async function interlockCommissionReversal(
     .leftJoin(TABLES.Payout, `${TABLES.Payout}.id`, `${TABLES.Commission}.payoutId`)
     .whereRaw(
       `("${TABLES.Payout}"."id" is null
-        or ("${TABLES.Payout}"."metadata"->>'transferState') = any(?::text[]))`,
-      [`{${OPEN_INTENT_STATES.join(',')}}`],
+        or (("${TABLES.Payout}"."metadata"->>'transferState') is not null
+            and ("${TABLES.Payout}"."metadata"->>'transferState') <> all(?::text[])))`,
+      [`{${TERMINAL_INTENT_STATES.join(',')}}`],
     )
     .select(`${TABLES.Commission}.id`)) as Array<{ id: string }>;
   const heldByIntent = new Set(claimed.map((c) => c.id));
