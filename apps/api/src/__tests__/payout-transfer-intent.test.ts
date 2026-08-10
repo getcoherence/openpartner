@@ -16,7 +16,7 @@ import { TABLES, DEFAULT_TENANT_ID } from '@openpartner/db';
 import { db } from '../db.js';
 import { runPayouts } from '../payouts.js';
 import { executePayoutTransfers } from '../payout-transfers.js';
-import { interlockCommissionReversal } from '../funding/interlocks.js';
+import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const TENANT = DEFAULT_TENANT_ID;
@@ -756,5 +756,151 @@ describe.skipIf(skipIntegration)('the idempotency window survives repeated retri
     const result = await executePayoutTransfers(db, { stripe });
     expect(transfersCreate).not.toHaveBeenCalled(); // cooling down
     expect(result.skipped).toBe(1);
+  });
+});
+
+// ---- Round-2 review fixes (Codex, 2026-08-09) ------------------------------
+
+describe.skipIf(skipIntegration)('round-2 hardening', () => {
+  it('a warm lease is never stolen by the expiry path', async () => {
+    // The window check used to run first and CAS on transferState alone,
+    // so a worker that had just leased and was inside transfers.create
+    // could have its intent reconciled and finalized underneath it — then
+    // its POST landed on a pruned key and created a SECOND transfer.
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({
+            transferState: 'posted',
+            postedAt: hoursAgo(30).toISOString(), // long past the window
+            leaseAt: new Date(Date.now() - 5_000).toISOString(), // but just leased
+          }),
+        ]),
+      });
+    const { stripe, transfersList, transfersCreate } = mockStripe({ listed: [] });
+
+    const result = await executePayoutTransfers(db, { stripe });
+
+    expect(transfersList).not.toHaveBeenCalled();
+    expect(transfersCreate).not.toHaveBeenCalled();
+    expect(result.skipped).toBe(1);
+    expect((await payoutOf(payoutId)).metadata.transferState).toBe('posted');
+  });
+
+  it('stops trusting the key before Stripe can prune it, not exactly at 24h', async () => {
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    // 23.5h old: inside Stripe's retention, but inside the safety margin.
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({
+            transferState: 'posted',
+            postedAt: hoursAgo(23.5).toISOString(),
+            leaseAt: hoursAgo(23.5).toISOString(),
+          }),
+        ]),
+      });
+    const { stripe, transfersList, transfersCreate } = mockStripe({ listed: [] });
+
+    await executePayoutTransfers(db, { stripe });
+
+    expect(transfersCreate).not.toHaveBeenCalled(); // no race against the expiry
+    expect(transfersList).toHaveBeenCalledOnce();
+  });
+
+  it('classifies a 400-level idempotency error as ambiguous', async () => {
+    // stripe-node puts 'idempotency_error' on rawType; the wrapper class
+    // name is on type. Matching type against the API string never fired.
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const transfersCreate = vi.fn(async () => {
+      throw Object.assign(new Error('Keys for idempotent requests can only be used with the same parameters'), {
+        statusCode: 400,
+        type: 'StripeIdempotencyError',
+        rawType: 'idempotency_error',
+      });
+    });
+    const stripe = { transfers: { create: transfersCreate, list: vi.fn() } } as unknown as Stripe;
+
+    const result = await executePayoutTransfers(db, { stripe });
+
+    expect(result.failed).toHaveLength(0);
+    expect(result.ambiguous).toEqual([payouts[0]!.payoutId]);
+    const commission = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(commission.payoutId).toBe(payouts[0]!.payoutId); // claim held
+  });
+
+  it('a commission claimed after the interlock check cannot still be reversed', async () => {
+    // The interlock read and the status flip are separate statements. The
+    // planner can claim the commission in between, so the UPDATE itself
+    // re-asserts the guard.
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    // Interlock says flippable (nothing claims it yet).
+    const before = await interlockCommissionReversal(db, commissionIds);
+    expect(before.flippable).toEqual(commissionIds);
+
+    // …planner commits an intent in the gap…
+    await plan();
+
+    // …and the reversal that was already authorized must now refuse.
+    const reversed = await whereNotClaimedByOpenIntent(
+      db,
+      db(TABLES.Commission).where({ [`${TABLES.Commission}.id`]: commissionIds[0]! }).whereIn('status', ['accrued', 'approved']),
+    ).update({ status: 'reversed' });
+    expect(reversed).toBe(0);
+    expect((await db(TABLES.Commission).where({ id: commissionIds[0]! }).first()).status).toBe('approved');
+  });
+
+  it('holds a commission whose payout row cannot be resolved (fails closed)', async () => {
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    // payoutId pointing at nothing — no FK exists on this column.
+    await db(TABLES.Commission).where({ id: commissionIds[0]! }).update({ payoutId: 'missing-payout' });
+
+    const interlock = await interlockCommissionReversal(db, commissionIds);
+    expect(interlock.held).toEqual(commissionIds);
+    expect(interlock.flippable).toHaveLength(0);
+  });
+
+  it('processes least-recently-attempted first so stuck intents cannot starve the rest', async () => {
+    const stuckPartner = await seedPartner();
+    await seedApproved(stuckPartner, 1, '50.00');
+    const { payouts: stuckPayouts } = await plan();
+    // An old intent that has been retried very recently.
+    await db(TABLES.Payout)
+      .where({ id: stuckPayouts[0]!.payoutId })
+      .update({
+        createdAt: hoursAgo(72),
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({
+            transferState: 'posted',
+            postedAt: hoursAgo(2).toISOString(),
+            leaseAt: new Date().toISOString(),
+          }),
+        ]),
+      });
+
+    const freshPartner = await seedPartner();
+    await seedApproved(freshPartner, 1, '25.00');
+    const { payouts: freshPayouts } = await plan();
+
+    const { stripe, transfersCreate } = mockStripe();
+    await executePayoutTransfers(db, { stripe });
+
+    // The newer, never-attempted intent is served even though an older
+    // row exists — it sorts first because it has no lease timestamp.
+    expect(transfersCreate).toHaveBeenCalledOnce();
+    expect((await payoutOf(freshPayouts[0]!.payoutId)).status).toBe('paid');
   });
 });

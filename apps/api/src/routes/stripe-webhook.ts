@@ -19,7 +19,7 @@ import { applyWhiteLabelFromSubscription, subscriptionHasWhiteLabel, whiteLabelP
 import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
 import { handleFundingEvent } from '../funding/webhook.js';
 import { mirrorHostedBillingState, type MirroredSubscriptionStatus } from '../billing-plan.js';
-import { interlockCommissionReversal } from '../funding/interlocks.js';
+import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
 
 const stripeKey = process.env.STRIPE_SECRET_KEY;
 // STRIPE_WEBHOOK_SECRET accepts either a single secret or a comma-separated
@@ -600,12 +600,17 @@ async function reverseCommissionsForInvoice(
     );
   }
 
+  // Same check/use gap as the admin route: the interlock read and this
+  // flip are separate statements, so re-assert the direct-rail guard
+  // inside the UPDATE (a payout intent can claim a commission in between).
   const reversed = interlock.flippable.length === 0
     ? 0
-    : await trx<CommissionRow>(TABLES.Commission)
-        .whereIn('id', interlock.flippable)
-        .whereIn('status', ['accrued', 'approved'])
-        .update({ status: 'reversed' });
+    : await whereNotClaimedByOpenIntent(
+        trx,
+        trx<CommissionRow>(TABLES.Commission)
+          .whereIn(`${TABLES.Commission}.id`, interlock.flippable)
+          .whereIn('status', ['accrued', 'approved']),
+      ).update({ status: 'reversed' });
 
   const alreadyPaidRow = (await trx<CommissionRow>(TABLES.Commission)
     .whereIn('attributionId', attributionIds)

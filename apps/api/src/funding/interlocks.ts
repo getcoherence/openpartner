@@ -37,6 +37,40 @@ import {
 } from '@openpartner/db';
 import { casBatch } from './state.js';
 
+/** Intent states that mean "a transfer for this commission is still on
+ *  the table". Terminal ones (confirmed/canceled) release their hold. */
+export const OPEN_INTENT_STATES = ['intent', 'posted', 'reconcile_required'] as const;
+
+/**
+ * Narrow a reversal UPDATE so it cannot flip a commission that an open
+ * direct-Connect payout intent claimed AFTER the interlock check ran.
+ *
+ * The interlock is a read; the flip is a separate write. Between them the
+ * planner can commit an intent and claim the row — and then the transfer
+ * goes out for the frozen amount while the commission is `reversed` and
+ * never marked paid. Re-asserting the condition inside the UPDATE closes
+ * that window: whichever statement lands second sees the other's work.
+ */
+export function whereNotClaimedByOpenIntent<T extends Knex.QueryBuilder>(db: Knex, q: T): T {
+  q.where(function () {
+    // Unclaimed, or claimed by a payout that provably isn't an open
+    // intent. Phrased as EXISTS rather than NOT EXISTS so a payoutId
+    // pointing at a row we can't see fails CLOSED — same rule the
+    // interlock's left join uses.
+    this.whereNull(`${TABLES.Commission}.payoutId`).orWhereExists(function () {
+      this.select(db.raw('1'))
+        .from(TABLES.Payout)
+        .whereRaw(`"${TABLES.Payout}"."id" = "${TABLES.Commission}"."payoutId"`)
+        .whereRaw(
+          `(("${TABLES.Payout}"."metadata"->>'transferState') is null
+            or ("${TABLES.Payout}"."metadata"->>'transferState') <> all(?::text[]))`,
+          [`{${OPEN_INTENT_STATES.join(',')}}`],
+        );
+    });
+  });
+  return q;
+}
+
 export interface InterlockResult {
   /** Commission ids safe to status-flip (no live allocation, or the
    *  allocation was just canceled). */
@@ -60,12 +94,21 @@ export async function interlockCommissionReversal(
   // not terminalized. `canceled`/`confirmed` intents are past — the
   // planner can regroup released commissions, and paid ones are 'paid'
   // and never reach here as flippable.
+  //
+  // LEFT join, not inner: a commission whose payoutId points at a Payout
+  // we cannot see (missing row, or one hidden from this connection) must
+  // be HELD, not silently dropped into flippable. There is no FK on
+  // Commission.payoutId, so "claimed but unresolvable" is a real state and
+  // fail-open on it would mean reversing a commission that a live intent
+  // is about to pay.
   const claimed = (await db(TABLES.Commission)
     .whereIn(`${TABLES.Commission}.id`, commissionIds)
     .whereNotNull(`${TABLES.Commission}.payoutId`)
-    .join(TABLES.Payout, `${TABLES.Payout}.id`, `${TABLES.Commission}.payoutId`)
+    .leftJoin(TABLES.Payout, `${TABLES.Payout}.id`, `${TABLES.Commission}.payoutId`)
     .whereRaw(
-      `("${TABLES.Payout}"."metadata"->>'transferState') = any('{intent,posted,reconcile_required}'::text[])`,
+      `("${TABLES.Payout}"."id" is null
+        or ("${TABLES.Payout}"."metadata"->>'transferState') = any(?::text[]))`,
+      [`{${OPEN_INTENT_STATES.join(',')}}`],
     )
     .select(`${TABLES.Commission}.id`)) as Array<{ id: string }>;
   const heldByIntent = new Set(claimed.map((c) => c.id));

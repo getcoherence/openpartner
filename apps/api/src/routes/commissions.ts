@@ -16,7 +16,7 @@ import { TABLES, type AttributionRow, type ProgramRow, type CommissionRow } from
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
 import { tenantOf } from '../tenancy.js';
-import { interlockCommissionReversal } from '../funding/interlocks.js';
+import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
 
 const listQuerySchema = z.object({
   status: z.enum(['accrued', 'approved', 'paid', 'reversed']).optional(),
@@ -157,12 +157,29 @@ commissionsRouter.post('/commissions/:id/reverse', requireAuth, requireAdmin, as
         'a payout for this commission is in flight (funding transfer, or a committed Connect payout intent); retry once it settles, then claw back via adjustment',
     });
   }
-  const updated = await db<CommissionRow>(TABLES.Commission)
-    .where({ id: req.params.id })
-    .whereIn('status', ['accrued', 'approved'])
+  // Re-assert the interlock INSIDE the update. The check above is a
+  // separate statement, and between the two the payout planner can commit
+  // an intent and claim this commission — after which reversing it would
+  // let the transfer go out for the frozen amount with the commission
+  // never marked paid.
+  const updated = await whereNotClaimedByOpenIntent(
+    db,
+    db<CommissionRow>(TABLES.Commission)
+      .where({ [`${TABLES.Commission}.id`]: req.params.id })
+      .whereIn('status', ['accrued', 'approved']),
+  )
     .update({ status: 'reversed' })
     .returning('*');
   if (updated.length === 0) {
+    const current = await db<CommissionRow>(TABLES.Commission).where({ id: req.params.id }).first();
+    if (current && ['accrued', 'approved'].includes(current.status)) {
+      // Status was fine, so the guard is what refused: a payout intent
+      // claimed it in the gap.
+      return res.status(409).json({
+        error: 'commission_in_transfer',
+        detail: 'a payout intent claimed this commission while the request was in flight; retry once it settles',
+      });
+    }
     return res.status(409).json({ error: 'not_reversible', detail: 'only accrued or approved commissions' });
   }
   const c = updated[0]!;

@@ -47,11 +47,20 @@ import { dispatchEvent } from './webhook-dispatcher.js';
  *  ambiguity has to be resolved by listing instead. Matches
  *  funding/executor.ts. */
 const IDEMPOTENCY_WINDOW_MS = 24 * 60 * 60 * 1000;
+/** Stop trusting the key this long BEFORE Stripe's retention runs out.
+ *  Checking the age and then POSTing is a time-of-check/time-of-use gap:
+ *  without a margin, a worker that measured "23h59m, still fine" can have
+ *  its request arrive after Stripe pruned the key — which creates a
+ *  SECOND transfer instead of replaying the first. */
+const KEY_SAFETY_MARGIN_MS = 60 * 60 * 1000;
 /** A just-posted intent is left alone briefly: the worker that posted it
  *  may still be waiting on Stripe. Without this, an admin-triggered run
  *  overlapping a scheduler tick would fire two concurrent POSTs on one key
  *  (safe — Stripe 409s — but noisy). */
 const POST_COOLDOWN_MS = 60_000;
+/** After this many attempts, a transfer we can see at Stripe but cannot
+ *  re-read stops being a transient blip and becomes an operator alert. */
+const RETRIEVE_ALERT_ATTEMPTS = 5;
 
 export type PayoutTransferState =
   | 'intent'
@@ -126,7 +135,13 @@ export async function executePayoutTransfers(
     .modify((qb) => {
       if (opts.tenantId) qb.where({ tenantId: opts.tenantId });
     })
-    .orderBy('createdAt', 'asc')
+    // Least-recently-attempted first. Ordering by createdAt let 500 stuck
+    // old intents monopolize every pass — including other tenants' — since
+    // the scan is global and capped. Every attempt bumps leaseAt, so a
+    // stuck intent naturally falls to the back of the queue.
+    .orderByRaw(
+      `coalesce("metadata"->>'leaseAt', "metadata"->>'postedAt', "createdAt"::text) asc`,
+    )
     .limit(500)) as PayoutRow[];
 
   if (intents.length === 0) return result;
@@ -171,17 +186,29 @@ async function advanceIntent(
     // the key a re-POST would create a SECOND transfer.
     const postedAt = new Date(meta.postedAt ?? payout.createdAt).getTime();
     const leaseAt = new Date(meta.leaseAt ?? meta.postedAt ?? payout.createdAt).getTime();
-    if (now.getTime() - postedAt > IDEMPOTENCY_WINDOW_MS) {
+
+    // COOLDOWN FIRST, deliberately. A warm lease means another worker is
+    // very likely inside transfers.create right now, and stealing the
+    // intent from under it — which the reconcile transition below would
+    // do, since it only checks transferState — lets that worker resume
+    // and POST after we have already finalized from a listing. Leave a
+    // warm intent alone whatever its age; the next tick picks it up.
+    if (now.getTime() - leaseAt < POST_COOLDOWN_MS) {
+      result.skipped += 1;
+      return;
+    }
+    // The margin is what makes the check safe to act on: a worker that
+    // leases just inside the boundary still has to make its Stripe call,
+    // and Stripe may prune the key any time after 24h. Treating the key
+    // as spent an hour early means every POST we authorize lands with
+    // room to spare, instead of racing the expiry we just measured.
+    if (now.getTime() - postedAt >= IDEMPOTENCY_WINDOW_MS - KEY_SAFETY_MARGIN_MS) {
       // The key may have been pruned, so a re-POST could create a SECOND
       // transfer. Find out what really happened instead.
       const moved = await casTransferState(db, payout.id, 'posted', 'reconcile_required');
       if (!moved) return;
       result.reconciled.push(payout.id);
       await reconcileIntent(db, stripe, moved, result);
-      return;
-    }
-    if (now.getTime() - leaseAt < POST_COOLDOWN_MS) {
-      result.skipped += 1;
       return;
     }
     // Inside the window: re-POSTing the frozen key is safe — Stripe
@@ -330,7 +357,22 @@ async function finalizeTransfer(
     } catch (err) {
       // Couldn't confirm ⇒ don't finalize. The intent stays posted and
       // the next tick tries again; nothing is recorded on a guess.
-      console.error(`[payouts] intent ${payout.id}: could not re-read transfer ${transfer.id}`, err);
+      //
+      // This is a "money moved, ledger not written" state, so it has to be
+      // visible rather than just quiet: persist the reason and escalate
+      // once retrying has clearly stopped helping. There is no automatic
+      // way out — a transfer we cannot read is an operator's problem.
+      const message = err instanceof Error ? err.message : String(err);
+      await db(TABLES.Payout)
+        .where({ id: payout.id })
+        .update({ metadata: mergeMeta(db, { lastError: `retrieve_failed:${message}`.slice(0, 500) }) });
+      if (attempts >= RETRIEVE_ALERT_ATTEMPTS) {
+        console.error(
+          `[payouts] ALERT: intent ${payout.id} has failed to re-read transfer ${transfer.id} on ${attempts} attempts — the transfer exists but the ledger cannot be finalized; operator action required`,
+        );
+      } else {
+        console.error(`[payouts] intent ${payout.id}: could not re-read transfer ${transfer.id}`, err);
+      }
       result.ambiguous.push(payout.id);
       return;
     }
@@ -514,7 +556,10 @@ async function leaseRetry(
   const q = db(TABLES.Payout)
     .where({ id: payoutId })
     .whereRaw(`("metadata"->>'transferState') = 'posted'`);
-  if (expectedLeaseAt === undefined) {
+  // `== null` on purpose: a metadata blob repaired by hand can carry JSON
+  // null, and `field = NULL` never matches, which would wedge the intent
+  // out of every within-window retry.
+  if (expectedLeaseAt == null) {
     q.whereRaw(`("metadata"->>'leaseAt') is null`);
   } else {
     q.whereRaw(`("metadata"->>'leaseAt') = ?`, [expectedLeaseAt]);
@@ -568,8 +613,20 @@ async function casTransferState(
  * window), which is the only way to learn what really happened.
  */
 function isDefiniteStripeError(err: unknown): boolean {
-  const e = err as { type?: string; code?: string; statusCode?: number };
-  if (e?.type === 'idempotency_error' || e?.code === 'idempotency_key_in_use') return false;
+  const e = err as { type?: string; rawType?: string; code?: string; statusCode?: number };
+  // stripe-node puts the wrapper class name on `type`
+  // ('StripeIdempotencyError') and the API's own string on `rawType`
+  // ('idempotency_error'). Checking `type` for the API string never
+  // matched — which mattered for the idempotency errors that arrive as
+  // 400 rather than 409 (a key reused with different parameters), since
+  // those would have been treated as proof no transfer exists.
+  if (
+    e?.type === 'StripeIdempotencyError' ||
+    e?.rawType === 'idempotency_error' ||
+    e?.code === 'idempotency_key_in_use'
+  ) {
+    return false;
+  }
   if (typeof e?.statusCode !== 'number') return false;
   if (e.statusCode === 409 || e.statusCode === 429) return false;
   return e.statusCode >= 400 && e.statusCode < 500;
