@@ -917,14 +917,20 @@ describe.skipIf(skipIntegration)('round-2 hardening', () => {
     // The window version only held for a FROZEN list: adding rows changed
     // `windows`, shifted the modular sequence, and left specific indices
     // never selected. A cursor is immune to churn.
+    //
+    // Asserting only the ORIGINAL rows was too weak — the window version
+    // happened to cover those on many days. EVERY row that exists long
+    // enough to be swept must actually be swept.
     const seen = new Set<string>();
     const all: string[] = [];
-    for (let i = 0; i < 4; i += 1) {
-      const b = await seedBatch({ status: 'settled', stripeChargeId: `ch_c${i}`, fundedAt: new Date() });
+    const addBatch = async (tag: string) => {
+      const b = await seedBatch({ status: 'settled', stripeChargeId: `ch_${tag}`, fundedAt: new Date() });
       await seedAllocation(b.id);
       all.push(b.id);
-    }
-    for (let run = 0; run < 6; run += 1) {
+    };
+    for (let i = 0; i < 4; i += 1) await addBatch(`c${i}`);
+
+    for (let run = 0; run < 10; run += 1) {
       const { stripe, chargeRetrieve } = mockStripe();
       await runFundingReconciliation(db, { stripe, sweepLimit: 2 });
       for (const call of chargeRetrieve.mock.calls) {
@@ -934,14 +940,11 @@ describe.skipIf(skipIntegration)('round-2 hardening', () => {
         if (row) seen.add(row.id);
       }
       // …and the set keeps growing between runs, as it does in production.
-      const extra = await seedBatch({
-        status: 'settled',
-        stripeChargeId: `ch_x${run}`,
-        fundedAt: new Date(),
-      });
-      await seedAllocation(extra.id);
+      if (run < 5) await addBatch(`x${run}`);
     }
-    for (const id of all) expect(seen.has(id)).toBe(true);
+
+    // 9 rows, all present by run 5; 10 runs of 2 covers every one.
+    for (const id of all) expect(seen.has(id), `never swept: ${id}`).toBe(true);
   });
 
   it('a full pass covers every row within ceil(total/limit) runs', async () => {
@@ -1106,35 +1109,39 @@ describe.skipIf(skipIntegration)('round-3 hardening', () => {
     expect(report.attentionBatches).toContain(batch.id);
   });
 
-  it('a batch frozen DURING the run is not transferred out of', async () => {
-    // The previous version of this test froze the batch before calling
-    // the executor, so the scan never selected it and the gate was never
-    // exercised — it passed with the gate deleted. This freezes it from
-    // inside the run, while the executor is already working the batch.
+  it('a batch frozen DURING the run stops before the NEXT partner', async () => {
+    // Two earlier versions of this test were vacuous: they froze the
+    // batch BEFORE calling the executor, so the scan never selected it
+    // and the test passed with the gate deleted. There was also no
+    // synchronization point — just a racing update with nothing to hook.
+    //
+    // Two partners give a real barrier: freeze from INSIDE the first
+    // transfer, then assert the second one never happens. That is exactly
+    // the production interleaving (a dispute webhook landing mid-batch).
     const batch = await seedBatch({
       status: 'transferring',
       stripeChargeId: 'ch_gate',
       fundedAt: new Date(),
+      // Two allocations, so the principal has to cover both or the
+      // executor's ledger invariant freezes the batch before any transfer.
+      principalMinor: '16000',
+      grossChargeMinor: '16000',
     });
     await seedAllocation(batch.id);
+    await seedAllocation(batch.id); // a second partner in the same batch
+
+    const transfersCreate = vi.fn(async (params: { amount: number }) => {
+      await db(TABLES.HostedFundingBatch)
+        .where({ id: batch.id })
+        .update({ status: 'funding_disputed' });
+      return { id: `tr_${params.amount}`, amount: params.amount, currency: 'usd', metadata: {} };
+    });
+    const stripe = { transfers: { create: transfersCreate, list: vi.fn() } } as unknown as Stripe;
     const { runTransferExecutor } = await import('../funding/executor.js');
-    const transfersCreate = vi.fn();
-    const stripe = {
-      transfers: { create: transfersCreate, list: vi.fn() },
-      // The first Stripe touch in this path is our own; use the partner
-      // lookup window by freezing as soon as the executor asks anything.
-    } as unknown as Stripe;
 
-    const original = db(TABLES.HostedFundingBatch);
-    void original;
-    // Freeze after the executor has selected the batch but before it can
-    // post: the per-partner re-read and the pre-POST gate must both see
-    // it. Simulated by freezing between the executor's selection query
-    // and its work, which a concurrent webhook does in production.
-    const run = runTransferExecutor(db, { stripe });
-    await db(TABLES.HostedFundingBatch).where({ id: batch.id }).update({ status: 'funding_disputed' });
-    await run;
+    await runTransferExecutor(db, { stripe });
 
-    expect(transfersCreate).not.toHaveBeenCalled();
+    // Exactly one partner was paid; the freeze stopped everything after.
+    expect(transfersCreate).toHaveBeenCalledTimes(1);
   });
 });

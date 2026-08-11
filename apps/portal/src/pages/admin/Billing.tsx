@@ -327,6 +327,15 @@ function PlanCard({ status }: { status: BillingStatus }) {
   );
 }
 
+const ATTENTION_LABELS: Record<string, string> = {
+  funding_charge_refunded: 'The funding charge for this batch was refunded.',
+  funding_charge_disputed: 'The funding charge for this batch was disputed.',
+  funding_timed_out: 'Funding for this batch timed out and was released.',
+  authorization_revoked: 'Commission funding authorization was missing or revoked.',
+  billing_not_set_up: 'No billing customer is set up for funding.',
+  needs_review: 'This batch needs review — contact support.',
+};
+
 interface FundingBatch {
   id: string;
   status: string;
@@ -338,6 +347,7 @@ interface FundingBatch {
   fundedAt: string | null;
   settledAt: string | null;
   needsAttention?: boolean;
+  attentionCode?: string | null;
 }
 
 interface FundingStatus {
@@ -553,7 +563,7 @@ function FundingCard() {
                     textTransform: 'uppercase',
                     fontWeight: 600,
                   }}
-                  title={b.needsAttention ? 'This batch needs operator attention — check the funding logs.' : undefined}
+                  title={b.needsAttention ? (ATTENTION_LABELS[b.attentionCode ?? ''] ?? 'This batch needs review — contact support.') : undefined}
                 >
                   {BATCH_STATUS_LABELS[b.status] ?? b.status}
                   {b.needsAttention ? ' ⚠' : ''}

@@ -83,10 +83,10 @@ async function sweepSlice<T>(
   rows: T[],
   idOf: (row: T) => string,
   limit: number,
-): Promise<{ due: T[]; deferred: T[] }> {
+): Promise<{ due: T[]; deferred: T[]; commit: () => Promise<void> }> {
   if (rows.length <= limit) {
-    await setSweepCursor(db, cursorKey, null); // whole set covered; start over
-    return { due: rows, deferred: [] };
+    // Whole set covered in one go; start from the top next time.
+    return { due: rows, deferred: [], commit: () => setSweepCursor(db, cursorKey, null) };
   }
   const ordered = [...rows].sort((a, b) => (idOf(a) < idOf(b) ? -1 : 1));
   const cursor = await getSweepCursor(db, cursorKey);
@@ -95,29 +95,50 @@ async function sweepSlice<T>(
   const from = startIndex === -1 ? 0 : startIndex;
   const due = ordered.slice(from, from + limit);
   const last = due.length > 0 ? idOf(due[due.length - 1]!) : null;
-  // Wrapping is explicit: once we hand out the tail, the next run starts
-  // from the beginning rather than stalling at the end.
-  await setSweepCursor(db, cursorKey, from + limit >= ordered.length ? null : last);
   const dueIds = new Set(due.map(idOf));
-  return { due, deferred: ordered.filter((r) => !dueIds.has(idOf(r))) };
+  return {
+    due,
+    deferred: ordered.filter((r) => !dueIds.has(idOf(r))),
+    // COMMIT AFTER THE WORK, never before. Advancing the cursor at
+    // hand-out time acknowledges rows we haven't checked yet: a crash —
+    // or a per-row Stripe failure, which is caught and logged — skipped
+    // that whole slice until the next wrap, and a charge row can age out
+    // of the 180-day horizon in the meantime. Re-checking a row after a
+    // crash is free; skipping one loses a clawback.
+    commit: () =>
+      setSweepCursor(db, cursorKey, from + limit >= ordered.length ? null : last),
+  };
 }
 
 /** The sweep is platform-wide, but Config is tenant-scoped; the seeded
  *  tenant holds these two platform rows. Documented rather than tidy —
  *  a dedicated table for two strings isn't worth a migration. */
 async function getSweepCursor(db: Knex, key: string): Promise<string | null> {
-  const row = (await db(TABLES.Config)
-    .where({ tenantId: DEFAULT_TENANT_ID, key })
-    .first(['value'])) as { value: unknown } | undefined;
-  const v = row?.value;
-  return typeof v === 'string' ? v : null;
+  try {
+    const row = (await db(TABLES.Config)
+      .where({ tenantId: DEFAULT_TENANT_ID, key })
+      .first(['value'])) as { value: unknown } | undefined;
+    const v = row?.value;
+    return typeof v === 'string' ? v : null;
+  } catch (err) {
+    // Degrade to "sweep from the top" rather than taking the whole job
+    // down. Config.tenantId is an FK to the seeded tenant, so a deployment
+    // that deleted that row would otherwise fail EVERY reconciliation.
+    console.error(`[funding-reconcile] sweep cursor ${key} unreadable — starting from the top`, err);
+    return null;
+  }
 }
 
 async function setSweepCursor(db: Knex, key: string, value: string | null): Promise<void> {
-  await db(TABLES.Config)
-    .insert({ tenantId: DEFAULT_TENANT_ID, key, value: JSON.stringify(value), updatedAt: new Date() })
-    .onConflict(['tenantId', 'key'])
-    .merge({ value: JSON.stringify(value), updatedAt: new Date() });
+  try {
+    await db(TABLES.Config)
+      .insert({ tenantId: DEFAULT_TENANT_ID, key, value: JSON.stringify(value), updatedAt: new Date() })
+      .onConflict(['tenantId', 'key'])
+      .merge({ value: JSON.stringify(value), updatedAt: new Date() });
+  } catch (err) {
+    // Losing the cursor costs repeated work, not correctness.
+    console.error(`[funding-reconcile] sweep cursor ${key} not persisted`, err);
+  }
 }
 
 export async function runFundingReconciliation(
@@ -285,7 +306,7 @@ export async function runFundingReconciliation(
   try {
     stripe = deps.stripe ?? requireStripe();
   } catch {
-    return report; // no Stripe configured (selfhost) — nothing to sweep
+    return finalize(report); // no Stripe configured (selfhost) — nothing to sweep
   }
 
   // ROTATE, don't just cap. A fixed order plus a fixed prefix meant the
@@ -333,6 +354,8 @@ export async function runFundingReconciliation(
       console.error(`[funding-reconcile] charge sweep failed for batch ${batch.id}`, err);
     }
   }
+
+  await chargeSlice.commit();
 
   // 3b. Same argument for the transfer side: a missed `transfer.reversed`
   // leaves a Payout recorded `paid` on money that was clawed back.
@@ -387,6 +410,15 @@ export async function runFundingReconciliation(
     }
   }
 
+  await transferSlice.commit();
+
+  return finalize(report);
+}
+
+/** Applied at EVERY exit, not just the last one — the no-Stripe early
+ *  return produced un-deduped reports. */
+function finalize(report: ReconcileReport): ReconcileReport {
   report.attentionBatches = [...new Set(report.attentionBatches)];
+  report.sweepSkipped = [...new Set(report.sweepSkipped)];
   return report;
 }
