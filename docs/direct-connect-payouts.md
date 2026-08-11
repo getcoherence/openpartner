@@ -132,6 +132,20 @@ create a transfer by hand for it — that is the one action the whole design
 exists to prevent. If you must, first confirm via
 `stripe transfers list --transfer-group <payoutId>` that none exists.
 
+**Disposing of a `duplicate_review` payout.** The executor found more
+than one transfer in the payout's `transfer_group`, or one from a key
+generation it had already proved absent. The partner has been paid more
+than once. This state is deliberately NOT scanned again — re-listing and
+re-alerting every 15 minutes forever helps nobody, and reversed
+duplicates still appear in Stripe's listing so the count never drops.
+The ledger is untouched, the payout is `failed`, and its commissions stay
+claimed so nothing can re-pay them.
+
+To dispose: reverse the surplus transfer(s) in Stripe, decide whether the
+partner keeps the correct one, then either release the claims (SQL below)
+so the payout re-plans, or reverse the commissions if the money is not
+owed. Nothing automatic will touch it.
+
 **Disposing of a reversed payout.** When a transfer is reversed, the payout
 is `failed`, the intent is `confirmed`, and its commissions stay `approved`
 **and claimed** — deliberately, so nothing re-pays money that came back. They

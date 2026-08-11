@@ -389,10 +389,27 @@ async function handleConnectEvent(
       const payoutId = transfer.metadata?.openpartner_payout_id;
       if (!payoutId) return null;
       const reversed = event.type === 'transfer.reversed' || (transfer.reversed ?? false);
-      await trx<PayoutRow>(TABLES.Payout).where({ id: payoutId }).update({
-        status: reversed ? 'failed' : 'paid',
-        completedAt: reversed ? null : new Date(),
-      });
+      // Apply ONLY to the transfer this payout actually recorded. A payout
+      // can have several transfers in its group across key generations
+      // (payout-transfers.ts) — without this, a reversal of a superseded
+      // attempt would mark the CURRENT, legitimately paid payout failed,
+      // and a stale `transfer.updated` could mark a pending one paid.
+      const updated = await trx<PayoutRow>(TABLES.Payout)
+        .where({ id: payoutId, stripeTransferId: transfer.id })
+        .update({
+          status: reversed ? 'failed' : 'paid',
+          completedAt: reversed ? null : new Date(),
+        });
+      if (updated === 0) {
+        // Either we never recorded this transfer, or the payout is on a
+        // different one. Both mean a transfer exists that our ledger does
+        // not own — exactly the state the executor's duplicate detection
+        // is for, and worth saying out loud when it's a reversal.
+        console.error(
+          `[payouts] ${event.type} for transfer ${transfer.id} does not match the transfer recorded on payout ${payoutId} — not applied; check for duplicate transfers`,
+        );
+        return `${event.type.replace('.', '_')}_unmatched`;
+      }
       return reversed ? 'transfer_reversed' : 'transfer_updated';
     }
     default:
@@ -635,6 +652,7 @@ async function reverseCommissionsForInvoice(
   const reversedIds = new Set(reversedRows.map((r) => r.id));
   const missedIds = interlock.flippable.filter((id) => !reversedIds.has(id));
   let lateHeld = 0;
+  let lateNewlyPaid = 0;
   if (missedIds.length > 0) {
     const missed = (await trx<CommissionRow>(TABLES.Commission)
       .whereIn('id', missedIds)
@@ -643,22 +661,34 @@ async function reverseCommissionsForInvoice(
     lateHeld = stillPayable.length;
     if (lateHeld > 0) {
       console.error(
-        `[funding] ALERT: invoice ${invoiceId} refund: ${lateHeld} commission(s) were claimed by a payout while the reversal was in flight (${stillPayable
+        `[funding] ALERT: invoice ${invoiceId} refund: ${lateHeld} commission(s) were claimed by a payout intent or a funding allocation while the reversal was in flight (${stillPayable
           .map((c) => c.id)
           .join(', ')}) — refunded revenue may still be paid out; operator action required`,
       );
     }
-    const otherwiseMoved = missed.length - lateHeld;
+    // A row that became `paid` between the alreadyPaid count and this
+    // read is in NEITHER total — it would vanish from the report while
+    // refunded revenue had just been paid out. Count it explicitly.
+    const paidLate = missed.filter((c) => c.status === 'paid').length;
+    if (paidLate > 0) {
+      lateNewlyPaid = paidLate;
+      console.error(
+        `[funding] ALERT: invoice ${invoiceId} refund: ${paidLate} commission(s) were PAID while the reversal was in flight — refunded revenue has left the platform; operator action required`,
+      );
+    }
+    const otherwiseMoved = missed.length - lateHeld - paidLate;
     if (otherwiseMoved > 0) {
       console.warn(
-        `[funding] invoice ${invoiceId} refund: ${otherwiseMoved} commission(s) changed status concurrently (already paid or reversed) — not counted as held`,
+        `[funding] invoice ${invoiceId} refund: ${otherwiseMoved} commission(s) were already reversed concurrently — not counted as held`,
       );
     }
   }
 
   return {
     reversed,
-    alreadyPaid,
+    // Includes rows that became paid between the two reads; leaving them
+    // out reported a cleanly-handled refund when money had just moved.
+    alreadyPaid: alreadyPaid + lateNewlyPaid,
     heldInTransfer: interlock.held.length + lateHeld,
   };
 }

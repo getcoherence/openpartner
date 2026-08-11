@@ -11,6 +11,7 @@
 
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type Stripe from 'stripe';
+import { readFileSync } from 'node:fs';
 import { ulid } from 'ulid';
 import { TABLES, DEFAULT_TENANT_ID } from '@openpartner/db';
 import { db } from '../db.js';
@@ -730,7 +731,7 @@ describe.skipIf(skipIntegration)('the idempotency window survives repeated retri
           JSON.stringify({
             transferState: 'posted',
             postedAt: hoursAgo(25).toISOString(),
-            leaseAt: hoursAgo(0.03).toISOString(),
+            leaseAt: hoursAgo(0.2).toISOString(), // cold: older than POST_COOLDOWN_MS
             attempts: 4,
           }),
         ]),
@@ -1066,7 +1067,10 @@ describe.skipIf(skipIntegration)('round-4 hardening: generations are epochs', ()
 
     expect(result.failed).toEqual([{ payoutId, error: 'duplicate_transfers' }]);
     const payout = await payoutOf(payoutId);
-    expect(payout.status).toBe('pending'); // NOT recorded as cleanly paid
+    expect(payout.status).toBe('failed'); // NOT recorded as cleanly paid
+    // Parked where the executor will not pick it up again: leaving it in
+    // reconcile_required re-listed and re-alerted every 15 minutes forever.
+    expect(payout.metadata.transferState).toBe('duplicate_review');
     expect(payout.metadata.lastError).toContain('tr_gen0');
     expect(payout.metadata.lastError).toContain('tr_gen1');
     const commission = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
@@ -1157,5 +1161,104 @@ describe.skipIf(skipIntegration)('round-4 hardening: generations are epochs', ()
 
     expect(transfersCreate).not.toHaveBeenCalled();
     expect(transfersList).toHaveBeenCalledOnce();
+  });
+});
+
+// ---- Round-5 review fixes (Codex, 2026-08-11) ------------------------------
+
+describe.skipIf(skipIntegration)('round-5 hardening', () => {
+  it('the lease outlives the bounded Stripe request budget', () => {
+    // A 60s lease with stripe-node's default 80s timeout and 2 retries
+    // meant a POST could still be in flight when another worker declared
+    // the lease cold, reconciled, and re-armed — two transfers, one
+    // recorded. The lease must dominate the request budget.
+    const src = readFileSync(new URL('../payout-transfers.ts', import.meta.url), 'utf8');
+    const timeout = Number(/TRANSFER_TIMEOUT_MS = ([\d_]+)/.exec(src)![1]!.replace(/_/g, ''));
+    const retries = Number(/TRANSFER_MAX_RETRIES = (\d+)/.exec(src)![1]!);
+    const cooldown = Number(/POST_COOLDOWN_MS = ([\d_]+)/.exec(src)![1]!.replace(/_/g, ''));
+    expect(cooldown).toBeGreaterThan(timeout * (retries + 1));
+  });
+
+  it('a transfer from a superseded generation is never finalized as current', async () => {
+    // Transfers were STAMPED with their generation and then the stamp was
+    // ignored: reconcile passed the row's CURRENT generation to finalize,
+    // so a gen-0 transfer discovered while the row was gen-1 passed the
+    // gen-1 fence and was recorded as the current epoch's.
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({
+            transferState: 'posted',
+            postedAt: hoursAgo(25).toISOString(),
+            leaseAt: hoursAgo(25).toISOString(),
+            keyGeneration: 1,
+          }),
+        ]),
+      });
+
+    const stale = {
+      id: 'tr_from_gen0',
+      amount: 5000,
+      currency: 'usd',
+      transfer_group: payoutId,
+      metadata: { openpartner_payout_id: payoutId, openpartner_key_generation: '0' },
+    };
+    const { stripe } = mockStripe({ listed: [stale] });
+
+    const result = await executePayoutTransfers(db, { stripe });
+
+    expect(result.failed).toEqual([
+      { payoutId, error: 'superseded_generation_transfer' },
+    ]);
+    const payout = await payoutOf(payoutId);
+    expect(payout.status).toBe('failed');
+    expect(payout.metadata.transferState).toBe('duplicate_review');
+    expect(payout.stripeTransferId).toBeNull(); // not recorded as this epoch's
+    const commission = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(commission.status).toBe('approved');
+  });
+
+  it('an unreadable keyGeneration refuses to act instead of throwing', async () => {
+    // The fence used `::int`, which RAISES on a non-numeric value — and a
+    // failed cast can't be coalesced away, so one malformed metadata blob
+    // wedged the intent permanently with only a generic log.
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [JSON.stringify({ keyGeneration: 'not-a-number' })]),
+      });
+    const { stripe, transfersCreate } = mockStripe();
+
+    const result = await executePayoutTransfers(db, { stripe });
+
+    expect(transfersCreate).not.toHaveBeenCalled();
+    expect(result.failed).toEqual([{ payoutId, error: 'unreadable_key_generation' }]);
+  });
+
+  it('a duplicate_review intent is not scanned again', async () => {
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    await db(TABLES.Payout)
+      .where({ id: payouts[0]!.payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [JSON.stringify({ transferState: 'duplicate_review' })]),
+      });
+    const { stripe, transfersList, transfersCreate } = mockStripe();
+
+    const result = await executePayoutTransfers(db, { stripe });
+
+    expect(result.processed).toBe(0);
+    expect(transfersList).not.toHaveBeenCalled();
+    expect(transfersCreate).not.toHaveBeenCalled();
   });
 });
