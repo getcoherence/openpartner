@@ -57,6 +57,19 @@ export const TERMINAL_INTENT_STATES = ['confirmed', 'canceled'] as const;
  * that window: whichever statement lands second sees the other's work.
  */
 export function whereNotClaimedByOpenIntent<T extends Knex.QueryBuilder>(db: Knex, q: T): T {
+  // ALSO exclude anything a funding allocation picked up after the
+  // interlock read. The interlock checks allocations, but between that
+  // read and this UPDATE a reservation can lock the still-approved
+  // commission and insert one — and the funded executor then overwrites
+  // `reversed` with `paid` when it finalizes.
+  q.whereNotExists(function () {
+    this.select(db.raw('1'))
+      .from(TABLES.HostedFundingAllocation)
+      .whereRaw(
+        `"${TABLES.HostedFundingAllocation}"."commissionId" = "${TABLES.Commission}"."id"`,
+      )
+      .whereIn(`${TABLES.HostedFundingAllocation}.state`, ['reserved', 'transfer_pending']);
+  });
   q.where(function () {
     // Unclaimed, or claimed by a payout that provably isn't an open
     // intent. Phrased as EXISTS rather than NOT EXISTS so a payoutId

@@ -119,6 +119,22 @@ export function idempotencyKeyFor(payoutId: string, generation = 0): string {
   return generation > 0 ? `payout_${payoutId}_g${generation}` : `payout_${payoutId}`;
 }
 
+/** Test seam: finalize a transfer as if produced under `generation`, to
+ *  stage "a worker holding a result from a superseded epoch". */
+export async function __testFinalizeStale(
+  db: Knex,
+  stripe: Stripe,
+  payoutId: string,
+  transfer: Stripe.Transfer,
+  generation: number,
+): Promise<void> {
+  const payout = (await db<PayoutRow>(TABLES.Payout).where({ id: payoutId }).first()) as PayoutRow;
+  const sink: PayoutTransferResult = {
+    processed: 0, confirmed: [], failed: [], ambiguous: [], reconciled: [], canceled: [], skipped: 0,
+  };
+  await finalizeTransfer(db, stripe, payout, transfer, generation, sink);
+}
+
 /** Test seam. The CAS is where the ABA guard lives, and calling it
  *  directly is the only way to stage "a stale worker acts on a row that
  *  has since been re-armed and re-posted". */
@@ -227,7 +243,7 @@ async function advanceIntent(
     // do, since it only checks transferState — lets that worker resume
     // and POST after we have already finalized from a listing. Leave a
     // warm intent alone whatever its age; the next tick picks it up.
-    if (now.getTime() - leaseAt < POST_COOLDOWN_MS) {
+    if (!Number.isNaN(leaseAt) && now.getTime() - leaseAt < POST_COOLDOWN_MS) {
       result.skipped += 1;
       return;
     }
@@ -236,7 +252,12 @@ async function advanceIntent(
     // and Stripe may prune the key any time after 24h. Treating the key
     // as spent an hour early means every POST we authorize lands with
     // room to spare, instead of racing the expiry we just measured.
-    if (now.getTime() - postedAt >= IDEMPOTENCY_WINDOW_MS - KEY_SAFETY_MARGIN_MS) {
+    // An unparseable timestamp yields NaN, and EVERY comparison against
+    // NaN is false — so a malformed `postedAt` sailed past both safety
+    // checks and reached the re-POST path, which is the one place we must
+    // never go on a guess. Unknown age is treated as expired: reconcile
+    // by listing, which is always safe.
+    if (Number.isNaN(postedAt) || now.getTime() - postedAt >= IDEMPOTENCY_WINDOW_MS - KEY_SAFETY_MARGIN_MS) {
       // The key may have been pruned, so a re-POST could create a SECOND
       // transfer. Find out what really happened instead.
       //
@@ -329,6 +350,11 @@ async function postTransfer(
   meta: PayoutTransferMeta,
   result: PayoutTransferResult,
 ): Promise<void> {
+  // The epoch this attempt belongs to. Everything we write after the
+  // Stripe call is fenced on it: if the intent has since been reconciled
+  // and re-armed under a newer generation, this worker's result belongs
+  // to a generation that is no longer current and must NOT be recorded.
+  const generation = meta.keyGeneration ?? 0;
   let transfer: Stripe.Transfer;
   try {
     transfer = await stripe.transfers.create(
@@ -344,10 +370,15 @@ async function postTransfer(
         metadata: {
           openpartner_payout_id: payout.id,
           openpartner_tenant_id: payout.tenantId,
+          // Which key generation produced this transfer. transfer_group
+          // stays the payout id so ONE listing finds every generation —
+          // that is what makes duplicates detectable rather than
+          // invisible. Absent on transfers created before generations.
+          openpartner_key_generation: String(generation),
           mode: meta.mode ?? '',
         },
       },
-      { idempotencyKey: idempotencyKeyFor(payout.id, meta.keyGeneration) },
+      { idempotencyKey: idempotencyKeyFor(payout.id, generation) },
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -356,13 +387,14 @@ async function postTransfer(
       // either the first POST was rejected outright, or this is a replay
       // of that same rejection. Concurrency (409) and throttling (429)
       // are excluded; see isDefiniteStripeError.
-      await failIntent(db, payout, message, result);
+      await failIntent(db, payout, message, generation, result);
       return;
     }
     // Ambiguous: the transfer may exist. Stay 'posted' — the next tick
     // replays the frozen key inside the window, or reconciles past it.
     await db(TABLES.Payout)
       .where({ id: payout.id })
+      .whereRaw(`coalesce(("metadata"->>'keyGeneration')::int, 0) = ?`, [generation])
       .update({
         metadata: mergeMeta(db, { lastError: message.slice(0, 500) }),
       });
@@ -371,7 +403,7 @@ async function postTransfer(
     return;
   }
 
-  await finalizeTransfer(db, stripe, payout, transfer, result);
+  await finalizeTransfer(db, stripe, payout, transfer, generation, result);
 }
 
 /**
@@ -384,6 +416,8 @@ async function finalizeTransfer(
   stripe: Stripe,
   payout: PayoutRow,
   transfer: Stripe.Transfer,
+  /** The generation this transfer was produced under. */
+  generation: number,
   result: PayoutTransferResult,
 ): Promise<void> {
   // A REPLAYED transfer object is stale. Stripe answers a retried
@@ -411,6 +445,7 @@ async function finalizeTransfer(
       await db(TABLES.Payout)
         .where({ id: payout.id })
         .whereRaw(`("metadata"->>'transferState') = 'posted'`)
+        .whereRaw(`coalesce(("metadata"->>'keyGeneration')::int, 0) = ?`, [generation])
         .update({ metadata: mergeMeta(db, { lastError: `retrieve_failed:${message}`.slice(0, 500) }) });
       if (attempts >= RETRIEVE_ALERT_ATTEMPTS) {
         console.error(
@@ -430,9 +465,15 @@ async function finalizeTransfer(
   // paid on money that came back. Close the intent, leave the payout
   // failed, and leave the commissions claimed for a human to dispose of.
   if (transfer.reversed || Number(transfer.amount_reversed ?? 0) > 0) {
-    await casTransferState(db, payout.id, ['posted', 'reconcile_required'], 'confirmed', {
-      lastError: 'transfer_reversed',
-    }, { status: 'failed', stripeTransferId: transfer.id });
+    await casTransferState(
+      db,
+      payout.id,
+      ['posted', 'reconcile_required'],
+      'confirmed',
+      { lastError: 'transfer_reversed' },
+      { status: 'failed', stripeTransferId: transfer.id },
+      { keyGeneration: generation },
+    );
     console.error(
       `[payouts] ALERT: transfer ${transfer.id} for payout ${payout.id} is reversed — commissions held, operator disposition required`,
     );
@@ -444,14 +485,20 @@ async function finalizeTransfer(
     // CAS on transferState only — NOT on Payout.status. A transfer.updated
     // webhook can legitimately have flipped status to 'paid' before we got
     // here; that must not block the ledger from being completed.
-    const moved = await casTransferState(trx, payout.id, ['posted', 'reconcile_required'], 'confirmed', {
-      lastError: undefined,
-    }, {
-      status: 'paid',
-      stripeTransferId: transfer.id,
-      completedAt: new Date(),
-    });
-    if (!moved) return false; // another worker finalized first
+    const moved = await casTransferState(
+      trx,
+      payout.id,
+      ['posted', 'reconcile_required'],
+      'confirmed',
+      { lastError: undefined },
+      { status: 'paid', stripeTransferId: transfer.id, completedAt: new Date() },
+      // Fenced on the epoch: a worker holding a transfer from generation
+      // N must not record it against an intent that has since re-armed
+      // to N+1 — that transfer belongs to a generation we already proved
+      // absent, and N+1 may have produced its own.
+      { keyGeneration: generation },
+    );
+    if (!moved) return false; // another worker finalized first, or we are stale
     await trx(TABLES.Commission)
       .where({ payoutId: payout.id, status: 'approved' })
       .update({ status: 'paid', paidAt: new Date() });
@@ -499,6 +546,16 @@ async function reconcileIntent(
   payout: PayoutRow,
   result: PayoutTransferResult,
 ): Promise<void> {
+  const meta = payout.metadata as unknown as PayoutTransferMeta;
+  const generation = meta.keyGeneration ?? 0;
+
+  // Collect EVERY match across every page, not the first. Generations
+  // share a transfer_group precisely so one listing sees all of them —
+  // taking the first hid the case this whole mechanism can produce: a
+  // late transfer from generation N materialising after N+1 already
+  // succeeded. Stripe lists newest-first, so "first match" would have
+  // reported the newest and left the older duplicate unrecorded.
+  const matches: Stripe.Transfer[] = [];
   let startingAfter: string | undefined;
   for (let page = 0; page < 20; page += 1) {
     const listed = await stripe.transfers.list({
@@ -506,14 +563,31 @@ async function reconcileIntent(
       limit: 100,
       ...(startingAfter ? { starting_after: startingAfter } : {}),
     });
-    const match = listed.data.find((t) => t.metadata?.openpartner_payout_id === payout.id);
-    if (match) {
-      await finalizeTransfer(db, stripe, payout, match, result);
-      return;
-    }
+    matches.push(...listed.data.filter((t) => t.metadata?.openpartner_payout_id === payout.id));
     if (!listed.has_more || listed.data.length === 0) break;
     startingAfter = listed.data[listed.data.length - 1]!.id;
   }
+
+  if (matches.length > 1) {
+    // Two real transfers for one commission set. Never pick one and move
+    // on — that records a payout as cleanly paid while a duplicate sits
+    // unaccounted for at Stripe. Freeze loudly and leave it to a human.
+    const ids = matches.map((t) => t.id).join(', ');
+    await db(TABLES.Payout)
+      .where({ id: payout.id })
+      .update({ metadata: mergeMeta(db, { lastError: `duplicate_transfers:${ids}`.slice(0, 500) }) });
+    console.error(
+      `[payouts] ALERT: payout ${payout.id} has ${matches.length} transfers in its transfer_group (${ids}) — the partner has been paid more than once; ledger NOT written, operator reconciliation required`,
+    );
+    result.failed.push({ payoutId: payout.id, error: 'duplicate_transfers' });
+    return;
+  }
+
+  if (matches.length === 1) {
+    await finalizeTransfer(db, stripe, payout, matches[0]!, generation, result);
+    return;
+  }
+
   // Bump the key generation. Clearing our own clocks does NOT give us a
   // fresh key: Stripe's retention is anchored to when `payout_<id>` was
   // FIRST used, so a re-armed POST inside that retention replays the
@@ -521,16 +595,24 @@ async function reconcileIntent(
   // anything — and the local window restarts, so it could loop forever.
   // Listing just proved no transfer exists, which is exactly the evidence
   // needed to make a new key safe.
-  const meta = payout.metadata as unknown as PayoutTransferMeta;
-  const nextGeneration = (meta.keyGeneration ?? 0) + 1;
-  console.error(
-    `[payouts] intent ${payout.id}: no transfer found in group after the idempotency window — re-arming under key generation ${nextGeneration}`,
+  //
+  // Fenced on the generation we READ: a reconciler resuming from a stale
+  // snapshot would otherwise recompute N+1 from an already-advanced row
+  // and hand a live generation back out for reuse.
+  const nextGeneration = generation + 1;
+  const rearmed = await casTransferState(
+    db,
+    payout.id,
+    'reconcile_required',
+    'intent',
+    { postedAt: undefined, leaseAt: undefined, keyGeneration: nextGeneration },
+    {},
+    { keyGeneration: generation },
   );
-  await casTransferState(db, payout.id, 'reconcile_required', 'intent', {
-    postedAt: undefined,
-    leaseAt: undefined,
-    keyGeneration: nextGeneration,
-  });
+  if (!rearmed) return; // someone else advanced this intent; their epoch wins
+  console.error(
+    `[payouts] intent ${payout.id}: no transfer found in group after the idempotency window — re-armed under key generation ${nextGeneration}`,
+  );
 }
 
 /** Definite failure: release the frozen commissions so the next planning
@@ -539,12 +621,19 @@ async function failIntent(
   db: Knex,
   payout: PayoutRow,
   message: string,
+  generation: number,
   result: PayoutTransferResult,
 ): Promise<void> {
   await db.transaction(async (trx) => {
-    const moved = await casTransferState(trx, payout.id, ['posted', 'intent'], 'canceled', {
-      lastError: message.slice(0, 500),
-    }, { status: 'failed' });
+    const moved = await casTransferState(
+      trx,
+      payout.id,
+      ['posted', 'intent'],
+      'canceled',
+      { lastError: message.slice(0, 500) },
+      { status: 'failed' },
+      { keyGeneration: generation },
+    );
     if (!moved) return;
     await releaseClaims(trx, payout.id);
   });
@@ -640,10 +729,13 @@ async function casTransferState(
   to: PayoutTransferState,
   patch: Record<string, unknown> = {},
   columns: Record<string, unknown> = {},
-  /** Extra equality predicates on the metadata the caller OBSERVED.
-   *  Without these the state alone is an ABA: a row can leave and
-   *  re-enter a state between a worker's read and its write. */
-  expect: { postedAt?: string } = {},
+  /** Equality predicates on the metadata the caller OBSERVED. Without
+   *  these the state alone is an ABA: a row can leave and re-enter a
+   *  state between a worker's read and its write. `keyGeneration` is the
+   *  epoch — every mutation that follows a Stripe call must be fenced on
+   *  it, or a worker holding a result from generation N can write it
+   *  against generation N+1. */
+  expect: { postedAt?: string; keyGeneration?: number } = {},
 ): Promise<PayoutRow | null> {
   const fromList = Array.isArray(from) ? from : [from];
   const q = db(TABLES.Payout)
@@ -655,6 +747,10 @@ async function casTransferState(
     } else {
       q.whereRaw(`("metadata"->>'postedAt') = ?`, [expect.postedAt]);
     }
+  }
+  if (expect.keyGeneration !== undefined) {
+    // Absent means generation 0 — rows written before generations existed.
+    q.whereRaw(`coalesce(("metadata"->>'keyGeneration')::int, 0) = ?`, [expect.keyGeneration]);
   }
   const [row] = (await q
     .update({

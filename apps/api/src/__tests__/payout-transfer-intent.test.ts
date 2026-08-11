@@ -1030,3 +1030,132 @@ describe.skipIf(skipIntegration)('round-3 hardening', () => {
     expect(interlock.flippable).toEqual(commissionIds);
   });
 });
+
+// ---- Round-4 review fixes (Codex, 2026-08-10) ------------------------------
+
+describe.skipIf(skipIntegration)('round-4 hardening: generations are epochs', () => {
+  async function stagePosted(payoutId: string, patch: Record<string, unknown>) {
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({ metadata: db.raw(`"metadata" || ?::jsonb`, [JSON.stringify(patch)]) });
+  }
+
+  it('reconcile reports EVERY transfer in the group, never just the first', async () => {
+    // Generations share a transfer_group precisely so one listing sees
+    // all of them. Taking the first match hid the case this mechanism can
+    // create: a late transfer from generation N arriving after N+1
+    // already succeeded — two real payments, one recorded.
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await stagePosted(payoutId, {
+      transferState: 'posted',
+      postedAt: hoursAgo(25).toISOString(),
+      leaseAt: hoursAgo(25).toISOString(),
+      keyGeneration: 1,
+    });
+
+    const dupes = [
+      { id: 'tr_gen0', amount: 5000, currency: 'usd', transfer_group: payoutId, metadata: { openpartner_payout_id: payoutId, openpartner_key_generation: '0' } },
+      { id: 'tr_gen1', amount: 5000, currency: 'usd', transfer_group: payoutId, metadata: { openpartner_payout_id: payoutId, openpartner_key_generation: '1' } },
+    ];
+    const { stripe } = mockStripe({ listed: dupes });
+
+    const result = await executePayoutTransfers(db, { stripe });
+
+    expect(result.failed).toEqual([{ payoutId, error: 'duplicate_transfers' }]);
+    const payout = await payoutOf(payoutId);
+    expect(payout.status).toBe('pending'); // NOT recorded as cleanly paid
+    expect(payout.metadata.lastError).toContain('tr_gen0');
+    expect(payout.metadata.lastError).toContain('tr_gen1');
+    const commission = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(commission.status).toBe('approved'); // ledger untouched
+  });
+
+  it('a transfer from a superseded generation is not recorded against the current one', async () => {
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+
+    // Worker holds a transfer produced under generation 0…
+    await stagePosted(payoutId, {
+      transferState: 'posted',
+      postedAt: hoursAgo(2).toISOString(),
+      leaseAt: hoursAgo(2).toISOString(),
+      keyGeneration: 0,
+      attempts: 1,
+    });
+    // …while the intent has since re-armed to generation 1.
+    await stagePosted(payoutId, { keyGeneration: 1 });
+
+    const staleTransfer = { id: 'tr_stale', amount: 5000, currency: 'usd', metadata: {} };
+    const stripe = {
+      transfers: {
+        create: vi.fn(async () => staleTransfer),
+        list: vi.fn(),
+        retrieve: vi.fn(async () => staleTransfer),
+      },
+    } as unknown as Stripe;
+    const { __testFinalizeStale } = await import('../payout-transfers.js');
+
+    await __testFinalizeStale(db, stripe, payoutId, staleTransfer as unknown as Stripe.Transfer, 0);
+
+    const payout = await payoutOf(payoutId);
+    expect(payout.status).toBe('pending'); // the stale epoch lost
+    expect(payout.stripeTransferId).toBeNull();
+    const commission = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(commission.status).toBe('approved');
+  });
+
+  it('the re-arm is fenced, so a stale reconciler cannot hand back a live generation', async () => {
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await stagePosted(payoutId, {
+      transferState: 'reconcile_required',
+      postedAt: hoursAgo(25).toISOString(),
+      keyGeneration: 0,
+    });
+
+    // While the listing is in flight, another worker advances the epoch.
+    const transfersList = vi.fn(async () => {
+      await stagePosted(payoutId, { keyGeneration: 1 });
+      return { data: [], has_more: false };
+    });
+    const stripe = {
+      transfers: { create: vi.fn(), list: transfersList, retrieve: vi.fn() },
+    } as unknown as Stripe;
+
+    await executePayoutTransfers(db, { stripe });
+
+    // The stale reconciler computed gen 1 from what it read; the fence
+    // rejected it, leaving the newer epoch intact rather than handing
+    // generation 1 back out for reuse.
+    const payout = await payoutOf(payoutId);
+    expect(payout.metadata.keyGeneration).toBe(1);
+    expect(payout.metadata.transferState).toBe('reconcile_required');
+  });
+
+  it('a malformed postedAt reconciles instead of authorizing a POST', async () => {
+    // NaN comparisons are all false, so a corrupt timestamp used to sail
+    // past both safety checks straight into a re-POST.
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await stagePosted(payoutId, {
+      transferState: 'posted',
+      postedAt: 'not-a-timestamp',
+      leaseAt: 'not-a-timestamp',
+    });
+    const { stripe, transfersCreate, transfersList } = mockStripe({ listed: [] });
+
+    await executePayoutTransfers(db, { stripe });
+
+    expect(transfersCreate).not.toHaveBeenCalled();
+    expect(transfersList).toHaveBeenCalledOnce();
+  });
+});

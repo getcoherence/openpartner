@@ -603,14 +603,17 @@ async function reverseCommissionsForInvoice(
   // Same check/use gap as the admin route: the interlock read and this
   // flip are separate statements, so re-assert the direct-rail guard
   // inside the UPDATE (a payout intent can claim a commission in between).
-  const reversed = interlock.flippable.length === 0
-    ? 0
-    : await whereNotClaimedByOpenIntent(
+  const reversedRows = interlock.flippable.length === 0
+    ? []
+    : ((await whereNotClaimedByOpenIntent(
         trx,
         trx<CommissionRow>(TABLES.Commission)
           .whereIn(`${TABLES.Commission}.id`, interlock.flippable)
           .whereIn('status', ['accrued', 'approved']),
-      ).update({ status: 'reversed' });
+      )
+        .update({ status: 'reversed' })
+        .returning('id')) as Array<{ id: string }>);
+  const reversed = reversedRows.length;
 
   const alreadyPaidRow = (await trx<CommissionRow>(TABLES.Commission)
     .whereIn('attributionId', attributionIds)
@@ -624,11 +627,33 @@ async function reverseCommissionsForInvoice(
   // counted as held by the interlock, so without this they vanished from
   // the report entirely: the refund looked fully handled while a
   // commission for refunded revenue stayed payable.
-  const lateHeld = interlock.flippable.length - reversed;
-  if (lateHeld > 0) {
-    console.error(
-      `[funding] ALERT: invoice ${invoiceId} refund: ${lateHeld} commission(s) were claimed by a payout intent between the interlock check and the reversal — refunded revenue may still be paid out; operator action required`,
-    );
+  // Anything in `flippable` the UPDATE didn't take. Do NOT assume why:
+  // a concurrent actor may have paid it, another refund may have already
+  // reversed it, or a payout intent may have claimed it. Counting them
+  // all as "held" produced false alerts and double-counted rows that were
+  // also reported as alreadyPaid.
+  const reversedIds = new Set(reversedRows.map((r) => r.id));
+  const missedIds = interlock.flippable.filter((id) => !reversedIds.has(id));
+  let lateHeld = 0;
+  if (missedIds.length > 0) {
+    const missed = (await trx<CommissionRow>(TABLES.Commission)
+      .whereIn('id', missedIds)
+      .select('id', 'status', 'payoutId')) as Array<Pick<CommissionRow, 'id' | 'status' | 'payoutId'>>;
+    const stillPayable = missed.filter((c) => ['accrued', 'approved'].includes(c.status));
+    lateHeld = stillPayable.length;
+    if (lateHeld > 0) {
+      console.error(
+        `[funding] ALERT: invoice ${invoiceId} refund: ${lateHeld} commission(s) were claimed by a payout while the reversal was in flight (${stillPayable
+          .map((c) => c.id)
+          .join(', ')}) — refunded revenue may still be paid out; operator action required`,
+      );
+    }
+    const otherwiseMoved = missed.length - lateHeld;
+    if (otherwiseMoved > 0) {
+      console.warn(
+        `[funding] invoice ${invoiceId} refund: ${otherwiseMoved} commission(s) changed status concurrently (already paid or reversed) — not counted as held`,
+      );
+    }
   }
 
   return {
