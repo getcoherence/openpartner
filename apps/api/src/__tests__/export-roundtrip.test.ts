@@ -526,7 +526,7 @@ describe.skipIf(skipIntegration)('SQL route validation', () => {
     expect(ok.status).toBe(200);
     expect(ok.text).toContain(`'${TENANT}'`);
     expect(ok.text).not.toContain(":'tenant_id'");
-    expect(ok.text).not.toContain('\set tenant_id');
+    expect(ok.text).not.toContain('\\set tenant_id');
   });
 
   it('validates on the per-table SQL route too', async () => {
