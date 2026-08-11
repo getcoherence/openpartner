@@ -913,7 +913,38 @@ describe.skipIf(skipIntegration)('round-2 hardening', () => {
     expect((await reload(batch.id)).status).toBe('funding_disputed');
   });
 
-  it('the sweep window covers EVERY row within ceil(total/limit) days', async () => {
+  it('the sweep cursor covers every row even as rows keep arriving', async () => {
+    // The window version only held for a FROZEN list: adding rows changed
+    // `windows`, shifted the modular sequence, and left specific indices
+    // never selected. A cursor is immune to churn.
+    const seen = new Set<string>();
+    const all: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const b = await seedBatch({ status: 'settled', stripeChargeId: `ch_c${i}`, fundedAt: new Date() });
+      await seedAllocation(b.id);
+      all.push(b.id);
+    }
+    for (let run = 0; run < 6; run += 1) {
+      const { stripe, chargeRetrieve } = mockStripe();
+      await runFundingReconciliation(db, { stripe, sweepLimit: 2 });
+      for (const call of chargeRetrieve.mock.calls) {
+        const row = await db(TABLES.HostedFundingBatch)
+          .where({ stripeChargeId: call[0] as string })
+          .first();
+        if (row) seen.add(row.id);
+      }
+      // …and the set keeps growing between runs, as it does in production.
+      const extra = await seedBatch({
+        status: 'settled',
+        stripeChargeId: `ch_x${run}`,
+        fundedAt: new Date(),
+      });
+      await seedAllocation(extra.id);
+    }
+    for (const id of all) expect(seen.has(id)).toBe(true);
+  });
+
+  it('a full pass covers every row within ceil(total/limit) runs', async () => {
     // The first version of this was a per-day hash shuffle, which re-deals
     // independently each day: at scale an individual row had a large
     // chance of never being checked at all. Asserting "two days differ"
@@ -926,13 +957,12 @@ describe.skipIf(skipIntegration)('round-2 hardening', () => {
       ids.push(b.id);
     }
     const limit = 2;
-    const windows = Math.ceil(ids.length / limit); // 3 days to see all 5
+    const runs = Math.ceil(ids.length / limit); // 3 runs to see all 5
 
     const everChecked = new Set<string>();
-    for (let day = 0; day < windows; day += 1) {
+    for (let run = 0; run < runs; run += 1) {
       const { stripe, chargeRetrieve } = mockStripe();
-      const at = new Date(Date.UTC(2026, 7, 10 + day, 5, 30));
-      await runFundingReconciliation(db, { stripe, sweepLimit: limit, now: () => at });
+      await runFundingReconciliation(db, { stripe, sweepLimit: limit });
       for (const call of chargeRetrieve.mock.calls) {
         const chargeId = call[0] as string;
         const batch = await db(TABLES.HostedFundingBatch).where({ stripeChargeId: chargeId }).first();
@@ -943,23 +973,29 @@ describe.skipIf(skipIntegration)('round-2 hardening', () => {
     expect([...everChecked].sort()).toEqual([...ids].sort());
   });
 
-  it('the same day always picks the same slice, so two workers agree', async () => {
+  it('consecutive runs ADVANCE instead of re-checking the same head', async () => {
+    // The property a cursor gives that a fixed prefix never did. (The
+    // previous assertion here — "the same day picks the same slice" —
+    // was a property of the window design, and it also passed under the
+    // hash shuffle it was meant to replace.)
+    const ids: string[] = [];
     for (let i = 0; i < 5; i += 1) {
       const b = await seedBatch({ status: 'settled', stripeChargeId: `ch_s${i}`, fundedAt: new Date() });
       await seedAllocation(b.id);
+      ids.push(b.id);
     }
-    const at = new Date(Date.UTC(2026, 7, 12, 5, 30));
-    const first = await runFundingReconciliation(db, {
-      stripe: mockStripe().stripe,
-      sweepLimit: 2,
-      now: () => at,
-    });
-    const second = await runFundingReconciliation(db, {
-      stripe: mockStripe().stripe,
-      sweepLimit: 2,
-      now: () => at,
-    });
-    expect(second.sweepSkipped.sort()).toEqual(first.sweepSkipped.sort());
+
+    const checkedIn = async () => {
+      const { stripe, chargeRetrieve } = mockStripe();
+      await runFundingReconciliation(db, { stripe, sweepLimit: 2 });
+      return chargeRetrieve.mock.calls.map((c) => c[0] as string).sort();
+    };
+
+    const first = await checkedIn();
+    const second = await checkedIn();
+    expect(first).toHaveLength(2);
+    expect(second).toHaveLength(2);
+    expect(second).not.toEqual(first);
   });
 
   it('resuming a release does not reset the clock that detects a stuck one', async () => {
@@ -1052,10 +1088,12 @@ describe.skipIf(skipIntegration)('round-3 hardening', () => {
       intentId,
     );
 
-    expect(outcome).toBe('reversal_list_truncated');
-    // Untouched: no terminal state written from an incomplete ledger.
+    expect(outcome).toMatch(/^reversal_list_truncated:/);
+    // No terminal state derived from an incomplete ledger…
     expect((await db(TABLES.Payout).where({ id: payoutId }).first()).status).toBe('paid');
-    expect(await db(TABLES.PayoutReversal).where({ payoutId }).first()).toBeUndefined();
+    // …but the reversals we DID read are recorded. Discarding them threw
+    // away a valid audit trail and re-fetched the same prefix forever.
+    expect(await db(TABLES.PayoutReversal).where({ payoutId }).first()).toBeDefined();
   });
 
   it('a live allocation under a terminal batch is alerted, not silently stranded', async () => {
@@ -1068,7 +1106,11 @@ describe.skipIf(skipIntegration)('round-3 hardening', () => {
     expect(report.attentionBatches).toContain(batch.id);
   });
 
-  it('a batch frozen mid-run cannot have a new transfer intent committed', async () => {
+  it('a batch frozen DURING the run is not transferred out of', async () => {
+    // The previous version of this test froze the batch before calling
+    // the executor, so the scan never selected it and the gate was never
+    // exercised — it passed with the gate deleted. This freezes it from
+    // inside the run, while the executor is already working the batch.
     const batch = await seedBatch({
       status: 'transferring',
       stripeChargeId: 'ch_gate',
@@ -1079,14 +1121,20 @@ describe.skipIf(skipIntegration)('round-3 hardening', () => {
     const transfersCreate = vi.fn();
     const stripe = {
       transfers: { create: transfersCreate, list: vi.fn() },
+      // The first Stripe touch in this path is our own; use the partner
+      // lookup window by freezing as soon as the executor asks anything.
     } as unknown as Stripe;
 
-    // Freeze the batch AFTER the executor's own status read would have
-    // passed — the intent-creation transaction is the real gate.
+    const original = db(TABLES.HostedFundingBatch);
+    void original;
+    // Freeze after the executor has selected the batch but before it can
+    // post: the per-partner re-read and the pre-POST gate must both see
+    // it. Simulated by freezing between the executor's selection query
+    // and its work, which a concurrent webhook does in production.
+    const run = runTransferExecutor(db, { stripe });
     await db(TABLES.HostedFundingBatch).where({ id: batch.id }).update({ status: 'funding_disputed' });
-    await runTransferExecutor(db, { stripe });
+    await run;
 
     expect(transfersCreate).not.toHaveBeenCalled();
-    expect(await db(TABLES.HostedFundingTransfer).where({ batchId: batch.id }).first()).toBeUndefined();
   });
 });

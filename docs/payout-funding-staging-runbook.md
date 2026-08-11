@@ -114,6 +114,30 @@ them can be observed by reading the happy path. Each has unit coverage in
 | H11 | **Payment wins the release** | Let the PI succeed while a release is in flight | Batch → `funded` **with `stripeChargeId` and `fundedAt` stamped** (it goes through the verified confirm path). A bare CAS left the charge id null and the executor froze it as `recovery_required` on the next tick |
 | H12 | **Batch frozen mid-transfer** | While the executor is working through a multi-partner batch, fire `charge.refunded` on the funding charge | The executor re-reads the batch status before each partner and **stops**; no further transfers leave the frozen batch |
 
+## Known gaps at launch (accept knowingly, or close first)
+
+Found by adversarial review and deliberately NOT auto-resolved, because
+the safe automatic behaviour would be worse than the manual one:
+
+- **No operator recovery transition.** A batch frozen `funding_disputed`
+  or `recovery_required` — including one frozen from `reserved` or
+  `invoicing` by an out-of-order clawback — keeps its allocations, and the
+  live-allocation index stops those commissions being re-reserved. That is
+  the SAFE default (releasing could permit a second debit against a charge
+  we can't prove absent), but it means the partner isn't paid until a
+  human acts, and the only tool today is SQL. A supported
+  "dispose of this batch" endpoint is the gap to close.
+- **Commission↔Allocation lock-order cycle (pre-existing).** The executor
+  locks Commission then updates Allocation; the reversal interlock updates
+  Allocation then Commission. Postgres aborts one side, so the symptom is
+  a retried webhook or a delayed executor tick, not corruption — but it
+  will show up in logs under load.
+- **A batch frozen while `reserved` is a correlation failure, not a
+  normal clawback**: a funding charge shouldn't exist before the collector
+  moves the batch to `invoicing`. Treat one as a signal that a PI was
+  created without its batch being advanced, and verify against Stripe
+  before disposing of it.
+
 ## Rollout order (founder-approved)
 
 1. Staging matrix above passes end to end.

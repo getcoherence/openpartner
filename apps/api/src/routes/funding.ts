@@ -60,12 +60,13 @@ fundingRouter.get('/billing/funding', requireAuth, requireAdmin, async (req, res
       createdAt: b.createdAt,
       fundedAt: b.fundedAt,
       settledAt: b.settledAt,
-      // A refund or dispute on an ALREADY-SETTLED batch records itself
-      // here without changing status (moving a terminal batch back into
-      // the non-terminal set collides with the one-open-batch index). If
-      // this isn't surfaced, such a batch renders as a plain healthy
-      // "Settled" and the clawback is invisible to the operator.
-      failureReason: b.failureReason,
+      // NORMALIZED, not the raw column. `failureReason` carries raw
+      // Stripe error text, internal state-machine reasons and Stripe
+      // object ids (`orphan_payment_intent:pi_…`) — an internal contract
+      // that shouldn't leak into a brand-facing surface. The flag is what
+      // the UI needs: something happened to this batch that its status
+      // alone doesn't show. Operators get the detail from the logs.
+      needsAttention: !!b.failureReason,
     })),
   });
 });

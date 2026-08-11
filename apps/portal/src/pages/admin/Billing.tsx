@@ -337,7 +337,7 @@ interface FundingBatch {
   createdAt: string;
   fundedAt: string | null;
   settledAt: string | null;
-  failureReason?: string | null;
+  needsAttention?: boolean;
 }
 
 interface FundingStatus {
@@ -549,14 +549,14 @@ function FundingCard() {
                     // refunded or disputed keeps its terminal status but
                     // carries a reason. Rendering it as a plain "Settled"
                     // hid the clawback completely.
-                    color: b.failureReason ? theme.danger : theme.textMuted,
+                    color: b.needsAttention ? theme.danger : theme.textMuted,
                     textTransform: 'uppercase',
                     fontWeight: 600,
                   }}
-                  title={b.failureReason ?? undefined}
+                  title={b.needsAttention ? 'This batch needs operator attention — check the funding logs.' : undefined}
                 >
                   {BATCH_STATUS_LABELS[b.status] ?? b.status}
-                  {b.failureReason ? ' ⚠' : ''}
+                  {b.needsAttention ? ' ⚠' : ''}
                 </span>
               </div>
             ))}

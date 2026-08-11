@@ -308,6 +308,22 @@ async function executePartnerTransfer(
   // Step 3 — post the transfer with the frozen key. 'pending', 'posted'
   // (within window) and 'failed' all retry the same key: replays return
   // the original outcome, real retries only happen after the window.
+  // LAST gate before the irreversible call. The check inside the
+  // intent-creation transaction only covers intents created on THIS pass
+  // — an existing pending/failed/posted intent skipped it entirely — and
+  // even a fresh one can have its batch frozen between that commit and
+  // this line. This can't be atomic with a Stripe call, but it narrows
+  // the gap to the request itself and closes the existing-intent hole.
+  const stillTransferring = (await db(TABLES.HostedFundingBatch)
+    .where({ id: batch.id })
+    .first(['status'])) as { status: string } | undefined;
+  if (stillTransferring?.status !== 'transferring') {
+    console.warn(
+      `[funding] batch ${batch.id} is ${stillTransferring?.status ?? 'missing'} — not posting the transfer for partner ${partnerId}`,
+    );
+    return;
+  }
+
   await db(TABLES.HostedFundingTransfer)
     .where({ id: intent.id })
     .update({ state: 'posted', postedAt: intent.postedAt ?? now, updatedAt: now });

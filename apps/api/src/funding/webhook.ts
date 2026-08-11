@@ -300,15 +300,6 @@ export async function handleTransferReversed(
   // Stripe says there is more (same lesson as the transfer-listing
   // pagination in #71).
   const { reversals, complete } = await allReversalsOf(stripe, transfer);
-  if (!complete) {
-    // Deriving `reversed` vs `partially_reversed` from a truncated ledger
-    // writes a terminal state that never self-corrects — every later run
-    // re-reads the same truncated prefix. Record nothing and escalate.
-    console.error(
-      `[funding] ALERT: transfer ${transfer.id} has more reversals than this job will page — payout state NOT derived; operator reconciliation required`,
-    );
-    return 'reversal_list_truncated';
-  }
   let recorded = 0;
   for (const reversal of reversals) {
     const inserted = await db(TABLES.PayoutReversal)
@@ -327,6 +318,19 @@ export async function handleTransferReversed(
       .ignore()
       .returning('id');
     recorded += inserted.length;
+  }
+
+  if (!complete) {
+    // The rows above are real and were recorded (the unique
+    // stripeReversalId makes that idempotent) — throwing them away would
+    // discard a valid audit trail and re-fetch the same prefix forever.
+    // What we must NOT do is derive `reversed` vs `partially_reversed`
+    // from a ledger we know is incomplete: that writes a terminal state
+    // that never self-corrects.
+    console.error(
+      `[funding] ALERT: transfer ${transfer.id} has more reversals than this job will page — ${recorded} newly recorded, payout status NOT derived; operator reconciliation required`,
+    );
+    return `reversal_list_truncated:${recorded}`;
   }
 
   // Derive the payout state from the full reversal ledger.

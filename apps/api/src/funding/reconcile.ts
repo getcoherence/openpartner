@@ -18,7 +18,7 @@
 
 import type Stripe from 'stripe';
 import type { Knex } from 'knex';
-import { TABLES, type HostedFundingBatchRow } from '@openpartner/db';
+import { DEFAULT_TENANT_ID, TABLES, type HostedFundingBatchRow } from '@openpartner/db';
 import { requireStripe } from '../stripe.js';
 import { casBatch, TRANSFER_DEADLINE_DAYS } from './state.js';
 
@@ -57,31 +57,67 @@ const STRIPE_SWEEP_LIMIT = 50;
  *  dispute window is 120 days; 180 gives margin. Money older than this is
  *  settled history and does not need re-checking every night. */
 const REVERSAL_HORIZON_DAYS = 180;
+const SWEEP_CURSOR_CHARGES = 'funding.sweep.cursor.charges';
+const SWEEP_CURSOR_TRANSFERS = 'funding.sweep.cursor.transfers';
 
 /**
- * Pick this run's slice as a sliding WINDOW over a stable ordering, so
- * coverage is complete rather than probabilistic.
+ * Advance a persisted CURSOR over a stable ordering, and return this
+ * run's slice.
  *
- * The first attempt at this was a per-day hash shuffle, which sounds
- * like rotation but isn't: each day re-deals independently, so at 10k
- * rows and 50/day an individual row had a ~40% chance of never being
- * checked at all. A window advancing one step per day visits every row
- * within ceil(total/limit) days, by construction.
+ * Two previous attempts at this were wrong in the same way — they looked
+ * like rotation without guaranteeing coverage:
+ *   - a per-day hash shuffle re-deals independently every day, so a row
+ *     can simply keep losing;
+ *   - a window computed as `(day % ceil(total/limit)) * limit` only holds
+ *     for a FROZEN list. In production rows are added daily, `windows`
+ *     changes, the modular sequence shifts, and specific indices are
+ *     never selected at all.
  *
- * No persisted cursor needed — the day number IS the cursor, which also
- * means two workers on the same day pick the same slice.
+ * A cursor has neither problem: it walks ids in order and remembers where
+ * it stopped, so every row is reached regardless of churn, and rows added
+ * behind the cursor are picked up on the next wrap.
  */
-function sweepWindow<T>(rows: T[], idOf: (row: T) => string, limit: number, now: Date): {
-  due: T[];
-  deferred: T[];
-} {
-  if (rows.length <= limit) return { due: rows, deferred: [] };
+async function sweepSlice<T>(
+  db: Knex,
+  cursorKey: string,
+  rows: T[],
+  idOf: (row: T) => string,
+  limit: number,
+): Promise<{ due: T[]; deferred: T[] }> {
+  if (rows.length <= limit) {
+    await setSweepCursor(db, cursorKey, null); // whole set covered; start over
+    return { due: rows, deferred: [] };
+  }
   const ordered = [...rows].sort((a, b) => (idOf(a) < idOf(b) ? -1 : 1));
-  const windows = Math.ceil(ordered.length / limit);
-  const day = Math.floor(now.getTime() / (24 * 60 * 60 * 1000));
-  const start = (day % windows) * limit;
-  const due = ordered.slice(start, start + limit);
-  return { due, deferred: ordered.filter((r) => !due.includes(r)) };
+  const cursor = await getSweepCursor(db, cursorKey);
+  const startIndex = cursor ? ordered.findIndex((r) => idOf(r) > cursor) : 0;
+  // findIndex returns -1 when the cursor is past every id — wrap.
+  const from = startIndex === -1 ? 0 : startIndex;
+  const due = ordered.slice(from, from + limit);
+  const last = due.length > 0 ? idOf(due[due.length - 1]!) : null;
+  // Wrapping is explicit: once we hand out the tail, the next run starts
+  // from the beginning rather than stalling at the end.
+  await setSweepCursor(db, cursorKey, from + limit >= ordered.length ? null : last);
+  const dueIds = new Set(due.map(idOf));
+  return { due, deferred: ordered.filter((r) => !dueIds.has(idOf(r))) };
+}
+
+/** The sweep is platform-wide, but Config is tenant-scoped; the seeded
+ *  tenant holds these two platform rows. Documented rather than tidy —
+ *  a dedicated table for two strings isn't worth a migration. */
+async function getSweepCursor(db: Knex, key: string): Promise<string | null> {
+  const row = (await db(TABLES.Config)
+    .where({ tenantId: DEFAULT_TENANT_ID, key })
+    .first(['value'])) as { value: unknown } | undefined;
+  const v = row?.value;
+  return typeof v === 'string' ? v : null;
+}
+
+async function setSweepCursor(db: Knex, key: string, value: string | null): Promise<void> {
+  await db(TABLES.Config)
+    .insert({ tenantId: DEFAULT_TENANT_ID, key, value: JSON.stringify(value), updatedAt: new Date() })
+    .onConflict(['tenantId', 'key'])
+    .merge({ value: JSON.stringify(value), updatedAt: new Date() });
 }
 
 export async function runFundingReconciliation(
@@ -257,11 +293,11 @@ export async function runFundingReconciliation(
   // behind it was never checked at all — reporting the skipped ids made
   // that visible but didn't fix the scheduling. Ordering by a per-day
   // hash gives every row a turn, so coverage is eventually complete.
-  const chargeSlice = sweepWindow(funded, (b) => b.id, sweepLimit, runAt);
+  const chargeSlice = await sweepSlice(db, SWEEP_CURSOR_CHARGES, funded, (b) => b.id, sweepLimit);
   if (chargeSlice.deferred.length > 0) {
     report.sweepSkipped.push(...chargeSlice.deferred.map((b) => b.id));
     console.warn(
-      `[funding-reconcile] ${funded.length} batches inside the ${REVERSAL_HORIZON_DAYS}d reversal horizon exceeds the ${sweepLimit}/run cap — ${chargeSlice.deferred.length} deferred to a later window (every batch is checked within ${Math.ceil(funded.length / sweepLimit)} days)`,
+      `[funding-reconcile] ${funded.length} batches inside the ${REVERSAL_HORIZON_DAYS}d reversal horizon exceeds the ${sweepLimit}/run cap — ${chargeSlice.deferred.length} deferred; the cursor resumes from here next run (full pass every ${Math.ceil(funded.length / sweepLimit)} runs)`,
     );
   }
   for (const batch of chargeSlice.due) {
@@ -312,12 +348,18 @@ export async function runFundingReconciliation(
     stripeTransferId: string;
     payoutId: string | null;
   }>;
-  const transferSlice = sweepWindow(confirmedAll, (i) => i.id, sweepLimit, runAt);
+  const transferSlice = await sweepSlice(
+    db,
+    SWEEP_CURSOR_TRANSFERS,
+    confirmedAll,
+    (i) => i.id,
+    sweepLimit,
+  );
   const confirmed = transferSlice.due;
   if (transferSlice.deferred.length > 0) {
     report.sweepSkipped.push(...transferSlice.deferred.map((i) => i.id));
     console.warn(
-      `[funding-reconcile] ${confirmedAll.length} confirmed transfers exceeds the ${sweepLimit}/run cap — ${transferSlice.deferred.length} deferred to a later window (every intent is checked within ${Math.ceil(confirmedAll.length / sweepLimit)} days)`,
+      `[funding-reconcile] ${confirmedAll.length} confirmed transfers exceeds the ${sweepLimit}/run cap — ${transferSlice.deferred.length} deferred; the cursor resumes from here next run (full pass every ${Math.ceil(confirmedAll.length / sweepLimit)} runs)`,
     );
   }
   for (const intent of confirmed) {
@@ -338,12 +380,13 @@ export async function runFundingReconciliation(
       const outcome = await handleTransferReversed(db, stripe, transfer, intent.id);
       report.missedReversals.push(intent.id);
       console.error(
-        `[funding-reconcile] ALERT: transfer ${transfer.id} (intent ${intent.id}) is reversed at Stripe but no webhook ever arrived — recorded now (${outcome})`,
+        `[funding-reconcile] ALERT: transfer ${transfer.id} (intent ${intent.id}) is reversed at Stripe but no webhook ever arrived — outcome: ${outcome}`,
       );
     } catch (err) {
       console.error(`[funding-reconcile] transfer sweep failed for intent ${intent.id}`, err);
     }
   }
 
+  report.attentionBatches = [...new Set(report.attentionBatches)];
   return report;
 }
