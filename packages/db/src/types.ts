@@ -767,7 +767,8 @@ export interface CouponRow {
 
 // ---------------------------------------------------------------------------
 // Hosted payout funding (docs/payout-funding.md §4). Hosted-only sidecars —
-// exported losslessly, inert on self-hosted import. All *Minor columns are
+// designed to export losslessly and be inert on self-hosted import — NOT
+// yet in EXPORT_TABLES, see docs/data-portability.md. All *Minor columns are
 // integer minor units with canonical lowercase currency.
 // ---------------------------------------------------------------------------
 

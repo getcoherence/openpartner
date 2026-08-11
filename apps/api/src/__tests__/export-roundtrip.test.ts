@@ -515,11 +515,26 @@ describe.skipIf(skipIntegration)('SQL route validation', () => {
       .set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(newline.status).toBe(400);
 
-    // …and a well-formed one still works.
+    expect(repeated.body.error).toBe('invalid_tenant_id');
+
+    // …and a well-formed one is actually HONOURED, not just accepted. A
+    // 200 alone would also pass if the parameter were ignored and a
+    // portable dump returned.
     const ok = await request(app)
       .get(`/export.sql?tenantId=${TENANT}`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(ok.status).toBe(200);
-    expect(ok.text).toContain('BEGIN;');
+    expect(ok.text).toContain(`'${TENANT}'`);
+    expect(ok.text).not.toContain(":'tenant_id'");
+    expect(ok.text).not.toContain('\set tenant_id');
+  });
+
+  it('validates on the per-table SQL route too', async () => {
+    const app = createApp();
+    const res = await request(app)
+      .get('/export/Partner.sql?tenantId=a&tenantId=b')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_tenant_id');
   });
 });

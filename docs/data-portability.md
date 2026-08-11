@@ -1,9 +1,11 @@
 # Data portability — export formats and how to restore them
 
 "Your data stays yours" is an architectural constraint, not a feature
-(CLAUDE.md principle #2). Concretely that means: **every table exports to
-CSV, JSON and SQL, and a hosted export restores into a self-hosted
-instance.** This document is the format contract.
+(CLAUDE.md principle #2). Concretely that means: **everything in the
+bundle exports to CSV, JSON and SQL, and a hosted export restores into a
+self-hosted instance.** This document is the format contract — including
+an explicit list of what is NOT in the bundle yet, because a contract
+that overstates itself is worse than one with a documented hole.
 
 ## What's in a bundle
 
@@ -136,9 +138,16 @@ failed to re-import.
 Being explicit matters more than being complete here: a promise the code
 doesn't keep is worse than a documented gap.
 
-**Never exported** (credentials and operational state, not customer data):
-`Session`, `MagicLinkToken`, `ApiKey`, `PlatformSession*`, `PlatformAdmin*`,
-`WebhookDelivery`, `NetworkOutbox`, `StripeWebhookInbox`.
+**Never exported** (credentials, platform-operational state, or delivery
+logs — not customer data):
+`Session`, `MagicLinkToken`, `ApiKey`, `Admin`, `PlatformSession`,
+`PlatformSessionBundle`, `PlatformAdmin`, `PlatformAdminSession`,
+`PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
+`StripeWebhookInbox`.
+
+`Admin` is the consequential one: it is authentication data, so it stays
+out — which is exactly why `HostedFundingAuthorization` (whose `adminId`
+is an FK to it) can't simply be added to the bundle.
 
 **Not exported yet — known gaps, not decisions:**
 
@@ -148,6 +157,9 @@ doesn't keep is worse than a documented gap.
 - `Config` — program name, support email and other UI-managed settings.
 - `PartnerPostback`, `BrandAsset` — customer-configured integration and
   content.
+- `WebhookEndpoint` — the customer's own outbound webhook configuration
+  (the *delivery log* is deliberately excluded, but the endpoints are
+  customer data and belong in the bundle).
 - The hosted funding sidecars (`HostedFundingBatch`, `HostedFundingAllocation`,
   `HostedFundingTransfer`, `HostedFundingAuthorization`, `HostedBillingState`)
   and `PayoutReversal`. `docs/payout-funding.md` §4 says these are
@@ -158,8 +170,11 @@ doesn't keep is worse than a documented gap.
   `HostedFundingAuthorization.adminId` references `Admin`, which is
   deliberately never exported.
 
-Until those land, an export is a complete record of **attribution and the
-commission/payout ledger**, not of hosted billing operations.
+Until those land, an export is a complete record of **attribution, the
+commission ledger, and the payouts derived from it**. It is NOT a
+complete record of payout *corrections*: with `PayoutReversal` absent, a
+restored payout can carry a `reversed` status whose supporting ledger
+didn't come with it. Nor is it a record of hosted billing operations.
 
 ## Adding a table to the bundle
 

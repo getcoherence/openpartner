@@ -604,7 +604,7 @@ This spec was hardened against three adversarial reviews (Infra/TLS, Auth/CORS/C
 - **Network isolation deferred (medium)** — source-side federation suppression + automated pre-enable assertion promoted to **launch-minimal** (§7.4, §9).
 - **Union ask-gate decoupled cert issuance from entitlement (medium)** — eliminated; the dedicated droplet's own `ask` *is* the entitlement gate (§6.1).
 - **Original draft's false "token rotates" claim (low)** — this spec's own draft asserted a property the template lacks; **corrected** to real rotation (§7.6).
-- **Portability of hosted-only fields (low)** — `PortalCustomDomain` documented as an exportable sidecar; `whiteLabel`/Stripe fields exported losslessly and treated as inert no-ops on self-hosted import (§3.3), honoring CLAUDE.md §2/§5.
+- **Portability of hosted-only fields (low)** — `PortalCustomDomain` documented as an exportable sidecar; `whiteLabel`/Stripe fields DESIGNED to export losslessly and be inert no-ops on self-hosted import (the `Tenant` table is not yet in EXPORT_TABLES — see docs/data-portability.md) (§3.3), honoring CLAUDE.md §2/§5.
 
 ---
 

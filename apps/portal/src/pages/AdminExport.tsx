@@ -43,7 +43,7 @@ export function AdminExport() {
   }
 
   return (
-    <Page title="Export / import" subtitle="Your data stays yours. Download everything, any time.">
+    <Page title="Export / import" subtitle="Your data stays yours. Download your partners, programs, attribution and ledger any time.">
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <Archive size={22} color={theme.accent} />
