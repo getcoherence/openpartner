@@ -22,7 +22,7 @@ Each arrow is a discrete table and a discrete step. The left two columns are raw
 
 ## Why event-sourced?
 
-Raw data is immutable. Attribution is a view — you can re-run it with a different model (last-click, first-click, linear, position) without re-collecting data. You can also correct an attribution model retroactively over historical events. And because raw data is the only load-bearing layer, export is simple: dump the six raw + derived tables, re-import on another instance, re-derive from there. Nothing lossy.
+Raw data is immutable. Attribution is a view — you can re-run it with a different model (last-click, first-click, linear, position) without re-collecting data. You can also correct an attribution model retroactively over historical events. And because raw data is the only load-bearing layer, export is simple: dump the raw + derived tables, re-import on another instance, re-derive from there. Nothing lossy in that chain — see docs/data-portability.md for the exact table set and the hosted-billing sidecars that are not in it yet.
 
 Concretely this buys you:
 

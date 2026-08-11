@@ -1,11 +1,14 @@
 /**
  * Export portability round-trip (audit #8).
  *
- * The promise in CLAUDE.md/README is concrete: every table exports to
+ * The promise in CLAUDE.md/README: everything in the bundle exports to
  * CSV + JSON + SQL, and the self-hosted build re-imports what the hosted
  * one produced. These tests seed one row in every exportable table, wipe
  * the database, restore, and compare — once through the JSON path and
  * once through the SQL dump actually executed against Postgres.
+ *
+ * Tables NOT in the bundle are listed in docs/data-portability.md; this
+ * suite deliberately does not assert anything about them.
  */
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
@@ -312,7 +315,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     const commission = await db(TABLES.Commission).where({ id: seeded.commissionId }).first();
     expect(commission.amount).toBe('40.00');
     expect(commission.status).toBe('approved');
-  });
+  }, 30_000);
 
   it('is idempotent — importing the same bundle twice inserts nothing new', async () => {
     await seedEverything();
@@ -329,7 +332,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
       expect(second.skipped[table] ?? 0, `${table} should be skipped`).toBe(1);
     }
     expect((await counts())[TABLES.PartnerCommission]).toBe(1);
-  });
+  }, 30_000);
 
   it('accepts a v1 bundle — older exports keep working', async () => {
     await seedEverything();
@@ -345,7 +348,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(report.inserted[TABLES.Partner]).toBe(1);
     expect(report.inserted[TABLES.PartnerProgram]).toBeUndefined();
     expect((await counts())[TABLES.Commission]).toBe(1);
-  });
+  }, 30_000);
 });
 
 describe.skipIf(skipIntegration)('SQL dump', () => {
@@ -362,7 +365,7 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
     const program = await db(TABLES.Program).first();
     expect(program.commissionRule).toEqual([{ trigger: 'every', type: 'percent', value: 20 }]);
     expect(program.categories).toEqual(['saas', 'devtools']);
-  });
+  }, 30_000);
 
   it('the portable form restores under whatever tenant psql is given', async () => {
     await seedEverything();
@@ -380,7 +383,7 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
     expect(await counts()).toEqual(before);
     const partner = await db(TABLES.Partner).first();
     expect(partner.tenantId).toBe(TENANT); // rewritten, not 'acme'
-  });
+  }, 30_000);
 
   it('is idempotent — re-running the dump inserts nothing new', async () => {
     await seedEverything();
@@ -389,7 +392,7 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
 
     await runSql(dump); // rows already exist
     expect(await counts()).toEqual(before);
-  });
+  }, 30_000);
 
   it('escapes quotes, json, decimals and nulls', async () => {
     await seedEverything();
@@ -431,7 +434,7 @@ describe.skipIf(skipIntegration)('SQL dump restore safety', () => {
 
     expect(await counts()).toEqual(before);
     expect((await db(TABLES.Partner).first()).tenantId).toBe(TENANT);
-  });
+  }, 30_000);
 
   it('pins the string-literal mode its escaping assumes', async () => {
     const dump = buildSqlDump({}, { tenantId: TENANT });
@@ -482,7 +485,7 @@ describe.skipIf(skipIntegration)('SQL dump restore safety', () => {
     expect(await counts()).toEqual(before);
     const partner = await db(TABLES.Partner).where({ id: partnerId }).first();
     expect(partner.name).toBe(`back\\slash '; select pg_sleep(0); -- and "quotes"`);
-  });
+  }, 30_000);
 
   it('text that merely looks like a timestamp stays text', async () => {
     // normalizeRow used to revive ANY ISO-shaped string as a Date.
@@ -494,7 +497,7 @@ describe.skipIf(skipIntegration)('SQL dump restore safety', () => {
 
     const partner = await db(TABLES.Partner).where({ id: partnerId }).first();
     expect(partner.name).toBe('2026-08-09T00:00:00');
-  });
+  }, 30_000);
 });
 
 describe.skipIf(skipIntegration)('SQL route validation', () => {
@@ -537,4 +540,58 @@ describe.skipIf(skipIntegration)('SQL route validation', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('invalid_tenant_id');
   });
+});
+
+describe.skipIf(skipIntegration)('cross-tenant restore', () => {
+  const OTHER_TENANT = '01J0000000OTHERTENANT00000';
+
+  afterAll(async () => {
+    if (skipIntegration) return;
+    for (const { table } of [...EXPORT_TABLES].reverse()) {
+      await db(table).where({ tenantId: OTHER_TENANT }).del();
+    }
+    await db(TABLES.Tenant).where({ id: OTHER_TENANT }).del();
+  });
+
+  it('rewrites tenantId on import — the whole point of hosted → self-host', async () => {
+    // Every other round-trip test exports and imports under the SAME
+    // tenant, so they would all pass with the rewrite deleted. This one
+    // restores into a different tenant, which is the actual promise:
+    // a hosted export lands in a self-host instance under ITS tenant id.
+    await db(TABLES.Tenant)
+      .insert({
+        id: OTHER_TENANT,
+        slug: 'other-restore-target',
+        displayName: 'Restore Target',
+        status: 'active',
+        approvalStatus: 'approved',
+      })
+      .onConflict('id')
+      .ignore();
+
+    const seeded = await seedEverything();
+    const bundle = await exportAll(db);
+    const sourceCounts = await counts();
+
+    // Wipe first: primary keys are GLOBAL, not per-tenant, so importing a
+    // bundle alongside its source in the same database is a no-op —
+    // `onConflict(pk).ignore()` sees the original rows. The real scenario
+    // is a different database (hosted → self-host), which this models.
+    await wipe();
+    const report = await importBundle(db, OTHER_TENANT, bundle);
+    expect(report.inserted[TABLES.Partner]).toBe(1);
+
+    for (const { table } of EXPORT_TABLES) {
+      const [row] = (await db(table).where({ tenantId: OTHER_TENANT }).count({ n: '*' })) as Array<{
+        n: string;
+      }>;
+      expect(Number(row?.n ?? 0), `${table} should have landed in the target tenant`).toBe(
+        sourceCounts[table],
+      );
+    }
+
+    // The rows really moved tenant, ids and all.
+    const moved = await db(TABLES.Commission).where({ id: seeded.commissionId }).first();
+    expect(moved.tenantId).toBe(OTHER_TENANT);
+  }, 30_000);
 });

@@ -1,8 +1,12 @@
 /**
  * Export / import — data portability primitives.
  *
- * Architectural commitment (CLAUDE.md): any export from the hosted version
- * must re-import cleanly into the self-hosted version. That means:
+ * Architectural commitment (CLAUDE.md): the JSON and SQL exports from the
+ * hosted version must re-import cleanly into the self-hosted version. (CSV
+ * is a VIEW, not a restore format — it has no type or ordering fidelity.)
+ * The table set is deliberately explicit, and what's missing from it is
+ * listed in docs/data-portability.md rather than left to be discovered.
+ * That means:
  *   1. The list of tables is stable across versions (additions OK, removals
  *      need a migration path).
  *   2. Column shapes are the raw DB row shape. Derived state gets re-derived

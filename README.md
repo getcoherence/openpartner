@@ -1,6 +1,6 @@
 # OpenPartner
 
-**Open-source partner attribution and payouts.** Run your own partner program: track every click through to revenue, pay partners out via Stripe Connect, export everything whenever you want.
+**Open-source partner attribution and payouts.** Run your own partner program: track every click through to revenue, pay partners out via Stripe Connect, export your data whenever you want.
 
 > The open alternative to Dub Partners, Rewardful, and Impact.
 
@@ -37,7 +37,7 @@ Self-hosted is the GitHub repo you're reading. Hosted tiers run the same code on
 
 ### Your data stays yours
 
-- **One-click export** — every table, CSV + JSON + SQL. On demand or scheduled to your own S3.
+- **One-click export** — partners, programs, attribution and the commission/payout ledger, as CSV + JSON + SQL. On demand or scheduled to your own S3. ([what's in the bundle, and what isn't](./docs/data-portability.md))
 - **Open schema, open API** — documented, versioned, stable.
 - **Round-trip portability** — exports from the hosted version re-import cleanly into the self-hosted version.
 - **No resale, no training** — your partner attribution data is not a product.

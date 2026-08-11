@@ -9,8 +9,9 @@ import type { Knex } from 'knex';
  * funding payment settles. All money columns are INTEGER MINOR UNITS with
  * canonical lowercase currency.
  *
- * Every Hosted* table is a hosted-only SIDECAR (CLAUDE.md §2): exported
- * like everything else, inert on self-hosted import. CommissionAdjustment
+ * Every Hosted* table is a hosted-only SIDECAR (CLAUDE.md §2), DESIGNED to
+ * export like everything else and be inert on self-hosted import — but not
+ * yet wired into EXPORT_TABLES; see docs/data-portability.md. CommissionAdjustment
  * is core + portable — a generic compensating-entry ledger any deployment
  * benefits from. No Stripe IDs land on core tables.
  */

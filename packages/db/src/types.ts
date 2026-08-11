@@ -35,8 +35,9 @@ export interface TenantRow {
   customDomain: string | null;
   /** White-label entitlement (provisioned flag). When true AND on an
    *  entitling billing state, the portal drops all OpenPartner platform
-   *  branding. See apps/api/src/white-label.ts. Hosted-only; inert on
-   *  self-hosted import. */
+   *  branding. See apps/api/src/white-label.ts. Hosted-only; DESIGNED to
+   *  be inert on self-hosted import, though `Tenant` is not yet in the
+   *  export bundle (docs/data-portability.md). */
   whiteLabel: boolean;
   metadata: Record<string, unknown>;
   createdAt: Date;
