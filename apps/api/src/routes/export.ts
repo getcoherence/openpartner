@@ -29,7 +29,7 @@ exportRouter.get('/export/:table.:format', requireAuth, requireAdmin, async (req
   const format = req.params.format ?? '';
   if (!isExportable(table)) return res.status(404).json({ error: 'table_not_exportable' });
 
-  const rows = await exportTable(db, table);
+  const rows = await exportTable(db, table, tenantId);
 
   if (format === 'json') {
     res.setHeader('Content-Type', 'application/json');
@@ -61,8 +61,8 @@ exportRouter.get('/export/:table.:format', requireAuth, requireAdmin, async (req
 });
 
 exportRouter.get('/export.json', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  const bundle = await exportAll(db);
+  const { db, tenantId } = tenantOf(req);
+  const bundle = await exportAll(db, tenantId);
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Content-Disposition', 'attachment; filename="openpartner-export.json"');
   res.json({
@@ -88,7 +88,7 @@ exportRouter.get('/export.sql', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const pinned = literalTenant(req.query);
   if (!pinned) return res.status(400).json({ error: 'invalid_tenant_id' });
-  const bundle = await exportAll(db);
+  const bundle = await exportAll(db, tenantId);
   res.setHeader('Content-Type', 'application/sql');
   res.setHeader('Content-Disposition', 'attachment; filename="openpartner-export.sql"');
   res.send(

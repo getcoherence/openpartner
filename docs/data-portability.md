@@ -133,6 +133,29 @@ the importer serializes json/jsonb columns itself instead of letting the
 driver guess. Before that, any program with compound commission rules
 failed to re-import.
 
+**Scalars count as JSON too.** Both serializers originally re-serialized a
+json/jsonb value only when it was a JS *object*. But `pg` parses json/jsonb
+through `JSON.parse`, so a column holding `'"hello"'` hands back the plain
+JS string `hello`, and one holding `'42'` hands back a number. Those were
+emitted as the SQL literals `'hello'` and `42`, which the column rejects —
+so a perfectly valid stored value made the restore fail. Any non-null JSON
+value is now re-serialized regardless of its JS type.
+
+**Known residual: JSON `null` versus SQL NULL.** After `select *` these are
+indistinguishable — both arrive as JS `null` — so a column holding the JSON
+value `null` exports as SQL `NULL`. On a nullable column that round-trips
+fine in practice; on a `NOT NULL` json column the restore fails loudly
+rather than corrupting anything. Closing this properly needs the exporter to
+read column nullability, which is not worth the complexity until someone
+actually stores a bare JSON `null`.
+
+**Scoping does not rely on RLS alone.** `exportTable` takes an explicit
+`tenantId` and filters on it. RLS is still the outer guarantee, but `appDb`
+falls back to the privileged `DATABASE_URL` when `DATABASE_URL_APP` is unset
+— a supported self-host configuration — and an unfiltered `select *` on that
+pool would return every tenant's rows. Every exportable table carries
+`tenantId`, so the filter is complete rather than best-effort.
+
 ## What is deliberately NOT in the bundle
 
 Being explicit matters more than being complete here: a promise the code

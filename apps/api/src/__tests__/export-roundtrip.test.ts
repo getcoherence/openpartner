@@ -23,6 +23,7 @@ import {
   buildSqlDump,
   exportAll,
   exportColumnTypes,
+  exportTable,
   importBundle,
   isSafeTenantId,
   primaryKeyOf,
@@ -282,7 +283,7 @@ describe.skipIf(skipIntegration)('export coverage', () => {
 describe.skipIf(skipIntegration)('JSON round-trip', () => {
   it('export → wipe → import restores every table', async () => {
     const seeded = await seedEverything();
-    const bundle = await exportAll(db);
+    const bundle = await exportAll(db, TENANT);
     const before = await counts();
     for (const { table } of EXPORT_TABLES) {
       expect(before[table], `${table} should have been seeded`).toBe(1);
@@ -319,7 +320,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
 
   it('is idempotent — importing the same bundle twice inserts nothing new', async () => {
     await seedEverything();
-    const bundle = await exportAll(db);
+    const bundle = await exportAll(db, TENANT);
     await wipe();
 
     await importBundle(db, TENANT, bundle);
@@ -336,7 +337,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
 
   it('accepts a v1 bundle — older exports keep working', async () => {
     await seedEverything();
-    const full = await exportAll(db);
+    const full = await exportAll(db, TENANT);
     const v1: Record<string, unknown[]> = { ...full };
     // v1 didn't know about these three.
     delete v1[TABLES.PartnerProgram];
@@ -348,13 +349,36 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(report.inserted[TABLES.Partner]).toBe(1);
     expect(report.inserted[TABLES.PartnerProgram]).toBeUndefined();
     expect((await counts())[TABLES.Commission]).toBe(1);
+
+    // Round 6: the above calls importBundle directly and never supplies a
+    // schemaVersion, so it would stay green if v1 were dropped from the
+    // HTTP contract — which is where the version gate actually lives. Go
+    // through the route as a real client would.
+    const app = createApp();
+    const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+    await wipe();
+    const viaRoute = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: 1, tables: v1 });
+    expect(viaRoute.status).toBe(200);
+    expect((await counts())[TABLES.Commission]).toBe(1);
+
+    // And an unsupported version is still refused, so this is a gate rather
+    // than an unconditional accept.
+    const bogus = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: 99, tables: v1 });
+    expect(bogus.status).toBe(400);
+    expect(bogus.body.error).toBe('unsupported_schema_version');
   }, 30_000);
 });
 
 describe.skipIf(skipIntegration)('SQL dump', () => {
   it('restores a wiped database when run as plain SQL', async () => {
     await seedEverything();
-    const bundle = await exportAll(db);
+    const bundle = await exportAll(db, TENANT);
     const before = await counts();
     const dump = buildSqlDump(bundle, { tenantId: TENANT, columnTypes: await exportColumnTypes(db) });
 
@@ -369,7 +393,7 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
 
   it('the portable form restores under whatever tenant psql is given', async () => {
     await seedEverything();
-    const bundle = await exportAll(db);
+    const bundle = await exportAll(db, TENANT);
     const before = await counts();
     const dump = buildSqlDump(bundle, { sourceTenantId: 'acme', columnTypes: await exportColumnTypes(db) });
 
@@ -387,7 +411,7 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
 
   it('is idempotent — re-running the dump inserts nothing new', async () => {
     await seedEverything();
-    const dump = buildSqlDump(await exportAll(db), { tenantId: TENANT, columnTypes: await exportColumnTypes(db) });
+    const dump = buildSqlDump(await exportAll(db, TENANT), { tenantId: TENANT, columnTypes: await exportColumnTypes(db) });
     const before = await counts();
 
     await runSql(dump); // rows already exist
@@ -396,7 +420,7 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
 
   it('escapes quotes, json, decimals and nulls', async () => {
     await seedEverything();
-    const dump = buildSqlDump(await exportAll(db), { tenantId: TENANT, columnTypes: await exportColumnTypes(db) });
+    const dump = buildSqlDump(await exportAll(db, TENANT), { tenantId: TENANT, columnTypes: await exportColumnTypes(db) });
     expect(dump).toContain(`'O''Hara & Co'`); // doubled quote
     // jsonb → a JSON literal; text[] → a Postgres array literal. Same JS
     // array shape, two different renderings — that's the whole point.
@@ -426,7 +450,7 @@ describe.skipIf(skipIntegration)('SQL dump restore safety', () => {
     // foreign key on the very first row.
     await seedEverything();
     const before = await counts();
-    const dump = buildSqlDump(await exportAll(db), { columnTypes: await exportColumnTypes(db) });
+    const dump = buildSqlDump(await exportAll(db, TENANT), { columnTypes: await exportColumnTypes(db) });
     expect(dump).toContain(`\\set tenant_id '${TENANT}'`);
 
     await wipe();
@@ -474,7 +498,7 @@ describe.skipIf(skipIntegration)('SQL dump restore safety', () => {
       .where({ id: partnerId })
       .update({ name: `back\\slash '; select pg_sleep(0); -- and "quotes"` });
     const before = await counts();
-    const dump = buildSqlDump(await exportAll(db), {
+    const dump = buildSqlDump(await exportAll(db, TENANT), {
       tenantId: TENANT,
       columnTypes: await exportColumnTypes(db),
     });
@@ -491,7 +515,7 @@ describe.skipIf(skipIntegration)('SQL dump restore safety', () => {
     // normalizeRow used to revive ANY ISO-shaped string as a Date.
     const { partnerId } = await seedEverything();
     await db(TABLES.Partner).where({ id: partnerId }).update({ name: '2026-08-09T00:00:00' });
-    const bundle = await exportAll(db);
+    const bundle = await exportAll(db, TENANT);
     await wipe();
     await importBundle(db, TENANT, bundle);
 
@@ -570,7 +594,7 @@ describe.skipIf(skipIntegration)('cross-tenant restore', () => {
       .ignore();
 
     const seeded = await seedEverything();
-    const bundle = await exportAll(db);
+    const bundle = await exportAll(db, TENANT);
     const sourceCounts = await counts();
 
     // Wipe first: primary keys are GLOBAL, not per-tenant, so importing a
@@ -593,5 +617,88 @@ describe.skipIf(skipIntegration)('cross-tenant restore', () => {
     // The rows really moved tenant, ids and all.
     const moved = await db(TABLES.Commission).where({ id: seeded.commissionId }).first();
     expect(moved.tenantId).toBe(OTHER_TENANT);
+  }, 30_000);
+});
+
+// ---- Round-6 review fixes (Codex, 2026-08-12) -----------------------------
+
+describe.skipIf(skipIntegration)('round-6: scalar and null JSON round-trip', () => {
+  it('a jsonb column holding a STRING survives export → SQL restore', async () => {
+    // pg parses json/jsonb through JSON.parse, so a stored '"hello"' arrives
+    // as the JS string `hello`. Both serializers only re-serialized when
+    // `typeof v === 'object'`, so the dump emitted the SQL literal 'hello' —
+    // not valid JSON — and the restore failed outright. A scalar is a legal
+    // JSON value and NOT NULL jsonb accepts it.
+    await seedEverything();
+    const partner = (await db(TABLES.Partner).where({ tenantId: TENANT }).first()) as { id: string };
+    await db.raw(`update "Partner" set metadata = '"hello"'::jsonb where id = ?`, [partner.id]);
+
+    const bundle = await exportAll(db, TENANT);
+    const dump = buildSqlDump(bundle, { tenantId: TENANT, columnTypes: await exportColumnTypes(db) });
+    await wipe();
+    await runSql(dump);
+
+    const restored = (await db(TABLES.Partner).where({ id: partner.id }).first()) as {
+      metadata: unknown;
+    };
+    expect(restored.metadata).toBe('hello');
+  }, 30_000);
+
+  it('a jsonb column holding a NUMBER survives the JSON import path', async () => {
+    await seedEverything();
+    const partner = (await db(TABLES.Partner).where({ tenantId: TENANT }).first()) as { id: string };
+    await db.raw(`update "Partner" set metadata = '42'::jsonb where id = ?`, [partner.id]);
+
+    const bundle = await exportAll(db, TENANT);
+    await wipe();
+    await importBundle(db, TENANT, bundle);
+
+    const restored = (await db(TABLES.Partner).where({ id: partner.id }).first()) as {
+      metadata: unknown;
+    };
+    expect(restored.metadata).toBe(42);
+  }, 30_000);
+});
+
+describe.skipIf(skipIntegration)('round-6: export is scoped without relying on RLS', () => {
+  it('exportTable filters by tenantId even on a privileged connection', async () => {
+    // Exports were an unfiltered `select *`, leaning entirely on RLS. But
+    // appDb falls back to the privileged DATABASE_URL when DATABASE_URL_APP
+    // is unset — a configuration db.ts documents as supported because
+    // "app-level tenantId filtering still applies". It did not apply here.
+    //
+    // `db` in this suite IS the privileged pool, so this test runs in
+    // exactly the configuration that used to leak.
+    await seedEverything();
+    const otherTenant = '01J0000000ROUND6TENANT0000';
+    await db(TABLES.Tenant)
+      .insert({
+        id: otherTenant,
+        slug: 'round6-scoping',
+        displayName: 'Round6 Scoping',
+        status: 'active',
+        approvalStatus: 'approved',
+      })
+      .onConflict('id')
+      .ignore();
+    const foreignId = ulid();
+    await db(TABLES.Partner).insert({
+      id: foreignId,
+      tenantId: otherTenant,
+      email: `foreign-${foreignId}@x.test`,
+      name: 'Foreign partner',
+    });
+
+    const rows = (await exportTable(db, TABLES.Partner as never, TENANT)) as Array<{
+      id: string;
+      tenantId: string;
+    }>;
+
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.tenantId === TENANT)).toBe(true);
+    expect(rows.some((r) => r.id === foreignId)).toBe(false);
+
+    await db(TABLES.Partner).where({ id: foreignId }).del();
+    await db(TABLES.Tenant).where({ id: otherTenant }).del();
   }, 30_000);
 });

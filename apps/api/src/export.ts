@@ -88,8 +88,28 @@ export function isExportable(name: string): name is ExportableTable {
   return (EXPORTABLE_TABLES as readonly string[]).includes(name);
 }
 
-export async function exportTable(db: Knex, table: ExportableTable): Promise<unknown[]> {
-  return db(table).select('*');
+/**
+ * Read one table for export.
+ *
+ * `tenantId` is REQUIRED and applied as an explicit filter, rather than
+ * leaning on RLS alone (round-6 review). RLS is still the outer guarantee
+ * and every exportable table has a policy — but `appDb` falls back to the
+ * privileged `DATABASE_URL` when `DATABASE_URL_APP` is unset, which db.ts
+ * documents as a supported self-host configuration on the grounds that
+ * "app-level tenantId filtering still applies". That was true everywhere
+ * except here: an unfiltered `select *` on a privileged pool returns every
+ * tenant's rows, so the export was the one path that broke the codebase's
+ * own safety net.
+ *
+ * Every table in EXPORT_TABLES carries `tenantId`, so this is complete
+ * rather than best-effort.
+ */
+export async function exportTable(
+  db: Knex,
+  table: ExportableTable,
+  tenantId: string,
+): Promise<unknown[]> {
+  return db(table).where({ tenantId }).select('*');
 }
 
 /**
@@ -130,10 +150,10 @@ function isTimestampType(type: string | undefined): boolean {
   );
 }
 
-export async function exportAll(db: Knex): Promise<Record<string, unknown[]>> {
+export async function exportAll(db: Knex, tenantId: string): Promise<Record<string, unknown[]>> {
   const out: Record<string, unknown[]> = {};
   for (const { table } of EXPORT_TABLES) {
-    out[table] = await exportTable(db, table as ExportableTable);
+    out[table] = await exportTable(db, table as ExportableTable, tenantId);
   }
   return out;
 }
@@ -323,6 +343,20 @@ function quoteIdent(name: string): string {
  */
 function sqlLiteral(v: unknown, pgType?: string): string {
   if (v === null || v === undefined) return 'NULL';
+  // A json/jsonb column holds JSON, whatever JS type the driver handed back.
+  //
+  // This used to serialize only when `typeof v === 'object'`, which is wrong
+  // because pg parses json/jsonb through JSON.parse: a stored `'"hello"'`
+  // arrives as the JS STRING `hello` and was emitted as the SQL literal
+  // 'hello' — not valid JSON, so the restore failed outright. Same for a
+  // stored number or boolean. Scalars are legal JSON values and a NOT NULL
+  // jsonb column accepts every one of them (round-6 review).
+  //
+  // Known residual, documented in docs/data-portability.md: a JS `null` from
+  // a json column is indistinguishable from SQL NULL after `select *`, so
+  // JSON `null` exports as SQL NULL. On a NOT NULL json column that restore
+  // fails loudly rather than corrupting anything.
+  if (isJsonType(pgType)) return escapeString(JSON.stringify(v));
   if (typeof v === 'boolean') return v ? 'true' : 'false';
   if (typeof v === 'number') return Number.isFinite(v) ? String(v) : 'NULL';
   if (typeof v === 'bigint') return String(v);
@@ -419,9 +453,15 @@ function normalizeRow(
     // a valid date.
     if (typeof v === 'string' && isTimestampType(types[k]) && isIsoDate(v)) {
       out[k] = new Date(v);
-    } else if (isJsonType(types[k]) && v !== null && typeof v === 'object') {
+    } else if (isJsonType(types[k]) && v !== null) {
       // Serialize json/jsonb ourselves. The driver renders a bare JS array
       // as a Postgres array literal, which a json column rejects.
+      //
+      // The `typeof v === 'object'` guard this used to carry let scalars
+      // through unserialized: pg parses json/jsonb via JSON.parse, so a
+      // stored `'"hello"'` arrives as a plain JS string and was passed to
+      // the driver as `hello`, which the column rejects. Scalars are legal
+      // JSON and must be re-serialized like anything else (round-6 review).
       out[k] = JSON.stringify(v);
     } else {
       out[k] = v;
