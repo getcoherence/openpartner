@@ -19,7 +19,7 @@ import { ulid } from 'ulid';
 import { TABLES, DEFAULT_TENANT_ID, type HostedFundingBatchRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { runFundingCollector } from '../funding/collect.js';
-import { releaseBatch } from '../funding/release.js';
+import { releaseBatch, forceReleaseBatch } from '../funding/release.js';
 import { claimInboxEvent, releaseInboxClaim, stampInboxOutcome } from '../funding/inbox.js';
 import { handleFundingEvent, InboxEventHeldError } from '../funding/webhook.js';
 import { runFundingReconciliation } from '../funding/reconcile.js';
@@ -1463,5 +1463,47 @@ describe.skipIf(skipIntegration)('round-6: sweep coverage', () => {
     // Ordering by eligibility time puts it ahead of the cursor, so it gets
     // its turn. Ordering by id leaves it behind, and it is never read.
     expect(seen).toContain('ch_late_funder');
+  });
+});
+
+describe.skipIf(skipIntegration)('round-6: operator disposition for a stuck release', () => {
+  it('frees a batch stuck in release_requested with no PI', async () => {
+    // The counterpart to "empty search is not proof": a batch whose PI
+    // genuinely never existed now has no automatic way out, so there has to
+    // be a manual one. A hold with no release is a leak.
+    const batch = await seedBatch({ status: 'invoicing' });
+    const allocationId = await seedAllocation(batch.id);
+    const failing = mockStripe({ searchResult: [] });
+    expect(await releaseBatch(db, failing.stripe, batch, 'funding_timeout')).toBe('pi_not_terminal');
+    expect((await reload(batch.id)).status).toBe('release_requested');
+
+    expect(await forceReleaseBatch(db, batch.id, 'keith', 'confirmed_no_pi')).toBe('released');
+    expect((await reload(batch.id)).status).toBe('released');
+    expect((await db(TABLES.HostedFundingAllocation).where({ id: allocationId }).first()).state).toBe(
+      'released',
+    );
+  });
+
+  it('REFUSES to force a batch that has a stamped PaymentIntent', async () => {
+    // Forcing past a live intent is precisely the double-charge the whole
+    // protocol prevents. That case is not stuck — it is the ordinary release
+    // path — so the operator tool must not touch it.
+    const batch = await seedBatch({
+      status: 'release_requested',
+      stripePaymentIntentId: 'pi_live_and_dangerous',
+    });
+    const allocationId = await seedAllocation(batch.id);
+
+    expect(await forceReleaseBatch(db, batch.id, 'keith', 'oops')).toBe('has_payment_intent');
+    expect((await reload(batch.id)).status).toBe('release_requested');
+    expect((await db(TABLES.HostedFundingAllocation).where({ id: allocationId }).first()).state).toBe(
+      'reserved',
+    );
+  });
+
+  it('does nothing to a batch that is not stuck', async () => {
+    const batch = await seedBatch({ status: 'reserved' });
+    expect(await forceReleaseBatch(db, batch.id, 'keith', 'wrong_state')).toBe('not_stuck');
+    expect((await reload(batch.id)).status).toBe('reserved');
   });
 });

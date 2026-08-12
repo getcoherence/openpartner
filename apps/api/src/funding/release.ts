@@ -182,3 +182,54 @@ export async function releaseBatch(
   });
   return closed ? 'released' : 'lost_cas';
 }
+
+/**
+ * OPERATOR ACTION — free a batch that is stuck in `release_requested`.
+ *
+ * Since round 6 an empty `paymentIntents.search` no longer counts as proof
+ * that no PaymentIntent exists, because Stripe's search index is eventually
+ * consistent. That is the right call — freeing allocations while a live PI
+ * can still debit the brand is the one unrecoverable mistake here — but it
+ * means a batch for which a PI genuinely never existed has no automatic way
+ * out. It sits `release_requested` with its allocations reserved until the
+ * daily reconcile's stuck-release alert brings a human. This is that human's
+ * tool, and it exists because a hold with no release is a leak.
+ *
+ * The operator is asserting what the system deliberately refuses to infer:
+ * that no PaymentIntent for this batch exists or ever will. Check first —
+ *
+ *   stripe payment_intents search --query "metadata['openpartner_funding_batch_id']:'<batchId>'"
+ *
+ * and give the index time to settle before concluding it is empty.
+ *
+ * Refuses outright when the batch HAS a stamped PI: that case is not stuck,
+ * it is the ordinary release path, and forcing past a live intent is exactly
+ * the double-charge this protocol exists to prevent. Cancel the PI in Stripe
+ * first and let the normal path finish.
+ */
+export async function forceReleaseBatch(
+  db: Knex,
+  batchId: string,
+  operator: string,
+  reason: string,
+): Promise<'released' | 'not_stuck' | 'has_payment_intent'> {
+  const batch = (await db(TABLES.HostedFundingBatch)
+    .where({ id: batchId })
+    .first()) as HostedFundingBatchRow | undefined;
+  if (!batch || batch.status !== 'release_requested') return 'not_stuck';
+  if (batch.stripePaymentIntentId) return 'has_payment_intent';
+
+  const now = new Date();
+  await db(TABLES.HostedFundingAllocation)
+    .where({ batchId, state: 'reserved' })
+    .update({ state: 'released', updatedAt: now });
+  const closed = await casBatch(db, batchId, 'release_requested', 'released', {
+    releasedAt: now,
+    failureReason: `operator_force_release:${operator}:${reason}`.slice(0, 500),
+  });
+  if (!closed) return 'not_stuck'; // someone else moved it while we looked
+  console.error(
+    `[funding] OPERATOR ${operator} force-released stuck batch ${batchId} (${reason}) — asserting no PaymentIntent exists; allocations returned to the pool`,
+  );
+  return 'released';
+}

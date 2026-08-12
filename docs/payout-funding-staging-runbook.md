@@ -176,6 +176,35 @@ them can be observed by reading the happy path. Each has unit coverage in
 | H11 | **Payment wins the release** | Let the PI succeed while a release is in flight | Batch → `funded` **with `stripeChargeId` and `fundedAt` stamped** (it goes through the verified confirm path). A bare CAS left the charge id null and the executor froze it as `recovery_required` on the next tick |
 | H12 | **Batch frozen mid-transfer** | While the executor is working through a multi-partner batch, fire `charge.refunded` on the funding charge | The executor re-reads the batch status before each partner and **stops**; no further transfers leave the frozen batch |
 
+## Operator disposition — freeing a stuck release
+
+Since round 6 an empty `paymentIntents.search` is no longer treated as proof
+that no PaymentIntent exists, because Stripe's search index is eventually
+consistent. That closes a double-charge, and it means a batch whose PI
+genuinely never existed has **no automatic way out**: it sits
+`release_requested` with allocations reserved until the daily reconcile's
+stuck-release alert brings a human.
+
+First, confirm what the system refuses to infer — that no intent exists or
+ever will — and give the index time to settle before concluding it is empty:
+
+```bash
+stripe payment_intents search \
+  --query "metadata['openpartner_funding_batch_id']:'<batchId>'"
+```
+
+If that is genuinely empty:
+
+```ts
+import { forceReleaseBatch } from './funding/release.js';
+await forceReleaseBatch(db, batchId, 'keith', 'confirmed_no_pi');
+```
+
+It **refuses** (`has_payment_intent`) when the batch has a stamped PI. That
+case is not stuck — it is the ordinary release path — and forcing past a live
+intent is exactly the double-charge the protocol exists to prevent. Cancel
+the intent in Stripe and let the normal path finish.
+
 ## Known gaps at launch (accept knowingly, or close first)
 
 Found by adversarial review and deliberately NOT auto-resolved, because
