@@ -58,8 +58,20 @@ than to "review" — that framing is what produced every finding above.
   (`3aa2e624-df1c-4fc9-88bd-c723bdb2713f`), `OPENPARTNER_TENANCY=multi`,
   `OPENPARTNER_MODE=flat`. `doctl` is authenticated; prod run logs:
   `doctl apps logs 3aa2e624-... api --type run` (~36h buffer).
-- **Prod migrations do NOT auto-run.** After merging any migration, run
-  `pnpm migrate` against prod manually. (None of #73–#75 add one.)
+- **Prod migrations DO auto-run — the long-standing note to the contrary
+  looks like a misdiagnosis (re-checked 2026-08-11).**
+  `apps/api/docker-entrypoint.sh` runs `migrate.js latest` and then
+  `ensure-app-role.js` on every boot, and *refuses to start* if either fails.
+  `OPENPARTNER_SKIP_MIGRATIONS` is **not set** in the prod DO spec, so this is
+  live. That entrypoint landed 2026-04-23, months before the two July
+  incidents blamed on migration drift — and both of those were application
+  code out of sync with the schema (`#52` stale table names after the
+  Campaign→Program rename, `#53` router not stamping `tenantId`), not
+  un-applied migrations. A migration failure here is loud, not silent.
+  Running `pnpm migrate` against prod by hand is therefore belt-and-braces
+  rather than required. The cheap way to settle it for good: merge #62 and
+  read the deploy log for `[entrypoint] running migrations`.
+  (None of #73–#75 add a migration anyway.)
 - **Payouts in prod are on the MANUAL rail.** `HOSTED_FUNDING_ENABLED` is OFF
   and there's a fail-closed guard on unfunded hosted Connect payouts. So the
   funding pipeline (`apps/api/src/funding/*`) does not execute in prod today,
@@ -138,9 +150,15 @@ publicly reachable, so a **local** run covers the matrices. Local tooling is
 already in place: Stripe CLI 1.40.8, Docker 29.0.1 running, `docker-compose.yml`
 present.
 
-What is genuinely missing is credentials and fixtures, not infrastructure:
+What is genuinely missing is fixtures, not infrastructure or credentials:
 
-- A Stripe **test-mode** secret key (there is no `apps/api/.env` at all today).
+- A Stripe **test-mode** secret key already exists — in the repo-root `.env`
+  (`STRIPE_SECRET_KEY=sk_test…`), *not* `apps/api/.env`, which does not exist.
+  That same file points `DATABASE_URL` at `localhost:5433`, matching
+  `docker-compose.yml`, so a local run needs no new credentials.
+- Do **not** solve the missing-staging problem by putting test keys on the
+  prod app. That would leave a live client and a test client in one process
+  against real tenant data; any misrouting is real money.
 - The fixtures in the runbook's Prerequisites: a test tenant with an active
   test subscription, a test Connect partner with `payouts_enabled=true`, a
   completed ACH funding authorization, and **test clocks** for anything
@@ -150,6 +168,54 @@ Round 5 is the argument for doing this: its worst finding was a mismatch
 between our lease and *Stripe's client defaults* — a fact about the real
 system that no amount of reading our own code surfaces, and that one
 test-mode run with an injected delay would have caught immediately.
+
+### 3a. Merging is blocked by a rule that cannot be satisfied (found 2026-08-11)
+`main` protection requires **1 approving code-owner review**, and GitHub does
+not let a PR author approve their own PR. With a single maintainer, that is
+unsatisfiable — which is most of why 16 PRs have sat open. `enforce_admins` is
+**false**, so the owner can merge with `gh pr merge --admin --squash`; the
+required status checks have all passed regardless. Fix the rule or bypass it,
+but know that "waiting for review" will never clear on its own.
+
+`required_linear_history` is on, so merges must be squash or rebase.
+
+### 3b. Two PRs conflict with the BATCH, not with `main`
+Each PR reports `MERGEABLE` because GitHub only compares it against `main`.
+Merged together, two collide. Verified by building the full combination:
+
+- **#66 × #61/#64** — `apps/api/src/__tests__/integration.test.ts`. All three
+  append a `describe` block at the end of the file. Resolution: keep both
+  blocks, each closed with its own `});\n});`.
+- **#70 × #69** — `.env.example`. Both document new vars in the same spot.
+  Resolution: keep both blocks.
+
+Neither is semantic. But they only appear *after* the first of each pair
+lands, so expect them mid-merge rather than up front.
+
+**The combination was validated on 2026-08-11**: all 11 non-money PRs merged
+into one branch, conflicts resolved as above → `pnpm typecheck` clean,
+`pnpm lint` clean, full API suite **42 files / 292 tests green**, and #62's
+migration verified applied (`tenant_isolation` policy present on
+`PartnerProgram`).
+
+### 3c. #66 was RED — fixed 2026-08-11, don't trust the old "all green"
+`fix/audit-safe-fixes` was failing `typecheck + test` (7 tests) and had been
+since 2026-08-08. Two causes behind one symptom:
+
+- **A real defect.** `#66`'s negative-age guard was `ageMs < 0`. `Event.ts`
+  comes from `new Date(event.created * 1000)` and Stripe stamps `created` in
+  whole **seconds**, so a conversion in the same second as its click truncates
+  to up to 999ms *before* it; the click clock is also not the event clock.
+  Both are ordinary, and the strict check dropped the attribution **silently**
+  — no error, just an unpaid partner. Now `ageMs < -CLICK_AFTER_EVENT_GRACE_MS`
+  (5 min), which still rejects backdated backlog events (hours-to-months off).
+- **Stale fixtures.** `compound-rules.integration.test.ts` seeded the click at
+  NOW against events backdated to January — correctly rejected. Fixed to put
+  the click just before the first event, which also means the 60d window is
+  genuinely exercised there for the first time.
+
+A companion test asserts an event 2s before its click still attributes, and
+it was **confirmed to fail when the grace is reverted**.
 
 ### 4. Post-merge prod actions (from the earlier batch)
 - `#62` → run `pnpm migrate` against prod.
