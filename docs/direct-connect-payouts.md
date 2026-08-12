@@ -171,6 +171,45 @@ update "Payout"
 update "Commission" set "payoutId" = null where "payoutId" = $1 and status <> 'paid';
 ```
 
+## Staging run — PASSED 2026-08-11 against Stripe test mode
+
+All six scenarios below were executed against **real Stripe test mode**
+(platform `acct_1TQ1rLLjeKaK2m8k`, destination `acct_1TQH8tLte7Y6cCMU`):
+**37 assertions, 0 failures.** Re-run it with:
+
+```bash
+cd apps/api
+set -a && . ../../.env && set +a
+export OPENPARTNER_ALLOW_UNFUNDED_CONNECT_PAYOUTS=1 OPENPARTNER_TENANCY=single
+export STAGING_READY_ACCT=acct_...      # onboarded, transfers: active
+export STAGING_UNREADY_ACCT=acct_...    # not onboarded — scenario 6
+pnpm exec tsx scripts/staging-direct-connect.ts
+```
+
+The script refuses to run against a live key or a non-local `DATABASE_URL`
+(it truncates tables and moves money). Transfers need available platform
+balance; top up test mode with
+`stripe post /v1/charges -d amount=200000 -d currency=usd -d source=tok_bypassPending`.
+
+What the run actually proved, beyond what the mocks could:
+
+- **Scenario 3** — the transfer was really created at Stripe and the response
+  then thrown away. The error carried no `statusCode`, classified ambiguous,
+  the intent stayed `posted` and the commissions stayed claimed. Replaying the
+  frozen key after the cooldown returned **the same transfer** — Stripe's
+  idempotency replay behaves as the design assumes, and only one transfer
+  exists for the group.
+- **Scenario 4** — 25 hours on, the executor called `transfers.list` and
+  **never** called `transfers.create` (asserted by counting calls), then
+  finalized against the transfer that already existed.
+- **Scenario 6** — a real Stripe 400 (`Your destination account needs to have
+  at least one of the following capabilities enabled: transfers…`), correctly
+  classified definite, payout `failed`, commissions returned to the pool.
+
+Not covered by this script, and still open: a genuine multi-process race (two
+executors on one intent). The cooldown/lease is exercised here single-process
+only.
+
 ## Staging checklist before trusting it with real money
 
 Run against Stripe **test mode** with `OPENPARTNER_ENABLE_SCHEDULER=1`:
