@@ -4,10 +4,16 @@
  * REAL Stripe TEST MODE.
  *
  * Not a unit test, and deliberately not in __tests__: the whole point is that
- * a Stripe mock cannot tell us how Stripe actually behaves. Round 5's worst
- * finding was a mismatch between our lease and stripe-node's own client
- * defaults — a fact about the real system that reading our code cannot
- * surface. This is the thing that would have caught it.
+ * a Stripe mock cannot tell us how Stripe actually behaves — how idempotency
+ * replay behaves, what a real 4xx looks like, what listing returns.
+ *
+ * WHAT THIS DOES NOT PROVE. It does not exercise the lease against a genuinely
+ * concurrent in-flight POST: the injected failures happen after the real
+ * request has fully returned. An earlier version of this header claimed it
+ * covered round 5's lease-vs-request-budget property; it never did, and that
+ * property turned out to be unprovable anyway (round 6 — stripe-node's timeout
+ * is socket-inactivity, so no cooldown bounds a request). Scenario 7 races two
+ * executors over one intent, which is the closest this gets to concurrency.
  *
  * REQUIRES A TEST-MODE KEY. It refuses to run against sk_live. It also needs
  * available platform balance; top up in test mode with:
@@ -31,7 +37,7 @@ import { ulid } from 'ulid';
 import { TABLES, DEFAULT_TENANT_ID } from '@openpartner/db';
 import { db } from '../src/db.js';
 import { runPayouts } from '../src/payouts.js';
-import { executePayoutTransfers } from '../src/payout-transfers.js';
+import { executePayoutTransfers, releaseIntentForRetry } from '../src/payout-transfers.js';
 
 const TENANT = DEFAULT_TENANT_ID;
 const READY_ACCT = process.env.STAGING_READY_ACCT!;
@@ -341,9 +347,16 @@ async function s6DefiniteFailure() {
   await seedApproved(partnerId, 1, '23.00');
   const { payouts } = await plan();
   if (payouts.length === 0) {
-    check('planner refused an unready partner (preflight)', true);
-    const unclaimed = await db(TABLES.Commission).whereNull('payoutId').where({ status: 'approved' });
-    check('commissions stayed in the payable pool', unclaimed.length === 1);
+    // This used to report success here, which meant a misconfiguration
+    // that stopped the planner producing anything at all looked exactly
+    // like "Stripe definitively rejected the transfer". The whole point
+    // of this scenario is the REAL 4xx, so not reaching Stripe is a
+    // failure of the scenario, not a pass.
+    check(
+      'planner produced an intent to send (scenario requires reaching Stripe)',
+      false,
+      'planner returned no payout — check OPENPARTNER_ALLOW_UNFUNDED_CONNECT_PAYOUTS / mode',
+    );
     return;
   }
   const payoutId = payouts[0]!.payoutId;
@@ -353,6 +366,92 @@ async function s6DefiniteFailure() {
   check('no transfer at Stripe', (await transfersForGroup(payoutId)).length === 0);
   const released = await db(TABLES.Commission).whereNull('payoutId').where({ status: 'approved' });
   check('commissions RELEASED back to the pool', released.length === 1, `got ${released.length}`);
+}
+
+async function s7ConcurrentExecutors() {
+  console.log('\n[7] Two executors racing ONE intent — the CAS is the only thing stopping them');
+  await reset();
+  const partnerId = await seedPartner(READY_ACCT);
+  await seedApproved(partnerId, 1, '27.00');
+  const { payouts } = await plan();
+  const payoutId = payouts[0]!.payoutId;
+
+  // Genuinely concurrent, against real Stripe. Both workers see an
+  // `intent` row and both try to claim it; only one may post.
+  const [a, b] = await Promise.all([
+    executePayoutTransfers(db, { stripe }),
+    executePayoutTransfers(db, { stripe }),
+  ]);
+
+  const transfers = await transfersForGroup(payoutId);
+  check('EXACTLY ONE transfer despite two concurrent executors', transfers.length === 1,
+    `got ${transfers.length}`);
+  const confirmedBy = [...a.confirmed, ...b.confirmed].filter((c) => c.payoutId === payoutId);
+  check('exactly one executor recorded it', confirmedBy.length === 1,
+    JSON.stringify({ a: a.confirmed, b: b.confirmed }));
+  check('payout paid', (await payoutRow(payoutId))?.status === 'paid');
+  const paid = await db(TABLES.Commission).where({ payoutId, status: 'paid' });
+  check('commission paid exactly once', paid.length === 1);
+}
+
+async function s8HoldNotRearm() {
+  console.log('\n[8] Past the window with NOTHING at Stripe — must HOLD, never re-arm (round 6)');
+  await reset();
+  const partnerId = await seedPartner(READY_ACCT);
+  await seedApproved(partnerId, 1, '29.00');
+  const { payouts } = await plan();
+  const payoutId = payouts[0]!.payoutId;
+
+  // Claim it as posted 25h ago without ever contacting Stripe: this is
+  // the shape of "we lost the response and nothing actually landed".
+  await db(TABLES.Payout)
+    .where({ id: payoutId })
+    .update({
+      metadata: db.raw(`"metadata" || ?::jsonb`, [
+        JSON.stringify({
+          transferState: 'posted',
+          postedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+          leaseAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+        }),
+      ]),
+    });
+
+  let created = 0;
+  const counting = {
+    ...stripe,
+    transfers: {
+      ...stripe.transfers,
+      create: async (p: Stripe.TransferCreateParams, o?: Stripe.RequestOptions) => {
+        created += 1;
+        return stripe.transfers.create(p, o);
+      },
+      list: stripe.transfers.list.bind(stripe.transfers),
+      retrieve: stripe.transfers.retrieve.bind(stripe.transfers),
+    },
+  } as unknown as Stripe;
+
+  // Several ticks. None may talk itself into posting.
+  await executePayoutTransfers(db, { stripe: counting });
+  await executePayoutTransfers(db, { stripe: counting });
+  await executePayoutTransfers(db, { stripe: counting });
+
+  check('never posted on its own', created === 0, `create called ${created}x`);
+  check('no transfer at Stripe', (await transfersForGroup(payoutId)).length === 0);
+  const held = await payoutRow(payoutId);
+  check('HELD in reconcile_required', held?.metadata?.transferState === 'reconcile_required',
+    String(held?.metadata?.transferState));
+  check('still on generation 0 (no self-re-arm)',
+    Number(held?.metadata?.keyGeneration ?? 0) === 0, String(held?.metadata?.keyGeneration));
+  const stillClaimed = await db(TABLES.Commission).where({ payoutId });
+  check('commissions stay frozen while held', stillClaimed.length === 1);
+
+  // The operator is the only way forward, and then it posts once.
+  const outcome = await releaseIntentForRetry(db, payoutId, 0, 'staging-matrix');
+  check('operator re-arm accepted', outcome === 'rearmed', String(outcome));
+  await executePayoutTransfers(db, { stripe: counting });
+  check('posts exactly once after operator authorisation', created === 1, `create called ${created}x`);
+  check('one transfer at Stripe', (await transfersForGroup(payoutId)).length === 1);
+  check('payout paid', (await payoutRow(payoutId))?.status === 'paid');
 }
 
 // -------------------------------------------------------------------- main
@@ -385,6 +484,8 @@ async function main() {
   await s4PastWindow();
   await s5SetChange();
   await s6DefiniteFailure();
+  await s7ConcurrentExecutors();
+  await s8HoldNotRearm();
 
   console.log(`\n================ ${pass} passed, ${fail} failed ================`);
   if (failures.length) {

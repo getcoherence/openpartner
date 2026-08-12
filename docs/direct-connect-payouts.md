@@ -63,22 +63,48 @@ intent ──preflight ok──▶ posted ──success──▶ confirmed      
    │                       ├──ambiguous─────▶ stays posted    (retry replays the frozen key)
    │                       │
    │                       └──>24h──────────▶ reconcile_required
-   └───────────listing proves no transfer────────────┘
-                    (listing finds one → confirmed)
+   │                                              │
+   │                                   listing finds one ──▶ confirmed
+   │                                              │
+   │                                   listing finds none ──▶ HELD (stays
+   │                                              reconcile_required, frozen)
+   └──────────── OPERATOR authorises a fresh key ─┘
 
 intent ──preflight fails──▶ canceled   (nothing was ever sent to Stripe)
 ```
 
 - **Inside Stripe's ~24h idempotency window**, re-POSTing the frozen key is
   safe: Stripe replays the original outcome instead of creating a second
-  transfer. A 60-second cooldown keeps a scheduler tick from racing an
-  admin-triggered run into two concurrent POSTs on one key.
+  transfer. `POST_COOLDOWN_MS` keeps a scheduler tick from racing an
+  admin-triggered run into two concurrent POSTs on one key. That is a
+  *scheduling* choice and carries no correctness weight — see below.
 - **Past the window** the key may be pruned, so a re-POST would be a *new*
   transfer. Instead the executor pages `transfers.list({ transfer_group })` —
   the payout id is the transfer group — and matches the
   `openpartner_payout_id` metadata stamp. Found → finalize with the real
-  transfer. Proven absent → re-arm as `intent`, which makes the next POST a
-  genuine first attempt.
+  transfer.
+- **Found nothing → the intent is HELD, not re-armed** (round 6). This used to
+  re-arm automatically, reasoning that the listing "proved" no transfer
+  exists. It proves no such thing. `transfers.list` is read-after-write
+  consistent, so it is accurate about requests Stripe has *finished* — but it
+  cannot see a POST still in flight, and there is no bound on how long one can
+  be. stripe-node implements `timeout` as `req.setTimeout`, a socket
+  **inactivity** timeout that resets after every stage of the request (its own
+  source says so in `net/FetchHttpClient.js`), so a slow-but-progressing
+  request outlives any cooldown. Nor can a local deadline help: aborting the
+  await does not retract a request Stripe already received.
+
+  So an empty listing means **unknown**, never **absent**. Re-arming on it is
+  precisely the double-pay — the old POST lands under the old key while the
+  new generation posts under a fresh one. The intent stays
+  `reconcile_required` on the same generation with its commissions frozen,
+  later ticks keep listing (a straggler still finalizes normally), and only an
+  operator may authorise a fresh key.
+
+  The cost is **liveness, not money**: a transfer whose POST genuinely never
+  reached Stripe waits for a human. That combination is rare — ambiguous POST
+  *and* past the retention window *and* nothing in the group — and it fails
+  loudly instead of paying twice.
 - **Preflight** (before the first POST only, when abandoning is still free)
   re-checks that every claimed commission is still `approved`, that they still
   sum to the frozen amount, and that the partner is still Connect-ready. Any
@@ -160,22 +186,56 @@ are invisible to the planner until an operator decides. Two dispositions:
 Doing nothing is also a decision, and a safe one: the money is not moving.
 The commissions simply sit out of the payable pool until someone acts.
 
-**Releasing an intent manually** (when Stripe listing proves no transfer
-exists, or after disposing of a reversed payout as above):
+**Disposing of a HELD intent.** An intent that reconciled to "nothing found"
+sits in `reconcile_required` forever by design — the executor will not
+authorise a new key on its own. There are two supported ways out, and both
+are code rather than hand-written SQL:
 
-```sql
-update "Payout"
-   set status = 'failed',
-       metadata = metadata || '{"transferState":"canceled","lastError":"manual release"}'
- where id = $1 and metadata->>'transferState' <> 'confirmed';
-update "Commission" set "payoutId" = null where "payoutId" = $1 and status <> 'paid';
+```ts
+import { releaseIntentForRetry, disposeIntent } from './payout-transfers.js';
+
+// "I have confirmed no transfer exists and want it paid." Bumps the key
+// generation so the next POST uses a key Stripe has never seen — reusing
+// the old one would just replay its stored outcome forever.
+await releaseIntentForRetry(db, payoutId, observedGeneration, 'keith');
+
+// "This should not be paid." Releases the frozen commissions back to the
+// payable pool.
+await disposeIntent(db, payoutId, 'keith', 'confirmed_no_transfer');
 ```
 
-## Staging run — PASSED 2026-08-11 against Stripe test mode
+Both are fenced on the generation you observed, so two operators — or an
+operator and a concurrent reconcile — cannot both hand out an epoch. `disposeIntent`
+also covers a `duplicate_review` payout once you have reversed the surplus
+transfers by hand.
 
-All six scenarios below were executed against **real Stripe test mode**
-(platform `acct_1TQ1rLLjeKaK2m8k`, destination `acct_1TQH8tLte7Y6cCMU`):
-**37 assertions, 0 failures.** Re-run it with:
+**Confirm before you release.** `releaseIntentForRetry` is you asserting the
+thing the system deliberately refuses to infer. Check first:
+
+```bash
+stripe transfers list --transfer-group <payoutId>
+```
+
+If that shows a transfer, do **not** re-arm — the next executor tick will
+find and finalize it on its own.
+
+## Staging run — PASSED against Stripe test mode
+
+Executed against **real Stripe test mode** (platform `acct_1TQ1rLLjeKaK2m8k`,
+destination `acct_1TQH8tLte7Y6cCMU`). Latest run after the round-6 rework:
+**50 assertions, 0 failures**, covering the six scenarios below plus two added
+in round 6:
+
+- **7 — two executors racing one intent.** Genuinely concurrent, against real
+  Stripe. Exactly one transfer, exactly one executor records it, the
+  commission is paid once. This is the first concurrency coverage the matrix
+  has had; earlier runs were single-threaded, which is why the CAS and lease
+  went unexercised.
+- **8 — past the window with nothing at Stripe.** Three ticks must not post,
+  the intent must stay `reconcile_required` on generation 0 with commissions
+  frozen, and only after `releaseIntentForRetry` may it post — exactly once.
+
+Re-run it with:
 
 ```bash
 cd apps/api
