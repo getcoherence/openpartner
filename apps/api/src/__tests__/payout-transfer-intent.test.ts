@@ -11,7 +11,6 @@
 
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type Stripe from 'stripe';
-import { readFileSync } from 'node:fs';
 import { ulid } from 'ulid';
 import { TABLES, DEFAULT_TENANT_ID } from '@openpartner/db';
 import { db } from '../db.js';
@@ -1321,17 +1320,21 @@ describe.skipIf(skipIntegration)('round-4 hardening: generations are epochs', ()
 // ---- Round-5 review fixes (Codex, 2026-08-11) ------------------------------
 
 describe.skipIf(skipIntegration)('round-5 hardening', () => {
-  it('the lease outlives the bounded Stripe request budget', () => {
-    // A 60s lease with stripe-node's default 80s timeout and 2 retries
-    // meant a POST could still be in flight when another worker declared
-    // the lease cold, reconciled, and re-armed — two transfers, one
-    // recorded. The lease must dominate the request budget.
-    const src = readFileSync(new URL('../payout-transfers.ts', import.meta.url), 'utf8');
-    const timeout = Number(/TRANSFER_TIMEOUT_MS = ([\d_]+)/.exec(src)![1]!.replace(/_/g, ''));
-    const retries = Number(/TRANSFER_MAX_RETRIES = (\d+)/.exec(src)![1]!);
-    const cooldown = Number(/POST_COOLDOWN_MS = ([\d_]+)/.exec(src)![1]!.replace(/_/g, ''));
-    expect(cooldown).toBeGreaterThan(timeout * (retries + 1));
-  });
+  // DELETED in round 6: 'the lease outlives the bounded Stripe request
+  // budget'. It parsed the three constants out of the source and asserted
+  // `cooldown > timeout * (retries + 1)`, which was worthless twice over.
+  //
+  // It asserted a guarantee that does not exist: stripe-node implements
+  // `timeout` as req.setTimeout, a socket-INACTIVITY timeout that resets
+  // after each request stage, so no arithmetic over those constants bounds
+  // the wall-clock life of a POST. And it was not even a mutation killer for
+  // the fix it claimed to protect — restoring the old 60s cooldown still
+  // passes `60 > 40`, and nothing checked the request options ever reached
+  // Stripe.
+  //
+  // What replaced it is the invariant that actually holds: the executor
+  // never re-arms on elapsed time at all. See 'reconcile that finds nothing
+  // HOLDS the intent — it never re-arms itself'.
 
   it('a transfer from a superseded generation is never finalized as current', async () => {
     // Transfers were STAMPED with their generation and then the stamp was
