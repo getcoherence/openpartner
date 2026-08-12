@@ -400,6 +400,44 @@ async function handleConnectEvent(
           status: reversed ? 'failed' : 'paid',
           completedAt: reversed ? null : new Date(),
         });
+      if (updated === 0 && reversed) {
+        // NOT YET STAMPED is a different case from NOT OURS, and
+        // collapsing them lost reversals (round-6 review).
+        //
+        // The executor posts the transfer and only writes
+        // `stripeTransferId` when it finalizes. A reversal landing in that
+        // gap matched nothing, was logged as "unmatched", and the event
+        // was acknowledged — so the reversal was gone, and the executor
+        // then recorded the payout `paid` from a create response that
+        // still said `reversed: false`.
+        //
+        // The transfer carries what we need to identify it without the id:
+        // `openpartner_payout_id` and `openpartner_key_generation` are
+        // stamped at creation and are immutable. Match on those, fenced on
+        // the generation, and terminalize the intent so the executor's
+        // finalize CAS loses rather than overwriting this with `paid`.
+        const stampedGeneration = transfer.metadata?.openpartner_key_generation ?? '0';
+        const claimed = await trx<PayoutRow>(TABLES.Payout)
+          .where({ id: payoutId })
+          .whereNull('stripeTransferId')
+          .whereRaw(`coalesce("metadata"->>'keyGeneration', '0') = ?`, [stampedGeneration])
+          .whereRaw(`("metadata"->>'transferState') in ('posted','reconcile_required')`)
+          .update({
+            status: 'failed',
+            completedAt: null,
+            stripeTransferId: transfer.id,
+            metadata: trx.raw(
+              `"metadata" || ?::jsonb`,
+              [JSON.stringify({ transferState: 'confirmed', lastError: `reversed_before_finalize:${transfer.id}` })],
+            ),
+          });
+        if (claimed > 0) {
+          console.error(
+            `[payouts] transfer ${transfer.id} was reversed before payout ${payoutId} finalized — recorded failed from metadata; its commissions stay claimed for operator disposition`,
+          );
+          return 'transfer_reversed_before_finalize';
+        }
+      }
       if (updated === 0) {
         // Either we never recorded this transfer, or the payout is on a
         // different one. Both mean a transfer exists that our ledger does

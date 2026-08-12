@@ -19,7 +19,10 @@ import { runPayouts } from '../payouts.js';
 import {
   executePayoutTransfers,
   idempotencyKeyFor,
+  releaseIntentForRetry,
+  disposeIntent,
   __testCasTransferState,
+  __testMarkDuplicateReview,
 } from '../payout-transfers.js';
 import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
 
@@ -36,7 +39,15 @@ interface FakeTransfer {
   metadata: Record<string, string>;
 }
 
-function mockStripe(opts: { onCreate?: (n: number) => void; listed?: FakeTransfer[] } = {}) {
+function mockStripe(
+  opts: {
+    onCreate?: (n: number) => void;
+    listed?: FakeTransfer[];
+    /** Mutate the live object a retrieve should see — how a reversal that
+     *  landed after the create response is simulated. */
+    onRetrieve?: (t: FakeTransfer, n: number) => FakeTransfer;
+  } = {},
+) {
   let calls = 0;
   const created: FakeTransfer[] = [];
   const transfersCreate = vi.fn(
@@ -63,10 +74,21 @@ function mockStripe(opts: { onCreate?: (n: number) => void; listed?: FakeTransfe
     data: (opts.listed ?? []).filter((t) => !transfer_group || t.transfer_group === transfer_group),
     has_more: false,
   }));
+  // The real API can always be re-read, and finalization always does it
+  // now — a mock without `retrieve` modelled an API where the live object
+  // is unknowable, which is precisely the blind spot that let a reversed
+  // first-attempt transfer be recorded paid (round-6 review).
+  let retrieves = 0;
+  const transfersRetrieve = vi.fn(async (id: string) => {
+    retrieves += 1;
+    const known = [...created, ...(opts.listed ?? [])].find((t) => t.id === id);
+    const live = known ?? { id, amount: 0, currency: 'usd', metadata: {} };
+    return opts.onRetrieve ? opts.onRetrieve(live, retrieves) : live;
+  });
   const stripe = {
-    transfers: { create: transfersCreate, list: transfersList },
+    transfers: { create: transfersCreate, list: transfersList, retrieve: transfersRetrieve },
   } as unknown as Stripe;
-  return { stripe, transfersCreate, transfersList, created };
+  return { stripe, transfersCreate, transfersList, transfersRetrieve, created };
 }
 
 /** Stripe answered with 4xx semantics — the transfer certainly doesn't exist. */
@@ -342,7 +364,13 @@ describe.skipIf(skipIntegration)('payout transfer executor', () => {
       metadata: { openpartner_payout_id: payoutId },
     };
     const transfersCreate = vi.fn(async () => replayed);
-    const stripe = { transfers: { create: transfersCreate, list: vi.fn() } } as unknown as Stripe;
+    const stripe = {
+      transfers: {
+        create: transfersCreate,
+        list: vi.fn(),
+        retrieve: vi.fn(async () => replayed),
+      },
+    } as unknown as Stripe;
 
     // Simulate the lost outcome: the intent was posted 3 minutes ago and
     // nothing finalized it.
@@ -421,9 +449,16 @@ describe.skipIf(skipIntegration)('payout transfer executor', () => {
     expect(commission.status).toBe('paid');
   });
 
-  it('reconcile that proves absence re-arms the intent for a fresh post', async () => {
+  it('reconcile that finds nothing HOLDS the intent — it never re-arms itself', async () => {
+    // Round 6. This used to re-arm on the reasoning that an empty listing
+    // "proved" no transfer exists. It proves nothing about a POST still in
+    // flight, and stripe-node's timeout is socket-inactivity, so no
+    // cooldown bounds one. Re-arming on it is the double-pay: the old
+    // request lands under the old key while the new generation posts under
+    // a fresh one. The intent must sit still until an operator says
+    // otherwise, however many ticks pass.
     const partnerId = await seedPartner();
-    await seedApproved(partnerId, 1, '50.00');
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
     const { payouts } = await plan();
     const payoutId = payouts[0]!.payoutId;
     await db(TABLES.Payout)
@@ -438,14 +473,117 @@ describe.skipIf(skipIntegration)('payout transfer executor', () => {
     await executePayoutTransfers(db, { stripe });
     expect(transfersCreate).not.toHaveBeenCalled();
     let payout = await payoutOf(payoutId);
-    expect(payout.metadata.transferState).toBe('intent');
-    expect(payout.metadata.postedAt).toBeUndefined();
+    expect(payout.metadata.transferState).toBe('reconcile_required');
+    expect(payout.metadata.keyGeneration ?? 0).toBe(0);
 
-    // Next tick posts it for real — exactly once.
+    // Ticking again must not talk itself into posting.
+    await executePayoutTransfers(db, { stripe });
+    await executePayoutTransfers(db, { stripe });
+    expect(transfersCreate).not.toHaveBeenCalled();
+    payout = await payoutOf(payoutId);
+    expect(payout.metadata.transferState).toBe('reconcile_required');
+
+    // And the commissions stay frozen the whole time — releasing them
+    // would let the planner regroup them under a new key.
+    const claimed = await db(TABLES.Commission).whereIn('id', commissionIds);
+    expect(claimed.every((c) => c.payoutId === payoutId)).toBe(true);
+    expect(claimed.every((c) => c.status === 'approved')).toBe(true);
+  });
+
+  it('a held intent still finalizes normally if the slow POST eventually lands', async () => {
+    // The liveness half of the hold: holding is not abandoning. If the
+    // in-flight request we could not see does arrive, a later listing
+    // finds it and the ledger is written from the real transfer.
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'posted', postedAt: hoursAgo(25).toISOString() }),
+        ]),
+      });
+
+    const { stripe } = mockStripe({ listed: [] });
+    await executePayoutTransfers(db, { stripe });
+    expect((await payoutOf(payoutId)).metadata.transferState).toBe('reconcile_required');
+
+    // Now the straggler shows up in the group.
+    const late = {
+      id: 'tr_late_arrival',
+      amount: 5000,
+      currency: 'usd',
+      transfer_group: payoutId,
+      metadata: { openpartner_payout_id: payoutId, openpartner_key_generation: '0' },
+    };
+    const second = mockStripe({ listed: [late] });
+    await executePayoutTransfers(db, { stripe: second.stripe });
+
+    const payout = await payoutOf(payoutId);
+    expect(payout.status).toBe('paid');
+    expect(payout.stripeTransferId).toBe('tr_late_arrival');
+    expect(second.transfersCreate).not.toHaveBeenCalled();
+  });
+
+  it('only an operator can re-arm a held intent, and only at the observed generation', async () => {
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'posted', postedAt: hoursAgo(25).toISOString() }),
+        ]),
+      });
+    const { stripe, transfersCreate } = mockStripe({ listed: [] });
+    await executePayoutTransfers(db, { stripe });
+    expect((await payoutOf(payoutId)).metadata.transferState).toBe('reconcile_required');
+
+    // A stale operator view loses rather than handing out a live epoch.
+    expect(await releaseIntentForRetry(db, payoutId, 7, 'stale-op')).toBe('generation_moved');
+    expect((await payoutOf(payoutId)).metadata.transferState).toBe('reconcile_required');
+
+    expect(await releaseIntentForRetry(db, payoutId, 0, 'keith')).toBe('rearmed');
+    const rearmed = await payoutOf(payoutId);
+    expect(rearmed.metadata.transferState).toBe('intent');
+    expect(rearmed.metadata.keyGeneration).toBe(1);
+
+    // Only now does the executor post, and under the FRESH key.
     await executePayoutTransfers(db, { stripe });
     expect(transfersCreate).toHaveBeenCalledOnce();
-    payout = await payoutOf(payoutId);
-    expect(payout.status).toBe('paid');
+    const [, options] = transfersCreate.mock.calls[0]! as unknown as [
+      Record<string, unknown>,
+      { idempotencyKey: string },
+    ];
+    expect(options.idempotencyKey).toBe(idempotencyKeyFor(payoutId, 1));
+  });
+
+  it('an operator can dispose a held intent, returning its commissions', async () => {
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'posted', postedAt: hoursAgo(25).toISOString() }),
+        ]),
+      });
+    const { stripe } = mockStripe({ listed: [] });
+    await executePayoutTransfers(db, { stripe });
+
+    expect(await disposeIntent(db, payoutId, 'keith', 'confirmed_no_transfer')).toBe('disposed');
+    const payout = await payoutOf(payoutId);
+    expect(payout.status).toBe('failed');
+    expect(payout.metadata.transferState).toBe('canceled');
+    const freed = await db(TABLES.Commission).whereIn('id', commissionIds);
+    expect(freed.every((c) => c.payoutId === null)).toBe(true);
+    expect(freed.every((c) => c.status === 'approved')).toBe(true);
   });
 
   it('a definite 4xx fails the payout and releases the claim so the next run regroups', async () => {
@@ -538,15 +676,22 @@ describe.skipIf(skipIntegration)('payout transfer executor', () => {
     const commissionIds = await seedApproved(partnerId, 1, '50.00');
     const { payouts } = await plan();
     const payoutId = payouts[0]!.payoutId;
-    const transfersCreate = vi.fn(async () => ({
+    const reversedTransfer = {
       id: 'tr_reversed',
       amount: 5000,
       currency: 'usd',
       reversed: true,
       amount_reversed: 5000,
       metadata: { openpartner_payout_id: payoutId },
-    }));
-    const stripe = { transfers: { create: transfersCreate, list: vi.fn() } } as unknown as Stripe;
+    };
+    const transfersCreate = vi.fn(async () => reversedTransfer);
+    const stripe = {
+      transfers: {
+        create: transfersCreate,
+        list: vi.fn(),
+        retrieve: vi.fn(async () => reversedTransfer),
+      },
+    } as unknown as Stripe;
 
     const result = await executePayoutTransfers(db, { stripe });
     expect(result.failed).toEqual([{ payoutId, error: 'transfer_reversed' }]);
@@ -743,7 +888,8 @@ describe.skipIf(skipIntegration)('the idempotency window survives repeated retri
     // Past the window ⇒ reconcile by listing, never a blind re-POST.
     expect(transfersList).toHaveBeenCalledOnce();
     expect(transfersCreate).not.toHaveBeenCalled();
-    expect((await payoutOf(payoutId)).metadata.transferState).toBe('intent'); // proven absent, re-armed
+    // ...and finding nothing HOLDS it (round 6) rather than re-arming.
+    expect((await payoutOf(payoutId)).metadata.transferState).toBe('reconcile_required');
   });
 
   it('the cooldown reads the lease clock, not the first post', async () => {
@@ -979,7 +1125,15 @@ describe.skipIf(skipIntegration)('round-3 hardening', () => {
       });
     const { stripe, transfersCreate } = mockStripe({ listed: [] });
 
-    await executePayoutTransfers(db, { stripe }); // proves absence, re-arms
+    // Round 6: the executor no longer re-arms itself — an empty listing
+    // is not proof. The generation bump now belongs to the operator, and
+    // the property under test (a fresh key, not the retained one) is
+    // asserted on THAT path.
+    await executePayoutTransfers(db, { stripe });
+    expect((await payoutOf(payoutId)).metadata.transferState).toBe('reconcile_required');
+    expect((await payoutOf(payoutId)).metadata.keyGeneration ?? 0).toBe(0);
+
+    expect(await releaseIntentForRetry(db, payoutId, 0, 'keith')).toBe('rearmed');
     expect((await payoutOf(payoutId)).metadata.keyGeneration).toBe(1);
 
     await executePayoutTransfers(db, { stripe }); // posts under the new key
@@ -1260,5 +1414,74 @@ describe.skipIf(skipIntegration)('round-5 hardening', () => {
     expect(result.processed).toBe(0);
     expect(transfersList).not.toHaveBeenCalled();
     expect(transfersCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe.skipIf(skipIntegration)('round-6 hardening', () => {
+  it('a FIRST-attempt transfer reversed before finalization is never recorded paid', async () => {
+    // The create response describes the transfer at the instant Stripe
+    // made it. A reversal landing between that response and our DB write
+    // is invisible in the body we hold, and the old `attempts > 1` guard
+    // skipped the re-read on exactly the attempt where nothing else could
+    // catch it — the reversal webhook cannot match a payout whose
+    // stripeTransferId is not stamped yet.
+    //
+    // Revert the unconditional retrieve and this test records `paid`.
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+
+    const { stripe, transfersRetrieve } = mockStripe({
+      // Created clean; reversed by the time anyone looks again.
+      onRetrieve: (t) => ({ ...t, reversed: true, amount_reversed: t.amount }),
+    });
+
+    const result = await executePayoutTransfers(db, { stripe });
+
+    expect(transfersRetrieve).toHaveBeenCalledOnce(); // on attempt 1
+    expect(result.confirmed).toHaveLength(0);
+    expect(result.failed).toEqual([{ payoutId, error: 'transfer_reversed' }]);
+
+    const payout = await payoutOf(payoutId);
+    expect(payout.status).toBe('failed');
+    const commission = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(commission.status).toBe('approved');
+    expect(commission.payoutId).toBe(payoutId); // frozen for an operator
+  });
+
+  it('a stale reconciler cannot quarantine the live generation', async () => {
+    // markDuplicateReview CASed on state only, so a reconciler holding a
+    // generation-0 snapshot could move a live generation-1 row to
+    // duplicate_review — failing a payout whose single transfer had
+    // legitimately moved money.
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+
+    // Row is live on generation 1, posted.
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({
+            transferState: 'posted',
+            postedAt: hoursAgo(25).toISOString(),
+            leaseAt: hoursAgo(25).toISOString(),
+            keyGeneration: 1,
+          }),
+        ]),
+      });
+
+    // A reconciler resuming from a generation-0 snapshot tries to
+    // quarantine it. Fenced on the generation it OBSERVED, so it loses.
+    await __testMarkDuplicateReview(db, payoutId, 'superseded_generation_transfer:tr_x:g1', 0);
+
+    // The live row must be untouched — still posted on generation 1.
+    const payout = await payoutOf(payoutId);
+    expect(payout.metadata.transferState).toBe('posted');
+    expect(payout.metadata.keyGeneration).toBe(1);
+    expect(payout.status).not.toBe('failed');
   });
 });

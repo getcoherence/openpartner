@@ -53,18 +53,29 @@ const IDEMPOTENCY_WINDOW_MS = 24 * 60 * 60 * 1000;
  *  its request arrive after Stripe pruned the key — which creates a
  *  SECOND transfer instead of replaying the first. */
 const KEY_SAFETY_MARGIN_MS = 60 * 60 * 1000;
-/** Bound the money call explicitly. stripe-node defaults to an 80s
- *  timeout with 2 network retries, so a single transfers.create can stay
- *  in flight for ~4 MINUTES — far longer than any lease we'd want to
- *  hold. An unbounded request is what let a POST outlive its lease. */
+/** Keep the money call on a short leash so a wedged request doesn't tie up
+ *  a worker: stripe-node otherwise defaults to an 80s timeout with 2
+ *  network retries. This is resource hygiene ONLY.
+ *
+ *  It is NOT a wall-clock bound, and nothing about correctness may rest on
+ *  it. stripe-node implements `timeout` as `req.setTimeout`, which is a
+ *  socket INACTIVITY timeout that resets after every stage of the request
+ *  — its own source says so, contrasting Node with fetch in
+ *  net/FetchHttpClient.js. A request that keeps making slow progress never
+ *  trips it and can outlive any figure written here. */
 const TRANSFER_TIMEOUT_MS = 20_000;
 const TRANSFER_MAX_RETRIES = 1;
-/** A just-posted intent is left alone while the worker that posted it may
- *  still be waiting on Stripe. This MUST exceed the worst-case request
- *  budget above (2 attempts x 20s, plus retry backoff): if the lease can
- *  expire while a POST is genuinely in flight, another worker reconciles,
- *  proves absence and re-arms — and then the in-flight transfer lands
- *  alongside the new generation's. Two transfers, one recorded. */
+/** How long a just-posted intent is left alone before another worker will
+ *  look at it. Purely a SCHEDULING choice — it stops a scheduler tick and
+ *  an admin-triggered run from stampeding the same key.
+ *
+ *  This used to carry the safety argument ("the lease outlives the
+ *  request"), which was false for the reason above: no cooldown can
+ *  guarantee an in-flight POST has finished. Safety now comes from the
+ *  fact that a cold lease never authorises a NEW key — reconcile holds
+ *  the intent for an operator instead of re-arming (see reconcileIntent).
+ *  Changing this number cannot cause a double-pay; it only changes how
+ *  soon a stuck intent is looked at. */
 const POST_COOLDOWN_MS = 180_000;
 /** After this many attempts, a transfer we can see at Stripe but cannot
  *  re-read stops being a transient blip and becomes an operator alert. */
@@ -468,14 +479,29 @@ async function finalizeTransfer(
   generation: number,
   result: PayoutTransferResult,
 ): Promise<void> {
-  // A REPLAYED transfer object is stale. Stripe answers a retried
-  // idempotency key with the response it stored at creation time, so
-  // `reversed` there is always false even if the transfer has since been
-  // clawed back — and finalizing on that would overwrite a reversal
-  // webhook's `failed` with `paid`. Any attempt past the first therefore
-  // re-reads the live object before believing it (audit review).
+  // ALWAYS re-read the live transfer before believing it.
+  //
+  // Two different staleness problems, and the first fix only covered one:
+  //  - A REPLAYED object is stale by construction. Stripe answers a
+  //    retried idempotency key with the response it stored at creation,
+  //    so `reversed` there is false even if the transfer was since
+  //    clawed back.
+  //  - The FIRST response goes stale too. It describes the transfer at
+  //    the instant Stripe created it; a reversal landing between that
+  //    response and this DB write is invisible in the body we hold. The
+  //    old `attempts > 1` guard skipped the re-read on exactly the
+  //    attempt where nothing else could catch it, because the reversal
+  //    webhook cannot match a payout whose stripeTransferId is not
+  //    stamped yet (round-6 review).
+  //
+  // The re-read does not close the window entirely — a reversal can still
+  // land between the retrieve and the commit — so it is defence in depth,
+  // not the guarantee. The guarantee is that the reversal webhook can
+  // always find this payout: it matches on the transfer's immutable
+  // metadata, so it works before the id is stamped. See
+  // routes/stripe-webhook.ts.
   const attempts = Number((payout.metadata as { attempts?: number }).attempts ?? 1);
-  if (attempts > 1) {
+  {
     try {
       transfer = await stripe.transfers.retrieve(transfer.id);
     } catch (err) {
@@ -621,7 +647,7 @@ async function reconcileIntent(
     // on — that records a payout as cleanly paid while a duplicate sits
     // unaccounted for at Stripe. Freeze loudly and leave it to a human.
     const ids = matches.map((t) => t.id).join(', ');
-    await markDuplicateReview(db, payout, `duplicate_transfers:${ids}`);
+    await markDuplicateReview(db, payout, `duplicate_transfers:${ids}`, generation);
     console.error(
       `[payouts] ALERT: payout ${payout.id} has ${matches.length} transfers in its transfer_group (${ids}) — the partner has been paid more than once; ledger NOT written, operator reconciliation required`,
     );
@@ -653,6 +679,7 @@ async function reconcileIntent(
         db,
         payout,
         `superseded_generation_transfer:${found.id}:g${stamped}`,
+        generation,
       );
       console.error(
         `[payouts] ALERT: payout ${payout.id} found transfer ${found.id} from generation ${stamped} while on generation ${generation} — a superseded attempt DID move money; operator reconciliation required`,
@@ -664,31 +691,53 @@ async function reconcileIntent(
     return;
   }
 
-  // Bump the key generation. Clearing our own clocks does NOT give us a
-  // fresh key: Stripe's retention is anchored to when `payout_<id>` was
-  // FIRST used, so a re-armed POST inside that retention replays the
-  // stored outcome (including a stored failure) instead of doing
-  // anything — and the local window restarts, so it could loop forever.
-  // Listing just proved no transfer exists, which is exactly the evidence
-  // needed to make a new key safe.
+  // NOTHING FOUND. This used to bump the key generation and re-arm the
+  // intent, on the reasoning that "listing just proved no transfer
+  // exists". It proves no such thing (round-6 review).
   //
-  // Fenced on the generation we READ: a reconciler resuming from a stale
-  // snapshot would otherwise recompute N+1 from an already-advanced row
-  // and hand a live generation back out for reuse.
-  const nextGeneration = generation + 1;
-  const rearmed = await casTransferState(
-    db,
-    payout.id,
-    'reconcile_required',
-    'intent',
-    { postedAt: undefined, leaseAt: undefined, keyGeneration: nextGeneration },
-    {},
-    { keyGeneration: generation },
-  );
-  if (!rearmed) return; // someone else advanced this intent; their epoch wins
+  // `transfers.list` is read-after-write consistent, so the listing is
+  // accurate — but only about requests Stripe has already FINISHED. It
+  // cannot see a POST that is still in flight, and we have no way to
+  // bound how long one can be: stripe-node's `timeout` is a socket
+  // INACTIVITY timeout that resets after each stage of the request (see
+  // its own note in net/FetchHttpClient.js), so a slow-but-progressing
+  // request has no wall-clock limit. No cooldown arithmetic fixes that;
+  // a local timer cannot bound a remote side effect, and aborting the
+  // await does not retract a request Stripe already received.
+  //
+  // So an empty listing means UNKNOWN, never ABSENT. Re-arming on it is
+  // exactly the double-pay: the old POST lands under the old key while
+  // the new generation posts under a fresh one.
+  //
+  // We therefore hold. The intent stays `reconcile_required` on the SAME
+  // generation with its commissions still frozen, and later ticks keep
+  // listing — if the slow POST does land, `finalizeTransfer` accepts a
+  // `reconcile_required` intent and records it normally. Only an
+  // operator may authorise a fresh-key attempt (see
+  // `releaseIntentForRetry` and docs/direct-connect-payouts.md).
+  //
+  // The cost is liveness, not money: a transfer whose POST genuinely
+  // never reached Stripe sits until a human says so. That case is rare
+  // (ambiguous POST *and* past the retention window *and* nothing in the
+  // group), and it fails loudly rather than paying twice.
+  //
+  // `leaseAt` still moves, under the generation fence, so repeated
+  // checks rotate fairly through the scan cap instead of one stuck row
+  // monopolising it.
+  await db(TABLES.Payout)
+    .where({ id: payout.id })
+    .whereRaw(`("metadata"->>'transferState') = 'reconcile_required'`)
+    .whereRaw(`coalesce("metadata"->>'keyGeneration', '0') = ?`, [String(generation)])
+    .update({
+      metadata: mergeMeta(db, {
+        leaseAt: new Date().toISOString(),
+        lastError: 'awaiting_operator:no_transfer_found_past_window',
+      }),
+    });
   console.error(
-    `[payouts] intent ${payout.id}: no transfer found in group after the idempotency window — re-armed under key generation ${nextGeneration}`,
+    `[payouts] ALERT: intent ${payout.id} found no transfer in its group past the idempotency window — HELD on generation ${generation} awaiting operator disposition; commissions stay frozen. An empty listing does not prove the POST never landed.`,
   );
+  result.failed.push({ payoutId: payout.id, error: 'awaiting_operator_disposition' });
 }
 
 /**
@@ -701,7 +750,19 @@ async function reconcileIntent(
  * starve every other tenant. Disposition is manual either way; this makes
  * "a human owns it now" a state rather than a hope.
  */
-async function markDuplicateReview(db: Knex, payout: PayoutRow, reason: string): Promise<void> {
+async function markDuplicateReview(
+  db: Knex,
+  payout: PayoutRow,
+  reason: string,
+  generation: number,
+): Promise<void> {
+  // Fenced on the generation the CALLER observed (round-6 review). This
+  // CASed on state alone, which let a reconciler resuming from a stale
+  // snapshot quarantine a live, newer generation: it would list, see that
+  // generation's legitimate transfer, judge it "superseded" relative to
+  // its own stale view, and park a payout whose single transfer had
+  // genuinely moved money — leaving the commissions frozen forever while
+  // the real finalizer lost its CAS.
   await casTransferState(
     db,
     payout.id,
@@ -709,7 +770,20 @@ async function markDuplicateReview(db: Knex, payout: PayoutRow, reason: string):
     'duplicate_review',
     { lastError: reason.slice(0, 500) },
     { status: 'failed' },
+    { keyGeneration: generation },
   );
+}
+
+/** Test seam for the fence above: stage "a stale reconciler tries to
+ *  quarantine a row that has since moved on". */
+export async function __testMarkDuplicateReview(
+  db: Knex,
+  payoutId: string,
+  reason: string,
+  observedGeneration: number,
+): Promise<void> {
+  const payout = (await db<PayoutRow>(TABLES.Payout).where({ id: payoutId }).first()) as PayoutRow;
+  await markDuplicateReview(db, payout, reason, observedGeneration);
 }
 
 /** Definite failure: release the frozen commissions so the next planning
@@ -754,6 +828,95 @@ async function cancelIntent(
   });
   console.error(`[payouts] intent ${payout.id} abandoned before any Stripe call: ${reason}`);
   result.canceled.push({ payoutId: payout.id, reason });
+}
+
+/**
+ * OPERATOR ACTION — authorise a fresh attempt on a held intent.
+ *
+ * The executor never re-arms by itself: an empty `transfers.list` cannot
+ * prove an in-flight POST will never land, so an intent that reconciles to
+ * "nothing found" is HELD rather than retried (see reconcileIntent). This
+ * is the only way out, and it exists because a hold with no release is
+ * just a leak.
+ *
+ * The operator is asserting the thing we cannot: that no transfer for this
+ * payout exists or ever will. The runbook tells them to confirm with
+ * `stripe transfers list --transfer-group <payoutId>` first. We bump the
+ * generation so the next POST uses a genuinely fresh key, because Stripe's
+ * retention is anchored to when `payout_<id>` was FIRST used — reusing it
+ * would replay the stored outcome forever.
+ *
+ * Fenced on the generation the caller observed, so two operators (or an
+ * operator and a concurrent reconcile) cannot both hand out an epoch.
+ */
+export async function releaseIntentForRetry(
+  db: Knex,
+  payoutId: string,
+  observedGeneration: number,
+  operator: string,
+): Promise<'rearmed' | 'not_held' | 'generation_moved'> {
+  const row = (await db(TABLES.Payout).where({ id: payoutId }).first()) as PayoutRow | undefined;
+  if (!row) return 'not_held';
+  const meta = row.metadata as unknown as PayoutTransferMeta;
+  if (meta.transferState !== 'reconcile_required') return 'not_held';
+  if ((meta.keyGeneration ?? 0) !== observedGeneration) return 'generation_moved';
+
+  const rearmed = await casTransferState(
+    db,
+    payoutId,
+    'reconcile_required',
+    'intent',
+    {
+      postedAt: undefined,
+      leaseAt: undefined,
+      keyGeneration: observedGeneration + 1,
+      lastError: `operator_rearm:${operator}`.slice(0, 500),
+    },
+    { status: 'pending' },
+    { keyGeneration: observedGeneration },
+  );
+  if (!rearmed) return 'generation_moved';
+  console.error(
+    `[payouts] OPERATOR ${operator} re-armed intent ${payoutId} at generation ${observedGeneration + 1} — asserting no transfer exists for it`,
+  );
+  return 'rearmed';
+}
+
+/**
+ * OPERATOR ACTION — give up on an intent and return its commissions.
+ *
+ * For a held intent the operator has confirmed produced no transfer, or a
+ * `duplicate_review` payout whose surplus transfers they have reversed by
+ * hand. Releasing the claims makes the commissions payable again, so this
+ * must never be automatic: doing it while a transfer is alive is precisely
+ * the double-pay the whole design prevents.
+ */
+export async function disposeIntent(
+  db: Knex,
+  payoutId: string,
+  operator: string,
+  reason: string,
+): Promise<'disposed' | 'not_disposable'> {
+  let ok = false;
+  await db.transaction(async (trx) => {
+    const moved = await casTransferState(
+      trx,
+      payoutId,
+      ['reconcile_required', 'duplicate_review'],
+      'canceled',
+      { lastError: `operator_dispose:${operator}:${reason}`.slice(0, 500) },
+      { status: 'failed' },
+    );
+    if (!moved) return;
+    await releaseClaims(trx, payoutId);
+    ok = true;
+  });
+  if (ok) {
+    console.error(
+      `[payouts] OPERATOR ${operator} disposed intent ${payoutId} (${reason}) — commissions returned to the payable pool`,
+    );
+  }
+  return ok ? 'disposed' : 'not_disposable';
 }
 
 /** Un-claim commissions frozen onto a dead intent. 'paid' rows are never

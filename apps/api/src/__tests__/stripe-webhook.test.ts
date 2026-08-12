@@ -75,6 +75,9 @@ const TABLES_TO_CLEAN = [
   TABLES.Click,
   TABLES.Link,
   TABLES.Program,
+  // Before Partner — Payout.partnerId is an FK. Commission is already
+  // deleted above, which is what frees Payout.
+  TABLES.Payout,
   TABLES.Partner,
   TABLES.Config,
 ];
@@ -486,5 +489,103 @@ describe.skipIf(skipIntegration)('stripe webhook — refund + reversal flow', ()
     expect(refundEvent).toBeTruthy();
     const attributions = await db(TABLES.Attribution).where({ eventId: refundEvent!.id });
     expect(attributions).toHaveLength(0);
+  });
+});
+
+describe.skipIf(skipIntegration)('round-6: a reversal that beats finalization', () => {
+  // The executor posts a transfer and only writes `stripeTransferId` when
+  // it finalizes. A reversal landing in that gap used to match nothing,
+  // get logged "unmatched" and ACKNOWLEDGED — so the only reversal event
+  // was consumed, and the executor then wrote `paid` from a create
+  // response that still said reversed:false. Money back, ledger says paid.
+  //
+  // Driven through the real HTTP route, not the handler, so a regression
+  // in routing or acknowledgement is caught too.
+  async function seedPostedPayout(generation = 0) {
+    const partnerId = ulid();
+    await db(TABLES.Partner).insert({
+      id: partnerId,
+      tenantId: DEFAULT_TENANT_ID,
+      name: 'Reversal partner',
+      email: `rev-${partnerId}@example.com`,
+      stripeConnectAccountId: `acct_${partnerId.slice(0, 10)}`,
+    });
+    const payoutId = ulid();
+    await db(TABLES.Payout).insert({
+      id: payoutId,
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId,
+      amount: '50.00',
+      currency: 'USD',
+      status: 'pending',
+      method: 'stripe_connect',
+      metadata: {
+        transferState: 'posted',
+        postedAt: new Date().toISOString(),
+        keyGeneration: generation,
+        attempts: 1,
+      },
+    });
+    return { partnerId, payoutId };
+  }
+
+  function reversalEvent(payoutId: string, transferId: string, generation = '0') {
+    return {
+      id: `evt_${ulid()}`,
+      type: 'transfer.reversed',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: transferId,
+          object: 'transfer',
+          amount: 5000,
+          currency: 'usd',
+          reversed: true,
+          transfer_group: payoutId,
+          metadata: {
+            openpartner_payout_id: payoutId,
+            openpartner_key_generation: generation,
+          },
+        },
+      },
+    };
+  }
+
+  it('is recorded against the payout even though stripeTransferId is not stamped yet', async () => {
+    const { payoutId } = await seedPostedPayout(0);
+    const res = await postWebhook(reversalEvent(payoutId, 'tr_reversed_early', '0'));
+    expect(res.status).toBe(200);
+
+    const payout = await db(TABLES.Payout).where({ id: payoutId }).first();
+    expect(payout!.status).toBe('failed');
+    expect(payout!.stripeTransferId).toBe('tr_reversed_early');
+    expect((payout!.metadata as { transferState?: string }).transferState).toBe('confirmed');
+    expect((payout!.metadata as { lastError?: string }).lastError).toContain('reversed_before_finalize');
+  });
+
+  it('does not touch a payout on a DIFFERENT key generation', async () => {
+    // A reversal of a superseded attempt must not fail the live one.
+    const { payoutId } = await seedPostedPayout(1);
+    const res = await postWebhook(reversalEvent(payoutId, 'tr_from_gen0', '0'));
+    expect(res.status).toBe(200);
+
+    const payout = await db(TABLES.Payout).where({ id: payoutId }).first();
+    expect(payout!.status).toBe('pending');
+    expect(payout!.stripeTransferId).toBeNull();
+    expect((payout!.metadata as { transferState?: string }).transferState).toBe('posted');
+  });
+
+  it('leaves an already-finalized payout to the normal stripeTransferId path', async () => {
+    const { payoutId } = await seedPostedPayout(0);
+    await db(TABLES.Payout).where({ id: payoutId }).update({
+      stripeTransferId: 'tr_already_known',
+      status: 'paid',
+    });
+    const res = await postWebhook(reversalEvent(payoutId, 'tr_already_known', '0'));
+    expect(res.status).toBe(200);
+
+    const payout = await db(TABLES.Payout).where({ id: payoutId }).first();
+    expect(payout!.status).toBe('failed');
+    expect(payout!.stripeTransferId).toBe('tr_already_known');
   });
 });
