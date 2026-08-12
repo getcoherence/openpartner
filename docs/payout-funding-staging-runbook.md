@@ -99,6 +99,49 @@ The three scenarios below are the ones that cost real money, and none of
 them can be observed by reading the happy path. Each has unit coverage in
 `funding-races.test.ts`; staging is where the Stripe half gets proven.
 
+> **Partially run 2026-08-11 against real Stripe test mode — 21 assertions,
+> 0 failures.** `apps/api/scripts/staging-funding-races.ts` automates
+> **H1, H5, H6, H7, H8, H9** (and H11 incidentally — see below).
+> **H2, H3, H4, H10, H12 have NOT been run.**
+>
+> ```bash
+> cd apps/api
+> set -a && . ../../.env && set +a
+> export HOSTED_FUNDING_ENABLED=1 OPENPARTNER_TENANCY=single
+> export STAGING_CUSTOMER=cus_... STAGING_PM=pm_... STAGING_PARTNER_ACCT=acct_...
+> pnpm exec tsx scripts/staging-funding-races.ts
+> ```
+>
+> The script header documents the one-off Stripe fixture setup (customer +
+> verified `us_bank_account` PM + mandate via SetupIntent microdeposits with
+> test amounts `32`/`45`).
+>
+> What the real API taught us that the mocks could not:
+>
+> - **H1 is sound.** The PI really was created, the response really was lost,
+>   the batch went `funding_failed` unstamped, and the retry **adopted the
+>   existing intent** — `create` was never called a second time (asserted by
+>   counting calls on a wrapped client). Exactly one PI existed throughout.
+> - **`paymentIntents.search` is eventually consistent.** The adoption path in
+>   H1/H5 depends on it, and a PI is not findable the instant it is created —
+>   the script polls up to 120s for the index to catch up. A retry that fires
+>   inside that window will not find the intent by search. This is a real
+>   property of Stripe, not of our code, and it is the argument for the
+>   frozen idempotency key remaining the *first* line of defence: inside 24h
+>   the key saves us, and search is the fallback past it.
+> - **H5 and H11 are the same race resolved two ways**, and both were observed
+>   across runs. When the release reached the PI first it was `canceled`, then
+>   allocations were freed. When test-mode ACH settled first the payment won,
+>   and the batch went to transfer with `stripeChargeId` and `fundedAt`
+>   stamped rather than bare-CAS'd to `funded`.
+> - **H6 holds.** With `search` throwing, release returned `pi_not_terminal`,
+>   left every allocation `reserved`, and parked the batch `release_requested`
+>   for the collector to resume. "Don't know" did not free anything.
+>
+> Note that test-mode ACH settles far faster than the ~4 business days of the
+> real rail, which is why H2/H4/H10 (all time- or interleaving-dependent) still
+> want either test clocks or a genuine two-process run.
+
 | # | Scenario | How to force it | Expected |
 |---|---|---|---|
 | H1 | **Ambiguous PI create.** Response lost after Stripe made the intent | Point the API at a proxy that drops the response to `POST /v1/payment_intents`; let the collector run | Batch `funding_failed`, no PI stamped. Then: set `updatedAt` back a day so the retry is due, restore the proxy. The retry must **search** and adopt the existing PI — `create` must NOT be called again, and **Stripe must show exactly one PaymentIntent for the batch** |
