@@ -125,6 +125,26 @@ async function seedBatch(amount = '60.00'): Promise<{ batchId: string; partnerId
   return { batchId: res.batchId, partnerId, commissionIds: [commissionId] };
 }
 
+/**
+ * Deliver a signed event to the real /webhooks/stripe route and return the
+ * HTTP status. Uses the same signing helper Stripe's own SDK exposes, so the
+ * signature check is genuinely exercised.
+ */
+async function postSignedWebhook(payload: object): Promise<number> {
+  const { createApp } = await import('../src/app.js');
+  const request = (await import('supertest')).default;
+  const app = createApp({ enableLogger: false });
+  const body = JSON.stringify(payload);
+  const secret = (process.env.STRIPE_WEBHOOK_SECRET ?? '').split(',')[0]!.trim();
+  const sig = stripe.webhooks.generateTestHeaderString({ payload: body, secret });
+  const res = await request(app)
+    .post('/webhooks/stripe')
+    .set('content-type', 'application/json')
+    .set('stripe-signature', sig)
+    .send(body);
+  return res.status;
+}
+
 async function batchRow(id: string) {
   return db(TABLES.HostedFundingBatch).where({ id }).first() as Promise<HostedFundingBatchRow | undefined>;
 }
@@ -227,9 +247,26 @@ async function h1AmbiguousCreate() {
   check('adopted the SAME intent Stripe already had',
     b2?.stripePaymentIntentId === createdPi?.id,
     `${b2?.stripePaymentIntentId} vs ${createdPi?.id}`);
-  check('did NOT blind-create a second intent', blindCreates === 0, `create called ${blindCreates}x`);
+
+  // THE money property, and the only one guaranteed here.
   const pis2 = await pisForBatch(batchId);
   check('STILL exactly one PI at Stripe', pis2.length === 1, `got ${pis2.length}`);
+
+  // Whether the retry reached that state by SEARCHING or by re-POSTing the
+  // frozen key is not deterministic, and asserting "search" was wrong: this
+  // scenario backdates the DB row 25h but the real idempotency key was
+  // minted seconds ago, so Stripe still replays it. When the search index
+  // has not caught up the retry re-POSTs, Stripe returns the SAME intent,
+  // and one PI still exists — safe, just a different route.
+  //
+  // The genuine post-window behaviour (key pruned, so only a search can
+  // save us) CANNOT be exercised without waiting out Stripe's real
+  // retention. That gap is honest and is recorded in the runbook.
+  if (blindCreates === 0) {
+    check('retry resolved by SEARCH, no POST at all', true);
+  } else {
+    note(`retry re-POSTed the frozen key (search index was cold) — Stripe replayed it and one PI still exists; the true post-window path is NOT covered here`);
+  }
 }
 
 // --------------------------------------------------------------------- H5/H6
@@ -265,9 +302,53 @@ async function h5ReleaseWithUnstampedPi() {
   //   - still alive (processing) → must NOT free
   //   - already succeeded → the payment WINS the release (that is H11), and
   //     the batch must go funded with the charge id stamped, not bare-CAS'd
-  if (pi && ['canceled', 'requires_payment_method'].includes(pi.status)) {
+  // `requires_payment_method` is NOT terminal — that PI can still be
+  // confirmed and take the money. Treating it as dead here would have let a
+  // "freed the allocations while the PI was still live" implementation pass
+  // (round-6 review of this script).
+  if (pi && pi.status === 'canceled') {
     check('H5: PI terminalized before allocations freed', true);
     check('H5: allocations released only after that', allocs.every((s) => s === 'released'), allocs.join(','));
+  } else if (outcome === 'pi_not_terminal') {
+    // Round 6: the search index had not caught up, so the release refused
+    // to act. That is correct, and it is not the end of the story — the
+    // batch must be RESUMABLE. Follow it through rather than asserting a
+    // single snapshot, which is what made this scenario flaky.
+    note('search was cold, so the release held — following it through to a terminal state');
+    check('held rather than freed', allocs.every((s) => s !== 'released'), allocs.join(','));
+
+    let indexed = false;
+    for (let i = 0; i < 36; i += 1) {
+      const f = await stripe.paymentIntents.search({
+        query: `metadata['openpartner_funding_batch_id']:'${batchId}'`, limit: 1,
+      });
+      if (f.data.length > 0) { indexed = true; break; }
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+
+    if (!indexed) {
+      // Do NOT quietly pass. Stripe never made the intent findable within
+      // three minutes, so the resume path genuinely could not run — that is
+      // a fact about the rail worth seeing, not a test to paper over.
+      note(`Stripe search NEVER indexed this PI within 180s — the resume path could not be exercised. The batch is correctly still held; a real deployment would wait for the daily stuck-release alert.`);
+      check('still held, allocations still reserved (the safe state)',
+        allocs.every((s) => s !== 'released'), allocs.join(','));
+      return;
+    }
+
+    await runFundingCollector(db, { stripe });
+    const resolved = await batchRow(batchId);
+    const resolvedAllocs = await allocStatuses(batchId);
+    check('the collector resumed it once Stripe was answerable',
+      resolved?.status !== 'release_requested', String(resolved?.status));
+    if (resolved?.status === 'funded' || resolved?.status === 'transferring') {
+      check('H11: charge id stamped (not a bare CAS to funded)', !!resolved?.stripeChargeId,
+        `chargeId=${resolved?.stripeChargeId}`);
+      check('H11: fundedAt stamped', !!resolved?.fundedAt, String(resolved?.fundedAt));
+    } else {
+      check('released only after the PI was terminalized',
+        resolvedAllocs.every((s) => s === 'released'), resolvedAllocs.join(','));
+    }
   } else if (pi && pi.status === 'succeeded') {
     note(`test-mode ACH settled immediately (PI ${pi.status}) — this exercises H11, payment wins the release`);
     check('H11: allocations NOT released — the money arrived',
@@ -326,8 +407,26 @@ async function h7h8h9Inbox() {
 
   const concurrent = await claimInboxEvent(db, evtId, 'payment_intent.succeeded');
   check('H8: concurrent delivery is HELD, not done', concurrent.status === 'held', concurrent.status);
-  check('H9: redelivery inside the lease is HELD (→409, so Stripe retries)',
-    concurrent.status === 'held', concurrent.status);
+
+  // Through the REAL HTTP route, not the helper. This block used to infer
+  // "→409" from `status === 'held'`, which is our own return value — a route
+  // regression that turned a held event into a 2xx would have passed while
+  // Stripe silently stopped redelivering. The status code is the property
+  // that matters, so assert the status code.
+  const httpStatus = await postSignedWebhook({
+    id: evtId,
+    type: 'payment_intent.succeeded',
+    created: Math.floor(Date.now() / 1000),
+    data: {
+      object: {
+        id: 'pi_staging_held',
+        object: 'payment_intent',
+        metadata: { openpartner_funding_batch_id: 'batch_that_does_not_matter' },
+      },
+    },
+  });
+  check('H9: a redelivery inside the lease really returns 409 over HTTP',
+    httpStatus === 409, `got HTTP ${httpStatus}`);
 
   // H7/H9: the worker dies without stamping an outcome. After the lease
   // expires, the next delivery must PROCESS it — not treat it as replayed.
@@ -354,6 +453,46 @@ async function h7h8h9Inbox() {
     finalRow.outcome === 'processed', `${finalRow.outcome} (stamp returned ${JSON.stringify(stale)})`);
 }
 
+async function h5bEmptySearchHolds() {
+  console.log('\n[H5b] Empty search is NOT proof of absence (round 6)');
+  await reset(); await seedTenantFunding();
+  const { batchId } = await seedBatch();
+
+  // A real PI exists at Stripe, but the row never got its id stamped AND
+  // the search index has not caught up — the exact window that used to free
+  // the allocations while the brand could still be debited.
+  let createdPi: Stripe.PaymentIntent | undefined;
+  await runFundingCollector(db, { stripe: lostResponseStripe((pi) => { createdPi = pi; }) });
+  check('a real PI exists, unstamped', !!createdPi && !(await batchRow(batchId))?.stripePaymentIntentId);
+
+  // Force the "index has not caught up" case deterministically.
+  const blindSearch = {
+    ...stripe,
+    paymentIntents: {
+      ...stripe.paymentIntents,
+      search: async () => ({ data: [] }) as unknown as Stripe.ApiSearchResult<Stripe.PaymentIntent>,
+      retrieve: stripe.paymentIntents.retrieve.bind(stripe.paymentIntents),
+      cancel: stripe.paymentIntents.cancel.bind(stripe.paymentIntents),
+      create: stripe.paymentIntents.create.bind(stripe.paymentIntents),
+      confirm: stripe.paymentIntents.confirm.bind(stripe.paymentIntents),
+    },
+  } as unknown as Stripe;
+
+  const b = (await batchRow(batchId))!;
+  const outcome = await releaseBatch(db, blindSearch, b, 'staging empty-search test');
+  const allocs = await allocStatuses(batchId);
+  const after = await batchRow(batchId);
+
+  check('release refused on an empty search', outcome === 'pi_not_terminal', String(outcome));
+  check('allocations stayed reserved', allocs.every((s) => s === 'reserved'), allocs.join(','));
+  check('batch held in release_requested', after?.status === 'release_requested', String(after?.status));
+
+  // And the live PI really is still alive — i.e. freeing would have been wrong.
+  const live = createdPi ? await stripe.paymentIntents.retrieve(createdPi.id) : undefined;
+  check('the PI it could not see was genuinely still live',
+    !!live && live.status !== 'canceled', String(live?.status));
+}
+
 // --------------------------------------------------------------------- main
 
 async function main() {
@@ -373,6 +512,7 @@ async function main() {
   console.log('Hosted funding races (runbook section H) — REAL Stripe test mode');
   await h1AmbiguousCreate();
   await h5ReleaseWithUnstampedPi();
+  await h5bEmptySearchHolds();
   await h6SearchDown();
   await h7h8h9Inbox();
 

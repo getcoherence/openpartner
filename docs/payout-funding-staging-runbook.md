@@ -99,9 +99,10 @@ The three scenarios below are the ones that cost real money, and none of
 them can be observed by reading the happy path. Each has unit coverage in
 `funding-races.test.ts`; staging is where the Stripe half gets proven.
 
-> **Partially run 2026-08-11 against real Stripe test mode — 21 assertions,
-> 0 failures.** `apps/api/scripts/staging-funding-races.ts` automates
-> **H1, H5, H6, H7, H8, H9** (and H11 incidentally — see below).
+> **Partially run against real Stripe test mode — latest run after the
+> round-6 rework: 27 assertions, 0 failures.**
+> `apps/api/scripts/staging-funding-races.ts` automates **H1, H5, H5b, H6,
+> H7, H8, H9** (and H11 incidentally — see below).
 > **H2, H3, H4, H10, H12 have NOT been run.**
 >
 > ```bash
@@ -118,17 +119,30 @@ them can be observed by reading the happy path. Each has unit coverage in
 >
 > What the real API taught us that the mocks could not:
 >
-> - **H1 is sound.** The PI really was created, the response really was lost,
->   the batch went `funding_failed` unstamped, and the retry **adopted the
->   existing intent** — `create` was never called a second time (asserted by
->   counting calls on a wrapped client). Exactly one PI existed throughout.
-> - **`paymentIntents.search` is eventually consistent.** The adoption path in
->   H1/H5 depends on it, and a PI is not findable the instant it is created —
->   the script polls up to 120s for the index to catch up. A retry that fires
->   inside that window will not find the intent by search. This is a real
->   property of Stripe, not of our code, and it is the argument for the
->   frozen idempotency key remaining the *first* line of defence: inside 24h
->   the key saves us, and search is the fallback past it.
+> - **H1 is sound, and exactly one PI exists throughout.** The PI really was
+>   created, the response really was lost, the batch went `funding_failed`
+>   unstamped, and the retry adopted that same intent.
+>
+>   What the script does **not** prove is that the retry got there by
+>   *searching*. It backdates the DB row 25h but the real idempotency key was
+>   minted seconds earlier, so Stripe still replays it — when the search index
+>   is cold the retry re-POSTs the frozen key and Stripe returns the SAME
+>   intent. Safe, but a different route, and the run notes say which one
+>   happened. **The genuine post-window path — key pruned, so only a search
+>   can save us — cannot be exercised without waiting out Stripe's real
+>   retention, and is therefore still uncovered.** An earlier version of this
+>   doc claimed `create` was never called; that was true of one run, not of
+>   the property.
+> - **`paymentIntents.search` is eventually consistent**, and that is the
+>   round-6 finding. A PI is not findable the instant it is created — in
+>   these runs indexing took seconds to over a minute, and sometimes longer
+>   than the script's 180s ceiling. Treating an empty search as proof of
+>   absence is therefore unsound, which is what **H5b** now pins: with the
+>   index cold, the release refuses to free, the allocations stay `reserved`,
+>   and the script then confirms the PI it could not see was *genuinely still
+>   live* — i.e. freeing would have debited the brand for commissions already
+>   back in the pool. The frozen idempotency key remains the first line of
+>   defence inside 24h; search is only the fallback past it.
 > - **H5 and H11 are the same race resolved two ways**, and both were observed
 >   across runs. When the release reached the PI first it was `canceled`, then
 >   allocations were freed. When test-mode ACH settled first the payment won,
@@ -137,6 +151,11 @@ them can be observed by reading the happy path. Each has unit coverage in
 > - **H6 holds.** With `search` throwing, release returned `pi_not_terminal`,
 >   left every allocation `reserved`, and parked the batch `release_requested`
 >   for the collector to resume. "Don't know" did not free anything.
+> - **H8/H9 now go through the HTTP route.** These used to call the inbox
+>   helpers directly and *infer* the 409 from our own return value, so a route
+>   regression that acknowledged a held event with 2xx would have passed while
+>   Stripe silently stopped redelivering. The script now posts a signed event
+>   to `/webhooks/stripe` and asserts the status code.
 >
 > Note that test-mode ACH settles far faster than the ~4 business days of the
 > real rail, which is why H2/H4/H10 (all time- or interleaving-dependent) still
