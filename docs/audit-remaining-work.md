@@ -1,7 +1,9 @@
 # Payment/subscription audit — handoff
 
-**Status (2026-08-11): the code is written and reviewed five times. Nothing
-here is merged, and neither money path has ever run against Stripe.**
+**Status (2026-08-11, updated): the code is written, reviewed five times, and
+both money paths have now been exercised against Stripe test mode — #73's
+matrix in full, #75's partially. Nothing is merged yet; merging is blocked by
+a branch-protection rule that a sole maintainer cannot satisfy (§3a).**
 
 Three PRs, seven commits each, all open off `main`:
 
@@ -126,8 +128,42 @@ clean `git merge-tree` only proves there was no textual conflict, not that
 the fix survived. All the pairs that share files merge clean —
 `#73×#74`, `#73×#75`, `#74×#75`, `#73×#71`, `#74×#62`.
 
-### 3. The staging matrices — the actual gate
-Neither money path has touched Stripe. These are written and waiting:
+### 3. The staging matrices — RUN on 2026-08-11, mostly clear
+
+**Both money paths have now touched Stripe test mode.** This section used to
+say neither ever had; that is no longer the status.
+
+| Matrix | Result | Script |
+|---|---|---|
+| **#73** direct-Connect, all 6 scenarios | **37 assertions, 0 failures** | `apps/api/scripts/staging-direct-connect.ts` |
+| **#75** funding races, H1/H5/H6/H7/H8/H9 (+H11) | **21 assertions, 0 failures** | `apps/api/scripts/staging-funding-races.ts` |
+
+**Still not run: H2, H3, H4, H10, H12** — all time- or interleaving-dependent,
+wanting either Stripe test clocks or a genuine two-process run. Neither script
+exercises a real multi-process race; the leases are single-process only so far.
+
+Both scripts refuse a live key or a non-local `DATABASE_URL`, and each doc
+carries its own run instructions and fixture setup.
+
+Three things the real API established that no mock could:
+
+1. **Replaying a frozen idempotency key returns the SAME transfer.** The whole
+   intent design rests on this and it had only ever been asserted against our
+   own mock. It holds.
+2. **`paymentIntents.search` is eventually consistent.** A PI is not findable
+   the instant it is created, and #75's adoption path depends on that search —
+   so a retry inside the indexing window will not find the intent. The frozen
+   key is therefore the load-bearing defence inside 24h, with search as the
+   fallback past it. That is what the design assumed; it is now confirmed
+   rather than hoped.
+3. **A real Stripe 400 for an unready destination** classifies as definite and
+   releases the claims. The mock's 400 was our own invention.
+
+The vindication of doing this at all: it is the same class of finding as round
+5's (our lease vs stripe-node's defaults) — facts about the real system that
+reading our own code cannot produce.
+
+The originals, for reference:
 
 - **`docs/direct-connect-payouts.md`** — six scenarios for #73: injected
   commit failure, injected timeout, past-window reconcile, commission-set
@@ -137,32 +173,40 @@ Neither money path has touched Stripe. These are written and waiting:
 - **`docs/payout-funding-staging-runbook.md` section H** (`### H. Races`) —
   twelve scenarios for #75, each with how to force it.
 
-**What is actually blocking this (checked 2026-08-11):**
+**How this was run, and why no staging server was needed:**
 
-There is **no openpartner staging environment**. `doctl apps list` shows
-`openpartner` (prod), `openpartner-network`, `openpartner-marketing` — and
-nothing else. "Run it on staging" is not a task someone forgot to do; it is
-a task with no environment to run in.
+There is **no openpartner staging environment** — `doctl apps list` shows only
+`openpartner` (prod), `openpartner-network`, `openpartner-marketing`. That is
+not a blocker, because "staging" here means *an instance talking to test-mode
+Stripe*, not a deployed environment. Both matrices ran **locally**: Postgres in
+Docker on `localhost:5433`, the code driven directly, real Stripe test mode.
 
-You do not need to build one. The runbook's own prerequisites allow
-`stripe listen --forward-to <host>/webhooks/stripe` when the target isn't
-publicly reachable, so a **local** run covers the matrices. Local tooling is
-already in place: Stripe CLI 1.40.8, Docker 29.0.1 running, `docker-compose.yml`
-present.
+Do **not** solve the missing-staging problem by putting test keys on the prod
+app. That would leave a live client and a test client in one process against
+real tenant data; any misrouting is real money.
 
-What is genuinely missing is fixtures, not infrastructure or credentials:
+Credentials and fixtures that already exist (test mode) — reuse them:
 
-- A Stripe **test-mode** secret key already exists — in the repo-root `.env`
-  (`STRIPE_SECRET_KEY=sk_test…`), *not* `apps/api/.env`, which does not exist.
-  That same file points `DATABASE_URL` at `localhost:5433`, matching
-  `docker-compose.yml`, so a local run needs no new credentials.
-- Do **not** solve the missing-staging problem by putting test keys on the
-  prod app. That would leave a live client and a test client in one process
-  against real tenant data; any misrouting is real money.
-- The fixtures in the runbook's Prerequisites: a test tenant with an active
-  test subscription, a test Connect partner with `payouts_enabled=true`, a
-  completed ACH funding authorization, and **test clocks** for anything
-  time-dependent (ACH settles in ~4 business days otherwise).
+- **Key**: repo-root `.env` (`STRIPE_SECRET_KEY=sk_test…`), *not*
+  `apps/api/.env`, which does not exist. Same file points `DATABASE_URL` at
+  `localhost:5433`.
+- **Platform account**: `acct_1TQ1rLLjeKaK2m8k`.
+- **Connect destination, onboarded** (`transfers: active`,
+  `payouts_enabled: true`): `acct_1TQH8tLte7Y6cCMU`.
+- **Connect destination, NOT onboarded** (for the definite-failure case):
+  `acct_1TQH3OLN2QQBjOXV`.
+- **Funding customer + ACH PM**: created 2026-08-11 — a customer with a
+  verified `us_bank_account` payment method and a mandate, built via
+  SetupIntent + `verify_microdeposits` with the test amounts `32`/`45`. The
+  exact ids are printed by the fixture commands in the header of
+  `apps/api/scripts/staging-funding-races.ts`.
+- **Platform balance**: transfers need available balance. Top up test mode with
+  `stripe post /v1/charges -d amount=200000 -d currency=usd -d source=tok_bypassPending`
+  (the bypass-pending test token lands straight in the available balance).
+
+Still wanted for the five unrun scenarios: **Stripe test clocks** (test-mode
+ACH settles almost immediately, which is *faster* than reality and hides the
+timing these exercise) and a genuine two-process run for the lease races.
 
 Round 5 is the argument for doing this: its worst finding was a mismatch
 between our lease and *Stripe's client defaults* — a fact about the real
