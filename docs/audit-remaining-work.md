@@ -1,9 +1,49 @@
 # Payment/subscription audit — handoff
 
-**Status (2026-08-11, updated): the code is written, reviewed five times, and
-both money paths have now been exercised against Stripe test mode — #73's
-matrix in full, #75's partially. Nothing is merged yet; merging is blocked by
-a branch-protection rule that a sole maintainer cannot satisfy (§3a).**
+**Status (2026-08-12): six review rounds. Round 6 found ten verified defects
+— two of them able to pay a partner twice — and all ten are now fixed, with
+every fix confirmed to fail its test when reverted. Both money paths run
+against Stripe test mode (#73's matrix in full, #75's partially). All three
+PRs are green. Nothing is merged; merging is blocked by a branch-protection
+rule a sole maintainer cannot satisfy (§3a).**
+
+### Round 6 — what it found, and the one structural conclusion
+
+The pattern from rounds 2–5 held: most findings were in the previous round's
+fixes. The important one is that **round 5's fix was built on an assumption
+that was never true.**
+
+`POST_COOLDOWN_MS > TRANSFER_TIMEOUT_MS × attempts` was supposed to guarantee
+the lease outlived the request. It cannot: stripe-node implements `timeout`
+as `req.setTimeout`, a socket-**inactivity** timeout that resets after each
+request stage — its own source says so. A slow-but-progressing POST has no
+wall-clock bound at all. Nor can a local deadline help, because aborting the
+await does not retract a request Stripe already received.
+
+So the executor **no longer re-arms on elapsed time**, and `POST_COOLDOWN_MS`
+is documented as carrying no correctness weight. The same shape appeared
+independently on the funding rail: an empty `paymentIntents.search` was
+treated as proof no PaymentIntent existed, but that API is eventually
+consistent. Both rails now treat "I did not see it" as **unknown**, never
+**absent**.
+
+That costs liveness, not money — a genuinely-lost POST or an unindexed PI
+waits for a human — so both rails gained an operator disposition path
+(`releaseIntentForRetry` / `disposeIntent`, `forceReleaseBatch`). The
+handoff previously listed operator tooling as "the most valuable follow-up";
+under this design it is a **prerequisite**, because a hold with no release
+is a leak.
+
+Two Codex runs from deliberately opposite framings agreed on every fix and
+disagreed only on scope. The smaller plan won on the merits: the fixes are
+mostly *deletions of unsound logic plus missing fences*, which is less new
+surface to breed a round 7 than the alternative (a new PaymentIntent
+lifecycle and a new work queue) would have been.
+
+Three of my own artefacts were wrong and are corrected: the
+cooldown-arithmetic test (deleted — it asserted a guarantee that does not
+exist and passed at the old constant anyway), and both staging scripts,
+which could report success while the property under test was false.
 
 Three PRs, seven commits each, all open off `main`:
 
@@ -39,16 +79,40 @@ almost always in the PREVIOUS round's fix, not the original code.**
   not rely on those defaults — it passes `timeout` and `maxNetworkRetries`
   explicitly on the transfer call and bounds the budget at 40s.
 
-Two independent coverage mechanisms for the funding sweep (a per-day hash
-shuffle, then a count-derived window) both *looked* like rotation without
-guaranteeing it; only a persisted cursor did. Three separate tests were
-found to pass with the fix they covered reverted.
+- Round 6 found the round-5 fix rested on an assumption that was never true
+  (see the status block above), plus the same "prove a negative" shape on the
+  funding rail, a first-attempt reversal believed from a stale response, an
+  unfenced quarantine, and a sweep that acknowledged its own failures.
+
+**Four** coverage mechanisms for the funding sweep have now looked like
+rotation without being it: a per-day hash shuffle, a count-derived window, a
+cursor that committed before the work, and a cursor ordered by **creation**
+id when rows join the sweep at **eligibility** time. Only the last of those
+is fixed by ordering on an immutable eligibility timestamp.
 
 The lesson to carry: **in this code, a fix that looks like the property is
 not the property.** When you change any of it, ask what interleaving makes
 your guarantee false, and write the test so it fails if your change is
 reverted. Ask an adversarial reviewer to refute a specific claim rather
 than to "review" — that framing is what produced every finding above.
+
+**And apply that to your own tests, because they are the usual culprit.**
+Round 6's revert checks caught three of mine mid-flight:
+
+- a payout-lock test that passed with the lock removed, because the handler
+  still blocked eventually — at its UPDATE. Blocking was never the property;
+  *summing after acquiring* is. It only discriminated once the blocker
+  mutated the ledger while holding the lock.
+- a sweep-coverage test that passed under both orderings, because with three
+  rows and nothing arriving the cursor wraps and covers everything anyway.
+  It needed genuine churn — fresh eligible rows before every run — before it
+  could reproduce the starvation.
+- a staging scenario that reported success when the planner produced no
+  payout at all, making a misconfiguration indistinguishable from the Stripe
+  rejection it was supposed to test.
+
+Running the suite is not the check. Reverting the fix and watching the test
+fail is the check.
 
 ---
 
