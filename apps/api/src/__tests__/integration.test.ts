@@ -553,4 +553,42 @@ describe.skipIf(skipIntegration)('audit safe-fixes', () => {
     const attributions = await db(TABLES.Attribution).where({ partnerId });
     expect(attributions).toHaveLength(0);
   });
+
+  it('an event a few seconds before its click still attributes (skew grace)', async () => {
+    // The companion to the test above, and the reason the negative-age check
+    // is not a strict `< 0`. Stripe stamps `created` in whole SECONDS, so a
+    // conversion in the same second as the click truncates to BEFORE it, and
+    // the click clock is not the event clock. A strict check dropped these
+    // silently. Revert the grace in attribution.ts and this test fails.
+    const partnerId = (
+      await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email: `skew-${ulid()}@x.com`, name: 'Skew' })
+    ).body.id;
+    const programId = (
+      await request(app).post('/programs').set('Authorization', `Bearer ${ADMIN_KEY}`).send({
+        name: 'Skew',
+        commissionRule: { type: 'percent', value: 20 },
+        destinationUrl: 'https://example.com/signup',
+      })
+    ).body.id;
+    const linkId = (
+      await request(app).post(`/partners/${partnerId}/links`).set('Authorization', `Bearer ${ADMIN_KEY}`).send({ linkKey: `skew_${ulid()}`, programId })
+    ).body.id;
+
+    const clickId = ulid();
+    await db(TABLES.Click).insert({
+      id: clickId, tenantId: DEFAULT_TENANT_ID, linkId, partnerId, programId,
+      landingUrl: 'https://example.com/signup', ipHash: 'h', userAgent: 't', referer: null, ts: new Date(),
+    });
+    const userId = `u_${ulid()}`;
+    await request(app).post('/attribution/identify').send({ cref: clickId, userId });
+    const eventRes = await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId, type: 'invoice_paid', value: 100, currency: 'USD', ts: new Date(Date.now() - 2_000).toISOString() });
+
+    expect(eventRes.status).toBe(200);
+    expect(eventRes.body.attribution.status).toBe('attributed');
+    const attributions = await db(TABLES.Attribution).where({ partnerId });
+    expect(attributions).toHaveLength(1);
+  });
 });

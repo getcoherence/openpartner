@@ -83,7 +83,11 @@ describe.skipIf(skipIntegration)('compound commission rules', () => {
       partnerId: partner.id,
       programId: campaign.id,
       landingUrl: 'https://example.com/',
-      ts: new Date(),
+      // Just before the first event below. These used to seed the click at
+      // NOW against events backdated to January — a negative age, which the
+      // old one-sided window check let through, so the window was never
+      // actually exercised here. Every event stays inside the 60d default.
+      ts: new Date('2025-12-31T23:59:00Z'),
     });
     await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId, userId });
 
@@ -133,7 +137,11 @@ describe.skipIf(skipIntegration)('compound commission rules', () => {
       partnerId: partner.id,
       programId: campaign.id,
       landingUrl: 'https://example.com/',
-      ts: new Date(),
+      // Just before the first event below. These used to seed the click at
+      // NOW against events backdated to January — a negative age, which the
+      // old one-sided window check let through, so the window was never
+      // actually exercised here. Every event stays inside the 60d default.
+      ts: new Date('2025-12-31T23:59:00Z'),
     });
     await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId, userId });
 
@@ -224,7 +232,11 @@ describe.skipIf(skipIntegration)('compound commission rules', () => {
       partnerId: partner.id,
       programId: campaign.id,
       landingUrl: 'https://example.com/',
-      ts: new Date(),
+      // Just before the first event below. These used to seed the click at
+      // NOW against events backdated to January — a negative age, which the
+      // old one-sided window check let through, so the window was never
+      // actually exercised here. Every event stays inside the 60d default.
+      ts: new Date('2025-12-31T23:59:00Z'),
     });
     await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId, userId });
 
@@ -263,7 +275,11 @@ describe.skipIf(skipIntegration)('compound commission rules', () => {
       partnerId: partner.id,
       programId: campaign.id,
       landingUrl: 'https://example.com/',
-      ts: new Date(),
+      // Just before the first event below. These used to seed the click at
+      // NOW against events backdated to January — a negative age, which the
+      // old one-sided window check let through, so the window was never
+      // actually exercised here. Every event stays inside the 60d default.
+      ts: new Date('2025-12-31T23:59:00Z'),
     });
     await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId, userId });
 
