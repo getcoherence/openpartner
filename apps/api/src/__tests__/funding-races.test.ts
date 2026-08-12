@@ -1341,3 +1341,127 @@ describe.skipIf(skipIntegration)('round-6 hardening', () => {
     expect(payout!.status).toBe('reversed');
   });
 });
+
+describe.skipIf(skipIntegration)('round-6: sweep coverage', () => {
+  /** A funded batch the charge sweep will pick up. */
+  async function seedSweepable(fundedAt: Date, chargeId: string) {
+    return seedBatch({
+      // 'settled' is terminal, so several can coexist — the one-open-batch
+      // index forbids multiple 'funded' rows per tenant+currency — and it is
+      // still inside the charge sweep's eligible set.
+      status: 'settled',
+      stripeChargeId: chargeId,
+      fundedAt,
+      actualStripeFeeMinor: '25', // already backfilled — keeps the sweep read-only
+    });
+  }
+
+  it('an item whose Stripe read FAILED is retried, not passed over', async () => {
+    // The cursor used to advance unconditionally once the loop finished,
+    // even though per-item errors are caught and logged inside it. A failed
+    // row was skipped AND acknowledged, and on the charge side could age
+    // out of the 180-day horizon before the cursor wrapped back to it.
+    //
+    // Revert the retry set and the failed batch is never re-read.
+    const now = Date.now();
+    const a = await seedSweepable(new Date(now - 3 * 86400000), 'ch_fails');
+    const b = await seedSweepable(new Date(now - 2 * 86400000), 'ch_ok');
+
+    let failFor: string | null = 'ch_fails';
+    const stripe = {
+      charges: {
+        retrieve: vi.fn(async (id: string) => {
+          if (id === failFor) throw new Error('stripe read failed');
+          return { id, refunded: false, amount_refunded: 0, disputed: false, balance_transaction: { fee: 25 } };
+        }),
+      },
+      transfers: { retrieve: vi.fn() },
+      paymentIntents: { retrieve: vi.fn(), search: vi.fn(async () => ({ data: [] })), cancel: vi.fn() },
+    } as unknown as Stripe;
+
+    await runFundingReconciliation(db, { stripe, sweepLimit: 1 });
+
+    // Stripe recovers. The NEXT run must come back to the failed batch even
+    // though the cursor moved past it.
+    failFor = null;
+    const seen: string[] = [];
+    const recovering = {
+      charges: {
+        retrieve: vi.fn(async (id: string) => {
+          seen.push(id);
+          return { id, refunded: false, amount_refunded: 0, disputed: false, balance_transaction: { fee: 25 } };
+        }),
+      },
+      transfers: { retrieve: vi.fn() },
+      paymentIntents: { retrieve: vi.fn(), search: vi.fn(async () => ({ data: [] })), cancel: vi.fn() },
+    } as unknown as Stripe;
+    await runFundingReconciliation(db, { stripe: recovering, sweepLimit: 1 });
+
+    expect(seen).toContain('ch_fails');
+    expect([a.id, b.id]).toHaveLength(2); // (ids used only for clarity)
+  });
+
+  it('a row that becomes eligible BEHIND the cursor is still swept, under churn', async () => {
+    // Ids are assigned at CREATION but rows join this sweep when they FUND.
+    // Under id ordering a batch that funds after the cursor has passed its
+    // id position is only reachable on a wrap — and if a full slice of
+    // newer eligible rows keeps arriving, the cursor never wraps and the
+    // row is starved forever. On the charge side it then ages out of the
+    // 180-day horizon and its clawback is lost.
+    //
+    // The churn is the point: an earlier version of this test seeded three
+    // rows and passed under BOTH orderings, because with nothing arriving
+    // the cursor wraps and covers everything either way.
+    const seen: string[] = [];
+    const mk = () =>
+      ({
+        charges: {
+          retrieve: vi.fn(async (id: string) => {
+            seen.push(id);
+            return { id, refunded: false, amount_refunded: 0, disputed: false, balance_transaction: { fee: 25 } };
+          }),
+        },
+        transfers: { retrieve: vi.fn() },
+        paymentIntents: { retrieve: vi.fn(), search: vi.fn(async () => ({ data: [] })), cancel: vi.fn() },
+      }) as unknown as Stripe;
+
+    const t0 = Date.now() - 30 * 86400000;
+    // Created FIRST, so it holds the lowest id — but not funded yet, so it
+    // is not eligible and the cursor will walk straight past its position.
+    const lateFunder = await seedBatch({
+      status: 'reserved',
+      stripeChargeId: null,
+      fundedAt: null,
+    });
+    // Enough ahead of it that the cursor cannot reach the end and wrap
+    // (a wrap would reset to the top and pick the low id up by accident).
+    for (let i = 0; i < 6; i += 1) {
+      await seedSweepable(new Date(t0 + i * 1000), `ch_seed_${i}`);
+    }
+
+    // Three runs: the cursor advances well past where lateFunder's id sits.
+    await runFundingReconciliation(db, { stripe: mk(), sweepLimit: 1 });
+    await runFundingReconciliation(db, { stripe: mk(), sweepLimit: 1 });
+    await runFundingReconciliation(db, { stripe: mk(), sweepLimit: 1 });
+
+    // NOW it funds: LATER than everything already swept (that is what
+    // "funds late" means) but still the oldest id in the table.
+    await db(TABLES.HostedFundingBatch).where({ id: lateFunder.id }).update({
+      status: 'settled',
+      stripeChargeId: 'ch_late_funder',
+      fundedAt: new Date(t0 + 6000),
+      actualStripeFeeMinor: 25,
+    });
+
+    // Churn: a newer eligible row arrives before every run, so the cursor
+    // never reaches the end and never wraps.
+    for (let i = 0; i < 6; i += 1) {
+      await seedSweepable(new Date(t0 + 10000 + i * 1000), `ch_churn_${i}`);
+      await runFundingReconciliation(db, { stripe: mk(), sweepLimit: 1 });
+    }
+
+    // Ordering by eligibility time puts it ahead of the cursor, so it gets
+    // its turn. Ordering by id leaves it behind, and it is never read.
+    expect(seen).toContain('ch_late_funder');
+  });
+});

@@ -82,31 +82,70 @@ async function sweepSlice<T>(
   cursorKey: string,
   rows: T[],
   idOf: (row: T) => string,
+  /** Immutable ELIGIBILITY order — see the ordering note below. */
+  orderKeyOf: (row: T) => string,
   limit: number,
-): Promise<{ due: T[]; deferred: T[]; commit: () => Promise<void> }> {
-  if (rows.length <= limit) {
-    // Whole set covered in one go; start from the top next time.
-    return { due: rows, deferred: [], commit: () => setSweepCursor(db, cursorKey, null) };
-  }
-  const ordered = [...rows].sort((a, b) => (idOf(a) < idOf(b) ? -1 : 1));
+): Promise<{ due: T[]; deferred: T[]; commit: (failedIds?: string[]) => Promise<void> }> {
+  // Rows that failed a previous run come back FIRST and stay in the set
+  // until they succeed, independent of where the cursor is (round 6).
+  const retrySet = await getSweepRetry(db, cursorKey);
+  const retryIds = new Set(retrySet);
+  const retryDue = rows.filter((r) => retryIds.has(idOf(r))).slice(0, limit);
+  const retryDueIds = new Set(retryDue.map(idOf));
+
+  // ORDER BY WHEN A ROW BECAME ELIGIBLE, not by its id. Ids are assigned
+  // at creation, but rows join this sweep later (a batch when it funds, a
+  // transfer when it confirms). A row that becomes eligible BEHIND the
+  // cursor was therefore never selected, and if a full slice of newer
+  // eligible rows arrives before every run the cursor never wraps to
+  // reach it — so it was skipped forever, and on the charge side it
+  // eventually aged out of the horizon entirely.
+  const cursorable = rows.filter((r) => !retryDueIds.has(idOf(r)));
+  const ordered = [...cursorable].sort((a, b) =>
+    orderKeyOf(a) < orderKeyOf(b) ? -1 : orderKeyOf(a) > orderKeyOf(b) ? 1 : 0,
+  );
+  const remaining = Math.max(0, limit - retryDue.length);
   const cursor = await getSweepCursor(db, cursorKey);
-  const startIndex = cursor ? ordered.findIndex((r) => idOf(r) > cursor) : 0;
-  // findIndex returns -1 when the cursor is past every id — wrap.
+  const startIndex = cursor ? ordered.findIndex((r) => orderKeyOf(r) > cursor) : 0;
+  // findIndex returns -1 when the cursor is past every key — wrap.
   const from = startIndex === -1 ? 0 : startIndex;
-  const due = ordered.slice(from, from + limit);
-  const last = due.length > 0 ? idOf(due[due.length - 1]!) : null;
+  const cursorDue = ordered.slice(from, from + remaining);
+  const last = cursorDue.length > 0 ? orderKeyOf(cursorDue[cursorDue.length - 1]!) : null;
+
+  const due = [...retryDue, ...cursorDue];
   const dueIds = new Set(due.map(idOf));
+  const wrapped = from + remaining >= ordered.length;
+
   return {
     due,
-    deferred: ordered.filter((r) => !dueIds.has(idOf(r))),
-    // COMMIT AFTER THE WORK, never before. Advancing the cursor at
-    // hand-out time acknowledges rows we haven't checked yet: a crash —
-    // or a per-row Stripe failure, which is caught and logged — skipped
-    // that whole slice until the next wrap, and a charge row can age out
-    // of the 180-day horizon in the meantime. Re-checking a row after a
-    // crash is free; skipping one loses a clawback.
-    commit: () =>
-      setSweepCursor(db, cursorKey, from + limit >= ordered.length ? null : last),
+    deferred: rows.filter((r) => !dueIds.has(idOf(r))),
+    // COMMIT AFTER THE WORK, never before — and never acknowledge an item
+    // that FAILED.
+    //
+    // The cursor used to advance unconditionally once the loop finished,
+    // even though per-item Stripe errors are caught and logged inside it.
+    // A failed row was therefore both skipped AND passed over, and could
+    // age out of the horizon before the cursor wrapped back.
+    //
+    // The obvious fix — don't commit the cursor if anything failed — is
+    // worse: one permanently unreadable Stripe object would pin the
+    // cursor and starve everything behind it. So failures go into a
+    // durable retry set instead, and the cursor is free to move on.
+    commit: async (failedIds: string[] = []) => {
+      const failed = new Set(failedIds);
+      const succeeded = [...dueIds].filter((id) => !failed.has(id));
+      const next = new Set([...retrySet, ...failedIds]);
+      for (const id of succeeded) next.delete(id);
+      let list = [...next];
+      if (list.length > RETRY_SET_CAP) {
+        console.error(
+          `[funding-reconcile] ALERT: ${cursorKey} retry set exceeded ${RETRY_SET_CAP} (${list.length}) — dropping the oldest; Stripe reads are failing persistently and need investigation`,
+        );
+        list = list.slice(-RETRY_SET_CAP);
+      }
+      await setSweepRetry(db, cursorKey, list);
+      await setSweepCursor(db, cursorKey, wrapped ? null : last);
+    },
   };
 }
 
@@ -126,6 +165,43 @@ async function getSweepCursor(db: Knex, key: string): Promise<string | null> {
     // that deleted that row would otherwise fail EVERY reconciliation.
     console.error(`[funding-reconcile] sweep cursor ${key} unreadable — starting from the top`, err);
     return null;
+  }
+}
+
+/** Ids that failed their Stripe read and must be retried regardless of
+ *  where the cursor has moved to. Bounded so a permanently-broken object
+ *  cannot grow it without limit; overflow is alerted, not silent. */
+const RETRY_SET_CAP = 200;
+
+async function getSweepRetry(db: Knex, key: string): Promise<string[]> {
+  try {
+    const row = (await db(TABLES.Config)
+      .where({ tenantId: DEFAULT_TENANT_ID, key: `${key}.retry` })
+      .first(['value'])) as { value: unknown } | undefined;
+    const v = row?.value;
+    return Array.isArray(v) ? (v as string[]).filter((x) => typeof x === 'string') : [];
+  } catch (err) {
+    // Same degradation as the cursor: losing the retry set costs a delayed
+    // re-check, not correctness — the row stays eligible and the cursor
+    // still reaches it on a wrap.
+    console.error(`[funding-reconcile] sweep retry set ${key} unreadable — treating as empty`, err);
+    return [];
+  }
+}
+
+async function setSweepRetry(db: Knex, key: string, ids: string[]): Promise<void> {
+  try {
+    await db(TABLES.Config)
+      .insert({
+        tenantId: DEFAULT_TENANT_ID,
+        key: `${key}.retry`,
+        value: JSON.stringify(ids),
+        updatedAt: new Date(),
+      })
+      .onConflict(['tenantId', 'key'])
+      .merge({ value: JSON.stringify(ids), updatedAt: new Date() });
+  } catch (err) {
+    console.error(`[funding-reconcile] sweep retry set ${key} not persisted`, err);
   }
 }
 
@@ -314,13 +390,25 @@ export async function runFundingReconciliation(
   // behind it was never checked at all — reporting the skipped ids made
   // that visible but didn't fix the scheduling. Ordering by a per-day
   // hash gives every row a turn, so coverage is eventually complete.
-  const chargeSlice = await sweepSlice(db, SWEEP_CURSOR_CHARGES, funded, (b) => b.id, sweepLimit);
+  const chargeSlice = await sweepSlice(
+    db,
+    SWEEP_CURSOR_CHARGES,
+    funded,
+    (b) => b.id,
+    // A batch joins this sweep when it FUNDS, so that is the ordering that
+    // guarantees coverage. `fundedAt` never moves once set; the id is the
+    // tiebreak. Ordering by id alone skipped batches that funded behind
+    // the cursor.
+    (b) => `${new Date(b.fundedAt ?? b.createdAt).toISOString()}|${b.id}`,
+    sweepLimit,
+  );
   if (chargeSlice.deferred.length > 0) {
     report.sweepSkipped.push(...chargeSlice.deferred.map((b) => b.id));
     console.warn(
       `[funding-reconcile] ${funded.length} batches inside the ${REVERSAL_HORIZON_DAYS}d reversal horizon exceeds the ${sweepLimit}/run cap — ${chargeSlice.deferred.length} deferred; the cursor resumes from here next run (full pass every ${Math.ceil(funded.length / sweepLimit)} runs)`,
     );
   }
+  const chargeFailures: string[] = [];
   for (const batch of chargeSlice.due) {
     try {
       const charge = await stripe.charges.retrieve(batch.stripeChargeId!, {
@@ -351,11 +439,14 @@ export async function runFundingReconciliation(
         );
       }
     } catch (err) {
+      // Remember it: a swallowed failure used to be acknowledged by the
+      // cursor and could age out of the horizon before the next wrap.
+      chargeFailures.push(batch.id);
       console.error(`[funding-reconcile] charge sweep failed for batch ${batch.id}`, err);
     }
   }
 
-  await chargeSlice.commit();
+  await chargeSlice.commit(chargeFailures);
 
   // 3b. Same argument for the transfer side: a missed `transfer.reversed`
   // leaves a Payout recorded `paid` on money that was clawed back.
@@ -370,12 +461,19 @@ export async function runFundingReconciliation(
     id: string;
     stripeTransferId: string;
     payoutId: string | null;
+    postedAt: Date | null;
+    createdAt: Date;
   }>;
   const transferSlice = await sweepSlice(
     db,
     SWEEP_CURSOR_TRANSFERS,
     confirmedAll,
     (i) => i.id,
+    // An intent joins this sweep when it CONFIRMS, which can be long after
+    // it was created. `postedAt` is the immutable anchor closest to that
+    // moment; id is the tiebreak. Ordering by id alone skipped intents
+    // that confirmed behind the cursor.
+    (i) => `${new Date(i.postedAt ?? i.createdAt).toISOString()}|${i.id}`,
     sweepLimit,
   );
   const confirmed = transferSlice.due;
@@ -385,6 +483,7 @@ export async function runFundingReconciliation(
       `[funding-reconcile] ${confirmedAll.length} confirmed transfers exceeds the ${sweepLimit}/run cap — ${transferSlice.deferred.length} deferred; the cursor resumes from here next run (full pass every ${Math.ceil(confirmedAll.length / sweepLimit)} runs)`,
     );
   }
+  const transferFailures: string[] = [];
   for (const intent of confirmed) {
     try {
       const payout = intent.payoutId
@@ -406,11 +505,12 @@ export async function runFundingReconciliation(
         `[funding-reconcile] ALERT: transfer ${transfer.id} (intent ${intent.id}) is reversed at Stripe but no webhook ever arrived — outcome: ${outcome}`,
       );
     } catch (err) {
+      transferFailures.push(intent.id);
       console.error(`[funding-reconcile] transfer sweep failed for intent ${intent.id}`, err);
     }
   }
 
-  await transferSlice.commit();
+  await transferSlice.commit(transferFailures);
 
   return finalize(report);
 }
