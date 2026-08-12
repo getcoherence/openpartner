@@ -791,11 +791,45 @@ describe.skipIf(skipIntegration)('review follow-ups', () => {
     expect(await releaseBatch(db, failing.stripe, batch, 'funding_timeout')).toBe('pi_not_terminal');
     expect((await reload(batch.id)).status).toBe('release_requested');
 
-    // Stripe recovers; the collector picks the batch back up.
-    const healthy = mockStripe({ searchResult: [] });
-    const result = await runFundingCollector(db, { stripe: healthy.stripe });
+    // Stripe is reachable again, but its search index has not caught up.
+    // Round 6: an EMPTY result is not proof of absence — paymentIntents.search
+    // is eventually consistent — so the batch must stay held with its
+    // allocations reserved rather than being freed on "I didn't see one".
+    const stillEmpty = mockStripe({ searchResult: [] });
+    await runFundingCollector(db, { stripe: stillEmpty.stripe });
+    expect((await reload(batch.id)).status).toBe('release_requested');
+    expect((await db(TABLES.HostedFundingAllocation).where({ id: allocationId }).first()).state).toBe(
+      'reserved',
+    );
+
+    // Once indexing catches up the PI is found and terminalized, and only
+    // THEN are the allocations freed. The batch was resumable throughout —
+    // which is the property this test was originally written for.
+    const found = mockStripe({
+      searchResult: [{ id: 'pi_late_indexed', status: 'processing' as PiStatus, metadata: {} }],
+      retrieveStatus: 'canceled',
+    });
+    const result = await runFundingCollector(db, { stripe: found.stripe });
 
     expect(result.released).toContain(batch.id);
+    expect((await reload(batch.id)).status).toBe('released');
+    expect((await db(TABLES.HostedFundingAllocation).where({ id: allocationId }).first()).state).toBe(
+      'released',
+    );
+  });
+
+  it('a still-RESERVED batch releases without asking Stripe at all', async () => {
+    // The local fact that replaces the unreliable search: the collector's
+    // only path to paymentIntents.create is inside the `invoicing` branch,
+    // which it enters by winning casBatch(reserved → invoicing). So if OUR
+    // CAS moved the batch out of `reserved`, no PI can exist — no search,
+    // no eventual-consistency exposure, and no reason to hold.
+    const batch = await seedBatch({ status: 'reserved' });
+    const allocationId = await seedAllocation(batch.id);
+    const { stripe, search } = mockStripe({ searchThrows: new Error('must not be called') });
+
+    expect(await releaseBatch(db, stripe, batch, 'funding_timeout')).toBe('released');
+    expect(search).not.toHaveBeenCalled();
     expect((await reload(batch.id)).status).toBe('released');
     expect((await db(TABLES.HostedFundingAllocation).where({ id: allocationId }).first()).state).toBe(
       'released',
@@ -1143,5 +1177,167 @@ describe.skipIf(skipIntegration)('round-3 hardening', () => {
 
     // Exactly one partner was paid; the freeze stopped everything after.
     expect(transfersCreate).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---- Round-6 review fixes (Codex, 2026-08-12) ------------------------------
+
+describe.skipIf(skipIntegration)('round-6 hardening', () => {
+  async function seedPayoutWithIntent(amount = '80.00') {
+    const { partnerId } = await seedCommission();
+    const batch = await seedBatch({ status: 'settled' });
+    const payoutId = ulid();
+    await db(TABLES.Payout).insert({
+      id: payoutId,
+      tenantId: TENANT,
+      partnerId,
+      amount,
+      currency: 'USD',
+      status: 'paid',
+      method: 'stripe_connect',
+      stripeTransferId: 'tr_r6',
+      metadata: {},
+    });
+    const intentId = ulid();
+    await db(TABLES.HostedFundingTransfer).insert({
+      id: intentId,
+      tenantId: TENANT,
+      batchId: batch.id,
+      partnerId,
+      currency: 'usd',
+      amountMinor: 8000,
+      destinationAccountId: 'acct_x',
+      idempotencyKey: `fbt:${intentId}`,
+      state: 'confirmed',
+      stripeTransferId: 'tr_r6',
+      payoutId,
+    });
+    return { payoutId, intentId, partnerId };
+  }
+
+  it('a reversal arriving before finalization is RETRIED, never acknowledged', async () => {
+    // The intent is committed before the Stripe call but its Payout is only
+    // linked at finalization. A reversal landing in that gap used to return
+    // 'transfer_intent_unknown', which was stamped terminal in the inbox and
+    // answered 2xx — so Stripe stopped redelivering and the only notice that
+    // the money came back was thrown away.
+    //
+    // Revert the throw and this test sees a terminal inbox outcome.
+    const { partnerId } = await seedCommission();
+    const batch = await seedBatch({ status: 'settled' });
+    const intentId = ulid();
+    await db(TABLES.HostedFundingTransfer).insert({
+      id: intentId,
+      tenantId: TENANT,
+      batchId: batch.id,
+      partnerId,
+      currency: 'usd',
+      amountMinor: 8000,
+      destinationAccountId: 'acct_x',
+      idempotencyKey: `fbt:${intentId}`,
+      state: 'posted',
+      stripeTransferId: 'tr_unlinked',
+      payoutId: null, // not finalized yet
+    });
+
+    const { stripe } = mockStripe();
+    const event = {
+      id: `evt_${ulid()}`,
+      type: 'transfer.reversed',
+      data: {
+        object: {
+          id: 'tr_unlinked',
+          object: 'transfer',
+          amount: 8000,
+          currency: 'usd',
+          reversed: true,
+          metadata: { openpartner_transfer_intent_id: intentId },
+        },
+      },
+    } as unknown as Stripe.Event;
+
+    await expect(handleFundingEvent(db, stripe, event)).rejects.toThrow(/no payout yet/);
+
+    // Crucially: no terminal outcome, and the claim was dropped so the
+    // redelivery is processed immediately rather than waiting out the lease.
+    const inboxRow = await db(TABLES.StripeWebhookInbox).where({ stripeEventId: event.id }).first();
+    expect(inboxRow?.outcome ?? null).toBeNull();
+  });
+
+  it('reversal status derivation takes the payout row lock', async () => {
+    // Two reversal events for one payout are leased independently, so their
+    // handlers run concurrently. Summing and writing without the payout row
+    // locked let them interleave and REGRESS 'reversed' back to
+    // 'partially_reversed' — and 'reversed' is what gates the clawback
+    // adjustments.
+    //
+    // Proven directly: hold FOR UPDATE on the payout in a competing
+    // transaction and the handler must block until it is released.
+    const { payoutId, intentId } = await seedPayoutWithIntent('80.00');
+    await db(TABLES.PayoutReversal).insert({
+      id: ulid(),
+      tenantId: TENANT,
+      payoutId,
+      stripeReversalId: 'trr_first',
+      amountMinor: 3000, // partial — 30 of 80
+      reason: null,
+      balanceTransactionId: null,
+      createdAt: new Date(),
+    });
+
+    const { stripe } = mockStripe();
+    const event = {
+      id: `evt_${ulid()}`,
+      type: 'transfer.reversed',
+      data: {
+        object: {
+          id: 'tr_r6',
+          object: 'transfer',
+          amount: 8000,
+          currency: 'usd',
+          reversed: true,
+          metadata: { openpartner_transfer_intent_id: intentId },
+        },
+      },
+    } as unknown as Stripe.Event;
+
+    // A weaker version of this test passed with the lock removed, because
+    // the handler still blocks eventually — at its UPDATE. Blocking is not
+    // the property; SUMMING AFTER ACQUIRING is. So the blocker changes the
+    // ledger while it holds the lock:
+    //
+    //   with the lock    → handler sums after commit, sees 30+50=80 → reversed
+    //   without the lock → handler already summed 30 → partially_reversed
+    //
+    // which is exactly the regression seen in production terms.
+    const blocker = await db.transaction();
+    await blocker(TABLES.Payout).where({ id: payoutId }).forUpdate().first();
+
+    let settled = false;
+    const inFlight = handleFundingEvent(db, stripe, event).then((r) => {
+      settled = true;
+      return r;
+    });
+    // Room to either block on the lock (fixed) or race past the sum (broken).
+    await new Promise((r) => setTimeout(r, 300));
+    expect(settled).toBe(false);
+
+    // The completing reversal lands while the lock is held.
+    await blocker(TABLES.PayoutReversal).insert({
+      id: ulid(),
+      tenantId: TENANT,
+      payoutId,
+      stripeReversalId: 'trr_completing',
+      amountMinor: 5000,
+      reason: null,
+      balanceTransactionId: null,
+      createdAt: new Date(),
+    });
+    await blocker.commit();
+    await inFlight;
+    expect(settled).toBe(true);
+
+    const payout = await db(TABLES.Payout).where({ id: payoutId }).first();
+    expect(payout!.status).toBe('reversed');
   });
 });

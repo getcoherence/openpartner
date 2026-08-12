@@ -71,22 +71,54 @@ export async function releaseBatch(
   // was released underneath it.
   let paymentIntentId = claimed.stripePaymentIntentId;
   if (!paymentIntentId && stripe) {
-    let orphan: Stripe.PaymentIntent | null;
-    try {
-      orphan = await findFundingPaymentIntent(stripe, batch.id);
-    } catch (err) {
-      // Couldn't ask ⇒ don't know ⇒ don't free. Next tick retries.
-      console.error(`[funding] release: PI search failed for batch ${batch.id}`, err);
-      return 'pi_not_terminal';
-    }
-    if (orphan) {
-      paymentIntentId = orphan.id;
-      await db(TABLES.HostedFundingBatch)
-        .where({ id: batch.id, status: 'release_requested' })
-        .update({ stripePaymentIntentId: orphan.id, updatedAt: new Date() });
-      console.warn(
-        `[funding] release: batch ${batch.id} had an unstamped PaymentIntent ${orphan.id} — terminalizing it before freeing`,
-      );
+    // A batch we claimed straight out of `reserved` provably never reached
+    // Stripe, and that is a LOCAL fact needing no search.
+    //
+    // The collector's only path to `paymentIntents.create` runs inside the
+    // `invoicing` branch, which it can only enter by winning
+    // casBatch(reserved → invoicing). So if OUR CAS moved it out of
+    // `reserved`, the collector never did, and no PI can exist for this
+    // batch. Anything else — invoicing, payment_processing, funding_failed
+    // — may have a PI whose id we have not stamped yet.
+    if (batch.status === 'reserved') {
+      // fall through with no PI: nothing to terminalize
+    } else {
+      let orphan: Stripe.PaymentIntent | null;
+      try {
+        orphan = await findFundingPaymentIntent(stripe, batch.id);
+      } catch (err) {
+        // Couldn't ask ⇒ don't know ⇒ don't free. Next tick retries.
+        console.error(`[funding] release: PI search failed for batch ${batch.id}`, err);
+        return 'pi_not_terminal';
+      }
+      if (orphan) {
+        paymentIntentId = orphan.id;
+        await db(TABLES.HostedFundingBatch)
+          .where({ id: batch.id, status: 'release_requested' })
+          .update({ stripePaymentIntentId: orphan.id, updatedAt: new Date() });
+        console.warn(
+          `[funding] release: batch ${batch.id} had an unstamped PaymentIntent ${orphan.id} — terminalizing it before freeing`,
+        );
+      } else {
+        // EMPTY IS NOT ABSENT (round-6 review). `paymentIntents.search` is
+        // Stripe's Search API and is explicitly eventually consistent — a
+        // PI created moments ago is not indexed yet. Treating an empty
+        // result as proof let a release free allocations while a live PI
+        // could still debit the brand; those commissions then landed in a
+        // NEW batch and were charged twice.
+        //
+        // A thrown lookup already meant "don't know". An empty one means
+        // exactly the same thing, and now says so. The batch stays
+        // `release_requested` with allocations reserved; the collector
+        // resumes it, and a later search finds the PI once indexing
+        // catches up. If no PI ever existed, it sits until the daily
+        // reconcile's stuck-release alert brings a human — liveness, not
+        // money.
+        console.warn(
+          `[funding] release: batch ${batch.id} has no stamped PI and search returned nothing — NOT treating that as proof of absence; staying release_requested`,
+        );
+        return 'pi_not_terminal';
+      }
     }
   }
 

@@ -56,6 +56,23 @@ export class InboxEventHeldError extends Error {
   }
 }
 
+/**
+ * The event is genuinely ours, but our own state isn't ready for it yet —
+ * typically a reversal arriving before finalization has linked the Payout.
+ *
+ * This must NOT be a terminal outcome. Stamping one acknowledges the event
+ * to Stripe, which stops redelivery, and an unprocessed reversal that will
+ * never be redelivered is money we never learn came back. Throwing sends it
+ * back through the retry path instead: the claim is released, the route
+ * answers 5xx, and the redelivery finds a linked payout.
+ */
+export class FundingEventNotReadyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FundingEventNotReadyError';
+  }
+}
+
 function fundingBatchIdOf(event: Stripe.Event): string | null {
   const obj = event.data.object as { metadata?: Record<string, string> | null };
   return obj?.metadata?.openpartner_funding_batch_id ?? null;
@@ -284,7 +301,29 @@ export async function handleTransferReversed(
   const intent = (await db(TABLES.HostedFundingTransfer)
     .where({ id: intentId })
     .first()) as HostedFundingTransferRow | undefined;
-  if (!intent || !intent.payoutId) return 'transfer_intent_unknown';
+  if (!intent) return 'transfer_intent_unknown';
+  if (!intent.payoutId) {
+    // NOT YET LINKED is not the same as UNKNOWN, and returning a terminal
+    // outcome here lost reversals permanently (round-6 review).
+    //
+    // The intent is committed before the Stripe call, but its Payout is
+    // only linked during finalization. A reversal landing in that gap —
+    // or after a crash before finalization — used to return
+    // 'transfer_intent_unknown', which the wrapper stamped as a terminal
+    // inbox outcome and answered 2xx. Stripe then stopped redelivering,
+    // so the only notice we would ever get that the money came back was
+    // discarded, and a later executor pass could finalize the reversed
+    // transfer as a paid payout.
+    //
+    // Throwing instead reuses the path that already exists for handler
+    // errors: handleFundingEvent releases the inbox claim and rethrows,
+    // the route answers 5xx, and Stripe redelivers — by which time
+    // finalization has linked the Payout and the reversal applies
+    // normally. Handlers are idempotent, so redelivery is safe.
+    throw new FundingEventNotReadyError(
+      `transfer intent ${intentId} has no payout yet (reversal arrived before finalization)`,
+    );
+  }
 
   const payout = (await db(TABLES.Payout).where({ id: intent.payoutId }).first()) as
     | PayoutRow
@@ -333,17 +372,34 @@ export async function handleTransferReversed(
     return `reversal_list_truncated:${recorded}`;
   }
 
-  // Derive the payout state from the full reversal ledger.
-  const sumRow = (await db(TABLES.PayoutReversal)
-    .where({ payoutId: payout.id })
-    .sum({ total: 'amountMinor' })
-    .first()) as { total: string | null } | undefined;
-  const reversedMinor = Number(sumRow?.total ?? 0);
+  // Derive the payout state from the full reversal ledger, UNDER A LOCK.
+  //
+  // Distinct Stripe events are leased independently, so two reversal
+  // handlers for one payout run concurrently. Summing and updating without
+  // the payout row locked let them interleave read/write and REGRESS the
+  // status (round-6 review): handler A records $30 and reads $30; handler
+  // B records the remaining $50, reads $80 and writes `reversed`; A then
+  // wakes and writes `partially_reversed` over it. The ledger was complete
+  // at $80 but the payout claimed otherwise — and `reversed` is what gates
+  // the clawback adjustments below.
+  //
+  // Taking `FOR UPDATE` first serialises the read-sum-write, so the later
+  // handler always re-sums after the earlier one committed.
   const payoutMinor = toMinor(payout.amount);
-  const fullyReversed = reversedMinor >= payoutMinor;
-  await db(TABLES.Payout)
-    .where({ id: payout.id })
-    .update({ status: fullyReversed ? 'reversed' : 'partially_reversed' });
+  let fullyReversed = false;
+  let reversedMinor = 0;
+  await db.transaction(async (trx) => {
+    await trx(TABLES.Payout).where({ id: payout.id }).forUpdate().first();
+    const sumRow = (await trx(TABLES.PayoutReversal)
+      .where({ payoutId: payout.id })
+      .sum({ total: 'amountMinor' })
+      .first()) as { total: string | null } | undefined;
+    reversedMinor = Number(sumRow?.total ?? 0);
+    fullyReversed = reversedMinor >= payoutMinor;
+    await trx(TABLES.Payout)
+      .where({ id: payout.id })
+      .update({ status: fullyReversed ? 'reversed' : 'partially_reversed' });
+  });
 
   if (fullyReversed) {
     // Compensating entries for the payout's commissions — paid rows stay
