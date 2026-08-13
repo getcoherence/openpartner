@@ -1,148 +1,142 @@
 # Payment/subscription audit — handoff
 
-**Status (2026-08-13): NINE review rounds. Rounds 6–8 are fixed and pushed.
-ROUND 9 IS NOT: ten of its eleven findings are OPEN — see §0, which is where
-a new agent should start. All three PRs are green and nothing is merged;
-merging is blocked by a branch-protection rule a sole maintainer cannot
-satisfy (§3a). There is also an unanswered product question (§0.4) that
-determines the shape of the remaining work.**
+**Status (2026-08-13, after ROUND 10): Keith answered §0.4 — the decision is
+B (durable operator-recovery requests). All ten round-9 findings are FIXED
+and pushed. A round-10 Codex pass then refuted six of seven claims about
+those fixes (15 findings, 9 CRITICAL); thirteen were fixed and pushed the
+same day, two are the documented prove-absence limit with a new alarm (§0.2).
+PRs #73 and #75 each carry three/three new commits, all suites green locally
+(325 tests, twice — see the flakiness note before trusting one red run).
+NOTHING IS MERGED; §3a's branch-protection blocker still stands and only
+Keith can clear it. The next work, in order, is §0.3.**
 
 ---
 
-## §0. START HERE — round 9's open findings and the decision
+## §0. START HERE — round 10: what happened, what remains
 
-Round 9's Codex output lived in a session scratchpad that no longer exists,
-so everything actionable is reproduced below. Nothing here has a test yet.
+### 0.1 The decision and where its implementation stands
 
-### 0.1 The framing correction that matters most
+Keith chose **B — fast unfreeze**: operators insert an append-only recovery
+request; the EXISTING executor/collector machinery applies it under its own
+fences. Round 10 then did two things:
 
-Round 9 corrected a claim I had made and acted on. I said the verify-then-write
-gap between Stripe and Postgres meant those operations "cannot be made safe."
-That is wrong, and believing it would send you down an unnecessary rewrite.
+1. **Fixed all ten round-9 findings** across #73/#75 (commits `d9258c3`,
+   `6b8317f`, `df730fd` / `40d7228`, `7798763`, `4d1544d`). The four
+   operator functions now verify everything verifiable themselves — group
+   membership by immutable `transfer_group`, frozen
+   amount/currency/destination authentication, the quiet gate + own search
+   on `forceReleaseBatch`, ghost-stamp fallback, the `duplicateReviewNonce`
+   fence against mid-resolution reversals, per-object sweep scheduling.
+   **B's apply step calls these functions unchanged — they ARE its
+   verification layer.** What B still adds: durability, auditability, an
+   admin API, and serialization with the machinery.
+2. **Did NOT build B's queue.** Deliberately: the apply step calls
+   functions that exist only on the two unmerged branches, and `main`
+   requires linear history — the PRs will land squashed, and a B branch
+   stacked on pre-squash commits needs history surgery afterwards. **Land
+   #73/#74/#75 first (per §3a, `gh pr merge --admin --squash`), then build
+   B as one new PR on main.** The full design — table shape, apply
+   semantics, outcome mapping, the tenancy check that stands between an
+   admin of tenant A and tenant B's payouts, the inline-apply-for-feedback
+   pattern — is in §0.4.
 
-The gap is real — Stripe does not join your DB transaction and its Transfer
-API has no conditional/`If-Match` write. But **the target is CONVERGENCE, not
-atomicity**: durable local intent, idempotent external mutation, a deduplicated
-webhook inbox, order-independent handlers, compensating ledger entries, and
-periodic reconciliation.
+### 0.2 Round 10's own findings — fixed, and the two that remain by design
 
-**This codebase already works that way, and says so** — `payout-transfers.ts`,
-in the finalizer:
+Codex's round-10 pass (adversarial, refute-these-claims framing) found 15.
+Thirteen are fixed and pushed; verify by reading the two `round 10` commits.
+The important shapes, because they will recur:
 
-> *"The re-read does not close the window entirely — a reversal can still land
-> between the retrieve and the commit — so it is defence in depth, not the
-> guarantee. The guarantee is that the reversal webhook can always find this
-> payout."*
+- **The nonce was an ABA.** Connect events return before the event-id
+  dedupe, so a REDELIVERED old event wrote its event-id nonce back and a
+  stale resolution fenced on it committed. The nonce is now a fresh ulid
+  per write — no observed value can return. General rule worth keeping:
+  **a fence value must be unforgeable AND unrepeatable.**
+- **Group membership is unauthenticated.** Anything on the Stripe account
+  can set `transfer_group` to our payout ULID. Refusing-on-any-member is
+  fail-closed and fine; FINALIZING a member is not — reconcile now
+  authenticates amount/currency/destination against the frozen intent plus
+  an immutable time bound (`transfer.created` cannot predate the current
+  generation's `postedAt`), which also defeats forged generation stamps.
+- **PaymentIntents have no transfer_group equivalent**, so the funding
+  rail's metadata search gets a metadata-independent backstop: the tenant
+  customer's PI LIST, matched on exact amount+currency since batch
+  creation (decisive because of one-open-batch-per-tenant+currency).
+- **Clocks:** sweep leases now use the DATABASE clock on both sides, and
+  a never-swept row's eligibility hint is clamped with `least(..., now())`.
 
-So the automatic path converges. `resolveDuplicateReview` does not — for one
-concrete, verified reason: the reversal webhook's metadata fallback in
-`routes/stripe-webhook.ts` accepts only
-`("metadata"->>'transferState') in ('posted','reconcile_required')`.
-**`duplicate_review` is not in that list**, so a reversal arriving while the
-operator is resolving a duplicate is dropped as `unmatched`, and the payout is
-then recorded `confirmed`/`paid` with the money gone — a state no operator
-function accepts.
+**Still open, by design — the prove-absence limit.** Two findings reduce to
+the same fact: an unbounded in-flight POST can land AFTER a verified action
+(a dispose on an empty listing; a keep-X resolution while a superseded
+generation's POST is still out there). No fence observes a CREATION, so
+these cannot be closed the way reversals were. What round 10 shipped is the
+ALARM: a new `transfer.created` webhook handler (detector only, no state
+writes) raises `transfer_created_orphan` when a transfer lands for a payout
+no longer expecting one. **Register `transfer.created` on the Stripe
+webhook destination or it never rings.** B closes the loop properly: the
+request row is the tombstone (who accepted the risk, when, on what
+evidence), and a post-action group re-check belongs in B's apply machinery.
+Also frozen by design: a transfer group larger than the 20-page budget
+(2000+ transfers for one payout) still refuses everything — that scale
+means a catastrophe upstream, and raw SQL is the honest tool there.
 
-### 0.2 Do these three first — they are cheap and deletion-shaped
+Residual accepted behaviours, so nobody re-finds them: a foreign transfer
+in our group can DoS the refusal guards (fail-closed, operator sees why); a
+sweep row whose lease expires mid-run can be READ twice by two live runs
+(handlers idempotent, ack is token-fenced); reversal-webhook identification
+now prefers `transfer_group`, so a group-less legacy transfer still falls
+back to metadata.
 
-1. **Wire `duplicate_review` into the reversal webhook fallback.** Widening
-   that predicate closes the critical above. This is the single highest
-   value-per-line change outstanding.
-2. **`forceReleaseBatch` never queries Stripe at all** (`funding/release.ts`)
-   — it only checks that the DB column is null. Either make it verify, or
-   stop describing it as verified.
-3. **Stop extending `sweepSlice`** (`funding/reconcile.ts`). Its own comments
-   now document four successive failures — rotation, retry budgeting, retry
-   ordering, eligibility ordering. Replace the global cursor + retry-set
-   arithmetic with per-object durable scheduling: claim the oldest due rows
-   in a short transaction with a lease token, do Stripe reads outside the
-   transaction, then acknowledge or reschedule by that token. Net deletion.
+### 0.3 The next work, in order
 
-### 0.3 The ten open round-9 findings
+1. **Keith merges the batch** — §3a (`--admin`), order per §1/§2 (#62
+   before #74; #71 with #75). **#75 now ADDS a migration**
+   (`20260813000000_funding_sweep_per_object`) — prod migrations auto-run
+   on deploy (see ground truth), a manual `pnpm migrate` is belt-and-braces.
+2. **Add `transfer.created`** to the Stripe webhook destination (§0.2).
+3. **Build B on main** per §0.4's design, as one PR; then a round-11 Codex
+   pass on it. Codex's standing caveat applies: review count is not
+   operational safety.
+4. The still-unrun staging scenarios (H2/H3/H4/H10/H12 — test clocks, true
+   two-process races) remain from before; unchanged.
 
-**#73 `fix/payout-transfer-intent` — six**
+### 0.4 Option B — the full design (drafted round 10, execute after merge)
 
-- **CRITICAL** `disposeIntent` skips verification entirely when the payout has
-  no stamped `stripeTransferId` — the common ambiguous case. It cancels and
-  releases the claims with no Stripe read, and the planner re-pays them.
-- **CRITICAL** Both list guards filter on `metadata.openpartner_payout_id`,
-  which is **mutable** at Stripe. A live transfer whose metadata was cleared
-  is invisible: `releaseIntentForRetry` re-arms, and `{allReversed}` sees an
-  empty group and treats it as vacuously reversed.
-- **CRITICAL** The kept-transfer path checks only "present and unreversed" —
-  never the **amount**, currency or destination. A one-cent transfer can mark
-  a $50 payout fully paid. `metadata.amountMinor` holds the frozen expected
-  amount and is never compared.
-- **CRITICAL** The list→write gap (see §0.1). Fix via the webhook predicate,
-  not by more verification.
-- **HIGH** New fail-closed paths can be permanently unrecoverable: a
-  `duplicate_review` group larger than the 20-page budget always returns
-  `cannot_verify`, and reversed transfers stay in the group so no Stripe-side
-  action reduces the count. Same for a `confirmed/failed` payout whose stamped
-  transfer returns `resource_missing`.
-- **HIGH** The runbook still tells operators to "release the claims so the
-  payout re-plans" for `duplicate_review` — the exact double-pay
-  `resolveDuplicateReview` exists to prevent — and claims all clients are
-  required while two signatures still declare them optional.
+**Table `OperatorRecoveryRequest`** (new migration; operational sidecar,
+listed with the export gaps): `id` ulid PK, `tenantId`, `rail`
+(`direct_connect` | `hosted_funding`), `kind` (`release_intent_for_retry` |
+`dispose_intent` | `resolve_duplicate_review` | `force_release_batch`),
+`targetId` (payoutId/batchId), `params` jsonb ({ observedGeneration } /
+{ reason } / { keptTransferId } | { allReversed: true } / { reason }),
+`requestedBy`, `note`, `status` (`pending` | `applied` | `refused` |
+`failed` | `canceled`), `outcome` (the function's literal return value),
+`attempts`, `createdAt`, `appliedAt`, `updatedAt`. Append-only discipline:
+terminal rows are never edited; a new decision is a new row.
 
-**#75 `fix/funding-race-hardening` — four**
+**Apply loop** `applyRecoveryRequests(db, { rail, stripe, tenantId? })`:
+claim pending oldest-first with `for update skip locked` (the round-10
+sweep-claim pattern); **check the target row's tenantId equals the
+request's tenantId before anything else** — the apply runs on the
+privileged pool and this is the only tenant boundary; call the existing
+function; map outcomes: success → `applied`; definitive refusals
+(`money_with_partner`, `kept_transfer_invalid`, `transfers_still_live`,
+`transfer_exists`, `has_payment_intent`, `generation_moved`, `not_held`,
+`not_in_duplicate_review`, `not_disposable`, `not_stuck`) → `refused` with
+the outcome recorded; retryable (`cannot_verify`, `review_moved`,
+`too_recent`) → stays `pending`, `attempts += 1`, cap ~10 → `failed` +
+alert. Wire the apply at the top of the existing scheduler jobs
+(direct-Connect 15-minute executor job; funding collector tick) so a
+released intent is executed by the same tick that released it.
 
-- **CRITICAL** `forceReleaseBatch` still permits release before a discovered
-  PI is stamped: worker A finds live PI X, and before A stamps it B wins the
-  null-predicated CAS and frees the allocations. The round-8 predicate closes
-  "stamp commits before force CAS", not "discovery before, stamp after".
-- **HIGH** `db.fn.now()` renders as `CURRENT_TIMESTAMP`, which is
-  **transaction-start** time — verified directly against Postgres. Transaction
-  start order is not commit order, so the sweep's "only ever moves forward"
-  premise is still false. Round 8's fix was insufficient.
-- **HIGH** The `limit = 1` fix traded cursor starvation for **retry**
-  starvation: retry budget is 0 there, so under churn a poison row is never
-  re-attempted and ages out of the horizon.
-- **MEDIUM** Retry-set overflow trims from the front, dropping rows that were
-  untouched and next in line — not "oldest attempted" as the comment claims.
+**API** (admin-authed, tenant-scoped, one route file):
+`POST /payouts/:id/recovery`, `POST /funding/batches/:id/recovery` —
+validate kind/params, insert, run ONE inline apply scoped to the new
+request, return its outcome synchronously (instant 2am feedback;
+durability is the insert, not the response); `GET /recovery-requests`.
 
-**#74 `fix/export-portability` — one, FIXED and pushed.** Round 8's tenant
-binding broke logout: a stale-tab signout carried another tenant's cookie, the
-filtered lookup found nothing, and the route cleared the browser cookie and
-returned 200 while the session stayed live. Now uses an exact-token revocation
-that resolves no principal and applies no tenant predicate.
-
-### 0.4 THE OPEN DECISION — needs Keith, not an agent
-
-The operator-recovery surface (`releaseIntentForRetry`, `disposeIntent`,
-`resolveDuplicateReview`, `forceReleaseBatch`) has produced most of rounds
-7–9's findings. It has **no production callers** — operators invoke it from a
-REPL. Three options were put to Codex:
-
-- **A — delete it.** Recovery returns to a pre-reviewed, parameterised
-  break-glass SQL script.
-- **B — durable intents.** The operator inserts an append-only request; the
-  **existing** executor/reconcile machinery applies it under its own fences.
-  Explicitly not a second payout engine.
-- **C — keep patching.**
-
-**Codex favours B, conditionally, and named the condition — which is a product
-question, not a technical one: when a payout freezes, does someone need to
-unfreeze it quickly, or can it wait for an engineer?** If operators must
-restore liveness at 2am, SQL is not an adequate permanent interface and B is
-forced. If a freeze can wait for bespoke, peer-reviewed work, A is fine for
-now and B later if that changes.
-
-Its round-10 estimates, offered as engineering bets rather than statistics:
-**A ≈ 4 findings, B ≈ 8, C ≈ 9**, and it would not predict a clean round under
-any option. It recommends B anyway, on a point worth carrying:
-
-> *"review count is not the same metric as operational safety."*
-
-That is the correction to how I had been reasoning. Fewer findings from
-deleted code is not safety; it is less code under review. **Do not choose the
-option that minimises the next round's finding count.**
-
-One honest limit it flagged: `releaseIntentForRetry` and `forceReleaseBatch`
-must prove **absence**, and no durable intent can prove that an in-flight
-request will never complete. For those, the only real choices are: stay
-frozen, take a documented human risk decision, or recover while leaving a
-tombstone that detects and compensates for a late object.
+**Plus B's half of the prove-absence close (§0.2):** after applying any
+empty-listing-based request, schedule a group re-check (reuse the
+per-object sweep pattern) for the target, so a late-landing transfer is
+found even if the `transfer.created` webhook is missed.
 
 ---
 
@@ -251,7 +245,8 @@ cooldown-arithmetic test (deleted — it asserted a guarantee that does not
 exist and passed at the old constant anyway), and both staging scripts,
 which could report success while the property under test was false.
 
-Three PRs, seven commits each, all open off `main`:
+Three PRs, all open off `main` (#73 and #75 gained three round-9/10
+commits each on 2026-08-13):
 
 | PR | Branch | What it is |
 |----|--------|------------|
@@ -393,7 +388,9 @@ Assert the *value* that the lock protects.
   Running `pnpm migrate` against prod by hand is therefore belt-and-braces
   rather than required. The cheap way to settle it for good: merge #62 and
   read the deploy log for `[entrypoint] running migrations`.
-  (None of #73–#75 add a migration anyway.)
+  (Since round 10, **#75 adds a migration** —
+  `20260813000000_funding_sweep_per_object`, four sweep-scheduling columns
+  on the two hosted sidecar tables. #73 and #74 still add none.)
 - **Payouts in prod are on the MANUAL rail.** `HOSTED_FUNDING_ENABLED` is OFF
   and there's a fail-closed guard on unfunded hosted Connect payouts. So the
   funding pipeline (`apps/api/src/funding/*`) does not execute in prod today,
