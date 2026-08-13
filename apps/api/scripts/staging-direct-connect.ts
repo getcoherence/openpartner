@@ -446,7 +446,9 @@ async function s8HoldNotRearm() {
   check('commissions stay frozen while held', stillClaimed.length === 1);
 
   // The operator is the only way forward, and then it posts once.
-  const outcome = await releaseIntentForRetry(db, payoutId, 0, 'staging-matrix');
+  // Pass the REAL client so the round-7 listing guard is exercised against
+  // Stripe rather than skipped — this is the only place it runs for real.
+  const outcome = await releaseIntentForRetry(db, payoutId, 0, 'staging-matrix', stripe);
   check('operator re-arm accepted', outcome === 'rearmed', String(outcome));
   await executePayoutTransfers(db, { stripe: counting });
   check('posts exactly once after operator authorisation', created === 1, `create called ${created}x`);
