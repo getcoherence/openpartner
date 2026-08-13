@@ -142,7 +142,7 @@ from connected-account events:
 ### Destination A — platform events
 
 - URL: `https://app.openpartner.dev/api/webhooks/stripe`
-- Events: `checkout.session.completed`, `customer.created`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`
+- Events: `checkout.session.completed`, `customer.created`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`, `transfer.updated`, `transfer.reversed`
 - Save → copy the **Signing secret** (`whsec_...`)
 
 > **`customer.subscription.updated` + `customer.subscription.deleted` are
@@ -154,18 +154,30 @@ from connected-account events:
 > `billing-subscription-reconcile` job self-heals within a day, but the
 > events are what make it immediate.
 
+> `transfer.*` belong here, NOT on Destination B: we create Connect transfers
+> with the platform key, so Stripe fires those events on the **platform**
+> account. (`payment_intent.*` also arrive here when hosted funding is on.)
+
 ### Destination B — connected accounts
 
 - URL: same — `https://app.openpartner.dev/api/webhooks/stripe`
 - Type: **Connected accounts**
-- Events: `account.updated`, `transfer.updated`, `transfer.reversed`
+- Events: `account.updated`
 - Save → copy the **Signing secret**
 
-Set the env var as the **comma-separated** combination of both:
+Set the two **family-bound** signing-secret vars (recommended — binds each
+secret to its destination so a Connect secret can't authorize a platform
+event, and vice versa):
 
 ```
-STRIPE_WEBHOOK_SECRET=whsec_AAA...,whsec_BBB...
+STRIPE_WEBHOOK_SECRET_PLATFORM=whsec_AAA...   # Destination A
+STRIPE_WEBHOOK_SECRET_CONNECT=whsec_BBB...    # Destination B
 ```
+
+> The legacy single var `STRIPE_WEBHOOK_SECRET=whsec_AAA...,whsec_BBB...`
+> still works but verifies both families with either secret (enforcement
+> OFF). Migrate to the split vars above; an event arriving on the wrong
+> destination for its type is then rejected (`secret_family_mismatch`).
 
 Re-deploy via the DO UI ("Force Rebuild and Deploy").
 
