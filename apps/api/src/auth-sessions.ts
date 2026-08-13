@@ -123,29 +123,53 @@ export async function createSession(
   return { plaintext, id, expiresAt };
 }
 
-export async function resolveSession(db: Knex, plaintext: string): Promise<SessionRow | null> {
+/**
+ * Resolve a session cookie.
+ *
+ * `expectTenantId` is REQUIRED rather than optional, and that is deliberate.
+ * This lookup used to match on `{prefix, tokenHash}` alone and rely on RLS to
+ * keep it inside the request's tenant — but `appDb` falls back to the
+ * privileged `DATABASE_URL` when `DATABASE_URL_APP` is unset (a configuration
+ * db.ts documents as supported), and there RLS is bypassed. Tenant A's cookie
+ * then resolved against `/t/tenant-b/...` and `resolvePrincipal` handed back
+ * an admin principal for B (round 8). The API-key path was bound in round 7;
+ * this is the other half of the same hole.
+ *
+ * Pass `null` ONLY where the caller is deliberately tenant-discovering and
+ * does not grant a principal from the result — `/session/home` is the one
+ * such caller. An optional parameter would have been the wrong shape here:
+ * the whole failure mode is a security predicate someone forgets to pass.
+ */
+export async function resolveSession(
+  db: Knex,
+  plaintext: string,
+  expectTenantId: string | null,
+): Promise<SessionRow | null> {
   if (!plaintext || plaintext.length < TOKEN_PREFIX_LEN) return null;
   const prefix = plaintext.slice(0, TOKEN_PREFIX_LEN);
   const tokenHash = hash(plaintext);
   const now = new Date();
-  const row = await db<SessionRow>(TABLES.Session)
+  const q = db<SessionRow>(TABLES.Session)
     .where({ prefix, tokenHash })
     .whereNull('revokedAt')
-    .andWhere('expiresAt', '>', now)
-    .first();
+    .andWhere('expiresAt', '>', now);
+  if (expectTenantId !== null) q.andWhere({ tenantId: expectTenantId });
+  const row = await q.first();
   if (!row) return null;
 
   // Defense-in-depth: if the principal was revoked but somehow a session
   // slipped through, reject here too.
+  // Scoped to the session's own tenant as well: on the privileged pool a
+  // bare principalId lookup would happily match another tenant's row.
   if (row.principalKind === 'partner') {
-    const partner = (await db('Partner').where({ id: row.principalId }).first()) as
-      | { revokedAt: Date | null }
-      | undefined;
+    const partner = (await db('Partner')
+      .where({ id: row.principalId, tenantId: row.tenantId })
+      .first()) as { revokedAt: Date | null } | undefined;
     if (!partner || partner.revokedAt) return null;
   } else if (row.principalKind === 'admin') {
-    const admin = (await db('Admin').where({ id: row.principalId }).first()) as
-      | { revokedAt: Date | null; activatedAt: Date | null }
-      | undefined;
+    const admin = (await db('Admin')
+      .where({ id: row.principalId, tenantId: row.tenantId })
+      .first()) as { revokedAt: Date | null; activatedAt: Date | null } | undefined;
     if (!admin || admin.revokedAt || !admin.activatedAt) return null;
   }
 

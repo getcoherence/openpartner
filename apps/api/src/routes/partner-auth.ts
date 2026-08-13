@@ -173,7 +173,7 @@ partnerAuthRouter.post('/auth/signout', async (req, res) => {
   const { db } = tenantOf(req);
   const cookie = (req as unknown as { cookies?: Record<string, string> }).cookies?.[SESSION_COOKIE_NAME];
   if (cookie) {
-    const session = await resolveSession(db, cookie);
+    const session = await resolveSession(db, cookie, tenantOf(req).tenantId);
     if (session) await revokeSession(db, session.id);
   }
   // Express's clearCookie only works when the options match the

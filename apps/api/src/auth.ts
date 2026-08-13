@@ -105,13 +105,21 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
     // tenantMiddleware. That's a routing bug — fail loudly.
     throw new Error('requireAuth invoked without a tenant-scoped req.db');
   }
+  // Every credential resolved below is bound to this tenant, so a missing
+  // one is a routing bug too. Deliberately NOT `?? null`: null is
+  // resolveSession's "any tenant" escape hatch, and defaulting to it here
+  // would silently reopen the cross-tenant hole this guard exists to close.
+  const tenantId = req.tenantId;
+  if (!tenantId) {
+    throw new Error('requireAuth invoked without a resolved tenantId');
+  }
 
   const header = req.header('authorization');
   if (!header) {
     const cookie = (req as unknown as { cookies?: Record<string, string> }).cookies?.op_session;
     if (!cookie) return null;
     const { resolveSession } = await import('./auth-sessions.js');
-    const session = await resolveSession(db, cookie);
+    const session = await resolveSession(db, cookie, tenantId);
     if (!session) return null;
     if (session.principalKind === 'admin') {
       return { role: 'admin', source: 'session', sessionId: session.id, adminId: session.principalId };
@@ -145,8 +153,6 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
   //
   // ApiKey carries `tenantId`, so this is exact rather than defence in
   // depth: a key is only ever valid for the tenant it belongs to.
-  const tenantId = req.tenantId;
-  if (!tenantId) throw new Error('requireAuth invoked without a resolved tenantId');
   const candidates = await db<ApiKeyRow>(TABLES.ApiKey)
     .where({ prefix, tenantId })
     .whereNull('revokedAt');

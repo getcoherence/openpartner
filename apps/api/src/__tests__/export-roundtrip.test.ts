@@ -18,6 +18,7 @@ import { TABLES, DEFAULT_TENANT_ID } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApp } from '../app.js';
 import { generateApiKey } from '../auth.js';
+import { createSession } from '../auth-sessions.js';
 import {
   EXPORT_TABLES,
   SCHEMA_VERSION,
@@ -794,5 +795,79 @@ describe.skipIf(skipIntegration)('round-7: an API key is bound to its tenant', (
     expect(res.status).toBe(200);
 
     await db(TABLES.ApiKey).where({ prefix }).del();
+  }, 30_000);
+});
+
+describe.skipIf(skipIntegration)('round-8: a session cookie is bound to its tenant too', () => {
+  it('another tenant\'s admin session cannot authenticate against this tenant', async () => {
+    // Round 7 bound the API-key path. The cookie path had the identical
+    // hole: resolveSession matched on {prefix, tokenHash} with no tenant
+    // predicate, so on the privileged pool tenant A's cookie resolved
+    // against tenant B's URL and resolvePrincipal handed back an admin
+    // principal for B. Fixing one credential path and not the other is
+    // exactly the kind of half-fix these rounds keep finding.
+    const foreignTenant = '01J0000000R8SESSTENANT0000';
+    await db(TABLES.Tenant)
+      .insert({
+        id: foreignTenant,
+        slug: 'r8-session',
+        displayName: 'R8 Session',
+        status: 'active',
+        approvalStatus: 'approved',
+      })
+      .onConflict('id')
+      .ignore();
+
+    const adminId = ulid();
+    await db(TABLES.Admin).insert({
+      id: adminId,
+      tenantId: foreignTenant,
+      email: `r8-${adminId}@x.test`,
+      name: 'Foreign admin',
+      activatedAt: new Date(),
+    });
+    const { plaintext } = await createSession(db, {
+      tenantId: foreignTenant,
+      principalKind: 'admin',
+      principalId: adminId,
+    });
+
+    const app = createApp({ enableLogger: false });
+    const res = await request(app)
+      .get('/export.json')
+      .set('Cookie', `op_session=${plaintext}`);
+
+    expect(res.status).toBe(401);
+
+    await db(TABLES.Session).where({ tenantId: foreignTenant }).del();
+    await db(TABLES.Admin).where({ id: adminId }).del();
+    await db(TABLES.Tenant).where({ id: foreignTenant }).del();
+  }, 30_000);
+
+  it('a session issued for THIS tenant still works', async () => {
+    // The other direction — the binding must not lock legitimate admins out.
+    const adminId = ulid();
+    await db(TABLES.Admin).insert({
+      id: adminId,
+      tenantId: TENANT,
+      email: `r8-local-${adminId}@x.test`,
+      name: 'Local admin',
+      activatedAt: new Date(),
+    });
+    const { plaintext } = await createSession(db, {
+      tenantId: TENANT,
+      principalKind: 'admin',
+      principalId: adminId,
+    });
+
+    const app = createApp({ enableLogger: false });
+    const res = await request(app)
+      .get('/export.json')
+      .set('Cookie', `op_session=${plaintext}`);
+
+    expect(res.status).toBe(200);
+
+    await db(TABLES.Session).where({ principalId: adminId }).del();
+    await db(TABLES.Admin).where({ id: adminId }).del();
   }, 30_000);
 });
