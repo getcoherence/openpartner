@@ -225,6 +225,9 @@ await releaseIntentForRetry(db, payoutId, observedGeneration, 'keith', stripe);
 // (the ambiguous held case) it lists the whole group instead and refuses
 // while any member still holds money; proceeding on an empty listing is
 // your documented risk decision, taken with every verifiable check passed.
+// A stamped id Stripe answers resource_missing for (a hand repair, a
+// pre-round-8 typo) falls back to the same group verification instead of
+// wedging on cannot_verify forever.
 await disposeIntent(db, payoutId, 'keith', 'confirmed_no_transfer', stripe);
 
 // A duplicate_review payout. disposeIntent REFUSES this state on purpose.

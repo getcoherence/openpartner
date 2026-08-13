@@ -958,6 +958,42 @@ export async function releaseIntentForRetry(
 }
 
 /**
+ * Page a payout's whole transfer_group. Membership is the group itself —
+ * set at creation, immutable, stamped with the payout ULID — never the
+ * mutable metadata (round 9). Returns 'cannot_verify' when Stripe cannot
+ * be read or the group is larger than the page budget: running out of
+ * pages is not the same as finding nothing.
+ */
+async function listTransferGroup(
+  stripe: Stripe,
+  payoutId: string,
+  logContext: string,
+): Promise<Stripe.Transfer[] | 'cannot_verify'> {
+  const group: Stripe.Transfer[] = [];
+  try {
+    let startingAfter: string | undefined;
+    for (let page = 0; page < 20; page += 1) {
+      const listed = await stripe.transfers.list({
+        transfer_group: payoutId,
+        limit: 100,
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+      });
+      group.push(...listed.data);
+      if (!listed.has_more || listed.data.length === 0) break;
+      if (page === 19) {
+        console.error(`[payouts] ${logContext} refused — more transfers than this listing will page`);
+        return 'cannot_verify';
+      }
+      startingAfter = listed.data[listed.data.length - 1]!.id;
+    }
+  } catch (err) {
+    console.error(`[payouts] ${logContext} refused — listing failed`, err);
+    return 'cannot_verify';
+  }
+  return group;
+}
+
+/**
  * OPERATOR ACTION — give up on an intent and return its commissions.
  *
  * For a held intent the operator has confirmed produced no transfer, or a
@@ -993,62 +1029,58 @@ export async function disposeIntent(
   const row = (await db(TABLES.Payout).where({ id: payoutId }).first()) as PayoutRow | undefined;
   if (!row) return 'not_disposable';
   if (!stripe) return 'cannot_verify';
+  let verifiedByStampedTransfer = false;
   if (row.stripeTransferId) {
-    let transfer: Stripe.Transfer;
+    let transfer: Stripe.Transfer | null = null;
     try {
       transfer = await stripe.transfers.retrieve(row.stripeTransferId);
     } catch (err) {
-      console.error(
-        `[payouts] OPERATOR ${operator} dispose of ${payoutId} refused — cannot read transfer ${row.stripeTransferId}`,
-        err,
-      );
-      return 'cannot_verify';
+      if ((err as { code?: string }).code === 'resource_missing') {
+        // The stamp names a transfer Stripe says does not exist — garbage
+        // from a hand repair or a pre-round-8 typo resolution. Refusing
+        // forever on it wedged the payout with no exit but raw SQL
+        // (round 9). A stamp that cannot be dereferenced proves nothing
+        // either way, so fall through to the same whole-group
+        // verification as the unstamped case.
+        console.error(
+          `[payouts] OPERATOR ${operator} dispose of ${payoutId}: stamped transfer ${row.stripeTransferId} does not exist at Stripe — verifying by transfer group instead`,
+        );
+      } else {
+        console.error(
+          `[payouts] OPERATOR ${operator} dispose of ${payoutId} refused — cannot read transfer ${row.stripeTransferId}`,
+          err,
+        );
+        return 'cannot_verify';
+      }
     }
-    const reversedMinor = Number(transfer.amount_reversed ?? 0);
-    if (reversedMinor < Number(transfer.amount ?? 0)) {
-      console.error(
-        `[payouts] OPERATOR ${operator} dispose of ${payoutId} REFUSED — transfer ${transfer.id} is only reversed ${reversedMinor}/${transfer.amount}; the partner still holds the remainder, so releasing these commissions would pay it twice`,
-      );
-      return 'money_with_partner';
+    if (transfer) {
+      const reversedMinor = Number(transfer.amount_reversed ?? 0);
+      if (reversedMinor < Number(transfer.amount ?? 0)) {
+        console.error(
+          `[payouts] OPERATOR ${operator} dispose of ${payoutId} REFUSED — transfer ${transfer.id} is only reversed ${reversedMinor}/${transfer.amount}; the partner still holds the remainder, so releasing these commissions would pay it twice`,
+        );
+        return 'money_with_partner';
+      }
+      verifiedByStampedTransfer = true;
     }
-  } else {
-    // NO stamped transfer — the AMBIGUOUS case, and round 9 found it was
-    // the one path here with no Stripe read at all: cancel, release, and
-    // the planner re-pays while a slow POST can still land. List the whole
-    // group instead (membership by immutable transfer_group, never by
-    // mutable metadata): any member still holding money refuses the
-    // release.
+  }
+  if (!verifiedByStampedTransfer) {
+    // NO usable stamped transfer — the AMBIGUOUS case, and round 9 found
+    // it was the one path here with no Stripe read at all: cancel,
+    // release, and the planner re-pays while a slow POST can still land.
+    // List the whole group instead: any member still holding money
+    // refuses the release.
     //
     // An EMPTY listing is still not proof of absence — that is the whole
     // reason the intent is held. Proceeding on empty is the operator's
     // documented risk decision, taken with every verifiable check passed;
     // what this guard closes is releasing against POSITIVE evidence.
-    const group: Stripe.Transfer[] = [];
-    try {
-      let startingAfter: string | undefined;
-      for (let page = 0; page < 20; page += 1) {
-        const listed = await stripe.transfers.list({
-          transfer_group: payoutId,
-          limit: 100,
-          ...(startingAfter ? { starting_after: startingAfter } : {}),
-        });
-        group.push(...listed.data);
-        if (!listed.has_more || listed.data.length === 0) break;
-        if (page === 19) {
-          console.error(
-            `[payouts] OPERATOR ${operator} dispose of ${payoutId} refused — more transfers than this listing will page, absence unproven`,
-          );
-          return 'cannot_verify';
-        }
-        startingAfter = listed.data[listed.data.length - 1]!.id;
-      }
-    } catch (err) {
-      console.error(
-        `[payouts] OPERATOR ${operator} dispose of ${payoutId} refused — listing failed`,
-        err,
-      );
-      return 'cannot_verify';
-    }
+    const group = await listTransferGroup(
+      stripe,
+      payoutId,
+      `OPERATOR ${operator} dispose of ${payoutId}`,
+    );
+    if (group === 'cannot_verify') return 'cannot_verify';
     const live = group.filter((t) => Number(t.amount_reversed ?? 0) < Number(t.amount ?? 0));
     if (live.length > 0) {
       console.error(
@@ -1159,30 +1191,12 @@ export async function resolveDuplicateReview(
   // Membership by immutable transfer_group, never by mutable metadata —
   // same round-9 rule as the other listings: a cleared-metadata transfer
   // must count against every disposition, not vanish from it.
-  const group: Stripe.Transfer[] = [];
-  try {
-    let startingAfter: string | undefined;
-    for (let page = 0; page < 20; page += 1) {
-      const listed = await stripe.transfers.list({
-        transfer_group: payoutId,
-        limit: 100,
-        ...(startingAfter ? { starting_after: startingAfter } : {}),
-      });
-      group.push(...listed.data);
-      if (!listed.has_more || listed.data.length === 0) break;
-      if (page === 19) {
-        // Exhausting the bound is not proof of anything. Refuse.
-        console.error(
-          `[payouts] OPERATOR ${operator} resolve of ${payoutId} refused — more transfers than this listing will page`,
-        );
-        return 'cannot_verify';
-      }
-      startingAfter = listed.data[listed.data.length - 1]!.id;
-    }
-  } catch (err) {
-    console.error(`[payouts] OPERATOR ${operator} resolve of ${payoutId} refused — listing failed`, err);
-    return 'cannot_verify';
-  }
+  const group = await listTransferGroup(
+    stripe,
+    payoutId,
+    `OPERATOR ${operator} resolve of ${payoutId}`,
+  );
+  if (group === 'cannot_verify') return 'cannot_verify';
 
   if ('keptTransferId' in disposition) {
     // The kept transfer must exist, still hold the money, and BE the

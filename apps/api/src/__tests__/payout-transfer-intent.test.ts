@@ -2150,4 +2150,62 @@ describe.skipIf(skipIntegration)('round-9 hardening', () => {
       (await db(TABLES.Commission).where({ id: commissionIds[0]! }).first()).payoutId,
     ).toBeNull();
   });
+
+  it('a stamped transfer Stripe does not recognize falls back to group verification', async () => {
+    // Round 9: a confirmed/failed payout whose stamped stripeTransferId
+    // answers resource_missing — a hand repair or a pre-round-8 typo
+    // resolution — returned cannot_verify forever: a wedge only raw SQL
+    // could clear. A stamp that cannot be dereferenced proves nothing
+    // either way, so it now verifies by the whole group like the
+    // unstamped case: live member → refuse; clear → operator decision.
+    const mkGhostStripe = (listed: FakeTransfer[]) =>
+      ({
+        transfers: {
+          create: vi.fn(),
+          retrieve: vi.fn(async () => {
+            throw Object.assign(new Error('No such transfer: tr_ghost'), {
+              code: 'resource_missing',
+              statusCode: 404,
+              type: 'StripeInvalidRequestError',
+            });
+          }),
+          list: vi.fn(async () => ({ data: listed, has_more: false })),
+        },
+      }) as unknown as Stripe;
+
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        status: 'failed',
+        stripeTransferId: 'tr_ghost',
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'confirmed' }),
+        ]),
+      });
+
+    // A live transfer in the group still refuses — the ghost stamp does
+    // not excuse ignoring real money.
+    const live: FakeTransfer = {
+      id: 'tr_real_and_live',
+      amount: 5000,
+      currency: 'usd',
+      transfer_group: payoutId,
+      metadata: {},
+    };
+    expect(await disposeIntent(db, payoutId, 'keith', 'ghost_stamp', mkGhostStripe([live]))).toBe(
+      'money_with_partner',
+    );
+
+    // Empty group: the wedge opens — this used to be cannot_verify forever.
+    expect(await disposeIntent(db, payoutId, 'keith', 'ghost_stamp', mkGhostStripe([]))).toBe(
+      'disposed',
+    );
+    expect(
+      (await db(TABLES.Commission).where({ id: commissionIds[0]! }).first()).payoutId,
+    ).toBeNull();
+  });
 });
