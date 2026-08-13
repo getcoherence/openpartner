@@ -1,11 +1,176 @@
 # Payment/subscription audit — handoff
 
-**Status (2026-08-13): SEVEN review rounds. Round 7 found twelve verified
-defects — nine of them in round 6's own fixes — and all twelve are now fixed,
-each confirmed to fail its test when reverted. Both money paths still pass
-against Stripe test mode (#73: 50 assertions, #75: 27). All three PRs green.
-Nothing is merged; merging is blocked by a branch-protection rule a sole
-maintainer cannot satisfy (§3a).**
+**Status (2026-08-13): NINE review rounds. Rounds 6–8 are fixed and pushed.
+ROUND 9 IS NOT: ten of its eleven findings are OPEN — see §0, which is where
+a new agent should start. All three PRs are green and nothing is merged;
+merging is blocked by a branch-protection rule a sole maintainer cannot
+satisfy (§3a). There is also an unanswered product question (§0.4) that
+determines the shape of the remaining work.**
+
+---
+
+## §0. START HERE — round 9's open findings and the decision
+
+Round 9's Codex output lived in a session scratchpad that no longer exists,
+so everything actionable is reproduced below. Nothing here has a test yet.
+
+### 0.1 The framing correction that matters most
+
+Round 9 corrected a claim I had made and acted on. I said the verify-then-write
+gap between Stripe and Postgres meant those operations "cannot be made safe."
+That is wrong, and believing it would send you down an unnecessary rewrite.
+
+The gap is real — Stripe does not join your DB transaction and its Transfer
+API has no conditional/`If-Match` write. But **the target is CONVERGENCE, not
+atomicity**: durable local intent, idempotent external mutation, a deduplicated
+webhook inbox, order-independent handlers, compensating ledger entries, and
+periodic reconciliation.
+
+**This codebase already works that way, and says so** — `payout-transfers.ts`,
+in the finalizer:
+
+> *"The re-read does not close the window entirely — a reversal can still land
+> between the retrieve and the commit — so it is defence in depth, not the
+> guarantee. The guarantee is that the reversal webhook can always find this
+> payout."*
+
+So the automatic path converges. `resolveDuplicateReview` does not — for one
+concrete, verified reason: the reversal webhook's metadata fallback in
+`routes/stripe-webhook.ts` accepts only
+`("metadata"->>'transferState') in ('posted','reconcile_required')`.
+**`duplicate_review` is not in that list**, so a reversal arriving while the
+operator is resolving a duplicate is dropped as `unmatched`, and the payout is
+then recorded `confirmed`/`paid` with the money gone — a state no operator
+function accepts.
+
+### 0.2 Do these three first — they are cheap and deletion-shaped
+
+1. **Wire `duplicate_review` into the reversal webhook fallback.** Widening
+   that predicate closes the critical above. This is the single highest
+   value-per-line change outstanding.
+2. **`forceReleaseBatch` never queries Stripe at all** (`funding/release.ts`)
+   — it only checks that the DB column is null. Either make it verify, or
+   stop describing it as verified.
+3. **Stop extending `sweepSlice`** (`funding/reconcile.ts`). Its own comments
+   now document four successive failures — rotation, retry budgeting, retry
+   ordering, eligibility ordering. Replace the global cursor + retry-set
+   arithmetic with per-object durable scheduling: claim the oldest due rows
+   in a short transaction with a lease token, do Stripe reads outside the
+   transaction, then acknowledge or reschedule by that token. Net deletion.
+
+### 0.3 The ten open round-9 findings
+
+**#73 `fix/payout-transfer-intent` — six**
+
+- **CRITICAL** `disposeIntent` skips verification entirely when the payout has
+  no stamped `stripeTransferId` — the common ambiguous case. It cancels and
+  releases the claims with no Stripe read, and the planner re-pays them.
+- **CRITICAL** Both list guards filter on `metadata.openpartner_payout_id`,
+  which is **mutable** at Stripe. A live transfer whose metadata was cleared
+  is invisible: `releaseIntentForRetry` re-arms, and `{allReversed}` sees an
+  empty group and treats it as vacuously reversed.
+- **CRITICAL** The kept-transfer path checks only "present and unreversed" —
+  never the **amount**, currency or destination. A one-cent transfer can mark
+  a $50 payout fully paid. `metadata.amountMinor` holds the frozen expected
+  amount and is never compared.
+- **CRITICAL** The list→write gap (see §0.1). Fix via the webhook predicate,
+  not by more verification.
+- **HIGH** New fail-closed paths can be permanently unrecoverable: a
+  `duplicate_review` group larger than the 20-page budget always returns
+  `cannot_verify`, and reversed transfers stay in the group so no Stripe-side
+  action reduces the count. Same for a `confirmed/failed` payout whose stamped
+  transfer returns `resource_missing`.
+- **HIGH** The runbook still tells operators to "release the claims so the
+  payout re-plans" for `duplicate_review` — the exact double-pay
+  `resolveDuplicateReview` exists to prevent — and claims all clients are
+  required while two signatures still declare them optional.
+
+**#75 `fix/funding-race-hardening` — four**
+
+- **CRITICAL** `forceReleaseBatch` still permits release before a discovered
+  PI is stamped: worker A finds live PI X, and before A stamps it B wins the
+  null-predicated CAS and frees the allocations. The round-8 predicate closes
+  "stamp commits before force CAS", not "discovery before, stamp after".
+- **HIGH** `db.fn.now()` renders as `CURRENT_TIMESTAMP`, which is
+  **transaction-start** time — verified directly against Postgres. Transaction
+  start order is not commit order, so the sweep's "only ever moves forward"
+  premise is still false. Round 8's fix was insufficient.
+- **HIGH** The `limit = 1` fix traded cursor starvation for **retry**
+  starvation: retry budget is 0 there, so under churn a poison row is never
+  re-attempted and ages out of the horizon.
+- **MEDIUM** Retry-set overflow trims from the front, dropping rows that were
+  untouched and next in line — not "oldest attempted" as the comment claims.
+
+**#74 `fix/export-portability` — one, FIXED and pushed.** Round 8's tenant
+binding broke logout: a stale-tab signout carried another tenant's cookie, the
+filtered lookup found nothing, and the route cleared the browser cookie and
+returned 200 while the session stayed live. Now uses an exact-token revocation
+that resolves no principal and applies no tenant predicate.
+
+### 0.4 THE OPEN DECISION — needs Keith, not an agent
+
+The operator-recovery surface (`releaseIntentForRetry`, `disposeIntent`,
+`resolveDuplicateReview`, `forceReleaseBatch`) has produced most of rounds
+7–9's findings. It has **no production callers** — operators invoke it from a
+REPL. Three options were put to Codex:
+
+- **A — delete it.** Recovery returns to a pre-reviewed, parameterised
+  break-glass SQL script.
+- **B — durable intents.** The operator inserts an append-only request; the
+  **existing** executor/reconcile machinery applies it under its own fences.
+  Explicitly not a second payout engine.
+- **C — keep patching.**
+
+**Codex favours B, conditionally, and named the condition — which is a product
+question, not a technical one: when a payout freezes, does someone need to
+unfreeze it quickly, or can it wait for an engineer?** If operators must
+restore liveness at 2am, SQL is not an adequate permanent interface and B is
+forced. If a freeze can wait for bespoke, peer-reviewed work, A is fine for
+now and B later if that changes.
+
+Its round-10 estimates, offered as engineering bets rather than statistics:
+**A ≈ 4 findings, B ≈ 8, C ≈ 9**, and it would not predict a clean round under
+any option. It recommends B anyway, on a point worth carrying:
+
+> *"review count is not the same metric as operational safety."*
+
+That is the correction to how I had been reasoning. Fewer findings from
+deleted code is not safety; it is less code under review. **Do not choose the
+option that minimises the next round's finding count.**
+
+One honest limit it flagged: `releaseIntentForRetry` and `forceReleaseBatch`
+must prove **absence**, and no durable intent can prove that an in-flight
+request will never complete. For those, the only real choices are: stay
+frozen, take a documented human risk decision, or recover while leaving a
+tombstone that detects and compensates for a late object.
+
+---
+
+### Round 8 — ten findings, all fixed and pushed
+
+Round 8's theme was that **round 7 built operator paths that act on an
+unverified human assertion**, which is strictly weaker than the "empty search
+is not proof" rule round 6 had just imposed on the automatic paths. A human
+typo is silent where a Stripe read is not.
+
+- `disposeIntent` released on `status !== 'paid'`, but the finalizer records
+  `confirmed+failed` for ANY non-zero `amount_reversed` — so a $10 clawback
+  on a $50 transfer released commissions the partner had mostly been paid
+  for. It now retrieves the transfer and refuses unless fully reversed.
+- `resolveDuplicateReview` validated nothing: `{allReversed}` while transfers
+  were live double-paid, and a typo'd `{keptTransferId}` recorded a payout
+  paid against a transfer that does not exist AND wedged the row. Both
+  dispositions are now checked against the transfer group.
+- The listing guard on `releaseIntentForRetry` only ran `if (stripe)`, and
+  the documented runbook call omitted it — so it was absent in the one usage
+  operators would copy. Required now, and exhausting the page budget returns
+  `cannot_verify` rather than being read as absence.
+- On #75: the `reserved` fast path read a stale snapshot; `forceReleaseBatch`
+  freed allocations before its CAS; the retry set could starve the sweep; the
+  `updatedAt` ordering premise was false; and an unlinked intent could
+  redeliver forever then vanish.
+- On #74: `resolveSession` had the identical hole round 7 fixed for API keys —
+  tenant A's cookie authenticated against tenant B.
 
 ### Round 7 — the fixes bred the defects, again, and where
 
@@ -154,6 +319,35 @@ Round 6's revert checks caught three of mine mid-flight:
 
 Running the suite is not the check. Reverting the fix and watching the test
 fail is the check.
+
+**Nine rounds of evidence on where defects come from.** Findings per round:
+R6 ten, R7 twelve, R8 ten, R9 eleven. No round has come back clean, and the
+count is not trending down. But the LOCATION has stabilised, and that is the
+useful signal:
+
+- Rounds 1–5 found defects in the core money protocol. Those areas have been
+  quiet for four rounds.
+- Rounds 6–9 findings are almost entirely in the operator-recovery surface
+  and the reconcile sweep — both of which exist to support round 6's decision
+  that ambiguity must freeze and wait for a human.
+- Across every round, changes that DELETED unsound logic produced no
+  follow-on findings. Changes that ADDED a mechanism produced them nearly
+  every time.
+
+Read that as a warning about which changes need the most scrutiny, **not** as
+an argument for minimising code. See §0.4: the metric that matters is
+operational safety, not next-round finding count.
+
+**Also record: several rounds' findings were in the author's own tests, not
+the production code.** Round 8 found four; round 9 found that a round-8 edit
+had *degraded* a previously-good test by changing its limit so it no longer
+discriminated. When you fix something here, check the test still fails with
+the fix reverted — including tests you did not intend to touch.
+
+**The suite is mildly flaky under parallel files sharing one Postgres.** Two
+runs failed different files (`export-roundtrip`, then `compound-rules`), and
+two consecutive runs then passed 276/276. Pre-existing. Do not trust a single
+red run; re-run before investigating.
 
 Round 7 caught four more of mine the same way, and the failure modes repeat
 often enough to be worth naming as a checklist:
