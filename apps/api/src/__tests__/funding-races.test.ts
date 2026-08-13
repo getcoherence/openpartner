@@ -947,10 +947,12 @@ describe.skipIf(skipIntegration)('round-2 hardening', () => {
     expect((await reload(batch.id)).status).toBe('funding_disputed');
   });
 
-  it('the sweep cursor covers every row even as rows keep arriving', async () => {
+  it('the sweep covers every row even as rows keep arriving', async () => {
     // The window version only held for a FROZEN list: adding rows changed
     // `windows`, shifted the modular sequence, and left specific indices
-    // never selected. A cursor is immune to churn.
+    // never selected. Per-object scheduling is immune to churn: every
+    // eligible row holds its own place in the least-recently-visited
+    // order, so arrivals compete on age instead of reshuffling the deck.
     //
     // Asserting only the ORIGINAL rows was too weak — the window version
     // happened to cover those on many days. EVERY row that exists long
@@ -1362,7 +1364,9 @@ describe.skipIf(skipIntegration)('round-6: sweep coverage', () => {
     // row was skipped AND acknowledged, and on the charge side could age
     // out of the 180-day horizon before the cursor wrapped back to it.
     //
-    // Revert the retry set and the failed batch is never re-read.
+    // Under per-object scheduling a failed row keeps its place in the
+    // rotation forever — it can be re-read a rotation late, but it can
+    // never be dropped or age out unseen.
     const now = Date.now();
     const a = await seedSweepable(new Date(now - 3 * 86400000), 'ch_fails');
     const b = await seedSweepable(new Date(now - 2 * 86400000), 'ch_ok');
@@ -1379,10 +1383,6 @@ describe.skipIf(skipIntegration)('round-6: sweep coverage', () => {
       paymentIntents: { retrieve: vi.fn(), search: vi.fn(async () => ({ data: [] })), cancel: vi.fn() },
     } as unknown as Stripe;
 
-    // Budget 2 so retries get a slot. Round 8 stopped them ever taking the
-    // LAST slot — at limit 1 a permanently-failing row starved every healthy
-    // cursor row — so at limit 1 the retry set is empty by design and the
-    // failed row is reached by the cursor on the wrap instead.
     await runFundingReconciliation(db, { stripe, sweepLimit: 2 });
 
     // Stripe recovers. The NEXT run must come back to the failed batch even
@@ -1777,17 +1777,11 @@ describe.skipIf(skipIntegration)('round-8 hardening', () => {
   });
 
   it('two permanently-failing rows are both eventually re-attempted', async () => {
-    // COVERAGE, NOT A MUTATION KILLER — and saying so rather than implying
-    // otherwise. The fix under it is that retry selection reads the STORED
-    // retry-set order (which `commit` rotates) instead of re-filtering
-    // `rows` and re-picking the same head forever.
-    //
-    // I could not isolate that: with a cursor slot free, the cursor reaches
-    // the second row on a wrap regardless of selection order, so the test
-    // passes either way. Two attempts at forcing it — more runs, then churn
-    // to prevent the wrap — both still passed with the rotation reverted.
-    // What this does prove is the weaker, still-worth-having property that
-    // neither row is abandoned. The rotation itself rests on inspection.
+    // Written against the retry set, where this property rested on a
+    // rotation that could not be isolated by test. Under per-object
+    // scheduling it is structural — every failed row keeps its own place
+    // in the least-recently-visited order — but the assertion stays: no
+    // failing row may ever be abandoned, whatever the mechanism.
     const now = Date.now();
     const a = await seedBatch({
       status: 'settled',
@@ -1844,10 +1838,14 @@ describe.skipIf(skipIntegration)('round-8 hardening', () => {
     expect([a.id, b.id]).toHaveLength(2);
   });
 
-  it('a poison retry cannot starve the cursor at limit 1', async () => {
+  it('a poison row cannot starve the sweep at limit 1', async () => {
     // At limit 1 the retry set used to take the only slot, so `remaining`
     // was 0 and one permanently-failing row starved every healthy row
-    // forever. Retries never take the last slot now.
+    // forever. Round 9 then found the inverse: the fix gave retries a
+    // budget of 0 at limit 1, so under churn a poison row was never
+    // re-attempted at all. Per-object scheduling dissolves the dilemma —
+    // a failed row reschedules exactly like a healthy one, so at limit 1
+    // the two rows here simply alternate.
     const now = Date.now();
     await seedBatch({
       status: 'settled',
@@ -1913,5 +1911,89 @@ describe.skipIf(skipIntegration)('round-8 hardening', () => {
     const report = await runFundingReconciliation(db, { stripe });
 
     expect(report.attentionBatches).toContain(batch.id);
+  });
+});
+
+// ---- Round-9 review fixes (Codex, 2026-08-13) ------------------------------
+
+describe.skipIf(skipIntegration)('round-9: per-object sweep scheduling', () => {
+  // Round 9 retired the global cursor + retry set: scheduling state lives
+  // on the swept rows themselves (sweepDueAt / sweepLeaseAt /
+  // sweepLeaseToken / sweepFailCount), claims are `for update skip locked`
+  // under a per-run lease token, and success and failure reschedule
+  // IDENTICALLY so selection is pure least-recently-visited rotation.
+  // The older coverage tests above still pin the coverage properties;
+  // these pin the parts of the new machine they cannot see.
+
+  const mkSweepable = (tag: string) =>
+    seedBatch({
+      status: 'settled',
+      stripeChargeId: `ch_${tag}`,
+      fundedAt: new Date(Date.now() - 86400000),
+      actualStripeFeeMinor: '25',
+    });
+
+  it('a row leased by a live concurrent run is left alone; a dead run lease expires', async () => {
+    const held = await mkSweepable('held');
+    await mkSweepable('free');
+    // Another run claimed `held` five minutes ago and is still working.
+    await db(TABLES.HostedFundingBatch)
+      .where({ id: held.id })
+      .update({ sweepLeaseAt: new Date(Date.now() - 5 * 60 * 1000), sweepLeaseToken: 'other_run' });
+
+    const first = mockStripe();
+    await runFundingReconciliation(db, { stripe: first.stripe });
+    const firstSeen = first.chargeRetrieve.mock.calls.map((c) => c[0] as string);
+    expect(firstSeen).toContain('ch_free');
+    // Revert the lease guard in the claim and this double-sweeps the row
+    // out from under the run that holds it.
+    expect(firstSeen).not.toContain('ch_held');
+
+    // The holder died. Once its lease ages past the TTL the row is
+    // claimable again — a crash costs a delay, never a dropped row.
+    await db(TABLES.HostedFundingBatch)
+      .where({ id: held.id })
+      .update({ sweepLeaseAt: new Date(Date.now() - 2 * 60 * 60 * 1000) });
+    const second = mockStripe();
+    await runFundingReconciliation(db, { stripe: second.stripe });
+    expect(second.chargeRetrieve.mock.calls.map((c) => c[0] as string)).toContain('ch_held');
+  });
+
+  it('failures reschedule IDENTICALLY to successes, and escalate via sweepFailCount', async () => {
+    // Any rule that revisits failures sooner puts every poison row ahead
+    // of every healthy row on every run — the round-8 starvation again.
+    // So after a run where one row fails and one succeeds, both must carry
+    // the SAME next-due; persistence is escalated by count, not priority.
+    const poison = await mkSweepable('always_fails');
+    const healthy = await mkSweepable('fine');
+    let failing = true;
+    const mk = () =>
+      ({
+        charges: {
+          retrieve: vi.fn(async (id: string) => {
+            if (failing && id === 'ch_always_fails') throw new Error('unreadable');
+            return { id, refunded: false, amount_refunded: 0, disputed: false, balance_transaction: { fee: 25 } };
+          }),
+        },
+        transfers: { retrieve: vi.fn() },
+        paymentIntents: { retrieve: vi.fn(), search: vi.fn(async () => ({ data: [] })), cancel: vi.fn() },
+      }) as unknown as Stripe;
+
+    await runFundingReconciliation(db, { stripe: mk() });
+    const p1 = await reload(poison.id);
+    const h1 = await reload(healthy.id);
+    expect(p1.sweepDueAt).toEqual(h1.sweepDueAt); // identical reschedule
+    expect(p1.sweepLeaseToken).toBeNull(); // acknowledged, not left claimed
+    expect(p1.sweepFailCount).toBe(1);
+    expect(h1.sweepFailCount).toBe(0);
+
+    await runFundingReconciliation(db, { stripe: mk() });
+    await runFundingReconciliation(db, { stripe: mk() });
+    expect((await reload(poison.id)).sweepFailCount).toBe(3);
+
+    // Stripe recovers: the count resets rather than ratcheting forever.
+    failing = false;
+    await runFundingReconciliation(db, { stripe: mk() });
+    expect((await reload(poison.id)).sweepFailCount).toBe(0);
   });
 });
