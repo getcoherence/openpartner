@@ -1,11 +1,52 @@
 # Payment/subscription audit — handoff
 
-**Status (2026-08-12): six review rounds. Round 6 found ten verified defects
-— two of them able to pay a partner twice — and all ten are now fixed, with
-every fix confirmed to fail its test when reverted. Both money paths run
-against Stripe test mode (#73's matrix in full, #75's partially). All three
-PRs are green. Nothing is merged; merging is blocked by a branch-protection
-rule a sole maintainer cannot satisfy (§3a).**
+**Status (2026-08-13): SEVEN review rounds. Round 7 found twelve verified
+defects — nine of them in round 6's own fixes — and all twelve are now fixed,
+each confirmed to fail its test when reverted. Both money paths still pass
+against Stripe test mode (#73: 50 assertions, #75: 27). All three PRs green.
+Nothing is merged; merging is blocked by a branch-protection rule a sole
+maintainer cannot satisfy (§3a).**
+
+### Round 7 — the fixes bred the defects, again, and where
+
+Round 6 concluded that its changes were "mostly deletions of unsound logic,
+so less new surface to breed a round 7". **That prediction was wrong in a
+specific, checkable direction.** The deletions held up — the
+hold-instead-of-re-arm and empty-search-is-unknown changes produced no
+findings at all. Every serious round-7 finding is in something round 6
+*added*: the operator functions, the webhook fallback, the retry set.
+
+If you take one thing from this file, take that: in this code, **the
+dangerous change is the one that adds a mechanism**, and "I removed unsound
+logic" is not a reason to expect a clean next round.
+
+What round 7 found, by shape:
+
+- **A fix that reintroduced its own bug one statement later.** Round 6 added
+  a metadata fallback so a reversal arriving before finalization could still
+  match. The exact-id match and the fallback are two statements, and the
+  executor could stamp the id between them — both miss, event acknowledged,
+  reversal lost. Fixed with a row lock so there is no in-between.
+- **A new operator tool that double-paid.** `disposeIntent` accepted
+  `duplicate_review` and released the claims, but a duplicate is disposed of
+  by keeping one transfer — those commissions are paid. No concurrency
+  needed; it was simply wrong. Split into `resolveDuplicateReview`, which
+  takes the operator's actual disposition.
+- **A guard that used a stale read.** The funding `reserved` fast path was
+  gated on the caller's snapshot while the CAS accepted four source states.
+  Now a dedicated `reserved` CAS proves the state it claims.
+- **A starvation fix that starved.** The sweep retry set took the whole
+  budget, so `limit` failing rows meant the cursor never advanced — the exact
+  poison-item failure the retry set was added to prevent.
+- **An ordering key that was not eligibility time.** `postedAt` is stamped
+  before the Stripe call, so a late-confirming intent still landed behind the
+  cursor. Fixed with a key that moves forward at confirmation, so a row can
+  only be re-visited, never skipped.
+- **A tenant filter that did not bind credentials.** #74's export filter was
+  correct but the claim around it was not: `requireAuth` matched an API key
+  with no tenant predicate, so on the privileged pool another tenant's key
+  authenticated and the filter faithfully served *their* data. That is
+  broader than export and is now fixed in `auth.ts`.
 
 ### Round 6 — what it found, and the one structural conclusion
 
@@ -113,6 +154,27 @@ Round 6's revert checks caught three of mine mid-flight:
 
 Running the suite is not the check. Reverting the fix and watching the test
 fail is the check.
+
+Round 7 caught four more of mine the same way, and the failure modes repeat
+often enough to be worth naming as a checklist:
+
+- **The early guard short-circuits before the code under test.** A
+  `forceReleaseBatch` test flipped the state up front, so the function
+  returned at its status check and never reached the ordering being tested.
+  Fixed with a seam that stages the race *between* the read and the CAS.
+- **The cursor wraps and covers everything by accident.** Twice now. Any
+  coverage test needs genuine churn — fresh eligible rows arriving before
+  every run — or the wrap hides the starvation.
+- **The value under test is already valid.** A JSONB test used the number
+  `42`; pg prepares that as the text `"42"`, which is valid JSON either way.
+  A *string* is the mutation killer.
+- **Array indexing where order is not guaranteed.** `payouts[0]` passed
+  locally and failed in CI once an earlier step returned a second partner's
+  commission to the pool. Select by the key you mean.
+
+And once more, from round 7's own fixes: **a lock test that asserts "it
+blocked" proves nothing** — it will block eventually at some later write.
+Assert the *value* that the lock protects.
 
 ---
 
