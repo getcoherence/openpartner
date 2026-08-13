@@ -44,18 +44,40 @@ export async function releaseBatch(
   // forever and never be reported. When we're already in
   // release_requested there is nothing to transition anyway: just carry
   // on to the money side.
-  const claimed =
-    batch.status === 'release_requested'
-      ? ((await db(TABLES.HostedFundingBatch)
-          .where({ id: batch.id, status: 'release_requested' })
-          .first()) as HostedFundingBatchRow | undefined) ?? null
-      : await casBatch(
-          db,
-          batch.id,
-          ['reserved', 'invoicing', 'payment_processing', 'funding_failed'],
-          'release_requested',
-          { failureReason: reason },
-        );
+  //
+  // The `reserved` claim is attempted SEPARATELY and first (round 7). The
+  // no-search fast path below is only sound if the batch was genuinely
+  // `reserved` at the moment we claimed it, and the broad CAS cannot tell
+  // us which of its four source states it matched. Deciding from the
+  // caller's `batch.status` was a stale read: a row that moved
+  // reserved → invoicing between the caller's SELECT and this CAS still
+  // won the broad CAS, and the fast path then freed the allocations while
+  // a PaymentIntent was being created for it.
+  //
+  // Winning a CAS whose only source state is `reserved` proves it.
+  let claimedFromReserved = false;
+  let claimed: HostedFundingBatchRow | null = null;
+  if (batch.status === 'release_requested') {
+    claimed =
+      ((await db(TABLES.HostedFundingBatch)
+        .where({ id: batch.id, status: 'release_requested' })
+        .first()) as HostedFundingBatchRow | undefined) ?? null;
+  } else {
+    claimed = await casBatch(db, batch.id, 'reserved', 'release_requested', {
+      failureReason: reason,
+    });
+    if (claimed) {
+      claimedFromReserved = true;
+    } else {
+      claimed = await casBatch(
+        db,
+        batch.id,
+        ['invoicing', 'payment_processing', 'funding_failed'],
+        'release_requested',
+        { failureReason: reason },
+      );
+    }
+  }
   if (!claimed) return 'lost_cas';
 
   // Step 1b — "no PI on the row" does NOT mean "no PI at Stripe". A
@@ -80,7 +102,7 @@ export async function releaseBatch(
     // `reserved`, the collector never did, and no PI can exist for this
     // batch. Anything else — invoicing, payment_processing, funding_failed
     // — may have a PI whose id we have not stamped yet.
-    if (batch.status === 'reserved') {
+    if (claimedFromReserved) {
       // fall through with no PI: nothing to terminalize
     } else {
       let orphan: Stripe.PaymentIntent | null;
@@ -212,22 +234,32 @@ export async function forceReleaseBatch(
   batchId: string,
   operator: string,
   reason: string,
+  /** Test seam: runs between the read and the CAS, so the check/use race
+   *  this function's ordering guards against can be staged deterministically
+   *  rather than hoped for. Never passed in production. */
+  opts: { __afterRead?: () => Promise<void> } = {},
 ): Promise<'released' | 'not_stuck' | 'has_payment_intent'> {
   const batch = (await db(TABLES.HostedFundingBatch)
     .where({ id: batchId })
     .first()) as HostedFundingBatchRow | undefined;
   if (!batch || batch.status !== 'release_requested') return 'not_stuck';
   if (batch.stripePaymentIntentId) return 'has_payment_intent';
+  await opts.__afterRead?.();
 
+  // CAS FIRST, then free (round 7). This used to free the allocations and
+  // only then attempt the closing transition — so losing that CAS to a
+  // concurrent release that had just found an orphan PI left a batch on its
+  // way to `funded` while its allocations were already released and
+  // re-batchable. Winning the CAS is what earns the right to free them.
   const now = new Date();
-  await db(TABLES.HostedFundingAllocation)
-    .where({ batchId, state: 'reserved' })
-    .update({ state: 'released', updatedAt: now });
   const closed = await casBatch(db, batchId, 'release_requested', 'released', {
     releasedAt: now,
     failureReason: `operator_force_release:${operator}:${reason}`.slice(0, 500),
   });
   if (!closed) return 'not_stuck'; // someone else moved it while we looked
+  await db(TABLES.HostedFundingAllocation)
+    .where({ batchId, state: 'reserved' })
+    .update({ state: 'released', updatedAt: now });
   console.error(
     `[funding] OPERATOR ${operator} force-released stuck batch ${batchId} (${reason}) — asserting no PaymentIntent exists; allocations returned to the pool`,
   );

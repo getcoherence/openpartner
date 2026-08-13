@@ -118,6 +118,23 @@ export async function handleFundingEvent(
   try {
     outcome = await routeFundingEvent(db, stripe, event, batchId, intentId);
   } catch (err) {
+    if (err instanceof FundingEventNotReadyError) {
+      // KEEP the claim (round 7). Dropping it on every attempt made an
+      // intent whose payoutId is never populated invisible: the batch can
+      // reach a terminal state the executor no longer scans (a disputed
+      // funding charge), so the intent never finalizes, every redelivery
+      // throws, every claim is deleted, and when Stripe finally gives up
+      // the reversal is lost with NO row for the stuck-claim alert to see.
+      //
+      // Leaving the claim in place with a null outcome means the 5-minute
+      // lease expires and the next redelivery takes over as normal, but the
+      // row persists — so the 1h unfinished-claim alert in reconcile.ts
+      // surfaces it to a human instead of it disappearing quietly.
+      console.error(
+        `[funding] event ${event.id} is not yet processable (${err.message}) — claim retained so the stuck-claim alert can see it if this persists`,
+      );
+      throw err;
+    }
     // Drop the claim, then rethrow → 5xx → Stripe redelivers, and the
     // redelivery is processed at once rather than waiting out the lease.
     // Every handler is idempotent, so re-running is safe.

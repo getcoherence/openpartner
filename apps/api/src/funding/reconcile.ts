@@ -90,7 +90,18 @@ async function sweepSlice<T>(
   // until they succeed, independent of where the cursor is (round 6).
   const retrySet = await getSweepRetry(db, cursorKey);
   const retryIds = new Set(retrySet);
-  const retryDue = rows.filter((r) => retryIds.has(idOf(r))).slice(0, limit);
+  // Retries get at most HALF the budget (round 7). Letting them take the
+  // whole limit was the poison-item failure in a new costume: with `limit`
+  // persistently-failing rows, `remaining` was 0 every run, `cursorDue` was
+  // always empty, the cursor reset to null forever, and NOTHING else was
+  // ever swept — the exact starvation the retry set was introduced to
+  // prevent. Reserving cursor capacity means both always make progress.
+  const retryBudget = Math.max(1, Math.floor(limit / 2));
+  const retryCandidates = rows.filter((r) => retryIds.has(idOf(r)));
+  // Rotate within the retry set too, so a persistently-failing head cannot
+  // hide the tail: take from the front, and `commit` moves the survivors to
+  // the back of the stored order.
+  const retryDue = retryCandidates.slice(0, retryBudget);
   const retryDueIds = new Set(retryDue.map(idOf));
 
   // ORDER BY WHEN A ROW BECAME ELIGIBLE, not by its id. Ids are assigned
@@ -133,13 +144,22 @@ async function sweepSlice<T>(
     // durable retry set instead, and the cursor is free to move on.
     commit: async (failedIds: string[] = []) => {
       const failed = new Set(failedIds);
-      const succeeded = [...dueIds].filter((id) => !failed.has(id));
-      const next = new Set([...retrySet, ...failedIds]);
-      for (const id of succeeded) next.delete(id);
-      let list = [...next];
+      const succeeded = new Set([...dueIds].filter((id) => !failed.has(id)));
+      // ROTATE: the ids we just attempted and that failed again go to the
+      // BACK, so a persistently-failing head cannot monopolise the retry
+      // budget and hide the tail behind it forever.
+      const attempted = new Set(retryDue.map(idOf));
+      const untouched = retrySet.filter((id) => !succeeded.has(id) && !attempted.has(id));
+      const retriedAgain = retrySet.filter((id) => !succeeded.has(id) && attempted.has(id));
+      const newlyFailed = failedIds.filter((id) => !retrySet.includes(id));
+      let list = [...untouched, ...retriedAgain, ...newlyFailed];
       if (list.length > RETRY_SET_CAP) {
+        // Drop from the FRONT (oldest-attempted) and say exactly which ids
+        // are being forgotten — a silently dropped id is the failure this
+        // whole mechanism exists to prevent, so it must never be quiet.
+        const dropped = list.slice(0, list.length - RETRY_SET_CAP);
         console.error(
-          `[funding-reconcile] ALERT: ${cursorKey} retry set exceeded ${RETRY_SET_CAP} (${list.length}) — dropping the oldest; Stripe reads are failing persistently and need investigation`,
+          `[funding-reconcile] ALERT: ${cursorKey} retry set exceeded ${RETRY_SET_CAP} (${list.length}) — DROPPING ${dropped.length} id(s) that will no longer be retried: ${dropped.join(', ')}. Stripe reads are failing persistently; investigate before these age out of their horizon.`,
         );
         list = list.slice(-RETRY_SET_CAP);
       }
@@ -463,17 +483,26 @@ export async function runFundingReconciliation(
     payoutId: string | null;
     postedAt: Date | null;
     createdAt: Date;
+    updatedAt: Date;
   }>;
   const transferSlice = await sweepSlice(
     db,
     SWEEP_CURSOR_TRANSFERS,
     confirmedAll,
     (i) => i.id,
-    // An intent joins this sweep when it CONFIRMS, which can be long after
-    // it was created. `postedAt` is the immutable anchor closest to that
-    // moment; id is the tiebreak. Ordering by id alone skipped intents
-    // that confirmed behind the cursor.
-    (i) => `${new Date(i.postedAt ?? i.createdAt).toISOString()}|${i.id}`,
+    // An intent joins this sweep when it CONFIRMS. `postedAt` is NOT that
+    // moment (round 7): it is stamped before the Stripe call, so an intent
+    // whose response was lost sits `posted` while the cursor walks past its
+    // postedAt, then confirms a day later via reconcile — landing BEHIND
+    // the cursor and starvable under churn, exactly the bug this ordering
+    // was meant to fix.
+    //
+    // `updatedAt` is the right key precisely because it MOVES: finalization
+    // bumps it at the moment the row becomes eligible, so the row is always
+    // ahead of the cursor when it joins. Later mutations bump it again,
+    // which can only re-visit a row — never skip one. Re-sweeping is free
+    // (the sweep is a read plus idempotent handlers); skipping is not.
+    (i) => `${new Date(i.updatedAt ?? i.postedAt ?? i.createdAt).toISOString()}|${i.id}`,
     sweepLimit,
   );
   const confirmed = transferSlice.due;

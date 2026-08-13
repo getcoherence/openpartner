@@ -1507,3 +1507,240 @@ describe.skipIf(skipIntegration)('round-6: operator disposition for a stuck rele
     expect((await reload(batch.id)).status).toBe('reserved');
   });
 });
+
+// ---- Round-7 review fixes (Codex, 2026-08-12) ------------------------------
+
+describe.skipIf(skipIntegration)('round-7 hardening', () => {
+  it('the fast path is gated on the state the CAS WON, not the caller snapshot', async () => {
+    // releaseBatch accepts four source states but the no-search fast path is
+    // only sound for `reserved`. Deciding from the caller's stale
+    // batch.status meant a row that moved reserved → invoicing between the
+    // caller's SELECT and the CAS still skipped the search — freeing the
+    // allocations while a PaymentIntent was being created for it.
+    const batch = await seedBatch({ status: 'reserved' });
+    const allocationId = await seedAllocation(batch.id);
+
+    // The row moves on underneath us; the caller still holds `reserved`.
+    await db(TABLES.HostedFundingBatch).where({ id: batch.id }).update({ status: 'invoicing' });
+
+    const { stripe, search } = mockStripe({ searchResult: [] });
+    const outcome = await releaseBatch(db, stripe, batch, 'funding_timeout');
+
+    // It must NOT take the fast path: it has to ask Stripe, and an empty
+    // answer is not proof, so it holds.
+    expect(search).toHaveBeenCalled();
+    expect(outcome).toBe('pi_not_terminal');
+    expect((await db(TABLES.HostedFundingAllocation).where({ id: allocationId }).first()).state).toBe(
+      'reserved',
+    );
+  });
+
+  it('forceReleaseBatch does not free allocations when it loses its CAS', async () => {
+    // It used to free them and only then attempt the closing transition, so
+    // losing that CAS to a concurrent release left a batch heading for
+    // `funded` with released, re-batchable allocations.
+    const batch = await seedBatch({ status: 'release_requested' });
+    const allocationId = await seedAllocation(batch.id);
+
+    // The race has to happen BETWEEN the read and the CAS. An earlier
+    // version of this test flipped the status up front, so the early guard
+    // returned not_stuck before the ordering code ran at all — and it
+    // passed with the fix reverted. The seam stages it properly: a
+    // concurrent release finds the orphan PI and carries the batch to
+    // `funded` while force-release is mid-flight.
+    expect(
+      await forceReleaseBatch(db, batch.id, 'keith', 'confirmed_no_pi', {
+        __afterRead: async () => {
+          await db(TABLES.HostedFundingBatch).where({ id: batch.id }).update({ status: 'funded' });
+        },
+      }),
+    ).toBe('not_stuck');
+    expect((await db(TABLES.HostedFundingAllocation).where({ id: allocationId }).first()).state).toBe(
+      'reserved',
+    );
+    expect((await reload(batch.id)).status).toBe('funded');
+  });
+
+  it('a saturated retry set cannot starve the cursor', async () => {
+    // Retry work used to take the whole budget, so `limit` persistently
+    // failing rows meant the cursor never advanced and nothing else was ever
+    // swept — the poison-item starvation the retry set was added to prevent,
+    // reintroduced in a new shape. Retries now get at most half.
+    const now = Date.now();
+    const failing: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const b = await seedBatch({
+        status: 'settled',
+        stripeChargeId: `ch_bad_${i}`,
+        fundedAt: new Date(now - (10 - i) * 86400000),
+        actualStripeFeeMinor: '25',
+      });
+      failing.push(b.id);
+    }
+    const healthy = await seedBatch({
+      status: 'settled',
+      stripeChargeId: 'ch_healthy',
+      fundedAt: new Date(now - 1000),
+      actualStripeFeeMinor: '25',
+    });
+
+    const seen: string[] = [];
+    const mk = () =>
+      ({
+        charges: {
+          retrieve: vi.fn(async (id: string) => {
+            seen.push(id);
+            if (id.startsWith('ch_bad_')) throw new Error('persistently unreadable');
+            return { id, refunded: false, amount_refunded: 0, disputed: false, balance_transaction: { fee: 25 } };
+          }),
+        },
+        transfers: { retrieve: vi.fn() },
+        paymentIntents: { retrieve: vi.fn(), search: vi.fn(async () => ({ data: [] })), cancel: vi.fn() },
+      }) as unknown as Stripe;
+
+    // Budget of 2 → at most 1 retry slot, so cursor work always gets one.
+    for (let run = 0; run < 4; run += 1) {
+      await runFundingReconciliation(db, { stripe: mk(), sweepLimit: 2 });
+    }
+
+    expect(seen).toContain('ch_healthy');
+    expect(failing.length).toBe(4);
+    expect(healthy.id).toBeTruthy();
+  });
+
+  it('an intent that confirms LATE is still swept — postedAt is not eligibility', async () => {
+    // postedAt is stamped before the Stripe call, so an intent whose
+    // response was lost sits `posted` while the cursor walks past it, then
+    // confirms much later and lands behind the cursor. Ordering on a key
+    // that moves forward at confirmation means a row can only ever be
+    // re-visited, never skipped.
+    const { partnerId } = await seedCommission();
+    const batch = await seedBatch({ status: 'settled' });
+    const t0 = new Date(Date.now() - 30 * 86400000);
+
+    const lateIntent = ulid();
+    await db(TABLES.HostedFundingTransfer).insert({
+      id: lateIntent,
+      tenantId: TENANT,
+      batchId: batch.id,
+      partnerId,
+      currency: 'usd',
+      amountMinor: 8000,
+      destinationAccountId: 'acct_x',
+      idempotencyKey: `fbt:${lateIntent}`,
+      state: 'posted', // not yet eligible
+      stripeTransferId: 'tr_late',
+      postedAt: t0,
+      payoutId: null,
+    });
+
+    // Newer intents that ARE eligible, so the cursor has somewhere to walk.
+    // Each needs its own partner: (batchId, partnerId, currency) is unique.
+    // updatedAt is set explicitly so the ordering under test is controlled
+    // rather than "whatever the insert happened to stamp".
+    const mkIntent = async (i: number, updatedAt: Date, state: string, tag: string) => {
+      const id = ulid();
+      const { partnerId: seedPartnerId } = await seedCommission();
+      await db(TABLES.HostedFundingTransfer).insert({
+        id,
+        tenantId: TENANT,
+        batchId: batch.id,
+        partnerId: seedPartnerId,
+        currency: 'usd',
+        amountMinor: 1000,
+        destinationAccountId: 'acct_x',
+        idempotencyKey: `fbt:${id}`,
+        state,
+        stripeTransferId: tag,
+        postedAt: new Date(t0.getTime() + 1000 + i * 1000),
+        payoutId: null,
+      });
+      await db(TABLES.HostedFundingTransfer).where({ id }).update({ updatedAt });
+      return id;
+    };
+    for (let i = 0; i < 4; i += 1) {
+      await mkIntent(i, new Date(t0.getTime() + 1000 + i * 1000), 'confirmed', `tr_seed_${i}`);
+    }
+
+    const seen: string[] = [];
+    const mk = () =>
+      ({
+        charges: { retrieve: vi.fn(async (id: string) => ({ id, refunded: false, amount_refunded: 0, disputed: false, balance_transaction: { fee: 25 } })) },
+        transfers: {
+          retrieve: vi.fn(async (id: string) => {
+            seen.push(id);
+            return { id, reversed: false, amount_reversed: 0, reversals: { data: [] } };
+          }),
+        },
+        paymentIntents: { retrieve: vi.fn(), search: vi.fn(async () => ({ data: [] })), cancel: vi.fn() },
+      }) as unknown as Stripe;
+
+    // Walk the cursor past where this intent's postedAt sits.
+    await runFundingReconciliation(db, { stripe: mk(), sweepLimit: 1 });
+    await runFundingReconciliation(db, { stripe: mk(), sweepLimit: 1 });
+    await runFundingReconciliation(db, { stripe: mk(), sweepLimit: 1 });
+
+    // NOW it confirms — long after its postedAt. updatedAt moves with it, so
+    // under the fixed ordering it lands AHEAD of the cursor.
+    await db(TABLES.HostedFundingTransfer)
+      .where({ id: lateIntent })
+      .update({ state: 'confirmed', updatedAt: new Date(t0.getTime() + 6000) });
+
+    // Churn: a newer eligible intent before every run, so the cursor never
+    // reaches the end and never wraps. Without this the cursor wraps and
+    // picks the low-postedAt row up by accident — which is why an earlier
+    // version of this test passed under BOTH orderings.
+    for (let i = 0; i < 4; i += 1) {
+      await mkIntent(10 + i, new Date(t0.getTime() + 10000 + i * 1000), 'confirmed', `tr_churn_${i}`);
+      await runFundingReconciliation(db, { stripe: mk(), sweepLimit: 1 });
+    }
+
+    expect(seen).toContain('tr_late');
+  });
+
+  it('an unprocessable reversal KEEPS its inbox claim so the stuck alert can see it', async () => {
+    // Deleting the claim on every attempt made an intent whose payoutId is
+    // never populated invisible: Stripe eventually stops redelivering and
+    // there is no row left for the unfinished-claim alert to report.
+    const { partnerId } = await seedCommission();
+    const batch = await seedBatch({ status: 'settled' });
+    const intentId = ulid();
+    await db(TABLES.HostedFundingTransfer).insert({
+      id: intentId,
+      tenantId: TENANT,
+      batchId: batch.id,
+      partnerId,
+      currency: 'usd',
+      amountMinor: 8000,
+      destinationAccountId: 'acct_x',
+      idempotencyKey: `fbt:${intentId}`,
+      state: 'posted',
+      stripeTransferId: 'tr_orphan',
+      payoutId: null,
+    });
+
+    const { stripe } = mockStripe();
+    const event = {
+      id: `evt_${ulid()}`,
+      type: 'transfer.reversed',
+      data: {
+        object: {
+          id: 'tr_orphan',
+          object: 'transfer',
+          amount: 8000,
+          currency: 'usd',
+          reversed: true,
+          metadata: { openpartner_transfer_intent_id: intentId },
+        },
+      },
+    } as unknown as Stripe.Event;
+
+    await expect(handleFundingEvent(db, stripe, event)).rejects.toThrow(/no payout yet/);
+
+    const row = (await db(TABLES.StripeWebhookInbox)
+      .where({ stripeEventId: event.id })
+      .first()) as { outcome: string | null; processedAt: Date } | undefined;
+    expect(row).toBeTruthy(); // the row SURVIVES
+    expect(row!.outcome ?? null).toBeNull(); // and is unfinished, so it alerts
+  });
+});
