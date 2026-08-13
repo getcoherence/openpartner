@@ -21,7 +21,7 @@
  */
 
 import { promises as fs } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 export interface PutOptions {
@@ -52,11 +52,13 @@ class FsStorage implements StorageBackend {
   ) {}
 
   async put(key: string, buf: Buffer, _opts: PutOptions): Promise<void> {
-    // No subdir nesting in keys (we control them) — single mkdir on the
-    // root suffices. atomic-ish: write then rename would be safer but
+    // Keys nest (e.g. tenants/<id>/logos/...), so create the full parent
+    // path, not just the storage root — otherwise a fresh install ENOENTs
+    // on the first upload. atomic-ish: write then rename would be safer but
     // for v1 a direct write is fine; the next overwrite supersedes.
-    await fs.mkdir(this.dir, { recursive: true });
-    await fs.writeFile(join(this.dir, key), buf);
+    const target = join(this.dir, key);
+    await fs.mkdir(dirname(target), { recursive: true });
+    await fs.writeFile(target, buf);
   }
 
   publicUrl(key: string): string {
