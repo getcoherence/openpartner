@@ -452,6 +452,21 @@ async function s8HoldNotRearm() {
   check('operator re-arm accepted', outcome === 'rearmed', String(outcome));
   await executePayoutTransfers(db, { stripe: counting });
   check('posts exactly once after operator authorisation', created === 1, `create called ${created}x`);
+
+  // And now the REFUSAL, against real Stripe. This scenario only ever
+  // tested acceptance, so removing the listing guard entirely produced the
+  // same result (round 8). A transfer now genuinely exists in the group, so
+  // a second re-arm attempt must be refused on positive evidence.
+  await db(TABLES.Payout)
+    .where({ id: payoutId })
+    .update({
+      metadata: db.raw(`"metadata" || ?::jsonb`, [
+        JSON.stringify({ transferState: 'reconcile_required', keyGeneration: 1 }),
+      ]),
+    });
+  const refused = await releaseIntentForRetry(db, payoutId, 1, 'staging-matrix', stripe);
+  check('a second re-arm is REFUSED once a transfer exists', refused === 'transfer_exists',
+    String(refused));
   check('one transfer at Stripe', (await transfersForGroup(payoutId)).length === 1);
   check('payout paid', (await payoutRow(payoutId))?.status === 'paid');
 }

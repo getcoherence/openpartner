@@ -37,6 +37,10 @@ interface FakeTransfer {
   currency: string;
   transfer_group?: string;
   metadata: Record<string, string>;
+  /** How much of it has been clawed back. Absent = none. The operator
+   *  disposals check this, so tests must be able to set it. */
+  amount_reversed?: number;
+  reversed?: boolean;
 }
 
 function mockStripe(
@@ -544,10 +548,10 @@ describe.skipIf(skipIntegration)('payout transfer executor', () => {
     expect((await payoutOf(payoutId)).metadata.transferState).toBe('reconcile_required');
 
     // A stale operator view loses rather than handing out a live epoch.
-    expect(await releaseIntentForRetry(db, payoutId, 7, 'stale-op')).toBe('generation_moved');
+    expect(await releaseIntentForRetry(db, payoutId, 7, 'stale-op', stripe)).toBe('generation_moved');
     expect((await payoutOf(payoutId)).metadata.transferState).toBe('reconcile_required');
 
-    expect(await releaseIntentForRetry(db, payoutId, 0, 'keith')).toBe('rearmed');
+    expect(await releaseIntentForRetry(db, payoutId, 0, 'keith', stripe)).toBe('rearmed');
     const rearmed = await payoutOf(payoutId);
     expect(rearmed.metadata.transferState).toBe('intent');
     expect(rearmed.metadata.keyGeneration).toBe(1);
@@ -1133,7 +1137,7 @@ describe.skipIf(skipIntegration)('round-3 hardening', () => {
     expect((await payoutOf(payoutId)).metadata.transferState).toBe('reconcile_required');
     expect((await payoutOf(payoutId)).metadata.keyGeneration ?? 0).toBe(0);
 
-    expect(await releaseIntentForRetry(db, payoutId, 0, 'keith')).toBe('rearmed');
+    expect(await releaseIntentForRetry(db, payoutId, 0, 'keith', stripe)).toBe('rearmed');
     expect((await payoutOf(payoutId)).metadata.keyGeneration).toBe(1);
 
     await executePayoutTransfers(db, { stripe }); // posts under the new key
@@ -1526,8 +1530,39 @@ describe.skipIf(skipIntegration)('round-7 hardening', () => {
         ]),
       });
 
+    // Round 8: the kept transfer is now VERIFIED against Stripe. The
+    // earlier version of this test passed an invented id and expected
+    // success, which codified the defect — a typo recorded the payout paid
+    // against a transfer that does not exist, and no operator function
+    // could then recover the state.
+    const kept: FakeTransfer = {
+      id: 'tr_kept',
+      amount: 5000,
+      currency: 'usd',
+      transfer_group: payoutId,
+      metadata: { openpartner_payout_id: payoutId },
+    };
+    const surplus: FakeTransfer = {
+      id: 'tr_surplus',
+      amount: 5000,
+      amount_reversed: 5000, // the operator reversed this one
+      currency: 'usd',
+      transfer_group: payoutId,
+      metadata: { openpartner_payout_id: payoutId },
+    };
+    const { stripe } = mockStripe({ listed: [kept, surplus] });
+
+    // A transfer id that is not in the group is refused outright.
     expect(
-      await resolveDuplicateReview(db, payoutId, 'keith', { keptTransferId: 'tr_kept' }),
+      await resolveDuplicateReview(db, payoutId, 'keith', { keptTransferId: 'tr_typo' }, stripe),
+    ).toBe('kept_transfer_invalid');
+    // So is naming the one that was reversed.
+    expect(
+      await resolveDuplicateReview(db, payoutId, 'keith', { keptTransferId: 'tr_surplus' }, stripe),
+    ).toBe('kept_transfer_invalid');
+
+    expect(
+      await resolveDuplicateReview(db, payoutId, 'keith', { keptTransferId: 'tr_kept' }, stripe),
     ).toBe('resolved');
 
     const payout = await payoutOf(payoutId);
@@ -1553,9 +1588,30 @@ describe.skipIf(skipIntegration)('round-7 hardening', () => {
         ]),
       });
 
-    expect(await resolveDuplicateReview(db, payoutId, 'keith', { allReversed: true })).toBe(
-      'resolved',
-    );
+    // Round 8: "all reversed" is verified too. Claiming it while a transfer
+    // still holds money released the commissions and let the planner pay
+    // them again.
+    const live: FakeTransfer = {
+      id: 'tr_still_live',
+      amount: 5000,
+      currency: 'usd',
+      transfer_group: payoutId,
+      metadata: { openpartner_payout_id: payoutId },
+    };
+    const stillLive = mockStripe({ listed: [live] });
+    expect(
+      await resolveDuplicateReview(db, payoutId, 'keith', { allReversed: true }, stillLive.stripe),
+    ).toBe('transfers_still_live');
+    expect(
+      (await db(TABLES.Commission).where({ id: commissionIds[0]! }).first()).payoutId,
+    ).toBe(payoutId); // still claimed
+
+    const reversed = mockStripe({
+      listed: [{ ...live, amount_reversed: 5000, reversed: true }],
+    });
+    expect(
+      await resolveDuplicateReview(db, payoutId, 'keith', { allReversed: true }, reversed.stripe),
+    ).toBe('resolved');
     const c = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
     expect(c.status).toBe('approved');
     expect(c.payoutId).toBeNull();
@@ -1675,5 +1731,146 @@ describe.skipIf(skipIntegration)('round-7 hardening', () => {
     expect(after.status).toBe('failed'); // NOT flipped to paid
     expect(after.stripeTransferId).toBe('tr_rev_first');
     expect(transfersCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe.skipIf(skipIntegration)('round-8 hardening', () => {
+  it('disposeIntent REFUSES a partially-reversed transfer', async () => {
+    // finalizeTransfer records confirmed+failed for ANY non-zero
+    // amount_reversed, including a partial clawback. `status !== 'paid'`
+    // was therefore never sufficient: a $10 reversal on a $50 transfer
+    // leaves $40 with the partner, and releasing those commissions let the
+    // planner pay the whole $50 again — $90 out for $50 owed.
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        status: 'failed',
+        stripeTransferId: 'tr_partial',
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'confirmed' }),
+        ]),
+      });
+
+    const partial: FakeTransfer = {
+      id: 'tr_partial',
+      amount: 5000,
+      amount_reversed: 1000, // only $10 came back
+      currency: 'usd',
+      transfer_group: payoutId,
+      metadata: { openpartner_payout_id: payoutId },
+    };
+    const { stripe } = mockStripe({ listed: [partial] });
+
+    expect(await disposeIntent(db, payoutId, 'keith', 'assumed_reversed', stripe)).toBe(
+      'money_with_partner',
+    );
+    const held = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(held.payoutId).toBe(payoutId); // still frozen — not re-payable
+
+    // Fully reversed, and it disposes normally.
+    const full = mockStripe({ listed: [{ ...partial, amount_reversed: 5000, reversed: true }] });
+    expect(await disposeIntent(db, payoutId, 'keith', 'fully_reversed', full.stripe)).toBe(
+      'disposed',
+    );
+    expect((await db(TABLES.Commission).where({ id: commissionIds[0]! }).first()).payoutId).toBeNull();
+  });
+
+  it('disposeIntent refuses when it cannot read the transfer', async () => {
+    // Same rule as everywhere else: could not ask ⇒ do not act.
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        status: 'failed',
+        stripeTransferId: 'tr_unreadable',
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'confirmed' }),
+        ]),
+      });
+
+    const throwing = {
+      transfers: {
+        create: vi.fn(),
+        list: vi.fn(),
+        retrieve: vi.fn(async () => {
+          throw new Error('stripe unavailable');
+        }),
+      },
+    } as unknown as Stripe;
+
+    expect(await disposeIntent(db, payoutId, 'keith', 'guess', throwing)).toBe('cannot_verify');
+    expect((await db(TABLES.Commission).where({ id: commissionIds[0]! }).first()).payoutId).toBe(
+      payoutId,
+    );
+  });
+
+  it('releaseIntentForRetry refuses rather than re-arming when it cannot list', async () => {
+    // The guard used to be skipped entirely when no client was passed, and
+    // the documented operator call omitted one. It is required now, and a
+    // failed listing refuses instead of proceeding.
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'reconcile_required', keyGeneration: 0 }),
+        ]),
+      });
+
+    const throwing = {
+      transfers: {
+        create: vi.fn(),
+        retrieve: vi.fn(),
+        list: vi.fn(async () => {
+          throw new Error('stripe unavailable');
+        }),
+      },
+    } as unknown as Stripe;
+
+    expect(await releaseIntentForRetry(db, payoutId, 0, 'keith', throwing)).toBe('cannot_verify');
+    const held = await payoutOf(payoutId);
+    expect(held.metadata.transferState).toBe('reconcile_required');
+    expect(held.metadata.keyGeneration ?? 0).toBe(0);
+  });
+
+  it('releaseIntentForRetry refuses when the transfer group exceeds the page budget', async () => {
+    // Exhausting the bound is not absence. Re-arming there would authorise
+    // a fresh key on the strength of not having looked.
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'reconcile_required', keyGeneration: 0 }),
+        ]),
+      });
+
+    // Always says there is another page, and never returns one of ours.
+    const endless = {
+      transfers: {
+        create: vi.fn(),
+        retrieve: vi.fn(),
+        list: vi.fn(async () => ({
+          data: [{ id: `tr_other_${Math.random()}`, metadata: {} }],
+          has_more: true,
+        })),
+      },
+    } as unknown as Stripe;
+
+    expect(await releaseIntentForRetry(db, payoutId, 0, 'keith', endless)).toBe('cannot_verify');
+    expect((await payoutOf(payoutId)).metadata.transferState).toBe('reconcile_required');
   });
 });

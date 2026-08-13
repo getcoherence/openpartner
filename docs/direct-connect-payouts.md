@@ -191,33 +191,53 @@ sits in `reconcile_required` forever by design — the executor will not
 authorise a new key on its own. There are two supported ways out, and both
 are code rather than hand-written SQL:
 
+**Every one of these takes a Stripe client, and it is required.** They verify
+their own premise rather than trusting yours — round 8 found that an operator
+tool which acts on an unverified human assertion is strictly weaker than the
+automatic paths, which were just purged of exactly that. A typo'd transfer id
+or a mistaken "I reversed them all" is silent; Stripe is not.
+
 ```ts
-import { releaseIntentForRetry, disposeIntent } from './payout-transfers.js';
+import {
+  releaseIntentForRetry,
+  disposeIntent,
+  resolveDuplicateReview,
+} from './payout-transfers.js';
 
-// "I have confirmed no transfer exists and want it paid." Bumps the key
-// generation so the next POST uses a key Stripe has never seen — reusing
-// the old one would just replay its stored outcome forever.
-await releaseIntentForRetry(db, payoutId, observedGeneration, 'keith');
+// "No transfer exists and I want it paid." Lists the transfer group first
+// and REFUSES ('transfer_exists') if anything is there — the executor will
+// finalize that instead. Bumps the key generation on success, because
+// Stripe's retention is anchored to the key's first use.
+await releaseIntentForRetry(db, payoutId, observedGeneration, 'keith', stripe);
 
-// "This should not be paid." Releases the frozen commissions back to the
-// payable pool.
-await disposeIntent(db, payoutId, 'keith', 'confirmed_no_transfer');
+// "This should not be paid." Retrieves the stamped transfer and refuses
+// ('money_with_partner') unless it is FULLY reversed — a partial clawback
+// still leaves money with the partner, and releasing those commissions
+// would pay the full amount again.
+await disposeIntent(db, payoutId, 'keith', 'confirmed_no_transfer', stripe);
+
+// A duplicate_review payout. disposeIntent REFUSES this state on purpose.
+await resolveDuplicateReview(db, payoutId, 'keith', { keptTransferId: 'tr_...' }, stripe);
+await resolveDuplicateReview(db, payoutId, 'keith', { allReversed: true }, stripe);
 ```
 
-Both are fenced on the generation you observed, so two operators — or an
-operator and a concurrent reconcile — cannot both hand out an epoch. `disposeIntent`
-also covers a `duplicate_review` payout once you have reversed the surplus
-transfers by hand.
+`releaseIntentForRetry` is fenced on the generation you observed, so two
+operators — or an operator and a concurrent reconcile — cannot both hand out
+an epoch.
 
-**Confirm before you release.** `releaseIntentForRetry` is you asserting the
-thing the system deliberately refuses to infer. Check first:
+`resolveDuplicateReview` checks the disposition you give it: a kept transfer
+must be in the payout's group and not reversed; `allReversed` is refused
+while any transfer still holds money.
+
+Any of them returns `cannot_verify` if Stripe cannot be read, or if the
+transfer group is larger than the listing will page. That is deliberate —
+running out of pages is not the same as finding nothing.
+
+**Look first anyway**, so you know what you are asserting:
 
 ```bash
 stripe transfers list --transfer-group <payoutId>
 ```
-
-If that shows a transfer, do **not** re-arm — the next executor tick will
-find and finalize it on its own.
 
 ## Staging run — PASSED against Stripe test mode
 

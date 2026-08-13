@@ -854,11 +854,12 @@ export async function releaseIntentForRetry(
   payoutId: string,
   observedGeneration: number,
   operator: string,
-  /** Stripe client. REQUIRED in production — see the listing guard below.
-   *  Omitting it is only for tests that have already established there is
-   *  no transfer. */
-  stripe?: Stripe,
-): Promise<'rearmed' | 'not_held' | 'generation_moved' | 'transfer_exists'> {
+  /** REQUIRED. Was optional in round 7, and the documented operator call in
+   *  docs/direct-connect-payouts.md omitted it — so the guard below did not
+   *  run in the one usage operators would actually copy (round 8). An
+   *  optional security parameter is a security parameter someone forgets. */
+  stripe: Stripe,
+): Promise<'rearmed' | 'not_held' | 'generation_moved' | 'transfer_exists' | 'cannot_verify'> {
   const row = (await db(TABLES.Payout).where({ id: payoutId }).first()) as PayoutRow | undefined;
   if (!row) return 'not_held';
   const meta = row.metadata as unknown as PayoutTransferMeta;
@@ -880,26 +881,40 @@ export async function releaseIntentForRetry(
   // the operator's assertion is already false: let the executor finalize it
   // instead. This is cheap and it closes the race, because the transfer the
   // reconciler found is by definition visible to a listing.
-  if (stripe) {
-    let startingAfter: string | undefined;
-    for (let page = 0; page < 20; page += 1) {
-      const listed = await stripe.transfers.list({
+  let startingAfter: string | undefined;
+  for (let page = 0; page < 20; page += 1) {
+    let listed: Stripe.ApiList<Stripe.Transfer>;
+    try {
+      listed = await stripe.transfers.list({
         transfer_group: payoutId,
         limit: 100,
         ...(startingAfter ? { starting_after: startingAfter } : {}),
       });
-      const mine = listed.data.filter((t) => t.metadata?.openpartner_payout_id === payoutId);
-      if (mine.length > 0) {
-        console.error(
-          `[payouts] OPERATOR ${operator} tried to re-arm ${payoutId} but ${mine.length} transfer(s) exist in its group (${mine
-            .map((t) => t.id)
-            .join(', ')}) — refusing; the executor will finalize it`,
-        );
-        return 'transfer_exists';
-      }
-      if (!listed.has_more || listed.data.length === 0) break;
-      startingAfter = listed.data[listed.data.length - 1]!.id;
+    } catch (err) {
+      // Could not ask ⇒ do not authorise. Same rule as everywhere else.
+      console.error(`[payouts] OPERATOR ${operator} re-arm of ${payoutId} refused — listing failed`, err);
+      return 'cannot_verify';
     }
+    const mine = listed.data.filter((t) => t.metadata?.openpartner_payout_id === payoutId);
+    if (mine.length > 0) {
+      console.error(
+        `[payouts] OPERATOR ${operator} tried to re-arm ${payoutId} but ${mine.length} transfer(s) exist in its group (${mine
+          .map((t) => t.id)
+          .join(', ')}) — refusing; the executor will finalize it`,
+      );
+      return 'transfer_exists';
+    }
+    if (!listed.has_more || listed.data.length === 0) break;
+    if (page === 19) {
+      // Exhausting the page budget is NOT absence (round 8). Running out of
+      // pages while Stripe still says `has_more` and then re-arming would
+      // authorise a fresh key on the strength of not having looked.
+      console.error(
+        `[payouts] OPERATOR ${operator} re-arm of ${payoutId} refused — the transfer group has more pages than this guard will read, so absence is unproven`,
+      );
+      return 'cannot_verify';
+    }
+    startingAfter = listed.data[listed.data.length - 1]!.id;
   }
 
   const rearmed = await casTransferState(
@@ -937,7 +952,46 @@ export async function disposeIntent(
   payoutId: string,
   operator: string,
   reason: string,
-): Promise<'disposed' | 'not_disposable'> {
+  /** REQUIRED wherever a transfer may exist. See the verification below. */
+  stripe?: Stripe,
+): Promise<'disposed' | 'not_disposable' | 'money_with_partner' | 'cannot_verify'> {
+  // VERIFY THE PREMISE, don't take the operator's word for it (round 8).
+  //
+  // Round 6 removed "an empty search proves absence" from the automatic
+  // paths. Round 7 then built operator paths that trust an unverified human
+  // assertion — which is strictly weaker than what we just removed. This is
+  // that rule applied here: releasing commissions claims the partner does
+  // not have the money, so check.
+  //
+  // The specific hole: `finalizeTransfer` records confirmed+failed for ANY
+  // non-zero `amount_reversed`, including a PARTIAL reversal. A $10 clawback
+  // on a $50 transfer leaves $40 with the partner, and releasing those
+  // commissions let the planner pay the full $50 again — $90 out for $50
+  // owed. `status !== 'paid'` was never sufficient: `failed` can still mean
+  // money with the partner.
+  const row = (await db(TABLES.Payout).where({ id: payoutId }).first()) as PayoutRow | undefined;
+  if (!row) return 'not_disposable';
+  if (row.stripeTransferId) {
+    if (!stripe) return 'cannot_verify';
+    let transfer: Stripe.Transfer;
+    try {
+      transfer = await stripe.transfers.retrieve(row.stripeTransferId);
+    } catch (err) {
+      console.error(
+        `[payouts] OPERATOR ${operator} dispose of ${payoutId} refused — cannot read transfer ${row.stripeTransferId}`,
+        err,
+      );
+      return 'cannot_verify';
+    }
+    const reversedMinor = Number(transfer.amount_reversed ?? 0);
+    if (reversedMinor < Number(transfer.amount ?? 0)) {
+      console.error(
+        `[payouts] OPERATOR ${operator} dispose of ${payoutId} REFUSED — transfer ${transfer.id} is only reversed ${reversedMinor}/${transfer.amount}; the partner still holds the remainder, so releasing these commissions would pay it twice`,
+      );
+      return 'money_with_partner';
+    }
+  }
+
   let ok = false;
   await db.transaction(async (trx) => {
     const moved = await casTransferState(
@@ -998,7 +1052,81 @@ export async function resolveDuplicateReview(
   payoutId: string,
   operator: string,
   disposition: { keptTransferId: string } | { allReversed: true },
-): Promise<'resolved' | 'not_in_duplicate_review'> {
+  /** REQUIRED. Both dispositions are checked against Stripe — see below. */
+  stripe?: Stripe,
+): Promise<
+  | 'resolved'
+  | 'not_in_duplicate_review'
+  | 'cannot_verify'
+  | 'kept_transfer_invalid'
+  | 'transfers_still_live'
+> {
+  // VERIFY BOTH DISPOSITIONS (round 8). As written, this function took the
+  // operator's assertion at face value and moved money state on it — the
+  // same "trust an unverifiable claim" the automatic paths had just been
+  // purged of, and worse, because a human typo is silent.
+  //
+  //   { allReversed } while transfers are still live → releases the
+  //     commissions → the planner pays them again.
+  //   { keptTransferId: <typo> } → records the payout paid against a
+  //     transfer that does not exist, and then NO operator function accepts
+  //     the resulting state: a wedge only raw SQL can clear.
+  if (!stripe) return 'cannot_verify';
+
+  const group: Stripe.Transfer[] = [];
+  try {
+    let startingAfter: string | undefined;
+    for (let page = 0; page < 20; page += 1) {
+      const listed = await stripe.transfers.list({
+        transfer_group: payoutId,
+        limit: 100,
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+      });
+      group.push(...listed.data.filter((t) => t.metadata?.openpartner_payout_id === payoutId));
+      if (!listed.has_more || listed.data.length === 0) break;
+      if (page === 19) {
+        // Exhausting the bound is not proof of anything. Refuse.
+        console.error(
+          `[payouts] OPERATOR ${operator} resolve of ${payoutId} refused — more transfers than this listing will page`,
+        );
+        return 'cannot_verify';
+      }
+      startingAfter = listed.data[listed.data.length - 1]!.id;
+    }
+  } catch (err) {
+    console.error(`[payouts] OPERATOR ${operator} resolve of ${payoutId} refused — listing failed`, err);
+    return 'cannot_verify';
+  }
+
+  if ('keptTransferId' in disposition) {
+    // The kept transfer must exist, be ours, and still hold the money.
+    const kept = group.find((t) => t.id === disposition.keptTransferId);
+    if (!kept) {
+      console.error(
+        `[payouts] OPERATOR ${operator} named kept transfer ${disposition.keptTransferId} for ${payoutId}, but no such transfer is in its group — refusing`,
+      );
+      return 'kept_transfer_invalid';
+    }
+    if (Number(kept.amount_reversed ?? 0) > 0) {
+      console.error(
+        `[payouts] OPERATOR ${operator} named kept transfer ${kept.id} for ${payoutId}, but it is reversed — refusing`,
+      );
+      return 'kept_transfer_invalid';
+    }
+  } else {
+    // Every transfer in the group must be FULLY reversed before the
+    // commissions can go back in the pool.
+    const live = group.filter((t) => Number(t.amount_reversed ?? 0) < Number(t.amount ?? 0));
+    if (live.length > 0) {
+      console.error(
+        `[payouts] OPERATOR ${operator} claimed all transfers reversed for ${payoutId}, but ${live.length} still hold money (${live
+          .map((t) => t.id)
+          .join(', ')}) — refusing`,
+      );
+      return 'transfers_still_live';
+    }
+  }
+
   let ok = false;
   await db.transaction(async (trx) => {
     if ('keptTransferId' in disposition) {
