@@ -265,6 +265,82 @@ export function opsBrandDecisionEmail(
   return { subject, text, html: plainHtml(text) };
 }
 
+/** Platform ops: a hosted brand scheduled their subscription to cancel at
+ *  period end (usually via the Stripe Customer Portal). */
+export function opsTenantCancellationScheduledEmail(
+  brandName: string,
+  slug: string,
+  effectiveAt: Date | null,
+  customerFeedback: string | null,
+  stripeSubscriptionUrl: string,
+): EmailTemplate {
+  const subject = `[Billing] ${brandName} (${slug}) scheduled a cancellation`;
+  const text = [
+    `${brandName} (${slug}) scheduled their OpenPartner subscription to cancel${
+      effectiveAt ? ` on ${effectiveAt.toISOString().slice(0, 10)}` : ' at the end of the current period'
+    }.`,
+    ...(customerFeedback ? [``, `Customer feedback: ${customerFeedback}`] : []),
+    ``,
+    `White-label branding + custom-domain routing will be revoked automatically`,
+    `when the subscription actually ends. Review the subscription in Stripe:`,
+    ``,
+    stripeSubscriptionUrl,
+  ].join('\n');
+  return { subject, text, html: wrap(text, stripeSubscriptionUrl, 'View subscription in Stripe') };
+}
+
+/** Platform ops: a previously scheduled cancellation was removed. */
+export function opsTenantCancellationResumedEmail(brandName: string, slug: string): EmailTemplate {
+  const subject = `[Billing] ${brandName} (${slug}) resumed their subscription`;
+  const text = `${brandName} (${slug}) removed their scheduled cancellation — the subscription renews as normal.`;
+  return { subject, text, html: plainHtml(text) };
+}
+
+/** Platform ops: a hosted brand's plan subscription ended. */
+export function opsTenantSubscriptionEndedEmail(
+  brandName: string,
+  slug: string,
+  via: 'webhook' | 'reconciliation',
+  whiteLabelRevoked: boolean,
+): EmailTemplate {
+  const subject = `[Billing] ${brandName} (${slug}) subscription ended`;
+  const text = [
+    `The OpenPartner plan subscription for ${brandName} (${slug}) has ended${
+      via === 'reconciliation'
+        ? ` — caught by the nightly Stripe reconciliation, which means the Stripe webhook delivery was missed (check the endpoint's subscribed events)`
+        : ''
+    }.`,
+    ``,
+    `Local billing state cleared.${whiteLabelRevoked ? ' White-label disabled and custom-domain routing revoked.' : ''}`,
+    `The brand keeps its data and can re-subscribe from the portal.`,
+  ].join('\n');
+  return { subject, text, html: plainHtml(text) };
+}
+
+/** Platform ops: Stripe failed to collect a tenant's own OpenPartner
+ *  invoice (dunning). */
+export function opsTenantInvoicePaymentFailedEmail(
+  brandName: string,
+  slug: string,
+  amountDue: string,
+  attemptCount: number,
+  invoiceUrl: string | null,
+): EmailTemplate {
+  const subject = `[Billing] Payment failed for ${brandName} (${slug}) — ${amountDue}`;
+  const text = [
+    `Stripe failed to collect ${amountDue} from ${brandName} (${slug}) (attempt ${attemptCount}).`,
+    ``,
+    `Stripe keeps retrying on its dunning schedule. If this brand has cancelled`,
+    `or the amount isn't actually owed, void the invoice in Stripe to stop the retries.`,
+    ...(invoiceUrl ? [``, invoiceUrl] : []),
+  ].join('\n');
+  return {
+    subject,
+    text,
+    html: invoiceUrl ? wrap(text, invoiceUrl, 'View invoice in Stripe') : plainHtml(text),
+  };
+}
+
 /** Plain-text-in-HTML wrapper for templates with no call-to-action button. */
 function plainHtml(text: string): string {
   return `<!DOCTYPE html>
