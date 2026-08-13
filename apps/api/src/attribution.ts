@@ -43,6 +43,11 @@ import { dispatchEvent } from './webhook-dispatcher.js';
 // timezone reasoning the rest of the engine doesn't do.
 const MONTH_MS = 30.4375 * 24 * 60 * 60 * 1000;
 
+// How far an event may predate its click and still attribute. Absorbs Stripe's
+// whole-second `created` truncation and clock drift between whoever stamped the
+// click and whoever stamped the event. See the age check in attributeEvent().
+const CLICK_AFTER_EVENT_GRACE_MS = 5 * 60 * 1000;
+
 export interface AttributeResult {
   status: 'attributed' | 'no_identity' | 'no_click' | 'outside_window' | 'already_attributed';
   touches?: Array<{ clickId: string; partnerId: string; weight: number; attributionId: string; commissionId?: string }>;
@@ -91,7 +96,20 @@ export async function attributeEvent(
     const campaign = campaignsById.get(click.programId);
     if (!campaign) continue;
     const windowMs = campaign.attributionWindowDays * 24 * 60 * 60 * 1000;
-    if (new Date(event.ts).getTime() - new Date(click.ts).getTime() > windowMs) continue;
+    const ageMs = new Date(event.ts).getTime() - new Date(click.ts).getTime();
+    // Outside the window OR a click that happened meaningfully AFTER the
+    // event: a later click must never attribute an earlier conversion
+    // (backlog / backdated events made negative ages pass the old one-sided
+    // check).
+    //
+    // The grace is load-bearing, not slop. A genuine conversion can measure
+    // slightly OLDER than the click that caused it for two ordinary reasons:
+    // Stripe stamps `created` in whole SECONDS, so a conversion in the same
+    // second as the click truncates to up to 999ms before it; and the clock
+    // stamping Click.ts is not the clock stamping the event. A strict `< 0`
+    // silently dropped both. What this rejects — a backdated backlog event
+    // replayed against a newer click — is hours or months off, never minutes.
+    if (ageMs < -CLICK_AFTER_EVENT_GRACE_MS || ageMs > windowMs) continue;
     eligible.push({ ...click, campaign });
   }
   if (eligible.length === 0) return { status: 'outside_window' };

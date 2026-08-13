@@ -10,16 +10,12 @@
 
 import type Stripe from 'stripe';
 import type { Knex } from 'knex';
-import {
-  TABLES,
-  type HostedFundingBatchRow,
-  type HostedFundingAuthorizationRow,
-  type TenantRow,
-} from '@openpartner/db';
+import { TABLES, type HostedFundingBatchRow, type TenantRow } from '@openpartner/db';
 import { requireStripe } from '../stripe.js';
 import { casBatch, FUNDING_TIMEOUT_DAYS, fundingRetryDueMs, fundingEnabled } from './state.js';
 import { getFundingAuthorization } from './reserve.js';
 import { releaseBatch } from './release.js';
+import { findFundingPaymentIntent, paymentIntentIdFromError } from './stripe-lookup.js';
 
 export interface CollectorDeps {
   stripe?: Stripe;
@@ -42,8 +38,17 @@ export async function runFundingCollector(db: Knex, deps: CollectorDeps = {}): P
   if (!fundingEnabled()) return result;
   const now = deps.now ?? (() => new Date());
 
+  // `release_requested` is in scope so a release that stopped halfway (a
+  // Stripe call failed) gets resumed on the next tick. Without it the
+  // batch was terminal-by-accident: allocations frozen, nothing looking.
   const batches = (await db(TABLES.HostedFundingBatch)
-    .whereIn('status', ['reserved', 'invoicing', 'payment_processing', 'funding_failed'])
+    .whereIn('status', [
+      'reserved',
+      'invoicing',
+      'payment_processing',
+      'funding_failed',
+      'release_requested',
+    ])
     .orderBy('createdAt', 'asc')) as HostedFundingBatchRow[];
 
   for (const batch of batches) {
@@ -84,23 +89,28 @@ async function collectBatch(
       return;
     }
     case 'invoicing': {
+      // Re-read the LIVE status first (round 10). This `batch` is a
+      // snapshot from the scan at the top of the pass; a pass that stalls
+      // long enough lets a release claim the batch in between, and the
+      // create below would then mint a PaymentIntent for a batch whose
+      // allocations are freed. The post-create status-predicated stamp
+      // does catch that — but only via the orphan-cancel compensation,
+      // whose cancel can lose to a bank debit already `processing`. One
+      // cheap read bounds the stale window to the create call itself,
+      // which the force-release quiet gate (1h) then covers entirely.
+      const live = (await db(TABLES.HostedFundingBatch)
+        .where({ id: batch.id })
+        .first()) as HostedFundingBatchRow | undefined;
+      if (!live || live.status !== 'invoicing') return;
       // A previous worker crashed between CAS and PI stamping — reconcile
-      // by deterministic idempotency key metadata, never blind re-POST
-      // (finding 2): search for a PI carrying our batch id first.
-      const existing = await stripe.paymentIntents.search({
-        query: `metadata['openpartner_funding_batch_id']:'${batch.id}'`,
-        limit: 1,
-      });
-      if (existing.data.length > 0) {
-        const pi = existing.data[0]!;
-        await db(TABLES.HostedFundingBatch)
-          .where({ id: batch.id, status: 'invoicing' })
-          .update({ stripePaymentIntentId: pi.id, updatedAt: new Date() });
-        await casBatch(db, batch.id, 'invoicing', 'payment_processing');
-        result.advanced.push(batch.id);
+      // by metadata, never blind re-POST (finding 2): search for a PI
+      // carrying our batch id first.
+      const existing = await findFundingPaymentIntent(stripe, batch.id);
+      if (existing) {
+        await adoptExistingPaymentIntent(db, live, existing, 'invoicing', stripe, result);
         return;
       }
-      await createFundingPaymentIntent(db, batch, stripe, result);
+      await createFundingPaymentIntent(db, live, stripe, result);
       return;
     }
     case 'payment_processing': {
@@ -122,6 +132,14 @@ async function collectBatch(
       }
       return;
     }
+    case 'release_requested': {
+      // A previous release stopped before the PI was terminal. Re-enter it
+      // (releaseBatch accepts release_requested as a source state) so the
+      // batch finishes releasing instead of sitting frozen forever.
+      const outcome = await releaseBatch(db, stripe, batch, batch.failureReason ?? 'release_resumed');
+      if (outcome === 'released') result.released.push(batch.id);
+      return;
+    }
     case 'funding_failed': {
       // Owned retry schedule (~day 1, 3, 7) against the same batch, then
       // the timeout above releases it.
@@ -141,11 +159,66 @@ async function collectBatch(
         await retryFundingPaymentIntent(db, batch, stripe, result);
         return;
       }
+      // No PI stamped — but "no stamp" does NOT mean "no PaymentIntent".
+      // An earlier create whose response was lost (timeout, crash) may
+      // have made a real bank debit. Inside Stripe's ~24h idempotency
+      // window a re-create would replay harmlessly; past it, it would
+      // debit the brand a SECOND time. So once we've attempted at all, we
+      // ask Stripe before creating (audit #12).
+      if (batch.fundingAttempts > 0) {
+        const orphan = await findFundingPaymentIntent(stripe, batch.id);
+        if (orphan) {
+          await adoptExistingPaymentIntent(db, batch, orphan, 'funding_failed', stripe, result);
+          return;
+        }
+      }
       const claimed = await casBatch(db, batch.id, 'funding_failed', 'invoicing');
       if (claimed) await createFundingPaymentIntent(db, claimed, stripe, result);
       return;
     }
   }
+}
+
+/**
+ * Take ownership of a PaymentIntent Stripe has but our batch doesn't know
+ * about — the recovery half of every ambiguous create. Stamps the id, then
+ * routes on the PI's ACTUAL status rather than assuming it's still open.
+ */
+async function adoptExistingPaymentIntent(
+  db: Knex,
+  batch: HostedFundingBatchRow,
+  pi: Stripe.PaymentIntent,
+  from: 'invoicing' | 'funding_failed',
+  stripe: Stripe,
+  result: CollectorResult,
+): Promise<void> {
+  const stamped = await db(TABLES.HostedFundingBatch)
+    .where({ id: batch.id, status: from })
+    .update({ stripePaymentIntentId: pi.id, updatedAt: new Date() });
+  if (stamped === 0) return; // batch moved under us; next tick re-reads
+
+  console.warn(
+    `[funding] batch ${batch.id}: adopted existing PaymentIntent ${pi.id} (${pi.status}) instead of creating a second one`,
+  );
+  if (pi.status === 'succeeded') {
+    // Move through payment_processing so the verified confirm path applies.
+    await casBatch(db, batch.id, from, 'payment_processing');
+    // Re-read with the charge expanded, exactly like the webhook path:
+    // confirm verifies against a live object and stamps the rail fee.
+    const live = await stripe.paymentIntents.retrieve(pi.id, {
+      expand: ['latest_charge.balance_transaction'],
+    });
+    const { confirmFundingFromPaymentIntent } = await import('./confirm.js');
+    await confirmFundingFromPaymentIntent(db, batch.id, live);
+    result.advanced.push(batch.id);
+    return;
+  }
+  if (pi.status === 'canceled') {
+    // Stay where we are; the release protocol owns terminalization.
+    return;
+  }
+  await casBatch(db, batch.id, from, 'payment_processing');
+  result.advanced.push(batch.id);
 }
 
 /**
@@ -246,18 +319,37 @@ async function createFundingPaymentIntent(
       // search) takes over — never a second blind create.
       { idempotencyKey: `fbpi:${batch.id}` },
     );
-    await db(TABLES.HostedFundingBatch)
-      .where({ id: batch.id })
+    // Status-predicated stamp (audit #12). A release can claim this batch
+    // while the create above is in flight — at which point the batch has
+    // no PI id, so release sees nothing to cancel and frees the
+    // allocations. Writing the id unconditionally would leave a real
+    // debit attached to a released batch. Losing this CAS means exactly
+    // that happened, and the PI we just made is an orphan.
+    const stamped = await db(TABLES.HostedFundingBatch)
+      .where({ id: batch.id, status: 'invoicing' })
       .update({
         stripePaymentIntentId: pi.id,
         paymentMethodType: auth.paymentMethodType,
         fundingAttempts: batch.fundingAttempts + 1,
         updatedAt: new Date(),
       });
+    if (stamped === 0) {
+      await abandonOrphanPaymentIntent(db, stripe, batch, pi);
+      return;
+    }
     await casBatch(db, batch.id, 'invoicing', 'payment_processing');
     result.advanced.push(batch.id);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // A create that failed AFTER Stripe made the intent (declines, bank
+    // setup errors) carries it on the error. Record which intent failed,
+    // so the retry confirms that one instead of creating another.
+    const failedPiId = paymentIntentIdFromError(err);
+    if (failedPiId) {
+      await db(TABLES.HostedFundingBatch)
+        .where({ id: batch.id, status: 'invoicing' })
+        .update({ stripePaymentIntentId: failedPiId, updatedAt: new Date() });
+    }
     await casBatch(db, batch.id, 'invoicing', 'funding_failed', {
       failureReason: message.slice(0, 500),
       fundingAttempts: batch.fundingAttempts + 1,
@@ -265,4 +357,86 @@ async function createFundingPaymentIntent(
     console.error(`[funding] PI creation failed for batch ${batch.id}: ${message}`);
     result.failed.push(batch.id);
   }
+}
+
+/**
+ * We created a PaymentIntent for a batch that a release claimed while the
+ * call was in flight. Cancel it — the allocations are already free, so
+ * this money must not arrive. If Stripe won't cancel (a bank debit that
+ * already moved to `processing`), the batch is frozen for an operator:
+ * money is coming in that no batch owns.
+ */
+async function abandonOrphanPaymentIntent(
+  db: Knex,
+  stripe: Stripe,
+  batch: HostedFundingBatchRow,
+  pi: Stripe.PaymentIntent,
+): Promise<void> {
+  try {
+    await stripe.paymentIntents.cancel(pi.id);
+    console.warn(
+      `[funding] batch ${batch.id}: released mid-create — canceled orphan PaymentIntent ${pi.id}`,
+    );
+    return;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await db(TABLES.HostedFundingBatch)
+      .where({ id: batch.id })
+      .update({ stripePaymentIntentId: pi.id, updatedAt: new Date() });
+
+    // ORDER MATTERS. Reclaiming the allocations is the part that actually
+    // prevents a second debit, so it runs FIRST and unconditionally. The
+    // status escalation below can legitimately fail — moving a released
+    // batch back to a non-terminal status violates the one-open-batch
+    // unique index if a newer batch already exists — and casBatch raises
+    // on that rather than returning null. Doing the escalation first meant
+    // the throw skipped the reclaim entirely, leaving a live debit and
+    // freed commissions: exactly the double-charge this path exists to
+    // stop.
+    const reclaimed = await reclaimReleasedAllocations(db, batch.id);
+    const stillFree = await db(TABLES.HostedFundingAllocation)
+      .where({ batchId: batch.id, state: 'released' })
+      .count<{ count: string }[]>('* as count')
+      .first();
+    const unreclaimed = Number((stillFree as { count?: string } | undefined)?.count ?? 0);
+
+    let frozen = false;
+    try {
+      frozen = !!(await casBatch(
+        db,
+        batch.id,
+        ['released', 'release_requested', 'funding_failed', 'payment_processing'],
+        'recovery_required',
+        { failureReason: `orphan_payment_intent:${pi.id}` },
+      ));
+    } catch (casErr) {
+      // Almost certainly the open-batch unique index: a newer batch for
+      // this tenant/currency is already live. The batch stays `released`
+      // and reconciliation skips released batches, so the alert below is
+      // the only thing that will surface it.
+      console.error(`[funding] batch ${batch.id}: could not freeze as recovery_required`, casErr);
+    }
+    console.error(
+      `[funding] ALERT: batch ${batch.id} was released while PaymentIntent ${pi.id} was in flight and the PI could not be canceled (${message}) — ${reclaimed} allocation(s) reclaimed, ${unreclaimed} already taken by a newer batch, batch ${frozen ? 'frozen recovery_required' : 'STILL RELEASED (could not freeze — a newer batch is open)'}; operator reconciliation required${unreclaimed > 0 ? ' — COMMISSIONS MAY BE DOUBLE-CHARGED' : ''}`,
+    );
+  }
+}
+
+/**
+ * Pull a released batch's allocations back under it. Only rows whose
+ * commission isn't already live somewhere else are taken — if a newer
+ * batch has already reserved one, that batch owns it and an operator has
+ * to untangle the overlap (the alert above says so).
+ */
+async function reclaimReleasedAllocations(db: Knex, batchId: string): Promise<number> {
+  return db(TABLES.HostedFundingAllocation)
+    .where({ batchId, state: 'released' })
+    .whereNotExists(function () {
+      this.select('*')
+        .from(`${TABLES.HostedFundingAllocation} as other`)
+        .whereRaw(`"other"."commissionId" = "${TABLES.HostedFundingAllocation}"."commissionId"`)
+        .whereRaw(`"other"."batchId" <> ?`, [batchId])
+        .whereNotIn('other.state', ['released', 'canceled']);
+    })
+    .update({ state: 'reserved', updatedAt: new Date() });
 }

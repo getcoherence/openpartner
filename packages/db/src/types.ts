@@ -815,6 +815,12 @@ export interface HostedFundingBatchRow {
   fundedAt: Date | null;
   settledAt: Date | null;
   releasedAt: Date | null;
+  /** Reconcile-sweep scheduling (per-object, see funding/reconcile.ts).
+   *  Null = never swept; ordered by eligibility time instead. */
+  sweepDueAt: Date | null;
+  sweepLeaseAt: Date | null;
+  sweepLeaseToken: string | null;
+  sweepFailCount: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -845,6 +851,11 @@ export interface HostedFundingTransferRow {
   payoutId: string | null;
   lastError: string | null;
   postedAt: Date | null;
+  /** Reconcile-sweep scheduling (per-object, see funding/reconcile.ts). */
+  sweepDueAt: Date | null;
+  sweepLeaseAt: Date | null;
+  sweepLeaseToken: string | null;
+  sweepFailCount: number;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -20,7 +20,7 @@
 
 import type { Knex } from 'knex';
 import { TABLES, type TenantRow } from '@openpartner/db';
-import { getTenantBillingState, type TenantBillingState } from './billing-plan.js';
+import { getTenantBillingState, hasActivePlan, type TenantBillingState } from './billing-plan.js';
 
 export function isWhiteLabelEntitled(
   tenant: Pick<TenantRow, 'whiteLabel' | 'status'>,
@@ -28,11 +28,13 @@ export function isWhiteLabelEntitled(
 ): boolean {
   if (!tenant.whiteLabel) return false;
   if (tenant.status !== 'active') return false;
-  // Self-host: single-tenant install the operator owns; rebranding is
-  // always theirs, no billing relationship to gate on.
-  if (billing.mode === 'selfhost') return true;
-  // Hosted: must actually be paying (or mid-trial, or enterprise).
-  return billing.plan === 'enterprise' || !!billing.stripeSubscriptionId || billing.inTrial;
+  // Reuse the canonical billing gate so a delinquent subscription can't keep
+  // white-label. hasActivePlan covers selfhost + enterprise + an active
+  // subscription (and rejects unpaid/paused/canceled via the mirrored
+  // status); inTrial covers the pre-subscribe evaluation window. The prior
+  // check keyed only on a non-null subscription id, so an unpaid/canceled
+  // sub kept white-label + its custom domain live for free.
+  return billing.inTrial || hasActivePlan(billing);
 }
 
 export interface WhiteLabelState {
