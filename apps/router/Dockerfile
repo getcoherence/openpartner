@@ -7,7 +7,7 @@
 # Multi-stage mirrors the API Dockerfile but skips the migration bundle
 # since the router only reads/writes; migrations run in the API image.
 
-ARG NODE_VERSION=20-alpine
+ARG NODE_VERSION=22-alpine
 
 FROM node:${NODE_VERSION} AS deps
 RUN corepack enable && corepack prepare pnpm@9.11.0 --activate
