@@ -15,7 +15,7 @@
 # Entrypoint runs knex migrations before starting the server, so a
 # fresh deploy against an empty DB bootstraps on first boot.
 
-ARG NODE_VERSION=20-alpine
+ARG NODE_VERSION=22-alpine
 
 # ---------- deps: resolve and fetch every workspace package --------
 FROM node:${NODE_VERSION} AS deps

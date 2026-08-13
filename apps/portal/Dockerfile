@@ -7,7 +7,7 @@
 # suit docker-compose (service name "api"); override for Fly /
 # standalone deploys.
 
-ARG NODE_VERSION=20-alpine
+ARG NODE_VERSION=22-alpine
 
 FROM node:${NODE_VERSION} AS deps
 RUN corepack enable && corepack prepare pnpm@9.11.0 --activate

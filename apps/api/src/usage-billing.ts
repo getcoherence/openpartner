@@ -23,7 +23,7 @@
 
 import type { Knex } from 'knex';
 import { TABLES, type EventRow } from '@openpartner/db';
-import { CONFIG_KEYS, getConfig, setConfig } from './config.js';
+import { CONFIG_KEYS, deleteConfig, getConfig, setConfig } from './config.js';
 import { requireStripe } from './stripe.js';
 import { getTenantBillingState } from './billing-plan.js';
 
@@ -157,6 +157,61 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
     };
   }
 
+  const stripe = requireStripe();
+
+  // Recovery path: a report was frozen but the run crashed before advancing
+  // the high-water mark. Re-send it VERBATIM (same identifier ⇒ Stripe's
+  // Meter Events API dedupes, so no double-count) rather than aggregating a
+  // fresh — and overlapping — window.
+  const pending = await getConfig<PendingUsageReport>(db, tenantId, CONFIG_KEYS.PendingUsageReport);
+  if (pending) {
+    // Staleness guard: Stripe rejects meter events with a timestamp beyond
+    // its ~35-day window, so a pending row left by a multi-week outage can
+    // never be resent — it would block this tenant's reporting forever. And
+    // past Stripe's ≥24h dedup guarantee a resend risks double-billing. Once
+    // it's this old, abandon it: advance past the window and ALERT for manual
+    // reconciliation rather than double-bill or wedge the tenant. (Trades a
+    // rare, loud under-report for a silent double-charge — the safe direction
+    // for billing.)
+    const STALE_PENDING_MS = 30 * 24 * 60 * 60 * 1000;
+    if (Date.now() - new Date(pending.rangeEndIso).getTime() > STALE_PENDING_MS) {
+      console.error(
+        `[usage] ALERT: abandoning stale pending usage report tenant=${tenantId} ` +
+          `rangeEnd=${pending.rangeEndIso} amount=${pending.amount} — reconcile in Stripe manually`,
+      );
+      await setConfig(db, tenantId, CONFIG_KEYS.LastUsageReportedAt, pending.rangeEndIso);
+      await deleteConfig(db, tenantId, CONFIG_KEYS.PendingUsageReport);
+      return {
+        mode,
+        meterEventName: pending.meterEventName,
+        customerId: pending.customerId,
+        amount: pending.amount,
+        rangeStart: pending.rangeStartIso ? new Date(pending.rangeStartIso) : null,
+        rangeEnd: new Date(pending.rangeEndIso),
+        reported: false,
+        reason: 'stale_pending_abandoned',
+      };
+    }
+    await stripe.billing.meterEvents.create({
+      event_name: pending.meterEventName,
+      payload: { stripe_customer_id: pending.customerId, value: pending.amount.toFixed(2) },
+      identifier: pending.identifier,
+      timestamp: Math.floor(new Date(pending.rangeEndIso).getTime() / 1000),
+    });
+    await setConfig(db, tenantId, CONFIG_KEYS.LastUsageReportedAt, pending.rangeEndIso);
+    await deleteConfig(db, tenantId, CONFIG_KEYS.PendingUsageReport);
+    return {
+      mode,
+      meterEventName: pending.meterEventName,
+      customerId: pending.customerId,
+      amount: pending.amount,
+      rangeStart: pending.rangeStartIso ? new Date(pending.rangeStartIso) : null,
+      rangeEnd: new Date(pending.rangeEndIso),
+      reported: true,
+      reason: 'resent frozen report (crash recovery)',
+    };
+  }
+
   const lastReportedAtIso = await getConfig<string>(db, tenantId, CONFIG_KEYS.LastUsageReportedAt);
   const rangeStart = lastReportedAtIso ? new Date(lastReportedAtIso) : null;
   const rangeEnd = new Date();
@@ -164,7 +219,8 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
 
   if (amount <= 0) {
     // Still advance the high-water mark — we've "reported" zero usage for
-    // the period and don't want to re-scan the same window forever.
+    // the period and don't want to re-scan the same window forever. No
+    // Stripe call, so no exactly-once concern here.
     await setConfig(db, tenantId, CONFIG_KEYS.LastUsageReportedAt, rangeEnd.toISOString());
     return {
       mode,
@@ -178,24 +234,33 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
     };
   }
 
-  const stripe = requireStripe();
-  // identifier is Stripe's idempotency key for meter events. Tying it to the
-  // window end means a re-run within the same second is deduped on Stripe's
-  // side, which is what we want when an admin double-clicks the report
-  // button or a cron job retries on transient failure. Include tenantId so
-  // two tenants reporting in the same second don't collide.
-  const identifier = `op-usage-${mode}-${tenantId}-${rangeEnd.toISOString()}`;
+  // Freeze the report BEFORE calling Stripe. The identifier is Stripe's dedup
+  // key, keyed on the period START (the high-water mark), NOT rangeEnd:
+  // rangeStart is identical for two runs racing the same period (scheduler +
+  // manual trigger, or two replicas), so they produce the SAME identifier and
+  // Stripe dedupes the double-submit; distinct periods have distinct starts.
+  // Persisting the frozen bounds+amount+identifier also lets a crash after
+  // Stripe accepts (but before the mark advances) re-send this exact row above.
+  const identifier = `op-usage-${mode}-${tenantId}-${rangeStart ? rangeStart.toISOString() : 'genesis'}`;
+  const frozen: PendingUsageReport = {
+    rangeStartIso: rangeStart ? rangeStart.toISOString() : null,
+    rangeEndIso: rangeEnd.toISOString(),
+    amount,
+    identifier,
+    meterEventName,
+    customerId,
+  };
+  await setConfig(db, tenantId, CONFIG_KEYS.PendingUsageReport, frozen);
+
   await stripe.billing.meterEvents.create({
     event_name: meterEventName,
-    payload: {
-      stripe_customer_id: customerId,
-      value: amount.toFixed(2),
-    },
+    payload: { stripe_customer_id: customerId, value: amount.toFixed(2) },
     identifier,
     timestamp: Math.floor(rangeEnd.getTime() / 1000),
   });
 
   await setConfig(db, tenantId, CONFIG_KEYS.LastUsageReportedAt, rangeEnd.toISOString());
+  await deleteConfig(db, tenantId, CONFIG_KEYS.PendingUsageReport);
   return {
     mode,
     meterEventName,
@@ -205,4 +270,13 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
     rangeEnd,
     reported: true,
   };
+}
+
+interface PendingUsageReport {
+  rangeStartIso: string | null;
+  rangeEndIso: string;
+  amount: number;
+  identifier: string;
+  meterEventName: string;
+  customerId: string;
 }
