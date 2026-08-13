@@ -41,9 +41,13 @@ interface FakeTransfer {
    *  disposals check this, so tests must be able to set it. */
   amount_reversed?: number;
   reversed?: boolean;
-  /** The Connect account it paid. resolveDuplicateReview verifies a kept
-   *  transfer against the intent's frozen destination (round 9). */
+  /** The Connect account it paid. resolveDuplicateReview and
+   *  reconcileIntent verify against the intent's frozen destination
+   *  (rounds 9–10). */
   destination?: string;
+  /** Stripe-stamped creation time (seconds). reconcileIntent refuses a
+   *  member created before the current generation's postedAt (round 10). */
+  created?: number;
 }
 
 function mockStripe(
@@ -429,11 +433,14 @@ describe.skipIf(skipIntegration)('payout transfer executor', () => {
     const { payouts } = await plan();
     const payoutId = payouts[0]!.payoutId;
 
-    // The transfer DID land 25 hours ago; our key is pruned by now.
+    // The transfer DID land 25 hours ago; our key is pruned by now. It
+    // carries the frozen destination — round 10 authenticates a group
+    // member against the intent before finalizing it.
     const landed: FakeTransfer = {
       id: 'tr_landed',
       amount: 5000,
       currency: 'usd',
+      destination: `acct_${partnerId.slice(0, 10)}`,
       transfer_group: payoutId,
       metadata: { openpartner_payout_id: payoutId },
     };
@@ -519,11 +526,13 @@ describe.skipIf(skipIntegration)('payout transfer executor', () => {
     await executePayoutTransfers(db, { stripe });
     expect((await payoutOf(payoutId)).metadata.transferState).toBe('reconcile_required');
 
-    // Now the straggler shows up in the group.
+    // Now the straggler shows up in the group, carrying the frozen
+    // destination the round-10 authentication checks for.
     const late = {
       id: 'tr_late_arrival',
       amount: 5000,
       currency: 'usd',
+      destination: `acct_${partnerId.slice(0, 10)}`,
       transfer_group: payoutId,
       metadata: { openpartner_payout_id: payoutId, openpartner_key_generation: '0' },
     };
@@ -2207,5 +2216,174 @@ describe.skipIf(skipIntegration)('round-9 hardening', () => {
     expect(
       (await db(TABLES.Commission).where({ id: commissionIds[0]! }).first()).payoutId,
     ).toBeNull();
+  });
+});
+
+// ---- Round-10 review fixes (Codex, 2026-08-13) -----------------------------
+
+describe.skipIf(skipIntegration)('round-10 hardening', () => {
+  async function seedHeld(state = 'reconcile_required', extra: Record<string, unknown> = {}) {
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({
+            transferState: state,
+            postedAt: hoursAgo(25).toISOString(),
+            ...extra,
+          }),
+        ]),
+      });
+    return { partnerId, commissionIds, payoutId, destination: `acct_${partnerId.slice(0, 10)}` };
+  }
+
+  it('a group member that does not match the frozen intent is NEVER finalized', async () => {
+    // Group membership is unauthenticated — anything on this Stripe
+    // account can set transfer_group to our payout ULID. Dropping the
+    // metadata filter without authenticating the member would have let a
+    // one-cent foreign transfer be recorded as paying a $50 payout.
+    // Reconcile now validates amount/currency/destination against the
+    // frozen intent and parks mismatches for a human.
+    const { commissionIds, payoutId } = await seedHeld();
+    const foreign: FakeTransfer = {
+      id: 'tr_foreign_one_cent',
+      amount: 1,
+      currency: 'usd',
+      destination: 'acct_someone_unrelated',
+      transfer_group: payoutId,
+      metadata: {},
+    };
+    const { stripe, transfersCreate } = mockStripe({ listed: [foreign] });
+    await executePayoutTransfers(db, { stripe });
+
+    const payout = await payoutOf(payoutId);
+    expect(payout.status).not.toBe('paid');
+    expect(payout.metadata.transferState).toBe('duplicate_review');
+    expect(payout.metadata.lastError).toContain('unauthenticated_group_transfer');
+    expect(transfersCreate).not.toHaveBeenCalled();
+    const c = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(c.status).toBe('approved');
+    expect(c.payoutId).toBe(payoutId); // frozen for the human, not re-payable
+  });
+
+  it('a BACKDATED transfer with a forged current-generation stamp parks for review', async () => {
+    // The generation stamp is mutable metadata: forging "1" onto an old
+    // generation-0 transfer made it look current, and its confirmation
+    // hid the still-in-flight generation-1 POST as a future duplicate.
+    // transfer.created is Stripe-stamped and immutable, and the current
+    // generation's POST cannot predate its own postedAt — so a member
+    // created before it is refused however its metadata reads.
+    const { commissionIds, payoutId, destination } = await seedHeld('reconcile_required', {
+      keyGeneration: 1,
+      postedAt: hoursAgo(1).toISOString(),
+    });
+    const forged: FakeTransfer = {
+      id: 'tr_gen0_forged_as_gen1',
+      amount: 5000,
+      currency: 'usd',
+      destination, // everything else matches the frozen intent
+      created: Math.floor((Date.now() - 48 * 60 * 60 * 1000) / 1000), // 48h old
+      transfer_group: payoutId,
+      metadata: { openpartner_payout_id: payoutId, openpartner_key_generation: '1' },
+    };
+    const { stripe } = mockStripe({ listed: [forged] });
+    await executePayoutTransfers(db, { stripe });
+
+    const payout = await payoutOf(payoutId);
+    expect(payout.status).not.toBe('paid');
+    expect(payout.metadata.transferState).toBe('duplicate_review');
+    expect(
+      (await db(TABLES.Commission).where({ id: commissionIds[0]! }).first()).payoutId,
+    ).toBe(payoutId);
+  });
+
+  it('disposeIntent verifies SIBLINGS even when the stamped transfer is fully reversed', async () => {
+    // The stamped transfer being fully reversed says nothing about a late
+    // duplicate that still holds the entire payment. The fast path that
+    // skipped the group listing on a verified stamp was a double-pay.
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        status: 'failed',
+        stripeTransferId: 'tr_reversed_stamped',
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'confirmed' }),
+        ]),
+      });
+
+    const stamped: FakeTransfer = {
+      id: 'tr_reversed_stamped',
+      amount: 5000,
+      amount_reversed: 5000,
+      currency: 'usd',
+      transfer_group: payoutId,
+      metadata: { openpartner_payout_id: payoutId },
+    };
+    const lateDuplicate: FakeTransfer = {
+      id: 'tr_late_duplicate',
+      amount: 5000,
+      currency: 'usd',
+      transfer_group: payoutId,
+      metadata: {},
+    };
+    expect(
+      await disposeIntent(
+        db,
+        payoutId,
+        'keith',
+        'reversed',
+        mockStripe({ listed: [stamped, lateDuplicate] }).stripe,
+      ),
+    ).toBe('money_with_partner');
+    expect(
+      (await db(TABLES.Commission).where({ id: commissionIds[0]! }).first()).payoutId,
+    ).toBe(payoutId); // still claimed
+
+    // With the duplicate reversed too, disposal proceeds.
+    const bothReversed = [stamped, { ...lateDuplicate, amount_reversed: 5000 }];
+    expect(
+      await disposeIntent(
+        db,
+        payoutId,
+        'keith',
+        'reversed',
+        mockStripe({ listed: bothReversed }).stripe,
+      ),
+    ).toBe('disposed');
+  });
+
+  it('an empty page claiming more pages is an INCOMPLETE group, not an empty one', async () => {
+    // listTransferGroup broke on data:[] even with has_more:true — a
+    // partial listing read as "verified empty" would release commissions
+    // while a live transfer sat on the unfetched page.
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'reconcile_required' }),
+        ]),
+      });
+
+    const sparse = {
+      transfers: {
+        create: vi.fn(),
+        retrieve: vi.fn(),
+        list: vi.fn(async () => ({ data: [], has_more: true })),
+      },
+    } as unknown as Stripe;
+    expect(await disposeIntent(db, payoutId, 'keith', 'oops', sparse)).toBe('cannot_verify');
+    expect((await payoutOf(payoutId)).metadata.transferState).toBe('reconcile_required');
   });
 });

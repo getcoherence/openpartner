@@ -205,16 +205,18 @@ async function resolveTenantForEvent(event: Stripe.Event): Promise<string | null
         .first(['tenantId']);
       return linked?.tenantId ?? null;
     }
+    case 'transfer.created':
     case 'transfer.updated':
     case 'transfer.reversed': {
       const transfer = event.data.object as Stripe.Transfer;
-      // metadata.openpartner_payout_id is our stamp, but metadata is
-      // MUTABLE at Stripe — a dashboard edit can clear it. transfer_group
-      // is set at creation, immutable, and stamped with the payout ULID,
-      // so it identifies the transfer when everything mutable is gone
-      // (round 9). A group value that is not one of our payout ids simply
-      // finds no row and the event is skipped.
-      const payoutId = transfer.metadata?.openpartner_payout_id ?? transfer.transfer_group;
+      // transfer_group FIRST, metadata as the legacy fallback (round 10).
+      // The group is set at creation, immutable, and stamped with the
+      // payout ULID; metadata is mutable, so preferring it let a FORGED
+      // openpartner_payout_id redirect an event away from its real payout
+      // into "unresolved tenant", acknowledged 2xx and lost. A group value
+      // that is not one of our payout ids simply finds no row and the
+      // event is skipped.
+      const payoutId = transfer.transfer_group ?? transfer.metadata?.openpartner_payout_id;
       if (!payoutId) return null;
       const row = await db<PayoutRow>(TABLES.Payout).where({ id: payoutId }).first(['tenantId']);
       return row?.tenantId ?? null;
@@ -389,15 +391,46 @@ async function handleConnectEvent(
       await mirrorHostedBillingState(trx, tenantId, 'canceled');
       return `subscription_deleted_${sub.status}${wl !== 'unchanged' ? `+white_label_${wl}` : ''}`;
     }
+    case 'transfer.created': {
+      // DETECTOR ONLY — no state is written. This closes the observation
+      // gap behind the prove-absence limit (round 10): an operator action
+      // taken on an empty listing (dispose, all-reversed resolution) is a
+      // documented risk decision precisely because an unbounded in-flight
+      // POST can still land afterwards. When it does, Stripe tells us —
+      // this is where we listen. A transfer arriving for a payout that is
+      // no longer expecting one is money moved outside the ledger, and it
+      // must be LOUD; disposition stays with a human.
+      const transfer = event.data.object as Stripe.Transfer;
+      const payoutId = transfer.transfer_group ?? transfer.metadata?.openpartner_payout_id;
+      if (!payoutId) return null;
+      const payout = (await trx<PayoutRow>(TABLES.Payout)
+        .where({ id: payoutId })
+        .first()) as PayoutRow | undefined;
+      if (!payout) return null;
+      const state = (payout.metadata as { transferState?: string } | null)?.transferState;
+      const benign =
+        (state === 'posted' || state === 'reconcile_required' || state === 'intent') &&
+        payout.stripeTransferId == null;
+      if (benign || payout.stripeTransferId === transfer.id) {
+        return 'transfer_created_observed';
+      }
+      console.error(
+        `[payouts] ALERT: transfer ${transfer.id} was CREATED for payout ${payoutId} which is ${state ?? 'unknown'}/${payout.status} on transfer ${payout.stripeTransferId ?? 'none'} — money moved outside the ledger (a late POST landing after a disposition?); operator reconciliation required`,
+      );
+      return 'transfer_created_orphan';
+    }
     case 'transfer.updated':
     case 'transfer.reversed': {
       const transfer = event.data.object as Stripe.Transfer;
-      // Same mutable-metadata rule as resolveTenantForEvent: fall back to
-      // the immutable transfer_group so a cleared-metadata transfer's
-      // reversal still finds its payout (round 9).
-      const payoutId = transfer.metadata?.openpartner_payout_id ?? transfer.transfer_group;
+      // transfer_group FIRST (round 10): it is immutable and stamped with
+      // the payout ULID at creation. Preferring the MUTABLE metadata stamp
+      // let a forged openpartner_payout_id redirect a reversal away from
+      // its real payout. Metadata remains only as the fallback for
+      // group-less transfers.
+      const payoutId = transfer.transfer_group ?? transfer.metadata?.openpartner_payout_id;
       if (!payoutId) return null;
       const reversed = event.type === 'transfer.reversed' || (transfer.reversed ?? false);
+      const partialOnly = !reversed && Number(transfer.amount_reversed ?? 0) > 0;
 
       // Serialize this whole decision against the executor's finalization.
       //
@@ -419,17 +452,33 @@ async function handleConnectEvent(
         .forUpdate()
         .first()) as PayoutRow | undefined;
 
+      // A PARTIAL reversal on the recorded transfer must never re-assert
+      // `paid` (round 10): `transfer.updated` arrives with `reversed`
+      // still false and a non-zero amount_reversed, and the write below
+      // used to flip even a `failed` payout back to paid on it. Partial
+      // reversals have no ledger representation on this rail yet
+      // (documented gap) — so the rule is: never OVERWRITE status on one.
+      // Say so loudly and leave the row exactly as it is.
+      if (partialOnly && locked?.stripeTransferId === transfer.id) {
+        console.error(
+          `[payouts] ALERT: transfer ${transfer.id} on payout ${payoutId} is PARTIALLY reversed (${transfer.amount_reversed}/${transfer.amount}) — status left ${locked.status}; partial reversals need operator disposition on this rail`,
+        );
+        return 'transfer_partial_reversal_unrecorded';
+      }
+
       // Apply ONLY to the transfer this payout actually recorded. A payout
       // can have several transfers in its group across key generations
       // (payout-transfers.ts) — without this, a reversal of a superseded
       // attempt would mark the CURRENT, legitimately paid payout failed,
       // and a stale `transfer.updated` could mark a pending one paid.
-      const updated = await trx<PayoutRow>(TABLES.Payout)
-        .where({ id: payoutId, stripeTransferId: transfer.id })
-        .update({
-          status: reversed ? 'failed' : 'paid',
-          completedAt: reversed ? null : new Date(),
-        });
+      const updated = partialOnly
+        ? 0
+        : await trx<PayoutRow>(TABLES.Payout)
+            .where({ id: payoutId, stripeTransferId: transfer.id })
+            .update({
+              status: reversed ? 'failed' : 'paid',
+              completedAt: reversed ? null : new Date(),
+            });
       if (updated === 0 && reversed) {
         // NOT YET STAMPED is a different case from NOT OURS, and
         // collapsing them lost reversals (round-6 review).
@@ -502,13 +551,20 @@ async function handleConnectEvent(
               )
             : [];
           const reversedIds = seen.includes(transfer.id) ? seen : [...seen, transfer.id];
+          // The nonce is a FRESH ulid, never the event id (round 10).
+          // Connect events return before the event-id dedupe, so Stripe
+          // REDELIVERING an old event would write its id back — an ABA
+          // that let a resolution fenced on the older value commit against
+          // a listing that predates a newer reversal. A value that never
+          // repeats cannot be restored; a redelivery just forces one more
+          // (cheap) re-verification.
           const recorded = await trx(TABLES.Payout)
             .where({ id: payoutId })
             .whereRaw(`("metadata"->>'transferState') = 'duplicate_review'`)
             .update({
               metadata: trx.raw(`"metadata" || ?::jsonb`, [
                 JSON.stringify({
-                  duplicateReviewNonce: event.id,
+                  duplicateReviewNonce: ulid(),
                   reversedTransferIds: reversedIds,
                 }),
               ]),

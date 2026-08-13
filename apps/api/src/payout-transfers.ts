@@ -706,6 +706,47 @@ async function reconcileIntent(
       result.failed.push({ payoutId: payout.id, error: 'superseded_generation_transfer' });
       return;
     }
+    // AUTHENTICATE before recording it as THE payment (round 10). Group
+    // membership is unauthenticated — anything on this Stripe account can
+    // set transfer_group to our ULID — and the generation stamp above is
+    // mutable metadata. Two immutable references pin the real payment:
+    //
+    //  - the intent's FROZEN amount, currency and destination; and
+    //  - `transfer.created` (Stripe-stamped, immutable) against
+    //    `postedAt`, which is stamped BEFORE this generation's first
+    //    POST — a genuine current-generation transfer cannot predate it
+    //    (5 min grace for clock skew). A forged generation stamp on an
+    //    OLDER transfer fails this even when everything else matches.
+    //
+    // A member that fails either is never finalized — it parks the payout
+    // for a human, exactly like a duplicate.
+    const expectedAmount = frozenAmountMinor(meta, payout);
+    const foundDestination =
+      typeof found.destination === 'string' ? found.destination : found.destination?.id;
+    const authentic =
+      expectedAmount !== null &&
+      Number(found.amount) === expectedAmount &&
+      found.currency === payout.currency.toLowerCase() &&
+      !!meta.destinationAccountId &&
+      foundDestination === meta.destinationAccountId;
+    const postedAtMs = meta.postedAt ? new Date(meta.postedAt).getTime() : NaN;
+    const backdated =
+      typeof found.created === 'number' &&
+      !Number.isNaN(postedAtMs) &&
+      found.created * 1000 < postedAtMs - 5 * 60 * 1000;
+    if (!authentic || backdated) {
+      await markDuplicateReview(
+        db,
+        payout,
+        `unauthenticated_group_transfer:${found.id}`,
+        generation,
+      );
+      console.error(
+        `[payouts] ALERT: payout ${payout.id} found transfer ${found.id} in its group that does not match the frozen intent (authentic=${authentic}, backdated=${backdated}) — NOT finalized; operator review required`,
+      );
+      result.failed.push({ payoutId: payout.id, error: 'unauthenticated_group_transfer' });
+      return;
+    }
     await finalizeTransfer(db, stripe, payout, found, stamped, result);
     return;
   }
@@ -979,7 +1020,14 @@ async function listTransferGroup(
         ...(startingAfter ? { starting_after: startingAfter } : {}),
       });
       group.push(...listed.data);
-      if (!listed.has_more || listed.data.length === 0) break;
+      if (!listed.has_more) break;
+      if (listed.data.length === 0) {
+        // An empty page that claims more pages is not a complete group —
+        // treating it as one turned a partial listing into "verified
+        // empty" (round 10). Whatever produced it, refuse.
+        console.error(`[payouts] ${logContext} refused — empty page with has_more, group incomplete`);
+        return 'cannot_verify';
+      }
       if (page === 19) {
         console.error(`[payouts] ${logContext} refused — more transfers than this listing will page`);
         return 'cannot_verify';
@@ -991,6 +1039,22 @@ async function listTransferGroup(
     return 'cannot_verify';
   }
   return group;
+}
+
+/**
+ * The amount this intent froze at plan time, in minor units — or null when
+ * nothing trustworthy exists. `metadata` is unconstrained jsonb, and
+ * Number() coercion accepted booleans: `amountMinor: true` became 1, and a
+ * one-cent transfer then validated against a $50 payout (round 10). Only
+ * an actual finite number counts; the payout row's own amount is the
+ * fallback for pre-metadata rows.
+ */
+function frozenAmountMinor(meta: PayoutTransferMeta, row: PayoutRow): number | null {
+  if (typeof meta.amountMinor === 'number' && Number.isFinite(meta.amountMinor)) {
+    return meta.amountMinor;
+  }
+  const fromRow = Math.round(Number(row.amount) * 100);
+  return Number.isFinite(fromRow) ? fromRow : null;
 }
 
 /**
@@ -1029,7 +1093,6 @@ export async function disposeIntent(
   const row = (await db(TABLES.Payout).where({ id: payoutId }).first()) as PayoutRow | undefined;
   if (!row) return 'not_disposable';
   if (!stripe) return 'cannot_verify';
-  let verifiedByStampedTransfer = false;
   if (row.stripeTransferId) {
     let transfer: Stripe.Transfer | null = null;
     try {
@@ -1040,8 +1103,7 @@ export async function disposeIntent(
         // from a hand repair or a pre-round-8 typo resolution. Refusing
         // forever on it wedged the payout with no exit but raw SQL
         // (round 9). A stamp that cannot be dereferenced proves nothing
-        // either way, so fall through to the same whole-group
-        // verification as the unstamped case.
+        // either way; the group verification below decides.
         console.error(
           `[payouts] OPERATOR ${operator} dispose of ${payoutId}: stamped transfer ${row.stripeTransferId} does not exist at Stripe — verifying by transfer group instead`,
         );
@@ -1061,20 +1123,22 @@ export async function disposeIntent(
         );
         return 'money_with_partner';
       }
-      verifiedByStampedTransfer = true;
     }
   }
-  if (!verifiedByStampedTransfer) {
-    // NO usable stamped transfer — the AMBIGUOUS case, and round 9 found
-    // it was the one path here with no Stripe read at all: cancel,
-    // release, and the planner re-pays while a slow POST can still land.
-    // List the whole group instead: any member still holding money
-    // refuses the release.
-    //
-    // An EMPTY listing is still not proof of absence — that is the whole
-    // reason the intent is held. Proceeding on empty is the operator's
-    // documented risk decision, taken with every verifiable check passed;
-    // what this guard closes is releasing against POSITIVE evidence.
+  // ALWAYS verify the whole group — never only the stamped transfer
+  // (round 10). A fully-reversed stamped transfer says nothing about its
+  // SIBLINGS: a late duplicate can hold the entire payment while the
+  // confirmed/failed state makes this payout look disposable. Any member
+  // still holding money refuses the release.
+  //
+  // An EMPTY listing is still not proof of absence — that is the whole
+  // reason held intents exist. Proceeding on empty is the operator's
+  // documented risk decision, taken with every verifiable check passed;
+  // what this guard closes is releasing against POSITIVE evidence. The
+  // `transfer.created` detector in routes/stripe-webhook.ts is the alarm
+  // for the residual case where an unbounded in-flight POST lands after
+  // this decision.
+  {
     const group = await listTransferGroup(
       stripe,
       payoutId,
@@ -1220,9 +1284,13 @@ export async function resolveDuplicateReview(
     // were frozen at plan time precisely so this comparison has an
     // immutable reference; the payout row's own amount is the fallback
     // for pre-metadata rows so an unusable blob cannot wedge the review.
-    const expectedAmount = Number.isFinite(Number(meta.amountMinor))
-      ? Number(meta.amountMinor)
-      : Math.round(Number(row.amount) * 100);
+    const expectedAmount = frozenAmountMinor(meta, row);
+    if (expectedAmount === null) {
+      console.error(
+        `[payouts] OPERATOR ${operator} resolve of ${payoutId} refused — no trustworthy frozen amount to validate the kept transfer against`,
+      );
+      return 'cannot_verify';
+    }
     const expectedCurrency = row.currency.toLowerCase();
     const keptDestination =
       typeof kept.destination === 'string' ? kept.destination : kept.destination?.id;

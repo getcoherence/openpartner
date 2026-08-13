@@ -262,6 +262,14 @@ running out of pages is not the same as finding nothing.
 stripe transfers list --transfer-group <payoutId>
 ```
 
+**The alarm for the residual risk**: none of these can prove an in-flight
+POST will never land. If one lands AFTER a disposition, Stripe announces
+it via `transfer.created`, and the webhook raises a loud
+`transfer_created_orphan` ALERT (no state is written — disposition stays
+with you). **Register `transfer.created` on the Stripe webhook
+destination** alongside `transfer.updated` / `transfer.reversed`, or the
+alarm never rings.
+
 ## Staging run — PASSED against Stripe test mode
 
 Executed against **real Stripe test mode** (platform `acct_1TQ1rLLjeKaK2m8k`,
