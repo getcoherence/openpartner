@@ -27,6 +27,7 @@ import {
   type PartnerPostbackRow,
 } from '@openpartner/db';
 import { db } from './db.js';
+import { safeFetch } from './outbound-guard.js';
 
 const POSTBACK_TIMEOUT_MS = 5_000;
 
@@ -125,10 +126,16 @@ async function fireOne(row: PartnerPostbackRow, ctx: PostbackContext): Promise<v
   let status = 0;
   let error: string | null = null;
   try {
-    const res = await fetch(url, {
+    // Validate AFTER macro substitution (the fired URL is what matters).
+    // safeFetch enforces the SSRF policy and throws OutboundBlockedError
+    // (a stable code, safe to store in the partner-visible lastError) for
+    // any non-public destination.
+    const res = await safeFetch(url, {
       method: 'GET',
       headers: { 'user-agent': 'OpenPartner-Postback/1' },
-      signal: AbortSignal.timeout(POSTBACK_TIMEOUT_MS),
+      timeoutMs: POSTBACK_TIMEOUT_MS,
+      // Partner-controlled URL: hardened policy — never the escape hatch.
+      trust: 'partner',
     });
     status = res.status;
     if (!res.ok) {

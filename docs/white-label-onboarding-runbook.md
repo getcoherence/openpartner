@@ -174,10 +174,19 @@ custom domain. Sessions are host-only by design: being signed in on
 
 ## 7. Post-launch behavior
 
-- **Daily jobs** (api scheduler): `portal-domain-reverify` (04:45 UTC)
-  demotes the domain if the TXT proof disappears;
-  `white-label-entitlement-sweep` (04:55 UTC) clears routing when billing
-  entitlement lapses (incl. trials that expire without subscribing).
+- **Daily jobs** (api scheduler): `billing-subscription-reconcile`
+  (04:25 UTC) polls Stripe for every tenant plan subscription and heals
+  drift from missed webhooks — an ended subscription found here clears the
+  billing mirror, disables white-label, and revokes routing exactly like
+  the `customer.subscription.deleted` webhook would have;
+  `portal-domain-reverify` (04:45 UTC) demotes the domain if the TXT proof
+  disappears; `white-label-entitlement-sweep` (04:55 UTC) clears routing
+  when billing entitlement lapses (incl. trials that expire without
+  subscribing). Note the sweep trusts the LOCAL billing mirror — the
+  reconcile job is what keeps that mirror honest when webhooks are missed.
+- **Ops notifications** (PLATFORM_OPS_EMAIL): cancellation scheduled /
+  resumed, subscription ended, and dunning failures on the tenant's own
+  invoices all email the ops inbox as they happen.
 - **Revocation is automatic** when `DO_API_TOKEN`/`DO_APP_ID` are set:
   both jobs (and admin domain deletion) remove the domain from the DO app
   so the cert stops renewing. Watch api logs for
