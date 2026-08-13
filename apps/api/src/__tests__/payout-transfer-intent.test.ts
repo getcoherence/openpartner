@@ -1586,8 +1586,15 @@ describe.skipIf(skipIntegration)('round-7 hardening', () => {
     // reached the partner.
     const partner2 = await seedPartner();
     const ids2 = await seedApproved(partner2, 1, '60.00');
-    const { payouts: p2 } = await plan();
-    const paidId = p2[0]!.payoutId;
+    await plan();
+    // Pick partner2's payout EXPLICITLY. The dispose above returned the
+    // first partner's commission to the pool, so this run plans a payout for
+    // both partners and their order is not guaranteed — indexing [0] passed
+    // locally and failed in CI.
+    const paid = (await db(TABLES.Payout).where({ partnerId: partner2 }).first()) as {
+      id: string;
+    };
+    const paidId = paid.id;
     await db(TABLES.Payout)
       .where({ id: paidId })
       .update({
