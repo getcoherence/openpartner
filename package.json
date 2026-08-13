@@ -6,7 +6,7 @@
   "homepage": "https://openpartner.dev",
   "packageManager": "pnpm@9.11.0",
   "engines": {
-    "node": ">=20.10.0"
+    "node": ">=22"
   },
   "scripts": {
     "build": "pnpm -r run build",

@@ -185,6 +185,17 @@ const JOBS: ScheduledJob[] = [
     },
   },
   {
+    name: 'billing-subscription-reconcile',
+    cronExpr: '25 4 * * *',
+    description:
+      'Poll Stripe for every tenant plan subscription and heal state a missed webhook left behind: clear ended subscriptions (revoking white-label + custom-domain routing), refresh the status mirror, and alert ops on newly scheduled cancellations (daily 04:25 UTC)',
+    handler: async () => {
+      if (getMode() === 'selfhost') return { skipped: 'selfhost' };
+      const { reconcileTenantSubscriptions } = await import('./billing-lifecycle.js');
+      return reconcileTenantSubscriptions(db);
+    },
+  },
+  {
     name: 'portal-domain-reverify',
     cronExpr: '45 4 * * *',
     description:
