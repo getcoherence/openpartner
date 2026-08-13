@@ -24,7 +24,7 @@ import {
 } from '../billing-lifecycle.js';
 import { applyWhiteLabelFromSubscription, subscriptionHasWhiteLabel, whiteLabelPriceId } from '../white-label-billing.js';
 import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
-import { handleFundingEvent } from '../funding/webhook.js';
+import { handleFundingEvent, InboxEventHeldError } from '../funding/webhook.js';
 import { mirrorHostedBillingState, type MirroredSubscriptionStatus } from '../billing-plan.js';
 import { interlockCommissionReversal } from '../funding/interlocks.js';
 
@@ -184,7 +184,18 @@ stripeWebhookRouter.post(
     // privileged pool and never reach attribution. Runs regardless of
     // HOSTED_FUNDING_ENABLED: a late webhook after a flag flip must still
     // land in the inbox and CAS safely.
-    const funding = await handleFundingEvent(db, stripe, event);
+    let funding: string | null;
+    try {
+      funding = await handleFundingEvent(db, stripe, event);
+    } catch (err) {
+      if (err instanceof InboxEventHeldError) {
+        // Another worker is mid-handler on this event. 409 (not 2xx) so
+        // Stripe redelivers: if that worker dies, this redelivery is the
+        // only thing that will ever process the event.
+        return res.status(409).json({ error: 'event_in_flight', eventId: event.id });
+      }
+      throw err;
+    }
     if (funding) return res.json({ ok: true, funding });
 
     const tenantId = await resolveTenantForEvent(event, family);

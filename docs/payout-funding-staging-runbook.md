@@ -91,6 +91,155 @@ Every row: state before → action → expected state after. Verify in DB
 | G1 | Clean staging ledger, run `funding-reconcile` | Zero violations |
 | G2 | Manually corrupt an allocation (delete a row) | Invariant violation alert names the batch |
 | G3 | Batch stuck `transferring` past 14d | Stuck alert |
+| G4 | Inbox row with `outcome IS NULL` older than 1h | `unfinishedInboxEvents` alert names the event id (replay it from the Stripe dashboard) |
+
+### H. Races (audit #12)
+
+The three scenarios below are the ones that cost real money, and none of
+them can be observed by reading the happy path. Each has unit coverage in
+`funding-races.test.ts`; staging is where the Stripe half gets proven.
+
+> **Partially run against real Stripe test mode — latest run after the
+> round-6 rework: 27 assertions, 0 failures.**
+> `apps/api/scripts/staging-funding-races.ts` automates **H1, H5, H5b, H6,
+> H7, H8, H9** (and H11 incidentally — see below).
+> **H2, H3, H4, H10, H12 have NOT been run.**
+>
+> ```bash
+> cd apps/api
+> set -a && . ../../.env && set +a
+> export HOSTED_FUNDING_ENABLED=1 OPENPARTNER_TENANCY=single
+> export STAGING_CUSTOMER=cus_... STAGING_PM=pm_... STAGING_PARTNER_ACCT=acct_...
+> pnpm exec tsx scripts/staging-funding-races.ts
+> ```
+>
+> The script header documents the one-off Stripe fixture setup (customer +
+> verified `us_bank_account` PM + mandate via SetupIntent microdeposits with
+> test amounts `32`/`45`).
+>
+> What the real API taught us that the mocks could not:
+>
+> - **H1 is sound, and exactly one PI exists throughout.** The PI really was
+>   created, the response really was lost, the batch went `funding_failed`
+>   unstamped, and the retry adopted that same intent.
+>
+>   What the script does **not** prove is that the retry got there by
+>   *searching*. It backdates the DB row 25h but the real idempotency key was
+>   minted seconds earlier, so Stripe still replays it — when the search index
+>   is cold the retry re-POSTs the frozen key and Stripe returns the SAME
+>   intent. Safe, but a different route, and the run notes say which one
+>   happened. **The genuine post-window path — key pruned, so only a search
+>   can save us — cannot be exercised without waiting out Stripe's real
+>   retention, and is therefore still uncovered.** An earlier version of this
+>   doc claimed `create` was never called; that was true of one run, not of
+>   the property.
+> - **`paymentIntents.search` is eventually consistent**, and that is the
+>   round-6 finding. A PI is not findable the instant it is created — in
+>   these runs indexing took seconds to over a minute, and sometimes longer
+>   than the script's 180s ceiling. Treating an empty search as proof of
+>   absence is therefore unsound, which is what **H5b** now pins: with the
+>   index cold, the release refuses to free, the allocations stay `reserved`,
+>   and the script then confirms the PI it could not see was *genuinely still
+>   live* — i.e. freeing would have debited the brand for commissions already
+>   back in the pool. The frozen idempotency key remains the first line of
+>   defence inside 24h; search is only the fallback past it.
+> - **H5 and H11 are the same race resolved two ways**, and both were observed
+>   across runs. When the release reached the PI first it was `canceled`, then
+>   allocations were freed. When test-mode ACH settled first the payment won,
+>   and the batch went to transfer with `stripeChargeId` and `fundedAt`
+>   stamped rather than bare-CAS'd to `funded`.
+> - **H6 holds.** With `search` throwing, release returned `pi_not_terminal`,
+>   left every allocation `reserved`, and parked the batch `release_requested`
+>   for the collector to resume. "Don't know" did not free anything.
+> - **H8/H9 now go through the HTTP route.** These used to call the inbox
+>   helpers directly and *infer* the 409 from our own return value, so a route
+>   regression that acknowledged a held event with 2xx would have passed while
+>   Stripe silently stopped redelivering. The script now posts a signed event
+>   to `/webhooks/stripe` and asserts the status code.
+>
+> Note that test-mode ACH settles far faster than the ~4 business days of the
+> real rail, which is why H2/H4/H10 (all time- or interleaving-dependent) still
+> want either test clocks or a genuine two-process run.
+
+| # | Scenario | How to force it | Expected |
+|---|---|---|---|
+| H1 | **Ambiguous PI create.** Response lost after Stripe made the intent | Point the API at a proxy that drops the response to `POST /v1/payment_intents`; let the collector run | Batch `funding_failed`, no PI stamped. Then: set `updatedAt` back a day so the retry is due, restore the proxy. The retry must **search** and adopt the existing PI — `create` must NOT be called again, and **Stripe must show exactly one PaymentIntent for the batch** |
+| H2 | Same, but past the idempotency window | As H1, then advance the test clock >24h before the retry | Still one PI. (Inside 24h the frozen key would have saved us; past it, only the search does) |
+| H3 | **Create that fails with an intent** (declined bank account) | Use a test account that declines | Batch `funding_failed` **with `stripePaymentIntentId` stamped**; the next retry CONFIRMS that intent (`fbpc:` key), never creates a second |
+| H4 | **Release vs in-flight create.** Batch released while a PI creation is in flight | Add a breakpoint/sleep inside the create call (or use a slow proxy), and trigger a release from another process while it hangs | The PI is **canceled** and never stamped on the released batch. If Stripe refuses to cancel (already `processing`), batch → `recovery_required` with `failureReason=orphan_payment_intent:<pi>` and an ALERT |
+| H5 | **Release with an unstamped PI at Stripe** | Blank `stripePaymentIntentId` on a batch that has a real PI, then run a release | Release searches, finds it, terminalizes it, and only then frees allocations. Allocations must NOT be `released` while the PI lives |
+| H6 | Same, but Stripe search is down | Block `/v1/payment_intents/search` | Release returns `pi_not_terminal` and **leaves allocations reserved** — never frees on "I don't know" |
+| H7 | **Webhook crash mid-handler** | Kill the API between the inbox claim and the handler finishing (breakpoint, then SIGKILL) | The inbox row exists with `outcome IS NULL`. Stripe's redelivery (after the 5-minute lease) must **process it**, not `inbox_replay` it. Before this fix the event was lost forever |
+| H8 | Concurrent delivery of the same event | Fire two deliveries at once (Stripe CLI `resend` twice) | One processes; the other gets **409 `event_in_flight`** — NOT a 2xx — so Stripe redelivers rather than considering it done. Exactly one state transition |
+| H9 | **Crash + redelivery inside the lease** | As H7, but replay from the dashboard within 5 minutes | The redelivery is refused with 409 (the lease is still held), and the delivery *after* the lease expires takes over and processes it. A 2xx here was the residual hole in the first version of this fix: it ended delivery for an event nobody had processed |
+| H10 | **Release stopped halfway** | Block `/v1/payment_intents/search` and trigger a timeout release | Batch sits `release_requested` with allocations still `reserved`; the **next collector tick resumes it** once Stripe is reachable. A batch still `release_requested` a day later is alerted by the daily reconcile |
+| H11 | **Payment wins the release** | Let the PI succeed while a release is in flight | Batch → `funded` **with `stripeChargeId` and `fundedAt` stamped** (it goes through the verified confirm path). A bare CAS left the charge id null and the executor froze it as `recovery_required` on the next tick |
+| H12 | **Batch frozen mid-transfer** | While the executor is working through a multi-partner batch, fire `charge.refunded` on the funding charge | The executor re-reads the batch status before each partner and **stops**; no further transfers leave the frozen batch |
+
+## Operator disposition — freeing a stuck release
+
+Since round 6 an empty `paymentIntents.search` is no longer treated as proof
+that no PaymentIntent exists, because Stripe's search index is eventually
+consistent. That closes a double-charge, and it means a batch whose PI
+genuinely never existed has **no automatic way out**: it sits
+`release_requested` with allocations reserved until the daily reconcile's
+stuck-release alert brings a human.
+
+First, confirm what the system refuses to infer — that no intent exists or
+ever will — and give the index time to settle before concluding it is empty:
+
+```bash
+stripe payment_intents search \
+  --query "metadata['openpartner_funding_batch_id']:'<batchId>'"
+```
+
+If that is genuinely empty:
+
+```ts
+import { forceReleaseBatch } from './funding/release.js';
+await forceReleaseBatch(db, batchId, 'keith', 'confirmed_no_pi', stripe);
+```
+
+The Stripe client is **required**: the force runs the same search itself
+(round 9) rather than trusting that you did, and it refuses
+(`has_payment_intent`) if it finds an intent — stamping the id so the
+ordinary release path can terminalize it. It also refuses (`too_recent`)
+until the batch has sat quiet in `release_requested` for an hour. That
+gate is what makes its search conclusive: an intent can only be CREATED
+while a batch is in `invoicing`, so an hour of quiet means any intent
+predates the stuck state by an hour — far past search-indexing lag. A
+`cannot_verify` answer means Stripe could not be asked; nothing was
+freed.
+
+It also **refuses** (`has_payment_intent`) when the batch already has a
+stamped PI. That case is not stuck — it is the ordinary release path — and
+forcing past a live intent is exactly the double-charge the protocol
+exists to prevent. Cancel the intent in Stripe and let the normal path
+finish.
+
+## Known gaps at launch (accept knowingly, or close first)
+
+Found by adversarial review and deliberately NOT auto-resolved, because
+the safe automatic behaviour would be worse than the manual one:
+
+- **No operator recovery transition.** A batch frozen `funding_disputed`
+  or `recovery_required` — including one frozen from `reserved` or
+  `invoicing` by an out-of-order clawback — keeps its allocations, and the
+  live-allocation index stops those commissions being re-reserved. That is
+  the SAFE default (releasing could permit a second debit against a charge
+  we can't prove absent), but it means the partner isn't paid until a
+  human acts, and the only tool today is SQL. A supported
+  "dispose of this batch" endpoint is the gap to close.
+- **Commission↔Allocation lock-order cycle (pre-existing).** The executor
+  locks Commission then updates Allocation; the reversal interlock updates
+  Allocation then Commission. Postgres aborts one side, so the symptom is
+  a retried webhook or a delayed executor tick, not corruption — but it
+  will show up in logs under load.
+- **A batch frozen while `reserved` is a correlation failure, not a
+  normal clawback**: a funding charge shouldn't exist before the collector
+  moves the batch to `invoicing`. Treat one as a signal that a PI was
+  created without its batch being advanced, and verify against Stripe
+  before disposing of it.
 
 ## Rollout order (founder-approved)
 
@@ -108,4 +257,28 @@ Every row: state before → action → expected state after. Verify in DB
 - Flag: `HOSTED_FUNDING_ENABLED=1` (API service). The ONLY funding env var.
 - Jobs: `funding-collector` (*/5), `funding-executor` (*/5), `funding-reconcile` (05:30 UTC daily).
 - Admin surface: Billing → Commission funding (authorize / revoke / batch history).
+
+**Invariants worth re-reading before touching this pipeline** (each one is a
+race that was found in review, not a hypothetical):
+
+- A PaymentIntent is never created for a batch that has attempted one until
+  Stripe has been **asked** whether one exists. "No id on the row" is not
+  evidence of "no charge at Stripe".
+- Allocations are never freed while a PaymentIntent could be alive —
+  including one whose id was never stamped. A failed lookup means *don't
+  know*, and *don't know* means *don't free*.
+- The PI stamp is status-predicated. Losing that CAS means a release took
+  the batch, and the intent we just created must be canceled (or the batch
+  frozen for an operator).
+- The webhook inbox is a **lease**, not a tombstone: only a stamped outcome
+  makes an event terminal, so a crashed handler is retried rather than
+  swallowed. "Someone else holds it" is answered with a **409, never a
+  2xx** — acknowledging an event nobody has processed ends Stripe's
+  redelivery, which is the same loss with extra steps. The claim carries an
+  owner token so a resurrected predecessor can't stamp or delete the new
+  owner's work.
+- Reconciliation is bounded by the **dispute horizon**, not by a page
+  number, and it reports the ids of anything the per-run cap left
+  unchecked. A cap that silently truncates makes an unchecked batch look
+  like a clean one.
 - Terms version constant: `FUNDING_TERMS_VERSION` in `apps/api/src/funding/state.ts`.

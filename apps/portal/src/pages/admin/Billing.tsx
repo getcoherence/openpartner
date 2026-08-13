@@ -327,6 +327,15 @@ function PlanCard({ status }: { status: BillingStatus }) {
   );
 }
 
+const ATTENTION_LABELS: Record<string, string> = {
+  funding_charge_refunded: 'The funding charge for this batch was refunded.',
+  funding_charge_disputed: 'The funding charge for this batch was disputed.',
+  funding_timed_out: 'Funding for this batch timed out and was released.',
+  authorization_revoked: 'Commission funding authorization was missing or revoked.',
+  billing_not_set_up: 'No billing customer is set up for funding.',
+  needs_review: 'This batch needs review — contact support.',
+};
+
 interface FundingBatch {
   id: string;
   status: string;
@@ -337,6 +346,8 @@ interface FundingBatch {
   createdAt: string;
   fundedAt: string | null;
   settledAt: string | null;
+  needsAttention?: boolean;
+  attentionCode?: string | null;
 }
 
 interface FundingStatus {
@@ -541,8 +552,21 @@ function FundingCard() {
                 <span style={{ flex: 1, fontSize: 13, color: theme.text }}>
                   {b.grossCharge} {b.currency.toUpperCase()}
                 </span>
-                <span style={{ fontSize: 11, color: theme.textMuted, textTransform: 'uppercase', fontWeight: 600 }}>
+                <span
+                  style={{
+                    fontSize: 11,
+                    // A settled batch whose funding charge was later
+                    // refunded or disputed keeps its terminal status but
+                    // carries a reason. Rendering it as a plain "Settled"
+                    // hid the clawback completely.
+                    color: b.needsAttention ? theme.danger : theme.textMuted,
+                    textTransform: 'uppercase',
+                    fontWeight: 600,
+                  }}
+                  title={b.needsAttention ? (ATTENTION_LABELS[b.attentionCode ?? ''] ?? 'This batch needs review — contact support.') : undefined}
+                >
                   {BATCH_STATUS_LABELS[b.status] ?? b.status}
+                  {b.needsAttention ? ' ⚠' : ''}
                 </span>
               </div>
             ))}

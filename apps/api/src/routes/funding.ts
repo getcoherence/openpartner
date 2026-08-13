@@ -27,6 +27,24 @@ import { ulid } from 'ulid';
 
 export const fundingRouter = Router();
 
+/**
+ * Map an internal `failureReason` onto a stable, brand-safe code. Unknown
+ * reasons collapse to 'needs_review' rather than being echoed — the point
+ * is to say what the admin can DO, not to expose our state machine.
+ */
+function attentionCodeOf(reason: string | null): string | null {
+  if (!reason) return null;
+  if (reason.startsWith('charge.refunded')) return 'funding_charge_refunded';
+  if (reason.startsWith('charge.dispute')) return 'funding_charge_disputed';
+  if (reason.startsWith('reconcile_detected')) return 'funding_charge_refunded';
+  if (reason.startsWith('orphan_payment_intent')) return 'needs_review';
+  if (reason.startsWith('payment_won_but_unverifiable')) return 'needs_review';
+  if (reason.includes('timeout') || reason.includes('retries_exhausted')) return 'funding_timed_out';
+  if (reason === 'authorization_missing_or_revoked') return 'authorization_revoked';
+  if (reason === 'no_stripe_customer') return 'billing_not_set_up';
+  return 'needs_review';
+}
+
 fundingRouter.get('/billing/funding', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const state = await getTenantBillingState(db, tenantId);
@@ -60,6 +78,15 @@ fundingRouter.get('/billing/funding', requireAuth, requireAdmin, async (req, res
       createdAt: b.createdAt,
       fundedAt: b.fundedAt,
       settledAt: b.settledAt,
+      // NORMALIZED, not the raw column. `failureReason` carries raw
+      // Stripe error text, internal state-machine reasons and Stripe
+      // object ids (`orphan_payment_intent:pi_…`) — an internal contract
+      // that shouldn't leak into a brand-facing surface. But dropping it
+      // entirely left a brand admin with "something is wrong, ask someone
+      // with log access", so it maps to a small closed set of codes they
+      // can act on. Raw detail stays in the logs for operators.
+      needsAttention: !!b.failureReason,
+      attentionCode: attentionCodeOf(b.failureReason),
     })),
   });
 });

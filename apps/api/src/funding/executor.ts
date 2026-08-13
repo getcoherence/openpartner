@@ -125,6 +125,20 @@ async function executeBatch(
   }
 
   for (const [partnerId, group] of byPartner) {
+    // Re-read the batch status before EACH transfer. A dispute webhook or
+    // the reconcile sweep can freeze the batch (→ funding_disputed) while
+    // we're working through its partners; the in-memory row we CASed to
+    // `transferring` at the top would otherwise keep paying money out of
+    // a charge that has been clawed back.
+    const live = (await db(TABLES.HostedFundingBatch)
+      .where({ id: batch.id })
+      .first(['status'])) as { status: string } | undefined;
+    if (live?.status !== 'transferring') {
+      console.warn(
+        `[funding] batch ${batch.id} left 'transferring' mid-run (now ${live?.status ?? 'missing'}) — stopping before partner ${partnerId}`,
+      );
+      return;
+    }
     await executePartnerTransfer(db, stripe, batch, partnerId, group, now(), result);
   }
 
@@ -212,6 +226,22 @@ async function executePartnerTransfer(
     }
 
     intent = await db.transaction(async (trx) => {
+      // The batch must STILL be transferring at the moment we commit the
+      // intent. The per-partner status read before this is only a check;
+      // this is the gate. Without it a dispute could freeze the batch
+      // between the two and we would still create an intent — and then
+      // transfer — out of a charge that has been clawed back.
+      const live = (await trx(TABLES.HostedFundingBatch)
+        .where({ id: batch.id })
+        .forUpdate()
+        .first(['status'])) as { status: string } | undefined;
+      if (live?.status !== 'transferring') {
+        console.warn(
+          `[funding] batch ${batch.id} left 'transferring' before the intent for partner ${partnerId} was committed (now ${live?.status ?? 'missing'}) — not creating it`,
+        );
+        return undefined;
+      }
+
       // Re-verify (finding 5): commissions must still be 'approved' and
       // untouched by reversal/refund/fraud since reservation.
       const commissionIds = group.map((a) => a.commissionId);
@@ -230,7 +260,7 @@ async function executePartnerTransfer(
       const claimed = await trx(TABLES.HostedFundingAllocation)
         .whereIn('id', group.map((a) => a.id))
         .where({ state: 'reserved' })
-        .update({ state: 'transfer_pending', updatedAt: new Date() });
+        .update({ state: 'transfer_pending', updatedAt: db.fn.now() });
       // Idempotent re-entry: a previous run may have already claimed them
       // (state transfer_pending) — that's fine, the intent row is the gate.
       if (claimed !== group.length && group.some((a) => a.state === 'reserved')) {
@@ -252,7 +282,7 @@ async function executePartnerTransfer(
           idempotencyKey: `fbt:${intentId}`,
           state: 'pending',
           createdAt: new Date(),
-          updatedAt: new Date(),
+          updatedAt: db.fn.now(),
         })
         .returning('*')) as HostedFundingTransferRow[];
       return row;
@@ -268,7 +298,7 @@ async function executePartnerTransfer(
     if (age > IDEMPOTENCY_WINDOW_MS) {
       await db(TABLES.HostedFundingTransfer)
         .where({ id: intent.id, state: 'posted' })
-        .update({ state: 'reconcile_required', updatedAt: new Date() });
+        .update({ state: 'reconcile_required', updatedAt: db.fn.now() });
       result.reconcileRequired.push(intent.id);
       await reconcileIntent(db, stripe, batch, { ...intent, state: 'reconcile_required' }, result);
       return;
@@ -278,9 +308,25 @@ async function executePartnerTransfer(
   // Step 3 — post the transfer with the frozen key. 'pending', 'posted'
   // (within window) and 'failed' all retry the same key: replays return
   // the original outcome, real retries only happen after the window.
+  // LAST gate before the irreversible call. The check inside the
+  // intent-creation transaction only covers intents created on THIS pass
+  // — an existing pending/failed/posted intent skipped it entirely — and
+  // even a fresh one can have its batch frozen between that commit and
+  // this line. This can't be atomic with a Stripe call, but it narrows
+  // the gap to the request itself and closes the existing-intent hole.
+  const stillTransferring = (await db(TABLES.HostedFundingBatch)
+    .where({ id: batch.id })
+    .first(['status'])) as { status: string } | undefined;
+  if (stillTransferring?.status !== 'transferring') {
+    console.warn(
+      `[funding] batch ${batch.id} is ${stillTransferring?.status ?? 'missing'} — not posting the transfer for partner ${partnerId}`,
+    );
+    return;
+  }
+
   await db(TABLES.HostedFundingTransfer)
     .where({ id: intent.id })
-    .update({ state: 'posted', postedAt: intent.postedAt ?? now, updatedAt: now });
+    .update({ state: 'posted', postedAt: intent.postedAt ?? now, updatedAt: db.fn.now() });
   let transfer: Stripe.Transfer;
   try {
     transfer = await stripe.transfers.create(
@@ -307,7 +353,7 @@ async function executePartnerTransfer(
       .update({
         state: definite ? 'failed' : 'posted', // ambiguous stays posted → window/reconcile
         lastError: message.slice(0, 500),
-        updatedAt: new Date(),
+        updatedAt: db.fn.now(),
       });
     console.error(`[funding] transfer post failed (${definite ? 'definite' : 'ambiguous'}) intent=${intent.id}: ${message}`);
     result.failed.push(intent.id);
@@ -341,7 +387,7 @@ async function finalizeTransfer(
         stripeTransferId: transfer.id,
         payoutId,
         lastError: null,
-        updatedAt: new Date(),
+        updatedAt: db.fn.now(),
       });
     if (updated === 0) return false; // another worker finalized first
 
@@ -363,7 +409,7 @@ async function finalizeTransfer(
     });
     await trx(TABLES.HostedFundingAllocation)
       .whereIn('id', group.map((a) => a.id))
-      .update({ state: 'transferred', updatedAt: new Date() });
+      .update({ state: 'transferred', updatedAt: db.fn.now() });
     await trx(TABLES.Commission)
       .whereIn('id', commissionIds)
       .update({ status: 'paid', paidAt: new Date(), payoutId });
@@ -436,7 +482,7 @@ async function reconcileIntent(
   // Proven absent — safe to re-post on the next tick as a first attempt.
   await db(TABLES.HostedFundingTransfer)
     .where({ id: intent.id, state: 'reconcile_required' })
-    .update({ state: 'pending', postedAt: null, updatedAt: new Date() });
+    .update({ state: 'pending', postedAt: null, updatedAt: db.fn.now() });
 }
 
 /** A definite error is one where Stripe RESPONDED (4xx semantics) — the
