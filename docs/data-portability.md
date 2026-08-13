@@ -141,13 +141,28 @@ emitted as the SQL literals `'hello'` and `42`, which the column rejects —
 so a perfectly valid stored value made the restore fail. Any non-null JSON
 value is now re-serialized regardless of its JS type.
 
-**Known residual: JSON `null` versus SQL NULL.** After `select *` these are
-indistinguishable — both arrive as JS `null` — so a column holding the JSON
-value `null` exports as SQL `NULL`. On a nullable column that round-trips
-fine in practice; on a `NOT NULL` json column the restore fails loudly
-rather than corrupting anything. Closing this properly needs the exporter to
-read column nullability, which is not worth the complexity until someone
-actually stores a bare JSON `null`.
+**Two known residuals, both from `JSON.parse`.** The driver hands us parsed
+JavaScript, so anything JSON can express but JS cannot represent exactly is
+already lost before either serializer runs:
+
+- **JSON `null` versus SQL NULL.** Indistinguishable after `select *` — both
+  arrive as JS `null` — so a column holding the JSON value `null` exports as
+  SQL `NULL`. On a nullable column that round-trips fine in practice; on a
+  `NOT NULL` json column the restore fails loudly rather than corrupting
+  anything.
+- **Number precision.** `'9007199254740993'::jsonb` parses to the JS number
+  `9007199254740992` and restores rounded; `1e400` becomes `Infinity`, which
+  `JSON.stringify` writes as `null`. This is silent, unlike the case above.
+
+Closing either properly means not going through `JSON.parse` at all —
+selecting the column as text, or installing a lossless parser — which is not
+worth the complexity until someone actually stores such a value. Both are
+covered by tests that assert the CURRENT lossy behaviour, so if a future
+change makes the parse lossless those tests fail and this section gets
+updated rather than quietly going stale.
+
+An earlier version of this doc claimed null-vs-NULL was the *only* residual.
+It was not.
 
 **Scoping does not rely on RLS alone.** `exportTable` takes an explicit
 `tenantId` and filters on it. RLS is still the outer guarantee, but `appDb`

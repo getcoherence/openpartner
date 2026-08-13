@@ -17,6 +17,7 @@ import { ulid } from 'ulid';
 import { TABLES, DEFAULT_TENANT_ID } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApp } from '../app.js';
+import { generateApiKey } from '../auth.js';
 import {
   EXPORT_TABLES,
   SCHEMA_VERSION,
@@ -644,10 +645,15 @@ describe.skipIf(skipIntegration)('round-6: scalar and null JSON round-trip', () 
     expect(restored.metadata).toBe('hello');
   }, 30_000);
 
-  it('a jsonb column holding a NUMBER survives the JSON import path', async () => {
+  it('a jsonb column holding a STRING survives the JSON import path', async () => {
+    // This used to use the number 42 and passed with the fix reverted: pg
+    // prepares a JS number as the parameter text "42", which is already
+    // valid JSON input, so the old `typeof v === 'object'` guard was never
+    // exercised. A string is the effective mutation killer — `hello` is
+    // prepared bare and jsonb rejects it.
     await seedEverything();
     const partner = (await db(TABLES.Partner).where({ tenantId: TENANT }).first()) as { id: string };
-    await db.raw(`update "Partner" set metadata = '42'::jsonb where id = ?`, [partner.id]);
+    await db.raw(`update "Partner" set metadata = '"hello"'::jsonb where id = ?`, [partner.id]);
 
     const bundle = await exportAll(db, TENANT);
     await wipe();
@@ -656,7 +662,29 @@ describe.skipIf(skipIntegration)('round-6: scalar and null JSON round-trip', () 
     const restored = (await db(TABLES.Partner).where({ id: partner.id }).first()) as {
       metadata: unknown;
     };
-    expect(restored.metadata).toBe(42);
+    expect(restored.metadata).toBe('hello');
+  }, 30_000);
+
+  it('a JSON number beyond IEEE-754 range does NOT survive — documented, not fixed', async () => {
+    // Honest coverage of a known lossy case rather than a claim that null
+    // is the only residual. pg parses jsonb through JSON.parse, so an
+    // integer past 2^53 is already rounded before either serializer sees
+    // it. If this test ever starts passing, someone has made the parse
+    // lossless and docs/data-portability.md should be updated.
+    await seedEverything();
+    const partner = (await db(TABLES.Partner).where({ tenantId: TENANT }).first()) as { id: string };
+    await db.raw(`update "Partner" set metadata = '9007199254740993'::jsonb where id = ?`, [
+      partner.id,
+    ]);
+
+    const bundle = await exportAll(db, TENANT);
+    await wipe();
+    await importBundle(db, TENANT, bundle);
+
+    const restored = (await db(TABLES.Partner).where({ id: partner.id }).first()) as {
+      metadata: unknown;
+    };
+    expect(restored.metadata).toBe(9007199254740992); // rounded, not 993
   }, 30_000);
 });
 
@@ -700,5 +728,71 @@ describe.skipIf(skipIntegration)('round-6: export is scoped without relying on R
 
     await db(TABLES.Partner).where({ id: foreignId }).del();
     await db(TABLES.Tenant).where({ id: otherTenant }).del();
+  }, 30_000);
+});
+
+describe.skipIf(skipIntegration)('round-7: an API key is bound to its tenant', () => {
+  it('another tenant\'s admin key cannot authenticate against this tenant', async () => {
+    // The key lookup filtered on prefix alone and leaned on RLS to keep it
+    // inside the tenant. That holds on the app role — but appDb falls back
+    // to the privileged DATABASE_URL when DATABASE_URL_APP is unset, a
+    // configuration db.ts documents as supported, and there RLS is bypassed.
+    // Tenant A's key then authenticated against tenant B's path and every
+    // tenant-scoped query below it, including the export, served B's data.
+    //
+    // This suite runs on the privileged pool, which is exactly the
+    // configuration that used to leak.
+    const foreignTenant = '01J0000000R7AUTHTENANT0000';
+    await db(TABLES.Tenant)
+      .insert({
+        id: foreignTenant,
+        slug: 'r7-auth',
+        displayName: 'R7 Auth',
+        status: 'active',
+        approvalStatus: 'approved',
+      })
+      .onConflict('id')
+      .ignore();
+
+    const { plaintext, prefix, hash } = generateApiKey();
+    await db(TABLES.ApiKey).insert({
+      id: ulid(),
+      tenantId: foreignTenant, // belongs to the OTHER tenant
+      label: 'foreign admin key',
+      prefix,
+      keyHash: hash,
+    });
+
+    const app = createApp({ enableLogger: false });
+    // Hit the default tenant's export with a key issued to another tenant.
+    const res = await request(app)
+      .get('/export.json')
+      .set('Authorization', `Bearer ${plaintext}`);
+
+    expect(res.status).toBe(401);
+
+    await db(TABLES.ApiKey).where({ tenantId: foreignTenant }).del();
+    await db(TABLES.Tenant).where({ id: foreignTenant }).del();
+  }, 30_000);
+
+  it('a key issued to THIS tenant still works', async () => {
+    // The other half — the fix must not lock everyone out.
+    const { plaintext, prefix, hash } = generateApiKey();
+    await db(TABLES.ApiKey).insert({
+      id: ulid(),
+      tenantId: TENANT,
+      label: 'local admin key',
+      prefix,
+      keyHash: hash,
+    });
+
+    const app = createApp({ enableLogger: false });
+    const res = await request(app)
+      .get('/export.json')
+      .set('Authorization', `Bearer ${plaintext}`);
+
+    expect(res.status).toBe(200);
+
+    await db(TABLES.ApiKey).where({ prefix }).del();
   }, 30_000);
 });
