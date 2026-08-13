@@ -589,3 +589,147 @@ describe.skipIf(skipIntegration)('round-6: a reversal that beats finalization', 
     expect(payout!.stripeTransferId).toBe('tr_already_known');
   });
 });
+
+describe.skipIf(skipIntegration)('round-9: reversal activity on a duplicate_review payout', () => {
+  // duplicate_review is parked for a HUMAN, and round 9 found the webhook
+  // dropped reversals landing there as "unmatched" — consumed and gone.
+  // The operator resolving the review had validated against a pre-reversal
+  // listing, so the reversed transfer got recorded as the kept one, paid.
+  // The webhook now RECORDS the reversal on the review (without claiming
+  // or terminalizing anything — other transfers may still hold money) and
+  // moves duplicateReviewNonce so an in-flight resolution loses its fenced
+  // CAS. Revert the recording branch and every test here sees the event
+  // fall through to "unmatched" with the metadata untouched.
+
+  async function seedDuplicateReviewPayout(generation = 0) {
+    const partnerId = ulid();
+    await db(TABLES.Partner).insert({
+      id: partnerId,
+      tenantId: DEFAULT_TENANT_ID,
+      name: 'Dup partner',
+      email: `dup-${partnerId}@example.com`,
+      stripeConnectAccountId: `acct_${partnerId.slice(0, 10)}`,
+    });
+    const payoutId = ulid();
+    await db(TABLES.Payout).insert({
+      id: payoutId,
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId,
+      amount: '50.00',
+      currency: 'USD',
+      status: 'failed',
+      method: 'stripe_connect',
+      metadata: {
+        transferState: 'duplicate_review',
+        keyGeneration: generation,
+        lastError: 'duplicate_transfers:tr_a, tr_b',
+      },
+    });
+    return payoutId;
+  }
+
+  function transferEvent(
+    payoutId: string,
+    transferId: string,
+    opts: { type?: string; reversed?: boolean; amountReversed?: number; generation?: string; noMetadata?: boolean } = {},
+  ) {
+    return {
+      id: `evt_${ulid()}`,
+      type: opts.type ?? 'transfer.reversed',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: transferId,
+          object: 'transfer',
+          amount: 5000,
+          amount_reversed: opts.amountReversed ?? 5000,
+          currency: 'usd',
+          reversed: opts.reversed ?? true,
+          transfer_group: payoutId,
+          metadata: opts.noMetadata
+            ? {}
+            : {
+                openpartner_payout_id: payoutId,
+                openpartner_key_generation: opts.generation ?? '0',
+              },
+        },
+      },
+    };
+  }
+
+  async function reviewMeta(payoutId: string) {
+    const payout = await db(TABLES.Payout).where({ id: payoutId }).first();
+    return payout!.metadata as {
+      transferState?: string;
+      duplicateReviewNonce?: string;
+      reversedTransferIds?: string[];
+    };
+  }
+
+  it('a full reversal is RECORDED on the review, not dropped as unmatched', async () => {
+    const payoutId = await seedDuplicateReviewPayout();
+    const event = transferEvent(payoutId, 'tr_a');
+    const res = await postWebhook(event);
+    expect(res.status).toBe(200);
+
+    const payout = await db(TABLES.Payout).where({ id: payoutId }).first();
+    // Still parked, still failed, nothing claimed or terminalized —
+    // other transfers in the group may still hold money.
+    expect(payout!.status).toBe('failed');
+    expect(payout!.stripeTransferId).toBeNull();
+    const meta = await reviewMeta(payoutId);
+    expect(meta.transferState).toBe('duplicate_review');
+    // The nonce is the event id: any resolution that read the row before
+    // this delivery now fails its fenced CAS and must re-verify.
+    expect(meta.duplicateReviewNonce).toBe(event.id);
+    expect(meta.reversedTransferIds).toEqual(['tr_a']);
+  });
+
+  it('a PARTIAL reversal (transfer.updated, reversed:false) is recorded too', async () => {
+    // Partials arrive as transfer.updated with `reversed` still false. A
+    // partially-reversed transfer can no longer be the kept one, so the
+    // review must move for it just the same.
+    const payoutId = await seedDuplicateReviewPayout();
+    const event = transferEvent(payoutId, 'tr_b', {
+      type: 'transfer.updated',
+      reversed: false,
+      amountReversed: 1000,
+    });
+    const res = await postWebhook(event);
+    expect(res.status).toBe(200);
+
+    const meta = await reviewMeta(payoutId);
+    expect(meta.transferState).toBe('duplicate_review');
+    expect(meta.duplicateReviewNonce).toBe(event.id);
+    expect(meta.reversedTransferIds).toEqual(['tr_b']);
+  });
+
+  it('records regardless of key generation, and accumulates ids without duplicates', async () => {
+    // A duplicate group spans generations by construction — the fallback's
+    // generation fence deliberately does not apply here.
+    const payoutId = await seedDuplicateReviewPayout(1);
+    const first = transferEvent(payoutId, 'tr_gen0', { generation: '0' });
+    expect((await postWebhook(first)).status).toBe(200);
+    // Redelivery of the same transfer id must not duplicate the entry.
+    expect((await postWebhook(transferEvent(payoutId, 'tr_gen0', { generation: '0' }))).status).toBe(200);
+    const second = transferEvent(payoutId, 'tr_gen1', { generation: '1' });
+    expect((await postWebhook(second)).status).toBe(200);
+
+    const meta = await reviewMeta(payoutId);
+    expect(meta.reversedTransferIds).toEqual(['tr_gen0', 'tr_gen1']);
+    expect(meta.duplicateReviewNonce).toBe(second.id);
+  });
+
+  it('finds the payout through transfer_group when metadata was cleared', async () => {
+    // metadata is mutable at Stripe; transfer_group is not. A reversal on
+    // a cleared-metadata transfer must still reach the review (round 9).
+    const payoutId = await seedDuplicateReviewPayout();
+    const event = transferEvent(payoutId, 'tr_cleared', { noMetadata: true });
+    const res = await postWebhook(event);
+    expect(res.status).toBe(200);
+
+    const meta = await reviewMeta(payoutId);
+    expect(meta.duplicateReviewNonce).toBe(event.id);
+    expect(meta.reversedTransferIds).toEqual(['tr_cleared']);
+  });
+});

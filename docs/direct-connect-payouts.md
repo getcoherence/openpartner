@@ -167,10 +167,18 @@ duplicates still appear in Stripe's listing so the count never drops.
 The ledger is untouched, the payout is `failed`, and its commissions stay
 claimed so nothing can re-pay them.
 
-To dispose: reverse the surplus transfer(s) in Stripe, decide whether the
-partner keeps the correct one, then either release the claims (SQL below)
-so the payout re-plans, or reverse the commissions if the money is not
-owed. Nothing automatic will touch it.
+To dispose: reverse the surplus transfer(s) in Stripe, then call
+`resolveDuplicateReview` with what is now true — `{ keptTransferId }` if
+the partner keeps one transfer (the commissions ARE paid and are recorded
+against it), or `{ allReversed: true }` if every transfer was reversed
+(the commissions go back to the pool). **Never release the claims by
+hand "so the payout re-plans": if any transfer was kept, those
+commissions are already paid, and re-planning pays them a second time —
+that is the exact double-pay this function exists to prevent.** The
+function verifies the disposition against Stripe either way, refuses
+while any unaccounted transfer still holds money, and — if a reversal
+lands while you are mid-resolution — loses its fenced commit and asks
+you to re-verify (`review_moved`).
 
 **Disposing of a reversed payout.** When a transfer is reversed, the payout
 is `failed`, the intent is `confirmed`, and its commissions stay `approved`
@@ -210,10 +218,13 @@ import {
 // Stripe's retention is anchored to the key's first use.
 await releaseIntentForRetry(db, payoutId, observedGeneration, 'keith', stripe);
 
-// "This should not be paid." Retrieves the stamped transfer and refuses
-// ('money_with_partner') unless it is FULLY reversed — a partial clawback
-// still leaves money with the partner, and releasing those commissions
-// would pay the full amount again.
+// "This should not be paid." With a stamped transfer, retrieves it and
+// refuses ('money_with_partner') unless FULLY reversed — a partial
+// clawback still leaves money with the partner, and releasing those
+// commissions would pay the full amount again. With NO stamped transfer
+// (the ambiguous held case) it lists the whole group instead and refuses
+// while any member still holds money; proceeding on an empty listing is
+// your documented risk decision, taken with every verifiable check passed.
 await disposeIntent(db, payoutId, 'keith', 'confirmed_no_transfer', stripe);
 
 // A duplicate_review payout. disposeIntent REFUSES this state on purpose.
@@ -225,9 +236,18 @@ await resolveDuplicateReview(db, payoutId, 'keith', { allReversed: true }, strip
 operators — or an operator and a concurrent reconcile — cannot both hand out
 an epoch.
 
-`resolveDuplicateReview` checks the disposition you give it: a kept transfer
-must be in the payout's group and not reversed; `allReversed` is refused
-while any transfer still holds money.
+`resolveDuplicateReview` checks the disposition you give it: a kept
+transfer must be in the payout's group, unreversed, and match the
+intent's **frozen amount, currency and destination** — "present and
+unreversed" alone would let a one-cent transfer mark a $50 payout paid;
+every OTHER transfer in the group must be fully reversed first. And
+`allReversed` is refused while any transfer still holds money. A
+`review_moved` answer means a reversal landed while you were resolving —
+re-run `stripe transfers list` and try again with what is now true.
+
+Membership in the group is by `transfer_group` — immutable at Stripe —
+never by metadata, which anyone with dashboard access can clear. A
+transfer with wiped metadata still counts against every disposition.
 
 Any of them returns `cannot_verify` if Stripe cannot be read, or if the
 transfer group is larger than the listing will page. That is deliberate —

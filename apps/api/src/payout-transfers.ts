@@ -113,6 +113,16 @@ export interface PayoutTransferMeta {
   /** When the last attempt claimed the intent. Moves on every retry and
    *  is the compare-and-swap token that keeps two workers off one key. */
   leaseAt?: string;
+  /** Moved (to the Stripe event id) by the reversal webhook whenever
+   *  reversal activity lands on ANY transfer in this payout's group while
+   *  it is parked in `duplicate_review`. `resolveDuplicateReview` fences
+   *  its commit on the value it observed, so a resolution validated
+   *  against a pre-reversal listing loses its CAS and must re-look. */
+  duplicateReviewNonce?: string;
+  /** Transfer ids whose reversal activity (full or partial) the webhook
+   *  recorded while the payout was parked. Operator information only —
+   *  validation always re-reads Stripe rather than trusting this list. */
+  reversedTransferIds?: string[];
   lastError?: string;
 }
 
@@ -629,6 +639,15 @@ async function reconcileIntent(
   // late transfer from generation N materialising after N+1 already
   // succeeded. Stripe lists newest-first, so "first match" would have
   // reported the newest and left the older duplicate unrecorded.
+  //
+  // Membership is the transfer_group itself — set at creation, immutable,
+  // and stamped with the payout ULID nothing else uses. Do NOT re-filter
+  // on `metadata.openpartner_payout_id`: metadata is MUTABLE at Stripe,
+  // so that filter made a transfer whose metadata was cleared in the
+  // dashboard invisible to every listing-based decision (round 9). A
+  // cleared-metadata transfer now reads as generation 0, which either
+  // finalizes normally (row on generation 0) or parks in duplicate_review
+  // (row moved on) — fail closed, never invisible.
   const matches: Stripe.Transfer[] = [];
   let startingAfter: string | undefined;
   for (let page = 0; page < 20; page += 1) {
@@ -637,7 +656,7 @@ async function reconcileIntent(
       limit: 100,
       ...(startingAfter ? { starting_after: startingAfter } : {}),
     });
-    matches.push(...listed.data.filter((t) => t.metadata?.openpartner_payout_id === payout.id));
+    matches.push(...listed.data);
     if (!listed.has_more || listed.data.length === 0) break;
     startingAfter = listed.data[listed.data.length - 1]!.id;
   }
@@ -881,40 +900,40 @@ export async function releaseIntentForRetry(
   // the operator's assertion is already false: let the executor finalize it
   // instead. This is cheap and it closes the race, because the transfer the
   // reconciler found is by definition visible to a listing.
-  let startingAfter: string | undefined;
-  for (let page = 0; page < 20; page += 1) {
-    let listed: Stripe.ApiList<Stripe.Transfer>;
-    try {
-      listed = await stripe.transfers.list({
-        transfer_group: payoutId,
-        limit: 100,
-        ...(startingAfter ? { starting_after: startingAfter } : {}),
-      });
-    } catch (err) {
-      // Could not ask ⇒ do not authorise. Same rule as everywhere else.
-      console.error(`[payouts] OPERATOR ${operator} re-arm of ${payoutId} refused — listing failed`, err);
-      return 'cannot_verify';
-    }
-    const mine = listed.data.filter((t) => t.metadata?.openpartner_payout_id === payoutId);
-    if (mine.length > 0) {
-      console.error(
-        `[payouts] OPERATOR ${operator} tried to re-arm ${payoutId} but ${mine.length} transfer(s) exist in its group (${mine
-          .map((t) => t.id)
-          .join(', ')}) — refusing; the executor will finalize it`,
-      );
-      return 'transfer_exists';
-    }
-    if (!listed.has_more || listed.data.length === 0) break;
-    if (page === 19) {
-      // Exhausting the page budget is NOT absence (round 8). Running out of
-      // pages while Stripe still says `has_more` and then re-arming would
-      // authorise a fresh key on the strength of not having looked.
-      console.error(
-        `[payouts] OPERATOR ${operator} re-arm of ${payoutId} refused — the transfer group has more pages than this guard will read, so absence is unproven`,
-      );
-      return 'cannot_verify';
-    }
-    startingAfter = listed.data[listed.data.length - 1]!.id;
+  //
+  // ANY transfer in the group refuses — not just ones whose metadata still
+  // carries our stamp. Metadata is mutable at Stripe, so filtering on it
+  // let a live transfer with cleared metadata pass this guard invisibly,
+  // and the fresh generation then posted a second transfer for a set the
+  // invisible one had already paid (round 9). The transfer_group is
+  // immutable and uniquely ours; membership in it IS the evidence — which
+  // also collapses the old 20-page walk: the first non-empty page settles
+  // the question, so only the degenerate empty-but-has_more answer is left
+  // to fail closed on.
+  let listed: Stripe.ApiList<Stripe.Transfer>;
+  try {
+    listed = await stripe.transfers.list({ transfer_group: payoutId, limit: 100 });
+  } catch (err) {
+    // Could not ask ⇒ do not authorise. Same rule as everywhere else.
+    console.error(`[payouts] OPERATOR ${operator} re-arm of ${payoutId} refused — listing failed`, err);
+    return 'cannot_verify';
+  }
+  if (listed.data.length > 0) {
+    console.error(
+      `[payouts] OPERATOR ${operator} tried to re-arm ${payoutId} but ${listed.data.length} transfer(s) exist in its group (${listed.data
+        .map((t) => t.id)
+        .join(', ')}) — refusing; the executor will finalize it`,
+    );
+    return 'transfer_exists';
+  }
+  if (listed.has_more) {
+    // An empty page that claims more pages should not happen for an
+    // indexed transfer_group query; whatever produced it, it is not proof
+    // of absence.
+    console.error(
+      `[payouts] OPERATOR ${operator} re-arm of ${payoutId} refused — listing returned no rows but has_more, absence unproven`,
+    );
+    return 'cannot_verify';
   }
 
   const rearmed = await casTransferState(
@@ -952,8 +971,10 @@ export async function disposeIntent(
   payoutId: string,
   operator: string,
   reason: string,
-  /** REQUIRED wherever a transfer may exist. See the verification below. */
-  stripe?: Stripe,
+  /** REQUIRED — this function verifies its own premise against Stripe.
+   *  Optional-with-a-runtime-refusal was how the round-8 guard ended up
+   *  absent from the one call operators would copy (round 9). */
+  stripe: Stripe,
 ): Promise<'disposed' | 'not_disposable' | 'money_with_partner' | 'cannot_verify'> {
   // VERIFY THE PREMISE, don't take the operator's word for it (round 8).
   //
@@ -971,8 +992,8 @@ export async function disposeIntent(
   // money with the partner.
   const row = (await db(TABLES.Payout).where({ id: payoutId }).first()) as PayoutRow | undefined;
   if (!row) return 'not_disposable';
+  if (!stripe) return 'cannot_verify';
   if (row.stripeTransferId) {
-    if (!stripe) return 'cannot_verify';
     let transfer: Stripe.Transfer;
     try {
       transfer = await stripe.transfers.retrieve(row.stripeTransferId);
@@ -987,6 +1008,53 @@ export async function disposeIntent(
     if (reversedMinor < Number(transfer.amount ?? 0)) {
       console.error(
         `[payouts] OPERATOR ${operator} dispose of ${payoutId} REFUSED — transfer ${transfer.id} is only reversed ${reversedMinor}/${transfer.amount}; the partner still holds the remainder, so releasing these commissions would pay it twice`,
+      );
+      return 'money_with_partner';
+    }
+  } else {
+    // NO stamped transfer — the AMBIGUOUS case, and round 9 found it was
+    // the one path here with no Stripe read at all: cancel, release, and
+    // the planner re-pays while a slow POST can still land. List the whole
+    // group instead (membership by immutable transfer_group, never by
+    // mutable metadata): any member still holding money refuses the
+    // release.
+    //
+    // An EMPTY listing is still not proof of absence — that is the whole
+    // reason the intent is held. Proceeding on empty is the operator's
+    // documented risk decision, taken with every verifiable check passed;
+    // what this guard closes is releasing against POSITIVE evidence.
+    const group: Stripe.Transfer[] = [];
+    try {
+      let startingAfter: string | undefined;
+      for (let page = 0; page < 20; page += 1) {
+        const listed = await stripe.transfers.list({
+          transfer_group: payoutId,
+          limit: 100,
+          ...(startingAfter ? { starting_after: startingAfter } : {}),
+        });
+        group.push(...listed.data);
+        if (!listed.has_more || listed.data.length === 0) break;
+        if (page === 19) {
+          console.error(
+            `[payouts] OPERATOR ${operator} dispose of ${payoutId} refused — more transfers than this listing will page, absence unproven`,
+          );
+          return 'cannot_verify';
+        }
+        startingAfter = listed.data[listed.data.length - 1]!.id;
+      }
+    } catch (err) {
+      console.error(
+        `[payouts] OPERATOR ${operator} dispose of ${payoutId} refused — listing failed`,
+        err,
+      );
+      return 'cannot_verify';
+    }
+    const live = group.filter((t) => Number(t.amount_reversed ?? 0) < Number(t.amount ?? 0));
+    if (live.length > 0) {
+      console.error(
+        `[payouts] OPERATOR ${operator} dispose of ${payoutId} REFUSED — ${live.length} transfer(s) in its group still hold money (${live
+          .map((t) => t.id)
+          .join(', ')}); releasing these commissions would pay them twice`,
       );
       return 'money_with_partner';
     }
@@ -1053,10 +1121,11 @@ export async function resolveDuplicateReview(
   operator: string,
   disposition: { keptTransferId: string } | { allReversed: true },
   /** REQUIRED. Both dispositions are checked against Stripe — see below. */
-  stripe?: Stripe,
+  stripe: Stripe,
 ): Promise<
   | 'resolved'
   | 'not_in_duplicate_review'
+  | 'review_moved'
   | 'cannot_verify'
   | 'kept_transfer_invalid'
   | 'transfers_still_live'
@@ -1073,6 +1142,23 @@ export async function resolveDuplicateReview(
   //     the resulting state: a wedge only raw SQL can clear.
   if (!stripe) return 'cannot_verify';
 
+  // Read the row FIRST and remember the review nonce we saw. The listing
+  // below is a snapshot, and a reversal can land after it — the webhook
+  // records that by moving `duplicateReviewNonce` (routes/stripe-webhook.ts),
+  // and both commits below are fenced on the value observed HERE. Listing
+  // first and fencing on nothing was round 9's list→write gap: a reversal
+  // arriving mid-resolution was dropped as unmatched while the stale
+  // validation recorded the reversed transfer as kept, paid.
+  const row = (await db(TABLES.Payout).where({ id: payoutId }).first()) as PayoutRow | undefined;
+  if (!row) return 'not_in_duplicate_review';
+  const meta = row.metadata as unknown as PayoutTransferMeta;
+  if (meta.transferState !== 'duplicate_review') return 'not_in_duplicate_review';
+  const observedNonce =
+    typeof meta.duplicateReviewNonce === 'string' ? meta.duplicateReviewNonce : null;
+
+  // Membership by immutable transfer_group, never by mutable metadata —
+  // same round-9 rule as the other listings: a cleared-metadata transfer
+  // must count against every disposition, not vanish from it.
   const group: Stripe.Transfer[] = [];
   try {
     let startingAfter: string | undefined;
@@ -1082,7 +1168,7 @@ export async function resolveDuplicateReview(
         limit: 100,
         ...(startingAfter ? { starting_after: startingAfter } : {}),
       });
-      group.push(...listed.data.filter((t) => t.metadata?.openpartner_payout_id === payoutId));
+      group.push(...listed.data);
       if (!listed.has_more || listed.data.length === 0) break;
       if (page === 19) {
         // Exhausting the bound is not proof of anything. Refuse.
@@ -1099,7 +1185,8 @@ export async function resolveDuplicateReview(
   }
 
   if ('keptTransferId' in disposition) {
-    // The kept transfer must exist, be ours, and still hold the money.
+    // The kept transfer must exist, still hold the money, and BE the
+    // payment this ledger is about to record.
     const kept = group.find((t) => t.id === disposition.keptTransferId);
     if (!kept) {
       console.error(
@@ -1112,6 +1199,45 @@ export async function resolveDuplicateReview(
         `[payouts] OPERATOR ${operator} named kept transfer ${kept.id} for ${payoutId}, but it is reversed — refusing`,
       );
       return 'kept_transfer_invalid';
+    }
+    // Amount, currency and destination must match the FROZEN intent —
+    // "present and unreversed" alone let a one-cent transfer mark a $50
+    // payout fully paid (round 9). amountMinor and destinationAccountId
+    // were frozen at plan time precisely so this comparison has an
+    // immutable reference; the payout row's own amount is the fallback
+    // for pre-metadata rows so an unusable blob cannot wedge the review.
+    const expectedAmount = Number.isFinite(Number(meta.amountMinor))
+      ? Number(meta.amountMinor)
+      : Math.round(Number(row.amount) * 100);
+    const expectedCurrency = row.currency.toLowerCase();
+    const keptDestination =
+      typeof kept.destination === 'string' ? kept.destination : kept.destination?.id;
+    if (Number(kept.amount) !== expectedAmount || kept.currency !== expectedCurrency) {
+      console.error(
+        `[payouts] OPERATOR ${operator} named kept transfer ${kept.id} for ${payoutId}, but it is ${kept.amount} ${kept.currency} where the intent froze ${expectedAmount} ${expectedCurrency} — refusing; that transfer is not this payment`,
+      );
+      return 'kept_transfer_invalid';
+    }
+    if (!meta.destinationAccountId || keptDestination !== meta.destinationAccountId) {
+      console.error(
+        `[payouts] OPERATOR ${operator} named kept transfer ${kept.id} for ${payoutId}, but its destination ${String(keptDestination)} does not match the frozen ${String(meta.destinationAccountId)} — refusing`,
+      );
+      return 'kept_transfer_invalid';
+    }
+    // Every OTHER member must be FULLY reversed before the ledger settles
+    // on the kept one. Resolving while a sibling still holds money records
+    // this set paid and forgets the sibling — the partner keeps the
+    // surplus with nothing left flagging it.
+    const liveSiblings = group.filter(
+      (t) => t.id !== kept.id && Number(t.amount_reversed ?? 0) < Number(t.amount ?? 0),
+    );
+    if (liveSiblings.length > 0) {
+      console.error(
+        `[payouts] OPERATOR ${operator} kept ${kept.id} for ${payoutId}, but ${liveSiblings.length} other transfer(s) still hold money (${liveSiblings
+          .map((t) => t.id)
+          .join(', ')}) — reverse the surplus first`,
+      );
+      return 'transfers_still_live';
     }
   } else {
     // Every transfer in the group must be FULLY reversed before the
@@ -1141,6 +1267,10 @@ export async function resolveDuplicateReview(
           stripeTransferId: disposition.keptTransferId,
           completedAt: new Date(),
         },
+        // Fenced on the nonce observed before the listing: if the webhook
+        // recorded reversal activity since, this loses and the operator
+        // re-verifies against the world as it now is.
+        { duplicateReviewNonce: observedNonce },
       );
       if (!moved) return;
       // The kept transfer paid these. Mark them paid rather than freeing
@@ -1158,6 +1288,7 @@ export async function resolveDuplicateReview(
       'canceled',
       { lastError: `operator_all_reversed:${operator}` },
       { status: 'failed' },
+      { duplicateReviewNonce: observedNonce },
     );
     if (!moved) return;
     await releaseClaims(trx, payoutId);
@@ -1171,8 +1302,19 @@ export async function resolveDuplicateReview(
           : 'all transfers reversed, commissions returned to the pool'
       }`,
     );
+    return 'resolved';
   }
-  return ok ? 'resolved' : 'not_in_duplicate_review';
+  // Distinguish "someone else resolved it" from "the webhook moved the
+  // nonce under us" — the second means re-verify and try again, not stop.
+  const after = (await db(TABLES.Payout).where({ id: payoutId }).first()) as PayoutRow | undefined;
+  const afterState = (after?.metadata as { transferState?: string } | undefined)?.transferState;
+  if (afterState === 'duplicate_review') {
+    console.error(
+      `[payouts] OPERATOR ${operator} resolve of ${payoutId} lost to new reversal activity recorded by the webhook — re-verify and retry`,
+    );
+    return 'review_moved';
+  }
+  return 'not_in_duplicate_review';
 }
 
 /** Un-claim commissions frozen onto a dead intent. 'paid' rows are never
@@ -1251,7 +1393,7 @@ async function casTransferState(
    *  epoch — every mutation that follows a Stripe call must be fenced on
    *  it, or a worker holding a result from generation N can write it
    *  against generation N+1. */
-  expect: { postedAt?: string; keyGeneration?: number } = {},
+  expect: { postedAt?: string; keyGeneration?: number; duplicateReviewNonce?: string | null } = {},
   /** Column-level guard. `notStatus` refuses the transition when the payout
    *  already carries that status — the operator disposals use it so a payout
    *  whose money reached the partner can never be released back into the
@@ -1276,6 +1418,15 @@ async function casTransferState(
     // throw and wedge the intent permanently, possibly after money moved.
     // Absent means generation 0: rows written before generations existed.
     q.whereRaw(`coalesce("metadata"->>'keyGeneration', '0') = ?`, [String(expect.keyGeneration)]);
+  }
+  if ('duplicateReviewNonce' in expect) {
+    // Same presence-sensitive shape as postedAt: null means "I observed no
+    // nonce", which only matches a row the webhook has not touched.
+    if (expect.duplicateReviewNonce == null) {
+      q.whereRaw(`("metadata"->>'duplicateReviewNonce') is null`);
+    } else {
+      q.whereRaw(`("metadata"->>'duplicateReviewNonce') = ?`, [expect.duplicateReviewNonce]);
+    }
   }
   if (guard.notStatus !== undefined) {
     q.whereNot({ status: guard.notStatus });

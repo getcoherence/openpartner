@@ -208,7 +208,13 @@ async function resolveTenantForEvent(event: Stripe.Event): Promise<string | null
     case 'transfer.updated':
     case 'transfer.reversed': {
       const transfer = event.data.object as Stripe.Transfer;
-      const payoutId = transfer.metadata?.openpartner_payout_id;
+      // metadata.openpartner_payout_id is our stamp, but metadata is
+      // MUTABLE at Stripe — a dashboard edit can clear it. transfer_group
+      // is set at creation, immutable, and stamped with the payout ULID,
+      // so it identifies the transfer when everything mutable is gone
+      // (round 9). A group value that is not one of our payout ids simply
+      // finds no row and the event is skipped.
+      const payoutId = transfer.metadata?.openpartner_payout_id ?? transfer.transfer_group;
       if (!payoutId) return null;
       const row = await db<PayoutRow>(TABLES.Payout).where({ id: payoutId }).first(['tenantId']);
       return row?.tenantId ?? null;
@@ -386,7 +392,10 @@ async function handleConnectEvent(
     case 'transfer.updated':
     case 'transfer.reversed': {
       const transfer = event.data.object as Stripe.Transfer;
-      const payoutId = transfer.metadata?.openpartner_payout_id;
+      // Same mutable-metadata rule as resolveTenantForEvent: fall back to
+      // the immutable transfer_group so a cleared-metadata transfer's
+      // reversal still finds its payout (round 9).
+      const payoutId = transfer.metadata?.openpartner_payout_id ?? transfer.transfer_group;
       if (!payoutId) return null;
       const reversed = event.type === 'transfer.reversed' || (transfer.reversed ?? false);
 
@@ -405,7 +414,10 @@ async function handleConnectEvent(
       // Taking the row lock first means we either see the pre-finalization
       // state (and the fallback applies) or the post-finalization state (and
       // the exact-id match applies). There is no longer an in-between.
-      await trx(TABLES.Payout).where({ id: payoutId }).forUpdate().first();
+      const locked = (await trx<PayoutRow>(TABLES.Payout)
+        .where({ id: payoutId })
+        .forUpdate()
+        .first()) as PayoutRow | undefined;
 
       // Apply ONLY to the transfer this payout actually recorded. A payout
       // can have several transfers in its group across key generations
@@ -454,6 +466,59 @@ async function handleConnectEvent(
             `[payouts] transfer ${transfer.id} was reversed before payout ${payoutId} finalized — recorded failed from metadata; its commissions stay claimed for operator disposition`,
           );
           return 'transfer_reversed_before_finalize';
+        }
+      }
+      // A payout parked in `duplicate_review` is a HUMAN's problem, and
+      // this event changes what that human is looking at. Claiming or
+      // terminalizing here would be wrong — other transfers in the group
+      // may still hold money — but dropping the event as "unmatched" is
+      // worse (round 9): the only reversal notification gets consumed
+      // while an operator mid-resolution validates against a pre-reversal
+      // listing, then records the reversed transfer as the kept one,
+      // paid, with the money gone. So RECORD it and move the review
+      // nonce; `resolveDuplicateReview` fences its commit on the nonce it
+      // observed, so any resolution validated before this write loses its
+      // CAS and must re-look.
+      //
+      // Two deliberate widenings relative to the fallback above: no
+      // key-generation fence (a duplicate group spans generations by
+      // construction, and every member's reversal is relevant to the
+      // review), and PARTIAL reversals count — they arrive as
+      // transfer.updated with `reversed` still false but a non-zero
+      // amount_reversed, and a partially-reversed transfer can no longer
+      // be the kept one.
+      const reversalActivity = reversed || Number(transfer.amount_reversed ?? 0) > 0;
+      if (updated === 0 && reversalActivity) {
+        const lockedMeta = (locked?.metadata ?? {}) as {
+          transferState?: string;
+          reversedTransferIds?: unknown;
+        };
+        if (lockedMeta.transferState === 'duplicate_review') {
+          // We hold the row lock, so this read-modify-write cannot race
+          // another delivery; the state predicate below is belt-and-braces.
+          const seen = Array.isArray(lockedMeta.reversedTransferIds)
+            ? (lockedMeta.reversedTransferIds as unknown[]).filter(
+                (v): v is string => typeof v === 'string',
+              )
+            : [];
+          const reversedIds = seen.includes(transfer.id) ? seen : [...seen, transfer.id];
+          const recorded = await trx(TABLES.Payout)
+            .where({ id: payoutId })
+            .whereRaw(`("metadata"->>'transferState') = 'duplicate_review'`)
+            .update({
+              metadata: trx.raw(`"metadata" || ?::jsonb`, [
+                JSON.stringify({
+                  duplicateReviewNonce: event.id,
+                  reversedTransferIds: reversedIds,
+                }),
+              ]),
+            });
+          if (recorded > 0) {
+            console.error(
+              `[payouts] transfer ${transfer.id} saw reversal activity while payout ${payoutId} sits in duplicate_review — recorded on the review; any in-flight operator resolution re-verifies`,
+            );
+            return 'transfer_reversal_in_duplicate_review';
+          }
         }
       }
       if (updated === 0) {

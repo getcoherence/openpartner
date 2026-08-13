@@ -41,6 +41,9 @@ interface FakeTransfer {
    *  disposals check this, so tests must be able to set it. */
   amount_reversed?: number;
   reversed?: boolean;
+  /** The Connect account it paid. resolveDuplicateReview verifies a kept
+   *  transfer against the intent's frozen destination (round 9). */
+  destination?: string;
 }
 
 function mockStripe(
@@ -58,6 +61,7 @@ function mockStripe(
     async (params: {
       amount: number;
       currency: string;
+      destination?: string;
       transfer_group?: string;
       metadata: Record<string, string>;
     }) => {
@@ -67,6 +71,7 @@ function mockStripe(
         id: `tr_${ulid()}`,
         amount: params.amount,
         currency: params.currency,
+        destination: params.destination,
         transfer_group: params.transfer_group,
         metadata: params.metadata,
       };
@@ -581,7 +586,11 @@ describe.skipIf(skipIntegration)('payout transfer executor', () => {
     const { stripe } = mockStripe({ listed: [] });
     await executePayoutTransfers(db, { stripe });
 
-    expect(await disposeIntent(db, payoutId, 'keith', 'confirmed_no_transfer')).toBe('disposed');
+    // The dispose lists the group itself now (round 9): an empty listing
+    // is the operator's risk decision, but positive evidence refuses.
+    expect(await disposeIntent(db, payoutId, 'keith', 'confirmed_no_transfer', stripe)).toBe(
+      'disposed',
+    );
     const payout = await payoutOf(payoutId);
     expect(payout.status).toBe('failed');
     expect(payout.metadata.transferState).toBe('canceled');
@@ -1512,7 +1521,9 @@ describe.skipIf(skipIntegration)('round-7 hardening', () => {
         ]),
       });
 
-    expect(await disposeIntent(db, payoutId, 'keith', 'oops')).toBe('not_disposable');
+    expect(await disposeIntent(db, payoutId, 'keith', 'oops', mockStripe().stripe)).toBe(
+      'not_disposable',
+    );
     const still = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
     expect(still.payoutId).toBe(payoutId); // still claimed — not re-payable
   });
@@ -1539,6 +1550,7 @@ describe.skipIf(skipIntegration)('round-7 hardening', () => {
       id: 'tr_kept',
       amount: 5000,
       currency: 'usd',
+      destination: `acct_${partnerId.slice(0, 10)}`, // the frozen destination
       transfer_group: payoutId,
       metadata: { openpartner_payout_id: payoutId },
     };
@@ -1547,6 +1559,7 @@ describe.skipIf(skipIntegration)('round-7 hardening', () => {
       amount: 5000,
       amount_reversed: 5000, // the operator reversed this one
       currency: 'usd',
+      destination: `acct_${partnerId.slice(0, 10)}`,
       transfer_group: payoutId,
       metadata: { openpartner_payout_id: payoutId },
     };
@@ -1634,7 +1647,9 @@ describe.skipIf(skipIntegration)('round-7 hardening', () => {
         ]),
       });
 
-    expect(await disposeIntent(db, payoutId, 'keith', 'reversed')).toBe('disposed');
+    expect(await disposeIntent(db, payoutId, 'keith', 'reversed', mockStripe().stripe)).toBe(
+      'disposed',
+    );
     const freed = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
     expect(freed.payoutId).toBeNull();
 
@@ -1659,7 +1674,9 @@ describe.skipIf(skipIntegration)('round-7 hardening', () => {
           JSON.stringify({ transferState: 'confirmed' }),
         ]),
       });
-    expect(await disposeIntent(db, paidId, 'keith', 'mistake')).toBe('not_disposable');
+    expect(await disposeIntent(db, paidId, 'keith', 'mistake', mockStripe().stripe)).toBe(
+      'not_disposable',
+    );
     expect((await db(TABLES.Commission).where({ id: ids2[0]! }).first()).payoutId).toBe(paidId);
   });
 
@@ -1843,9 +1860,14 @@ describe.skipIf(skipIntegration)('round-8 hardening', () => {
     expect(held.metadata.keyGeneration ?? 0).toBe(0);
   });
 
-  it('releaseIntentForRetry refuses when the transfer group exceeds the page budget', async () => {
-    // Exhausting the bound is not absence. Re-arming there would authorise
-    // a fresh key on the strength of not having looked.
+  it('releaseIntentForRetry counts a CLEARED-METADATA transfer as evidence', async () => {
+    // Round 9: the guard filtered the listing on
+    // `metadata.openpartner_payout_id`, which is MUTABLE at Stripe. A live
+    // transfer whose metadata had been cleared in the dashboard was
+    // invisible, the guard saw "nothing", and the re-arm posted a second
+    // transfer for a set the invisible one had already paid. Membership is
+    // the immutable transfer_group now — revert the filter and this
+    // re-arms.
     const partnerId = await seedPartner();
     await seedApproved(partnerId, 1, '50.00');
     const { payouts } = await plan();
@@ -1858,19 +1880,274 @@ describe.skipIf(skipIntegration)('round-8 hardening', () => {
         ]),
       });
 
-    // Always says there is another page, and never returns one of ours.
-    const endless = {
+    const clearedMetadata = {
       transfers: {
         create: vi.fn(),
         retrieve: vi.fn(),
         list: vi.fn(async () => ({
-          data: [{ id: `tr_other_${Math.random()}`, metadata: {} }],
-          has_more: true,
+          data: [{ id: 'tr_metadata_cleared', metadata: {}, transfer_group: payoutId }],
+          has_more: false,
         })),
       },
     } as unknown as Stripe;
 
-    expect(await releaseIntentForRetry(db, payoutId, 0, 'keith', endless)).toBe('cannot_verify');
+    expect(await releaseIntentForRetry(db, payoutId, 0, 'keith', clearedMetadata)).toBe(
+      'transfer_exists',
+    );
     expect((await payoutOf(payoutId)).metadata.transferState).toBe('reconcile_required');
+
+    // And the degenerate empty-page-with-has_more answer is still not
+    // proof of absence.
+    const sparse = {
+      transfers: {
+        create: vi.fn(),
+        retrieve: vi.fn(),
+        list: vi.fn(async () => ({ data: [], has_more: true })),
+      },
+    } as unknown as Stripe;
+    expect(await releaseIntentForRetry(db, payoutId, 0, 'keith', sparse)).toBe('cannot_verify');
+    expect((await payoutOf(payoutId)).metadata.transferState).toBe('reconcile_required');
+  });
+});
+
+// ---- Round-9 review fixes (Codex, 2026-08-13) ------------------------------
+
+describe.skipIf(skipIntegration)('round-9 hardening', () => {
+  async function seedDuplicateReview(amount = '50.00') {
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, amount);
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        status: 'failed',
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'duplicate_review' }),
+        ]),
+      });
+    return { partnerId, commissionIds, payoutId, destination: `acct_${partnerId.slice(0, 10)}` };
+  }
+
+  it('a reversal recorded MID-RESOLUTION makes the resolution lose and re-look', async () => {
+    // The list→write gap: the operator's listing is a snapshot, and a
+    // reversal can land after it. The webhook records that by moving
+    // duplicateReviewNonce (routes/stripe-webhook.ts); both commits in
+    // resolveDuplicateReview are fenced on the nonce observed BEFORE the
+    // listing. Remove the fence and this records a reversed transfer as
+    // the kept one, paid, with the money gone.
+    const { commissionIds, payoutId, destination } = await seedDuplicateReview();
+    const kept: FakeTransfer = {
+      id: 'tr_kept',
+      amount: 5000,
+      currency: 'usd',
+      destination,
+      transfer_group: payoutId,
+      metadata: { openpartner_payout_id: payoutId },
+    };
+    const stripe = {
+      transfers: {
+        create: vi.fn(),
+        retrieve: vi.fn(),
+        list: vi.fn(async () => {
+          // The reversal lands and its webhook is processed while the
+          // operator's listing is in flight — this is the exact write the
+          // webhook makes (routes/stripe-webhook.ts), staged here because
+          // the race window is inside resolveDuplicateReview.
+          await db(TABLES.Payout)
+            .where({ id: payoutId })
+            .whereRaw(`("metadata"->>'transferState') = 'duplicate_review'`)
+            .update({
+              metadata: db.raw(`"metadata" || ?::jsonb`, [
+                JSON.stringify({
+                  duplicateReviewNonce: 'evt_mid_resolution',
+                  reversedTransferIds: ['tr_kept'],
+                }),
+              ]),
+            });
+          // …and the snapshot the operator validates against still shows
+          // the kept transfer unreversed.
+          return { data: [kept], has_more: false };
+        }),
+      },
+    } as unknown as Stripe;
+
+    expect(
+      await resolveDuplicateReview(db, payoutId, 'keith', { keptTransferId: 'tr_kept' }, stripe),
+    ).toBe('review_moved');
+
+    // Nothing moved: still parked, still failed, commissions still claimed.
+    const payout = await payoutOf(payoutId);
+    expect(payout.status).toBe('failed');
+    expect(payout.stripeTransferId).toBeNull();
+    expect(payout.metadata.transferState).toBe('duplicate_review');
+    const c = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(c.status).toBe('approved');
+    expect(c.payoutId).toBe(payoutId);
+  });
+
+  it('the kept transfer must BE the frozen payment — amount, currency, destination', async () => {
+    // "Present and unreversed" alone let a one-cent transfer mark a $50
+    // payout fully paid. The intent froze amountMinor and the destination
+    // at plan time precisely so this comparison has an immutable reference.
+    const { commissionIds, payoutId, destination } = await seedDuplicateReview();
+
+    const oneCent: FakeTransfer = {
+      id: 'tr_one_cent',
+      amount: 1,
+      currency: 'usd',
+      destination,
+      transfer_group: payoutId,
+      metadata: { openpartner_payout_id: payoutId },
+    };
+    expect(
+      await resolveDuplicateReview(
+        db,
+        payoutId,
+        'keith',
+        { keptTransferId: 'tr_one_cent' },
+        mockStripe({ listed: [oneCent] }).stripe,
+      ),
+    ).toBe('kept_transfer_invalid');
+
+    const wrongDestination: FakeTransfer = {
+      id: 'tr_wrong_dest',
+      amount: 5000,
+      currency: 'usd',
+      destination: 'acct_someone_else',
+      transfer_group: payoutId,
+      metadata: { openpartner_payout_id: payoutId },
+    };
+    expect(
+      await resolveDuplicateReview(
+        db,
+        payoutId,
+        'keith',
+        { keptTransferId: 'tr_wrong_dest' },
+        mockStripe({ listed: [wrongDestination] }).stripe,
+      ),
+    ).toBe('kept_transfer_invalid');
+
+    // Refused means untouched.
+    const payout = await payoutOf(payoutId);
+    expect(payout.status).toBe('failed');
+    expect(payout.metadata.transferState).toBe('duplicate_review');
+    const c = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(c.status).toBe('approved');
+  });
+
+  it('keeping one transfer while a SIBLING still holds money is refused', async () => {
+    // Resolving records this commission set paid and takes the payout out
+    // of review — a live sibling would be surplus money with nothing left
+    // flagging it. Reverse the surplus first.
+    const { payoutId, destination } = await seedDuplicateReview();
+    const kept: FakeTransfer = {
+      id: 'tr_kept',
+      amount: 5000,
+      currency: 'usd',
+      destination,
+      transfer_group: payoutId,
+      metadata: { openpartner_payout_id: payoutId },
+    };
+    const liveSibling: FakeTransfer = {
+      id: 'tr_live_sibling',
+      amount: 5000,
+      currency: 'usd',
+      destination,
+      transfer_group: payoutId,
+      metadata: {}, // cleared metadata must not hide it either
+    };
+    expect(
+      await resolveDuplicateReview(
+        db,
+        payoutId,
+        'keith',
+        { keptTransferId: 'tr_kept' },
+        mockStripe({ listed: [kept, liveSibling] }).stripe,
+      ),
+    ).toBe('transfers_still_live');
+    expect((await payoutOf(payoutId)).metadata.transferState).toBe('duplicate_review');
+  });
+
+  it('allReversed cannot be satisfied vacuously by a metadata filter', async () => {
+    // Round 9: the group listing filtered on mutable metadata, so a live
+    // transfer whose metadata was cleared left an EMPTY group and
+    // {allReversed} released the commissions against it. Membership is the
+    // immutable transfer_group now — revert the filter drop and this
+    // double-pays.
+    const { commissionIds, payoutId, destination } = await seedDuplicateReview();
+    const clearedButLive: FakeTransfer = {
+      id: 'tr_cleared_live',
+      amount: 5000,
+      currency: 'usd',
+      destination,
+      transfer_group: payoutId,
+      metadata: {},
+    };
+    expect(
+      await resolveDuplicateReview(
+        db,
+        payoutId,
+        'keith',
+        { allReversed: true },
+        mockStripe({ listed: [clearedButLive] }).stripe,
+      ),
+    ).toBe('transfers_still_live');
+    const c = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(c.payoutId).toBe(payoutId); // still claimed
+  });
+
+  it('disposeIntent with NO stamped transfer verifies the group before releasing', async () => {
+    // Round 9's first critical: the no-stamped-id case — the common
+    // ambiguous one — released the claims with no Stripe read at all, and
+    // the planner re-paid them. It lists the whole group now; a live
+    // member (stamped metadata or not) refuses the release.
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'reconcile_required' }),
+        ]),
+      });
+
+    const liveUnstamped: FakeTransfer = {
+      id: 'tr_live_unstamped',
+      amount: 5000,
+      currency: 'usd',
+      transfer_group: payoutId,
+      metadata: {},
+    };
+    expect(
+      await disposeIntent(
+        db,
+        payoutId,
+        'keith',
+        'oops',
+        mockStripe({ listed: [liveUnstamped] }).stripe,
+      ),
+    ).toBe('money_with_partner');
+    expect(
+      (await db(TABLES.Commission).where({ id: commissionIds[0]! }).first()).payoutId,
+    ).toBe(payoutId); // still claimed
+
+    // Fully-reversed members are money that came back — releasing is then
+    // the operator's (verified-as-far-as-verifiable) risk decision.
+    const reversedMember: FakeTransfer = { ...liveUnstamped, amount_reversed: 5000 };
+    expect(
+      await disposeIntent(
+        db,
+        payoutId,
+        'keith',
+        'confirmed_reversed',
+        mockStripe({ listed: [reversedMember] }).stripe,
+      ),
+    ).toBe('disposed');
+    expect(
+      (await db(TABLES.Commission).where({ id: commissionIds[0]! }).first()).payoutId,
+    ).toBeNull();
   });
 });
