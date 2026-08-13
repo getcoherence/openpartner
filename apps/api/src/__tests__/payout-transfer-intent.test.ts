@@ -20,6 +20,7 @@ import {
   idempotencyKeyFor,
   releaseIntentForRetry,
   disposeIntent,
+  resolveDuplicateReview,
   __testCasTransferState,
   __testMarkDuplicateReview,
 } from '../payout-transfers.js';
@@ -1486,5 +1487,186 @@ describe.skipIf(skipIntegration)('round-6 hardening', () => {
     expect(payout.metadata.transferState).toBe('posted');
     expect(payout.metadata.keyGeneration).toBe(1);
     expect(payout.status).not.toBe('failed');
+  });
+});
+
+describe.skipIf(skipIntegration)('round-7 hardening', () => {
+  it('disposeIntent REFUSES a duplicate_review payout', async () => {
+    // It used to accept this state and release the claims. But a duplicate
+    // is disposed of by reversing the SURPLUS and keeping one transfer, so
+    // those commissions have been paid — releasing them let the planner pay
+    // them a second time. Revert the state list and this test double-pays.
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'duplicate_review' }),
+        ]),
+      });
+
+    expect(await disposeIntent(db, payoutId, 'keith', 'oops')).toBe('not_disposable');
+    const still = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(still.payoutId).toBe(payoutId); // still claimed — not re-payable
+  });
+
+  it('resolveDuplicateReview with a kept transfer marks commissions PAID, not free', async () => {
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'duplicate_review' }),
+        ]),
+      });
+
+    expect(
+      await resolveDuplicateReview(db, payoutId, 'keith', { keptTransferId: 'tr_kept' }),
+    ).toBe('resolved');
+
+    const payout = await payoutOf(payoutId);
+    expect(payout.status).toBe('paid');
+    expect(payout.stripeTransferId).toBe('tr_kept');
+    const c = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(c.status).toBe('paid');
+    expect(c.payoutId).toBe(payoutId);
+    // The whole point: nothing is left for the planner to pay again.
+    expect((await plan()).payouts).toHaveLength(0);
+  });
+
+  it('resolveDuplicateReview with all-reversed returns the commissions', async () => {
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'duplicate_review' }),
+        ]),
+      });
+
+    expect(await resolveDuplicateReview(db, payoutId, 'keith', { allReversed: true })).toBe(
+      'resolved',
+    );
+    const c = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(c.status).toBe('approved');
+    expect(c.payoutId).toBeNull();
+  });
+
+  it('disposeIntent frees a REVERSED payout but never a paid one', async () => {
+    // A reversed transfer leaves confirmed + failed with the commissions
+    // frozen "for operator disposition" — previously no function accepted
+    // that state at all, so the freeze had no exit.
+    const partnerId = await seedPartner();
+    const commissionIds = await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        status: 'failed',
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'confirmed' }),
+        ]),
+      });
+
+    expect(await disposeIntent(db, payoutId, 'keith', 'reversed')).toBe('disposed');
+    const freed = await db(TABLES.Commission).where({ id: commissionIds[0]! }).first();
+    expect(freed.payoutId).toBeNull();
+
+    // And the same shape with status 'paid' must be refused — that money
+    // reached the partner.
+    const partner2 = await seedPartner();
+    const ids2 = await seedApproved(partner2, 1, '60.00');
+    const { payouts: p2 } = await plan();
+    const paidId = p2[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: paidId })
+      .update({
+        status: 'paid',
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'confirmed' }),
+        ]),
+      });
+    expect(await disposeIntent(db, paidId, 'keith', 'mistake')).toBe('not_disposable');
+    expect((await db(TABLES.Commission).where({ id: ids2[0]! }).first()).payoutId).toBe(paidId);
+  });
+
+  it('releaseIntentForRetry REFUSES when a transfer exists in the group', async () => {
+    // The generation fence does not cover this: a reconciler that has just
+    // found a transfer has not written anything yet, so it is still on the
+    // generation the operator observed. Re-arming there posts a second
+    // transfer for a set the first already paid.
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'reconcile_required', keyGeneration: 0 }),
+        ]),
+      });
+
+    const existing: FakeTransfer = {
+      id: 'tr_already_out_there',
+      amount: 5000,
+      currency: 'usd',
+      transfer_group: payoutId,
+      metadata: { openpartner_payout_id: payoutId, openpartner_key_generation: '0' },
+    };
+    const { stripe } = mockStripe({ listed: [existing] });
+
+    expect(await releaseIntentForRetry(db, payoutId, 0, 'keith', stripe)).toBe('transfer_exists');
+    const held = await payoutOf(payoutId);
+    expect(held.metadata.transferState).toBe('reconcile_required');
+    expect(held.metadata.keyGeneration ?? 0).toBe(0);
+  });
+
+  it('a reversal recorded before finalization is not flipped back to paid', async () => {
+    // The webhook now takes the payout row lock, so it either sees the
+    // pre-finalization state (and claims via metadata) or the post- state
+    // (and matches on the id). Either way the executor must not overwrite
+    // a recorded reversal with `paid`.
+    const partnerId = await seedPartner();
+    await seedApproved(partnerId, 1, '50.00');
+    const { payouts } = await plan();
+    const payoutId = payouts[0]!.payoutId;
+
+    // The webhook got there first and recorded the reversal from metadata.
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        status: 'failed',
+        stripeTransferId: 'tr_rev_first',
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({
+            transferState: 'confirmed',
+            postedAt: hoursAgo(0.5).toISOString(),
+            leaseAt: hoursAgo(0.5).toISOString(),
+            keyGeneration: 0,
+            attempts: 1,
+            lastError: 'reversed_before_finalize:tr_rev_first',
+          }),
+        ]),
+      });
+
+    // The executor's next pass must not resurrect it as paid.
+    const { stripe, transfersCreate } = mockStripe({ listed: [] });
+    await executePayoutTransfers(db, { stripe });
+
+    const after = await payoutOf(payoutId);
+    expect(after.status).toBe('failed'); // NOT flipped to paid
+    expect(after.stripeTransferId).toBe('tr_rev_first');
+    expect(transfersCreate).not.toHaveBeenCalled();
   });
 });

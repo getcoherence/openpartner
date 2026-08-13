@@ -854,12 +854,53 @@ export async function releaseIntentForRetry(
   payoutId: string,
   observedGeneration: number,
   operator: string,
-): Promise<'rearmed' | 'not_held' | 'generation_moved'> {
+  /** Stripe client. REQUIRED in production — see the listing guard below.
+   *  Omitting it is only for tests that have already established there is
+   *  no transfer. */
+  stripe?: Stripe,
+): Promise<'rearmed' | 'not_held' | 'generation_moved' | 'transfer_exists'> {
   const row = (await db(TABLES.Payout).where({ id: payoutId }).first()) as PayoutRow | undefined;
   if (!row) return 'not_held';
   const meta = row.metadata as unknown as PayoutTransferMeta;
   if (meta.transferState !== 'reconcile_required') return 'not_held';
   if ((meta.keyGeneration ?? 0) !== observedGeneration) return 'generation_moved';
+
+  // Look before re-arming (round 7).
+  //
+  // The generation fence alone does not protect this. `reconcileIntent`
+  // does not claim the row before it lists, so a scheduler tick can be
+  // holding a transfer it just found — still on generation N, because it
+  // has not written anything yet — while the operator re-arms N→N+1 from
+  // the same observed generation. The reconciler then loses its finalize
+  // CAS, and generation N+1 posts a SECOND transfer for a set the first
+  // one already paid.
+  //
+  // We cannot prove absence (that is the whole premise of the hold), but we
+  // can refuse on positive evidence. A listing that finds anything means
+  // the operator's assertion is already false: let the executor finalize it
+  // instead. This is cheap and it closes the race, because the transfer the
+  // reconciler found is by definition visible to a listing.
+  if (stripe) {
+    let startingAfter: string | undefined;
+    for (let page = 0; page < 20; page += 1) {
+      const listed = await stripe.transfers.list({
+        transfer_group: payoutId,
+        limit: 100,
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+      });
+      const mine = listed.data.filter((t) => t.metadata?.openpartner_payout_id === payoutId);
+      if (mine.length > 0) {
+        console.error(
+          `[payouts] OPERATOR ${operator} tried to re-arm ${payoutId} but ${mine.length} transfer(s) exist in its group (${mine
+            .map((t) => t.id)
+            .join(', ')}) — refusing; the executor will finalize it`,
+        );
+        return 'transfer_exists';
+      }
+      if (!listed.has_more || listed.data.length === 0) break;
+      startingAfter = listed.data[listed.data.length - 1]!.id;
+    }
+  }
 
   const rearmed = await casTransferState(
     db,
@@ -902,10 +943,24 @@ export async function disposeIntent(
     const moved = await casTransferState(
       trx,
       payoutId,
-      ['reconcile_required', 'duplicate_review'],
+      // ONLY states where no transfer moved money that these commissions
+      // still owe. `duplicate_review` used to be in this list and that was
+      // a double-pay (round 7): a duplicate is disposed of by REVERSING the
+      // surplus and KEEPING one transfer, so the commissions have been paid
+      // — releasing them let the planner pay them a second time. Use
+      // `resolveDuplicateReview` for that state instead.
+      //
+      // `confirmed` is included, but only via the status guard below: a
+      // reversed transfer leaves confirmed+failed with the money returned,
+      // so the commissions genuinely are unpaid and releasing them is the
+      // correct disposition. A confirmed+PAID payout must never be released.
+      ['reconcile_required', 'confirmed'],
       'canceled',
       { lastError: `operator_dispose:${operator}:${reason}`.slice(0, 500) },
       { status: 'failed' },
+      undefined,
+      // Guard: never dispose a payout whose money reached the partner.
+      { notStatus: 'paid' },
     );
     if (!moved) return;
     await releaseClaims(trx, payoutId);
@@ -917,6 +972,79 @@ export async function disposeIntent(
     );
   }
   return ok ? 'disposed' : 'not_disposable';
+}
+
+/**
+ * OPERATOR ACTION — resolve a `duplicate_review` payout.
+ *
+ * The executor parks here when it finds more than one transfer in a payout's
+ * group, or one from a superseded generation: the partner has been paid more
+ * than once and no automatic rule can be right. The operator reverses the
+ * surplus in Stripe, then tells us which of two things is now true.
+ *
+ * This exists because `disposeIntent` used to accept this state and simply
+ * release the claims, which was a double-pay whenever a transfer was kept
+ * (round 7): the kept transfer had already paid those commissions, and
+ * releasing them let the next planning run pay them again.
+ *
+ *   { keptTransferId }  the partner keeps this transfer — the commissions
+ *                       ARE paid, so record the ledger against it and do
+ *                       NOT return them to the pool.
+ *   { allReversed }     every transfer was reversed — the money came back,
+ *                       so the commissions are unpaid and go back.
+ */
+export async function resolveDuplicateReview(
+  db: Knex,
+  payoutId: string,
+  operator: string,
+  disposition: { keptTransferId: string } | { allReversed: true },
+): Promise<'resolved' | 'not_in_duplicate_review'> {
+  let ok = false;
+  await db.transaction(async (trx) => {
+    if ('keptTransferId' in disposition) {
+      const moved = await casTransferState(
+        trx,
+        payoutId,
+        'duplicate_review',
+        'confirmed',
+        { lastError: `operator_kept_transfer:${operator}` },
+        {
+          status: 'paid',
+          stripeTransferId: disposition.keptTransferId,
+          completedAt: new Date(),
+        },
+      );
+      if (!moved) return;
+      // The kept transfer paid these. Mark them paid rather than freeing
+      // them — this is the whole point of the function.
+      await trx(TABLES.Commission)
+        .where({ payoutId, status: 'approved' })
+        .update({ status: 'paid', paidAt: new Date() });
+      ok = true;
+      return;
+    }
+    const moved = await casTransferState(
+      trx,
+      payoutId,
+      'duplicate_review',
+      'canceled',
+      { lastError: `operator_all_reversed:${operator}` },
+      { status: 'failed' },
+    );
+    if (!moved) return;
+    await releaseClaims(trx, payoutId);
+    ok = true;
+  });
+  if (ok) {
+    console.error(
+      `[payouts] OPERATOR ${operator} resolved duplicate_review on ${payoutId}: ${
+        'keptTransferId' in disposition
+          ? `kept ${disposition.keptTransferId}, commissions recorded PAID`
+          : 'all transfers reversed, commissions returned to the pool'
+      }`,
+    );
+  }
+  return ok ? 'resolved' : 'not_in_duplicate_review';
 }
 
 /** Un-claim commissions frozen onto a dead intent. 'paid' rows are never
@@ -996,6 +1124,11 @@ async function casTransferState(
    *  it, or a worker holding a result from generation N can write it
    *  against generation N+1. */
   expect: { postedAt?: string; keyGeneration?: number } = {},
+  /** Column-level guard. `notStatus` refuses the transition when the payout
+   *  already carries that status — the operator disposals use it so a payout
+   *  whose money reached the partner can never be released back into the
+   *  payable pool, whatever its transferState says. */
+  guard: { notStatus?: string } = {},
 ): Promise<PayoutRow | null> {
   const fromList = Array.isArray(from) ? from : [from];
   const q = db(TABLES.Payout)
@@ -1015,6 +1148,9 @@ async function casTransferState(
     // throw and wedge the intent permanently, possibly after money moved.
     // Absent means generation 0: rows written before generations existed.
     q.whereRaw(`coalesce("metadata"->>'keyGeneration', '0') = ?`, [String(expect.keyGeneration)]);
+  }
+  if (guard.notStatus !== undefined) {
+    q.whereNot({ status: guard.notStatus });
   }
   const [row] = (await q
     .update({

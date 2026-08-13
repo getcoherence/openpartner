@@ -389,6 +389,24 @@ async function handleConnectEvent(
       const payoutId = transfer.metadata?.openpartner_payout_id;
       if (!payoutId) return null;
       const reversed = event.type === 'transfer.reversed' || (transfer.reversed ?? false);
+
+      // Serialize this whole decision against the executor's finalization.
+      //
+      // Round 7: the exact-id match and the metadata fallback below are two
+      // statements, and the executor commits its finalization in its OWN
+      // transaction. Without this lock the executor could stamp
+      // `stripeTransferId` BETWEEN them — the first match missed because the
+      // id was still null, the fallback then missed because it requires the
+      // id to be null, and the event fell through to "unmatched" and was
+      // acknowledged 2xx. A reversed transfer, a payout recorded paid, and
+      // no second chance: exactly the hole the fallback was added to close,
+      // reintroduced one statement later.
+      //
+      // Taking the row lock first means we either see the pre-finalization
+      // state (and the fallback applies) or the post-finalization state (and
+      // the exact-id match applies). There is no longer an in-between.
+      await trx(TABLES.Payout).where({ id: payoutId }).forUpdate().first();
+
       // Apply ONLY to the transfer this payout actually recorded. A payout
       // can have several transfers in its group across key generations
       // (payout-transfers.ts) — without this, a reversal of a superseded
