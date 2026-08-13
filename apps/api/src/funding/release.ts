@@ -252,11 +252,24 @@ export async function forceReleaseBatch(
   // way to `funded` while its allocations were already released and
   // re-batchable. Winning the CAS is what earns the right to free them.
   const now = new Date();
-  const closed = await casBatch(db, batchId, 'release_requested', 'released', {
-    releasedAt: now,
-    failureReason: `operator_force_release:${operator}:${reason}`.slice(0, 500),
-  });
-  if (!closed) return 'not_stuck'; // someone else moved it while we looked
+  const closed = await casBatch(
+    db,
+    batchId,
+    'release_requested',
+    'released',
+    {
+      releasedAt: now,
+      failureReason: `operator_force_release:${operator}:${reason}`.slice(0, 500),
+    },
+    // Round 8: status alone was not enough. A concurrent releaseBatch can
+    // search, find an orphan PI and STAMP it while the row stays
+    // `release_requested` — so this CAS still won, freed the allocations,
+    // and left a batch heading for `funded` whose commissions were already
+    // back in the pool. Require the id to still be null at the moment we
+    // win, not merely when we read.
+    { stripePaymentIntentId: null },
+  );
+  if (!closed) return 'not_stuck'; // someone else moved it, or stamped a PI
   await db(TABLES.HostedFundingAllocation)
     .where({ batchId, state: 'reserved' })
     .update({ state: 'released', updatedAt: now });

@@ -260,7 +260,7 @@ async function executePartnerTransfer(
       const claimed = await trx(TABLES.HostedFundingAllocation)
         .whereIn('id', group.map((a) => a.id))
         .where({ state: 'reserved' })
-        .update({ state: 'transfer_pending', updatedAt: new Date() });
+        .update({ state: 'transfer_pending', updatedAt: db.fn.now() });
       // Idempotent re-entry: a previous run may have already claimed them
       // (state transfer_pending) — that's fine, the intent row is the gate.
       if (claimed !== group.length && group.some((a) => a.state === 'reserved')) {
@@ -282,7 +282,7 @@ async function executePartnerTransfer(
           idempotencyKey: `fbt:${intentId}`,
           state: 'pending',
           createdAt: new Date(),
-          updatedAt: new Date(),
+          updatedAt: db.fn.now(),
         })
         .returning('*')) as HostedFundingTransferRow[];
       return row;
@@ -298,7 +298,7 @@ async function executePartnerTransfer(
     if (age > IDEMPOTENCY_WINDOW_MS) {
       await db(TABLES.HostedFundingTransfer)
         .where({ id: intent.id, state: 'posted' })
-        .update({ state: 'reconcile_required', updatedAt: new Date() });
+        .update({ state: 'reconcile_required', updatedAt: db.fn.now() });
       result.reconcileRequired.push(intent.id);
       await reconcileIntent(db, stripe, batch, { ...intent, state: 'reconcile_required' }, result);
       return;
@@ -326,7 +326,7 @@ async function executePartnerTransfer(
 
   await db(TABLES.HostedFundingTransfer)
     .where({ id: intent.id })
-    .update({ state: 'posted', postedAt: intent.postedAt ?? now, updatedAt: now });
+    .update({ state: 'posted', postedAt: intent.postedAt ?? now, updatedAt: db.fn.now() });
   let transfer: Stripe.Transfer;
   try {
     transfer = await stripe.transfers.create(
@@ -353,7 +353,7 @@ async function executePartnerTransfer(
       .update({
         state: definite ? 'failed' : 'posted', // ambiguous stays posted → window/reconcile
         lastError: message.slice(0, 500),
-        updatedAt: new Date(),
+        updatedAt: db.fn.now(),
       });
     console.error(`[funding] transfer post failed (${definite ? 'definite' : 'ambiguous'}) intent=${intent.id}: ${message}`);
     result.failed.push(intent.id);
@@ -387,7 +387,7 @@ async function finalizeTransfer(
         stripeTransferId: transfer.id,
         payoutId,
         lastError: null,
-        updatedAt: new Date(),
+        updatedAt: db.fn.now(),
       });
     if (updated === 0) return false; // another worker finalized first
 
@@ -409,7 +409,7 @@ async function finalizeTransfer(
     });
     await trx(TABLES.HostedFundingAllocation)
       .whereIn('id', group.map((a) => a.id))
-      .update({ state: 'transferred', updatedAt: new Date() });
+      .update({ state: 'transferred', updatedAt: db.fn.now() });
     await trx(TABLES.Commission)
       .whereIn('id', commissionIds)
       .update({ status: 'paid', paidAt: new Date(), payoutId });
@@ -470,7 +470,7 @@ async function reconcileIntent(
   // Proven absent — safe to re-post on the next tick as a first attempt.
   await db(TABLES.HostedFundingTransfer)
     .where({ id: intent.id, state: 'reconcile_required' })
-    .update({ state: 'pending', postedAt: null, updatedAt: new Date() });
+    .update({ state: 'pending', postedAt: null, updatedAt: db.fn.now() });
 }
 
 /** A definite error is one where Stripe RESPONDED (4xx semantics) — the

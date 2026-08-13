@@ -96,12 +96,22 @@ async function sweepSlice<T>(
   // always empty, the cursor reset to null forever, and NOTHING else was
   // ever swept — the exact starvation the retry set was introduced to
   // prevent. Reserving cursor capacity means both always make progress.
-  const retryBudget = Math.max(1, Math.floor(limit / 2));
-  const retryCandidates = rows.filter((r) => retryIds.has(idOf(r)));
-  // Rotate within the retry set too, so a persistently-failing head cannot
-  // hide the tail: take from the front, and `commit` moves the survivors to
-  // the back of the stored order.
-  const retryDue = retryCandidates.slice(0, retryBudget);
+  // Never take the LAST slot (round 8). `Math.max(1, ...)` meant that at
+  // limit 1 the retry set took the only slot, `remaining` was 0, and one
+  // permanently-failing row starved every healthy cursor row forever — the
+  // poison-item failure yet again. Cursor work now always gets at least one
+  // slot; at limit 1 retries get none and are reached by the cursor
+  // instead, since they remain in `rows`.
+  const retryBudget = Math.max(0, Math.min(Math.floor(limit / 2), limit - 1));
+  // Select in RETRY-SET order, not row order. `commit` rotates survivors to
+  // the back of the stored set, but selecting by filtering `rows` threw
+  // that order away and re-picked the same head every run — so the rotation
+  // rotated nothing and the tail of the set was never retried (round 8).
+  const byId = new Map(rows.map((r) => [idOf(r), r]));
+  const retryDue = retrySet
+    .map((id) => byId.get(id))
+    .filter((r): r is T => r !== undefined)
+    .slice(0, retryBudget);
   const retryDueIds = new Set(retryDue.map(idOf));
 
   // ORDER BY WHEN A ROW BECAME ELIGIBLE, not by its id. Ids are assigned
@@ -379,6 +389,35 @@ export async function runFundingReconciliation(
     );
   }
 
+  // 2d. Transfer intents that POSTED but never got linked to a Payout.
+  //
+  // This is the condition behind the lost reversal round 7 fixed, and it
+  // needs its own detector rather than relying on the inbox alert above
+  // (round 8). That alert measures age from `processedAt`, which a claim
+  // takeover REFRESHES — so an event redelivered every few minutes keeps
+  // pushing its own alert out and can stay unprocessable indefinitely.
+  //
+  // The underlying fact is not timing-dependent: an intent stuck in
+  // `posted` with no payoutId cannot accept a reversal, and if its batch
+  // has reached a state the executor no longer scans (a disputed funding
+  // charge) nothing will ever link it. Report that directly.
+  const unlinkedDeadline = new Date(runAt.getTime() - INBOX_STUCK_MS);
+  const unlinked = (await db(TABLES.HostedFundingTransfer)
+    .whereIn('state', ['posted', 'reconcile_required'])
+    .whereNull('payoutId')
+    .where('updatedAt', '<', unlinkedDeadline)
+    .select('id', 'batchId', 'stripeTransferId')) as Array<{
+    id: string;
+    batchId: string;
+    stripeTransferId: string | null;
+  }>;
+  for (const i of unlinked) {
+    report.attentionBatches.push(i.batchId);
+    console.error(
+      `[funding-reconcile] ALERT: transfer intent ${i.id} (batch ${i.batchId}, transfer ${i.stripeTransferId ?? 'none'}) has been posted with no linked Payout for over an hour — it cannot accept a reversal in this state; operator action required`,
+    );
+  }
+
   // 3. Live-Stripe sweep over settled money. Two jobs, one charge fetch:
   // backfill the rail fee, and — the reason this is not optional — notice
   // a refund or dispute whose webhook we never received. Everything else
@@ -502,6 +541,13 @@ export async function runFundingReconciliation(
     // ahead of the cursor when it joins. Later mutations bump it again,
     // which can only re-visit a row — never skip one. Re-sweeping is free
     // (the sweep is a read plus idempotent handlers); skipping is not.
+    //
+    // That argument needs the timestamps to come from ONE clock, and in
+    // round 7 they did not: every writer used the app's `new Date()`, so a
+    // node running a minute behind could finalize a row with a timestamp
+    // BEHIND the cursor and strand it (round 8). Every writer of this
+    // column now uses `db.fn.now()` — the database's own clock — so the
+    // ordering has a single source and "only ever forward" is true.
     (i) => `${new Date(i.updatedAt ?? i.postedAt ?? i.createdAt).toISOString()}|${i.id}`,
     sweepLimit,
   );

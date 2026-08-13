@@ -49,11 +49,21 @@ export async function casBatch(
   from: FundingBatchStatus | FundingBatchStatus[],
   to: FundingBatchStatus,
   patch: Partial<Record<string, unknown>> = {},
+  /** Extra equality predicates on columns the caller OBSERVED. Status alone
+   *  is an ABA: a value the caller read can change while the row stays in
+   *  the same status. `forceReleaseBatch` uses this to require that
+   *  `stripePaymentIntentId` is still null at the moment it wins, because a
+   *  concurrent release can stamp a live PI without leaving
+   *  `release_requested` (round 8). */
+  expect: Partial<Record<string, unknown>> = {},
 ): Promise<HostedFundingBatchRow | null> {
   const fromList = Array.isArray(from) ? from : [from];
-  const [row] = (await db(TABLES.HostedFundingBatch)
-    .where({ id: batchId })
-    .whereIn('status', fromList)
+  const q = db(TABLES.HostedFundingBatch).where({ id: batchId }).whereIn('status', fromList);
+  for (const [col, value] of Object.entries(expect)) {
+    if (value === null) q.whereNull(col);
+    else q.where({ [col]: value as never });
+  }
+  const [row] = (await q
     .update({ status: to, updatedAt: new Date(), ...patch })
     .returning('*')) as HostedFundingBatchRow[];
   return row ?? null;

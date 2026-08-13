@@ -1379,7 +1379,11 @@ describe.skipIf(skipIntegration)('round-6: sweep coverage', () => {
       paymentIntents: { retrieve: vi.fn(), search: vi.fn(async () => ({ data: [] })), cancel: vi.fn() },
     } as unknown as Stripe;
 
-    await runFundingReconciliation(db, { stripe, sweepLimit: 1 });
+    // Budget 2 so retries get a slot. Round 8 stopped them ever taking the
+    // LAST slot — at limit 1 a permanently-failing row starved every healthy
+    // cursor row — so at limit 1 the retry set is empty by design and the
+    // failed row is reached by the cursor on the wrap instead.
+    await runFundingReconciliation(db, { stripe, sweepLimit: 2 });
 
     // Stripe recovers. The NEXT run must come back to the failed batch even
     // though the cursor moved past it.
@@ -1395,7 +1399,7 @@ describe.skipIf(skipIntegration)('round-6: sweep coverage', () => {
       transfers: { retrieve: vi.fn() },
       paymentIntents: { retrieve: vi.fn(), search: vi.fn(async () => ({ data: [] })), cancel: vi.fn() },
     } as unknown as Stripe;
-    await runFundingReconciliation(db, { stripe: recovering, sweepLimit: 1 });
+    await runFundingReconciliation(db, { stripe: recovering, sweepLimit: 2 });
 
     expect(seen).toContain('ch_fails');
     expect([a.id, b.id]).toHaveLength(2); // (ids used only for clarity)
@@ -1742,5 +1746,172 @@ describe.skipIf(skipIntegration)('round-7 hardening', () => {
       .first()) as { outcome: string | null; processedAt: Date } | undefined;
     expect(row).toBeTruthy(); // the row SURVIVES
     expect(row!.outcome ?? null).toBeNull(); // and is unfinished, so it alerts
+  });
+});
+
+describe.skipIf(skipIntegration)('round-8 hardening', () => {
+  it('forceReleaseBatch loses if a live PI is stamped while it works', async () => {
+    // The CAS was on status alone, but a concurrent releaseBatch can find an
+    // orphan PI and STAMP it while the row stays `release_requested`. The
+    // status-only CAS still won, freed the allocations, and left a batch on
+    // its way to `funded` whose commissions were already back in the pool.
+    const batch = await seedBatch({ status: 'release_requested' });
+    const allocationId = await seedAllocation(batch.id);
+
+    expect(
+      await forceReleaseBatch(db, batch.id, 'keith', 'confirmed_no_pi', {
+        __afterRead: async () => {
+          // The other releaser finds the orphan and stamps it. Status is
+          // deliberately unchanged — that is the whole point.
+          await db(TABLES.HostedFundingBatch)
+            .where({ id: batch.id })
+            .update({ stripePaymentIntentId: 'pi_found_by_the_other_worker' });
+        },
+      }),
+    ).toBe('not_stuck');
+
+    expect((await db(TABLES.HostedFundingAllocation).where({ id: allocationId }).first()).state).toBe(
+      'reserved',
+    );
+    expect((await reload(batch.id)).status).toBe('release_requested');
+  });
+
+  it('two permanently-failing rows are both eventually re-attempted', async () => {
+    // COVERAGE, NOT A MUTATION KILLER — and saying so rather than implying
+    // otherwise. The fix under it is that retry selection reads the STORED
+    // retry-set order (which `commit` rotates) instead of re-filtering
+    // `rows` and re-picking the same head forever.
+    //
+    // I could not isolate that: with a cursor slot free, the cursor reaches
+    // the second row on a wrap regardless of selection order, so the test
+    // passes either way. Two attempts at forcing it — more runs, then churn
+    // to prevent the wrap — both still passed with the rotation reverted.
+    // What this does prove is the weaker, still-worth-having property that
+    // neither row is abandoned. The rotation itself rests on inspection.
+    const now = Date.now();
+    const a = await seedBatch({
+      status: 'settled',
+      stripeChargeId: 'ch_fail_a',
+      fundedAt: new Date(now - 9 * 86400000),
+      actualStripeFeeMinor: '25',
+    });
+    const b = await seedBatch({
+      status: 'settled',
+      stripeChargeId: 'ch_fail_b',
+      fundedAt: new Date(now - 8 * 86400000),
+      actualStripeFeeMinor: '25',
+    });
+
+    const attempts: string[] = [];
+    const mk = () =>
+      ({
+        charges: {
+          retrieve: vi.fn(async (id: string) => {
+            attempts.push(id);
+            if (id.startsWith('ch_fail_')) throw new Error('always fails');
+            return { id, refunded: false, amount_refunded: 0, disputed: false, balance_transaction: { fee: 25 } };
+          }),
+        },
+        transfers: { retrieve: vi.fn() },
+        paymentIntents: { retrieve: vi.fn(), search: vi.fn(async () => ({ data: [] })), cancel: vi.fn() },
+      }) as unknown as Stripe;
+
+    // First run: the retry set is empty, so the cursor sweeps BOTH and both
+    // fail — that is what puts them in the set.
+    await runFundingReconciliation(db, { stripe: mk(), sweepLimit: 2 });
+    expect(attempts).toContain('ch_fail_a');
+    expect(attempts).toContain('ch_fail_b');
+    attempts.length = 0;
+
+    // Now churn: a newer eligible row before every run, so the cursor is
+    // permanently busy ahead and can never wrap back to a or b. From here
+    // the ONLY way either gets looked at again is the retry set — and the
+    // only way the SECOND one does is if selection actually rotates.
+    // Without the churn the cursor reaches it anyway and this test passes
+    // with the rotation reverted, which is exactly what happened first time.
+    for (let i = 0; i < 6; i += 1) {
+      await seedBatch({
+        status: 'settled',
+        stripeChargeId: `ch_churn_${i}`,
+        fundedAt: new Date(now + i * 1000),
+        actualStripeFeeMinor: '25',
+      });
+      await runFundingReconciliation(db, { stripe: mk(), sweepLimit: 2 });
+    }
+
+    expect(attempts).toContain('ch_fail_a');
+    expect(attempts).toContain('ch_fail_b');
+    expect([a.id, b.id]).toHaveLength(2);
+  });
+
+  it('a poison retry cannot starve the cursor at limit 1', async () => {
+    // At limit 1 the retry set used to take the only slot, so `remaining`
+    // was 0 and one permanently-failing row starved every healthy row
+    // forever. Retries never take the last slot now.
+    const now = Date.now();
+    await seedBatch({
+      status: 'settled',
+      stripeChargeId: 'ch_poison',
+      fundedAt: new Date(now - 9 * 86400000),
+      actualStripeFeeMinor: '25',
+    });
+    await seedBatch({
+      status: 'settled',
+      stripeChargeId: 'ch_wants_a_turn',
+      fundedAt: new Date(now - 8 * 86400000),
+      actualStripeFeeMinor: '25',
+    });
+
+    const seen: string[] = [];
+    const mk = () =>
+      ({
+        charges: {
+          retrieve: vi.fn(async (id: string) => {
+            seen.push(id);
+            if (id === 'ch_poison') throw new Error('always fails');
+            return { id, refunded: false, amount_refunded: 0, disputed: false, balance_transaction: { fee: 25 } };
+          }),
+        },
+        transfers: { retrieve: vi.fn() },
+        paymentIntents: { retrieve: vi.fn(), search: vi.fn(async () => ({ data: [] })), cancel: vi.fn() },
+      }) as unknown as Stripe;
+
+    for (let i = 0; i < 4; i += 1) {
+      await runFundingReconciliation(db, { stripe: mk(), sweepLimit: 1 });
+    }
+
+    expect(seen).toContain('ch_wants_a_turn');
+  });
+
+  it('an intent posted with no linked payout is alerted on its own', async () => {
+    // The inbox stuck-claim alert measures from processedAt, which a claim
+    // takeover REFRESHES — so an event redelivered every few minutes pushes
+    // its own alert out indefinitely. The underlying condition is not
+    // timing-dependent and gets its own detector.
+    const { partnerId } = await seedCommission();
+    const batch = await seedBatch({ status: 'funding_disputed' });
+    const intentId = ulid();
+    await db(TABLES.HostedFundingTransfer).insert({
+      id: intentId,
+      tenantId: TENANT,
+      batchId: batch.id,
+      partnerId,
+      currency: 'usd',
+      amountMinor: 8000,
+      destinationAccountId: 'acct_x',
+      idempotencyKey: `fbt:${intentId}`,
+      state: 'posted',
+      stripeTransferId: 'tr_never_linked',
+      payoutId: null,
+    });
+    // Older than the alert threshold.
+    await db(TABLES.HostedFundingTransfer)
+      .where({ id: intentId })
+      .update({ updatedAt: new Date(Date.now() - 3 * 60 * 60 * 1000) });
+
+    const { stripe } = mockStripe();
+    const report = await runFundingReconciliation(db, { stripe });
+
+    expect(report.attentionBatches).toContain(batch.id);
   });
 });
