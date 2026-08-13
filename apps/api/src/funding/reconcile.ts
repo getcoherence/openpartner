@@ -108,24 +108,35 @@ async function claimSweepRows<T>(
   db: Knex,
   table: string,
   token: string,
-  runAt: Date,
   limit: number,
   eligible: (qb: Knex.QueryBuilder) => void,
   /** SQL expression for a never-swept row's place in the order. */
   eligibilityOrderSql: string,
 ): Promise<T[]> {
-  const leaseFloor = new Date(runAt.getTime() - SWEEP_LEASE_MS);
+  // Lease times come from the DATABASE clock, on both sides (round 10).
+  // Writing the worker's own clock let a clock-fast worker strand a row
+  // behind a future lease after a crash, and a clock-slow worker write a
+  // lease that was already "expired" and be reclaimed mid-flight. One
+  // clock, one comparison.
+  //
+  // The never-swept eligibility hint is clamped with least(..., now())
+  // for the same reason: a future-skewed timestamp must mean "due now",
+  // not "sorts behind every rescheduled row forever".
   const sub = db(table)
     .select('id')
     .modify(eligible)
-    .where((qb) => qb.whereNull('sweepLeaseAt').orWhere('sweepLeaseAt', '<', leaseFloor))
-    .orderByRaw(`coalesce("sweepDueAt", ${eligibilityOrderSql}) asc, id asc`)
+    .where((qb) =>
+      qb
+        .whereNull('sweepLeaseAt')
+        .orWhereRaw(`"sweepLeaseAt" < now() - make_interval(secs => ?)`, [SWEEP_LEASE_MS / 1000]),
+    )
+    .orderByRaw(`coalesce("sweepDueAt", least(${eligibilityOrderSql}, now())) asc, id asc`)
     .limit(limit)
     .forUpdate()
     .skipLocked();
   return (await db(table)
     .whereIn('id', sub)
-    .update({ sweepLeaseAt: runAt, sweepLeaseToken: token })
+    .update({ sweepLeaseAt: db.fn.now(), sweepLeaseToken: token })
     .returning('*')) as T[];
 }
 
@@ -361,7 +372,6 @@ export async function runFundingReconciliation(
     db,
     TABLES.HostedFundingBatch,
     sweepToken,
-    runAt,
     sweepLimit,
     chargeEligible,
     `coalesce("fundedAt", "createdAt")`,
@@ -457,7 +467,6 @@ export async function runFundingReconciliation(
     db,
     TABLES.HostedFundingTransfer,
     sweepToken,
-    runAt,
     sweepLimit,
     transferEligible,
     `"updatedAt"`,

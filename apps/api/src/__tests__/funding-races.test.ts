@@ -47,6 +47,9 @@ interface StripeMockOpts {
   /** What `paymentIntents.search` returns. */
   searchResult?: Array<Record<string, unknown> & { id: string; status: PiStatus }>;
   searchThrows?: Error;
+  /** What `paymentIntents.list` (customer-scoped, round 10) returns. */
+  piList?: Array<Record<string, unknown> & { id: string; status: PiStatus }>;
+  piListThrows?: Error;
   /** Hook that runs INSIDE paymentIntents.create, before it resolves —
    *  the only way to simulate "something else moved while we were in
    *  flight". */
@@ -76,6 +79,10 @@ function mockStripe(opts: StripeMockOpts = {}) {
     if (opts.searchThrows) throw opts.searchThrows;
     return { data: opts.searchResult ?? [] };
   });
+  const piList = vi.fn(async () => {
+    if (opts.piListThrows) throw opts.piListThrows;
+    return { data: opts.piList ?? [] };
+  });
   const retrieve = vi.fn(async (id: string) =>
     (opts.retrieveStatus ?? 'processing') === 'succeeded'
       ? succeededPi(id)
@@ -102,11 +109,11 @@ function mockStripe(opts: StripeMockOpts = {}) {
     ...(opts.transfer ?? {}),
   }));
   const stripe = {
-    paymentIntents: { create, search, retrieve, cancel, confirm },
+    paymentIntents: { create, search, retrieve, cancel, confirm, list: piList },
     charges: { retrieve: chargeRetrieve },
     transfers: { retrieve: transferRetrieve },
   } as unknown as Stripe;
-  return { stripe, create, search, retrieve, cancel, confirm, chargeRetrieve, transferRetrieve };
+  return { stripe, create, search, retrieve, cancel, confirm, piList, chargeRetrieve, transferRetrieve };
 }
 
 // ---- Seeding --------------------------------------------------------------
@@ -2043,8 +2050,19 @@ describe.skipIf(skipIntegration)('round-9: per-object sweep scheduling', () => {
     });
     const allocationId = await seedAllocation(batch.id);
 
+    // The fixture carries the metadata stamp the PRODUCTION search
+    // queries on — a metadata-less PI would not come back from it, and a
+    // mock that returns one anyway tests a search that does not exist
+    // (round 10). The metadata-cleared case is covered by the
+    // customer-list test below.
     const found = mockStripe({
-      searchResult: [{ id: 'pi_lurking_unstamped', status: 'processing' as PiStatus, metadata: {} }],
+      searchResult: [
+        {
+          id: 'pi_lurking_unstamped',
+          status: 'processing' as PiStatus,
+          metadata: { openpartner_funding_batch_id: batch.id },
+        },
+      ],
     });
     expect(await forceReleaseBatch(db, batch.id, 'keith', 'confirmed_no_pi', found.stripe)).toBe(
       'has_payment_intent',
@@ -2069,5 +2087,111 @@ describe.skipIf(skipIntegration)('round-9: per-object sweep scheduling', () => {
       'cannot_verify',
     );
     expect((await reload(batch.id)).status).toBe('release_requested');
+  });
+
+  it('a METADATA-CLEARED PaymentIntent still refuses the force via the customer list', async () => {
+    // The metadata search is the only stamp a funding PI carries, and
+    // metadata is mutable — cleared, the PI was invisible and the force
+    // freed allocations while a live debit sat at Stripe (round 10). The
+    // customer list is metadata-independent: any non-canceled PI matching
+    // this batch's exact amount+currency since the batch was created
+    // refuses the force. Revert the list fallback and this releases.
+    await db(TABLES.Tenant).where({ id: TENANT }).update({ stripeCustomerId: 'cus_force_test' });
+    const batch = await seedBatch({
+      status: 'release_requested',
+      updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+    });
+    const allocationId = await seedAllocation(batch.id);
+
+    const cleared = mockStripe({
+      searchResult: [], // its metadata is gone, so the search sees nothing
+      piList: [
+        {
+          id: 'pi_metadata_wiped',
+          status: 'processing' as PiStatus,
+          amount: 8000, // == grossChargeMinor
+          currency: 'usd',
+          created: Math.floor(Date.now() / 1000) - 60,
+          metadata: {},
+        },
+      ],
+    });
+    expect(await forceReleaseBatch(db, batch.id, 'keith', 'confirmed_no_pi', cleared.stripe)).toBe(
+      'has_payment_intent',
+    );
+    expect((await reload(batch.id)).status).toBe('release_requested');
+    expect((await db(TABLES.HostedFundingAllocation).where({ id: allocationId }).first()).state).toBe(
+      'reserved',
+    );
+
+    // An unrelated PI (different amount) does not block the operator.
+    const unrelated = mockStripe({
+      searchResult: [],
+      piList: [
+        {
+          id: 'pi_something_else',
+          status: 'processing' as PiStatus,
+          amount: 123,
+          currency: 'usd',
+          created: Math.floor(Date.now() / 1000) - 60,
+          metadata: {},
+        },
+      ],
+    });
+    expect(await forceReleaseBatch(db, batch.id, 'keith', 'confirmed_no_pi', unrelated.stripe)).toBe(
+      'released',
+    );
+  });
+
+  it('a stalled collector cannot create a PI from a stale invoicing snapshot', async () => {
+    // The scan reads every batch up front; a release can claim one while
+    // the pass is stalled on earlier rows, and the create then mints a
+    // debit for a batch whose allocations are freed — recoverable only
+    // through the orphan-cancel compensation, whose cancel can lose to a
+    // processing bank debit. The collector re-reads the LIVE status
+    // before creating now. Revert that and this creates for batchB.
+    await seedAuthorization();
+    // Two invoicing batches (different currencies — the one-open-batch
+    // index is per tenant+currency), processed in createdAt order.
+    const batchA = await seedBatch({ status: 'invoicing', currency: 'usd' });
+    const batchB = await seedBatch({ status: 'invoicing', currency: 'eur' });
+
+    const create = vi.fn(async (params: { metadata: Record<string, string> }) => ({
+      id: `pi_${ulid().slice(0, 12)}`,
+      status: 'processing' as PiStatus,
+      amount: 8000,
+      metadata: params.metadata,
+    }));
+    const search = vi.fn(async (params: { query: string }) => {
+      // While the pass is busy with batchA, a release claims batchB —
+      // exactly what a stalled pass looks like from batchB's side.
+      if (params.query.includes(batchA.id)) {
+        await db(TABLES.HostedFundingBatch)
+          .where({ id: batchB.id })
+          .update({ status: 'release_requested' });
+      }
+      return { data: [] };
+    });
+    const stripe = {
+      paymentIntents: {
+        create,
+        search,
+        retrieve: vi.fn(async (id: string) => ({ id, status: 'processing' as PiStatus, metadata: {} })),
+        cancel: vi.fn(),
+        confirm: vi.fn(),
+        list: vi.fn(async () => ({ data: [] })),
+      },
+      charges: { retrieve: vi.fn() },
+      transfers: { retrieve: vi.fn() },
+    } as unknown as Stripe;
+
+    await runFundingCollector(db, { stripe });
+
+    // Exactly one create — batchA's. batchB's stale snapshot was refused
+    // by the live re-read.
+    const createdFor = create.mock.calls.map(
+      (c) => (c[0] as { metadata: Record<string, string> }).metadata.openpartner_funding_batch_id,
+    );
+    expect(createdFor).toEqual([batchA.id]);
   });
 });

@@ -89,15 +89,28 @@ async function collectBatch(
       return;
     }
     case 'invoicing': {
+      // Re-read the LIVE status first (round 10). This `batch` is a
+      // snapshot from the scan at the top of the pass; a pass that stalls
+      // long enough lets a release claim the batch in between, and the
+      // create below would then mint a PaymentIntent for a batch whose
+      // allocations are freed. The post-create status-predicated stamp
+      // does catch that — but only via the orphan-cancel compensation,
+      // whose cancel can lose to a bank debit already `processing`. One
+      // cheap read bounds the stale window to the create call itself,
+      // which the force-release quiet gate (1h) then covers entirely.
+      const live = (await db(TABLES.HostedFundingBatch)
+        .where({ id: batch.id })
+        .first()) as HostedFundingBatchRow | undefined;
+      if (!live || live.status !== 'invoicing') return;
       // A previous worker crashed between CAS and PI stamping — reconcile
       // by metadata, never blind re-POST (finding 2): search for a PI
       // carrying our batch id first.
       const existing = await findFundingPaymentIntent(stripe, batch.id);
       if (existing) {
-        await adoptExistingPaymentIntent(db, batch, existing, 'invoicing', stripe, result);
+        await adoptExistingPaymentIntent(db, live, existing, 'invoicing', stripe, result);
         return;
       }
-      await createFundingPaymentIntent(db, batch, stripe, result);
+      await createFundingPaymentIntent(db, live, stripe, result);
       return;
     }
     case 'payment_processing': {

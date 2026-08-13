@@ -307,6 +307,51 @@ export async function forceReleaseBatch(
     return 'has_payment_intent';
   }
 
+  // The metadata search above is the ONLY stamp a funding PI carries, and
+  // metadata is MUTABLE — cleared or forged, the PI is invisible to it
+  // (round 10; the same failure the transfer-side fixes closed with
+  // transfer_group, which PaymentIntents do not have). The customer LIST
+  // is the immutable fallback: funding PIs are created on the tenant's
+  // Stripe customer, and one-open-batch-per-tenant+currency means any
+  // non-canceled PI at this batch's exact amount and currency, created
+  // since the batch was, is almost certainly this batch's. Refuse on
+  // suspicion — fail closed; an operator can cancel the PI in Stripe and
+  // retry.
+  const tenant = (await db(TABLES.Tenant)
+    .where({ id: batch.tenantId })
+    .first(['stripeCustomerId'])) as { stripeCustomerId: string | null } | undefined;
+  if (tenant?.stripeCustomerId) {
+    let recent: Stripe.ApiList<Stripe.PaymentIntent>;
+    try {
+      recent = await stripe.paymentIntents.list({
+        customer: tenant.stripeCustomerId,
+        limit: 100,
+      });
+    } catch (err) {
+      console.error(
+        `[funding] OPERATOR ${operator} force-release of ${batchId} refused — customer PI list failed`,
+        err,
+      );
+      return 'cannot_verify';
+    }
+    const createdFloor = new Date(batch.createdAt).getTime() - 5 * 60 * 1000;
+    const suspicious = recent.data.filter(
+      (pi) =>
+        pi.status !== 'canceled' &&
+        Number(pi.amount) === Number(batch.grossChargeMinor) &&
+        pi.currency === batch.currency &&
+        pi.created * 1000 >= createdFloor,
+    );
+    if (suspicious.length > 0) {
+      console.error(
+        `[funding] OPERATOR ${operator} force-release of ${batchId} refused — ${suspicious.length} unexplained PaymentIntent(s) on the tenant's customer match this batch's amount (${suspicious
+          .map((p) => `${p.id}:${p.status}`)
+          .join(', ')}); their metadata does not claim this batch, which is itself suspicious`,
+      );
+      return 'has_payment_intent';
+    }
+  }
+
   await opts.__afterRead?.();
 
   // CAS FIRST, then free (round 7). This used to free the allocations and
