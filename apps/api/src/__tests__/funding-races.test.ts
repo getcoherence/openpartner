@@ -1481,7 +1481,14 @@ describe.skipIf(skipIntegration)('round-6: operator disposition for a stuck rele
     expect(await releaseBatch(db, failing.stripe, batch, 'funding_timeout')).toBe('pi_not_terminal');
     expect((await reload(batch.id)).status).toBe('release_requested');
 
-    expect(await forceReleaseBatch(db, batch.id, 'keith', 'confirmed_no_pi')).toBe('released');
+    // Round 9: the force refuses until the batch has been QUIET long
+    // enough that any PaymentIntent would be indexed for its own search.
+    await db(TABLES.HostedFundingBatch)
+      .where({ id: batch.id })
+      .update({ updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) });
+    expect(
+      await forceReleaseBatch(db, batch.id, 'keith', 'confirmed_no_pi', mockStripe({ searchResult: [] }).stripe),
+    ).toBe('released');
     expect((await reload(batch.id)).status).toBe('released');
     expect((await db(TABLES.HostedFundingAllocation).where({ id: allocationId }).first()).state).toBe(
       'released',
@@ -1498,7 +1505,9 @@ describe.skipIf(skipIntegration)('round-6: operator disposition for a stuck rele
     });
     const allocationId = await seedAllocation(batch.id);
 
-    expect(await forceReleaseBatch(db, batch.id, 'keith', 'oops')).toBe('has_payment_intent');
+    expect(
+      await forceReleaseBatch(db, batch.id, 'keith', 'oops', mockStripe().stripe),
+    ).toBe('has_payment_intent');
     expect((await reload(batch.id)).status).toBe('release_requested');
     expect((await db(TABLES.HostedFundingAllocation).where({ id: allocationId }).first()).state).toBe(
       'reserved',
@@ -1507,7 +1516,9 @@ describe.skipIf(skipIntegration)('round-6: operator disposition for a stuck rele
 
   it('does nothing to a batch that is not stuck', async () => {
     const batch = await seedBatch({ status: 'reserved' });
-    expect(await forceReleaseBatch(db, batch.id, 'keith', 'wrong_state')).toBe('not_stuck');
+    expect(
+      await forceReleaseBatch(db, batch.id, 'keith', 'wrong_state', mockStripe().stripe),
+    ).toBe('not_stuck');
     expect((await reload(batch.id)).status).toBe('reserved');
   });
 });
@@ -1543,7 +1554,10 @@ describe.skipIf(skipIntegration)('round-7 hardening', () => {
     // It used to free them and only then attempt the closing transition, so
     // losing that CAS to a concurrent release left a batch heading for
     // `funded` with released, re-batchable allocations.
-    const batch = await seedBatch({ status: 'release_requested' });
+    const batch = await seedBatch({
+      status: 'release_requested',
+      updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000), // past the quiet gate
+    });
     const allocationId = await seedAllocation(batch.id);
 
     // The race has to happen BETWEEN the read and the CAS. An earlier
@@ -1553,7 +1567,7 @@ describe.skipIf(skipIntegration)('round-7 hardening', () => {
     // concurrent release finds the orphan PI and carries the batch to
     // `funded` while force-release is mid-flight.
     expect(
-      await forceReleaseBatch(db, batch.id, 'keith', 'confirmed_no_pi', {
+      await forceReleaseBatch(db, batch.id, 'keith', 'confirmed_no_pi', mockStripe({ searchResult: [] }).stripe, {
         __afterRead: async () => {
           await db(TABLES.HostedFundingBatch).where({ id: batch.id }).update({ status: 'funded' });
         },
@@ -1755,11 +1769,14 @@ describe.skipIf(skipIntegration)('round-8 hardening', () => {
     // orphan PI and STAMP it while the row stays `release_requested`. The
     // status-only CAS still won, freed the allocations, and left a batch on
     // its way to `funded` whose commissions were already back in the pool.
-    const batch = await seedBatch({ status: 'release_requested' });
+    const batch = await seedBatch({
+      status: 'release_requested',
+      updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000), // past the quiet gate
+    });
     const allocationId = await seedAllocation(batch.id);
 
     expect(
-      await forceReleaseBatch(db, batch.id, 'keith', 'confirmed_no_pi', {
+      await forceReleaseBatch(db, batch.id, 'keith', 'confirmed_no_pi', mockStripe({ searchResult: [] }).stripe, {
         __afterRead: async () => {
           // The other releaser finds the orphan and stamps it. Status is
           // deliberately unchanged — that is the whole point.
@@ -1995,5 +2012,62 @@ describe.skipIf(skipIntegration)('round-9: per-object sweep scheduling', () => {
     failing = false;
     await runFundingReconciliation(db, { stripe: mk() });
     expect((await reload(poison.id)).sweepFailCount).toBe(0);
+  });
+
+  it('forceReleaseBatch refuses a batch that moved within the last hour', async () => {
+    // The quiet gate is what makes the force's own search conclusive: a
+    // PaymentIntent can only be created while a batch is in `invoicing`,
+    // so an hour of release_requested quiet means any PI predates the
+    // stuck state by an hour — far past search-indexing lag.
+    const batch = await seedBatch({ status: 'release_requested' });
+    const allocationId = await seedAllocation(batch.id);
+
+    expect(
+      await forceReleaseBatch(db, batch.id, 'keith', 'too_eager', mockStripe({ searchResult: [] }).stripe),
+    ).toBe('too_recent');
+    expect((await reload(batch.id)).status).toBe('release_requested');
+    expect((await db(TABLES.HostedFundingAllocation).where({ id: allocationId }).first()).state).toBe(
+      'reserved',
+    );
+  });
+
+  it('forceReleaseBatch asks Stripe itself — a discovered PI refuses the force and is stamped', async () => {
+    // Round 9's critical: worker A (releaseBatch) finds a live PI but has
+    // not stamped it yet; the force's null-id fence still wins, frees the
+    // allocations, and the PI can then succeed against re-batchable
+    // commissions. The force now searches for itself — revert that and
+    // this releases a batch whose debit is alive.
+    const batch = await seedBatch({
+      status: 'release_requested',
+      updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+    });
+    const allocationId = await seedAllocation(batch.id);
+
+    const found = mockStripe({
+      searchResult: [{ id: 'pi_lurking_unstamped', status: 'processing' as PiStatus, metadata: {} }],
+    });
+    expect(await forceReleaseBatch(db, batch.id, 'keith', 'confirmed_no_pi', found.stripe)).toBe(
+      'has_payment_intent',
+    );
+    const after = await reload(batch.id);
+    expect(after.status).toBe('release_requested'); // untouched — ordinary path owns it now
+    expect(after.stripePaymentIntentId).toBe('pi_lurking_unstamped'); // stamped for the collector
+    expect((await db(TABLES.HostedFundingAllocation).where({ id: allocationId }).first()).state).toBe(
+      'reserved',
+    );
+  });
+
+  it('forceReleaseBatch refuses when it cannot ask', async () => {
+    const batch = await seedBatch({
+      status: 'release_requested',
+      updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+    });
+    await seedAllocation(batch.id);
+
+    const down = mockStripe({ searchThrows: new Error('stripe down') });
+    expect(await forceReleaseBatch(db, batch.id, 'keith', 'confirmed_no_pi', down.stripe)).toBe(
+      'cannot_verify',
+    );
+    expect((await reload(batch.id)).status).toBe('release_requested');
   });
 });

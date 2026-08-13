@@ -21,6 +21,19 @@ import { TABLES, type HostedFundingBatchRow } from '@openpartner/db';
 import { casBatch } from './state.js';
 import { findFundingPaymentIntent } from './stripe-lookup.js';
 
+/**
+ * How long a batch must have sat QUIET in `release_requested` before an
+ * operator may force it. This is what makes the force's own search
+ * meaningful: a PaymentIntent can only be created while a batch is in the
+ * collector's `invoicing` branch, so any PI for a batch that has been
+ * release_requested this long must predate the stuck state by at least
+ * this long — far past Stripe's search-indexing lag — and the search
+ * below is therefore guaranteed to see it. Without the gate, a PI that a
+ * concurrent releaseBatch had just discovered (but not yet stamped) could
+ * be un-indexed for OUR search while visible to ITS search (round 9).
+ */
+const FORCE_RELEASE_QUIET_MS = 60 * 60 * 1000;
+
 export type ReleaseOutcome = 'released' | 'payment_won' | 'lost_cas' | 'pi_not_terminal';
 
 export async function releaseBatch(
@@ -228,22 +241,72 @@ export async function releaseBatch(
  * it is the ordinary release path, and forcing past a live intent is exactly
  * the double-charge this protocol exists to prevent. Cancel the PI in Stripe
  * first and let the normal path finish.
+ *
+ * And it VERIFIES its own premise (round 9): the null-id fence closed
+ * "stamp commits before the force CAS", but not "releaseBatch discovered a
+ * PI and had not stamped it yet" — the force won its CAS with the id still
+ * null, freed the allocations, and the discovered PI could then succeed
+ * against a batch whose commissions were already re-batchable. The quiet
+ * gate plus the force's own search close that: no PI can be CREATED for a
+ * release_requested batch, so after an hour of quiet any existing PI is
+ * old enough to be indexed, and the search here will find it.
  */
 export async function forceReleaseBatch(
   db: Knex,
   batchId: string,
   operator: string,
   reason: string,
+  /** REQUIRED — the force asks Stripe itself rather than trusting the
+   *  operator's (or the row's) claim that no PaymentIntent exists. */
+  stripe: Stripe,
   /** Test seam: runs between the read and the CAS, so the check/use race
    *  this function's ordering guards against can be staged deterministically
    *  rather than hoped for. Never passed in production. */
   opts: { __afterRead?: () => Promise<void> } = {},
-): Promise<'released' | 'not_stuck' | 'has_payment_intent'> {
+): Promise<
+  'released' | 'not_stuck' | 'has_payment_intent' | 'too_recent' | 'cannot_verify'
+> {
   const batch = (await db(TABLES.HostedFundingBatch)
     .where({ id: batchId })
     .first()) as HostedFundingBatchRow | undefined;
   if (!batch || batch.status !== 'release_requested') return 'not_stuck';
   if (batch.stripePaymentIntentId) return 'has_payment_intent';
+  if (!stripe) return 'cannot_verify';
+
+  // Quiet gate — see FORCE_RELEASE_QUIET_MS. `updatedAt` moves when the
+  // batch enters release_requested and when a resuming releaseBatch stamps
+  // a discovered PI; deliberate re-entry does NOT rewrite the row, so a
+  // batch failing its release every tick still goes quiet here.
+  if (new Date(batch.updatedAt).getTime() > Date.now() - FORCE_RELEASE_QUIET_MS) {
+    console.error(
+      `[funding] OPERATOR ${operator} force-release of ${batchId} refused — the batch moved less than an hour ago; give the collector's own search time, then retry`,
+    );
+    return 'too_recent';
+  }
+
+  // Ask Stripe. Found ⇒ this batch is not the case the force exists for:
+  // stamp the PI so the ordinary release path can terminalize it, and
+  // refuse. Couldn't ask ⇒ don't know ⇒ don't free.
+  let orphan: Stripe.PaymentIntent | null;
+  try {
+    orphan = await findFundingPaymentIntent(stripe, batchId);
+  } catch (err) {
+    console.error(
+      `[funding] OPERATOR ${operator} force-release of ${batchId} refused — PI search failed`,
+      err,
+    );
+    return 'cannot_verify';
+  }
+  if (orphan) {
+    await db(TABLES.HostedFundingBatch)
+      .where({ id: batchId, status: 'release_requested' })
+      .update({ stripePaymentIntentId: orphan.id, updatedAt: new Date() });
+    console.error(
+      `[funding] OPERATOR ${operator} force-release of ${batchId} refused — PaymentIntent ${orphan.id} exists; stamped it so the ordinary release path can terminalize it`,
+    );
+    return 'has_payment_intent';
+  }
+
   await opts.__afterRead?.();
 
   // CAS FIRST, then free (round 7). This used to free the allocations and

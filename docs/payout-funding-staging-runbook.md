@@ -197,13 +197,25 @@ If that is genuinely empty:
 
 ```ts
 import { forceReleaseBatch } from './funding/release.js';
-await forceReleaseBatch(db, batchId, 'keith', 'confirmed_no_pi');
+await forceReleaseBatch(db, batchId, 'keith', 'confirmed_no_pi', stripe);
 ```
 
-It **refuses** (`has_payment_intent`) when the batch has a stamped PI. That
-case is not stuck — it is the ordinary release path — and forcing past a live
-intent is exactly the double-charge the protocol exists to prevent. Cancel
-the intent in Stripe and let the normal path finish.
+The Stripe client is **required**: the force runs the same search itself
+(round 9) rather than trusting that you did, and it refuses
+(`has_payment_intent`) if it finds an intent — stamping the id so the
+ordinary release path can terminalize it. It also refuses (`too_recent`)
+until the batch has sat quiet in `release_requested` for an hour. That
+gate is what makes its search conclusive: an intent can only be CREATED
+while a batch is in `invoicing`, so an hour of quiet means any intent
+predates the stuck state by an hour — far past search-indexing lag. A
+`cannot_verify` answer means Stripe could not be asked; nothing was
+freed.
+
+It also **refuses** (`has_payment_intent`) when the batch already has a
+stamped PI. That case is not stuck — it is the ordinary release path — and
+forcing past a live intent is exactly the double-charge the protocol
+exists to prevent. Cancel the intent in Stripe and let the normal path
+finish.
 
 ## Known gaps at launch (accept knowingly, or close first)
 
