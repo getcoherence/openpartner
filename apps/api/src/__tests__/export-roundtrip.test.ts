@@ -871,3 +871,59 @@ describe.skipIf(skipIntegration)('round-8: a session cookie is bound to its tena
     await db(TABLES.Admin).where({ id: adminId }).del();
   }, 30_000);
 });
+
+describe.skipIf(skipIntegration)('round-9: signout revokes the token it was given', () => {
+  it('a stale-tab signout still revokes the session, even for another tenant', async () => {
+    // Round 8 routed signout through resolveSession, which it had just bound
+    // to the request tenant — and that silently broke logout. `op_session`
+    // is host-wide at path '/', so entering a second workspace overwrites
+    // it; a signout from a stale tab then carries tenant B's token to tenant
+    // A's URL. The filtered lookup found nothing, the route cleared the
+    // browser cookie and returned 200, and B's session stayed live.
+    //
+    // Revert revokeSessionByToken and this test finds the session still
+    // usable after "logging out".
+    const otherTenant = '01J0000000R9SIGNOUTTENANT0';
+    await db(TABLES.Tenant)
+      .insert({
+        id: otherTenant,
+        slug: 'r9-signout',
+        displayName: 'R9 Signout',
+        status: 'active',
+        approvalStatus: 'approved',
+      })
+      .onConflict('id')
+      .ignore();
+
+    const adminId = ulid();
+    await db(TABLES.Admin).insert({
+      id: adminId,
+      tenantId: otherTenant,
+      email: `r9-${adminId}@x.test`,
+      name: 'Other-tenant admin',
+      activatedAt: new Date(),
+    });
+    const { plaintext, id: sessionId } = await createSession(db, {
+      tenantId: otherTenant,
+      principalKind: 'admin',
+      principalId: adminId,
+    });
+
+    // Signout hits the DEFAULT tenant's URL carrying the other tenant's
+    // cookie — the stale-tab shape.
+    const app = createApp({ enableLogger: false });
+    const res = await request(app)
+      .post('/auth/signout')
+      .set('Cookie', `op_session=${plaintext}`);
+    expect(res.status).toBe(200);
+
+    const row = (await db(TABLES.Session).where({ id: sessionId }).first()) as {
+      revokedAt: Date | null;
+    };
+    expect(row.revokedAt).not.toBeNull(); // actually logged out
+
+    await db(TABLES.Session).where({ id: sessionId }).del();
+    await db(TABLES.Admin).where({ id: adminId }).del();
+    await db(TABLES.Tenant).where({ id: otherTenant }).del();
+  }, 30_000);
+});

@@ -181,6 +181,37 @@ export async function revokeSession(db: Knex, id: string): Promise<void> {
   await db<SessionRow>(TABLES.Session).where({ id }).update({ revokedAt: new Date() });
 }
 
+/**
+ * Revoke whatever session a token names, WITHOUT resolving a principal and
+ * WITHOUT filtering by tenant.
+ *
+ * Signout used to go through `resolveSession`, which round 8 correctly bound
+ * to the request tenant — and that silently broke logout (round 9). The
+ * `op_session` cookie is host-wide at `path: '/'`, so entering a second
+ * workspace overwrites it; a signout from a stale tab then carries tenant
+ * B's token to tenant A's URL. The tenant-filtered lookup found nothing, the
+ * route cleared the browser cookie and returned 200 — and B's session stayed
+ * valid server-side. "Logged out" that leaves a live token is worse than the
+ * cross-tenant read the binding was added to prevent.
+ *
+ * Revoking a token the caller already holds grants nothing and leaks
+ * nothing, so it needs no tenant predicate — it is strictly a destruction of
+ * the bearer's own credential. That is why this is separate from
+ * `resolveSession` rather than a flag on it: the two operations have
+ * genuinely different safety requirements, and one function serving both is
+ * how the binding got applied where it did not belong.
+ */
+export async function revokeSessionByToken(db: Knex, plaintext: string): Promise<boolean> {
+  if (!plaintext || plaintext.length < TOKEN_PREFIX_LEN) return false;
+  const prefix = plaintext.slice(0, TOKEN_PREFIX_LEN);
+  const tokenHash = hash(plaintext);
+  const updated = await db<SessionRow>(TABLES.Session)
+    .where({ prefix, tokenHash })
+    .whereNull('revokedAt')
+    .update({ revokedAt: new Date() });
+  return updated > 0;
+}
+
 export function sessionCookieOptions(): CookieOptions {
   return {
     httpOnly: true,

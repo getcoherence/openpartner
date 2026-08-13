@@ -19,8 +19,8 @@ import {
   consumeMagicLink,
   createSession,
   issueMagicLink,
-  resolveSession,
   revokeSession,
+  revokeSessionByToken,
   sessionCookieOptions,
 } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
@@ -173,8 +173,15 @@ partnerAuthRouter.post('/auth/signout', async (req, res) => {
   const { db } = tenantOf(req);
   const cookie = (req as unknown as { cookies?: Record<string, string> }).cookies?.[SESSION_COOKIE_NAME];
   if (cookie) {
-    const session = await resolveSession(db, cookie, tenantOf(req).tenantId);
-    if (session) await revokeSession(db, session.id);
+    // Revoke the token PRESENTED, whichever tenant it belongs to.
+    //
+    // This went through resolveSession, which round 8 bound to the request
+    // tenant — and that broke logout (round 9). `op_session` is host-wide at
+    // path '/', so entering a second workspace overwrites it, and a signout
+    // from a stale tab carries tenant B's token to tenant A's URL. The
+    // filtered lookup found nothing, we cleared the browser cookie and
+    // returned 200, and B's session stayed live.
+    await revokeSessionByToken(db, cookie);
   }
   // Express's clearCookie only works when the options match the
   // original cookie's attributes (path + secure + sameSite + domain
