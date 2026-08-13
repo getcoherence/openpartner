@@ -142,8 +142,17 @@ from connected-account events:
 ### Destination A — platform events
 
 - URL: `https://app.openpartner.dev/api/webhooks/stripe`
-- Events: `checkout.session.completed`, `customer.created`, `customer.subscription.created`, `invoice.paid`, `invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`
+- Events: `checkout.session.completed`, `customer.created`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`
 - Save → copy the **Signing secret** (`whsec_...`)
+
+> **`customer.subscription.updated` + `customer.subscription.deleted` are
+> load-bearing.** They are how a tenant's cancellation (usually made in the
+> Stripe Customer Portal, invisible to our app otherwise) reaches OpenPartner:
+> they clear the local billing mirror, revoke white-label + custom-domain
+> routing, and alert PLATFORM_OPS_EMAIL. Without them a cancellation
+> silently never lands (the Jul 2026 incident) — the nightly
+> `billing-subscription-reconcile` job self-heals within a day, but the
+> events are what make it immediate.
 
 ### Destination B — connected accounts
 

@@ -29,6 +29,14 @@ process.env.OPENPARTNER_MODE = 'selfhost';
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
 
+// The capturing receiver binds 127.0.0.1. Partner postbacks use the HARDENED
+// policy (no private-CIDR escape hatch — even the self-host env var doesn't
+// apply to them), so a localhost receiver would be blocked. Force a
+// permissive policy for this delivery-mechanics test; the security split
+// itself is covered in outbound-guard.test.ts.
+const { __setOutboundPolicyForTests } = await import('../outbound-guard.js');
+const ipaddrForTests = (await import('ipaddr.js')).default;
+
 interface CapturedCall {
   url: string;
   method: string;
@@ -58,6 +66,7 @@ const TABLES_TO_CLEAN = [
 
 beforeAll(async () => {
   if (skipIntegration) return;
+  __setOutboundPolicyForTests({ allowedPorts: null, privateCidrs: [ipaddrForTests.parseCIDR('127.0.0.1/32')] });
   await db.raw('select 1');
   await new Promise<void>((resolve) => {
     receiver = createServer((req, res) => {
@@ -73,6 +82,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  __setOutboundPolicyForTests(null);
   if (receiver) await new Promise<void>((r) => receiver.close(() => r()));
   if (!skipIntegration) {
     for (const t of TABLES_TO_CLEAN) await db(t).del();

@@ -18,6 +18,11 @@ const ADMIN_KEY = 'op_test_webhook_admin_0123456789abcdef0123';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
 process.env.OPENPARTNER_MODE = 'selfhost';
 process.env.OPENPARTNER_TENANCY = 'single';
+// The receivers below bind 127.0.0.1; the SSRF guard blocks private IPs by
+// default. This is the self-host-only escape hatch (honored because
+// mode=selfhost + tenancy=single). Ports are unrestricted in that mode, so
+// the random receiver ports are fine.
+process.env.OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS = '127.0.0.1/32,::1/128';
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 
