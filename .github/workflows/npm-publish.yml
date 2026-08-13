@@ -34,7 +34,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: pnpm
           # registry-url is what enables `pnpm publish` to pick up
           # NODE_AUTH_TOKEN below. Without it, publish 401s.

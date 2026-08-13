@@ -308,6 +308,50 @@ describe.skipIf(skipIntegration)('transfer executor', () => {
     const batchAfter = await db(TABLES.HostedFundingBatch).where({ id: batch.id }).first();
     expect(batchAfter.status).toBe('settled');
   });
+
+  it('reconcile pages past the first 100 transfers to find the match (no duplicate re-POST)', async () => {
+    const partnerId = await seedPartner();
+    const commissionIds = await seedCommissions(partnerId, 1, '50.00');
+    const batch = await fundedBatch(partnerId, commissionIds, 5000);
+
+    const netErr = mockStripe({
+      transfers: {
+        create: vi.fn(async () => {
+          throw new Error('socket hang up');
+        }),
+        list: vi.fn(async () => ({ data: [] })),
+      },
+    });
+    await runTransferExecutor(db, { stripe: netErr.stripe });
+    const intent = await db(TABLES.HostedFundingTransfer).where({ partnerId }).first();
+    expect(intent.state).toBe('posted');
+
+    // Our transfer landed but sits on PAGE 2 of the transfer_group listing.
+    const landed = { id: 'tr_page2', amount: 5000, currency: 'usd', metadata: { openpartner_transfer_intent_id: intent.id } };
+    const listMock = vi.fn(async (params: { starting_after?: string }) => {
+      if (!params.starting_after) {
+        const dummies = Array.from({ length: 100 }, (_, i) => ({ id: `tr_dummy_${i}`, metadata: {} }));
+        return { data: dummies, has_more: true };
+      }
+      return { data: [landed], has_more: false };
+    });
+    const recon = mockStripe({
+      transfers: {
+        create: vi.fn(async () => {
+          throw new Error('must not re-POST');
+        }),
+        list: listMock,
+      },
+    });
+    const later = new Date(Date.now() + 25 * 60 * 60 * 1000);
+    const result = await runTransferExecutor(db, { stripe: recon.stripe, now: () => later });
+
+    expect(result.transfersConfirmed).toContain(intent.id);
+    expect(listMock).toHaveBeenCalledTimes(2); // paged past the first 100
+    const after = await db(TABLES.HostedFundingTransfer).where({ id: intent.id }).first();
+    expect(after.state).toBe('confirmed');
+    expect(after.stripeTransferId).toBe('tr_page2');
+  });
 });
 
 // ---- Funding webhooks -----------------------------------------------------

@@ -19,6 +19,10 @@ export async function setConfig<T>(db: Knex, tenantId: string, key: string, valu
     .merge({ value: jsonbValue as unknown as object, updatedAt: new Date() });
 }
 
+export async function deleteConfig(db: Knex, tenantId: string, key: string): Promise<void> {
+  await db<ConfigRow>(TABLES.Config).where({ tenantId, key }).del();
+}
+
 // Known config keys — centralized so we don't stringly-type across the codebase.
 export const CONFIG_KEYS = {
   StripeMerchantCustomerId: 'stripe.merchant.customerId',
@@ -26,6 +30,12 @@ export const CONFIG_KEYS = {
   // High-water mark for usage reporting. Stored as ISO string. The next
   // run aggregates Events with ts > this value, then advances the mark.
   LastUsageReportedAt: 'stripe.merchant.lastUsageReportedAt',
+  // Outbox for exactly-once usage reporting: the frozen {rangeStart,
+  // rangeEnd, amount, identifier} written BEFORE the Stripe meter call and
+  // cleared only after the high-water mark advances. A crash between the
+  // Stripe accept and the mark advance re-sends this row verbatim (same
+  // identifier ⇒ Stripe dedupes) instead of re-aggregating a new window.
+  PendingUsageReport: 'stripe.merchant.pendingUsageReport',
   // High-water mark for Network-originated payout reporting (separate
   // from usage reporting because the cadence + trigger are different
   // — payouts are weekly, usage is daily).

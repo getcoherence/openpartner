@@ -12,7 +12,6 @@
 import { ulid } from 'ulid';
 import type { Knex } from 'knex';
 import {
-  DEFAULT_TENANT_ID,
   TABLES,
   type AdminRow,
   type ProgramRow,
@@ -20,6 +19,7 @@ import {
   type TenantRow,
 } from '@openpartner/db';
 import { getMailer } from './mailer.js';
+import { platformOpsEmail, sendOpsEmail } from './platform-ops-mail.js';
 import { getPortalBaseUrl } from './portal-url.js';
 import {
   brandApprovedEmail,
@@ -118,12 +118,7 @@ export async function writeAudit(
 // Ops notifications
 // --------------------------------------------------------------------------
 
-/** The platform-ops inbox that review notifications go to. Unset → ops
- *  email is skipped (self-host / dev). */
-export function platformOpsEmail(): string | null {
-  const v = (process.env.PLATFORM_OPS_EMAIL ?? '').trim();
-  return v.length > 0 ? v : null;
-}
+export { platformOpsEmail };
 
 /** URL to the review queue in the ops console (platform origin, no tenant
  *  prefix). */
@@ -131,35 +126,12 @@ export function opsConsoleUrl(): string {
   return `${getPortalBaseUrl()}/platform/brands`;
 }
 
-/**
- * Send an ops notification through the PLATFORM mail transport. We pass
- * DEFAULT_TENANT_ID as the mail context so resolveMailConfig falls through
- * to the env transport rather than a brand's UI-configured provider — an
- * internal ops alert must never egress via a customer's Postmark account.
- */
-async function sendOps(db: Knex, tmpl: { subject: string; text: string; html: string }, tag: string): Promise<void> {
-  const to = platformOpsEmail();
-  if (!to) return;
-  try {
-    await getMailer().send({ db, tenantId: DEFAULT_TENANT_ID }, {
-      to,
-      subject: tmpl.subject,
-      text: tmpl.text,
-      html: tmpl.html,
-      tag,
-      metadata: { channel: 'platform_ops' },
-    });
-  } catch (err) {
-    console.error('[brand-review] ops notify failed', err);
-  }
-}
-
 export async function notifyOpsNewBrand(
   db: Knex,
   params: { brandName: string; slug: string; adminEmail: string },
 ): Promise<void> {
   const tmpl = opsBrandNeedsReviewEmail(params.brandName, params.slug, params.adminEmail, opsConsoleUrl());
-  await sendOps(db, tmpl, 'ops_brand_needs_review');
+  await sendOpsEmail(db, tmpl, 'ops_brand_needs_review');
 }
 
 async function notifyOpsDecision(
@@ -179,7 +151,7 @@ async function notifyOpsDecision(
     params.operatorEmail,
     params.reason,
   );
-  await sendOps(db, tmpl, 'ops_brand_decision');
+  await sendOpsEmail(db, tmpl, 'ops_brand_decision');
 }
 
 // --------------------------------------------------------------------------

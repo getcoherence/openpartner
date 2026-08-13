@@ -19,7 +19,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { TABLES, type ClickRow, type LinkRow } from '@openpartner/db';
-import { grantScope, requireAuth } from '../auth.js';
+import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 
 const ingestSchema = z.object({
@@ -50,7 +50,12 @@ const ingestSchema = z.object({
 
 export const clicksRouter = Router();
 
-clicksRouter.post('/clicks', requireAuth, grantScope('clicks:write'), async (req, res) => {
+// Server-to-server click ingest (Network federation / SDK). Same gate as
+// /attribution/events: an admin credential, or a scoped key with
+// `clicks:write` (grantScope rewrites it to admin). requireAdmin then
+// rejects partner sessions/keys — a partner must not be able to forge
+// clicks (inflate counts, or credit another partner via someone's linkKey).
+clicksRouter.post('/clicks', requireAuth, grantScope('clicks:write'), requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = ingestSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });

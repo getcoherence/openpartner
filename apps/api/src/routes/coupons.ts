@@ -326,7 +326,13 @@ const redeemSchema = z.object({
   ts: z.string().datetime().optional(),
 });
 
-couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), async (req, res) => {
+// Server-to-server coupon redemption → synthesizes Click+Identity+Event and
+// runs attribution, so it mints commissions. Same gate as /attribution/events:
+// admin, or a scoped `events:write` key (grantScope rewrites to admin).
+// requireAdmin is load-bearing — without it a PARTNER (session or partner key)
+// passes requireAuth, falls through grantScope unchanged, and could forge
+// conversions crediting themselves.
+couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = redeemSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });

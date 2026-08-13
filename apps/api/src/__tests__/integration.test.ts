@@ -592,3 +592,60 @@ describe.skipIf(skipIntegration)('audit safe-fixes', () => {
     expect(attributions).toHaveLength(1);
   });
 });
+
+describe.skipIf(skipIntegration)('server-to-server ingest routes reject partner principals', () => {
+  // Regression: /coupons/redeem and /clicks are admin-or-scoped-key ingest
+  // routes (grantScope + requireAdmin, same as /attribution/events). A
+  // partner principal must NOT reach them — /coupons/redeem mints
+  // commissions, so a partner without the gate could forge conversions
+  // crediting themselves.
+  async function mintPartnerKey(): Promise<string> {
+    const p = (
+      await request(app)
+        .post('/partners')
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ email: `s2s-${ulid()}@x.com`, name: 'S2S' })
+    ).body.id;
+    const keyRes = await request(app)
+      .post(`/partners/${p}/api-keys`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ label: 'test' });
+    return keyRes.body.plaintext as string;
+  }
+
+  it('POST /coupons/redeem: partner key → 403; admin passes auth (404 unknown coupon)', async () => {
+    const partnerKey = await mintPartnerKey();
+    const body = { code: 'NOPE', eventType: 'sale', userId: 'u1', externalEventId: ulid(), value: 100 };
+
+    const asPartner = await request(app)
+      .post('/coupons/redeem')
+      .set('Authorization', `Bearer ${partnerKey}`)
+      .send(body);
+    expect(asPartner.status).toBe(403);
+
+    const asAdmin = await request(app)
+      .post('/coupons/redeem')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send(body);
+    expect(asAdmin.status).not.toBe(403);
+    expect(asAdmin.status).toBe(404); // coupon_not_found — reached the handler
+  });
+
+  it('POST /clicks: partner key → 403; admin passes auth (404 unknown link)', async () => {
+    const partnerKey = await mintPartnerKey();
+    const body = { id: ulid(), linkKey: 'nope', landingUrl: 'https://x/', ts: new Date().toISOString() };
+
+    const asPartner = await request(app)
+      .post('/clicks')
+      .set('Authorization', `Bearer ${partnerKey}`)
+      .send(body);
+    expect(asPartner.status).toBe(403);
+
+    const asAdmin = await request(app)
+      .post('/clicks')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send(body);
+    expect(asAdmin.status).not.toBe(403);
+    expect(asAdmin.status).toBe(404); // link_not_found — reached the handler
+  });
+});

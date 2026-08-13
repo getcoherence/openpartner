@@ -33,6 +33,7 @@ import {
 } from '@openpartner/db';
 import { db } from './db.js';
 import { dispatchPartnerPostbacks, isPostbackEvent } from './partner-postback.js';
+import { safeFetch } from './outbound-guard.js';
 
 const SIGNATURE_HEADER = 'x-openpartner-signature';
 const TIMESTAMP_HEADER = 'x-openpartner-timestamp';
@@ -270,7 +271,10 @@ async function attemptDelivery(deliveryId: string, endpoint: WebhookEndpointRow,
 
   const attemptAt = new Date();
   try {
-    const res = await fetch(endpoint.url, {
+    // safeFetch enforces the SSRF policy (public-unicast destination, DNS
+    // pinning, no redirects) and throws OutboundBlockedError — caught below
+    // and recorded as a failed delivery — for anything it refuses.
+    const res = await safeFetch(endpoint.url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -281,7 +285,10 @@ async function attemptDelivery(deliveryId: string, endpoint: WebhookEndpointRow,
         'user-agent': 'OpenPartner-Webhooks/1',
       },
       body,
-      signal: AbortSignal.timeout(10_000),
+      timeoutMs: 10_000,
+      // Admin-configured endpoint: full deployment policy (may use the
+      // operator's private-CIDR escape hatch on self-host).
+      trust: 'admin',
     });
     const ok = res.ok;
     await db<WebhookDeliveryRow>(TABLES.WebhookDelivery)
