@@ -353,6 +353,7 @@ describe.skipIf(skipIntegration)('stripe webhook — refund + reversal flow', ()
           id: stripeChargeId,
           customer: { id: customerId, metadata: {}, object: 'customer' },
           invoice: stripeInvoiceId,
+          amount: 4900,
           amount_refunded: 4900,
           currency: 'usd',
         },
@@ -430,6 +431,7 @@ describe.skipIf(skipIntegration)('stripe webhook — refund + reversal flow', ()
           id: stripeChargeId,
           customer: { id: customerId, metadata: {}, object: 'customer' },
           invoice: stripeInvoiceId,
+          amount: 4900,
           amount_refunded: 4900,
           currency: 'usd',
         },
@@ -471,6 +473,7 @@ describe.skipIf(skipIntegration)('stripe webhook — refund + reversal flow', ()
           id: `ch_${ulid()}`,
           customer: { id: customerId, metadata: {}, object: 'customer' },
           invoice: stripeInvoiceId,
+          amount: 1900,
           amount_refunded: 1900,
           currency: 'usd',
         },
@@ -488,6 +491,131 @@ describe.skipIf(skipIntegration)('stripe webhook — refund + reversal flow', ()
     expect(attributions).toHaveLength(0);
   });
 });
+
+describe.skipIf(skipIntegration)('stripe webhook — partial refund stopgap', () => {
+  it('a PARTIAL charge.refunded does not reverse commissions (records + flags instead)', async () => {
+    const { clickId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    const stripeInvoiceId = `in_${ulid()}`;
+    const stripeChargeId = `ch_${ulid()}`;
+
+    await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: `cs_${ulid()}`,
+          mode: 'subscription',
+          client_reference_id: clickId,
+          customer: customerId,
+          subscription: `sub_${ulid()}`,
+        },
+      },
+    });
+
+    await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'invoice.paid',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: stripeInvoiceId,
+          customer: { id: customerId, metadata: {}, object: 'customer' },
+          amount_paid: 10000,
+          currency: 'usd',
+          charge: stripeChargeId,
+        },
+      },
+    });
+
+    const invoicePaidEvent = await db(TABLES.Event).where({ type: 'invoice_paid' }).first();
+    const invoiceAttributions = await db(TABLES.Attribution).where({ eventId: invoicePaidEvent!.id });
+    const accruedBefore = await db(TABLES.Commission)
+      .whereIn('attributionId', invoiceAttributions.map((a) => a.id))
+      .where({ status: 'accrued' });
+    expect(accruedBefore.length).toBeGreaterThan(0);
+
+    // $1 refund on a $100 charge — partial.
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'charge.refunded',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: stripeChargeId,
+          customer: { id: customerId, metadata: {}, object: 'customer' },
+          invoice: stripeInvoiceId,
+          amount: 10000,
+          amount_refunded: 100,
+          currency: 'usd',
+        },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.corrective).toBe('refund');
+
+    // Commissions untouched — a partial refund must NOT reverse 100%.
+    const after = await db(TABLES.Commission)
+      .whereIn('attributionId', invoiceAttributions.map((a) => a.id));
+    expect(after.every((c) => c.status === 'accrued')).toBe(true);
+
+    const refundEvent = await db(TABLES.Event).where({ type: 'refund' }).first();
+    const md = refundEvent!.metadata as { reversedCommissions?: number; partialRefundReversalSkipped?: boolean; fullRefund?: boolean };
+    expect(md.reversedCommissions).toBe(0);
+    expect(md.partialRefundReversalSkipped).toBe(true);
+    expect(md.fullRefund).toBe(false);
+  });
+
+  it('fully refunding a partially-CAPTURED charge reverses commissions (measured vs amount_captured)', async () => {
+    const { clickId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    const stripeInvoiceId = `in_${ulid()}`;
+    const stripeChargeId = `ch_${ulid()}`;
+
+    await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: { object: { id: `cs_${ulid()}`, mode: 'subscription', client_reference_id: clickId, customer: customerId, subscription: `sub_${ulid()}` } },
+    });
+    await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'invoice.paid',
+      created: Math.floor(Date.now() / 1000),
+      data: { object: { id: stripeInvoiceId, customer: { id: customerId, metadata: {}, object: 'customer' }, amount_paid: 6000, currency: 'usd', charge: stripeChargeId } },
+    });
+
+    const invoicePaidEvent = await db(TABLES.Event).where({ type: 'invoice_paid' }).first();
+    const invoiceAttributions = await db(TABLES.Attribution).where({ eventId: invoicePaidEvent!.id });
+
+    // $100 authorized, only $60 captured, then the full $60 refunded.
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'charge.refunded',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: stripeChargeId,
+          customer: { id: customerId, metadata: {}, object: 'customer' },
+          invoice: stripeInvoiceId,
+          amount: 10000,
+          amount_captured: 6000,
+          amount_refunded: 6000,
+          currency: 'usd',
+        },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const after = await db(TABLES.Commission).whereIn('attributionId', invoiceAttributions.map((a) => a.id));
+    expect(after.every((c) => c.status === 'reversed')).toBe(true);
+    const refundEvent = await db(TABLES.Event).where({ type: 'refund' }).first();
+    expect((refundEvent!.metadata as { fullRefund?: boolean }).fullRefund).toBe(true);
+  });
+});
+
 
 // --------------------------------------------------------------------------
 // Tenant billing lifecycle: the brand's OWN subscription to OpenPartner.

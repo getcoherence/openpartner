@@ -585,12 +585,26 @@ async function mapStripeEvent(
       const rawInvoice = (charge as unknown as { invoice?: string | { id: string } | null }).invoice;
       const invoiceId = typeof rawInvoice === 'string' ? rawInvoice : rawInvoice?.id ?? null;
 
-      // Auto-reverse non-paid Commissions linked to the original invoice.
-      // Commissions already in 'paid' status are flagged for admin review —
-      // we don't claw back funds that have already left the platform.
-      const reversal = invoiceId
-        ? await reverseCommissionsForInvoice(trx, invoiceId)
-        : { reversed: 0, alreadyPaid: 0, heldInTransfer: 0 };
+      // Stopgap for partial-refund over-clawback: the old path reversed 100%
+      // of an invoice's commissions on ANY refund, and charge.amount_refunded
+      // is cumulative — so a $1 refund on a $100 order wiped the whole
+      // commission, and successive partials mis-stated. Only auto-reverse on
+      // a FULL refund; partials are recorded for the audit trail and left for
+      // manual handling (proportional clawback is a separate ledger change).
+      // Commissions already 'paid' are flagged, not clawed back.
+      //
+      // "Full" is measured against what was actually COLLECTED
+      // (charge.amount_captured), NOT the intended charge.amount: a $100 auth
+      // captured for $60 and then fully refunded ($60) is a full refund even
+      // though amount_refunded (6000) < amount (10000). Fall back to
+      // charge.amount when amount_captured is absent.
+      const captured = typeof charge.amount_captured === 'number' ? charge.amount_captured : null;
+      const collected = captured ?? (typeof charge.amount === 'number' ? charge.amount : null);
+      const isFullRefund = collected != null && collected > 0 && charge.amount_refunded >= collected;
+      const reversal =
+        invoiceId && isFullRefund
+          ? await reverseCommissionsForInvoice(trx, invoiceId)
+          : { reversed: 0, alreadyPaid: 0, heldInTransfer: 0 };
 
       return {
         userId,
@@ -601,6 +615,10 @@ async function mapStripeEvent(
           stripeChargeId: charge.id,
           ...(invoiceId ? { stripeInvoiceId: invoiceId } : {}),
           amountRefunded: charge.amount_refunded,
+          ...(collected != null ? { chargeCollected: collected } : {}),
+          fullRefund: isFullRefund,
+          // Surfaces a partial refund that needs manual commission handling.
+          ...(invoiceId && !isFullRefund ? { partialRefundReversalSkipped: true } : {}),
           reversedCommissions: reversal.reversed,
           alreadyPaidCommissions: reversal.alreadyPaid,
           ...(reversal.heldInTransfer > 0 ? { heldInTransferCommissions: reversal.heldInTransfer } : {}),
