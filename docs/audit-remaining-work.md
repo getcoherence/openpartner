@@ -7,8 +7,9 @@ those fixes (15 findings, 9 CRITICAL); thirteen were fixed and pushed the
 same day, two are the documented prove-absence limit with a new alarm (§0.2).
 PRs #73 and #75 each carry three/three new commits, all suites green locally
 (325 tests, twice — see the flakiness note before trusting one red run).
-NOTHING IS MERGED; §3a's branch-protection blocker still stands and only
-Keith can clear it. The next work, in order, is §0.3.**
+THE BATCH IS MERGED (2026-08-13): all sixteen PRs #60–#75 are on main,
+squash-merged in the validated order after the full combination passed
+locally. What remains, in order, is §0.3.**
 
 ---
 
@@ -88,15 +89,24 @@ back to metadata.
 
 ### 0.3 The next work, in order
 
-1. **Keith merges the batch** — §3a (`--admin`), order per §1/§2 (#62
-   before #74; #71 with #75). **#75 now ADDS a migration**
-   (`20260813000000_funding_sweep_per_object`) — prod migrations auto-run
-   on deploy (see ground truth), a manual `pnpm migrate` is belt-and-braces.
-2. **Add `transfer.created`** to the Stripe webhook destination (§0.2).
-3. **Build B on main** per §0.4's design, as one PR; then a round-11 Codex
+1. ~~Merge the batch~~ — **DONE 2026-08-13**: all sixteen PRs (#60–#75)
+   squash-merged to main in the validated order, after the full 16-way
+   combination passed locally (46 files / 483 tests, typecheck + lint
+   clean). Mid-train conflicts (#66, #70, #67, #68, #73) were resolved
+   identically to the validation build. #75's sweep migration and #62's
+   RLS migration auto-run on the deploy — verify the deploy log shows
+   `[entrypoint] running migrations`, and confirm the `tenant_isolation`
+   policy exists on `PartnerProgram` plus the four `sweep*` columns on the
+   funding sidecar tables.
+2. **Post-merge prod actions**: run/verify #63's auto-approve job once and
+   check the accrued backlog it had been failing to clear.
+3. **Stripe webhook destination**: add `transfer.created` (§0.2's alarm)
+   and `customer.subscription.updated` / `customer.subscription.deleted`
+   (#60's cancellation sync) per docs/deploy-production.md.
+4. **Build B on main** per §0.4's design, as one PR; then a round-11 Codex
    pass on it. Codex's standing caveat applies: review count is not
    operational safety.
-4. The still-unrun staging scenarios (H2/H3/H4/H10/H12 — test clocks, true
+5. The still-unrun staging scenarios (H2/H3/H4/H10/H12 — test clocks, true
    two-process races) remain from before; unchanged.
 
 ### 0.4 Option B — the full design (drafted round 10, execute after merge)
