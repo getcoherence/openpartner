@@ -52,6 +52,14 @@ const TENANT_TABLES = [
   'PartnerCommission',
 ];
 
+// Tables where the app role gets LESS than full DML. OperatorRecoveryRequest
+// is append-only from the app's side: the API inserts and lists, every
+// update runs on the privileged pool, and withholding UPDATE/DELETE here is
+// what makes the audit trail tamper-resistant to tenant-scoped code.
+const RESTRICTED_GRANTS: Array<{ table: string; grant: string }> = [
+  { table: 'OperatorRecoveryRequest', grant: 'select, insert' },
+];
+
 async function main(): Promise<void> {
   const password = process.env.OPENPARTNER_APP_DB_PASSWORD;
   if (!password) {
@@ -101,6 +109,17 @@ async function main(): Promise<void> {
       )) as { rows: unknown[] };
       if (tableExists.rows.length === 0) continue;
       await db.raw(`grant select, insert, update, delete on "${tbl}" to openpartner_app`);
+    }
+    for (const { table, grant } of RESTRICTED_GRANTS) {
+      const tableExists = (await db.raw(
+        `select 1 from information_schema.tables where table_schema = 'public' and table_name = ?`,
+        [table],
+      )) as { rows: unknown[] };
+      if (tableExists.rows.length === 0) continue;
+      // Revoke first so a role provisioned before the grant narrowed
+      // doesn't keep the wider privileges forever.
+      await db.raw(`revoke all privileges on "${table}" from openpartner_app`);
+      await db.raw(`grant ${grant} on "${table}" to openpartner_app`);
     }
 
     await db.raw('grant usage on all sequences in schema public to openpartner_app');

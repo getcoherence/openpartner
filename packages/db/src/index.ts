@@ -109,4 +109,5 @@ export const TABLES = {
   StripeWebhookInbox: 'StripeWebhookInbox',
   PayoutReversal: 'PayoutReversal',
   CommissionAdjustment: 'CommissionAdjustment',
+  OperatorRecoveryRequest: 'OperatorRecoveryRequest',
 } as const;

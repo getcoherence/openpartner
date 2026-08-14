@@ -113,10 +113,16 @@ const JOBS: ScheduledJob[] = [
     name: 'payout-transfers',
     cronExpr: '*/15 * * * *',
     description:
-      'Post Stripe transfers for committed direct-Connect payout intents: frozen idempotency key per intent, reconcile-by-transfer_group past the 24h key window, release claims on definite failure (every 15 minutes)',
+      'Apply pending operator-recovery requests for the direct-Connect rail, then post Stripe transfers for committed payout intents: frozen idempotency key per intent, reconcile-by-transfer_group past the 24h key window, release claims on definite failure (every 15 minutes)',
     handler: async () => {
+      // Recovery FIRST (decision B): an intent an operator just released
+      // is executed by the same tick that released it, instead of waiting
+      // for the next one.
+      const { applyRecoveryRequests } = await import('./operator-recovery.js');
+      const recovery = await applyRecoveryRequests(db, { rail: 'direct_connect' });
       const { executePayoutTransfers } = await import('./payout-transfers.js');
-      return executePayoutTransfers(db);
+      const transfers = await executePayoutTransfers(db);
+      return { recovery, transfers };
     },
   },
   {
@@ -158,10 +164,17 @@ const JOBS: ScheduledJob[] = [
     name: 'funding-collector',
     cronExpr: '*/5 * * * *',
     description:
-      'Advance hosted funding batches: create/retry funding PaymentIntents, poll as webhook-loss backstop, release timed-out batches (every 5 minutes; no-op unless HOSTED_FUNDING_ENABLED=1)',
+      'Apply pending operator-recovery requests for the hosted funding rail, then advance hosted funding batches: create/retry funding PaymentIntents, poll as webhook-loss backstop, release timed-out batches (every 5 minutes; the collector is a no-op unless HOSTED_FUNDING_ENABLED=1)',
     handler: async () => {
+      // Recovery first (decision B), and NOT behind the funding flag: a
+      // force-release of a stuck batch is exactly what an operator does
+      // after HOSTED_FUNDING_ENABLED was pulled mid-incident, and
+      // forceReleaseBatch carries its own verification either way.
+      const { applyRecoveryRequests } = await import('./operator-recovery.js');
+      const recovery = await applyRecoveryRequests(db, { rail: 'hosted_funding' });
       const { runFundingCollector } = await import('./funding/collect.js');
-      return runFundingCollector(db);
+      const collected = await runFundingCollector(db);
+      return { recovery, collected };
     },
   },
   {

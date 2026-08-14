@@ -100,12 +100,27 @@ back to metadata.
    funding sidecar tables.
 2. **Post-merge prod actions**: run/verify #63's auto-approve job once and
    check the accrued backlog it had been failing to clear.
-3. **Stripe webhook destination**: add `transfer.created` (§0.2's alarm)
-   and `customer.subscription.updated` / `customer.subscription.deleted`
-   (#60's cancellation sync) per docs/deploy-production.md.
+   *2026-08-14: the 05:15 UTC run happened but rotated out of the log
+   buffer before it could be read — still unverified. Check approved-
+   commission counts in admin, or read tomorrow's run.*
+3. ~~Stripe webhook destination~~ — **DONE 2026-08-14**: live Stripe now
+   has exactly three endpoints. Destination A (platform) carries 15 events
+   incl. the never-registered `charge.refunded` / `charge.dispute.created`
+   / `invoice.payment_failed` / `payment_intent.*` trio / `transfer.created`;
+   Destination B is `account.updated` only; the third endpoint belongs to
+   the separate Network service — treat as not-ours. The two old app
+   endpoints are deleted, the split `STRIPE_WEBHOOK_SECRET_PLATFORM` /
+   `_CONNECT` vars are live (legacy combined var removed), so #68's
+   family enforcement is ON in prod. Clean deploys, no signature or
+   family mismatches.
 4. **Build B on main** per §0.4's design, as one PR; then a round-11 Codex
    pass on it. Codex's standing caveat applies: review count is not
    operational safety.
+   *2026-08-14: BUILT on `feat/operator-recovery-requests` — migration,
+   apply loop (`apps/api/src/operator-recovery.ts`), admin API
+   (`routes/recovery.ts`), scheduler wiring, §0.2's post-apply group
+   recheck, and the `transfer.created` family-map addition, with 25 new
+   tests. Round-11 pass + PR in flight; see the PR for what survived.*
 5. The still-unrun staging scenarios (H2/H3/H4/H10/H12 — test clocks, true
    two-process races) remain from before; unchanged.
 

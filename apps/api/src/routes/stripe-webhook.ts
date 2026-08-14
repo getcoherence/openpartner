@@ -111,9 +111,12 @@ const PLATFORM_EVENT_TYPES = new Set([
   'payment_intent.payment_failed',
   'payment_intent.canceled',
   // transfer.* are PLATFORM-account events: we create Connect transfers with
-  // the platform key (funding/executor.ts), so Stripe fires transfer.updated
-  // / transfer.reversed on the platform account — they arrive on Destination
-  // A, NOT the connected-account destination.
+  // the platform key (funding/executor.ts), so Stripe fires transfer.created
+  // / transfer.updated / transfer.reversed on the platform account — they
+  // arrive on Destination A, NOT the connected-account destination.
+  // transfer.created is the round-10 orphan detector's feed; registered on
+  // Destination A 2026-08-14.
+  'transfer.created',
   'transfer.updated',
   'transfer.reversed',
 ]);
