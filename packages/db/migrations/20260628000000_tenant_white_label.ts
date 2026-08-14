@@ -16,8 +16,9 @@ import type { Knex } from 'knex';
  * keep white-label (and a live custom-domain cert) for free.
  *
  * Portability (CLAUDE.md §2/§5): a hosted-only concept, but stored as a
- * plain boolean so it exports losslessly to CSV/JSON/SQL and is an inert
- * no-op on self-hosted import — a self-hosted single-tenant install is
+ * plain boolean so it CAN export losslessly to CSV/JSON/SQL and be an
+ * inert no-op on self-hosted import (the `Tenant` table is not yet in the
+ * export bundle — docs/data-portability.md) — a self-hosted single-tenant install is
  * already its own brand.
  */
 export async function up(knex: Knex): Promise<void> {

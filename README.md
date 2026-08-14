@@ -1,6 +1,6 @@
 # OpenPartner
 
-**Open-source partner attribution and payouts.** Run your own partner program: track every click through to revenue, pay partners out via Stripe Connect, export everything whenever you want.
+**Open-source partner attribution and payouts.** Run your own partner program: track every click through to revenue, pay partners out via Stripe Connect, export your data whenever you want.
 
 > The open alternative to Dub Partners, Rewardful, and Impact.
 
@@ -37,7 +37,7 @@ Self-hosted is the GitHub repo you're reading. Hosted tiers run the same code on
 
 ### Your data stays yours
 
-- **One-click export** — every table, CSV + JSON + SQL. On demand or scheduled to your own S3.
+- **One-click export** — partners, programs, attribution and the commission/payout ledger, as CSV + JSON + SQL. On demand or scheduled to your own S3. ([what's in the bundle, and what isn't](./docs/data-portability.md))
 - **Open schema, open API** — documented, versioned, stable.
 - **Round-trip portability** — exports from the hosted version re-import cleanly into the self-hosted version.
 - **No resale, no training** — your partner attribution data is not a product.
@@ -119,7 +119,7 @@ v1. End-to-end attribution, payouts, and export are working; API surface is stab
 
 - Scoped API keys (`partners:write`, `links:write`, `commissions:read`, …) — the federation contract that lets an external creator-network service provision Partner + Link rows on this instance over REST
 - `@openpartner/sdk` on npm with browser and server entries
-- Portable JSON + CSV export per table; full bundle round-trippable via `POST /import`
+- Portable JSON + CSV + SQL export per table; full bundle round-trippable via `POST /import`, or restore the SQL dump straight into a self-hosted instance with `psql -v tenant_id=<destination tenant id> -f openpartner-export.sql`
 
 **Operations**
 

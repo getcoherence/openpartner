@@ -35,8 +35,9 @@ export interface TenantRow {
   customDomain: string | null;
   /** White-label entitlement (provisioned flag). When true AND on an
    *  entitling billing state, the portal drops all OpenPartner platform
-   *  branding. See apps/api/src/white-label.ts. Hosted-only; inert on
-   *  self-hosted import. */
+   *  branding. See apps/api/src/white-label.ts. Hosted-only; DESIGNED to
+   *  be inert on self-hosted import, though `Tenant` is not yet in the
+   *  export bundle (docs/data-portability.md). */
   whiteLabel: boolean;
   metadata: Record<string, unknown>;
   createdAt: Date;
@@ -767,7 +768,8 @@ export interface CouponRow {
 
 // ---------------------------------------------------------------------------
 // Hosted payout funding (docs/payout-funding.md §4). Hosted-only sidecars —
-// exported losslessly, inert on self-hosted import. All *Minor columns are
+// designed to export losslessly and be inert on self-hosted import — NOT
+// yet in EXPORT_TABLES, see docs/data-portability.md. All *Minor columns are
 // integer minor units with canonical lowercase currency.
 // ---------------------------------------------------------------------------
 

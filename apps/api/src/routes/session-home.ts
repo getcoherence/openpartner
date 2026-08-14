@@ -26,7 +26,9 @@ sessionHomeRouter.get('/session/home', async (req, res) => {
   // Tenant session takes precedence — they've already picked a workspace.
   const tenantCookie = cookies[SESSION_COOKIE_NAME];
   if (tenantCookie) {
-    const session = await resolveSession(db, tenantCookie);
+    // null: this endpoint is deliberately tenant-DISCOVERING — it returns
+    // a home URL, never a principal. See resolveSession.
+    const session = await resolveSession(db, tenantCookie, null);
     if (session) {
       const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: session.tenantId, status: 'active' }).first();
       if (tenant) {

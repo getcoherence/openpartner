@@ -152,7 +152,7 @@ CREATE POLICY portal_custom_domain_tenant ON "PortalCustomDomain"
 White-label introduces hosted-only concepts; portability is a hard architectural constraint, so we state coverage explicitly:
 
 - **`PortalCustomDomain` is a sidecar table** (clearly optional, not a core attribution table) — correct per CLAUDE.md §2. It is added to the documented export schema and is exported to **CSV + JSON + SQL** like every other table.
-- **`Tenant.whiteLabel`** is a hosted-only billing entitlement living alongside the existing hosted-only Stripe columns. It is **exported losslessly** but is an **inert no-op on self-hosted import**: in `OPENPARTNER_MODE=selfhost`, the importer accepts the column, ignores its billing semantics (self-host has no metered white-label entitlement — branding is simply always available), and never requires a Stripe price/subscription to honor it. `verificationToken`/`status`/`edgeKind` import as plain data; a self-hosted instance re-derives its own edge.
+- **`Tenant.whiteLabel`** is a hosted-only billing entitlement living alongside the existing hosted-only Stripe columns. It is **intended to export losslessly** and to be an **inert no-op on self-hosted import** (NB: as of schemaVersion 2 the `Tenant` table itself is not yet in the export set — see docs/data-portability.md): in `OPENPARTNER_MODE=selfhost`, the importer is designed to accept the column, ignore its billing semantics (self-host has no metered white-label entitlement — branding is simply always available), and never requires a Stripe price/subscription to honor it. `verificationToken`/`status`/`edgeKind` import as plain data; a self-hosted instance re-derives its own edge.
 - Net effect: export stays **lossless and re-importable**; migrating off hosted into self-hosted does not lose the domain history and does not drag in a billing dependency. No core table gains a hosted-only field (CLAUDE.md §2), and nothing here makes export lossy (CLAUDE.md §5).
 
 ---
@@ -604,7 +604,7 @@ This spec was hardened against three adversarial reviews (Infra/TLS, Auth/CORS/C
 - **Network isolation deferred (medium)** — source-side federation suppression + automated pre-enable assertion promoted to **launch-minimal** (§7.4, §9).
 - **Union ask-gate decoupled cert issuance from entitlement (medium)** — eliminated; the dedicated droplet's own `ask` *is* the entitlement gate (§6.1).
 - **Original draft's false "token rotates" claim (low)** — this spec's own draft asserted a property the template lacks; **corrected** to real rotation (§7.6).
-- **Portability of hosted-only fields (low)** — `PortalCustomDomain` documented as an exportable sidecar; `whiteLabel`/Stripe fields exported losslessly and treated as inert no-ops on self-hosted import (§3.3), honoring CLAUDE.md §2/§5.
+- **Portability of hosted-only fields (low)** — `PortalCustomDomain` documented as an exportable sidecar; `whiteLabel`/Stripe fields DESIGNED to export losslessly and be inert no-ops on self-hosted import (the `Tenant` table is not yet in EXPORT_TABLES — see docs/data-portability.md) (§3.3), honoring CLAUDE.md §2/§5.
 
 ---
 

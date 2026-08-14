@@ -105,13 +105,21 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
     // tenantMiddleware. That's a routing bug — fail loudly.
     throw new Error('requireAuth invoked without a tenant-scoped req.db');
   }
+  // Every credential resolved below is bound to this tenant, so a missing
+  // one is a routing bug too. Deliberately NOT `?? null`: null is
+  // resolveSession's "any tenant" escape hatch, and defaulting to it here
+  // would silently reopen the cross-tenant hole this guard exists to close.
+  const tenantId = req.tenantId;
+  if (!tenantId) {
+    throw new Error('requireAuth invoked without a resolved tenantId');
+  }
 
   const header = req.header('authorization');
   if (!header) {
     const cookie = (req as unknown as { cookies?: Record<string, string> }).cookies?.op_session;
     if (!cookie) return null;
     const { resolveSession } = await import('./auth-sessions.js');
-    const session = await resolveSession(db, cookie);
+    const session = await resolveSession(db, cookie, tenantId);
     if (!session) return null;
     if (session.principalKind === 'admin') {
       return { role: 'admin', source: 'session', sessionId: session.id, adminId: session.principalId };
@@ -133,7 +141,21 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
   const prefix = token.slice(0, KEY_PREFIX_LEN);
   const hash = hashKey(token);
 
-  const candidates = await db<ApiKeyRow>(TABLES.ApiKey).where({ prefix }).whereNull('revokedAt');
+  // Bind the key to the REQUEST'S tenant explicitly.
+  //
+  // This lookup used to filter on prefix alone and lean on RLS to keep it
+  // inside the tenant. That holds on the app role — but `appDb` falls back
+  // to the privileged `DATABASE_URL` when `DATABASE_URL_APP` is unset, a
+  // configuration db.ts documents as supported, and there RLS is bypassed.
+  // Tenant A's admin key then authenticated successfully against tenant B's
+  // path (`/t/tenant-b/...`), and every downstream tenant-scoped query —
+  // including the export — faithfully served B's data to A (round 7).
+  //
+  // ApiKey carries `tenantId`, so this is exact rather than defence in
+  // depth: a key is only ever valid for the tenant it belongs to.
+  const candidates = await db<ApiKeyRow>(TABLES.ApiKey)
+    .where({ prefix, tenantId })
+    .whereNull('revokedAt');
   const match2 = candidates.find((row) => constantTimeEqual(row.keyHash, hash));
   if (!match2) return null;
 

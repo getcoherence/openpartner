@@ -1,10 +1,28 @@
 import { useState } from 'react';
-import { Download, FileJson, FileSpreadsheet, Archive, Upload } from 'lucide-react';
+import { FileJson, FileSpreadsheet, Archive, Upload, Database } from 'lucide-react';
 import { getApiKey } from '../api.js';
 import { theme } from '../theme.js';
 import { Button, Card, Page, SectionHeading } from '../ui.js';
 
-const TABLES = ['Partner', 'Program', 'Link', 'Click', 'Identity', 'Event', 'Attribution', 'Commission', 'Payout'];
+// Mirrors EXPORT_TABLES in apps/api/src/export.ts, in the same FK-safe
+// order. Keep the two in sync — a table missing here is a table nobody
+// can download one-off, even though the full bundle has it.
+const TABLES = [
+  'Partner',
+  'Program',
+  'PartnerProgram',
+  'PartnerCommission',
+  'Coupon',
+  'Link',
+  'Click',
+  'Identity',
+  'Event',
+  'Attribution',
+  'Commission',
+  'Payout',
+  'PortalCustomDomain',
+  'CommissionAdjustment',
+];
 
 export function AdminExport() {
   const key = getApiKey() ?? '';
@@ -25,19 +43,26 @@ export function AdminExport() {
   }
 
   return (
-    <Page title="Export / import" subtitle="Your data stays yours. Download everything, any time.">
+    <Page title="Export / import" subtitle="Your data stays yours. Download your partners, programs, attribution and ledger any time.">
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <Archive size={22} color={theme.accent} />
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 15, fontWeight: 500 }}>Full bundle</div>
             <div style={{ color: theme.textMuted, fontSize: 13 }}>
-              Every exportable table as one JSON file. Round-trippable into a self-hosted instance via <code>POST /import</code>.
+              Every exportable table in one file. JSON round-trips into a self-hosted instance via{' '}
+              <code>POST /import</code>; the SQL dump restores directly with{' '}
+              <code>psql -v tenant_id=&lt;destination tenant id&gt; -f openpartner-export.sql</code>.
             </div>
           </div>
-          <Button icon={<Download size={14} />} onClick={() => download('/export.json')}>
-            Download
-          </Button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button icon={<FileJson size={14} />} onClick={() => download('/export.json')}>
+              JSON
+            </Button>
+            <Button variant="secondary" icon={<Database size={14} />} onClick={() => download('/export.sql')}>
+              SQL
+            </Button>
+          </div>
         </div>
       </Card>
 
@@ -46,7 +71,7 @@ export function AdminExport() {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
           <thead>
             <tr>
-              {['Table', 'JSON', 'CSV'].map((h) => (
+              {['Table', 'JSON', 'CSV', 'SQL'].map((h) => (
                 <th
                   key={h}
                   style={{
@@ -85,6 +110,11 @@ export function AdminExport() {
                 <td style={{ padding: '8px 18px' }}>
                   <Button size="sm" variant="ghost" icon={<FileSpreadsheet size={14} />} onClick={() => download(`/export/${t}.csv`)}>
                     CSV
+                  </Button>
+                </td>
+                <td style={{ padding: '8px 18px' }}>
+                  <Button size="sm" variant="ghost" icon={<Database size={14} />} onClick={() => download(`/export/${t}.sql`)}>
+                    SQL
                   </Button>
                 </td>
               </tr>

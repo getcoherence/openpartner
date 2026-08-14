@@ -67,8 +67,11 @@ settled | settled_with_residual`, with exception states `funding_failed`,
 
 ## 4. Data model
 
-All sidecar tables: RLS tenant-isolation, `openpartner_app` grants, documented exports,
-inert on self-host import. **All money columns are integer minor units** with canonical
+All sidecar tables: RLS tenant-isolation, `openpartner_app` grants, and a DESIGN
+intent to export inertly on self-host import. NOTE: as of schemaVersion 2 these
+tables are not yet in `EXPORT_TABLES` — `HostedFundingAuthorization.adminId` is an
+FK to `Admin`, which is deliberately never exported, so wiring them up needs that
+decision first. Tracked in docs/data-portability.md. **All money columns are integer minor units** with canonical
 lowercase currency (finding 12); launch currencies are USD (ACH) with GBP (Bacs)
 as the designed-in fast-follow — both 2-decimal, so exponent handling stays trivial and
 asserted; the currency column and rail selection are scheme-aware from day one.
