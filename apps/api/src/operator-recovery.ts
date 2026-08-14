@@ -279,7 +279,10 @@ async function claimRequests(
       .update({
         leaseAt: trx.fn.now(),
         leaseToken: token,
-        attempts: trx.raw(`least("attempts", ${MAX_APPLY_ATTEMPTS * 100}) + 1`),
+        // Clamped on BOTH sides: least() alone still overflows-in-spirit
+        // for a hand-poisoned NEGATIVE counter, which would hold the cap
+        // check false for ~2^31 claims (round 12).
+        attempts: trx.raw(`greatest(least("attempts", ${MAX_APPLY_ATTEMPTS * 100}), 0) + 1`),
         updatedAt: trx.fn.now(),
       })
       .returning('*')) as OperatorRecoveryRequestRow[];
@@ -329,7 +332,7 @@ async function applyOne(
     return;
   }
 
-  const operator = `${request.requestedBy}/req_${request.id}`;
+  const operator = operatorStringFor(request);
   const params = (request.params ?? {}) as Record<string, unknown>;
 
   let outcome: string;
@@ -432,23 +435,40 @@ async function applyOne(
   await settleTerminal(db, request, token, 'refused', outcome, result);
 }
 
+/** The audit string the operator functions stamp for this request.
+ *
+ *  `requestedBy` is SANITIZED before it enters the string: `/` and `:` —
+ *  the two delimiters the marker check anchors on — are squashed to `_`.
+ *  Without that, a requestedBy shaped like `env_admin_key/req_<A>:x`
+ *  (arbitrary text is insertable by anything holding app-role INSERT; the
+ *  API derives it, the schema does not enforce it) would make request B's
+ *  stamp start with request A's expected prefix, forging A's
+ *  "my interrupted attempt applied it" verdict (round 12). With `/`
+ *  banned from the name and the fixed-length id terminated by our own
+ *  delimiter, the first `/req_` in the stamp is always OURS. */
+function operatorStringFor(request: OperatorRecoveryRequestRow): string {
+  const safe = request.requestedBy.replace(/[/:]/g, '_').slice(0, 254);
+  return `${safe}/req_${request.id}`;
+}
+
 /** Does the target's operator-audit field carry THIS request's marker?
  *
  *  ANCHORED at the start of the string, per kind, on purpose. The stamped
- *  value is `operator_<action>:<requestedBy>/req_<id>[:<reason>]`, and the
- *  REASON is operator-controlled free text that lands in the same string —
- *  a bare `includes('req_<id>')` let a second request against the same
- *  target embed another request's id in its reason and forge that
+ *  value is `operator_<action>:<sanitized requestedBy>/req_<id>[:<reason>]`,
+ *  and the REASON is operator-controlled free text that lands in the same
+ *  string — a bare `includes('req_<id>')` let a second request against the
+ *  same target embed another request's id in its reason and forge that
  *  request's "my interrupted attempt applied it" verdict. The prefix up
- *  through `/req_<id>` sits entirely BEFORE any attacker-influenced text
- *  (requestedBy is derived from authentication, never typed), so a
- *  startsWith match cannot be forged from the reason field. The 500-char
- *  server-side truncation cuts only the reason tail, never the prefix. */
+ *  through `/req_<id>` sits entirely BEFORE any attacker-influenced text,
+ *  the sanitizer (operatorStringFor) keeps `/` and `:` out of the name
+ *  segment, and ULIDs are fixed-length — so a startsWith match can only be
+ *  produced by this request's own stamp. The 500-char server-side
+ *  truncation cuts only the reason tail, never the prefix. */
 async function targetCarriesOurMarker(
   db: Knex,
   request: OperatorRecoveryRequestRow,
 ): Promise<boolean> {
-  const operator = `${request.requestedBy}/req_${request.id}`;
+  const operator = operatorStringFor(request);
   const prefixes: Record<OperatorRecoveryKind, string[]> = {
     release_intent_for_retry: [`operator_rearm:${operator}`],
     dispose_intent: [`operator_dispose:${operator}:`],
@@ -595,8 +615,9 @@ async function recheckAppliedRequests(
       leaseAt: db.fn.now(),
       leaseToken: token,
       // Clamped for the same reason as the apply claim: a poisoned
-      // counter must not make the claim statement itself raise.
-      recheckAttempts: db.raw(`least("recheckAttempts", ${MAX_RECHECK_ATTEMPTS * 100}) + 1`),
+      // counter must neither raise in the claim statement (positive
+      // overflow) nor hold the give-up check false forever (negative).
+      recheckAttempts: db.raw(`greatest(least("recheckAttempts", ${MAX_RECHECK_ATTEMPTS * 100}), 0) + 1`),
       updatedAt: db.fn.now(),
     })
     .returning('*')) as OperatorRecoveryRequestRow[];
@@ -624,6 +645,14 @@ async function recheckAppliedRequests(
     // Fence FIRST, side effects only on a win: a stale pass that lost its
     // lease mid-listing must not re-emit an alarm the winner already
     // settled — that is how one orphan becomes an unbounded alert stream.
+    //
+    // Accepted residual (round 12): a process killed between this commit
+    // and the console.error below loses the LOG LINE, not the finding —
+    // `recheckOutcome` durably records the orphan on the row (visible in
+    // GET /recovery-requests), and the transfer.created webhook detector
+    // remains the primary alarm. Making the emit itself durable would
+    // mean an alarm outbox, which is more mechanism than a
+    // milliseconds-wide crash window justifies in this codebase.
     const settled = await db(TABLES.OperatorRecoveryRequest)
       .where({ id: request.id, leaseToken: token, status: 'applied' })
       .update({

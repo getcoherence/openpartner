@@ -591,6 +591,71 @@ describe.skipIf(skipIntegration)('applyRecoveryRequests — tenancy, pacing, fen
     expect(request.outcome).toBe('not_disposable:after_interrupted_attempt');
   });
 
+  it('a requestedBy crafted to embed another request\'s marker cannot forge its verdict', async () => {
+    // Round 12: requestedBy is unconstrained text at the schema level. A
+    // second request whose requestedBy is `<A.requestedBy>/req_<A>:x`
+    // would — unsanitized — produce a stamp that STARTS with request A's
+    // expected prefix, forging A's applied verdict on takeover. The
+    // sanitizer squashes / and : out of the name segment at stamp time,
+    // so this test drives the REAL apply path for the malicious request
+    // and then asserts A still refuses. Removing the sanitizer makes B's
+    // genuine stamp match A's prefix and this test fail.
+    const { payoutId } = await seedHeldIntent();
+    const requestA = await insertRequest({
+      kind: 'dispose_intent',
+      targetId: payoutId,
+      params: { reason: 'a' },
+    });
+    const requestB = ulid();
+    await db(TABLES.OperatorRecoveryRequest).insert({
+      id: requestB,
+      tenantId: TENANT,
+      rail: 'direct_connect',
+      kind: 'dispose_intent',
+      targetId: payoutId,
+      params: JSON.stringify({ reason: 'b' }),
+      requestedBy: `test@op.example/req_${requestA}:delegate`,
+      status: 'pending',
+    });
+    const { stripe } = mockStripe({ listed: [] });
+
+    // B applies for real — its stamp lands on the payout via disposeIntent.
+    await applyRecoveryRequests(db, { rail: 'direct_connect', requestId: requestB, stripe });
+    expect((await requestOf(requestB)).status).toBe('applied');
+
+    // A's claim died mid-flight (expired lease); its takeover re-calls the
+    // function, which refuses — and the marker check must NOT read B's
+    // stamp as A's own.
+    await db(TABLES.OperatorRecoveryRequest)
+      .where({ id: requestA })
+      .update({ leaseAt: hoursAgo(2), leaseToken: 'dead-run', attempts: 1 });
+    await applyRecoveryRequests(db, { rail: 'direct_connect', requestId: requestA, stripe });
+    const a = await requestOf(requestA);
+    expect(a.status).toBe('refused');
+    expect(a.outcome).toBe('not_disposable:after_interrupted_attempt');
+  });
+
+  it('a NEGATIVE poisoned attempts counter is repaired at claim, not honored', async () => {
+    // least() alone left a negative counter negative, holding the cap
+    // check false for ~2^31 claims (round 12). greatest(...,0)+1 repairs
+    // it to a genuine attempt count on the first claim.
+    const { payoutId } = await seedHeldIntent();
+    const requestId = await insertRequest({
+      kind: 'release_intent_for_retry',
+      targetId: payoutId,
+      params: { observedGeneration: 0 },
+    });
+    await db(TABLES.OperatorRecoveryRequest)
+      .where({ id: requestId })
+      .update({ attempts: -2147483648 });
+    const { stripe } = mockStripe({ listThrows: true });
+
+    await applyRecoveryRequests(db, { rail: 'direct_connect', stripe });
+    const request = await requestOf(requestId);
+    expect(request.status).toBe('pending'); // genuinely attempt 1, paced
+    expect(request.attempts).toBe(1);
+  });
+
   it('a poisoned attempts counter cannot abort the pass or starve other requests', async () => {
     // attempts at int4 max used to make the claim statement itself raise
     // (integer out of range) — outside every per-request catch, at the top

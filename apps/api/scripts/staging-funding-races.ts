@@ -561,6 +561,13 @@ async function h2PastWindowSearchOnly() {
     `stamped=${after?.stripePaymentIntentId} expected=${createdPi?.id}`);
   check('H2: create was never needed',
     !(after?.failureReason ?? '').includes('H2 VIOLATION'), String(after?.failureReason));
+  // Adoption must ADVANCE the batch, not just stamp an id — an adopt that
+  // left the row funding_failed would pass the id assertion while the
+  // money sat unrecovered (round-12 review of this script).
+  check('H2: the batch actually progressed past funding_failed',
+    ['payment_processing', 'funded', 'transferring', 'settled', 'settled_with_residual'].includes(
+      after?.status ?? ''),
+    String(after?.status));
   const pis = await pisForBatch(batchId);
   check('H2: STILL exactly one PI at Stripe', pis.length === 1, `got ${pis.length}`);
 }
@@ -640,9 +647,15 @@ async function h3CreateFailsWithIntent() {
   check('H3: no second create', creates === 0, `creates=${creates}`);
   check('H3: same PI still stamped', b2?.stripePaymentIntentId === createdPi?.id,
     String(b2?.stripePaymentIntentId));
+  // The confirm must MOVE the batch — a retry whose funding_failed →
+  // payment_processing CAS was dropped would confirm at Stripe and leave
+  // the ledger behind (round-12 review of this script).
+  check('H3: batch advanced past funding_failed after the confirm',
+    ['payment_processing', 'funded', 'transferring', 'settled', 'settled_with_residual'].includes(
+      b2?.status ?? ''),
+    String(b2?.status));
   const pis = await pisForBatch(batchId);
   check('H3: exactly one PI at Stripe', pis.length === 1, `got ${pis.length}`);
-  note(`H3 retry landed the batch in '${b2?.status}' (confirm ${confirms > 0 ? 'ran' : 'did not run'})`);
 }
 
 /**
@@ -726,14 +739,47 @@ async function h4ReleaseVsInflightCreate() {
     // legitimately won the release — never a silent free.
     check('H4: allocations NOT freed while the debit lives',
       allocs.every((s) => s !== 'released'), allocs.join(','));
-    check('H4: batch frozen or funded — never silently released',
-      after?.status === 'recovery_required' || after?.status === 'funded' ||
-      after?.status === 'transferring' || after?.status === 'release_requested' ||
-      after?.status === 'payment_processing',
-      String(after?.status));
     if (after?.status === 'recovery_required') {
       check('H4: failureReason names the orphan',
         (after.failureReason ?? '').includes('orphan_payment_intent'), String(after.failureReason));
+      return;
+    }
+    // Follow through to a DECISIVE landing. Accepting a release_requested
+    // snapshot here let a no-op compensation pass (round-12 review of this
+    // script): a live PI with a forever-held batch is exactly that
+    // regression, so keep ticking until the state decides — released (PI
+    // terminal), frozen loudly, or payment won.
+    let final: HostedFundingBatchRow | undefined;
+    let livePi: Stripe.PaymentIntent | undefined;
+    for (let i = 0; i < 36; i += 1) {
+      await runFundingCollector(db, { stripe });
+      final = await batchRow(batchId);
+      livePi = createdPi ? await stripe.paymentIntents.retrieve(createdPi.id) : undefined;
+      if (final?.status === 'released' || final?.status === 'recovery_required' ||
+          final?.status === 'funded' || final?.status === 'transferring') break;
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+    const finalAllocs = await allocStatuses(batchId);
+    if (final?.status === 'released') {
+      check('H4: released only after the PI terminalized', livePi?.status === 'canceled',
+        String(livePi?.status));
+      check('H4: allocations freed with the release',
+        finalAllocs.every((s) => s === 'released'), finalAllocs.join(','));
+    } else if (final?.status === 'recovery_required') {
+      check('H4: frozen loudly with the orphan named',
+        (final.failureReason ?? '').includes('orphan_payment_intent'), String(final.failureReason));
+    } else if (final?.status === 'funded' || final?.status === 'transferring') {
+      check('H4/H11: payment won — charge id stamped', !!final?.stripeChargeId,
+        String(final?.stripeChargeId));
+      check('H4/H11: allocations NOT freed', finalAllocs.every((s) => s !== 'released'),
+        finalAllocs.join(','));
+    } else if (livePi?.status === 'processing') {
+      note(`PI stayed 'processing' for the whole window — held is the only safe landing this run (batch=${final?.status})`);
+      check('H4: still held, nothing freed', finalAllocs.every((s) => s !== 'released'),
+        finalAllocs.join(','));
+    } else {
+      check('H4: batch stuck while its PI is terminal — compensation failed', false,
+        `status=${final?.status} pi=${livePi?.status}`);
     }
   }
 }
@@ -782,8 +828,19 @@ async function h10ReleaseStoppedHalfwayResumes() {
     return;
   }
 
-  await runFundingCollector(db, { stripe });
-  const final = await batchRow(batchId);
+  // Tick until decisive, bounded. A single resume tick was not a valid
+  // probe: this script WATCHED one of its own searches succeed and the
+  // collector's very next search return empty — Stripe's search is
+  // eventually consistent per-REQUEST, not monotonic, so one warm read
+  // proves nothing about the next. "Stuck" only means something after a
+  // full window of ticks.
+  let final: HostedFundingBatchRow | undefined;
+  for (let i = 0; i < 36; i += 1) {
+    await runFundingCollector(db, { stripe });
+    final = await batchRow(batchId);
+    if (final?.status !== 'release_requested') break;
+    await new Promise((r) => setTimeout(r, 5000));
+  }
   const finalAllocs = await allocStatuses(batchId);
   const pi = createdPi ? await stripe.paymentIntents.retrieve(createdPi.id) : undefined;
   console.log(`    (resumed: batch=${final?.status}, PI=${pi?.status})`);
@@ -799,7 +856,14 @@ async function h10ReleaseStoppedHalfwayResumes() {
       finalAllocs.join(','));
   } else {
     // An ACH PI in 'processing' can be neither canceled nor confirmed-past;
-    // the batch must still be held safely.
+    // the batch must still be held safely. But held-with-a-TERMINAL-PI is
+    // not safety, it is the resume never running — the regression where
+    // release_requested drops out of the collector scan (round-12 review
+    // of this script).
+    const piTerminal = pi?.status === 'canceled' || pi?.status === 'succeeded';
+    check('H10: not stuck in release_requested while the PI is terminal',
+      !(final?.status === 'release_requested' && piTerminal),
+      `status=${final?.status} pi=${pi?.status}`);
     check('H10: still held safely (no free while the PI lives)',
       finalAllocs.every((s) => s !== 'released'),
       `status=${final?.status} allocs=${finalAllocs.join(',')}`);
@@ -842,17 +906,10 @@ async function seedBatchTwoPartners(): Promise<{ batchId: string; partnerIds: st
   return { batchId: res.batchId, partnerIds };
 }
 
-/**
- * H12 — the funding charge is refunded while the executor is mid-batch.
- * The refund is REAL (test mode), the webhook delivery is the real signed
- * route, and the executor must stop before the second partner.
- */
-async function h12FreezeMidTransfer() {
-  console.log('\n[H12] Batch frozen mid-transfer — refund lands between partners, executor stops');
-  await reset(); await seedTenantFunding();
+/** Seed a two-partner batch and drive it to funded via the real rail.
+ *  Returns undefined when test-mode ACH refuses to settle in time. */
+async function fundTwoPartnerBatch(): Promise<{ batchId: string; funded: HostedFundingBatchRow } | undefined> {
   const { batchId } = await seedBatchTwoPartners();
-
-  await runFundingCollector(db, { stripe });
   let funded: HostedFundingBatchRow | undefined;
   for (let i = 0; i < 36; i += 1) {
     await runFundingCollector(db, { stripe }); // webhookless: the poll backstop confirms
@@ -860,13 +917,57 @@ async function h12FreezeMidTransfer() {
     if (funded?.status === 'funded' || funded?.status === 'transferring') break;
     await new Promise((r) => setTimeout(r, 5000));
   }
-  if (!(funded?.status === 'funded' || funded?.status === 'transferring')) {
-    note(`batch never funded within 180s (status=${funded?.status}) — test-mode ACH did not settle; H12 not exercisable this run`);
+  if (!(funded?.status === 'funded' || funded?.status === 'transferring')) return undefined;
+  return { batchId, funded: funded! };
+}
+
+/**
+ * H12 — the funding charge is refunded while the executor is mid-batch.
+ * The refund is REAL (test mode), the webhook delivery is the real signed
+ * route, and the executor must stop before the second partner.
+ *
+ * A CONTROL batch runs first: the executor must pay BOTH partners when
+ * nothing freezes. Without it, an executor that unconditionally stopped
+ * after one partner would pass every freeze assertion below (round-12
+ * review of this script) — the control is what makes "one transfer" mean
+ * "the freeze stopped it".
+ */
+async function h12FreezeMidTransfer() {
+  console.log('\n[H12] Batch frozen mid-transfer — refund lands between partners, executor stops');
+  const { runTransferExecutor } = await import('../src/funding/executor.js');
+
+  await reset(); await seedTenantFunding();
+  const control = await fundTwoPartnerBatch();
+  if (!control) {
+    note('control batch never funded within 180s — test-mode ACH did not settle; H12 not exercisable this run');
     return;
   }
-  check('H12: batch funded with charge stamped', !!funded?.stripeChargeId, String(funded?.stripeChargeId));
+  let controlTransfers = 0;
+  const countingTransfers = {
+    ...stripe,
+    transfers: {
+      ...stripe.transfers,
+      create: async (p: Stripe.TransferCreateParams, o?: Stripe.RequestOptions) => {
+        controlTransfers += 1;
+        return stripe.transfers.create(p, o);
+      },
+      list: stripe.transfers.list.bind(stripe.transfers),
+      retrieve: stripe.transfers.retrieve.bind(stripe.transfers),
+    },
+  } as unknown as Stripe;
+  await runTransferExecutor(db, { stripe: countingTransfers });
+  check('H12 control: BOTH partners paid when nothing freezes', controlTransfers === 2,
+    `got ${controlTransfers}`);
 
-  const { runTransferExecutor } = await import('../src/funding/executor.js');
+  await reset(); await seedTenantFunding();
+  const frozen = await fundTwoPartnerBatch();
+  if (!frozen) {
+    note('freeze batch never funded within 180s — test-mode ACH did not settle; H12 not exercisable this run');
+    return;
+  }
+  const { batchId } = frozen;
+  const funded = frozen.funded;
+  check('H12: batch funded with charge stamped', !!funded?.stripeChargeId, String(funded?.stripeChargeId));
   let transfersCreated = 0;
   const refundMidway = {
     ...stripe,

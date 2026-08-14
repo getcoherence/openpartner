@@ -117,9 +117,15 @@ async function main(): Promise<void> {
       )) as { rows: unknown[] };
       if (tableExists.rows.length === 0) continue;
       // Revoke first so a role provisioned before the grant narrowed
-      // doesn't keep the wider privileges forever.
-      await db.raw(`revoke all privileges on "${table}" from openpartner_app`);
-      await db.raw(`grant ${grant} on "${table}" to openpartner_app`);
+      // doesn't keep the wider privileges forever — in ONE transaction,
+      // so a boot killed between the two statements cannot strand the
+      // role with no privileges at all (round 12): GRANT/REVOKE are
+      // transactional in Postgres, and live instances see either the old
+      // grants or the new ones, never the gap.
+      await db.transaction(async (trx) => {
+        await trx.raw(`revoke all privileges on "${table}" from openpartner_app`);
+        await trx.raw(`grant ${grant} on "${table}" to openpartner_app`);
+      });
     }
 
     await db.raw('grant usage on all sequences in schema public to openpartner_app');
