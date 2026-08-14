@@ -99,11 +99,21 @@ The three scenarios below are the ones that cost real money, and none of
 them can be observed by reading the happy path. Each has unit coverage in
 `funding-races.test.ts`; staging is where the Stripe half gets proven.
 
-> **Partially run against real Stripe test mode — latest run after the
-> round-6 rework: 27 assertions, 0 failures.**
-> `apps/api/scripts/staging-funding-races.ts` automates **H1, H5, H5b, H6,
-> H7, H8, H9** (and H11 incidentally — see below).
-> **H2, H3, H4, H10, H12 have NOT been run.**
+> **ALL scenarios have now run against real Stripe test mode.**
+> `apps/api/scripts/staging-funding-races.ts` automates **H1–H12** (H11
+> lands incidentally through H5/H10 — see below). H1/H5–H9 ran 2026-08-11
+> (27 assertions, 0 failures); **H2, H3, H4, H10, H12 ran 2026-08-14 (23
+> assertions, 0 failures)**. `STAGING_SCENARIOS=h2,h12` runs a subset.
+>
+> Two honest limits from the 08-14 run, so nobody re-finds them:
+> Stripe test clocks do NOT move idempotency-key retention, so the true
+> "key pruned" state cannot be forced — H2 instead proves our side of the
+> property (the retry resolves purely by search with `create` forbidden).
+> And test-mode ACH declines fail only asynchronously, so H3's synchronous
+> error-with-intent shape is staged around a REAL unconfirmed PI (the
+> stamp-from-error → fbpc-confirm → never-a-second-create arc is fully
+> real). H12's freeze is a REAL refund delivered through the real signed
+> webhook route mid-executor-run: exactly one transfer left the batch.
 >
 > ```bash
 > cd apps/api

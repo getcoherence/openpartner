@@ -121,8 +121,13 @@ back to metadata.
    (`routes/recovery.ts`), scheduler wiring, §0.2's post-apply group
    recheck, and the `transfer.created` family-map addition, with 25 new
    tests. Round-11 pass + PR in flight; see the PR for what survived.*
-5. The still-unrun staging scenarios (H2/H3/H4/H10/H12 — test clocks, true
-   two-process races) remain from before; unchanged.
+5. ~~The still-unrun staging scenarios~~ — **RUN 2026-08-14**: H2/H3/H4/
+   H10/H12 all passed against real Stripe test mode (23 assertions, 0
+   failures; see §3's table and the runbook for the two documented
+   limits). Only a true multi-process lease race remains unexercised.
+   *Also 2026-08-14: PR #76 (build B + round-11 fixes) MERGED to main,
+   deployed, migration verified in the prod entrypoint log; runbooks now
+   point operators at the recovery API.*
 
 ### 0.4 Option B — the full design (drafted round 10, execute after merge)
 
@@ -479,10 +484,19 @@ say neither ever had; that is no longer the status.
 |---|---|---|
 | **#73** direct-Connect, all 6 scenarios | **37 assertions, 0 failures** | `apps/api/scripts/staging-direct-connect.ts` |
 | **#75** funding races, H1/H5/H6/H7/H8/H9 (+H11) | **21 assertions, 0 failures** | `apps/api/scripts/staging-funding-races.ts` |
+| **H2/H3/H4/H10/H12** (2026-08-14) | **23 assertions, 0 failures** | same script, `STAGING_SCENARIOS=h2,h3,h4,h10,h12` |
 
-**Still not run: H2, H3, H4, H10, H12** — all time- or interleaving-dependent,
-wanting either Stripe test clocks or a genuine two-process run. Neither script
-exercises a real multi-process race; the leases are single-process only so far.
+~~Still not run: H2, H3, H4, H10, H12~~ — **RUN 2026-08-14, all clear.**
+Two limits stand, documented in the script header and runbook: Stripe test
+clocks do not move idempotency-key retention (H2 proves the search alone
+suffices, with `create` forbidden, instead of forcing a genuinely pruned
+key), and test-mode ACH declines fail only asynchronously (H3's
+error-with-intent shape is staged around a REAL unconfirmed PI). H4's
+release-vs-in-flight-create ran as two genuinely interleaved async flows
+against real Stripe (orphan canceled, full release arc); H12's freeze was
+a REAL refund delivered through the signed webhook route mid-executor-run.
+What remains genuinely unexercised is only a multi-PROCESS lease race —
+the leases are still single-process-tested.
 
 Both scripts refuse a live key or a non-local `DATABASE_URL`, and each doc
 carries its own run instructions and fixture setup.

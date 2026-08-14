@@ -2,10 +2,18 @@
  * Hosted funding races — section H of docs/payout-funding-staging-runbook.md,
  * executed against REAL Stripe TEST MODE.
  *
- * Covers the three races the runbook calls "the ones that cost real money":
- * an ambiguous PaymentIntent create, a release racing a live PI, and the
- * webhook inbox lease. A mock cannot answer the question that matters here —
- * what Stripe actually does — so this drives the real API.
+ * Covers the races the runbook calls "the ones that cost real money":
+ * ambiguous PaymentIntent creates (H1/H2/H3), a release racing a live PI
+ * (H4/H5/H5b/H6/H10/H11), the webhook inbox lease (H7/H8/H9), and the
+ * mid-batch freeze (H12). A mock cannot answer the question that matters
+ * here — what Stripe actually does — so this drives the real API.
+ * STAGING_SCENARIOS=h2,h12 runs a subset.
+ *
+ * Two honest limits, so nobody re-finds them: Stripe test clocks do NOT
+ * move idempotency-key retention, so the true "key pruned" state cannot be
+ * forced — H2 proves our side (search alone suffices) instead. And
+ * test-mode ACH declines fail only asynchronously, so H3's synchronous
+ * error-with-intent shape is staged around a REAL unconfirmed PI.
  *
  * REQUIRES A TEST-MODE KEY, and TRUNCATES the product tables of whatever
  * DATABASE_URL points at. Local database only.
@@ -493,6 +501,415 @@ async function h5bEmptySearchHolds() {
     !!live && live.status !== 'canceled', String(live?.status));
 }
 
+// ------------------------------------------------- H2/H3/H4/H10/H12 (2026-08-14)
+
+/**
+ * H2 — past the idempotency window, the SEARCH alone must carry the retry.
+ *
+ * Stripe test clocks do not move idempotency-key retention, so the true
+ * "key pruned" state cannot be forced (H1's honest note). What CAN be
+ * proven deterministically is our side of the property: once the DB row
+ * says the window has passed, the retry must not need `create` at all —
+ * so it runs against a client whose create THROWS, and only a pure
+ * search-adopt can pass.
+ */
+async function h2PastWindowSearchOnly() {
+  console.log('\n[H2] Past the window — retry must resolve by search alone (create forbidden)');
+  await reset(); await seedTenantFunding();
+  const { batchId } = await seedBatch();
+
+  let createdPi: Stripe.PaymentIntent | undefined;
+  await runFundingCollector(db, { stripe: lostResponseStripe((pi) => { createdPi = pi; }) });
+  check('ambiguous create staged (PI exists, unstamped)',
+    !!createdPi && !(await batchRow(batchId))?.stripePaymentIntentId);
+
+  let indexed = false;
+  for (let i = 0; i < 36; i += 1) {
+    const f = await stripe.paymentIntents.search({
+      query: `metadata['openpartner_funding_batch_id']:'${batchId}'`, limit: 1,
+    });
+    if (f.data.length > 0) { indexed = true; break; }
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+  if (!indexed) {
+    note('Stripe search never indexed the PI within 180s — H2 cannot run this attempt; the safe hold is asserted instead');
+    check('batch still holds (not released, not double-created)',
+      (await pisForBatch(batchId)).length === 1);
+    return;
+  }
+
+  // Make the retry due AND past the window on our side.
+  await db(TABLES.HostedFundingBatch).where({ id: batchId })
+    .update({ updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000) });
+
+  const createForbidden = {
+    ...stripe,
+    paymentIntents: {
+      ...stripe.paymentIntents,
+      create: async () => { throw new Error('H2 VIOLATION: create called on the past-window retry'); },
+      search: stripe.paymentIntents.search.bind(stripe.paymentIntents),
+      retrieve: stripe.paymentIntents.retrieve.bind(stripe.paymentIntents),
+      cancel: stripe.paymentIntents.cancel.bind(stripe.paymentIntents),
+      confirm: stripe.paymentIntents.confirm.bind(stripe.paymentIntents),
+    },
+  } as unknown as Stripe;
+  await runFundingCollector(db, { stripe: createForbidden });
+
+  const after = await batchRow(batchId);
+  check('H2: retry ADOPTED the existing PI purely by search',
+    after?.stripePaymentIntentId === createdPi?.id,
+    `stamped=${after?.stripePaymentIntentId} expected=${createdPi?.id}`);
+  check('H2: create was never needed',
+    !(after?.failureReason ?? '').includes('H2 VIOLATION'), String(after?.failureReason));
+  const pis = await pisForBatch(batchId);
+  check('H2: STILL exactly one PI at Stripe', pis.length === 1, `got ${pis.length}`);
+}
+
+/**
+ * H3 — a create that fails WITH an intent attached. The PI is REAL; the
+ * error shape is staged (stripe-node attaches `payment_intent` to
+ * confirm-time payment failures, but test-mode ACH declines only fail
+ * asynchronously, so no fixture can produce the synchronous shape — an
+ * honest gap, noted). The property under test is ours: the failed PI's id
+ * is stamped from the error, and the retry CONFIRMS that intent (fbpc:
+ * key) — never a second create.
+ */
+async function h3CreateFailsWithIntent() {
+  console.log('\n[H3] Create fails WITH an intent — retry confirms it, never re-creates');
+  await reset(); await seedTenantFunding();
+  const { batchId } = await seedBatch();
+
+  let createdPi: Stripe.PaymentIntent | undefined;
+  const confirmFails = {
+    ...stripe,
+    paymentIntents: {
+      ...stripe.paymentIntents,
+      create: async (p: Stripe.PaymentIntentCreateParams, o?: Stripe.RequestOptions) => {
+        // Real PI, unconfirmed — the state a confirm-time decline leaves.
+        const params = { ...p };
+        delete (params as { confirm?: boolean }).confirm;
+        delete (params as { off_session?: boolean }).off_session;
+        const pi = await stripe.paymentIntents.create(params, o);
+        createdPi = pi;
+        const err = new Error('Your bank account could not be debited (staged decline)') as Error & {
+          type?: string; payment_intent?: Stripe.PaymentIntent;
+        };
+        err.type = 'StripeInvalidRequestError';
+        err.payment_intent = pi;
+        throw err;
+      },
+      search: stripe.paymentIntents.search.bind(stripe.paymentIntents),
+      retrieve: stripe.paymentIntents.retrieve.bind(stripe.paymentIntents),
+      cancel: stripe.paymentIntents.cancel.bind(stripe.paymentIntents),
+      confirm: stripe.paymentIntents.confirm.bind(stripe.paymentIntents),
+    },
+  } as unknown as Stripe;
+  await runFundingCollector(db, { stripe: confirmFails });
+
+  const b1 = await batchRow(batchId);
+  check('H3: batch funding_failed', b1?.status === 'funding_failed', String(b1?.status));
+  check('H3: the FAILED intent id was stamped from the error',
+    !!createdPi && b1?.stripePaymentIntentId === createdPi.id,
+    `stamped=${b1?.stripePaymentIntentId}`);
+
+  // Retry due now. Count what the retry does at the money API.
+  await db(TABLES.HostedFundingBatch).where({ id: batchId })
+    .update({ updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000) });
+  let creates = 0; let confirms = 0; let confirmKey = '';
+  const counting = {
+    ...stripe,
+    paymentIntents: {
+      ...stripe.paymentIntents,
+      create: async (p: Stripe.PaymentIntentCreateParams, o?: Stripe.RequestOptions) => {
+        creates += 1; return stripe.paymentIntents.create(p, o);
+      },
+      confirm: async (id: string, p?: Stripe.PaymentIntentConfirmParams, o?: Stripe.RequestOptions) => {
+        confirms += 1; confirmKey = o?.idempotencyKey ?? '';
+        return stripe.paymentIntents.confirm(id, p, o);
+      },
+      search: stripe.paymentIntents.search.bind(stripe.paymentIntents),
+      retrieve: stripe.paymentIntents.retrieve.bind(stripe.paymentIntents),
+      cancel: stripe.paymentIntents.cancel.bind(stripe.paymentIntents),
+    },
+  } as unknown as Stripe;
+  await runFundingCollector(db, { stripe: counting });
+
+  const b2 = await batchRow(batchId);
+  check('H3: retry CONFIRMED the same intent', confirms === 1, `confirms=${confirms}`);
+  check('H3: per-attempt fbpc key used', confirmKey.startsWith(`fbpc:${batchId}:`), confirmKey);
+  check('H3: no second create', creates === 0, `creates=${creates}`);
+  check('H3: same PI still stamped', b2?.stripePaymentIntentId === createdPi?.id,
+    String(b2?.stripePaymentIntentId));
+  const pis = await pisForBatch(batchId);
+  check('H3: exactly one PI at Stripe', pis.length === 1, `got ${pis.length}`);
+  note(`H3 retry landed the batch in '${b2?.status}' (confirm ${confirms > 0 ? 'ran' : 'did not run'})`);
+}
+
+/**
+ * H4 — release racing an in-flight create. The create has left for Stripe
+ * (the PI is real) but its response has not returned when a release claims
+ * the batch. Two genuinely interleaved async flows against real Stripe.
+ */
+async function h4ReleaseVsInflightCreate() {
+  console.log('\n[H4] Release vs in-flight create — the orphan must be canceled or frozen loudly');
+  await reset(); await seedTenantFunding();
+  const { batchId } = await seedBatch();
+
+  let createdPi: Stripe.PaymentIntent | undefined;
+  let releaseOutcome: string | undefined;
+  let releaseDone: Promise<void> = Promise.resolve();
+  const gated = {
+    ...stripe,
+    paymentIntents: {
+      ...stripe.paymentIntents,
+      create: async (p: Stripe.PaymentIntentCreateParams, o?: Stripe.RequestOptions) => {
+        const pi = await stripe.paymentIntents.create(p, o);
+        createdPi = pi;
+        // The response is now "in flight". Run the release START TO FINISH
+        // while the collector is still awaiting this create.
+        releaseDone = (async () => {
+          const b = (await batchRow(batchId))!;
+          releaseOutcome = await releaseBatch(db, stripe, b, 'H4 staged release');
+        })();
+        await releaseDone;
+        return pi;
+      },
+      search: stripe.paymentIntents.search.bind(stripe.paymentIntents),
+      retrieve: stripe.paymentIntents.retrieve.bind(stripe.paymentIntents),
+      cancel: stripe.paymentIntents.cancel.bind(stripe.paymentIntents),
+      confirm: stripe.paymentIntents.confirm.bind(stripe.paymentIntents),
+    },
+  } as unknown as Stripe;
+  await runFundingCollector(db, { stripe: gated });
+  await releaseDone;
+  note(`release outcome while the create was in flight: ${releaseOutcome}`);
+
+  const after = await batchRow(batchId);
+  const pi = createdPi ? await stripe.paymentIntents.retrieve(createdPi.id) : undefined;
+  const allocs = await allocStatuses(batchId);
+  console.log(`    (batch=${after?.status}, PI=${pi?.status}, allocs=${allocs.join(',')})`);
+
+  if (pi?.status === 'canceled') {
+    // The orphan was canceled — the batch may finish releasing now.
+    check('H4: orphan PI canceled, never stamped on a released batch',
+      after?.status !== 'released' || !after?.stripePaymentIntentId,
+      `status=${after?.status} pi=${after?.stripePaymentIntentId}`);
+    // The resume can only finish once the canceled PI is FINDABLE: an
+    // empty search is not absence (round 6), so the release correctly
+    // holds until Stripe's index catches up. Asserting a single
+    // post-cancel tick was this test's own round-6 mistake — wait for
+    // the index, THEN resume.
+    let indexed = false;
+    for (let i = 0; i < 36; i += 1) {
+      const f = await stripe.paymentIntents.search({
+        query: `metadata['openpartner_funding_batch_id']:'${batchId}'`, limit: 1,
+      });
+      if (f.data.length > 0) { indexed = true; break; }
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+    if (!indexed) {
+      note('search never indexed the canceled orphan within 180s — the hold is the asserted safe state');
+      const heldAllocs = await allocStatuses(batchId);
+      check('H4: held safely until the index catches up',
+        heldAllocs.every((s) => s === 'reserved'), heldAllocs.join(','));
+      return;
+    }
+    await runFundingCollector(db, { stripe }); // resume the half-done release
+    const final = await batchRow(batchId);
+    const finalAllocs = await allocStatuses(batchId);
+    check('H4: batch reached released with allocations freed',
+      final?.status === 'released' && finalAllocs.every((s) => s === 'released'),
+      `status=${final?.status} allocs=${finalAllocs.join(',')}`);
+  } else {
+    // Stripe refused the cancel (ACH debit already processing/succeeded).
+    // The compensation must have frozen the batch loudly, or the payment
+    // legitimately won the release — never a silent free.
+    check('H4: allocations NOT freed while the debit lives',
+      allocs.every((s) => s !== 'released'), allocs.join(','));
+    check('H4: batch frozen or funded — never silently released',
+      after?.status === 'recovery_required' || after?.status === 'funded' ||
+      after?.status === 'transferring' || after?.status === 'release_requested' ||
+      after?.status === 'payment_processing',
+      String(after?.status));
+    if (after?.status === 'recovery_required') {
+      check('H4: failureReason names the orphan',
+        (after.failureReason ?? '').includes('orphan_payment_intent'), String(after.failureReason));
+    }
+  }
+}
+
+/**
+ * H10 — a release stopped halfway (search down) leaves a resumable batch,
+ * and the NEXT collector tick finishes the job once Stripe answers.
+ */
+async function h10ReleaseStoppedHalfwayResumes() {
+  console.log('\n[H10] Release stopped halfway — held safely, resumed by the next tick');
+  await reset(); await seedTenantFunding();
+  const { batchId } = await seedBatch();
+
+  let createdPi: Stripe.PaymentIntent | undefined;
+  await runFundingCollector(db, { stripe: lostResponseStripe((pi) => { createdPi = pi; }) });
+
+  const searchDown = {
+    ...stripe,
+    paymentIntents: {
+      ...stripe.paymentIntents,
+      search: async () => { throw new Error('search unavailable (injected)'); },
+      retrieve: stripe.paymentIntents.retrieve.bind(stripe.paymentIntents),
+      cancel: stripe.paymentIntents.cancel.bind(stripe.paymentIntents),
+      create: stripe.paymentIntents.create.bind(stripe.paymentIntents),
+      confirm: stripe.paymentIntents.confirm.bind(stripe.paymentIntents),
+    },
+  } as unknown as Stripe;
+  const b = (await batchRow(batchId))!;
+  const halted = await releaseBatch(db, searchDown, b, 'H10 staged timeout release');
+  const mid = await batchRow(batchId);
+  const midAllocs = await allocStatuses(batchId);
+  check('H10: release halted with pi_not_terminal', halted === 'pi_not_terminal', String(halted));
+  check('H10: batch sits release_requested', mid?.status === 'release_requested', String(mid?.status));
+  check('H10: allocations still reserved', midAllocs.every((s) => s === 'reserved'), midAllocs.join(','));
+
+  let indexed = false;
+  for (let i = 0; i < 36; i += 1) {
+    const f = await stripe.paymentIntents.search({
+      query: `metadata['openpartner_funding_batch_id']:'${batchId}'`, limit: 1,
+    });
+    if (f.data.length > 0) { indexed = true; break; }
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+  if (!indexed) {
+    note('search never indexed within 180s — resume not exercisable this run; the hold itself is the asserted safe state');
+    return;
+  }
+
+  await runFundingCollector(db, { stripe });
+  const final = await batchRow(batchId);
+  const finalAllocs = await allocStatuses(batchId);
+  const pi = createdPi ? await stripe.paymentIntents.retrieve(createdPi.id) : undefined;
+  console.log(`    (resumed: batch=${final?.status}, PI=${pi?.status})`);
+  if (final?.status === 'released') {
+    check('H10: resumed and released — PI terminal first',
+      pi?.status === 'canceled', String(pi?.status));
+    check('H10: allocations freed only on the resume',
+      finalAllocs.every((s) => s === 'released'), finalAllocs.join(','));
+  } else if (final?.status === 'funded' || final?.status === 'transferring') {
+    check('H11 landing: payment won the resume — charge id stamped', !!final?.stripeChargeId,
+      String(final?.stripeChargeId));
+    check('H11 landing: allocations NOT freed', finalAllocs.every((s) => s !== 'released'),
+      finalAllocs.join(','));
+  } else {
+    // An ACH PI in 'processing' can be neither canceled nor confirmed-past;
+    // the batch must still be held safely.
+    check('H10: still held safely (no free while the PI lives)',
+      finalAllocs.every((s) => s !== 'released'),
+      `status=${final?.status} allocs=${finalAllocs.join(',')}`);
+    note(`resume could not terminalize (PI ${pi?.status}) — held, which is the safe landing`);
+  }
+}
+
+/** Two partners with approved commissions in ONE batch. */
+async function seedBatchTwoPartners(): Promise<{ batchId: string; partnerIds: string[] }> {
+  const candidates: Array<{ partnerId: string; commissionIds: string[]; amountMinor: number }> = [];
+  const partnerIds: string[] = [];
+  for (let i = 0; i < 2; i += 1) {
+    const partnerId = ulid();
+    partnerIds.push(partnerId);
+    await db(TABLES.Partner).insert({
+      id: partnerId, tenantId: TENANT, email: `p${partnerId}@x.test`, name: `P${i}`,
+      stripeConnectAccountId: PARTNER_ACCT, metadata: { stripe: { payoutsEnabled: true } },
+    });
+    const programId = ulid();
+    await db(TABLES.Program).insert({
+      id: programId, tenantId: TENANT, name: `prog${i}`,
+      commissionRule: JSON.stringify([{ trigger: 'every', type: 'percent', value: 20 }]),
+      destinationUrl: 'https://x.test', attributionWindowDays: 60, attributionModel: 'last_click',
+    });
+    const clickId = ulid();
+    await db(TABLES.Click).insert({ id: clickId, tenantId: TENANT, partnerId, programId, landingUrl: 'https://x.test/', ts: new Date() });
+    const eventId = ulid();
+    await db(TABLES.Event).insert({ id: eventId, tenantId: TENANT, userId: `u-${clickId}`, type: 'invoice_paid', value: '60.00', currency: 'USD', ts: new Date() });
+    const attributionId = ulid();
+    await db(TABLES.Attribution).insert({ id: attributionId, tenantId: TENANT, eventId, clickId, partnerId, programId, model: 'last_click', weight: '1', computedAt: new Date() });
+    const commissionId = ulid();
+    await db(TABLES.Commission).insert({
+      id: commissionId, tenantId: TENANT, partnerId, attributionId,
+      amount: '60.00', currency: 'USD', status: 'approved',
+    });
+    candidates.push({ partnerId, commissionIds: [commissionId], amountMinor: 6000 });
+  }
+  const res = await db.transaction(async (trx) => reserveFundingBatch(trx, TENANT, 'usd', candidates));
+  if (!res.batchId) throw new Error(`reserve failed: ${res.skipped}`);
+  return { batchId: res.batchId, partnerIds };
+}
+
+/**
+ * H12 — the funding charge is refunded while the executor is mid-batch.
+ * The refund is REAL (test mode), the webhook delivery is the real signed
+ * route, and the executor must stop before the second partner.
+ */
+async function h12FreezeMidTransfer() {
+  console.log('\n[H12] Batch frozen mid-transfer — refund lands between partners, executor stops');
+  await reset(); await seedTenantFunding();
+  const { batchId } = await seedBatchTwoPartners();
+
+  await runFundingCollector(db, { stripe });
+  let funded: HostedFundingBatchRow | undefined;
+  for (let i = 0; i < 36; i += 1) {
+    await runFundingCollector(db, { stripe }); // webhookless: the poll backstop confirms
+    funded = await batchRow(batchId);
+    if (funded?.status === 'funded' || funded?.status === 'transferring') break;
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+  if (!(funded?.status === 'funded' || funded?.status === 'transferring')) {
+    note(`batch never funded within 180s (status=${funded?.status}) — test-mode ACH did not settle; H12 not exercisable this run`);
+    return;
+  }
+  check('H12: batch funded with charge stamped', !!funded?.stripeChargeId, String(funded?.stripeChargeId));
+
+  const { runTransferExecutor } = await import('../src/funding/executor.js');
+  let transfersCreated = 0;
+  const refundMidway = {
+    ...stripe,
+    transfers: {
+      ...stripe.transfers,
+      create: async (p: Stripe.TransferCreateParams, o?: Stripe.RequestOptions) => {
+        const t = await stripe.transfers.create(p, o);
+        transfersCreated += 1;
+        if (transfersCreated === 1) {
+          // Between partner 1 and partner 2: refund the funding charge for
+          // REAL and deliver the genuine refunded charge through the
+          // signed webhook route — the freeze must land before the
+          // executor reads the batch for partner 2.
+          await stripe.refunds.create({ charge: funded!.stripeChargeId! });
+          const charge = await stripe.charges.retrieve(funded!.stripeChargeId!);
+          const status = await postSignedWebhook({
+            id: `evt_staging_${ulid()}`,
+            type: 'charge.refunded',
+            created: Math.floor(Date.now() / 1000),
+            data: { object: charge },
+          });
+          note(`charge.refunded webhook answered HTTP ${status}`);
+        }
+        return t;
+      },
+      list: stripe.transfers.list.bind(stripe.transfers),
+      retrieve: stripe.transfers.retrieve.bind(stripe.transfers),
+    },
+  } as unknown as Stripe;
+  await runTransferExecutor(db, { stripe: refundMidway });
+
+  const after = await batchRow(batchId);
+  check('H12: exactly ONE transfer left the batch', transfersCreated === 1, `got ${transfersCreated}`);
+  check('H12: batch frozen as funding_disputed', after?.status === 'funding_disputed', String(after?.status));
+  const intents = (await db(TABLES.HostedFundingTransfer).where({ batchId })) as Array<{
+    partnerId: string; state: string; stripeTransferId: string | null;
+  }>;
+  const posted = intents.filter((t) => t.stripeTransferId != null);
+  check('H12: at most one intent row carries a transfer', posted.length <= 1,
+    intents.map((t) => `${t.partnerId}:${t.state}`).join(','));
+  note(`intent rows after freeze: ${intents.map((t) => `${t.state}${t.stripeTransferId ? '(posted)' : ''}`).join(', ') || 'none'}`);
+}
+
 // --------------------------------------------------------------------- main
 
 async function main() {
@@ -510,11 +927,20 @@ async function main() {
   }
 
   console.log('Hosted funding races (runbook section H) — REAL Stripe test mode');
-  await h1AmbiguousCreate();
-  await h5ReleaseWithUnstampedPi();
-  await h5bEmptySearchHolds();
-  await h6SearchDown();
-  await h7h8h9Inbox();
+  // STAGING_SCENARIOS=h2,h12 runs a subset; default runs everything.
+  const only = (process.env.STAGING_SCENARIOS ?? '')
+    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const want = (name: string) => only.length === 0 || only.includes(name);
+  if (want('h1')) await h1AmbiguousCreate();
+  if (want('h2')) await h2PastWindowSearchOnly();
+  if (want('h3')) await h3CreateFailsWithIntent();
+  if (want('h4')) await h4ReleaseVsInflightCreate();
+  if (want('h5')) await h5ReleaseWithUnstampedPi();
+  if (want('h5b')) await h5bEmptySearchHolds();
+  if (want('h6')) await h6SearchDown();
+  if (want('h7')) await h7h8h9Inbox();
+  if (want('h10')) await h10ReleaseStoppedHalfwayResumes();
+  if (want('h12')) await h12FreezeMidTransfer();
 
   console.log(`\n================ ${pass} passed, ${fail} failed ================`);
   if (failures.length) { console.log('Failures:'); for (const f of failures) console.log(`  - ${f}`); }
