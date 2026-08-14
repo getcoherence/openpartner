@@ -219,6 +219,27 @@ export function tenantOf(req: Request): { db: Knex; tenantId: string } {
 }
 
 /**
+ * Run `fn` inside a fresh appDb transaction with `app.tenant_id` pinned —
+ * the same RLS scoping the request middleware installs, for code that
+ * needs a transaction of its own instead of the request's.
+ *
+ * Two callers need exactly this:
+ *   - the scheduler, which has no request to borrow a transaction from;
+ *   - anything that must COMMIT before touching the outside world (the
+ *     payout planner: money must never move inside a transaction that can
+ *     still roll back — audit #10).
+ */
+export async function withTenantTransaction<T>(
+  tenantId: string,
+  fn: (trx: Knex.Transaction) => Promise<T>,
+): Promise<T> {
+  return appDb.transaction(async (trx) => {
+    await trx.raw(`set local app.tenant_id = '${tenantId.replace(/'/g, "''")}'`);
+    return fn(trx);
+  });
+}
+
+/**
  * Express middleware that:
  *   1. Resolves the tenantId for the request
  *   2. Opens a transaction on the appDb pool

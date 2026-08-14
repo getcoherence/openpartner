@@ -75,6 +75,9 @@ const TABLES_TO_CLEAN = [
   TABLES.Click,
   TABLES.Link,
   TABLES.Program,
+  // Before Partner — Payout.partnerId is an FK. Commission is already
+  // deleted above, which is what frees Payout.
+  TABLES.Payout,
   TABLES.Partner,
   TABLES.Config,
 ];
@@ -616,7 +619,6 @@ describe.skipIf(skipIntegration)('stripe webhook — partial refund stopgap', ()
   });
 });
 
-
 // --------------------------------------------------------------------------
 // Tenant billing lifecycle: the brand's OWN subscription to OpenPartner.
 // Guards + ops notifications added after the Jul 2026 missed-cancellation
@@ -1012,5 +1014,404 @@ describe.skipIf(skipIntegration)('stripe webhook — tenant billing lifecycle', 
     const event = await db(TABLES.Event).where({ type: 'invoice_payment_failed' }).first();
     expect(event).toBeTruthy();
     expect(sentMail).toHaveLength(0);
+  });
+});
+
+describe.skipIf(skipIntegration)('round-6: a reversal that beats finalization', () => {
+  // The executor posts a transfer and only writes `stripeTransferId` when
+  // it finalizes. A reversal landing in that gap used to match nothing,
+  // get logged "unmatched" and ACKNOWLEDGED — so the only reversal event
+  // was consumed, and the executor then wrote `paid` from a create
+  // response that still said reversed:false. Money back, ledger says paid.
+  //
+  // Driven through the real HTTP route, not the handler, so a regression
+  // in routing or acknowledgement is caught too.
+  async function seedPostedPayout(generation = 0) {
+    const partnerId = ulid();
+    await db(TABLES.Partner).insert({
+      id: partnerId,
+      tenantId: DEFAULT_TENANT_ID,
+      name: 'Reversal partner',
+      email: `rev-${partnerId}@example.com`,
+      stripeConnectAccountId: `acct_${partnerId.slice(0, 10)}`,
+    });
+    const payoutId = ulid();
+    await db(TABLES.Payout).insert({
+      id: payoutId,
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId,
+      amount: '50.00',
+      currency: 'USD',
+      status: 'pending',
+      method: 'stripe_connect',
+      metadata: {
+        transferState: 'posted',
+        postedAt: new Date().toISOString(),
+        keyGeneration: generation,
+        attempts: 1,
+      },
+    });
+    return { partnerId, payoutId };
+  }
+
+  function reversalEvent(payoutId: string, transferId: string, generation = '0') {
+    return {
+      id: `evt_${ulid()}`,
+      type: 'transfer.reversed',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: transferId,
+          object: 'transfer',
+          amount: 5000,
+          currency: 'usd',
+          reversed: true,
+          transfer_group: payoutId,
+          metadata: {
+            openpartner_payout_id: payoutId,
+            openpartner_key_generation: generation,
+          },
+        },
+      },
+    };
+  }
+
+  it('is recorded against the payout even though stripeTransferId is not stamped yet', async () => {
+    const { payoutId } = await seedPostedPayout(0);
+    const res = await postWebhook(reversalEvent(payoutId, 'tr_reversed_early', '0'));
+    expect(res.status).toBe(200);
+
+    const payout = await db(TABLES.Payout).where({ id: payoutId }).first();
+    expect(payout!.status).toBe('failed');
+    expect(payout!.stripeTransferId).toBe('tr_reversed_early');
+    expect((payout!.metadata as { transferState?: string }).transferState).toBe('confirmed');
+    expect((payout!.metadata as { lastError?: string }).lastError).toContain('reversed_before_finalize');
+  });
+
+  it('does not touch a payout on a DIFFERENT key generation', async () => {
+    // A reversal of a superseded attempt must not fail the live one.
+    const { payoutId } = await seedPostedPayout(1);
+    const res = await postWebhook(reversalEvent(payoutId, 'tr_from_gen0', '0'));
+    expect(res.status).toBe(200);
+
+    const payout = await db(TABLES.Payout).where({ id: payoutId }).first();
+    expect(payout!.status).toBe('pending');
+    expect(payout!.stripeTransferId).toBeNull();
+    expect((payout!.metadata as { transferState?: string }).transferState).toBe('posted');
+  });
+
+  it('leaves an already-finalized payout to the normal stripeTransferId path', async () => {
+    const { payoutId } = await seedPostedPayout(0);
+    await db(TABLES.Payout).where({ id: payoutId }).update({
+      stripeTransferId: 'tr_already_known',
+      status: 'paid',
+    });
+    const res = await postWebhook(reversalEvent(payoutId, 'tr_already_known', '0'));
+    expect(res.status).toBe(200);
+
+    const payout = await db(TABLES.Payout).where({ id: payoutId }).first();
+    expect(payout!.status).toBe('failed');
+    expect(payout!.stripeTransferId).toBe('tr_already_known');
+  });
+});
+
+describe.skipIf(skipIntegration)('round-9: reversal activity on a duplicate_review payout', () => {
+  // duplicate_review is parked for a HUMAN, and round 9 found the webhook
+  // dropped reversals landing there as "unmatched" — consumed and gone.
+  // The operator resolving the review had validated against a pre-reversal
+  // listing, so the reversed transfer got recorded as the kept one, paid.
+  // The webhook now RECORDS the reversal on the review (without claiming
+  // or terminalizing anything — other transfers may still hold money) and
+  // moves duplicateReviewNonce so an in-flight resolution loses its fenced
+  // CAS. Revert the recording branch and every test here sees the event
+  // fall through to "unmatched" with the metadata untouched.
+
+  async function seedDuplicateReviewPayout(generation = 0) {
+    const partnerId = ulid();
+    await db(TABLES.Partner).insert({
+      id: partnerId,
+      tenantId: DEFAULT_TENANT_ID,
+      name: 'Dup partner',
+      email: `dup-${partnerId}@example.com`,
+      stripeConnectAccountId: `acct_${partnerId.slice(0, 10)}`,
+    });
+    const payoutId = ulid();
+    await db(TABLES.Payout).insert({
+      id: payoutId,
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId,
+      amount: '50.00',
+      currency: 'USD',
+      status: 'failed',
+      method: 'stripe_connect',
+      metadata: {
+        transferState: 'duplicate_review',
+        keyGeneration: generation,
+        lastError: 'duplicate_transfers:tr_a, tr_b',
+      },
+    });
+    return payoutId;
+  }
+
+  function transferEvent(
+    payoutId: string,
+    transferId: string,
+    opts: { type?: string; reversed?: boolean; amountReversed?: number; generation?: string; noMetadata?: boolean } = {},
+  ) {
+    return {
+      id: `evt_${ulid()}`,
+      type: opts.type ?? 'transfer.reversed',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: transferId,
+          object: 'transfer',
+          amount: 5000,
+          amount_reversed: opts.amountReversed ?? 5000,
+          currency: 'usd',
+          reversed: opts.reversed ?? true,
+          transfer_group: payoutId,
+          metadata: opts.noMetadata
+            ? {}
+            : {
+                openpartner_payout_id: payoutId,
+                openpartner_key_generation: opts.generation ?? '0',
+              },
+        },
+      },
+    };
+  }
+
+  async function reviewMeta(payoutId: string) {
+    const payout = await db(TABLES.Payout).where({ id: payoutId }).first();
+    return payout!.metadata as {
+      transferState?: string;
+      duplicateReviewNonce?: string;
+      reversedTransferIds?: string[];
+    };
+  }
+
+  it('a full reversal is RECORDED on the review, not dropped as unmatched', async () => {
+    const payoutId = await seedDuplicateReviewPayout();
+    const event = transferEvent(payoutId, 'tr_a');
+    const res = await postWebhook(event);
+    expect(res.status).toBe(200);
+
+    const payout = await db(TABLES.Payout).where({ id: payoutId }).first();
+    // Still parked, still failed, nothing claimed or terminalized —
+    // other transfers in the group may still hold money.
+    expect(payout!.status).toBe('failed');
+    expect(payout!.stripeTransferId).toBeNull();
+    const meta = await reviewMeta(payoutId);
+    expect(meta.transferState).toBe('duplicate_review');
+    // The nonce is a FRESH value (never the event id — see the ABA test
+    // below): any resolution that read the row before this delivery now
+    // fails its fenced CAS and must re-verify.
+    expect(typeof meta.duplicateReviewNonce).toBe('string');
+    expect(meta.duplicateReviewNonce).not.toBe(event.id);
+    expect(meta.reversedTransferIds).toEqual(['tr_a']);
+  });
+
+  it('a PARTIAL reversal (transfer.updated, reversed:false) is recorded too', async () => {
+    // Partials arrive as transfer.updated with `reversed` still false. A
+    // partially-reversed transfer can no longer be the kept one, so the
+    // review must move for it just the same.
+    const payoutId = await seedDuplicateReviewPayout();
+    const event = transferEvent(payoutId, 'tr_b', {
+      type: 'transfer.updated',
+      reversed: false,
+      amountReversed: 1000,
+    });
+    const res = await postWebhook(event);
+    expect(res.status).toBe(200);
+
+    const meta = await reviewMeta(payoutId);
+    expect(meta.transferState).toBe('duplicate_review');
+    expect(typeof meta.duplicateReviewNonce).toBe('string');
+    expect(meta.reversedTransferIds).toEqual(['tr_b']);
+  });
+
+  it('records regardless of key generation, and accumulates ids without duplicates', async () => {
+    // A duplicate group spans generations by construction — the fallback's
+    // generation fence deliberately does not apply here.
+    const payoutId = await seedDuplicateReviewPayout(1);
+    const first = transferEvent(payoutId, 'tr_gen0', { generation: '0' });
+    expect((await postWebhook(first)).status).toBe(200);
+    // Redelivery of the same transfer id must not duplicate the entry.
+    expect((await postWebhook(transferEvent(payoutId, 'tr_gen0', { generation: '0' }))).status).toBe(200);
+    const second = transferEvent(payoutId, 'tr_gen1', { generation: '1' });
+    expect((await postWebhook(second)).status).toBe(200);
+
+    const meta = await reviewMeta(payoutId);
+    expect(meta.reversedTransferIds).toEqual(['tr_gen0', 'tr_gen1']);
+  });
+
+  it('REDELIVERY of an old event can never restore an old nonce (ABA)', async () => {
+    // Connect events return before the event-id dedupe, so Stripe CAN
+    // redeliver an already-recorded event after a newer one. When the
+    // nonce was the event id, that redelivery wrote the OLD id back — and
+    // a resolution fenced on it then committed against a listing that
+    // predates the newer reversal, recording a reversed transfer as kept
+    // and paid (round 10). The nonce is a fresh ulid per write now, so no
+    // observed value can ever come back.
+    const payoutId = await seedDuplicateReviewPayout();
+    const e1 = transferEvent(payoutId, 'tr_a');
+    expect((await postWebhook(e1)).status).toBe(200);
+    const nonceAfterE1 = (await reviewMeta(payoutId)).duplicateReviewNonce;
+    expect(typeof nonceAfterE1).toBe('string');
+
+    const e2 = transferEvent(payoutId, 'tr_b');
+    expect((await postWebhook(e2)).status).toBe(200);
+    const nonceAfterE2 = (await reviewMeta(payoutId)).duplicateReviewNonce;
+    expect(nonceAfterE2).not.toBe(nonceAfterE1);
+
+    // The EXACT same first event again — same event id, same payload.
+    expect((await postWebhook(e1)).status).toBe(200);
+    const nonceAfterReplay = (await reviewMeta(payoutId)).duplicateReviewNonce;
+    // Whatever it is now, it is NOT the value a stale resolution observed.
+    expect(nonceAfterReplay).not.toBe(nonceAfterE1);
+    // And the id ledger did not grow a duplicate.
+    expect((await reviewMeta(payoutId)).reversedTransferIds).toEqual(['tr_a', 'tr_b']);
+  });
+
+  it('finds the payout through transfer_group when metadata was cleared', async () => {
+    // metadata is mutable at Stripe; transfer_group is not. A reversal on
+    // a cleared-metadata transfer must still reach the review (round 9).
+    const payoutId = await seedDuplicateReviewPayout();
+    const event = transferEvent(payoutId, 'tr_cleared', { noMetadata: true });
+    const res = await postWebhook(event);
+    expect(res.status).toBe(200);
+
+    const meta = await reviewMeta(payoutId);
+    expect(typeof meta.duplicateReviewNonce).toBe('string');
+    expect(meta.reversedTransferIds).toEqual(['tr_cleared']);
+  });
+
+  it('a FORGED payout-id stamp cannot redirect a reversal away from its group', async () => {
+    // Round 10: identity resolution preferred the mutable metadata stamp
+    // over the immutable transfer_group, so pointing
+    // openpartner_payout_id at a bogus id sent the event to "unresolved
+    // tenant", acknowledged 2xx and lost. transfer_group wins now.
+    const payoutId = await seedDuplicateReviewPayout();
+    const event = transferEvent(payoutId, 'tr_forged_stamp');
+    (event.data.object.metadata as Record<string, string>).openpartner_payout_id =
+      '01BOGUSBOGUSBOGUSBOGUSBOGU';
+    const res = await postWebhook(event);
+    expect(res.status).toBe(200);
+
+    const meta = await reviewMeta(payoutId);
+    expect(meta.reversedTransferIds).toEqual(['tr_forged_stamp']);
+  });
+
+  it('a PARTIAL reversal on the recorded transfer never rewrites status', async () => {
+    // transfer.updated arrives with reversed:false and amount_reversed>0.
+    // The exact-id write used to run `status: 'paid'` on it — flipping
+    // even a FAILED payout back to paid on a $10 clawback (round 10).
+    // Partials have no ledger representation on this rail yet, so the
+    // rule is: never overwrite status on one.
+    const partnerId = ulid();
+    await db(TABLES.Partner).insert({
+      id: partnerId,
+      tenantId: DEFAULT_TENANT_ID,
+      name: 'Partial partner',
+      email: `part-${partnerId}@example.com`,
+      stripeConnectAccountId: `acct_${partnerId.slice(0, 10)}`,
+    });
+    const payoutId = ulid();
+    await db(TABLES.Payout).insert({
+      id: payoutId,
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId,
+      amount: '50.00',
+      currency: 'USD',
+      status: 'failed', // a reversal was already recorded
+      method: 'stripe_connect',
+      stripeTransferId: 'tr_partially_clawed',
+      metadata: { transferState: 'confirmed', keyGeneration: 0 },
+    });
+
+    const event = transferEvent(payoutId, 'tr_partially_clawed', {
+      type: 'transfer.updated',
+      reversed: false,
+      amountReversed: 1000,
+    });
+    const res = await postWebhook(event);
+    expect(res.status).toBe(200);
+
+    const payout = await db(TABLES.Payout).where({ id: payoutId }).first();
+    expect(payout!.status).toBe('failed'); // NOT flipped back to paid
+  });
+
+  it('transfer.created for a payout no longer expecting one raises the orphan alert', async () => {
+    // The detector behind the prove-absence limit: an operator disposed a
+    // held intent on an empty listing, and the unbounded in-flight POST
+    // then landed. Stripe tells us via transfer.created — the ledger says
+    // canceled, so this transfer is money moved outside it. No state is
+    // written; the alert is the point.
+    const partnerId = ulid();
+    await db(TABLES.Partner).insert({
+      id: partnerId,
+      tenantId: DEFAULT_TENANT_ID,
+      name: 'Orphan partner',
+      email: `orph-${partnerId}@example.com`,
+      stripeConnectAccountId: `acct_${partnerId.slice(0, 10)}`,
+    });
+    const payoutId = ulid();
+    await db(TABLES.Payout).insert({
+      id: payoutId,
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId,
+      amount: '50.00',
+      currency: 'USD',
+      status: 'failed',
+      method: 'stripe_connect',
+      metadata: { transferState: 'canceled', lastError: 'operator_dispose:keith:oops' },
+    });
+
+    const event = {
+      id: `evt_${ulid()}`,
+      type: 'transfer.created',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: 'tr_late_landing',
+          object: 'transfer',
+          amount: 5000,
+          amount_reversed: 0,
+          currency: 'usd',
+          reversed: false,
+          transfer_group: payoutId,
+          metadata: {},
+        },
+      },
+    };
+    const res = await postWebhook(event);
+    expect(res.status).toBe(200);
+    expect(res.body.connect).toBe('transfer_created_orphan');
+
+    // Detector only — nothing was mutated.
+    const payout = await db(TABLES.Payout).where({ id: payoutId }).first();
+    expect(payout!.status).toBe('failed');
+    expect((payout!.metadata as { transferState?: string }).transferState).toBe('canceled');
+
+    // An expected creation (posted intent, nothing stamped) stays quiet.
+    const postedId = ulid();
+    await db(TABLES.Payout).insert({
+      id: postedId,
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId,
+      amount: '50.00',
+      currency: 'USD',
+      status: 'pending',
+      method: 'stripe_connect',
+      metadata: { transferState: 'posted', keyGeneration: 0 },
+    });
+    const benign = { ...event, id: `evt_${ulid()}` };
+    benign.data = {
+      object: { ...event.data.object, id: 'tr_expected', transfer_group: postedId },
+    };
+    const res2 = await postWebhook(benign);
+    expect(res2.status).toBe(200);
+    expect(res2.body.connect).toBe('transfer_created_observed');
   });
 });

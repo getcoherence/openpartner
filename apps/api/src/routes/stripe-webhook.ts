@@ -26,7 +26,7 @@ import { applyWhiteLabelFromSubscription, subscriptionHasWhiteLabel, whiteLabelP
 import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
 import { handleFundingEvent, InboxEventHeldError } from '../funding/webhook.js';
 import { mirrorHostedBillingState, type MirroredSubscriptionStatus } from '../billing-plan.js';
-import { interlockCommissionReversal } from '../funding/interlocks.js';
+import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
 
 const stripeKey = process.env.STRIPE_SECRET_KEY;
 
@@ -319,10 +319,18 @@ async function resolveTenantForEvent(event: Stripe.Event, family: SecretFamily):
         .first(['tenantId']);
       return linked?.tenantId ?? null;
     }
+    case 'transfer.created':
     case 'transfer.updated':
     case 'transfer.reversed': {
       const transfer = event.data.object as Stripe.Transfer;
-      const payoutId = transfer.metadata?.openpartner_payout_id;
+      // transfer_group FIRST, metadata as the legacy fallback (round 10).
+      // The group is set at creation, immutable, and stamped with the
+      // payout ULID; metadata is mutable, so preferring it let a FORGED
+      // openpartner_payout_id redirect an event away from its real payout
+      // into "unresolved tenant", acknowledged 2xx and lost. A group value
+      // that is not one of our payout ids simply finds no row and the
+      // event is skipped.
+      const payoutId = transfer.transfer_group ?? transfer.metadata?.openpartner_payout_id;
       if (!payoutId) return null;
       const row = await db<PayoutRow>(TABLES.Payout).where({ id: payoutId }).first(['tenantId']);
       return row?.tenantId ?? null;
@@ -594,16 +602,202 @@ async function handleConnectEvent(
       const outcome = await notifyTenantInvoicePaymentFailed(trx, tenantId, invoice);
       return `tenant_invoice_payment_failed_${outcome}`;
     }
+    case 'transfer.created': {
+      // DETECTOR ONLY — no state is written. This closes the observation
+      // gap behind the prove-absence limit (round 10): an operator action
+      // taken on an empty listing (dispose, all-reversed resolution) is a
+      // documented risk decision precisely because an unbounded in-flight
+      // POST can still land afterwards. When it does, Stripe tells us —
+      // this is where we listen. A transfer arriving for a payout that is
+      // no longer expecting one is money moved outside the ledger, and it
+      // must be LOUD; disposition stays with a human.
+      const transfer = event.data.object as Stripe.Transfer;
+      const payoutId = transfer.transfer_group ?? transfer.metadata?.openpartner_payout_id;
+      if (!payoutId) return null;
+      const payout = (await trx<PayoutRow>(TABLES.Payout)
+        .where({ id: payoutId })
+        .first()) as PayoutRow | undefined;
+      if (!payout) return null;
+      const state = (payout.metadata as { transferState?: string } | null)?.transferState;
+      const benign =
+        (state === 'posted' || state === 'reconcile_required' || state === 'intent') &&
+        payout.stripeTransferId == null;
+      if (benign || payout.stripeTransferId === transfer.id) {
+        return 'transfer_created_observed';
+      }
+      console.error(
+        `[payouts] ALERT: transfer ${transfer.id} was CREATED for payout ${payoutId} which is ${state ?? 'unknown'}/${payout.status} on transfer ${payout.stripeTransferId ?? 'none'} — money moved outside the ledger (a late POST landing after a disposition?); operator reconciliation required`,
+      );
+      return 'transfer_created_orphan';
+    }
     case 'transfer.updated':
     case 'transfer.reversed': {
       const transfer = event.data.object as Stripe.Transfer;
-      const payoutId = transfer.metadata?.openpartner_payout_id;
+      // transfer_group FIRST (round 10): it is immutable and stamped with
+      // the payout ULID at creation. Preferring the MUTABLE metadata stamp
+      // let a forged openpartner_payout_id redirect a reversal away from
+      // its real payout. Metadata remains only as the fallback for
+      // group-less transfers.
+      const payoutId = transfer.transfer_group ?? transfer.metadata?.openpartner_payout_id;
       if (!payoutId) return null;
       const reversed = event.type === 'transfer.reversed' || (transfer.reversed ?? false);
-      await trx<PayoutRow>(TABLES.Payout).where({ id: payoutId }).update({
-        status: reversed ? 'failed' : 'paid',
-        completedAt: reversed ? null : new Date(),
-      });
+      const partialOnly = !reversed && Number(transfer.amount_reversed ?? 0) > 0;
+
+      // Serialize this whole decision against the executor's finalization.
+      //
+      // Round 7: the exact-id match and the metadata fallback below are two
+      // statements, and the executor commits its finalization in its OWN
+      // transaction. Without this lock the executor could stamp
+      // `stripeTransferId` BETWEEN them — the first match missed because the
+      // id was still null, the fallback then missed because it requires the
+      // id to be null, and the event fell through to "unmatched" and was
+      // acknowledged 2xx. A reversed transfer, a payout recorded paid, and
+      // no second chance: exactly the hole the fallback was added to close,
+      // reintroduced one statement later.
+      //
+      // Taking the row lock first means we either see the pre-finalization
+      // state (and the fallback applies) or the post-finalization state (and
+      // the exact-id match applies). There is no longer an in-between.
+      const locked = (await trx<PayoutRow>(TABLES.Payout)
+        .where({ id: payoutId })
+        .forUpdate()
+        .first()) as PayoutRow | undefined;
+
+      // A PARTIAL reversal on the recorded transfer must never re-assert
+      // `paid` (round 10): `transfer.updated` arrives with `reversed`
+      // still false and a non-zero amount_reversed, and the write below
+      // used to flip even a `failed` payout back to paid on it. Partial
+      // reversals have no ledger representation on this rail yet
+      // (documented gap) — so the rule is: never OVERWRITE status on one.
+      // Say so loudly and leave the row exactly as it is.
+      if (partialOnly && locked?.stripeTransferId === transfer.id) {
+        console.error(
+          `[payouts] ALERT: transfer ${transfer.id} on payout ${payoutId} is PARTIALLY reversed (${transfer.amount_reversed}/${transfer.amount}) — status left ${locked.status}; partial reversals need operator disposition on this rail`,
+        );
+        return 'transfer_partial_reversal_unrecorded';
+      }
+
+      // Apply ONLY to the transfer this payout actually recorded. A payout
+      // can have several transfers in its group across key generations
+      // (payout-transfers.ts) — without this, a reversal of a superseded
+      // attempt would mark the CURRENT, legitimately paid payout failed,
+      // and a stale `transfer.updated` could mark a pending one paid.
+      const updated = partialOnly
+        ? 0
+        : await trx<PayoutRow>(TABLES.Payout)
+            .where({ id: payoutId, stripeTransferId: transfer.id })
+            .update({
+              status: reversed ? 'failed' : 'paid',
+              completedAt: reversed ? null : new Date(),
+            });
+      if (updated === 0 && reversed) {
+        // NOT YET STAMPED is a different case from NOT OURS, and
+        // collapsing them lost reversals (round-6 review).
+        //
+        // The executor posts the transfer and only writes
+        // `stripeTransferId` when it finalizes. A reversal landing in that
+        // gap matched nothing, was logged as "unmatched", and the event
+        // was acknowledged — so the reversal was gone, and the executor
+        // then recorded the payout `paid` from a create response that
+        // still said `reversed: false`.
+        //
+        // The transfer carries what we need to identify it without the id:
+        // `openpartner_payout_id` and `openpartner_key_generation` are
+        // stamped at creation and are immutable. Match on those, fenced on
+        // the generation, and terminalize the intent so the executor's
+        // finalize CAS loses rather than overwriting this with `paid`.
+        const stampedGeneration = transfer.metadata?.openpartner_key_generation ?? '0';
+        const claimed = await trx<PayoutRow>(TABLES.Payout)
+          .where({ id: payoutId })
+          .whereNull('stripeTransferId')
+          .whereRaw(`coalesce("metadata"->>'keyGeneration', '0') = ?`, [stampedGeneration])
+          .whereRaw(`("metadata"->>'transferState') in ('posted','reconcile_required')`)
+          .update({
+            status: 'failed',
+            completedAt: null,
+            stripeTransferId: transfer.id,
+            metadata: trx.raw(
+              `"metadata" || ?::jsonb`,
+              [JSON.stringify({ transferState: 'confirmed', lastError: `reversed_before_finalize:${transfer.id}` })],
+            ),
+          });
+        if (claimed > 0) {
+          console.error(
+            `[payouts] transfer ${transfer.id} was reversed before payout ${payoutId} finalized — recorded failed from metadata; its commissions stay claimed for operator disposition`,
+          );
+          return 'transfer_reversed_before_finalize';
+        }
+      }
+      // A payout parked in `duplicate_review` is a HUMAN's problem, and
+      // this event changes what that human is looking at. Claiming or
+      // terminalizing here would be wrong — other transfers in the group
+      // may still hold money — but dropping the event as "unmatched" is
+      // worse (round 9): the only reversal notification gets consumed
+      // while an operator mid-resolution validates against a pre-reversal
+      // listing, then records the reversed transfer as the kept one,
+      // paid, with the money gone. So RECORD it and move the review
+      // nonce; `resolveDuplicateReview` fences its commit on the nonce it
+      // observed, so any resolution validated before this write loses its
+      // CAS and must re-look.
+      //
+      // Two deliberate widenings relative to the fallback above: no
+      // key-generation fence (a duplicate group spans generations by
+      // construction, and every member's reversal is relevant to the
+      // review), and PARTIAL reversals count — they arrive as
+      // transfer.updated with `reversed` still false but a non-zero
+      // amount_reversed, and a partially-reversed transfer can no longer
+      // be the kept one.
+      const reversalActivity = reversed || Number(transfer.amount_reversed ?? 0) > 0;
+      if (updated === 0 && reversalActivity) {
+        const lockedMeta = (locked?.metadata ?? {}) as {
+          transferState?: string;
+          reversedTransferIds?: unknown;
+        };
+        if (lockedMeta.transferState === 'duplicate_review') {
+          // We hold the row lock, so this read-modify-write cannot race
+          // another delivery; the state predicate below is belt-and-braces.
+          const seen = Array.isArray(lockedMeta.reversedTransferIds)
+            ? (lockedMeta.reversedTransferIds as unknown[]).filter(
+                (v): v is string => typeof v === 'string',
+              )
+            : [];
+          const reversedIds = seen.includes(transfer.id) ? seen : [...seen, transfer.id];
+          // The nonce is a FRESH ulid, never the event id (round 10).
+          // Connect events return before the event-id dedupe, so Stripe
+          // REDELIVERING an old event would write its id back — an ABA
+          // that let a resolution fenced on the older value commit against
+          // a listing that predates a newer reversal. A value that never
+          // repeats cannot be restored; a redelivery just forces one more
+          // (cheap) re-verification.
+          const recorded = await trx(TABLES.Payout)
+            .where({ id: payoutId })
+            .whereRaw(`("metadata"->>'transferState') = 'duplicate_review'`)
+            .update({
+              metadata: trx.raw(`"metadata" || ?::jsonb`, [
+                JSON.stringify({
+                  duplicateReviewNonce: ulid(),
+                  reversedTransferIds: reversedIds,
+                }),
+              ]),
+            });
+          if (recorded > 0) {
+            console.error(
+              `[payouts] transfer ${transfer.id} saw reversal activity while payout ${payoutId} sits in duplicate_review — recorded on the review; any in-flight operator resolution re-verifies`,
+            );
+            return 'transfer_reversal_in_duplicate_review';
+          }
+        }
+      }
+      if (updated === 0) {
+        // Either we never recorded this transfer, or the payout is on a
+        // different one. Both mean a transfer exists that our ledger does
+        // not own — exactly the state the executor's duplicate detection
+        // is for, and worth saying out loud when it's a reversal.
+        console.error(
+          `[payouts] ${event.type} for transfer ${transfer.id} does not match the transfer recorded on payout ${payoutId} — not applied; check for duplicate transfers`,
+        );
+        return `${event.type.replace('.', '_')}_unmatched`;
+      }
       return reversed ? 'transfer_reversed' : 'transfer_updated';
     }
     default:
@@ -829,12 +1023,20 @@ async function reverseCommissionsForInvoice(
     );
   }
 
-  const reversed = interlock.flippable.length === 0
-    ? 0
-    : await trx<CommissionRow>(TABLES.Commission)
-        .whereIn('id', interlock.flippable)
-        .whereIn('status', ['accrued', 'approved'])
-        .update({ status: 'reversed' });
+  // Same check/use gap as the admin route: the interlock read and this
+  // flip are separate statements, so re-assert the direct-rail guard
+  // inside the UPDATE (a payout intent can claim a commission in between).
+  const reversedRows = interlock.flippable.length === 0
+    ? []
+    : ((await whereNotClaimedByOpenIntent(
+        trx,
+        trx<CommissionRow>(TABLES.Commission)
+          .whereIn(`${TABLES.Commission}.id`, interlock.flippable)
+          .whereIn('status', ['accrued', 'approved']),
+      )
+        .update({ status: 'reversed' })
+        .returning('id')) as Array<{ id: string }>);
+  const reversed = reversedRows.length;
 
   const alreadyPaidRow = (await trx<CommissionRow>(TABLES.Commission)
     .whereIn('attributionId', attributionIds)
@@ -843,7 +1045,58 @@ async function reverseCommissionsForInvoice(
     .first()) as { c: string | number } | undefined;
   const alreadyPaid = Number(alreadyPaidRow?.c ?? 0);
 
-  return { reversed, alreadyPaid, heldInTransfer: interlock.held.length };
+  // Commissions the guarded UPDATE refused because a payout intent
+  // claimed them AFTER the interlock read. They are neither reversed nor
+  // counted as held by the interlock, so without this they vanished from
+  // the report entirely: the refund looked fully handled while a
+  // commission for refunded revenue stayed payable.
+  // Anything in `flippable` the UPDATE didn't take. Do NOT assume why:
+  // a concurrent actor may have paid it, another refund may have already
+  // reversed it, or a payout intent may have claimed it. Counting them
+  // all as "held" produced false alerts and double-counted rows that were
+  // also reported as alreadyPaid.
+  const reversedIds = new Set(reversedRows.map((r) => r.id));
+  const missedIds = interlock.flippable.filter((id) => !reversedIds.has(id));
+  let lateHeld = 0;
+  let lateNewlyPaid = 0;
+  if (missedIds.length > 0) {
+    const missed = (await trx<CommissionRow>(TABLES.Commission)
+      .whereIn('id', missedIds)
+      .select('id', 'status', 'payoutId')) as Array<Pick<CommissionRow, 'id' | 'status' | 'payoutId'>>;
+    const stillPayable = missed.filter((c) => ['accrued', 'approved'].includes(c.status));
+    lateHeld = stillPayable.length;
+    if (lateHeld > 0) {
+      console.error(
+        `[funding] ALERT: invoice ${invoiceId} refund: ${lateHeld} commission(s) were claimed by a payout intent or a funding allocation while the reversal was in flight (${stillPayable
+          .map((c) => c.id)
+          .join(', ')}) — refunded revenue may still be paid out; operator action required`,
+      );
+    }
+    // A row that became `paid` between the alreadyPaid count and this
+    // read is in NEITHER total — it would vanish from the report while
+    // refunded revenue had just been paid out. Count it explicitly.
+    const paidLate = missed.filter((c) => c.status === 'paid').length;
+    if (paidLate > 0) {
+      lateNewlyPaid = paidLate;
+      console.error(
+        `[funding] ALERT: invoice ${invoiceId} refund: ${paidLate} commission(s) were PAID while the reversal was in flight — refunded revenue has left the platform; operator action required`,
+      );
+    }
+    const otherwiseMoved = missed.length - lateHeld - paidLate;
+    if (otherwiseMoved > 0) {
+      console.warn(
+        `[funding] invoice ${invoiceId} refund: ${otherwiseMoved} commission(s) were already reversed concurrently — not counted as held`,
+      );
+    }
+  }
+
+  return {
+    reversed,
+    // Includes rows that became paid between the two reads; leaving them
+    // out reported a cleanly-handled refund when money had just moved.
+    alreadyPaid: alreadyPaid + lateNewlyPaid,
+    heldInTransfer: interlock.held.length + lateHeld,
+  };
 }
 
 async function resolveUserIdFromCustomer(
