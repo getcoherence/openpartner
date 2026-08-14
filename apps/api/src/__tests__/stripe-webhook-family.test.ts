@@ -101,14 +101,19 @@ describe.skipIf(skipIntegration)('stripe webhook — secret-family enforcement',
 
   it('treats transfer.* as PLATFORM family (platform secret passes, connect secret rejects)', async () => {
     // We create Connect transfers with the platform key, so transfer.* fire
-    // on the platform account and arrive on Destination A.
-    const onPlatform = await post(evt('transfer.reversed', { id: `tr_${ulid()}`, object: 'transfer', metadata: {} }), PLATFORM_SECRET);
-    expect(onPlatform.status).toBe(200);
-    expect(onPlatform.body.reason).not.toBe('secret_family_mismatch');
+    // on the platform account and arrive on Destination A. transfer.created
+    // (the round-10 orphan detector's feed) is included: leaving it out of
+    // the family map made it unconstrained, so a Connect-secret holder
+    // could feed the detector forged creations.
+    for (const type of ['transfer.created', 'transfer.reversed']) {
+      const onPlatform = await post(evt(type, { id: `tr_${ulid()}`, object: 'transfer', metadata: {} }), PLATFORM_SECRET);
+      expect(onPlatform.status).toBe(200);
+      expect(onPlatform.body.reason).not.toBe('secret_family_mismatch');
 
-    const onConnect = await post(evt('transfer.reversed', { id: `tr_${ulid()}`, object: 'transfer', metadata: {} }), CONNECT_SECRET);
-    expect(onConnect.status).toBe(200);
-    expect(onConnect.body.reason).toBe('secret_family_mismatch');
+      const onConnect = await post(evt(type, { id: `tr_${ulid()}`, object: 'transfer', metadata: {} }), CONNECT_SECRET);
+      expect(onConnect.status).toBe(200);
+      expect(onConnect.body.reason).toBe('secret_family_mismatch');
+    }
   });
 
   it('rejects a signature made with an unknown secret', async () => {

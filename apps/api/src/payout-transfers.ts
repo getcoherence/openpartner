@@ -1004,8 +1004,11 @@ export async function releaseIntentForRetry(
  * mutable metadata (round 9). Returns 'cannot_verify' when Stripe cannot
  * be read or the group is larger than the page budget: running out of
  * pages is not the same as finding nothing.
+ *
+ * Exported for the operator-recovery recheck pass (operator-recovery.ts),
+ * which re-lists a group after an absence-based disposition.
  */
-async function listTransferGroup(
+export async function listTransferGroup(
   stripe: Stripe,
   payoutId: string,
   logContext: string,

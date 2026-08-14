@@ -912,3 +912,45 @@ export interface CommissionAdjustmentRow {
   metadata: Record<string, unknown>;
   createdAt: Date;
 }
+
+export type OperatorRecoveryRail = 'direct_connect' | 'hosted_funding';
+export type OperatorRecoveryKind =
+  | 'release_intent_for_retry'
+  | 'dispose_intent'
+  | 'resolve_duplicate_review'
+  | 'force_release_batch';
+export type OperatorRecoveryStatus = 'pending' | 'applied' | 'refused' | 'failed' | 'canceled';
+
+/** OPERATIONAL SIDECAR (not exported — see docs/data-portability.md):
+ *  durable, auditable operator decisions on frozen money state. The apply
+ *  loop (apps/api/src/operator-recovery.ts) calls the existing operator
+ *  functions under their own fences; this row is the tombstone recording
+ *  who accepted which risk, when, on what evidence. Terminal rows are
+ *  never edited into a new decision — a new decision is a new row. */
+export interface OperatorRecoveryRequestRow {
+  id: string;
+  tenantId: string;
+  rail: OperatorRecoveryRail;
+  kind: OperatorRecoveryKind;
+  /** payoutId (direct_connect) or batchId (hosted_funding). */
+  targetId: string;
+  params: Record<string, unknown>;
+  requestedBy: string;
+  note: string | null;
+  status: OperatorRecoveryStatus;
+  /** The operator function's literal return value from the last attempt,
+   *  or an apply-loop verdict (tenant_mismatch / invalid_request / ...). */
+  outcome: string | null;
+  attempts: number;
+  nextAttemptAt: Date | null;
+  /** Claim lease — apply loop + recheck pass, token-fenced writes. */
+  leaseAt: Date | null;
+  leaseToken: string | null;
+  /** Post-apply transfer-group re-check (direct_connect kinds only). */
+  recheckDueAt: Date | null;
+  recheckAttempts: number;
+  recheckOutcome: string | null;
+  appliedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}

@@ -50,6 +50,7 @@ const TENANT_TABLES = [
   'NetworkOutbox',
   'Coupon',
   'PartnerCommission',
+  'OperatorRecoveryRequest',
 ];
 
 async function main(): Promise<void> {

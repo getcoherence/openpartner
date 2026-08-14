@@ -18,6 +18,7 @@ import { dashboardRouter } from './routes/dashboard.js';
 import { apiKeysRouter } from './routes/api-keys.js';
 import { connectRouter } from './routes/connect.js';
 import { payoutsRouter } from './routes/payouts.js';
+import { recoveryRouter } from './routes/recovery.js';
 import { commissionsRouter } from './routes/commissions.js';
 import { exportRouter } from './routes/export.js';
 import { importPartnersRouter } from './routes/import-partners.js';
@@ -260,6 +261,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(apiKeysRouter);
   app.use(connectRouter);
   app.use(payoutsRouter);
+  app.use(recoveryRouter);
   app.use(commissionsRouter);
   app.use(exportRouter);
   app.use(importPartnersRouter);

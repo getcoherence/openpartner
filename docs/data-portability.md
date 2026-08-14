@@ -207,6 +207,12 @@ is an FK to it) can't simply be added to the bundle.
   Exporting them needs an FK decision first:
   `HostedFundingAuthorization.adminId` references `Admin`, which is
   deliberately never exported.
+- `OperatorRecoveryRequest` — the operator-recovery decision ledger
+  (apps/api/src/operator-recovery.ts). Operational sidecar in the same
+  category: an auditable record of hosted/self-host *operations*, not of
+  the attribution or commission data itself. Its `requestedBy` carries
+  admin identity, so it inherits the same `Admin`-adjacent export
+  question as `HostedFundingAuthorization`.
 
 Until those land, an export is a complete record of **attribution, the
 commission ledger, and the payouts derived from it**. It is NOT a
