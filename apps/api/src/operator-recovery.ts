@@ -433,24 +433,46 @@ async function applyOne(
 }
 
 /** Does the target's operator-audit field carry THIS request's marker?
- *  The operator string every function stamps is `<requestedBy>/req_<id>`,
- *  truncated at 500 chars server-side — the id sits well inside that. */
+ *
+ *  ANCHORED at the start of the string, per kind, on purpose. The stamped
+ *  value is `operator_<action>:<requestedBy>/req_<id>[:<reason>]`, and the
+ *  REASON is operator-controlled free text that lands in the same string —
+ *  a bare `includes('req_<id>')` let a second request against the same
+ *  target embed another request's id in its reason and forge that
+ *  request's "my interrupted attempt applied it" verdict. The prefix up
+ *  through `/req_<id>` sits entirely BEFORE any attacker-influenced text
+ *  (requestedBy is derived from authentication, never typed), so a
+ *  startsWith match cannot be forged from the reason field. The 500-char
+ *  server-side truncation cuts only the reason tail, never the prefix. */
 async function targetCarriesOurMarker(
   db: Knex,
   request: OperatorRecoveryRequestRow,
 ): Promise<boolean> {
-  const marker = `req_${request.id}`;
+  const operator = `${request.requestedBy}/req_${request.id}`;
+  const prefixes: Record<OperatorRecoveryKind, string[]> = {
+    release_intent_for_retry: [`operator_rearm:${operator}`],
+    dispose_intent: [`operator_dispose:${operator}:`],
+    resolve_duplicate_review: [
+      `operator_kept_transfer:${operator}`,
+      `operator_all_reversed:${operator}`,
+    ],
+    force_release_batch: [`operator_force_release:${operator}:`],
+  };
+  const expected = prefixes[request.kind] ?? [];
   if (request.rail === 'direct_connect') {
     const payout = (await db<PayoutRow>(TABLES.Payout)
       .where({ id: request.targetId })
       .first()) as PayoutRow | undefined;
     const lastError = (payout?.metadata as { lastError?: string } | null)?.lastError;
-    return typeof lastError === 'string' && lastError.includes(marker);
+    return typeof lastError === 'string' && expected.some((p) => lastError.startsWith(p));
   }
   const batch = (await db<HostedFundingBatchRow>(TABLES.HostedFundingBatch)
     .where({ id: request.targetId })
     .first(['failureReason'])) as Pick<HostedFundingBatchRow, 'failureReason'> | undefined;
-  return typeof batch?.failureReason === 'string' && batch.failureReason.includes(marker);
+  return (
+    typeof batch?.failureReason === 'string' &&
+    expected.some((p) => batch.failureReason!.startsWith(p))
+  );
 }
 
 /** Terminal write, fenced on the claim token: only the claim holder may

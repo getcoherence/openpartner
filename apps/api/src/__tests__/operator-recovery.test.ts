@@ -556,6 +556,41 @@ describe.skipIf(skipIntegration)('applyRecoveryRequests — tenancy, pacing, fen
     expect(request.outcome).toBe('not_disposable:after_interrupted_attempt');
   });
 
+  it('a marker embedded in another request\'s REASON does not forge the applied verdict', async () => {
+    // The reason field is operator-controlled free text that lands in the
+    // same lastError string as the audit marker. If the marker check ever
+    // regresses to a substring match, this request's id smuggled inside
+    // someone else's reason would settle it 'applied' — the check must
+    // anchor on the string START, which only the real operator stamp of
+    // THIS request can produce.
+    const { payoutId } = await seedHeldIntent();
+    const requestId = await insertRequest({
+      kind: 'dispose_intent',
+      targetId: payoutId,
+      params: { reason: 'x' },
+    });
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        status: 'failed',
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({
+            transferState: 'canceled',
+            lastError: `operator_dispose:rogue@b.example/req_01SOMEOTHERREQUESTID99:see req_${requestId} for context`,
+          }),
+        ]),
+      });
+    await db(TABLES.OperatorRecoveryRequest)
+      .where({ id: requestId })
+      .update({ leaseAt: hoursAgo(2), leaseToken: 'dead-run', attempts: 1 });
+    const { stripe } = mockStripe({ listed: [] });
+
+    await applyRecoveryRequests(db, { rail: 'direct_connect', stripe });
+    const request = await requestOf(requestId);
+    expect(request.status).toBe('refused');
+    expect(request.outcome).toBe('not_disposable:after_interrupted_attempt');
+  });
+
   it('a poisoned attempts counter cannot abort the pass or starve other requests', async () => {
     // attempts at int4 max used to make the claim statement itself raise
     // (integer out of range) — outside every per-request catch, at the top
