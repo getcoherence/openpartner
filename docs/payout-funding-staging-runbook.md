@@ -193,7 +193,23 @@ stripe payment_intents search \
   --query "metadata['openpartner_funding_batch_id']:'<batchId>'"
 ```
 
-If that is genuinely empty:
+If that is genuinely empty, file a recovery request — **the supported
+path** (decision B, audit handoff §0.4): durable, auditable, admin-authed,
+tenant-scoped, applied by the funding collector tick under the function's
+own fences:
+
+```
+POST /funding/batches/:batchId/recovery
+  { "kind": "force_release_batch", "reason": "confirmed_no_pi", "note": "..." }
+
+GET /recovery-requests?targetId=<batchId>   — status + outcome history
+```
+
+The insert is the durable part; the response carries one inline apply's
+verdict. `too_recent` / `cannot_verify` answers leave the request
+`pending` and the 5-minute collector tick keeps retrying (capped, then
+`failed` + alert). The break-glass path when the API is unavailable is
+the function itself:
 
 ```ts
 import { forceReleaseBatch } from './funding/release.js';

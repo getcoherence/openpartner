@@ -167,11 +167,12 @@ duplicates still appear in Stripe's listing so the count never drops.
 The ledger is untouched, the payout is `failed`, and its commissions stay
 claimed so nothing can re-pay them.
 
-To dispose: reverse the surplus transfer(s) in Stripe, then call
-`resolveDuplicateReview` with what is now true — `{ keptTransferId }` if
-the partner keeps one transfer (the commissions ARE paid and are recorded
-against it), or `{ allReversed: true }` if every transfer was reversed
-(the commissions go back to the pool). **Never release the claims by
+To dispose: reverse the surplus transfer(s) in Stripe, then file a
+`resolve_duplicate_review` recovery request (see "Disposing of a HELD
+intent" below for the API) with what is now true — `{ keptTransferId }`
+if the partner keeps one transfer (the commissions ARE paid and are
+recorded against it), or `{ allReversed: true }` if every transfer was
+reversed (the commissions go back to the pool). **Never release the claims by
 hand "so the payout re-plans": if any transfer was kept, those
 commissions are already paid, and re-planning pays them a second time —
 that is the exact double-pay this function exists to prevent.** The
@@ -196,8 +197,34 @@ The commissions simply sit out of the payable pool until someone acts.
 
 **Disposing of a HELD intent.** An intent that reconciled to "nothing found"
 sits in `reconcile_required` forever by design — the executor will not
-authorise a new key on its own. There are two supported ways out, and both
-are code rather than hand-written SQL:
+authorise a new key on its own.
+
+**The supported way out is the operator-recovery API** (decision B,
+audit handoff §0.4) — durable, auditable, admin-authed, tenant-scoped:
+
+```
+POST /payouts/:payoutId/recovery
+  { "kind": "release_intent_for_retry", "observedGeneration": 0, "note": "..." }
+  { "kind": "dispose_intent",           "reason": "confirmed_no_transfer" }
+  { "kind": "resolve_duplicate_review", "keptTransferId": "tr_..." }
+  { "kind": "resolve_duplicate_review", "allReversed": true }
+
+GET /recovery-requests?targetId=<payoutId>   — status + outcome history
+```
+
+The insert is the durable part; the response carries one inline apply's
+verdict. A retryable answer (`cannot_verify`, `review_moved`,
+`too_recent`) leaves the request `pending` and the 15-minute executor
+tick keeps retrying (capped, then `failed` + alert) — your 2am decision
+is on the record either way, and the request row is the audit tombstone:
+who accepted which risk, when, on what evidence. Outcome literals are
+exactly the function returns documented below. An applied absence-based
+request also schedules a 24-hour transfer-group re-check that alarms if
+a late in-flight POST lands after your decision.
+
+The functions the apply loop calls are below — they remain what actually
+verifies and moves state, and calling them directly from a REPL is the
+break-glass path when the API is unavailable.
 
 **Every one of these takes a Stripe client, and it is required.** They verify
 their own premise rather than trusting yours — round 8 found that an operator
