@@ -83,8 +83,14 @@ export async function up(knex: Knex): Promise<void> {
     `alter table "OperatorRecoveryRequest" add constraint "OperatorRecoveryRequest_status_check" check ("status" in (${checkIn(STATUSES)}))`,
   );
 
-  // Tenant isolation + app-role grant — the canonical pattern
-  // (20260613000000_partner_postback.ts / 20260710000000_hosted_funding.ts).
+  // Tenant isolation — the canonical pattern (20260613000000_partner_postback.ts
+  // / 20260710000000_hosted_funding.ts) — but the app-role grant is
+  // deliberately NARROWER than the usual full DML: SELECT + INSERT only.
+  // The API inserts and lists; every UPDATE (claims, settles, rechecks)
+  // happens in the apply loop on the privileged pool. Withholding UPDATE
+  // and DELETE from the app role makes the append-only discipline a
+  // database property, not a convention: no tenant-scoped code path can
+  // rewrite a terminal decision or erase the audit trail.
   await knex.raw(`alter table "OperatorRecoveryRequest" enable row level security`);
   await knex.raw(`alter table "OperatorRecoveryRequest" force row level security`);
   await knex.raw(`
@@ -96,7 +102,7 @@ export async function up(knex: Knex): Promise<void> {
     do $$
     begin
       if exists (select 1 from pg_roles where rolname = 'openpartner_app') then
-        execute 'grant select, insert, update, delete on "OperatorRecoveryRequest" to openpartner_app';
+        execute 'grant select, insert on "OperatorRecoveryRequest" to openpartner_app';
       end if;
     end
     $$;

@@ -483,6 +483,108 @@ describe.skipIf(skipIntegration)('applyRecoveryRequests — tenancy, pacing, fen
     expect(request.attempts).toBe(10);
   });
 
+  it('a takeover whose target carries OUR marker settles applied, not refused', async () => {
+    // The round-11 interleaving: a claim dies between its action
+    // committing and its settle. The takeover pass re-calls the function,
+    // which now refuses ('not_disposable' — the payout is already
+    // canceled). Recording that refusal verbatim would make the audit row
+    // lie about its own action. The target's lastError carries the dead
+    // attempt's operator marker, which embeds this request's id — so the
+    // takeover recognizes its own ghost and settles applied.
+    const { payoutId } = await seedHeldIntent();
+    const requestId = await insertRequest({
+      kind: 'dispose_intent',
+      targetId: payoutId,
+      params: { reason: 'x' },
+    });
+    // Stage "the prior attempt acted, then died": the payout looks exactly
+    // as disposeIntent leaves it, stamped with THIS request's marker, and
+    // the request still holds an expired lease from the dead run.
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        status: 'failed',
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({
+            transferState: 'canceled',
+            lastError: `operator_dispose:test@op.example/req_${requestId}:x`,
+          }),
+        ]),
+      });
+    await db(TABLES.OperatorRecoveryRequest)
+      .where({ id: requestId })
+      .update({ leaseAt: hoursAgo(2), leaseToken: 'dead-run', attempts: 1 });
+    const { stripe } = mockStripe({ listed: [] });
+
+    const result = await applyRecoveryRequests(db, { rail: 'direct_connect', stripe });
+    expect(result.applied).toEqual([
+      { requestId, targetId: payoutId, outcome: 'disposed:by_interrupted_attempt' },
+    ]);
+    const request = await requestOf(requestId);
+    expect(request.status).toBe('applied');
+    expect(request.recheckDueAt).not.toBeNull(); // the §0.2 backstop still runs
+  });
+
+  it('a takeover refusal WITHOUT our marker is annotated, never recorded as clean', async () => {
+    const { payoutId } = await seedHeldIntent();
+    const requestId = await insertRequest({
+      kind: 'dispose_intent',
+      targetId: payoutId,
+      params: { reason: 'x' },
+    });
+    // Same shape, but the payout was disposed by someone ELSE's request —
+    // our attempt died without acting.
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        status: 'failed',
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({
+            transferState: 'canceled',
+            lastError: 'operator_dispose:someone-else/req_01OTHERREQUESTID:y',
+          }),
+        ]),
+      });
+    await db(TABLES.OperatorRecoveryRequest)
+      .where({ id: requestId })
+      .update({ leaseAt: hoursAgo(2), leaseToken: 'dead-run', attempts: 1 });
+    const { stripe } = mockStripe({ listed: [] });
+
+    await applyRecoveryRequests(db, { rail: 'direct_connect', stripe });
+    const request = await requestOf(requestId);
+    expect(request.status).toBe('refused');
+    expect(request.outcome).toBe('not_disposable:after_interrupted_attempt');
+  });
+
+  it('a poisoned attempts counter cannot abort the pass or starve other requests', async () => {
+    // attempts at int4 max used to make the claim statement itself raise
+    // (integer out of range) — outside every per-request catch, at the top
+    // of the job that moves money. One bad row must cost only itself.
+    const poisoned = await seedHeldIntent();
+    const healthy = await seedHeldIntent();
+    const poisonedId = await insertRequest({
+      kind: 'dispose_intent',
+      targetId: poisoned.payoutId,
+      params: { reason: 'x' },
+    });
+    await db(TABLES.OperatorRecoveryRequest)
+      .where({ id: poisonedId })
+      .update({ attempts: 2147483647 });
+    const healthyId = await insertRequest({
+      kind: 'dispose_intent',
+      targetId: healthy.payoutId,
+      params: { reason: 'y' },
+    });
+    const { stripe } = mockStripe({ listed: [] });
+
+    const result = await applyRecoveryRequests(db, { rail: 'direct_connect', stripe });
+    expect(result.processed).toBe(2); // nothing threw, nothing starved
+    expect((await requestOf(healthyId)).status).toBe('applied');
+    // the poisoned row settles too (its clamped count is far past the cap,
+    // so any outcome is terminal) — it just can't take the rail with it
+    expect(['applied', 'refused', 'failed']).toContain((await requestOf(poisonedId)).status);
+  });
+
   it('a warm lease held by another worker is not stolen', async () => {
     const { payoutId } = await seedHeldIntent();
     const requestId = await insertRequest({

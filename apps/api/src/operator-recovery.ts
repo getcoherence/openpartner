@@ -28,7 +28,26 @@
  * check here — target row's tenantId must equal the request row's — is the
  * ONLY boundary between an admin of tenant A and tenant B's payouts. The
  * request row's tenantId is trustworthy because inserts happen through the
- * tenant-scoped API under RLS. It runs before anything else, always.
+ * tenant-scoped API under RLS (the table's app-role grant is SELECT +
+ * INSERT only, and the RLS with-check pins tenantId to the session's
+ * tenant). It runs before anything else, always. What this does NOT
+ * defend against — deliberately — is a writer on the privileged pool
+ * hand-inserting a row that self-asserts another tenant: that writer can
+ * already do anything to any row directly, so the request queue adds no
+ * privilege it lacks. `requestedBy` is audit text, not authentication.
+ *
+ * EXACTLY-ONCE, honestly stated: the lease + token fence make the SETTLE
+ * at-most-once, and the operator functions' own CAS fences make the money
+ * action at-most-once. What no fence can give is a truthful outcome when
+ * a claim dies BETWEEN its action committing and its settle: the takeover
+ * pass re-calls the function, which now refuses ("not_disposable",
+ * "not_stuck", ...) because the world already reflects the action. So a
+ * takeover of an EXPIRED lease treats definitive refusals with suspicion:
+ * the operator functions stamp their audit marker (which embeds this
+ * request's id) on the target, and if the target carries OUR marker the
+ * refusal is re-read as "the prior attempt applied it" and settled
+ * `applied`. If the marker is absent the refusal settles annotated as
+ * ambiguous, with an alert — never as a clean refusal.
  *
  * PROVE-ABSENCE CLOSE (§0.2): an applied direct-Connect request is a
  * documented risk decision that no in-flight POST will land later — a
@@ -158,17 +177,36 @@ export async function applyRecoveryRequests(
   if (!stripe) {
     // Never claim what we cannot verify: every kind's function returns
     // cannot_verify without a client, which would just burn the attempt
-    // budget. Requests stay pending until Stripe is configured.
+    // budget. Requests stay pending until Stripe is configured — but a
+    // pending request on an instance with no Stripe client is a
+    // misconfiguration someone must hear about, not a quiet hold.
     result.skipped = 'stripe_not_configured';
+    const pending = (await db(TABLES.OperatorRecoveryRequest)
+      .where({ status: 'pending', rail: deps.rail })
+      .count({ n: '*' })) as Array<{ n: string | number }>;
+    const n = Number(pending[0]?.n ?? 0);
+    if (n > 0) {
+      console.error(
+        `[recovery] ALERT: ${n} pending ${deps.rail} recovery request(s) cannot be applied — STRIPE_SECRET_KEY is not configured on this instance`,
+      );
+    }
     return result;
   }
 
   const token = ulid();
-  const claimed = await claimRequests(db, deps, token);
-  for (const request of claimed) {
+  let claimed: ClaimedRequest[];
+  try {
+    claimed = await claimRequests(db, deps, token);
+  } catch (err) {
+    // The claim failing must cost the recovery pass, never the rail: this
+    // runs at the top of the scheduler job that moves money.
+    console.error(`[recovery] claim failed for rail ${deps.rail}`, err);
+    return result;
+  }
+  for (const { request, takeover } of claimed) {
     result.processed += 1;
     try {
-      await applyOne(db, stripe, request, token, result);
+      await applyOne(db, stripe, request, token, takeover, result);
     } catch (err) {
       // Unexpected throw (DB down mid-apply, a bug): same path as a
       // retryable outcome — the underlying functions are idempotent and
@@ -179,46 +217,77 @@ export async function applyRecoveryRequests(
     }
   }
 
-  await recheckAppliedRequests(db, stripe, deps, token, result);
+  try {
+    await recheckAppliedRequests(db, stripe, deps, token, result);
+  } catch (err) {
+    console.error(`[recovery] recheck pass failed for rail ${deps.rail}`, err);
+  }
   return result;
 }
 
-/** Single-statement claim (the round-10 sweep-claim pattern): lease via
- *  the DATABASE clock on both sides, `for update skip locked` so the
- *  scheduler tick and an inline API apply cannot double-claim, attempts
- *  counted at claim time so a crash mid-apply still consumes budget. */
+interface ClaimedRequest {
+  request: OperatorRecoveryRequestRow;
+  /** True when this claim took over an EXPIRED lease — the prior holder
+   *  died (or stalled) mid-apply, so its action may have committed
+   *  without settling. Definitive refusals on such a claim are treated
+   *  with suspicion (see the file header). */
+  takeover: boolean;
+}
+
+/** Claim (the round-10 sweep-claim pattern): lease via the DATABASE clock
+ *  on both sides, `for update skip locked` so the scheduler tick and an
+ *  inline API apply cannot double-claim, attempts counted at claim time so
+ *  a crash mid-apply still consumes budget. Runs as select-then-update in
+ *  one transaction (rather than one statement) so the OLD leaseAt — the
+ *  takeover signal — survives; the row lock spans both statements.
+ *
+ *  The attempts increment is clamped before adding: a hand-poisoned
+ *  counter at int4 max would otherwise make the claim STATEMENT raise on
+ *  every pass, which — since this runs at the top of the rail's scheduler
+ *  job — would starve every other request AND stop the money rail itself.
+ *  One bad row must never cost more than itself. */
 async function claimRequests(
   db: Knex,
   deps: RecoveryApplyDeps,
   token: string,
-): Promise<OperatorRecoveryRequestRow[]> {
-  const sub = db(TABLES.OperatorRecoveryRequest)
-    .select('id')
-    .where({ status: 'pending', rail: deps.rail })
-    .modify((qb) => {
-      if (deps.tenantId) qb.where({ tenantId: deps.tenantId });
-      if (deps.requestId) qb.where({ id: deps.requestId });
-    })
-    .whereRaw(`coalesce("nextAttemptAt", to_timestamp(0)) <= now()`)
-    .where((qb) =>
-      qb
-        .whereNull('leaseAt')
-        .orWhereRaw(`"leaseAt" < now() - make_interval(secs => ?)`, [APPLY_LEASE_MS / 1000]),
-    )
-    .orderBy('createdAt', 'asc')
-    .orderBy('id', 'asc')
-    .limit(APPLY_CLAIM_LIMIT)
-    .forUpdate()
-    .skipLocked();
-  return (await db(TABLES.OperatorRecoveryRequest)
-    .whereIn('id', sub)
-    .update({
-      leaseAt: db.fn.now(),
-      leaseToken: token,
-      attempts: db.raw('"attempts" + 1'),
-      updatedAt: db.fn.now(),
-    })
-    .returning('*')) as OperatorRecoveryRequestRow[];
+): Promise<ClaimedRequest[]> {
+  return db.transaction(async (trx) => {
+    const rows = (await trx(TABLES.OperatorRecoveryRequest)
+      .select('*')
+      .where({ status: 'pending', rail: deps.rail })
+      .modify((qb) => {
+        if (deps.tenantId) qb.where({ tenantId: deps.tenantId });
+        if (deps.requestId) qb.where({ id: deps.requestId });
+      })
+      .whereRaw(`coalesce("nextAttemptAt", to_timestamp(0)) <= now()`)
+      .where((qb) =>
+        qb
+          .whereNull('leaseAt')
+          .orWhereRaw(`"leaseAt" < now() - make_interval(secs => ?)`, [APPLY_LEASE_MS / 1000]),
+      )
+      .orderBy('createdAt', 'asc')
+      .orderBy('id', 'asc')
+      .limit(APPLY_CLAIM_LIMIT)
+      .forUpdate()
+      .skipLocked()) as OperatorRecoveryRequestRow[];
+    if (rows.length === 0) return [];
+    const updated = (await trx(TABLES.OperatorRecoveryRequest)
+      .whereIn(
+        'id',
+        rows.map((r) => r.id),
+      )
+      .update({
+        leaseAt: trx.fn.now(),
+        leaseToken: token,
+        attempts: trx.raw(`least("attempts", ${MAX_APPLY_ATTEMPTS * 100}) + 1`),
+        updatedAt: trx.fn.now(),
+      })
+      .returning('*')) as OperatorRecoveryRequestRow[];
+    const byId = new Map(updated.map((r) => [r.id, r]));
+    return rows
+      .filter((r) => byId.has(r.id))
+      .map((r) => ({ request: byId.get(r.id)!, takeover: r.leaseAt != null }));
+  });
 }
 
 async function applyOne(
@@ -226,6 +295,7 @@ async function applyOne(
   stripe: Stripe,
   request: OperatorRecoveryRequestRow,
   token: string,
+  takeover: boolean,
   result: RecoveryApplyResult,
 ): Promise<void> {
   // Kind↔rail pairing first. The API validates this, but the row is jsonb
@@ -328,7 +398,59 @@ async function applyOne(
     await settleRetryable(db, request, token, outcome, result);
     return;
   }
+
+  // A definitive refusal on a TAKEN-OVER claim is suspect: the dead
+  // holder's action may have committed unsettled, and the function now
+  // refuses because the world already reflects it (see the file header).
+  // The operator functions stamp `req_<id>` (via the operator string) on
+  // the target's lastError / failureReason — our own marker there means
+  // THIS request applied, whoever's process died.
+  if (takeover && (await targetCarriesOurMarker(db, request))) {
+    console.error(
+      `[recovery] request ${request.id} refused as ${outcome} on a taken-over lease, but ${request.targetId} carries this request's marker — the interrupted attempt applied it; settling applied`,
+    );
+    await settleTerminal(
+      db,
+      request,
+      token,
+      'applied',
+      `${SUCCESS_OUTCOME[request.kind]}:by_interrupted_attempt`,
+      result,
+    );
+    return;
+  }
+  if (takeover) {
+    // Marker absent but the doubt stands (a rearm's marker, for one, is
+    // cleared once the executor confirms). Refuse — but never as a CLEAN
+    // refusal, and loudly enough that a human reads the target.
+    console.error(
+      `[recovery] ALERT: request ${request.id} refused as ${outcome} on a taken-over lease — a prior attempt died mid-apply, so this refusal may be the echo of that attempt succeeding; read ${request.targetId} before filing a new request`,
+    );
+    await settleTerminal(db, request, token, 'refused', `${outcome}:after_interrupted_attempt`, result);
+    return;
+  }
   await settleTerminal(db, request, token, 'refused', outcome, result);
+}
+
+/** Does the target's operator-audit field carry THIS request's marker?
+ *  The operator string every function stamps is `<requestedBy>/req_<id>`,
+ *  truncated at 500 chars server-side — the id sits well inside that. */
+async function targetCarriesOurMarker(
+  db: Knex,
+  request: OperatorRecoveryRequestRow,
+): Promise<boolean> {
+  const marker = `req_${request.id}`;
+  if (request.rail === 'direct_connect') {
+    const payout = (await db<PayoutRow>(TABLES.Payout)
+      .where({ id: request.targetId })
+      .first()) as PayoutRow | undefined;
+    const lastError = (payout?.metadata as { lastError?: string } | null)?.lastError;
+    return typeof lastError === 'string' && lastError.includes(marker);
+  }
+  const batch = (await db<HostedFundingBatchRow>(TABLES.HostedFundingBatch)
+    .where({ id: request.targetId })
+    .first(['failureReason'])) as Pick<HostedFundingBatchRow, 'failureReason'> | undefined;
+  return typeof batch?.failureReason === 'string' && batch.failureReason.includes(marker);
 }
 
 /** Terminal write, fenced on the claim token: only the claim holder may
@@ -450,7 +572,9 @@ async function recheckAppliedRequests(
     .update({
       leaseAt: db.fn.now(),
       leaseToken: token,
-      recheckAttempts: db.raw('"recheckAttempts" + 1'),
+      // Clamped for the same reason as the apply claim: a poisoned
+      // counter must not make the claim statement itself raise.
+      recheckAttempts: db.raw(`least("recheckAttempts", ${MAX_RECHECK_ATTEMPTS * 100}) + 1`),
       updatedAt: db.fn.now(),
     })
     .returning('*')) as OperatorRecoveryRequestRow[];
@@ -458,9 +582,12 @@ async function recheckAppliedRequests(
   for (const request of due) {
     result.recheck.processed += 1;
     let outcome: string;
+    let alert: string | null = null;
     let done = true;
     try {
-      outcome = await recheckOne(db, stripe, request);
+      const checked = await recheckOne(db, stripe, request);
+      outcome = checked.outcome;
+      alert = checked.alert;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[recovery] recheck error on request ${request.id}`, err);
@@ -469,14 +596,13 @@ async function recheckAppliedRequests(
     }
     if (outcome === 'cannot_verify') done = false;
     if (!done && request.recheckAttempts >= MAX_RECHECK_ATTEMPTS) {
-      console.error(
-        `[recovery] ALERT: recheck for request ${request.id} (payout ${request.targetId}) could not verify after ${request.recheckAttempts} attempts — giving up; list the transfer group by hand`,
-      );
+      alert = `[recovery] ALERT: recheck for request ${request.id} (payout ${request.targetId}) could not verify after ${request.recheckAttempts} attempts — giving up; list the transfer group by hand`;
       done = true;
     }
-    if (outcome.startsWith('orphan_transfers:')) result.recheck.orphaned.push(request.targetId);
-    if (!done) result.recheck.deferred += 1;
-    await db(TABLES.OperatorRecoveryRequest)
+    // Fence FIRST, side effects only on a win: a stale pass that lost its
+    // lease mid-listing must not re-emit an alarm the winner already
+    // settled — that is how one orphan becomes an unbounded alert stream.
+    const settled = await db(TABLES.OperatorRecoveryRequest)
       .where({ id: request.id, leaseToken: token, status: 'applied' })
       .update({
         recheckOutcome: outcome,
@@ -487,27 +613,34 @@ async function recheckAppliedRequests(
         leaseToken: null,
         updatedAt: db.fn.now(),
       });
+    if (settled === 0) continue; // another pass owns this recheck now
+    if (alert) console.error(alert);
+    if (outcome.startsWith('orphan_transfers:')) result.recheck.orphaned.push(request.targetId);
+    if (!done) result.recheck.deferred += 1;
   }
 }
 
+/** Pure check: computes the outcome and the alert to emit, but emits
+ *  nothing — the caller fences on the lease token first, so a pass that
+ *  lost its claim mid-listing never re-raises a settled alarm. */
 async function recheckOne(
   db: Knex,
   stripe: Stripe,
   request: OperatorRecoveryRequestRow,
-): Promise<string> {
+): Promise<{ outcome: string; alert: string | null }> {
   const payout = (await db<PayoutRow>(TABLES.Payout)
     .where({ id: request.targetId })
     .first()) as PayoutRow | undefined;
   if (!payout || payout.tenantId !== request.tenantId) {
     // The target vanished (or never matched) after an APPLIED request —
     // either way there is nothing to list and something to look at.
-    console.error(
-      `[recovery] ALERT: recheck for request ${request.id} cannot load payout ${request.targetId} — target missing`,
-    );
-    return 'target_missing';
+    return {
+      outcome: 'target_missing',
+      alert: `[recovery] ALERT: recheck for request ${request.id} cannot load payout ${request.targetId} — target missing`,
+    };
   }
   const group = await listTransferGroup(stripe, payout.id, `recovery recheck ${request.id}`);
-  if (group === 'cannot_verify') return 'cannot_verify';
+  if (group === 'cannot_verify') return { outcome: 'cannot_verify', alert: null };
 
   const meta = payout.metadata as { transferState?: string } | null;
   const state = meta?.transferState;
@@ -528,10 +661,10 @@ async function recheckOne(
       );
   if (orphans.length > 0) {
     const ids = orphans.map((t) => t.id).join(', ');
-    console.error(
-      `[recovery] ALERT: recheck for request ${request.id} found ${orphans.length} live transfer(s) (${ids}) for payout ${payout.id} which is ${state ?? 'unknown'}/${payout.status} on transfer ${payout.stripeTransferId ?? 'none'} — money moved outside the ledger after an operator disposition; operator reconciliation required`,
-    );
-    return `orphan_transfers:${ids}`.slice(0, 500);
+    return {
+      outcome: `orphan_transfers:${ids}`.slice(0, 500),
+      alert: `[recovery] ALERT: recheck for request ${request.id} found ${orphans.length} live transfer(s) (${ids}) for payout ${payout.id} which is ${state ?? 'unknown'}/${payout.status} on transfer ${payout.stripeTransferId ?? 'none'} — money moved outside the ledger after an operator disposition; operator reconciliation required`,
+    };
   }
-  return 'clear';
+  return { outcome: 'clear', alert: null };
 }
