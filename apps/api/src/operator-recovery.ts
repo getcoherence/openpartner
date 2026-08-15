@@ -301,7 +301,19 @@ async function applyOne(
   takeover: boolean,
   result: RecoveryApplyResult,
 ): Promise<void> {
-  // Kind↔rail pairing first. The API validates this, but the row is jsonb
+  // ID shape first: the API only ever generates ULIDs, and the audit
+  // marker namespace is only unambiguous when the id segment is a
+  // fixed-length, delimiter-free token. An arbitrary varchar(32) id let
+  // two generations of forgery through (round 13: <A>+'X' extended past
+  // a startsWith; round 14: <A>+':B' recreated the reason-prefix
+  // ambiguity). Refusing non-ULID ids at the door closes the id-shaped
+  // class outright; the exact/prefix marker logic below stays as
+  // defense-in-depth.
+  if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(request.id)) {
+    await settleTerminal(db, request, token, 'refused', 'invalid_request:id', result);
+    return;
+  }
+  // Kind↔rail pairing next. The API validates this, but the row is jsonb
   // + strings and can be inserted by hand — the loop trusts nothing.
   if (!RAIL_KINDS[request.rail]?.has(request.kind)) {
     await settleTerminal(db, request, token, 'refused', 'invalid_request:kind_rail_mismatch', result);
@@ -513,8 +525,14 @@ async function targetCarriesOurMarker(
 }
 
 /** Terminal write, fenced on the claim token: only the claim holder may
- *  settle, and only while the row is still pending. An applied
- *  direct-Connect request schedules its group recheck here (§0.2). */
+ *  settle, and only while the row is still pending. Direct-Connect
+ *  requests schedule the §0.2 group recheck when APPLIED — and also on a
+ *  takeover-ANNOTATED refusal (round 14): a rearm whose interrupted
+ *  attempt succeeded has its marker legitimately cleared once the
+ *  executor finalizes the new generation, so the takeover cannot tell
+ *  "never acted" from "acted and completed" — and the superseded
+ *  generation's in-flight POST is exactly the late-lander the recheck
+ *  exists to catch. Ambiguity earns the backstop, never loses it. */
 async function settleTerminal(
   db: Knex,
   request: OperatorRecoveryRequestRow,
@@ -523,7 +541,10 @@ async function settleTerminal(
   outcome: string,
   result: RecoveryApplyResult,
 ): Promise<void> {
-  const scheduleRecheck = status === 'applied' && request.rail === 'direct_connect';
+  const scheduleRecheck =
+    request.rail === 'direct_connect' &&
+    (status === 'applied' ||
+      (status === 'refused' && outcome.endsWith(':after_interrupted_attempt')));
   const updated = await db(TABLES.OperatorRecoveryRequest)
     .where({ id: request.id, leaseToken: token, status: 'pending' })
     .update({
@@ -609,7 +630,11 @@ async function recheckAppliedRequests(
   if (deps.rail !== 'direct_connect') return;
   const sub = db(TABLES.OperatorRecoveryRequest)
     .select('id')
-    .where({ status: 'applied', rail: 'direct_connect' })
+    // 'refused' rows carry a recheck too when the refusal was a takeover
+    // annotation (settleTerminal) — only rows with recheckDueAt set are
+    // ever claimed, so plain refusals stay untouched.
+    .whereIn('status', ['applied', 'refused'])
+    .where({ rail: 'direct_connect' })
     .modify((qb) => {
       if (deps.tenantId) qb.where({ tenantId: deps.tenantId });
       if (deps.requestId) qb.where({ id: deps.requestId });
@@ -671,7 +696,8 @@ async function recheckAppliedRequests(
     // mean an alarm outbox, which is more mechanism than a
     // milliseconds-wide crash window justifies in this codebase.
     const settled = await db(TABLES.OperatorRecoveryRequest)
-      .where({ id: request.id, leaseToken: token, status: 'applied' })
+      .where({ id: request.id, leaseToken: token })
+      .whereIn('status', ['applied', 'refused'])
       .update({
         recheckOutcome: outcome,
         recheckDueAt: done

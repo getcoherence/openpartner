@@ -180,13 +180,19 @@ async function pisForBatch(batchId: string): Promise<Stripe.PaymentIntent[]> {
  *  that separates "search was cold" (legitimate hold; Stripe search is
  *  not monotonic even after one warm read — observed live, round 13)
  *  from "the resume never ran" (the regression under test). */
-function warmSearchStripe(piId: string): Stripe {
+function warmSearchStripe(piId: string, batchId: string): Stripe {
   return {
     ...stripe,
     paymentIntents: {
       ...stripe.paymentIntents,
-      search: async () =>
-        ({ data: [await stripe.paymentIntents.retrieve(piId)], has_more: false }) as unknown as Stripe.ApiSearchResult<Stripe.PaymentIntent>,
+      // Honors the QUERY: only a search actually asking about this batch
+      // gets the PI. An argument-blind stub would mask a query-scoping
+      // regression (wrong metadata key, constant batch id) by answering
+      // every search correctly anyway (round 14).
+      search: async (params: Stripe.PaymentIntentSearchParams) =>
+        (params?.query?.includes(batchId)
+          ? { data: [await stripe.paymentIntents.retrieve(piId)], has_more: false }
+          : { data: [], has_more: false }) as unknown as Stripe.ApiSearchResult<Stripe.PaymentIntent>,
       retrieve: stripe.paymentIntents.retrieve.bind(stripe.paymentIntents),
       cancel: stripe.paymentIntents.cancel.bind(stripe.paymentIntents),
       create: stripe.paymentIntents.create.bind(stripe.paymentIntents),
@@ -682,14 +688,26 @@ async function h3CreateFailsWithIntent() {
   // recorded is then the correct landing (round 13).
   const advanced = ['payment_processing', 'funded', 'transferring', 'settled', 'settled_with_residual']
     .includes(b2?.status ?? '');
-  const confirmRejected =
+  let confirmRejected =
     b2?.status === 'funding_failed' && confirms === 1 && Number(b2?.fundingAttempts) >= 2;
-  check('H3: confirm either advanced the batch or recorded its own rejection',
+  if (confirmRejected && createdPi) {
+    // Status + attempt count alone cannot tell "the confirm rejected"
+    // from "the confirm SUCCEEDED and the follow-up CAS failed" — the
+    // second leaves money in flight with the ledger behind (round 14).
+    // The PI itself is the discriminator: a genuine rejection leaves it
+    // unadvanced.
+    const live = await stripe.paymentIntents.retrieve(createdPi.id);
+    confirmRejected =
+      live.status === 'requires_payment_method' || live.status === 'requires_confirmation';
+    if (!confirmRejected) {
+      note(`PI advanced to '${live.status}' while the batch stayed funding_failed — that is a ledger left behind, not a rejection`);
+    } else {
+      note('the real confirm rejected — funding_failed with the attempt recorded is the correct landing');
+    }
+  }
+  check('H3: confirm either advanced the batch or GENUINELY rejected (PI unadvanced)',
     advanced || confirmRejected,
     `status=${b2?.status} confirms=${confirms} attempts=${b2?.fundingAttempts}`);
-  if (confirmRejected) {
-    note('the real confirm rejected — funding_failed with the attempt recorded is the correct landing');
-  }
   const pis = await pisForBatch(batchId);
   check('H3: exactly one PI at Stripe', pis.length === 1, `got ${pis.length}`);
 }
@@ -776,7 +794,7 @@ async function h4ReleaseVsInflightCreate() {
     }
     if (final?.status === 'release_requested' && createdPi) {
       note('search stayed cold through the resume window — probing with a deterministically warm search');
-      await runFundingCollector(db, { stripe: warmSearchStripe(createdPi.id) });
+      await runFundingCollector(db, { stripe: warmSearchStripe(createdPi.id, batchId) });
       final = await batchRow(batchId);
     }
     const finalAllocs = await allocStatuses(batchId);
@@ -915,7 +933,7 @@ async function h10ReleaseStoppedHalfwayResumes() {
       finalAllocs.every((s) => s !== 'released'),
       `status=${final?.status} allocs=${finalAllocs.join(',')}`);
     if (final?.status === 'release_requested' && createdPi) {
-      await runFundingCollector(db, { stripe: warmSearchStripe(createdPi.id) });
+      await runFundingCollector(db, { stripe: warmSearchStripe(createdPi.id, batchId) });
       const probed = await batchRow(batchId);
       const probedAllocs = await allocStatuses(batchId);
       const piNow = await stripe.paymentIntents.retrieve(createdPi.id);

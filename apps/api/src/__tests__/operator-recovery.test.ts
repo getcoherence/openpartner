@@ -554,6 +554,45 @@ describe.skipIf(skipIntegration)('applyRecoveryRequests — tenancy, pacing, fen
     const request = await requestOf(requestId);
     expect(request.status).toBe('refused');
     expect(request.outcome).toBe('not_disposable:after_interrupted_attempt');
+    // Round 14: ambiguity EARNS the §0.2 backstop. The takeover cannot
+    // tell "never acted" from "acted and the marker was legitimately
+    // overwritten", so the annotated refusal schedules the group recheck
+    // exactly like an applied request would.
+    expect(request.recheckDueAt).not.toBeNull();
+  });
+
+  it('the recheck runs for a takeover-annotated REFUSED request and alarms on a late transfer', async () => {
+    const { payoutId } = await seedHeldIntent('canceled');
+    await db(TABLES.Payout).where({ id: payoutId }).update({ status: 'failed' });
+    const requestId = ulid();
+    await db(TABLES.OperatorRecoveryRequest).insert({
+      id: requestId,
+      tenantId: TENANT,
+      rail: 'direct_connect',
+      kind: 'dispose_intent',
+      targetId: payoutId,
+      params: JSON.stringify({ reason: 'x' }),
+      requestedBy: 'test@op.example',
+      status: 'refused',
+      outcome: 'not_disposable:after_interrupted_attempt',
+      recheckDueAt: hoursAgo(1),
+    });
+    const late: FakeTransfer = {
+      id: 'tr_after_ambiguous_takeover',
+      amount: 5000,
+      currency: 'usd',
+      transfer_group: payoutId,
+      metadata: {},
+    };
+    const { stripe } = mockStripe({ listed: [late] });
+
+    const result = await applyRecoveryRequests(db, { rail: 'direct_connect', stripe });
+    expect(result.recheck.processed).toBe(1);
+    expect(result.recheck.orphaned).toEqual([payoutId]);
+    const request = await requestOf(requestId);
+    expect(request.recheckOutcome).toBe('orphan_transfers:tr_after_ambiguous_takeover');
+    expect(request.recheckDueAt).toBeNull();
+    expect(request.status).toBe('refused'); // the decision row itself is never edited
   });
 
   it('a marker embedded in another request\'s REASON does not forge the applied verdict', async () => {
@@ -635,53 +674,39 @@ describe.skipIf(skipIntegration)('applyRecoveryRequests — tenancy, pacing, fen
     expect(a.outcome).toBe('not_disposable:after_interrupted_attempt');
   });
 
-  it('an EXTENDED request id cannot forge a suffix-less marker (rearm)', async () => {
-    // Round 13: ids are schema-unconstrained (varchar 32, no ULID check),
-    // so request B with id = <A's id> + "X" produced a rearm stamp of
-    // which A's marker was a strict PREFIX — startsWith settled A applied
-    // though A never acted. The suffix-less kinds now match by exact
-    // equality; this drives the full interleaving through the real paths.
+  it('a NON-ULID request id is refused at the door — the marker namespace stays unambiguous', async () => {
+    // Rounds 13/14: ids were schema-unconstrained varchar(32), and both an
+    // EXTENDED id (<A>+'X', defeating startsWith) and a COLON-bearing id
+    // (<A>+':B', recreating the reason-prefix ambiguity) could forge
+    // another request's marker. The apply loop now refuses any id that is
+    // not a 26-char Crockford ULID before touching anything.
     const { payoutId } = await seedHeldIntent();
-    const requestA = ulid();
-    await db(TABLES.OperatorRecoveryRequest).insert({
-      id: requestA,
-      tenantId: TENANT,
-      rail: 'direct_connect',
-      kind: 'release_intent_for_retry',
-      targetId: payoutId,
-      params: JSON.stringify({ observedGeneration: 0 }),
-      requestedBy: 'api_key:K', // sanitizes to api_key_K
-      status: 'pending',
-    });
-    const requestB = `${requestA}X`; // 27 chars — fits varchar(32)
-    await db(TABLES.OperatorRecoveryRequest).insert({
-      id: requestB,
-      tenantId: TENANT,
-      rail: 'direct_connect',
-      kind: 'release_intent_for_retry',
-      targetId: payoutId,
-      params: JSON.stringify({ observedGeneration: 0 }),
-      requestedBy: 'api_key_K', // sanitizes identically
-      status: 'pending',
-    });
-    const { stripe } = mockStripe({ listed: [] });
+    const base = ulid();
+    for (const badId of [`${base}X`, `${base.slice(0, 24)}:B`]) {
+      await db(TABLES.OperatorRecoveryRequest).insert({
+        id: badId,
+        tenantId: TENANT,
+        rail: 'direct_connect',
+        kind: 'dispose_intent',
+        targetId: payoutId,
+        params: JSON.stringify({ reason: 'forged-id shape' }),
+        requestedBy: 'api_key_K',
+        status: 'pending',
+      });
+    }
+    const { stripe, transfersList } = mockStripe({ listed: [] });
 
-    // B applies for real: generation 0 → 1, stamp operator_rearm:...req_<A>X
-    await applyRecoveryRequests(db, { rail: 'direct_connect', requestId: requestB, stripe });
-    expect((await requestOf(requestB)).status).toBe('applied');
-
-    // A's dead claim is taken over; the function refuses (generation
-    // moved), and the marker check must NOT read B's stamp as A's own.
-    await db(TABLES.OperatorRecoveryRequest)
-      .where({ id: requestA })
-      .update({ leaseAt: hoursAgo(2), leaseToken: 'dead-run', attempts: 1 });
-    await applyRecoveryRequests(db, { rail: 'direct_connect', requestId: requestA, stripe });
-    const a = await requestOf(requestA);
-    expect(a.status).toBe('refused');
-    // not_held (the rearmed intent left reconcile_required) or
-    // generation_moved — either refusal literal is right; what matters is
-    // that it is annotated and NEVER settled applied off B's stamp.
-    expect(a.outcome).toMatch(/^(not_held|generation_moved):after_interrupted_attempt$/);
+    await applyRecoveryRequests(db, { rail: 'direct_connect', stripe });
+    const rows = (await db(TABLES.OperatorRecoveryRequest).whereNot({ status: 'pending' })) as Array<{
+      status: string; outcome: string | null;
+    }>;
+    expect(rows).toHaveLength(2);
+    for (const r of rows) {
+      expect(r.status).toBe('refused');
+      expect(r.outcome).toBe('invalid_request:id');
+    }
+    expect(transfersList).not.toHaveBeenCalled();
+    expect((await payoutOf(payoutId)).metadata.transferState).toBe('reconcile_required');
   });
 
   it('a NEGATIVE poisoned attempts counter is repaired at claim, not honored', async () => {
