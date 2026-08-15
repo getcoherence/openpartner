@@ -115,6 +115,11 @@ them can be observed by reading the happy path. Each has unit coverage in
 > real). H12's freeze is a REAL refund delivered through the real signed
 > webhook route mid-executor-run: exactly one transfer left the batch.
 >
+> **Multi-process races** (the caveat that used to close this section) ran
+> 2026-08-14 via `apps/api/scripts/staging-two-process-races.ts` — real
+> concurrent OS processes racing the intent lease, the inbox claim, and
+> the recovery-request claim. 17 assertions, 0 failures.
+>
 > ```bash
 > cd apps/api
 > set -a && . ../../.env && set +a

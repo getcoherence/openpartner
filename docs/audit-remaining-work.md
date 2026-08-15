@@ -98,11 +98,12 @@ back to metadata.
    `[entrypoint] running migrations`, and confirm the `tenant_isolation`
    policy exists on `PartnerProgram` plus the four `sweep*` columns on the
    funding sidecar tables.
-2. **Post-merge prod actions**: run/verify #63's auto-approve job once and
-   check the accrued backlog it had been failing to clear.
-   *2026-08-14: the 05:15 UTC run happened but rotated out of the log
-   buffer before it could be read — still unverified. Check approved-
-   commission counts in admin, or read tomorrow's run.*
+2. ~~Post-merge prod actions~~ — **VERIFIED 2026-08-14 (evening)** by a
+   read-only query against `openpartner_prod` (via the DO managed-DB
+   connection): ZERO mature-unswept accrued commissions remain across all
+   tenants (the job's own WHERE clause, re-run as a SELECT), and the
+   ledger's commissions are all `approved`. #63's backlog is cleared;
+   the log-buffer rotation earlier in the day no longer matters.
 3. ~~Stripe webhook destination~~ — **DONE 2026-08-14**: live Stripe now
    has exactly three endpoints. Destination A (platform) carries 15 events
    incl. the never-registered `charge.refunded` / `charge.dispute.created`
@@ -495,8 +496,16 @@ error-with-intent shape is staged around a REAL unconfirmed PI). H4's
 release-vs-in-flight-create ran as two genuinely interleaved async flows
 against real Stripe (orphan canceled, full release arc); H12's freeze was
 a REAL refund delivered through the signed webhook route mid-executor-run.
-What remains genuinely unexercised is only a multi-PROCESS lease race —
-the leases are still single-process-tested.
+~~What remains genuinely unexercised is only a multi-PROCESS lease race~~
+— **RUN 2026-08-14 (evening): `apps/api/scripts/staging-two-process-races.ts`**
+spawns genuinely concurrent OS processes (separate DB connections) against
+real Stripe test mode: two executors racing one fresh intent end-to-end
+(exactly ONE transfer at Stripe, paid once), a reconcile+finalize duel
+over a held intent whose transfer already exists (finalized once, never
+re-posted), 40 inbox events claimed under real contention (19/21 split,
+no double-claims, all stamped), and 24 pending recovery requests split
+across two apply loops (every request settled once, attempts === 1).
+**17 assertions, 0 failures.** Nothing in §3 remains unexercised.
 
 Both scripts refuse a live key or a non-local `DATABASE_URL`, and each doc
 carries its own run instructions and fixture setup.
