@@ -1,43 +1,82 @@
 /**
- * Merchant billing endpoints — only meaningful in hosted modes.
+ * Per-tenant billing endpoints.
  *
- *   selfhost  → /billing/status responds 'selfhost', everything else 404.
- *   flat      → Stripe Checkout + Customer Portal for the merchant's
- *               monthly subscription.
- *   revshare  → /billing/status surfaces accrued platform fees; collection is
- *               handled out-of-band against the 3% retained on payouts.
+ * Each tenant on a hosted multi-tenant deployment picks one of:
+ *
+ *   flex        $49/mo + 1.5% metered. Stripe subscription with two
+ *               line items (base + usage), 14-day trial.
+ *   revshare    3% metered, no monthly. Stripe subscription with the
+ *               metered line item only, 14-day trial.
+ *   enterprise  Custom — no Stripe sub, billed out of band.
+ *
+ * Selfhost installs run as one tenant under the global OPENPARTNER_MODE
+ * env (selfhost / flat / revshare). The per-tenant resolver in
+ * billing-plan.ts unifies both paths so this route stays mode-agnostic.
+ *
+ * Stripe Customer + Subscription IDs live on the Tenant row
+ * (stripeCustomerId, stripeSubscriptionId). The legacy Config-keyed
+ * store (stripe.merchant.{customerId,subscriptionId}) is back-filled
+ * by the tenant_billing_plan migration; this file only reads/writes
+ * Tenant.
  */
 
 import { Router } from 'express';
+import type { Knex } from 'knex';
 import { z } from 'zod';
-import { TABLES } from '@openpartner/db';
-import { db } from '../db.js';
+import { TABLES, type BillingPlan, type TenantRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
-import { REVSHARE_FEE_BPS, getMode, requireStripe } from '../stripe.js';
-import { CONFIG_KEYS, getConfig, setConfig } from '../config.js';
+import { REVSHARE_FEE_BPS, requireStripe } from '../stripe.js';
+import { getTenantBillingState, priceIdsForPlan } from '../billing-plan.js';
+import { reportUsageToStripe } from '../usage-billing.js';
+import { tenantOf } from '../tenancy.js';
+import { getWhiteLabelState } from '../white-label.js';
+import { applyWhiteLabelFromSubscription, whiteLabelPriceId } from '../white-label-billing.js';
 
 export const billingRouter = Router();
 
-billingRouter.get('/billing/status', requireAuth, requireAdmin, async (_req, res) => {
-  const mode = getMode();
+billingRouter.get('/billing/status', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const state = await getTenantBillingState(db, tenantId);
+  const mode = state.mode;
+
   if (mode === 'selfhost') {
-    return res.json({ mode, billed: false });
+    return res.json({ mode, plan: null, billed: false });
+  }
+
+  if (state.plan === 'enterprise') {
+    return res.json({
+      mode,
+      plan: state.plan,
+      enterprise: true,
+      message: 'Billed out of band — contact your account manager.',
+    });
   }
 
   if (mode === 'flat') {
-    const subscriptionId = await getConfig<string>(CONFIG_KEYS.StripeMerchantSubscriptionId);
-    if (!subscriptionId) return res.json({ mode, subscribed: false });
+    if (!state.stripeSubscriptionId) {
+      return res.json({
+        mode,
+        plan: state.plan,
+        subscribed: false,
+        trialEndsAt: state.trialEndsAt,
+        inTrial: state.inTrial,
+        hasUsedTrial: state.hasUsedTrial,
+        trialExpiredWithoutSubscription: state.trialExpiredWithoutSubscription,
+      });
+    }
     const stripe = requireStripe();
-    const sub = await stripe.subscriptions.retrieve(subscriptionId);
+    const sub = await stripe.subscriptions.retrieve(state.stripeSubscriptionId);
     const periodEnd = (sub as unknown as { current_period_end?: number }).current_period_end
       ?? sub.items.data[0]?.current_period_end
       ?? null;
     return res.json({
       mode,
+      plan: state.plan,
       subscribed: true,
       subscriptionId: sub.id,
       status: sub.status,
       currentPeriodEnd: periodEnd,
+      trialEnd: sub.trial_end,
     });
   }
 
@@ -50,58 +89,358 @@ billingRouter.get('/billing/status', requireAuth, requireAdmin, async (_req, res
 
   res.json({
     mode,
+    plan: state.plan,
     feeRate: `${REVSHARE_FEE_BPS / 100}%`,
     accruedPlatformFees: fees.reduce<Record<string, number>>((acc, f) => {
       acc[f.currency] = Number(f.fee);
       return acc;
     }, {}),
+    subscribed: !!state.stripeSubscriptionId,
+    trialEndsAt: state.trialEndsAt,
+    inTrial: state.inTrial,
   });
 });
 
+/**
+ * Set the tenant's plan in-place when none was picked at signup
+ * (legacy tenants + anyone who signed up before the marketing
+ * pricing CTAs). Refuses to overwrite an existing plan — those go
+ * through the Stripe Customer Portal so the subscription's price
+ * IDs change in lockstep with our local mirror.
+ */
+const setPlanSchema = z.object({
+  // Enterprise is sales-led and billed out of band: it counts as "active"
+  // with no Stripe subscription and can enable white-label directly. It must
+  // never be self-assignable through this authenticated setter (signup
+  // already excludes it) — only flex/revshare go through self-serve.
+  plan: z.enum(['flex', 'revshare']),
+});
+billingRouter.post('/billing/plan', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = setPlanSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  const state = await getTenantBillingState(db, tenantId);
+  if (state.plan) {
+    return res.status(409).json({
+      error: 'plan_already_set',
+      detail: 'Use the Stripe Customer Portal to switch plans on an active subscription.',
+      currentPlan: state.plan,
+    });
+  }
+
+  await db<TenantRow>(TABLES.Tenant)
+    .where({ id: tenantId })
+    .update({ billingPlan: body.data.plan as BillingPlan, updatedAt: new Date() });
+
+  res.json({ ok: true, plan: body.data.plan });
+});
+
+// ---------- White-label add-on (spec §8.2) ----------
+
+/**
+ * Add-on status for the admin wizard. `effective` is the runtime
+ * entitlement (provisioned AND entitling billing state) — the same truth
+ * /config/program reports.
+ */
+billingRouter.get('/billing/white-label', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const state = await getTenantBillingState(db, tenantId);
+  const wl = await getWhiteLabelState(db, tenantId);
+  res.json({
+    provisioned: wl.provisioned,
+    effective: wl.effective,
+    plan: state.plan,
+    mode: state.mode,
+    subscribed: !!state.stripeSubscriptionId,
+    priceConfigured: !!whiteLabelPriceId(),
+  });
+});
+
+/**
+ * Enable the add-on. Hosted flex/revshare: attaches the add-on price to
+ * the tenant's ACTIVE subscription as a prorated line item, then mirrors
+ * the flag locally (the webhook re-confirms). Enterprise: flag only —
+ * sales-led, no Stripe item. No subscription → 409; the wizard sends the
+ * admin through plan checkout first (checkout accepts whiteLabel:true to
+ * bundle the add-on from the start).
+ */
+billingRouter.post('/billing/white-label', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const state = await getTenantBillingState(db, tenantId);
+
+  if (state.mode === 'selfhost') {
+    return res.status(400).json({ error: 'no_billing_in_selfhost', detail: 'Self-host installs are always white-label entitled.' });
+  }
+  if (state.plan === 'enterprise') {
+    // Shares the transition path with the webhook so enabling also
+    // withdraws the brand from the shared marketplace.
+    await applyWhiteLabelFromSubscription(db, tenantId, true);
+    return res.json({ ok: true, provisioned: true, billedVia: 'enterprise_contract' });
+  }
+  if (!state.stripeSubscriptionId) {
+    return res.status(409).json({
+      error: 'subscription_required',
+      detail: 'Activate your plan first — the white-label add-on attaches to your subscription.',
+    });
+  }
+  const price = whiteLabelPriceId();
+  if (!price) {
+    return res.status(500).json({ error: 'stripe_price_not_configured', detail: 'STRIPE_WHITELABEL_ADD_ON_PRICE_ID is not set.' });
+  }
+
+  const stripe = requireStripe();
+  const sub = await stripe.subscriptions.retrieve(state.stripeSubscriptionId);
+  const already = sub.items.data.find((it) => it.price.id === price);
+  if (!already) {
+    await stripe.subscriptionItems.create({
+      subscription: sub.id,
+      price,
+      quantity: 1,
+      proration_behavior: 'create_prorations',
+    });
+  }
+  // Optimistic local mirror — the subscription.updated webhook is the
+  // authoritative confirmation and is idempotent with this.
+  await applyWhiteLabelFromSubscription(db, tenantId, true);
+  res.json({ ok: true, provisioned: true, billedVia: already ? 'already_on_subscription' : 'subscription_item_added' });
+});
+
+/**
+ * Disable the add-on: remove the subscription item (prorated credit) and
+ * mirror locally — which also revokes custom-domain routing + the DO edge.
+ */
+billingRouter.delete('/billing/white-label', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const state = await getTenantBillingState(db, tenantId);
+
+  if (state.mode === 'selfhost') {
+    return res.status(400).json({ error: 'no_billing_in_selfhost' });
+  }
+  if (state.plan === 'enterprise') {
+    // Sales-led: flip the flag; contract changes happen out of band.
+    await applyWhiteLabelFromSubscription(db, tenantId, false);
+    return res.json({ ok: true, provisioned: false });
+  }
+  const price = whiteLabelPriceId();
+  if (state.stripeSubscriptionId && price) {
+    const stripe = requireStripe();
+    const sub = await stripe.subscriptions.retrieve(state.stripeSubscriptionId);
+    const item = sub.items.data.find((it) => it.price.id === price);
+    if (item) {
+      await stripe.subscriptionItems.del(item.id, { proration_behavior: 'create_prorations' });
+    }
+  }
+  await applyWhiteLabelFromSubscription(db, tenantId, false);
+  res.json({ ok: true, provisioned: false });
+});
+
 const checkoutSchema = z.object({
-  priceId: z.string().min(1).optional(),
   successUrl: z.string().url(),
   cancelUrl: z.string().url(),
   customerEmail: z.string().email().optional(),
+  /** Bundle the white-label add-on into the plan checkout (new brands
+   *  that picked white-label before subscribing). */
+  whiteLabel: z.boolean().optional(),
 });
 
 billingRouter.post('/billing/checkout', requireAuth, requireAdmin, async (req, res) => {
-  if (getMode() !== 'flat') return res.status(400).json({ error: 'only_flat_mode' });
+  const { db, tenantId } = tenantOf(req);
+  const state = await getTenantBillingState(db, tenantId);
+
+  if (state.plan === 'enterprise') {
+    return res.status(400).json({ error: 'enterprise_plan_no_checkout', detail: 'Enterprise tenants are billed out of band.' });
+  }
+  if (state.mode === 'selfhost') {
+    return res.status(400).json({ error: 'no_billing_in_selfhost' });
+  }
+  if (state.stripeSubscriptionId) {
+    return res.status(409).json({ error: 'already_subscribed', detail: 'Use the Customer Portal to change plans.' });
+  }
+  if (!state.plan) {
+    return res.status(400).json({ error: 'no_plan_chosen', detail: 'Pick a plan first via /admin/billing.' });
+  }
+
   const body = checkoutSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const priceId = body.data.priceId ?? process.env.STRIPE_FLAT_PRICE_ID;
-  if (!priceId) return res.status(500).json({ error: 'no_flat_price_configured' });
+  let lineItems: ReturnType<typeof priceIdsForPlan>;
+  try {
+    lineItems = priceIdsForPlan(state.plan, { whiteLabel: body.data.whiteLabel });
+  } catch (err) {
+    return res.status(500).json({ error: 'stripe_price_not_configured', detail: err instanceof Error ? err.message : String(err) });
+  }
+  if (!lineItems) {
+    return res.status(400).json({ error: 'enterprise_plan_no_checkout' });
+  }
 
   const stripe = requireStripe();
+
+  // Reuse Stripe Customer if one exists from a prior aborted Checkout
+  // attempt; otherwise create + persist on Tenant.stripeCustomerId so
+  // the Customer Portal works on the same record after subscription
+  // completion.
+  let customerId = state.stripeCustomerId;
+  if (!customerId) {
+    const customer = await stripe.customers.create({
+      email: body.data.customerEmail,
+      metadata: {
+        openpartner_role: 'merchant_self_subscription',
+        openpartner_tenant_id: tenantId,
+      },
+    });
+    customerId = customer.id;
+    await db<TenantRow>(TABLES.Tenant)
+      .where({ id: tenantId })
+      .update({ stripeCustomerId: customerId, updatedAt: new Date() });
+  }
+
+  // The 14-day trial runs from signup, not from Stripe Checkout — by
+  // the time a brand reaches Checkout the evaluation window is the
+  // pressure to subscribe. Always require a payment method up front;
+  // never set trial_period_days (Stripe would otherwise add a *second*
+  // trial on top of the one they just spent in-product).
   const session = await stripe.checkout.sessions.create({
     mode: 'subscription',
-    line_items: [{ price: priceId, quantity: 1 }],
+    customer: customerId,
+    line_items: lineItems,
+    payment_method_collection: 'always',
+    // Show the promo-code field so sales-issued codes (e.g. first-month
+    // white-label discounts) are self-serve at checkout.
+    allow_promotion_codes: true,
     success_url: body.data.successUrl,
     cancel_url: body.data.cancelUrl,
-    customer_email: body.data.customerEmail,
+    metadata: {
+      openpartner_tenant_id: tenantId,
+      openpartner_plan: state.plan,
+    },
   });
   res.json({ url: session.url });
 });
 
+billingRouter.post('/billing/report-usage', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const state = await getTenantBillingState(db, tenantId);
+  if (state.mode === 'selfhost') {
+    return res.status(400).json({ error: 'no_billing_in_selfhost' });
+  }
+  try {
+    const result = await reportUsageToStripe(db, tenantId);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({
+      error: 'usage_report_failed',
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
 billingRouter.post('/billing/portal', requireAuth, requireAdmin, async (req, res) => {
-  if (getMode() !== 'flat') return res.status(400).json({ error: 'only_flat_mode' });
+  const { db, tenantId } = tenantOf(req);
+  const state = await getTenantBillingState(db, tenantId);
+  // Both flat and revshare have a Stripe Customer + subscription, both
+  // benefit from the Portal (payment method updates, invoice history,
+  // plan switching). Selfhost + enterprise: nothing to manage here.
+  if (state.mode === 'selfhost' || state.plan === 'enterprise') {
+    return res.status(400).json({ error: 'no_portal_for_this_plan' });
+  }
   const body = z.object({ returnUrl: z.string().url() }).safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const customerId = await getConfig<string>(CONFIG_KEYS.StripeMerchantCustomerId);
-  if (!customerId) return res.status(404).json({ error: 'no_customer_on_file' });
+  if (!state.stripeCustomerId) return res.status(404).json({ error: 'no_customer_on_file' });
 
   const stripe = requireStripe();
   const session = await stripe.billingPortal.sessions.create({
-    customer: customerId,
+    customer: state.stripeCustomerId,
     return_url: body.data.returnUrl,
   });
   res.json({ url: session.url });
 });
 
-// Exposed for the stripe webhook to call on checkout.session.completed.
-export async function persistMerchantSubscription(customerId: string, subscriptionId: string): Promise<void> {
-  await setConfig(CONFIG_KEYS.StripeMerchantCustomerId, customerId);
-  await setConfig(CONFIG_KEYS.StripeMerchantSubscriptionId, subscriptionId);
+/**
+ * Recent invoices for the tenant. Used by the Admin → Billing page.
+ * Returns a thin slice — full detail lives in the Stripe Customer Portal.
+ */
+billingRouter.get('/billing/invoices', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const state = await getTenantBillingState(db, tenantId);
+  if (!state.stripeCustomerId) return res.json({ invoices: [] });
+
+  const stripe = requireStripe();
+  const list = await stripe.invoices.list({ customer: state.stripeCustomerId, limit: 12 });
+  res.json({
+    invoices: list.data.map((inv) => ({
+      id: inv.id,
+      number: inv.number,
+      status: inv.status,
+      amountDue: inv.amount_due,
+      amountPaid: inv.amount_paid,
+      currency: inv.currency,
+      created: inv.created,
+      periodStart: inv.period_start,
+      periodEnd: inv.period_end,
+      hostedInvoiceUrl: inv.hosted_invoice_url,
+      invoicePdf: inv.invoice_pdf,
+    })),
+  });
+});
+
+/**
+ * Webhook helper — stamps Stripe state on the Tenant row. Used from
+ * checkout.session.completed (subscribe), customer.subscription.updated
+ * (plan switch / trial conversion), and customer.subscription.deleted
+ * (cancel).
+ *
+ * Patch semantics: undefined = "leave field alone", null = "explicitly
+ * clear" (used on subscription.deleted to drop stripeSubscriptionId).
+ */
+export interface MerchantSubscriptionPatch {
+  stripeCustomerId?: string | null;
+  stripeSubscriptionId?: string | null;
+  trialEndsAt?: Date | null;
+  /** Stamp the trial-used marker on this update. Webhook sets it to
+   *  `new Date()` only on the first checkout-with-trial completion;
+   *  never cleared afterward. */
+  firstTrialActivatedAt?: Date | null;
+}
+
+export async function persistMerchantSubscription(
+  db: Knex,
+  tenantId: string,
+  patch: MerchantSubscriptionPatch,
+): Promise<void> {
+  const dbPatch: Partial<TenantRow> = { updatedAt: new Date() };
+  if (patch.stripeCustomerId !== undefined) dbPatch.stripeCustomerId = patch.stripeCustomerId;
+  if (patch.stripeSubscriptionId !== undefined) dbPatch.stripeSubscriptionId = patch.stripeSubscriptionId;
+  if (patch.trialEndsAt !== undefined) dbPatch.trialEndsAt = patch.trialEndsAt;
+  if (patch.firstTrialActivatedAt !== undefined) dbPatch.firstTrialActivatedAt = patch.firstTrialActivatedAt;
+  await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).update(dbPatch);
+}
+
+/** Update a tenant's plan after a Stripe Customer Portal plan switch.
+ *  Called from the customer.subscription.updated webhook handler when
+ *  the subscription's price IDs change. */
+export async function updateTenantPlanFromStripeSub(
+  db: Knex,
+  tenantId: string,
+  newPlan: 'flex' | 'revshare',
+): Promise<void> {
+  await db<TenantRow>(TABLES.Tenant)
+    .where({ id: tenantId })
+    .update({ billingPlan: newPlan as TenantRow['billingPlan'], updatedAt: new Date() });
+}
+
+/** Detect the openpartner plan from a Stripe subscription's line-item
+ *  price IDs. Returns null when the IDs don't match known prices —
+ *  caller treats that as "don't reclassify the tenant". */
+export function inferPlanFromPriceIds(priceIds: string[]): 'flex' | 'revshare' | null {
+  const flatBase = process.env.STRIPE_FLAT_PRICE_ID;
+  const flatUsage = process.env.STRIPE_FLAT_USAGE_PRICE_ID;
+  const rev = process.env.STRIPE_REVSHARE_USAGE_PRICE_ID;
+  for (const id of priceIds) {
+    if (flatBase && id === flatBase) return 'flex';
+    if (flatUsage && id === flatUsage) return 'flex';
+    if (rev && id === rev) return 'revshare';
+  }
+  return null;
 }

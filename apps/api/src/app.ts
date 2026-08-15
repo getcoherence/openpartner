@@ -5,33 +5,56 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import helmet from 'helmet';
 import pinoHttp from 'pino-http';
+import rateLimit from 'express-rate-limit';
 import { ulid } from 'ulid';
 
 import { stripeWebhookRouter } from './routes/stripe-webhook.js';
 import { identifyRouter } from './routes/identify.js';
 import { eventsRouter } from './routes/events.js';
 import { partnersRouter } from './routes/partners.js';
-import { campaignsRouter } from './routes/campaigns.js';
+import { programsRouter } from './routes/programs.js';
 import { linksRouter } from './routes/links.js';
 import { dashboardRouter } from './routes/dashboard.js';
 import { apiKeysRouter } from './routes/api-keys.js';
 import { connectRouter } from './routes/connect.js';
 import { payoutsRouter } from './routes/payouts.js';
+import { recoveryRouter } from './routes/recovery.js';
 import { commissionsRouter } from './routes/commissions.js';
 import { exportRouter } from './routes/export.js';
+import { importPartnersRouter } from './routes/import-partners.js';
+import { couponsRouter } from './routes/coupons.js';
 import { billingRouter } from './routes/billing.js';
+import { fundingRouter } from './routes/funding.js';
 import { authRouter } from './routes/auth.js';
+import { partnerAuthRouter } from './routes/partner-auth.js';
 import { adminOverviewRouter } from './routes/admin-overview.js';
-import { magicLinkRouter } from './routes/magic-link.js';
 import { funnelRouter } from './routes/funnel.js';
+import { settingsRouter } from './routes/settings.js';
+import { mountStaticUploads, uploadsRouter } from './routes/uploads.js';
+import { brandResourcesRouter } from './routes/brand-resources.js';
+import { adminsRouter } from './routes/admins.js';
+import { installRouter } from './routes/install.js';
 import { fraudReviewRouter } from './routes/fraud-review.js';
 import { webhooksRouter } from './routes/webhooks.js';
-import { networkVendorsRouter } from './routes/network-vendors.js';
-import { networkCreatorsRouter } from './routes/network-creators.js';
-import { networkOfferingsRouter } from './routes/network-offerings.js';
-import { networkRequestsRouter } from './routes/network-requests.js';
-import { networkEarningsRouter } from './routes/network-earnings.js';
 import { metricsRouter } from './routes/metrics.js';
+import { signupRouter } from './routes/signup.js';
+import { partnerSignupRouter } from './routes/partner-signup.js';
+import { networkPartnerRouter } from './routes/network-partner.js';
+import { accountDeletionRouter } from './routes/account-deletion.js';
+import { partnerCampaignsRouter } from './routes/partner-campaigns.js';
+import { partnerPostbacksRouter } from './routes/partner-postbacks.js';
+import { onboardingRouter } from './routes/onboarding.js';
+import { creatorPortalRouter } from './routes/creator-portal.js';
+import { signinRouter } from './routes/signin.js';
+import { portalDomainGateRouter, portalDomainsRouter } from './routes/portal-domains.js';
+import { clicksRouter } from './routes/clicks.js';
+import { sessionHomeRouter } from './routes/session-home.js';
+import { platformAuthRouter } from './routes/platform-auth.js';
+import { platformAdminRouter } from './routes/platform-admin.js';
+import { tenantMiddleware } from './tenancy.js';
+import { trialGate } from './middleware/trial-gate.js';
+import { approvalGate } from './middleware/approval-gate.js';
+import { corsOriginDecider } from './cors-origins.js';
 
 export function createApp(options: { enableLogger?: boolean } = {}) {
   const app = express();
@@ -63,13 +86,77 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   if (corsOrigins.length === 0 && process.env.NODE_ENV === 'production') {
     throw new Error('PORTAL_URL must be set in production so CORS has an origin allowlist');
   }
+  // /attribution/identify is the browser SDK's stitch call, made from the
+  // BRAND'S OWN website origin (acme.com) — an origin we can never
+  // allowlist ahead of time. It gets analytics-collector CORS: any origin,
+  // NO credentials (the endpoint is deliberately unauthenticated,
+  // rate-limited, reads no cookies, and returns nothing sensitive — see
+  // routes/identify.ts). Mounted BEFORE the global CORS so it also owns
+  // the OPTIONS preflight for this path; the global middleware runs after
+  // but never unsets headers, so the open ACAO survives for this route
+  // only. Everything else keeps the strict allowlist + credentials.
+  const IDENTIFY_PATH = /^(?:\/(?:api\/)?t\/[a-z0-9-]+)?\/attribution\/identify\/?$/;
+  const identifyCors = cors({ origin: true, credentials: false });
+  app.use((req, res, next) => (IDENTIFY_PATH.test(req.path) ? identifyCors(req, res, next) : next()));
+
+  // Origin callback = static seed allowlist ∪ cached verified custom
+  // domains (white-label; see cors-origins.ts). Still no `origin: true` —
+  // an origin is echoed back only after it matches one of the two sets;
+  // anything else gets no Access-Control-Allow-Origin at all. Requests
+  // without an Origin header (same-origin, curl) skip the DB entirely.
+  const strictCors = cors({
+    origin: corsOriginDecider(new Set(corsOrigins)),
+    credentials: true,
+  });
+  app.use((req, res, next) => (IDENTIFY_PATH.test(req.path) ? next() : strictCors(req, res, next)));
+  app.use(cookieParser());
+
+  // CSRF: we deliberately do NOT mount a CSRF-token middleware. Defense
+  // is layered:
+  //   1. Session cookies are issued with SameSite=Lax (auth-sessions.ts +
+  //      platform-sessions.ts) — modern browsers refuse to attach them
+  //      on cross-site state-changing requests, which kills the basic
+  //      CSRF attack vector (a malicious site fetch()'ing our endpoints
+  //      with credentials: include can't get the cookie sent).
+  //   2. CORS allowlist is explicit (no `origin: true` reflection;
+  //      see corsOrigins above), so a cross-origin XHR / fetch can't
+  //      read the response even if it could send the request.
+  //   3. The state-changing surface that bypasses cookies entirely —
+  //      bearer-token API access — uses scoped keys, not session
+  //      cookies, so it isn't CSRF-relevant.
+  // CodeQL flags the cookie middleware as unprotected (js/missing-token-
+  // validation) because it can't see the SameSite property on the cookies
+  // we issue downstream — that's a static-analysis false positive.
+
+  // Global rate limit. Caps a single IP at 600 requests / 5 min — well
+  // above any legitimate single-user workload (the portal does ~30 req
+  // on a cold dashboard load) but tight enough that a runaway script
+  // or credential-stuffing loop hits the wall fast. Self-hosters who
+  // sit behind a CDN with rate-limiting (Cloudflare, etc.) get this as
+  // belt-and-suspenders; deployments without an edge layer get baseline
+  // protection here. /health is exempt so kube-probes don't drain the
+  // budget; the click-router hot path runs in a separate service so
+  // it's unaffected. Standard headers turn off the legacy X-RateLimit-*
+  // (we use the IETF draft).
   app.use(
-    cors({
-      origin: corsOrigins,
-      credentials: true,
+    rateLimit({
+      windowMs: 5 * 60 * 1000,
+      limit: 600,
+      standardHeaders: 'draft-7',
+      legacyHeaders: false,
+      // Skip endpoints we trust externally:
+      //   /health, /metrics — kube-probes / Prometheus scrape, no auth, high freq
+      //   /webhooks/* — Stripe etc. retry on rejection; rate-limiting them
+      //     would amplify upstream backpressure into our queues
+      //   /uploads/* — static handler for FS-backed image assets
+      skip: (req) =>
+        req.path === '/health' ||
+        req.path === '/metrics' ||
+        req.path.startsWith('/webhooks/') ||
+        req.path.startsWith('/uploads/'),
+      message: { error: 'rate_limited' },
     }),
   );
-  app.use(cookieParser());
 
   // Request correlation: accept an inbound X-Request-Id for callers that
   // want to correlate across services, generate a ULID otherwise, and
@@ -106,33 +193,95 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
     res.json({ ok: true, service: 'api', mode: MODE });
   });
 
+  // Static handler for FS-backed uploads (no-op when STORAGE_KIND=s3).
+  // Mounted before any auth middleware — uploaded assets are public-read
+  // by design (avatars + logos appear in unauthenticated contexts).
+  mountStaticUploads(app);
+
+  // ----- Public, non-tenant routes (mounted BEFORE tenantMiddleware) -----
+  // These either run before any tenant exists (install), or are platform-
+  // wide (metrics scraped by Prometheus). They use the privileged db
+  // directly and are responsible for their own access control.
+  app.use(installRouter);
+  app.use(signupRouter);
+  app.use(signinRouter);
+  app.use(sessionHomeRouter);
+  app.use(platformAuthRouter);
+  // Platform-ops console (brand review). Cross-tenant, privileged-pool,
+  // its own operator auth — must sit before tenantMiddleware.
+  app.use(platformAdminRouter);
+  app.use(metricsRouter);
+  // Cert/entitlement allow-gate for white-label custom domains — public,
+  // server-to-server (the Phase-3 Caddy droplet's on_demand_tls `ask`).
+  app.use(portalDomainGateRouter);
+  // Creator portal is platform-level (no tenant), proxies to Network.
+  // Mount before tenantMiddleware so it's reachable from app.openpartner.dev/*
+  // without a /t/<slug>/ prefix.
+  app.use(creatorPortalRouter);
+
+  // ----- Tenant scope -----
+  // Everything below runs inside a per-request transaction with
+  // app.tenant_id set, so RLS scopes every query to the current tenant.
+  // In single-tenancy mode, tenantId is always 'default'. In multi-tenancy
+  // mode, it's resolved from /t/<slug>/... in the URL.
+  app.use(tenantMiddleware);
+
+  // Soft trial-gate. Returns 402 on a small allowlist of expensive write
+  // endpoints when the tenant's trial expired without conversion. Reads,
+  // SDK callbacks, click ingestion, billing routes, and auth all stay
+  // open. Mounted right after tenantMiddleware so it has tenant scope.
+  // Brand-approval gate. 403s the "go live" write actions (invite partner,
+  // creator self-signup, roster import, marketplace publish, creator-app
+  // approval) while a brand is still pending review. Config + reads stay
+  // open so the brand can set up. Mounted BEFORE trialGate so a pending
+  // brand hears "you're under review" rather than "pick a plan" — approval
+  // is the earlier gate. Both run after tenantMiddleware for tenant scope.
+  app.use(approvalGate);
+
+  app.use(trialGate);
+
   app.use(authRouter);
-  app.use(magicLinkRouter);
+  app.use(partnerAuthRouter);
+  app.use(portalDomainsRouter);
+  app.use(partnerSignupRouter);
+  app.use(adminsRouter);
+  app.use(settingsRouter);
+  app.use(uploadsRouter);
+  app.use(brandResourcesRouter);
   app.use(funnelRouter);
   app.use(fraudReviewRouter);
   app.use(webhooksRouter);
   app.use(identifyRouter);
   app.use(eventsRouter);
   app.use(partnersRouter);
-  app.use(campaignsRouter);
+  app.use(programsRouter);
   app.use(linksRouter);
+  app.use(clicksRouter);
   app.use(dashboardRouter);
   app.use(apiKeysRouter);
   app.use(connectRouter);
   app.use(payoutsRouter);
+  app.use(recoveryRouter);
   app.use(commissionsRouter);
   app.use(exportRouter);
+  app.use(importPartnersRouter);
+  app.use(couponsRouter);
   app.use(billingRouter);
+  app.use(fundingRouter);
   app.use(adminOverviewRouter);
-  app.use(networkVendorsRouter);
-  app.use(networkCreatorsRouter);
-  app.use(networkOfferingsRouter);
-  app.use(networkRequestsRouter);
-  app.use(networkEarningsRouter);
-  app.use(metricsRouter);
+  app.use(networkPartnerRouter);
+  app.use(accountDeletionRouter);
+  app.use(partnerCampaignsRouter);
+  app.use(partnerPostbacksRouter);
+  app.use(onboardingRouter);
 
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
     req.log?.error({ err }, 'request_failed');
+    // Echo message + stack to stderr so CI logs surface 500s that the
+    // test harness would otherwise swallow. Safe — these are
+    // unauthenticated server-side error paths; we're logging them
+    // anyway via pino when the logger's on.
+    console.error(`[500] ${req.method} ${req.url} ${err?.message}\n${err?.stack ?? ''}`);
     res.status(500).json({ error: 'internal_error' });
   });
 

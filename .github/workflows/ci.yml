@@ -10,6 +10,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Default to read-only. Jobs that need to write (the docker job pushes to
+# GHCR) opt in explicitly via their own permissions block.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: typecheck + test
@@ -32,10 +37,9 @@ jobs:
 
     env:
       DATABASE_URL: postgres://openpartner:openpartner@localhost:5432/openpartner
-      # A deterministic 32-byte key so federation code paths that require
-      # NETWORK_ENCRYPTION_KEY don't throw during boot.
-      NETWORK_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
-      ADMIN_API_KEY: op_ci_0000000000000000000000000000000000000000000000000000000000
+      # Quoted so YAML doesn't parse these as integers or booleans.
+      ADMIN_API_KEY: "op_ci_0000000000000000000000000000000000000000000000000000000000"
+      SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
 
     steps:
       - uses: actions/checkout@v4
@@ -46,10 +50,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      # @openpartner/db is consumed via its "types": "dist/index.d.ts"
+      # field, so downstream typechecks need its build output to exist.
+      # Also produces the migration bundle the Migrate step runs.
+      - name: Build @openpartner/db
+        run: pnpm --filter @openpartner/db build
 
       - name: Migrate
         run: pnpm migrate

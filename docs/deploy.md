@@ -26,11 +26,12 @@ Ingress rules fan incoming traffic out: `/api/*` → `api`, everything else → 
    ```
 3. **Set the secrets** App Platform marked as `SECRET` in the spec:
    - `ADMIN_API_KEY` — bootstrap admin token. Generate with `node -e "console.log('op_' + require('crypto').randomBytes(24).toString('hex'))"`.
-   - `NETWORK_ENCRYPTION_KEY` — 32 hex bytes for AES-256-GCM. `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
-   - `POSTMARK_SERVER_TOKEN`, `MAIL_FROM` — your Postmark creds + verified sender.
-   - `PORTAL_URL` — e.g. `https://partners.yourdomain.com`. Magic-link emails link to this.
+   - `PORTAL_URL` — e.g. `https://partners.yourdomain.com`. Required in production (CORS allowlist + invite email links).
+   - `SECRETS_ENCRYPTION_KEY` — 32 bytes (hex or base64) used to encrypt SMTP passwords / Postmark tokens stored in the Config table. **Required in production.** Generate with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
+   - `POSTMARK_SERVER_TOKEN`, `MAIL_FROM` (or `SMTP_HOST` + SMTP vars, or neither) — mail provider fallback. You can skip these entirely and let the admin configure mail from the Settings UI after install; these env vars win only when UI settings are empty.
    - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_FLAT_PRICE_ID` — only if running `flat` or `revshare` mode.
    - `COOKIE_DOMAIN` — `.yourdomain.com` so the router's `_cref` cookie covers your landing pages.
+   - `METRICS_TOKEN` — optional; set to require Bearer auth on `/metrics`.
 4. **Deploy.** The API container runs migrations on first boot via `apps/api/docker-entrypoint.sh`, so an empty Postgres bootstraps automatically. Subsequent deploys re-run and are idempotent against `knex_migrations`.
 5. **Wire custom domains.** In the App Platform UI → Settings → Domains:
    - Primary: `partners.yourdomain.com` → `portal` component.
@@ -70,7 +71,7 @@ cd openpartner
 cp .env.example .env
 # Edit .env — set:
 #   OPENPARTNER_DOMAIN, CADDY_EMAIL, ADMIN_API_KEY,
-#   NETWORK_ENCRYPTION_KEY, POSTMARK_SERVER_TOKEN, MAIL_FROM, etc.
+#   PORTAL_HOST, API_HOST, ROUTER_HOST, etc.
 docker compose -f docker-compose.prod.yml up -d
 ```
 

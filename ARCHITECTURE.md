@@ -22,7 +22,7 @@ Each arrow is a discrete table and a discrete step. The left two columns are raw
 
 ## Why event-sourced?
 
-Raw data is immutable. Attribution is a view — you can re-run it with a different model (last-click, first-click, linear, position) without re-collecting data. You can also correct an attribution model retroactively over historical events. And because raw data is the only load-bearing layer, export is simple: dump the six raw + derived tables, re-import on another instance, re-derive from there. Nothing lossy.
+Raw data is immutable. Attribution is a view — you can re-run it with a different model (last-click, first-click, linear, position) without re-collecting data. You can also correct an attribution model retroactively over historical events. And because raw data is the only load-bearing layer, export is simple: dump the raw + derived tables, re-import on another instance, re-derive from there. Nothing lossy in that chain — see docs/data-portability.md for the exact table set and the hosted-billing sidecars that are not in it yet.
 
 Concretely this buys you:
 
@@ -86,13 +86,35 @@ One codebase, three behaviors, flipped by `OPENPARTNER_MODE`:
 
 The core product — attribution, events, commissions — is identical across modes. Only the billing + payout layer changes.
 
-## The Network
+## Install + auth
 
-OpenPartner has a built-in two-sided marketplace (`NetworkVendor`, `NetworkCreator`, `NetworkOffering`, `NetworkRequest`). Vendors publish offerings (commission terms, assets, description). Creators apply. On acceptance, the vendor instance provisions a `Partner` row via federation — the creator gets a share link like `go.vendor.com/r/<their-slug>`.
+First-run is a three-step wizard at `/install` — admin account (name + email), program name + support email, and mail transport. On submit the first admin gets an emailed magic link; clicking it activates them with a session cookie. `/install` 409s once any admin is activated so a second party can't take over.
 
-Federation credentials are scoped API keys (vendor's key for vendor → hosted network, hosted network's key for network → vendor on provisioning). Keys at rest are AES-256-GCM encrypted with `NETWORK_ENCRYPTION_KEY`.
+**Personas** are first-class — neither admins nor partners authenticate with a shared token:
 
-Self-hosted instances opt in by publishing their instance URL + scoped key. Skipping the Network entirely is supported — the vendor-direct flow (manually create Partners through the admin portal) is the original path.
+- **Admin** — invited by another admin (or created during install), verifies a magic link, gets a `Session` cookie keyed `(principalKind='admin', principalId)`. Can invite / revoke / reinstate other admins, edit program + mail settings. `ADMIN_API_KEY` env stays valid as a bootstrap / headless / CI bearer; think `doctl`, migrations, or emergency access.
+- **Partner** — invited by an admin, same magic-link flow, separate `Partner` table. Creates their own Links + API keys from their dashboard; admin never sees partner credentials. Revocation kills sessions in-transaction and stamps clicks `fraudFlag='revoked'` so future attribution skips them without breaking the end-user click experience.
+
+Magic-link tokens and sessions share one generalized schema (`MagicLinkToken`, `Session`) keyed by `(principalKind, principalId)`. The verify endpoint branches on `principalKind` — invites for partners stamp `Partner.activatedAt`, invites for admins stamp `Admin.activatedAt`.
+
+## Settings + secret encryption
+
+Anything user-facing and runtime-adjustable lives in the `Config` table, editable from the admin Settings UI — not env. This covers:
+
+- **Program settings** — program name + support email (plaintext, identifiers not secrets)
+- **Mail settings** — SMTP or Postmark selection + credentials
+
+Credentials inside `Config` (SMTP password, Postmark server token) are AES-256-GCM encrypted at rest using `SECRETS_ENCRYPTION_KEY` — the one env-level secret required in production. Public readers of the Settings API get a sanitized view (`hasPassword: true/false`) so the UI can show "saved ✓" without ever exposing plaintext.
+
+Env vars like `SMTP_HOST` / `POSTMARK_SERVER_TOKEN` / `MAIL_FROM` remain as **fallbacks** — the mailer resolves UI config first, env second, console stdout last (dev only). Hosted deployments can force a transport via env; self-hosters who want to rotate credentials without a redeploy do so from the Settings page.
+
+## Federating with an external creator network
+
+OpenPartner OSS is vendor-direct — the admin creates Partner rows, issues share links, and manages their own partner program. A separate hosted service (outside this repo) implements a two-sided creator network: vendors publish offerings, creators apply, and approved partnerships federate back into each vendor's OpenPartner instance as Partner + Link rows.
+
+The federation contract is thin: the vendor mints a scoped API key (`partners:write`, `links:write`, `partners:read`, `commissions:read`) and hands it to the network. The network calls the vendor's public API as an authenticated client — no shared schema, no inbound connections into the vendor. Data stays on the vendor's instance. Revoke the key and federation stops.
+
+Not participating in any network is the default. Everything in this repo works standalone.
 
 ## Data portability
 
@@ -101,7 +123,7 @@ Every core table round-trips through `GET /export.json`. Two guarantees:
 1. **Stable schema.** Column shapes don't change within a major version. Additions are allowed; renames or removals are migrations with explicit export-compat handling.
 2. **No hosted-only fields on core tables.** If the hosted version needs metadata (billing customer IDs, rate-limit tokens), it goes in a sidecar table clearly labeled as optional. Self-host imports ignore it.
 
-Import is `POST /import` (selfhost-only — importing into a shared hosted DB would collide primary keys). Each table uses `onConflict('id').ignore()`, so partial-then-resumed imports and re-imports of the same bundle are no-ops.
+Import is `POST /import` (selfhost-only — importing into a shared hosted DB would collide primary keys). Each table uses its OWN primary key as the conflict target with `.ignore()` (`PartnerCommission` is keyed on `partnerId`, not `id`), so partial-then-resumed imports and re-imports of the same bundle are no-ops.
 
 ## Observability
 

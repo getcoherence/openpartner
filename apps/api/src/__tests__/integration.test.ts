@@ -11,13 +11,18 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { ulid } from 'ulid';
-import { TABLES } from '@openpartner/db';
+import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApp } from '../app.js';
 
 const ADMIN_KEY = 'op_test_admin_key_0123456789abcdef0123';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
-process.env.OPENPARTNER_MODE = process.env.OPENPARTNER_MODE ?? 'selfhost';
+// Force selfhost — vitest auto-loads .env, so the ?? form would let a
+// developer's local .env mode bleed into the suite.
+process.env.OPENPARTNER_MODE = 'selfhost';
+// Force single tenancy — every direct insert below gets stamped with the
+// default tenant; routes go through tenantMiddleware which sets the same.
+process.env.OPENPARTNER_TENANCY = 'single';
 
 const TABLES_TO_CLEAN = [
   TABLES.Commission,
@@ -26,11 +31,8 @@ const TABLES_TO_CLEAN = [
   TABLES.Identity,
   TABLES.Click,
   TABLES.Link,
-  TABLES.Campaign,
+  TABLES.Program,
   TABLES.Payout,
-  TABLES.Session,
-  TABLES.MagicLinkToken,
-  TABLES.DevMessage,
   TABLES.ApiKey,
   TABLES.Partner,
   TABLES.Config,
@@ -47,6 +49,16 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Truncate before destroying so subsequent test files (which share
+  // this DB and may not list every Partner-referencing table in their
+  // own beforeEach) start from a clean slate. Without this, a Link or
+  // Click left behind here cascades into FK violations when another
+  // file's `delete from Partner` runs.
+  if (!skipIntegration) {
+    for (const t of TABLES_TO_CLEAN) {
+      await db(t).del();
+    }
+  }
   await db.destroy();
 });
 
@@ -69,27 +81,28 @@ describe.skipIf(skipIntegration)('api integration', () => {
 
     // 2. Admin creates a campaign (20% commission).
     const campaignRes = await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ name: 'Default', commissionRule: { type: 'percent', value: 20 } });
+      .send({ name: 'Default', commissionRule: { type: 'percent', value: 20 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
     expect(campaignRes.status).toBe(201);
-    const campaignId = campaignRes.body.id;
+    const programId = campaignRes.body.id;
 
     // 3. Admin creates a link for the partner.
     const linkKey = `test_${Date.now()}`;
     const linkRes = await request(app)
       .post(`/partners/${partnerId}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey, campaignId, destinationUrl: 'https://example.com/signup' });
+      .send({ linkKey, programId, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
     expect(linkRes.status).toBe(201);
 
     // 4. Simulate a click (normally written by the router).
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId: linkRes.body.id,
       partnerId,
-      campaignId,
+      programId,
       landingUrl: 'https://example.com/signup?cref=' + clickId,
       ipHash: 'test-hash',
       userAgent: 'test',
@@ -163,22 +176,23 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const partnerId = partnerRes.body.id;
 
     const campaignRes = await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ name: 'C', commissionRule: { type: 'percent', value: 10 } });
-    const campaignId = campaignRes.body.id;
+      .send({ name: 'C', commissionRule: { type: 'percent', value: 10 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
+    const programId = campaignRes.body.id;
 
     const linkRes = await request(app)
       .post(`/partners/${partnerId}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey: `fraud_${Date.now()}`, campaignId, destinationUrl: 'https://e.com' });
+      .send({ linkKey: `fraud_${Date.now()}`, programId, destinationUrl: 'https://e.com' });
 
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId: linkRes.body.id,
       partnerId,
-      campaignId,
+      programId,
       landingUrl: 'https://e.com',
       ipHash: 'x',
       userAgent: 'x',
@@ -231,7 +245,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
       .get('/export.json')
       .set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(exportRes.status).toBe(200);
-    expect(exportRes.body.schemaVersion).toBe(1);
+    expect(exportRes.body.schemaVersion).toBe(2);
     expect(exportRes.body.tables.Partner).toHaveLength(1);
 
     // Wipe, re-import.
@@ -239,7 +253,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const importRes = await request(app)
       .post('/import')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ schemaVersion: 1, tables: exportRes.body.tables });
+      .send({ schemaVersion: 2, tables: exportRes.body.tables });
     expect(importRes.status).toBe(200);
     expect(importRes.body.report.inserted.Partner).toBe(1);
 
@@ -255,28 +269,28 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const p2 = (await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email: 'p2@x.com', name: 'P2' })).body.id;
 
     const linearCampaign = (await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ name: 'Linear', commissionRule: { type: 'percent', value: 20 }, attributionModel: 'linear' })).body.id;
+      .send({ name: 'Linear', commissionRule: { type: 'percent', value: 20 }, attributionModel: 'linear', destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })).body.id;
 
     const link1 = (await request(app)
       .post(`/partners/${p1}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey: `l1_${Date.now()}`, campaignId: linearCampaign, destinationUrl: 'https://e.com' })).body;
+      .send({ linkKey: `l1_${Date.now()}`, programId: linearCampaign, destinationUrl: 'https://e.com' })).body;
     const link2 = (await request(app)
       .post(`/partners/${p2}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey: `l2_${Date.now()}`, campaignId: linearCampaign, destinationUrl: 'https://e.com' })).body;
+      .send({ linkKey: `l2_${Date.now()}`, programId: linearCampaign, destinationUrl: 'https://e.com' })).body;
 
     const click1 = ulid();
     const click2 = ulid();
     await db(TABLES.Click).insert({
-      id: click1, linkId: link1.id, partnerId: p1, campaignId: linearCampaign,
+      id: click1, tenantId: DEFAULT_TENANT_ID, linkId: link1.id, partnerId: p1, programId: linearCampaign,
       landingUrl: 'x', ipHash: 'x', userAgent: 'x', referer: null, fraudFlag: null,
       ts: new Date(Date.now() - 10_000),
     });
     await db(TABLES.Click).insert({
-      id: click2, linkId: link2.id, partnerId: p2, campaignId: linearCampaign,
+      id: click2, tenantId: DEFAULT_TENANT_ID, linkId: link2.id, partnerId: p2, programId: linearCampaign,
       landingUrl: 'x', ipHash: 'x', userAgent: 'x', referer: null, fraudFlag: null,
       ts: new Date(Date.now() - 5_000),
     });
@@ -354,15 +368,15 @@ describe.skipIf(skipIntegration)('api integration', () => {
     ).body;
     const campaign = (
       await request(app)
-        .post('/campaigns')
+        .post('/programs')
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ name: 'F', commissionRule: { type: 'percent', value: 10 } })
+        .send({ name: 'F', commissionRule: { type: 'percent', value: 10 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })
     ).body;
     const link = (
       await request(app)
         .post(`/partners/${partner.id}/links`)
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ linkKey: `fk_${Date.now()}`, campaignId: campaign.id, destinationUrl: 'https://e.com' })
+        .send({ linkKey: `fk_${Date.now()}`, programId: campaign.id, destinationUrl: 'https://e.com' })
     ).body;
 
     // 3 clicks, one flagged.
@@ -370,9 +384,9 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const click2 = ulid();
     const click3 = ulid();
     await db(TABLES.Click).insert([
-      { id: click1, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'a', userAgent: 'x', referer: null, fraudFlag: null },
-      { id: click2, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'b', userAgent: 'x', referer: null, fraudFlag: null },
-      { id: click3, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'c', userAgent: 'x', referer: null, fraudFlag: 'velocity' },
+      { id: click1, tenantId: DEFAULT_TENANT_ID, linkId: link.id, partnerId: partner.id, programId: campaign.id, landingUrl: 'x', ipHash: 'a', userAgent: 'x', referer: null, fraudFlag: null },
+      { id: click2, tenantId: DEFAULT_TENANT_ID, linkId: link.id, partnerId: partner.id, programId: campaign.id, landingUrl: 'x', ipHash: 'b', userAgent: 'x', referer: null, fraudFlag: null },
+      { id: click3, tenantId: DEFAULT_TENANT_ID, linkId: link.id, partnerId: partner.id, programId: campaign.id, landingUrl: 'x', ipHash: 'c', userAgent: 'x', referer: null, fraudFlag: 'velocity' },
     ]);
 
     // User 1 stitches, signs up, pays.
@@ -419,24 +433,25 @@ describe.skipIf(skipIntegration)('api integration', () => {
     ).body;
     const campaign = (
       await request(app)
-        .post('/campaigns')
+        .post('/programs')
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ name: 'Fr', commissionRule: { type: 'percent', value: 20 } })
+        .send({ name: 'Fr', commissionRule: { type: 'percent', value: 20 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })
     ).body;
     const link = (
       await request(app)
         .post(`/partners/${partner.id}/links`)
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ linkKey: `fr_${Date.now()}`, campaignId: campaign.id, destinationUrl: 'https://e.com' })
+        .send({ linkKey: `fr_${Date.now()}`, programId: campaign.id, destinationUrl: 'https://e.com' })
     ).body;
 
     // Click comes in flagged as velocity.
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
-      campaignId: campaign.id,
+      programId: campaign.id,
       landingUrl: 'x',
       ipHash: 'x',
       userAgent: 'x',
@@ -480,5 +495,157 @@ describe.skipIf(skipIntegration)('api integration', () => {
 
     const unauth = await request(app).get('/auth/whoami');
     expect(unauth.status).toBe(401);
+  });
+});
+
+describe.skipIf(skipIntegration)('audit safe-fixes', () => {
+  it('POST /billing/plan rejects enterprise (sales-led), accepts flex', async () => {
+    // enterprise counts as active + white-label with no Stripe sub, so it
+    // must not be self-assignable through this authenticated setter.
+    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ billingPlan: null });
+    try {
+      const bad = await request(app)
+        .post('/billing/plan')
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ plan: 'enterprise' });
+      expect(bad.status).toBe(400);
+
+      const ok = await request(app)
+        .post('/billing/plan')
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ plan: 'flex' });
+      expect(ok.status).toBe(200);
+    } finally {
+      await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ billingPlan: null });
+    }
+  });
+
+  it('a click that happened AFTER the event does not attribute it (negative age)', async () => {
+    const partnerId = (
+      await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email: `fut-${ulid()}@x.com`, name: 'Fut' })
+    ).body.id;
+    const programId = (
+      await request(app).post('/programs').set('Authorization', `Bearer ${ADMIN_KEY}`).send({
+        name: 'Fut',
+        commissionRule: { type: 'percent', value: 20 },
+        destinationUrl: 'https://example.com/signup',
+      })
+    ).body.id;
+    const linkId = (
+      await request(app).post(`/partners/${partnerId}/links`).set('Authorization', `Bearer ${ADMIN_KEY}`).send({ linkKey: `fut_${ulid()}`, programId })
+    ).body.id;
+
+    // Click NOW; the conversion event is backdated to before it.
+    const clickId = ulid();
+    await db(TABLES.Click).insert({
+      id: clickId, tenantId: DEFAULT_TENANT_ID, linkId, partnerId, programId,
+      landingUrl: 'https://example.com/signup', ipHash: 'h', userAgent: 't', referer: null, ts: new Date(),
+    });
+    const userId = `u_${ulid()}`;
+    await request(app).post('/attribution/identify').send({ cref: clickId, userId });
+    const eventRes = await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId, type: 'invoice_paid', value: 100, currency: 'USD', ts: new Date(Date.now() - 3600_000).toISOString() });
+
+    expect(eventRes.status).toBe(200);
+    expect(eventRes.body.attribution.status).toBe('outside_window');
+    const attributions = await db(TABLES.Attribution).where({ partnerId });
+    expect(attributions).toHaveLength(0);
+  });
+
+  it('an event a few seconds before its click still attributes (skew grace)', async () => {
+    // The companion to the test above, and the reason the negative-age check
+    // is not a strict `< 0`. Stripe stamps `created` in whole SECONDS, so a
+    // conversion in the same second as the click truncates to BEFORE it, and
+    // the click clock is not the event clock. A strict check dropped these
+    // silently. Revert the grace in attribution.ts and this test fails.
+    const partnerId = (
+      await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email: `skew-${ulid()}@x.com`, name: 'Skew' })
+    ).body.id;
+    const programId = (
+      await request(app).post('/programs').set('Authorization', `Bearer ${ADMIN_KEY}`).send({
+        name: 'Skew',
+        commissionRule: { type: 'percent', value: 20 },
+        destinationUrl: 'https://example.com/signup',
+      })
+    ).body.id;
+    const linkId = (
+      await request(app).post(`/partners/${partnerId}/links`).set('Authorization', `Bearer ${ADMIN_KEY}`).send({ linkKey: `skew_${ulid()}`, programId })
+    ).body.id;
+
+    const clickId = ulid();
+    await db(TABLES.Click).insert({
+      id: clickId, tenantId: DEFAULT_TENANT_ID, linkId, partnerId, programId,
+      landingUrl: 'https://example.com/signup', ipHash: 'h', userAgent: 't', referer: null, ts: new Date(),
+    });
+    const userId = `u_${ulid()}`;
+    await request(app).post('/attribution/identify').send({ cref: clickId, userId });
+    const eventRes = await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId, type: 'invoice_paid', value: 100, currency: 'USD', ts: new Date(Date.now() - 2_000).toISOString() });
+
+    expect(eventRes.status).toBe(200);
+    expect(eventRes.body.attribution.status).toBe('attributed');
+    const attributions = await db(TABLES.Attribution).where({ partnerId });
+    expect(attributions).toHaveLength(1);
+  });
+});
+
+describe.skipIf(skipIntegration)('server-to-server ingest routes reject partner principals', () => {
+  // Regression: /coupons/redeem and /clicks are admin-or-scoped-key ingest
+  // routes (grantScope + requireAdmin, same as /attribution/events). A
+  // partner principal must NOT reach them — /coupons/redeem mints
+  // commissions, so a partner without the gate could forge conversions
+  // crediting themselves.
+  async function mintPartnerKey(): Promise<string> {
+    const p = (
+      await request(app)
+        .post('/partners')
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ email: `s2s-${ulid()}@x.com`, name: 'S2S' })
+    ).body.id;
+    const keyRes = await request(app)
+      .post(`/partners/${p}/api-keys`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ label: 'test' });
+    return keyRes.body.plaintext as string;
+  }
+
+  it('POST /coupons/redeem: partner key → 403; admin passes auth (404 unknown coupon)', async () => {
+    const partnerKey = await mintPartnerKey();
+    const body = { code: 'NOPE', eventType: 'sale', userId: 'u1', externalEventId: ulid(), value: 100 };
+
+    const asPartner = await request(app)
+      .post('/coupons/redeem')
+      .set('Authorization', `Bearer ${partnerKey}`)
+      .send(body);
+    expect(asPartner.status).toBe(403);
+
+    const asAdmin = await request(app)
+      .post('/coupons/redeem')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send(body);
+    expect(asAdmin.status).not.toBe(403);
+    expect(asAdmin.status).toBe(404); // coupon_not_found — reached the handler
+  });
+
+  it('POST /clicks: partner key → 403; admin passes auth (404 unknown link)', async () => {
+    const partnerKey = await mintPartnerKey();
+    const body = { id: ulid(), linkKey: 'nope', landingUrl: 'https://x/', ts: new Date().toISOString() };
+
+    const asPartner = await request(app)
+      .post('/clicks')
+      .set('Authorization', `Bearer ${partnerKey}`)
+      .send(body);
+    expect(asPartner.status).toBe(403);
+
+    const asAdmin = await request(app)
+      .post('/clicks')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send(body);
+    expect(asAdmin.status).not.toBe(403);
+    expect(asAdmin.status).toBe(404); // link_not_found — reached the handler
   });
 });

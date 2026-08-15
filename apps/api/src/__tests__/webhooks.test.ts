@@ -10,13 +10,19 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { ulid } from 'ulid';
-import { TABLES } from '@openpartner/db';
+import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApp } from '../app.js';
 
 const ADMIN_KEY = 'op_test_webhook_admin_0123456789abcdef0123';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
 process.env.OPENPARTNER_MODE = 'selfhost';
+process.env.OPENPARTNER_TENANCY = 'single';
+// The receivers below bind 127.0.0.1; the SSRF guard blocks private IPs by
+// default. This is the self-host-only escape hatch (honored because
+// mode=selfhost + tenancy=single). Ports are unrestricted in that mode, so
+// the random receiver ports are fine.
+process.env.OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS = '127.0.0.1/32,::1/128';
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 
@@ -77,7 +83,7 @@ const TABLES_TO_CLEAN = [
   TABLES.Identity,
   TABLES.Click,
   TABLES.Link,
-  TABLES.Campaign,
+  TABLES.Program,
   TABLES.Payout,
   TABLES.ApiKey,
   TABLES.Partner,
@@ -134,22 +140,23 @@ describe.skipIf(skipIntegration)('webhooks', () => {
       .send({ email: 'wh@e.com', name: 'WH' });
     const partnerId = partnerRes.body.id;
     const campaignRes = await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ name: 'WH', commissionRule: { type: 'percent', value: 20 } });
-    const campaignId = campaignRes.body.id;
+      .send({ name: 'WH', commissionRule: { type: 'percent', value: 20 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
+    const programId = campaignRes.body.id;
     const linkRes = await request(app)
       .post(`/partners/${partnerId}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey: `wh_${Date.now()}`, campaignId, destinationUrl: 'https://e.com' });
+      .send({ linkKey: `wh_${Date.now()}`, programId, destinationUrl: 'https://e.com' });
     const linkId = linkRes.body.id;
 
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId,
       partnerId,
-      campaignId,
+      programId,
       landingUrl: 'x',
       ipHash: 'x',
       userAgent: 'x',
@@ -218,22 +225,23 @@ describe.skipIf(skipIntegration)('webhooks', () => {
     ).body;
     const campaign = (
       await request(app)
-        .post('/campaigns')
+        .post('/programs')
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ name: 'R', commissionRule: { type: 'percent', value: 10 } })
+        .send({ name: 'R', commissionRule: { type: 'percent', value: 10 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })
     ).body;
     const link = (
       await request(app)
         .post(`/partners/${partner.id}/links`)
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ linkKey: `r_${Date.now()}`, campaignId: campaign.id, destinationUrl: 'https://e.com' })
+        .send({ linkKey: `r_${Date.now()}`, programId: campaign.id, destinationUrl: 'https://e.com' })
     ).body;
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
-      campaignId: campaign.id,
+      programId: campaign.id,
       landingUrl: 'x',
       ipHash: 'x',
       userAgent: 'x',
@@ -298,22 +306,23 @@ describe.skipIf(skipIntegration)('webhooks', () => {
     ).body;
     const campaign = (
       await request(app)
-        .post('/campaigns')
+        .post('/programs')
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ name: 'S', commissionRule: { type: 'percent', value: 10 } })
+        .send({ name: 'S', commissionRule: { type: 'percent', value: 10 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })
     ).body;
     const link = (
       await request(app)
         .post(`/partners/${partner.id}/links`)
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ linkKey: `s_${Date.now()}`, campaignId: campaign.id, destinationUrl: 'https://e.com' })
+        .send({ linkKey: `s_${Date.now()}`, programId: campaign.id, destinationUrl: 'https://e.com' })
     ).body;
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
-      campaignId: campaign.id,
+      programId: campaign.id,
       landingUrl: 'x',
       ipHash: 'x',
       userAgent: 'x',

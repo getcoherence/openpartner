@@ -12,6 +12,18 @@ export function clearApiKey(): void {
   localStorage.removeItem(KEY_STORAGE);
 }
 
+/**
+ * Pull the tenant slug from the current URL path so multi-tenant mode
+ * scopes API calls automatically. In single-tenant mode the SPA never
+ * mounts under /t/<slug>/ so this returns null and api() calls hit /api/*
+ * unchanged.
+ */
+export function currentTenantSlug(): string | null {
+  if (typeof window === 'undefined') return null;
+  const m = window.location.pathname.match(/^\/t\/([a-z0-9-]+)(?:\/|$)/);
+  return m ? m[1]! : null;
+}
+
 export async function api<T = unknown>(
   path: string,
   init: Omit<RequestInit, 'body'> & { body?: unknown } = {},
@@ -19,18 +31,28 @@ export async function api<T = unknown>(
   const key = getApiKey();
   const headers = new Headers(init.headers);
   if (key) headers.set('Authorization', `Bearer ${key}`);
-  if (init.body !== undefined && !headers.has('content-type')) {
+  // Blob/File bodies carry their own content-type and pass through as-is
+  // (used by upload endpoints). Everything else gets JSON treatment.
+  const isBinaryBody = init.body instanceof Blob;
+  if (init.body !== undefined && !isBinaryBody && !headers.has('content-type')) {
     headers.set('content-type', 'application/json');
   }
-  const res = await fetch(`/api${path}`, {
+  if (isBinaryBody && !headers.has('content-type')) {
+    headers.set('content-type', (init.body as Blob).type || 'application/octet-stream');
+  }
+  const slug = currentTenantSlug();
+  const tenantPrefix = slug ? `/t/${slug}` : '';
+  const res = await fetch(`/api${tenantPrefix}${path}`, {
     ...init,
     headers,
-    credentials: 'include', // send op_session cookie on magic-link flow
+    credentials: 'include',
     body: init.body === undefined
       ? undefined
-      : typeof init.body === 'string'
-        ? init.body
-        : JSON.stringify(init.body),
+      : isBinaryBody
+        ? (init.body as Blob)
+        : typeof init.body === 'string'
+          ? init.body
+          : JSON.stringify(init.body),
   });
   if (res.status === 401) {
     clearApiKey();
@@ -43,9 +65,26 @@ export async function api<T = unknown>(
     } catch {
       /* ignore */
     }
-    throw new ApiError(res.status, `${res.status} ${res.statusText}`, detail);
+    // Pull the most meaningful string out of the body when one's
+    // present. Server convention is `{ error, detail }` where `detail`
+    // is the verbose human-readable cause (e.g. upstream Network's
+    // 4xx body when proxied). Without this every API failure renders
+    // as a bare "500" or "400" — useless when triaging.
+    throw new ApiError(res.status, friendlyMessage(res, detail), detail);
   }
   return res.json() as Promise<T>;
+}
+
+function friendlyMessage(res: Response, detail: unknown): string {
+  const fallback = res.statusText ? `${res.status} ${res.statusText}` : `${res.status}`;
+  if (!detail || typeof detail !== 'object') return fallback;
+  const d = detail as Record<string, unknown>;
+  // Prefer the verbose explanation; fall back to the short error code.
+  if (typeof d.detail === 'string' && d.detail.length > 0) {
+    return typeof d.error === 'string' ? `${d.error}: ${d.detail}` : d.detail;
+  }
+  if (typeof d.error === 'string' && d.error.length > 0) return d.error;
+  return fallback;
 }
 
 export class ApiError extends Error {
@@ -55,20 +94,9 @@ export class ApiError extends Error {
 }
 
 export interface Principal {
-  role: 'admin' | 'partner' | 'network_vendor' | 'network_creator';
+  role: 'admin' | 'partner';
   source?: string;
   partnerId?: string;
   partner?: { id: string; name: string; email: string; stripeConnected: boolean };
-  networkVendorId?: string;
-  vendor?: { id: string; name: string; slug: string; logoUrl: string | null; websiteUrl: string | null; status: string };
-  networkCreatorId?: string;
-  creator?: {
-    id: string;
-    name: string;
-    handle: string;
-    email: string;
-    avatarUrl: string | null;
-    defaultPromoCode: string | null;
-    status: string;
-  };
+  admin?: { id: string; name: string; email: string };
 }

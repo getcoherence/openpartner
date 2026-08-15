@@ -1,125 +1,187 @@
 /**
- * Mail delivery. The abstraction stays tiny — a single send() that takes
- * { to, subject, text, html?, metadata? }.
+ * Transactional mailer. Transport comes from resolveMailConfig():
  *
- * Two implementations:
- *   DevMailer       persists to the DevMessage table. An admin-only
- *                   /dev/mailbox endpoint reads them back so local dev
- *                   and CI can follow magic links without configuring
- *                   a real provider.
- *   PostmarkMailer  POSTs to Postmark's Email API over native fetch
- *                   (no SDK dep). Used in any environment with
- *                   MAIL_TRANSPORT=postmark set.
+ *   UI-configured settings (Config table, per-tenant) take precedence —
+ *   stored encrypted at rest; SMTP password / Postmark token decrypted at
+ *   dispatch time.
  *
- * The factory reads MAIL_TRANSPORT:
- *   "postmark"  → PostmarkMailer (requires POSTMARK_SERVER_TOKEN + MAIL_FROM)
- *   anything else → DevMailer
+ *   Env fallback if UI is empty (SMTP_HOST / POSTMARK_SERVER_TOKEN +
+ *   MAIL_FROM). Env is shared platform-wide.
+ *
+ *   Console fallback if neither — dev only; the magic link prints
+ *   to the `pnpm dev:api` terminal.
+ *
+ * Mailers are created per-send so a settings change takes effect on
+ * the next email without a restart. A cached mailer would be a stale-
+ * creds footgun after rotation.
+ *
+ * Multi-tenant: every send takes a `{ db, tenantId }` context so we look
+ * up the right tenant's UI overrides. Pass through the request's `req.db`
+ * (transaction with app.tenant_id pinned).
+ *
+ * Tests override via __setMailerForTests with an in-memory capturer.
  */
 
-import { ulid } from 'ulid';
-import { TABLES, type DevMessageRow } from '@openpartner/db';
-import { db } from './db.js';
+import type { Knex } from 'knex';
+import nodemailer from 'nodemailer';
+import { resolveMailConfig } from './mail-settings.js';
+import { resolveBrandName } from './brand-name.js';
+import { getWhiteLabelState } from './white-label.js';
+import { TABLES, type ConfigRow } from '@openpartner/db';
 
-export interface MailMessage {
+export interface Message {
   to: string;
   subject: string;
   text: string;
   html?: string;
-  metadata?: Record<string, unknown>;
-  /**
-   * Opaque tag Postmark stores alongside the message. We use it to
-   * distinguish creator_signup / creator_signin / vendor_signup /
-   * vendor_signin in dashboards and searches.
-   */
   tag?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SendContext {
+  db: Knex;
+  tenantId: string;
 }
 
 export interface Mailer {
-  send(msg: MailMessage): Promise<void>;
+  send(ctx: SendContext, msg: Message): Promise<void>;
 }
 
-class DevMailer implements Mailer {
-  async send(msg: MailMessage): Promise<void> {
-    await db<DevMessageRow>(TABLES.DevMessage).insert({
-      id: ulid(),
-      to: msg.to,
-      subject: msg.subject,
-      body: msg.text,
-      html: msg.html ?? null,
-      metadata: (msg.metadata ?? {}) as never,
-    });
-    console.log(`[dev-mail] to=${msg.to} subject="${msg.subject}"`);
+/** Strip and quote pieces of a name for safe use in an RFC 5322 display
+ *  name. Drops control chars and double-quotes; trims to 80 chars.
+ *  The control-char range is intentional — it's exactly what RFC 5322
+ *  forbids in atom + quoted-string productions. */
+// eslint-disable-next-line no-control-regex
+const DISPLAY_NAME_UNSAFE = /[\x00-\x1f"\\]/g;
+function safeDisplayName(name: string): string {
+  return name.replace(DISPLAY_NAME_UNSAFE, '').trim().slice(0, 80);
+}
+
+/** Pull the bare email address out of `"Name" <addr@host>` or `addr@host`. */
+function extractAddress(from: string): string {
+  const m = from.match(/<([^>]+)>/);
+  return (m?.[1] ?? from).trim();
+}
+
+class RoutingMailer implements Mailer {
+  async send(ctx: SendContext, msg: Message): Promise<void> {
+    const cfg = await resolveMailConfig(ctx.db, ctx.tenantId);
+
+    // Brand-aware From + Reply-To when we're using the platform fallback
+    // (source='env'). Pattern: `"Acme via OpenPartner" <noreply@openpartner.dev>`,
+    // Reply-To = the brand's support email if set. Means hosted brands
+    // get brand identity in the inbox without configuring email at all.
+    // For source='ui' (brand wired up their own provider) we trust their
+    // From and don't second-guess it.
+    let from = cfg.from ?? null;
+    let replyTo: string | undefined;
+    if (cfg.source === 'env' && from) {
+      const brandName = await resolveBrandName(ctx.db, ctx.tenantId);
+      if (brandName) {
+        // White-label tenants get a clean brand-only From — no "via
+        // OpenPartner" platform attribution. (Auth is unaffected: the
+        // platform-fallback sender is still on openpartner.dev, which
+        // SPF/DKIM authenticate; only the display name changes. A tenant
+        // wanting the address itself white-labeled configures their own
+        // provider — source='ui' — which skips this block entirely.)
+        const wl = await getWhiteLabelState(ctx.db, ctx.tenantId);
+        from = wl.effective
+          ? `"${safeDisplayName(brandName)}" <${extractAddress(from)}>`
+          : `"${safeDisplayName(brandName)} via OpenPartner" <${extractAddress(from)}>`;
+      }
+      const supportRow = await ctx.db<ConfigRow>(TABLES.Config)
+        .where({ tenantId: ctx.tenantId, key: 'program_settings' })
+        .first();
+      const supportEmail = ((supportRow?.value as { supportEmail?: string } | undefined)?.supportEmail ?? '').trim();
+      if (supportEmail) {
+        replyTo = supportEmail;
+      } else {
+        // Fallback: oldest active admin on the tenant. Means a partner
+        // hitting Reply on a sign-in email always lands on a human at
+        // the brand, even before Settings → Brand info is filled in.
+        const fallbackAdmin = await ctx.db(TABLES.Admin)
+          .where({ tenantId: ctx.tenantId })
+          .whereNotNull('activatedAt')
+          .whereNull('revokedAt')
+          .orderBy('activatedAt', 'asc')
+          .first(['email']);
+        if (fallbackAdmin?.email) replyTo = fallbackAdmin.email as string;
+      }
+    }
+
+    if (cfg.kind === 'smtp' && cfg.smtp && from) {
+      const transporter = nodemailer.createTransport({
+        host: cfg.smtp.host,
+        port: cfg.smtp.port,
+        secure: cfg.smtp.secure,
+        auth:
+          cfg.smtp.user && cfg.smtp.password
+            ? { user: cfg.smtp.user, pass: cfg.smtp.password }
+            : undefined,
+        // Nodemailer's default connection timeout is 2 MINUTES — longer
+        // than the platform gateway's ~60s, so a misconfigured host (wrong
+        // hostname, filtered port) surfaced as an opaque 504 instead of
+        // our clean ETIMEDOUT/ECONNREFUSED error, and a real send (partner
+        // invite, signup) could pin its request just as long. Fail fast:
+        // a healthy SMTP handshake completes in single-digit seconds.
+        connectionTimeout: 10_000,
+        greetingTimeout: 10_000,
+        socketTimeout: 30_000,
+      });
+      await transporter.sendMail({
+        from,
+        to: msg.to,
+        replyTo,
+        subject: msg.subject,
+        text: msg.text,
+        html: msg.html,
+        headers: msg.tag ? { 'X-Tag': msg.tag } : undefined,
+      });
+      return;
+    }
+    if (cfg.kind === 'postmark' && cfg.postmark && from) {
+      const res = await fetch('https://api.postmarkapp.com/email', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json',
+          'X-Postmark-Server-Token': cfg.postmark.serverToken,
+        },
+        body: JSON.stringify({
+          From: from,
+          To: msg.to,
+          ReplyTo: replyTo,
+          Subject: msg.subject,
+          TextBody: msg.text,
+          HtmlBody: msg.html,
+          Tag: msg.tag,
+          MessageStream: cfg.postmark.messageStream,
+          Metadata: msg.metadata,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`postmark ${res.status}: ${await res.text().catch(() => '<no body>')}`);
+      }
+      const json = (await res.json().catch(() => ({}))) as { ErrorCode?: number; Message?: string };
+      if (json.ErrorCode && json.ErrorCode !== 0) {
+        throw new Error(`postmark error ${json.ErrorCode}: ${json.Message ?? 'unknown'}`);
+      }
+      return;
+    }
+    // Console fallback. Dev only.
+    console.log(`[mail] to=${msg.to} subject=${JSON.stringify(msg.subject)}`);
+    console.log(msg.text);
   }
 }
 
-class PostmarkMailer implements Mailer {
-  constructor(
-    private readonly serverToken: string,
-    private readonly from: string,
-    private readonly messageStream: string,
-  ) {}
-
-  async send(msg: MailMessage): Promise<void> {
-    const res = await fetch('https://api.postmarkapp.com/email', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        accept: 'application/json',
-        'x-postmark-server-token': this.serverToken,
-      },
-      body: JSON.stringify({
-        From: this.from,
-        To: msg.to,
-        Subject: msg.subject,
-        TextBody: msg.text,
-        HtmlBody: msg.html,
-        MessageStream: this.messageStream,
-        Tag: msg.tag,
-        // Metadata values must be strings per Postmark's contract.
-        Metadata: msg.metadata
-          ? Object.fromEntries(Object.entries(msg.metadata).map(([k, v]) => [k, String(v)]))
-          : undefined,
-      }),
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`postmark send failed: ${res.status} ${text.slice(0, 300)}`);
-    }
-
-    // 200 with ErrorCode=0 is the success shape; ErrorCode != 0 is a
-    // per-message rejection (recipient suppressed, blocked, etc). Both
-    // are worth knowing about, but only ErrorCode != 0 with a non-zero
-    // status should throw. Postmark returns ErrorCode=0 on 200.
-    const body = (await res.json()) as { ErrorCode?: number; Message?: string };
-    if (body.ErrorCode && body.ErrorCode !== 0) {
-      throw new Error(`postmark rejected message: ${body.ErrorCode} ${body.Message ?? ''}`);
-    }
-  }
-}
-
-let mailerInstance: Mailer | null = null;
+let override: Mailer | null = null;
+const routing = new RoutingMailer();
 
 export function getMailer(): Mailer {
-  if (mailerInstance) return mailerInstance;
-  const transport = process.env.MAIL_TRANSPORT ?? 'dev';
-  if (transport === 'postmark') {
-    const token = process.env.POSTMARK_SERVER_TOKEN;
-    const from = process.env.MAIL_FROM;
-    if (!token) throw new Error('MAIL_TRANSPORT=postmark requires POSTMARK_SERVER_TOKEN');
-    if (!from) throw new Error('MAIL_TRANSPORT=postmark requires MAIL_FROM');
-    const stream = process.env.POSTMARK_MESSAGE_STREAM ?? 'outbound';
-    mailerInstance = new PostmarkMailer(token, from, stream);
-  } else {
-    mailerInstance = new DevMailer();
-  }
-  return mailerInstance;
+  return override ?? routing;
 }
 
-/**
- * Reset for tests that want to change env vars between runs. Not used
- * in production code paths.
- */
-export function __resetMailerForTests(): void {
-  mailerInstance = null;
+/** For tests: inject a capturing / mock mailer. Pass null to reset. */
+export function __setMailerForTests(mailer: Mailer | null): void {
+  override = mailer;
 }

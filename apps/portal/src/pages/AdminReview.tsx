@@ -11,6 +11,13 @@ interface Commission {
   currency: string;
   status: string;
   accruedAt: string;
+  holdbackDays: number | null;
+  matureAt: string | null;
+  campaignName: string | null;
+}
+
+function daysFromNow(iso: string): number {
+  return Math.ceil((Date.parse(iso) - Date.now()) / (24 * 60 * 60 * 1000));
 }
 
 export function AdminReview() {
@@ -50,20 +57,48 @@ export function AdminReview() {
       ) : (
         <Table
           columns={['Partner', { label: 'Amount', align: 'right' }, 'Status', 'Accrued', 'Actions']}
-          rows={rows.map((c) => [
-            <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(c.partnerId)}</code>,
-            <span style={{ fontWeight: 500 }}>{money(c.amount, c.currency)}</span>,
-            <StatusPill status={c.status} />,
-            <span style={{ color: theme.textMuted }}>{formatDate(c.accruedAt, { relative: true })}</span>,
-            <div style={{ display: 'flex', gap: 6 }}>
-              <Button size="sm" onClick={() => approve.mutate(c.id)} disabled={approve.isPending}>
-                Approve
-              </Button>
-              <Button size="sm" variant="danger" onClick={() => reverse.mutate(c.id)} disabled={reverse.isPending}>
-                Reverse
-              </Button>
-            </div>,
-          ])}
+          rows={rows.map((c) => {
+            const inHoldback = c.matureAt ? Date.parse(c.matureAt) > Date.now() : false;
+            const daysLeft = c.matureAt ? daysFromNow(c.matureAt) : 0;
+            return [
+              <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(c.partnerId)}</code>,
+              <span style={{ fontWeight: 500 }}>{money(c.amount, c.currency)}</span>,
+              inHoldback ? (
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: theme.textMuted,
+                    background: theme.surface2,
+                    border: `1px solid ${theme.border}`,
+                    borderRadius: 999,
+                    padding: '3px 9px',
+                    whiteSpace: 'nowrap',
+                  }}
+                  title={`Holdback policy: ${c.holdbackDays} days. Auto-approves on ${new Date(c.matureAt!).toLocaleDateString()}.`}
+                >
+                  Holdback · {daysLeft}d left
+                </span>
+              ) : (
+                <StatusPill status={c.status} />
+              ),
+              <span style={{ color: theme.textMuted }}>{formatDate(c.accruedAt, { relative: true })}</span>,
+              <div style={{ display: 'flex', gap: 6 }}>
+                <span title={inHoldback ? `In holdback until ${new Date(c.matureAt!).toLocaleDateString()}` : ''}>
+                  <Button
+                    size="sm"
+                    onClick={() => approve.mutate(c.id)}
+                    disabled={approve.isPending || inHoldback}
+                  >
+                    Approve
+                  </Button>
+                </span>
+                <Button size="sm" variant="danger" onClick={() => reverse.mutate(c.id)} disabled={reverse.isPending}>
+                  Reverse
+                </Button>
+              </div>,
+            ];
+          })}
         />
       )}
     </Page>

@@ -7,7 +7,7 @@
 # Multi-stage mirrors the API Dockerfile but skips the migration bundle
 # since the router only reads/writes; migrations run in the API image.
 
-ARG NODE_VERSION=20-alpine
+ARG NODE_VERSION=22-alpine
 
 FROM node:${NODE_VERSION} AS deps
 RUN corepack enable && corepack prepare pnpm@9.11.0 --activate
@@ -37,9 +37,14 @@ RUN apk add --no-cache tini
 ENV NODE_ENV=production \
     ROUTER_PORT=4701
 WORKDIR /app
-COPY --from=builder /out/package.json ./package.json
-COPY --from=builder /out/node_modules ./node_modules
-COPY --from=builder /out/dist ./dist
+# chown to the unprivileged `node` user (UID 1000) shipped with the
+# official node:alpine image so the runtime container doesn't run as
+# root.
+COPY --from=builder --chown=node:node /out/package.json ./package.json
+COPY --from=builder --chown=node:node /out/node_modules ./node_modules
+COPY --from=builder --chown=node:node /out/dist ./dist
+
+USER node
 
 EXPOSE 4701
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

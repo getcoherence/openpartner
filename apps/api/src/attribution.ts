@@ -27,13 +27,26 @@ import {
   TABLES,
   type AttributionModel,
   type AttributionRow,
-  type CampaignRow,
+  type ProgramRow,
   type ClickRow,
   type CommissionRule,
+  type CommissionSubRule,
   type EventRow,
   type IdentityRow,
 } from '@openpartner/db';
 import { dispatchEvent } from './webhook-dispatcher.js';
+
+// Average month length used by the recurringMonths cap. We use 30.4375 days
+// (365.25 / 12) so a "12 months" cap doesn't drift by an extra day every
+// February. The cap fires when (event.ts - firstAttributedEventTs) exceeds
+// this; we DON'T anchor on calendar months because that would require
+// timezone reasoning the rest of the engine doesn't do.
+const MONTH_MS = 30.4375 * 24 * 60 * 60 * 1000;
+
+// How far an event may predate its click and still attribute. Absorbs Stripe's
+// whole-second `created` truncation and clock drift between whoever stamped the
+// click and whoever stamped the event. See the age check in attributeEvent().
+const CLICK_AFTER_EVENT_GRACE_MS = 5 * 60 * 1000;
 
 export interface AttributeResult {
   status: 'attributed' | 'no_identity' | 'no_click' | 'outside_window' | 'already_attributed';
@@ -42,7 +55,7 @@ export interface AttributeResult {
 }
 
 interface ClickWithCampaign extends ClickRow {
-  campaign: CampaignRow;
+  campaign: ProgramRow;
 }
 
 export async function attributeEvent(
@@ -58,17 +71,45 @@ export async function attributeEvent(
   const cleanClicks = clicks.filter((c) => !c.fraudFlag);
   if (cleanClicks.length === 0) return { status: 'no_click' };
 
-  const campaignIds = Array.from(new Set(cleanClicks.map((c) => c.campaignId)));
-  const campaigns = await db<CampaignRow>(TABLES.Campaign).whereIn('id', campaignIds);
+  // Revoked partners are excluded from attribution — any call landing
+  // here (whether a live event webhook or a replay via
+  // attributeBacklogForUser) skips them regardless of whether the event
+  // timestamp predates the revoke. This matches the admin-intent of
+  // "stop all earning for this partner going forward" and keeps backlog
+  // re-runs from retroactively shifting weight around a revoked
+  // partner. Historical attribution rows already in the table for the
+  // partner aren't deleted on revoke — admin reverses those manually
+  // via the commissions review queue if needed.
+  const partnerIds = Array.from(new Set(cleanClicks.map((c) => c.partnerId)));
+  const revokedPartners = await db('Partner').whereIn('id', partnerIds).whereNotNull('revokedAt').pluck('id');
+  const revokedSet = new Set(revokedPartners as string[]);
+  const eligibleByPartner = cleanClicks.filter((c) => !revokedSet.has(c.partnerId));
+  if (eligibleByPartner.length === 0) return { status: 'no_click' };
+
+  const programIds = Array.from(new Set(eligibleByPartner.map((c) => c.programId)));
+  const campaigns = await db<ProgramRow>(TABLES.Program).whereIn('id', programIds);
   const campaignsById = new Map(campaigns.map((c) => [c.id, c]));
 
   // Clicks in-window relative to this event, with their campaign attached.
   const eligible: ClickWithCampaign[] = [];
-  for (const click of cleanClicks) {
-    const campaign = campaignsById.get(click.campaignId);
+  for (const click of eligibleByPartner) {
+    const campaign = campaignsById.get(click.programId);
     if (!campaign) continue;
     const windowMs = campaign.attributionWindowDays * 24 * 60 * 60 * 1000;
-    if (new Date(event.ts).getTime() - new Date(click.ts).getTime() > windowMs) continue;
+    const ageMs = new Date(event.ts).getTime() - new Date(click.ts).getTime();
+    // Outside the window OR a click that happened meaningfully AFTER the
+    // event: a later click must never attribute an earlier conversion
+    // (backlog / backdated events made negative ages pass the old one-sided
+    // check).
+    //
+    // The grace is load-bearing, not slop. A genuine conversion can measure
+    // slightly OLDER than the click that caused it for two ordinary reasons:
+    // Stripe stamps `created` in whole SECONDS, so a conversion in the same
+    // second as the click truncates to up to 999ms before it; and the clock
+    // stamping Click.ts is not the clock stamping the event. A strict `< 0`
+    // silently dropped both. What this rejects — a backdated backlog event
+    // replayed against a newer click — is hours or months off, never minutes.
+    if (ageMs < -CLICK_AFTER_EVENT_GRACE_MS || ageMs > windowMs) continue;
     eligible.push({ ...click, campaign });
   }
   if (eligible.length === 0) return { status: 'outside_window' };
@@ -91,9 +132,10 @@ export async function attributeEvent(
     const insertRes = await db<AttributionRow>(TABLES.Attribution)
       .insert({
         id: attributionId,
+        tenantId: event.tenantId,
         eventId: event.id,
         partnerId: click.partnerId,
-        campaignId: click.campaignId,
+        programId: click.programId,
         clickId: click.id,
         model,
         weight: weight.toFixed(4),
@@ -105,30 +147,81 @@ export async function attributeEvent(
     if (insertRes.length === 0) continue; // dup — already attributed
     allDup = false;
 
-    const rule = parseCommissionRule(click.campaign.commissionRule);
-    const amount = computeCommissionAmount(rule, event) * weight;
-    const commissionId = ulid();
-    await db(TABLES.Commission).insert({
-      id: commissionId,
-      attributionId,
-      partnerId: click.partnerId,
-      amount: amount.toFixed(2),
-      currency: event.currency ?? 'USD',
-      status: 'accrued',
-    });
-    results.push({ clickId: click.id, partnerId: click.partnerId, weight, attributionId, commissionId });
-    dispatchEvent('attribution.created', {
+    // Commission lifecycle gate: events dated after the campaign's
+    // endsAt don't accrue. Attribution row stays for analytics — we
+    // still want to know the click → conversion path was real — just
+    // no payout. Pre-startsAt is similarly skipped (defensive; clicks
+    // shouldn't exist for a not-yet-started campaign).
+    const { commissionEarnable } = await import('./campaign-lifecycle.js');
+    if (!commissionEarnable(click.campaign, new Date(event.ts))) {
+      continue;
+    }
+
+    // Prefer the partner's snapshotted rule (set at PartnershipRequest
+    // approval time via federation) over the live Campaign rule. This
+    // is what makes "brand edits campaign rule post-approval" safe —
+    // existing partners keep what they were approved under. Absent
+    // snapshot = pre-snapshot partner OR non-Network partner; falls
+    // back to the Campaign rule (status quo).
+    const rules = await resolveCommissionRule(db, click.partnerId, click.campaign.commissionRule);
+
+    // Walk every sub-rule. A single event may produce multiple Commission
+    // rows (e.g., a `subscription_created` matches both a one-time bonus
+    // and a recurring rule). Each sub-rule's eligibility is evaluated
+    // independently against the same Event + Attribution.
+    let firstCommissionId: string | undefined;
+    for (const subRule of rules) {
+      const baseAmount = await evaluateSubRule(db, subRule, event, click.partnerId);
+      if (baseAmount === null) continue; // not eligible (filter / first / cap miss)
+      const amount = baseAmount * weight;
+      if (amount === 0) continue;
+
+      const commissionId = ulid();
+      await db(TABLES.Commission).insert({
+        id: commissionId,
+        tenantId: event.tenantId,
+        attributionId,
+        partnerId: click.partnerId,
+        amount: amount.toFixed(2),
+        currency: event.currency ?? 'USD',
+        status: 'accrued',
+      });
+      if (!firstCommissionId) firstCommissionId = commissionId;
+
+      dispatchEvent(event.tenantId, 'commission.accrued', {
+        commissionId,
+        partnerId: click.partnerId,
+        attributionId,
+        // clickId + eventId carry through to partner postback macros
+        // ({click_id}, {event_id}, {transaction_id}). Tenant webhook
+        // subscribers ignore them if they don't care.
+        clickId: click.id,
+        eventId: event.id,
+        programId: click.programId,
+        amount: amount.toFixed(2),
+        currency: event.currency ?? 'USD',
+        eventType: event.type,
+        eventValue: event.value,
+      });
+    }
+
+    // attribution.created fires once per Attribution regardless of how many
+    // Commission rows it produced. commissionId/Amount in the payload
+    // reflect the FIRST commission for backwards compat with subscribers
+    // that key off a single commission per attribution; multi-rule consumers
+    // should listen to commission.accrued.
+    results.push({ clickId: click.id, partnerId: click.partnerId, weight, attributionId, commissionId: firstCommissionId });
+    dispatchEvent(event.tenantId, 'attribution.created', {
       attributionId,
       eventId: event.id,
       partnerId: click.partnerId,
-      campaignId: click.campaignId,
+      programId: click.programId,
       clickId: click.id,
       model,
       weight,
       eventType: event.type,
       eventValue: event.value,
-      commissionId,
-      commissionAmount: amount.toFixed(2),
+      commissionId: firstCommissionId,
       commissionCurrency: event.currency ?? 'USD',
     });
   }
@@ -176,13 +269,132 @@ export function applyModel(model: AttributionModel, n: number): number[] {
   return w;
 }
 
-function parseCommissionRule(raw: unknown): CommissionRule {
-  if (raw && typeof raw === 'object' && 'type' in raw) return raw as CommissionRule;
+/**
+ * Tolerate both the array shape (post-compound-rules migration) and the
+ * legacy single-object shape ({type, value, recurring?}). The single-object
+ * fallback is what makes a half-applied migration non-catastrophic — the
+ * 20260614000000 migration backfills Campaign rows but a pre-deploy app
+ * version reading a post-migration row, or vice versa, still produces a
+ * valid array.
+ */
+export function parseCommissionRule(raw: unknown): CommissionRule {
+  if (Array.isArray(raw)) return raw as CommissionRule;
+  if (raw && typeof raw === 'object' && 'type' in raw) {
+    const r = raw as { type: 'percent' | 'fixed'; value: number; currency?: string; recurring?: boolean };
+    return [{
+      trigger: 'every',
+      type: r.type,
+      value: r.value,
+      currency: r.currency,
+      recurring: r.recurring,
+    }];
+  }
   throw new Error('Invalid commissionRule on Campaign');
 }
 
-export function computeCommissionAmount(rule: CommissionRule, event: Pick<EventRow, 'value'>): number {
-  if (rule.type === 'fixed') return rule.value;
+/**
+ * Look up the partner's snapshotted commission rule (set at
+ * PartnershipRequest approval via federation, or backfilled by an
+ * admin migration). Falls back to the live Campaign rule when no
+ * snapshot exists — preserves status quo for non-Network partners
+ * and partners onboarded before snapshots shipped.
+ *
+ * Snapshot lookup precedence:
+ *   1. PartnerCommission.commissionRules (the array form, post-compound)
+ *   2. PartnerCommission legacy columns (commissionType/commissionValue/
+ *      recurring) — wrapped into a 1-element array for the engine
+ *   3. Campaign.commissionRule (no snapshot exists)
+ */
+async function resolveCommissionRule(
+  db: Knex,
+  partnerId: string,
+  campaignRule: unknown,
+): Promise<CommissionRule> {
+  const snapshot = await db<{
+    commissionType: 'percent' | 'fixed';
+    commissionValue: string;
+    recurring: boolean;
+    commissionRules: CommissionRule | null;
+  }>(TABLES.PartnerCommission)
+    .where({ partnerId })
+    .first('commissionType', 'commissionValue', 'recurring', 'commissionRules');
+
+  if (snapshot?.commissionRules) return snapshot.commissionRules;
+
+  if (snapshot) {
+    return [{
+      trigger: 'every',
+      type: snapshot.commissionType,
+      value: Number(snapshot.commissionValue),
+      recurring: snapshot.recurring,
+    }];
+  }
+
+  return parseCommissionRule(campaignRule);
+}
+
+/**
+ * Decide whether `subRule` fires for `event` and, if so, return the
+ * pre-weight commission base amount. Returns null when the rule doesn't
+ * apply to this event (type mismatch, first-trigger already fired, or
+ * recurringMonths cap reached).
+ *
+ * Trigger checks issue one query each against (Attribution × Event); the
+ * indexes on Attribution(partnerId) + Event(userId) keep this O(log n).
+ * The cap check piggybacks on the same join so it's a second small query.
+ */
+async function evaluateSubRule(
+  db: Knex,
+  subRule: CommissionSubRule,
+  event: EventRow,
+  partnerId: string,
+): Promise<number | null> {
+  if (subRule.eventType && subRule.eventType !== event.type) return null;
+
+  if (subRule.trigger === 'first' || subRule.trigger === 'subsequent') {
+    // "Has this (partner, user, eventType) been attributed before?"
+    // first      → fire only when there's NO prior attribution
+    // subsequent → fire only when there IS a prior attribution
+    // Refunds don't re-arm the lookup; if a brand wants a refund to
+    // re-trigger the bonus they'd reverse the prior commission and
+    // re-attribute, consistent with how holdback works.
+    const prior = await db(TABLES.Attribution)
+      .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
+      .where(`${TABLES.Attribution}.partnerId`, partnerId)
+      .andWhere(`${TABLES.Event}.userId`, event.userId)
+      .andWhere(`${TABLES.Event}.type`, event.type)
+      .andWhere(`${TABLES.Event}.ts`, '<', event.ts)
+      .first(`${TABLES.Event}.id`);
+    if (subRule.trigger === 'first' && prior) return null;
+    if (subRule.trigger === 'subsequent' && !prior) return null;
+  }
+
+  if (subRule.recurring && subRule.recurringMonths != null) {
+    const first = (await db(TABLES.Attribution)
+      .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
+      .where(`${TABLES.Attribution}.partnerId`, partnerId)
+      .andWhere(`${TABLES.Event}.userId`, event.userId)
+      .andWhere(`${TABLES.Event}.type`, event.type)
+      .orderBy(`${TABLES.Event}.ts`, 'asc')
+      .first(`${TABLES.Event}.ts as ts`)) as { ts: Date | string } | undefined;
+    if (first) {
+      const firstMs = new Date(first.ts).getTime();
+      const eventMs = new Date(event.ts).getTime();
+      if (eventMs - firstMs > subRule.recurringMonths * MONTH_MS) return null;
+    }
+  }
+
+  return computeSubRuleAmount(subRule, event);
+}
+
+/** Pure dollar amount for one sub-rule against one event. No trigger
+ *  evaluation — caller is responsible for that. Exported so tests can
+ *  exercise the math without a database. */
+export function computeSubRuleAmount(
+  subRule: CommissionSubRule,
+  event: Pick<EventRow, 'value'>,
+): number {
+  if (subRule.type === 'fixed') return subRule.value;
   const revenue = event.value ? Number(event.value) : 0;
-  return Math.round(revenue * rule.value) / 100;
+  return Math.round(revenue * subRule.value) / 100;
 }

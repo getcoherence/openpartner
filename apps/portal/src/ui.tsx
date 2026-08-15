@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { theme } from './theme.js';
+import { useIsMobile } from './lib/useMediaQuery.js';
 
 // ---------------- Layout ----------------
 
@@ -14,24 +15,28 @@ export function Page({
   actions?: ReactNode;
   children: ReactNode;
 }) {
+  const isMobile = useIsMobile();
   return (
-    <div style={{ padding: '32px 40px', maxWidth: 1280, margin: '0 auto' }}>
+    <div style={{ padding: isMobile ? '20px 16px' : '32px 40px', maxWidth: 1280, margin: '0 auto' }}>
       <header
         style={{
           display: 'flex',
+          // On mobile the title + actions stack so wide action buttons
+          // don't squeeze the heading into an unreadable column.
+          flexDirection: isMobile ? 'column' : 'row',
           justifyContent: 'space-between',
-          alignItems: 'flex-end',
-          marginBottom: 28,
-          gap: 16,
+          alignItems: isMobile ? 'stretch' : 'flex-end',
+          marginBottom: isMobile ? 20 : 28,
+          gap: isMobile ? 14 : 16,
         }}
       >
         <div>
-          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 600, letterSpacing: '-0.01em' }}>{title}</h1>
+          <h1 style={{ margin: 0, fontSize: isMobile ? 21 : 24, fontWeight: 600, letterSpacing: '-0.01em' }}>{title}</h1>
           {subtitle && (
             <div style={{ color: theme.textMuted, fontSize: 14, marginTop: 4 }}>{subtitle}</div>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>{actions}</div>
+        {actions && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{actions}</div>}
       </header>
       {children}
     </div>
@@ -118,9 +123,84 @@ export function Table({
   empty?: string;
 }) {
   const cols = columns.map((c) => (typeof c === 'string' ? { label: c, align: 'left' as const } : c));
+  const isMobile = useIsMobile();
+
+  // On phones, a multi-column table forces horizontal scrolling and hides
+  // data off-screen. Reflow each row into a stacked "label: value" card so
+  // every field is visible without scrolling sideways. The first column is
+  // treated as the row's title (rendered full-width, larger).
+  if (isMobile) {
+    if (rows.length === 0) {
+      return (
+        <Card style={{ textAlign: 'center', color: theme.textDim, fontSize: 14 }}>{empty}</Card>
+      );
+    }
+    return (
+      <Card padded={false} style={{ overflow: 'hidden' }}>
+        {rows.map((row, i) => (
+          <div
+            key={i}
+            style={{
+              padding: '14px 16px',
+              borderBottom: i < rows.length - 1 ? `1px solid ${theme.borderSubtle}` : 'none',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+            }}
+          >
+            {row.map((cell, j) => {
+              const isTitle = j === 0;
+              return (
+                <div
+                  key={j}
+                  style={
+                    isTitle
+                      ? { fontSize: 15, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }
+                      : {
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'baseline',
+                          gap: 12,
+                        }
+                  }
+                >
+                  {!isTitle && (
+                    <span
+                      style={{
+                        flexShrink: 0,
+                        color: theme.textMuted,
+                        fontSize: 11,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.05em',
+                      }}
+                    >
+                      {cols[j]?.label}
+                    </span>
+                  )}
+                  <span
+                    style={{
+                      minWidth: 0,
+                      textAlign: isTitle ? 'left' : 'right',
+                      fontVariantNumeric: 'tabular-nums',
+                    }}
+                  >
+                    {cell}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </Card>
+    );
+  }
+
   return (
     <Card padded={false} style={{ overflow: 'hidden' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+      {/* Horizontal scroll as a fallback for very wide content on tablet/
+          desktop widths; phones use the stacked card layout above. */}
+      <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14, minWidth: 'max-content' }}>
         <thead>
           <tr>
             {cols.map((c) => (
@@ -170,6 +250,7 @@ export function Table({
           )}
         </tbody>
       </table>
+      </div>
     </Card>
   );
 }
@@ -282,6 +363,26 @@ export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement> & { 
   );
 }
 
+export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      {...props}
+      style={{
+        padding: '10px 12px',
+        fontSize: 14,
+        background: theme.surface2,
+        border: `1px solid ${theme.border}`,
+        borderRadius: theme.radiusSm,
+        color: theme.text,
+        width: '100%',
+        fontFamily: 'inherit',
+        resize: 'vertical',
+        ...props.style,
+      }}
+    />
+  );
+}
+
 export function Label({ children }: { children: ReactNode }) {
   return (
     <label
@@ -309,6 +410,9 @@ export function StatusPill({ status }: { status: string }) {
     pending: { bg: theme.surface2, fg: theme.textMuted },
     failed: { bg: theme.dangerSoft, fg: theme.danger },
     connected: { bg: theme.successSoft, fg: theme.success },
+    invited: { bg: theme.warnSoft, fg: theme.warn },
+    active: { bg: theme.successSoft, fg: theme.success },
+    revoked: { bg: theme.dangerSoft, fg: theme.danger },
   };
   const c = palette[status] ?? { bg: theme.surface2, fg: theme.textMuted };
   return (

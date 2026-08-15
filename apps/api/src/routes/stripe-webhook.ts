@@ -1,20 +1,143 @@
 import { Router, raw } from 'express';
+import type { Knex } from 'knex';
 import Stripe from 'stripe';
 import { ulid } from 'ulid';
-import { TABLES, type EventRow, type PartnerRow, type PayoutRow } from '@openpartner/db';
-import { db } from '../db.js';
+import {
+  TABLES,
+  type AttributionRow,
+  type ClickRow,
+  type CommissionRow,
+  type EventRow,
+  type IdentityRow,
+  type PartnerRow,
+  type PayoutRow,
+  type TenantRow,
+} from '@openpartner/db';
+import { appDb, db } from '../db.js';
 import { attributeEvent } from '../attribution.js';
-import { persistMerchantSubscription } from './billing.js';
+import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFromStripeSub } from './billing.js';
+import {
+  handleCancellationScheduleChanged,
+  handleTenantSubscriptionEnded,
+  notifyTenantInvoicePaymentFailed,
+  subscriptionCancelScheduled,
+} from '../billing-lifecycle.js';
+import { applyWhiteLabelFromSubscription, subscriptionHasWhiteLabel, whiteLabelPriceId } from '../white-label-billing.js';
+import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
+import { handleFundingEvent, InboxEventHeldError } from '../funding/webhook.js';
+import { mirrorHostedBillingState, type MirroredSubscriptionStatus } from '../billing-plan.js';
+import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
 
 const stripeKey = process.env.STRIPE_SECRET_KEY;
-const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+// Webhook signing secrets, bound to the Stripe "Event destination" that
+// issued them so a secret from one destination can't authorize an event
+// family from the other (confused-deputy hardening — spec review #11):
+//   - STRIPE_WEBHOOK_SECRET_PLATFORM → Destination A: platform-account events
+//     (checkout.*, customer.*, invoice.*, charge.*, payment_intent.*)
+//   - STRIPE_WEBHOOK_SECRET_CONNECT  → Destination B: connected-account events
+//     (account.updated, transfer.*)
+// Each accepts a comma-separated list (multiple endpoints / rotation).
+// STRIPE_WEBHOOK_SECRET is the LEGACY combined var: when the split vars are
+// unset it verifies BOTH families (unchanged behavior) and family
+// enforcement is skipped for it. Migrate to the split vars to turn on
+// enforcement — see docs/deploy-production.md.
+function parseSecrets(v: string | undefined): string[] {
+  return (v ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+const platformWebhookSecrets = parseSecrets(process.env.STRIPE_WEBHOOK_SECRET_PLATFORM);
+const connectWebhookSecrets = parseSecrets(process.env.STRIPE_WEBHOOK_SECRET_CONNECT);
+const legacyWebhookSecrets = parseSecrets(process.env.STRIPE_WEBHOOK_SECRET);
+const anyWebhookSecret =
+  platformWebhookSecrets.length + connectWebhookSecrets.length + legacyWebhookSecrets.length > 0;
+
+if (
+  legacyWebhookSecrets.length > 0 &&
+  platformWebhookSecrets.length === 0 &&
+  connectWebhookSecrets.length === 0
+) {
+  console.warn(
+    '[stripe-webhook] using legacy STRIPE_WEBHOOK_SECRET for all event families; set ' +
+      'STRIPE_WEBHOOK_SECRET_PLATFORM + STRIPE_WEBHOOK_SECRET_CONNECT to enable secret-family enforcement.',
+  );
+}
 
 const stripe = stripeKey ? new Stripe(stripeKey) : null;
 
 export const stripeWebhookRouter = Router();
 
+type SecretFamily = 'platform' | 'connect' | 'legacy';
+
+/** Verify the signature against each configured secret, returning which
+ *  destination family the matching secret belongs to. */
+function verifyWebhook(
+  stripeClient: Stripe,
+  body: Buffer,
+  sig: string,
+): { event: Stripe.Event; family: SecretFamily } | null {
+  const groups: Array<[SecretFamily, string[]]> = [
+    ['platform', platformWebhookSecrets],
+    ['connect', connectWebhookSecrets],
+    ['legacy', legacyWebhookSecrets],
+  ];
+  for (const [family, secrets] of groups) {
+    for (const secret of secrets) {
+      try {
+        return { event: stripeClient.webhooks.constructEvent(body, sig, secret), family };
+      } catch {
+        // Not this secret — try the next.
+      }
+    }
+  }
+  return null;
+}
+
+// The destination family each handled event type must arrive on. Types not
+// listed here are unconstrained (the handlers skip anything they don't map).
+const PLATFORM_EVENT_TYPES = new Set([
+  'checkout.session.completed',
+  'customer.created',
+  'customer.subscription.created',
+  'customer.subscription.updated',
+  'customer.subscription.deleted',
+  'invoice.paid',
+  'invoice.payment_failed',
+  'charge.refunded',
+  'charge.dispute.created',
+  'payment_intent.succeeded',
+  'payment_intent.payment_failed',
+  'payment_intent.canceled',
+  // transfer.* are PLATFORM-account events: we create Connect transfers with
+  // the platform key (funding/executor.ts), so Stripe fires transfer.created
+  // / transfer.updated / transfer.reversed on the platform account — they
+  // arrive on Destination A, NOT the connected-account destination.
+  // transfer.created is the round-10 orphan detector's feed; registered on
+  // Destination A 2026-08-14.
+  'transfer.created',
+  'transfer.updated',
+  'transfer.reversed',
+]);
+// Only account.updated is a genuine connected-account event (event.account
+// set, delivered via the Connect destination).
+const CONNECT_EVENT_TYPES = new Set(['account.updated']);
+function expectedFamilyForType(type: string): SecretFamily | null {
+  if (PLATFORM_EVENT_TYPES.has(type)) return 'platform';
+  if (CONNECT_EVENT_TYPES.has(type)) return 'connect';
+  return null;
+}
+
 /**
  * Stripe webhook → raw event log.
+ *
+ * Stripe events have no URL tenant — the webhook URL is platform-wide. We
+ * resolve tenantId from event metadata (every Stripe object we create is
+ * stamped with `openpartner_tenant_id`) with DB-backed fallbacks for objects
+ * that pre-date the stamping. Once resolved, the actual writes happen inside
+ * an `appDb.transaction(...)` with `SET LOCAL app.tenant_id` so RLS catches
+ * any cross-tenant mistake as a second line of defense.
  *
  * Each Stripe event we care about becomes an immutable Event row, then goes
  * through the attribution engine. We map:
@@ -22,78 +145,326 @@ export const stripeWebhookRouter = Router();
  *   - customer.subscription.created → 'subscription_created'
  *   - invoice.paid                → 'invoice_paid' (carries revenue)
  *
- * We require stripe_userId to be present in customer metadata as
- * `openpartner_user_id` — that's the bridge from Stripe's Customer to the
- * merchant's userId, which is what Identity stitches against.
+ * We require `openpartner_user_id` to be present in customer metadata as
+ * the bridge from Stripe's Customer to the merchant's userId, which is
+ * what Identity stitches against.
  */
 stripeWebhookRouter.post(
   '/webhooks/stripe',
   raw({ type: 'application/json' }),
   async (req, res) => {
-    if (!stripe || !webhookSecret) {
+    if (!stripe || !anyWebhookSecret) {
       return res.status(503).json({ error: 'stripe_not_configured' });
     }
 
     const sig = req.header('stripe-signature');
     if (!sig) return res.status(400).json({ error: 'missing_signature' });
 
-    let event: Stripe.Event;
+    const verified = verifyWebhook(stripe, req.body, sig);
+    if (!verified) return res.status(400).json({ error: 'invalid_signature' });
+    const { event, family } = verified;
+
+    // Confused-deputy guard: a secret bound to one destination must not
+    // authorize an event type belonging to the other (e.g. the Connect
+    // secret carrying a forged checkout.session.completed). Skipped for the
+    // legacy combined secret, which has no family binding. 2xx so Stripe
+    // stops retrying a permanently-rejected event.
+    if (family !== 'legacy') {
+      const expected = expectedFamilyForType(event.type);
+      if (expected !== null && expected !== family) {
+        console.warn('[stripe-webhook] secret-family mismatch', {
+          type: event.type,
+          verifiedFamily: family,
+          expectedFamily: expected,
+        });
+        return res.json({ ok: true, skipped: event.type, reason: 'secret_family_mismatch' });
+      }
+    }
+
+    // Funding-pipeline events (PaymentIntents/charges/transfers stamped
+    // with our funding metadata) are platform-money events, not merchant
+    // conversion events — they route to the funding state machine on the
+    // privileged pool and never reach attribution. Runs regardless of
+    // HOSTED_FUNDING_ENABLED: a late webhook after a flag flip must still
+    // land in the inbox and CAS safely.
+    let funding: string | null;
     try {
-      event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
-    } catch {
-      return res.status(400).json({ error: 'invalid_signature' });
+      funding = await handleFundingEvent(db, stripe, event);
+    } catch (err) {
+      if (err instanceof InboxEventHeldError) {
+        // Another worker is mid-handler on this event. 409 (not 2xx) so
+        // Stripe redelivers: if that worker dies, this redelivery is the
+        // only thing that will ever process the event.
+        return res.status(409).json({ error: 'event_in_flight', eventId: event.id });
+      }
+      throw err;
+    }
+    if (funding) return res.json({ ok: true, funding });
+
+    const tenantId = await resolveTenantForEvent(event, family);
+    if (!tenantId) {
+      // Genuinely unresolvable — most likely a connected-account event for
+      // an account we don't recognize. 2xx so Stripe stops retrying.
+      return res.json({ ok: true, skipped: event.type, reason: 'unresolved_tenant' });
     }
 
-    const connectResult = await handleConnectEvent(event);
-    if (connectResult) return res.json({ ok: true, connect: connectResult });
+    const result = await runInTenant(tenantId, async (trx) => {
+      const connectResult = await handleConnectEvent(trx, event!, tenantId);
+      if (connectResult) return { connect: connectResult };
 
-    const mapped = await mapStripeEvent(stripe, event);
-    if (!mapped) return res.json({ ok: true, skipped: event.type });
+      // Coupon auto-redemption: if the event carries a discount code that
+      // matches an OpenPartner Coupon in this tenant, ensure the synthetic
+      // Click + Identity exist BEFORE the standard attribution path runs.
+      // The next attributeEvent() call then finds the click and credits
+      // the partner — same code path as a clicked share-link conversion.
+      const redeemed = await maybeRedeemStripeCoupons(trx, stripe!, event!, tenantId);
+      if (redeemed.length > 0) {
+        console.log('[stripe-webhook] auto-redeemed coupons', { eventId: event!.id, redeemed });
+      }
 
-    // Idempotency: a Stripe retry (5xx, timeout) re-delivers the same
-    // event.id. Insert with ON CONFLICT DO NOTHING on the unique
-    // partial index over externalEventId, then handle the dedupe path.
-    const eventId = ulid();
-    const inserted = await db<EventRow>(TABLES.Event)
-      .insert({
-        id: eventId,
-        userId: mapped.userId,
-        type: mapped.type,
-        value: mapped.value != null ? mapped.value.toFixed(2) : null,
-        currency: mapped.currency ?? 'USD',
-        externalEventId: event.id,
-        metadata: { stripeEventId: event.id, stripeType: event.type },
-        ts: new Date(event.created * 1000),
-      })
-      .onConflict('externalEventId')
-      .ignore()
-      .returning('*');
+      const mapped = await mapStripeEvent(trx, stripe!, event!);
+      if (!mapped) return { skipped: event!.type };
 
-    if (inserted.length === 0) {
-      // Retry of a previously-processed event — the first delivery
-      // already attributed it. Return 2xx so Stripe stops retrying.
-      const existing = await db<EventRow>(TABLES.Event).where({ externalEventId: event.id }).first();
-      return res.json({ ok: true, idempotent: true, eventId: existing?.id });
-    }
+      // Idempotency: a Stripe retry (5xx, timeout) re-delivers the same
+      // event.id. Insert with ON CONFLICT DO NOTHING on the unique
+      // partial index over externalEventId, then handle the dedupe path.
+      const eventId = ulid();
+      const inserted = await trx<EventRow>(TABLES.Event)
+        .insert({
+          id: eventId,
+          tenantId,
+          userId: mapped.userId,
+          type: mapped.type,
+          value: mapped.value != null ? mapped.value.toFixed(2) : null,
+          currency: mapped.currency ?? 'USD',
+          externalEventId: event!.id,
+          metadata: { stripeEventId: event!.id, stripeType: event!.type, ...(mapped.metadata ?? {}) },
+          ts: new Date(event!.created * 1000),
+        })
+        .onConflict('externalEventId')
+        .ignore()
+        .returning('*');
 
-    const result = await attributeEvent(db, inserted[0] as EventRow);
-    res.json({ ok: true, eventId, attribution: result });
+      if (inserted.length === 0) {
+        // Retry of a previously-processed event — the first delivery
+        // already attributed it. Return 2xx so Stripe stops retrying.
+        const existing = await trx<EventRow>(TABLES.Event).where({ externalEventId: event!.id }).first();
+        return { idempotent: true, eventId: existing?.id };
+      }
+
+      // Corrective events (refund, dispute, payment_failed) are recorded for
+      // the audit trail but don't drive new attribution rows — handling those
+      // is done in mapStripeEvent before insertion (e.g. flipping the source
+      // commissions to 'reversed').
+      if (CORRECTIVE_EVENT_TYPES.has(mapped.type)) {
+        return { eventId, corrective: mapped.type };
+      }
+
+      const attribution = await attributeEvent(trx, inserted[0] as EventRow);
+      return { eventId, attribution };
+    });
+
+    res.json({ ok: true, ...result });
   },
 );
 
-// Connect-side events. These don't produce attribution Events — they update
-// Partner (onboarding progress) and Payout (transfer resolution) rows.
-async function handleConnectEvent(event: Stripe.Event): Promise<string | null> {
+const CORRECTIVE_EVENT_TYPES = new Set(['refund', 'dispute_created', 'invoice_payment_failed']);
+
+/**
+ * Run a callback inside an appDb transaction with `app.tenant_id` pinned to
+ * the given tenant. Mirrors what tenantMiddleware does for HTTP requests, but
+ * we can't use that here because Stripe webhooks have no URL tenant.
+ */
+async function runInTenant<T>(tenantId: string, fn: (trx: Knex.Transaction) => Promise<T>): Promise<T> {
+  return appDb.transaction(async (trx) => {
+    // tenantId is sourced from a DB lookup or our own metadata stamp on
+    // the Stripe object — never directly user-controlled — and single-
+    // quotes are escaped before inlining. Postgres SET LOCAL doesn't
+    // accept bind params, so the inline interpolation is required.
+    // nosemgrep: javascript.lang.security.audit.sqli.node-knex-sqli.node-knex-sqli
+    await trx.raw(`set local app.tenant_id = '${tenantId.replace(/'/g, "''")}'`);
+    return fn(trx);
+  });
+}
+
+/**
+ * Resolve which tenant an event belongs to. Strategy:
+ *
+ *   1. Read `openpartner_tenant_id` from the event object's metadata. Every
+ *      Stripe object we create is stamped with this on construction, so for
+ *      anything created post-multi-tenant deploy the lookup is constant-time.
+ *   2. For events whose payload doesn't carry our metadata (older Connect
+ *      accounts, transfers identified only by payoutId), fall back to DB
+ *      lookup via the privileged `db` (cross-tenant scan).
+ *   3. If neither yields a tenant, return null and the caller skips the
+ *      event with 2xx so Stripe stops retrying.
+ */
+async function resolveTenantForEvent(event: Stripe.Event, family: SecretFamily): Promise<string | null> {
+  // The openpartner_tenant_id metadata stamp is authoritative only for
+  // objects WE create in our platform account (platform/legacy families).
+  // A connected account can influence its own object metadata, so connect
+  // events resolve purely from the connected-account id / our payout id
+  // below — metadata may confirm a mapping, never establish one.
+  if (family !== 'connect') {
+    const obj = event.data.object as { metadata?: Record<string, string> | null };
+    const direct = obj?.metadata?.openpartner_tenant_id;
+    if (direct) return direct;
+  }
+
   switch (event.type) {
     case 'account.updated': {
       const account = event.data.object as Stripe.Account;
-      const partnerId = account.metadata?.openpartner_partner_id;
-      if (!partnerId) return 'account_updated_no_partner_id';
-      await db<PartnerRow>(TABLES.Partner)
-        .where({ id: partnerId })
+      // Resolve by the connected-account id only (authoritative) — the link
+      // is always established server-side at /connect/start, so we never need
+      // (and must not trust) account.metadata to pick the tenant.
+      const linked = await db<PartnerRow>(TABLES.Partner)
+        .where({ stripeConnectAccountId: account.id })
+        .first(['tenantId']);
+      return linked?.tenantId ?? null;
+    }
+    case 'transfer.created':
+    case 'transfer.updated':
+    case 'transfer.reversed': {
+      const transfer = event.data.object as Stripe.Transfer;
+      // transfer_group FIRST, metadata as the legacy fallback (round 10).
+      // The group is set at creation, immutable, and stamped with the
+      // payout ULID; metadata is mutable, so preferring it let a FORGED
+      // openpartner_payout_id redirect an event away from its real payout
+      // into "unresolved tenant", acknowledged 2xx and lost. A group value
+      // that is not one of our payout ids simply finds no row and the
+      // event is skipped.
+      const payoutId = transfer.transfer_group ?? transfer.metadata?.openpartner_payout_id;
+      if (!payoutId) return null;
+      const row = await db<PayoutRow>(TABLES.Payout).where({ id: payoutId }).first(['tenantId']);
+      return row?.tenantId ?? null;
+    }
+    case 'checkout.session.completed': {
+      const session = event.data.object as Stripe.Checkout.Session;
+      // Merchant-subscription checkout (the brand subscribing to Flex /
+      // Revshare via /admin/billing) stamps openpartner_tenant_id on
+      // session metadata at create time. Prefer that — it's a constant-
+      // time read with no DB round-trip.
+      const metaTenantId = session.metadata?.openpartner_tenant_id;
+      if (metaTenantId) return metaTenantId;
+      // Rewardful-style merchant→customer checkout: tenant resolves via
+      // the Click row identified by client_reference_id (the cref).
+      if (session.client_reference_id) {
+        const row = await db<ClickRow>(TABLES.Click)
+          .where({ id: session.client_reference_id })
+          .first(['tenantId']);
+        if (row) return row.tenantId;
+      }
+      return null;
+    }
+    case 'customer.created':
+    case 'customer.subscription.created':
+    case 'customer.subscription.updated':
+    case 'customer.subscription.deleted':
+    case 'invoice.paid':
+    case 'invoice.payment_failed':
+    case 'charge.refunded':
+    case 'charge.dispute.created': {
+      const customerId = extractCustomerId(event.data.object as { customer?: unknown; id?: string });
+      if (!customerId) return null;
+      // First, check whether this is a merchant-self-subscription
+      // Customer (created by /billing/checkout). We persist the
+      // customer id on Tenant.stripeCustomerId on first checkout,
+      // so the lookup is a constant-time indexed read and avoids a
+      // Stripe API roundtrip to inspect Customer.metadata.
+      const tenantRow = await db('Tenant')
+        .where({ stripeCustomerId: customerId })
+        .first<{ id: string }>('id');
+      if (tenantRow) return tenantRow.id;
+      // Fallback: rewardful-style customer (came in through attribution).
+      // Resolves via the Identity → Click chain — covers Customers
+      // stitched at checkout.session.completed by the Rewardful path.
+      const identity = await db(TABLES.Identity)
+        .join(TABLES.Click, `${TABLES.Click}.id`, `${TABLES.Identity}.clickId`)
+        .where(`${TABLES.Identity}.userId`, customerId)
+        .first<{ tenantId: string }>(`${TABLES.Click}.tenantId as tenantId`);
+      return identity?.tenantId ?? null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Pull a customer id out of an arbitrary Stripe event object — handles the
+ * `customer` field being either a string id, an embedded Customer object,
+ * a deleted-customer marker, or absent. For customer.* events the id is on
+ * the object itself.
+ */
+function extractCustomerId(obj: { customer?: unknown; id?: string; object?: string }): string | null {
+  if (obj.object === 'customer' && obj.id) return obj.id;
+  const c = obj.customer;
+  if (typeof c === 'string') return c;
+  if (c && typeof c === 'object' && 'id' in c && typeof (c as { id: unknown }).id === 'string') {
+    return (c as { id: string }).id;
+  }
+  return null;
+}
+
+interface TenantBillingIds {
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+}
+
+async function tenantBillingIds(trx: Knex.Transaction, tenantId: string): Promise<TenantBillingIds> {
+  const row = await trx<TenantRow>(TABLES.Tenant)
+    .where({ id: tenantId })
+    .first(['stripeCustomerId', 'stripeSubscriptionId']);
+  return {
+    stripeCustomerId: row?.stripeCustomerId ?? null,
+    stripeSubscriptionId: row?.stripeSubscriptionId ?? null,
+  };
+}
+
+/**
+ * Is this event about the tenant's OWN billing — the Customer that
+ * /billing/checkout created to subscribe the brand to OpenPartner? A
+ * merchant end-customer's events resolve to the same tenant (via the
+ * Identity chain), and must go through attribution, never the
+ * tenant-billing state paths. The subscription-id fallback covers legacy /
+ * concierge-provisioned tenants whose stripeCustomerId was never persisted
+ * but whose subscription pointer is on file.
+ */
+function isOwnBilling(
+  ids: TenantBillingIds,
+  customerId: string | null,
+  subscriptionId?: string,
+): boolean {
+  if (ids.stripeCustomerId && customerId && ids.stripeCustomerId === customerId) return true;
+  if (subscriptionId && ids.stripeSubscriptionId && ids.stripeSubscriptionId === subscriptionId) return true;
+  return false;
+}
+
+// Connect-side events. These don't produce attribution Events — they update
+// Partner (onboarding progress) and Payout (transfer resolution) rows.
+async function handleConnectEvent(
+  trx: Knex.Transaction,
+  event: Stripe.Event,
+  tenantId: string,
+): Promise<string | null> {
+  switch (event.type) {
+    case 'account.updated': {
+      const account = event.data.object as Stripe.Account;
+      // Resolve the target partner by the connected-account id — NEVER by
+      // account.metadata. The partner↔account link is established
+      // server-side at /connect/start (accounts.create → persist
+      // stripeConnectAccountId), so the partner is always already linked by
+      // the time account.updated fires. A Standard account can influence its
+      // own metadata, so selecting the partner from
+      // account.metadata.openpartner_partner_id would let one partner
+      // re-point another's stripeConnectAccountId and hijack their payouts.
+      const target = await trx<PartnerRow>(TABLES.Partner)
+        .where({ stripeConnectAccountId: account.id })
+        .first(['id']);
+      if (!target) return 'account_updated_unlinked_account';
+      await trx<PartnerRow>(TABLES.Partner)
+        .where({ id: target.id })
         .update({
-          stripeConnectAccountId: account.id,
-          metadata: db.raw(
+          metadata: trx.raw(
             `jsonb_set(coalesce("metadata", '{}'::jsonb), '{stripe}', ?::jsonb, true)`,
             [
               JSON.stringify({
@@ -110,22 +481,326 @@ async function handleConnectEvent(event: Stripe.Event): Promise<string | null> {
     }
     case 'checkout.session.completed': {
       const session = event.data.object as Stripe.Checkout.Session;
+      // Disambiguator: a Rewardful-style merchant→customer checkout carries
+      // client_reference_id (the cref). Our merchant→OpenPartner subscription
+      // checkout (created in billing.ts) doesn't. So presence of
+      // client_reference_id means "skip the merchant-subscription path and
+      // let mapStripeEvent do attribution."
+      if (session.client_reference_id) return null;
       if (session.mode === 'subscription' && typeof session.customer === 'string' && typeof session.subscription === 'string') {
-        await persistMerchantSubscription(session.customer, session.subscription);
+        // trialEndsAt + firstTrialActivatedAt are owned by signup — don't
+        // touch them here. Stripe's sub.trial_end is always null now (we
+        // stopped passing trial_period_days to Checkout) and overwriting
+        // would clobber the signup-set in-product evaluation deadline.
+        await persistMerchantSubscription(trx, tenantId, {
+          stripeCustomerId: session.customer,
+          stripeSubscriptionId: session.subscription,
+        });
         return 'merchant_subscription_persisted';
       }
       return null;
     }
+    case 'customer.subscription.updated': {
+      // Plan switch via Stripe Customer Portal. Detect the new plan from
+      // the price IDs on the active items and update Tenant.billingPlan
+      // to match. Only act when the price IDs are ones we recognize —
+      // third-party additions (e.g. one-off line items) shouldn't
+      // reclassify the tenant.
+      const sub = event.data.object as Stripe.Subscription;
+      // Only the tenant's OWN plan subscription (the Customer created by
+      // /billing/checkout) may drive plan / white-label / mirror state.
+      // Subscription events for a merchant's END-CUSTOMERS also resolve
+      // to this tenant (via the Identity chain) — those must fall through
+      // to the attribution path, not clobber the tenant's billing mirror.
+      const ids = await tenantBillingIds(trx, tenantId);
+      if (!isOwnBilling(ids, extractCustomerId(sub), sub.id)) return null;
+      // Staleness: an updated may touch billing state ONLY when it refers to
+      // the tenant's CURRENT subscription. Stripe guarantees no event
+      // ordering, so after a cancel the pointer can be null (deleted already
+      // cleared it) or point at a replacement sub — in both cases a
+      // late/resent/out-of-order updated for the old sub must not resurrect
+      // or overwrite state. A null pointer is only re-established by
+      // checkout.session.completed on a real (re)subscribe, so an updated
+      // never legitimately needs to adopt one from null (regardless of the
+      // snapshot's status — an active stale snapshot is exactly the
+      // resurrection case).
+      if (ids.stripeSubscriptionId !== sub.id) {
+        return ids.stripeSubscriptionId
+          ? 'subscription_updated_stale_ignored'
+          : 'subscription_updated_no_pointer_ignored';
+      }
+      const priceIds = sub.items.data.map((it) => it.price.id);
+      const newPlan = inferPlanFromPriceIds(priceIds);
+      if (newPlan) {
+        await updateTenantPlanFromStripeSub(trx, tenantId, newPlan);
+      }
+      // White-label add-on: the subscription is the source of truth for
+      // hosted flex/revshare tenants — mirror presence of the add-on price
+      // onto Tenant.whiteLabel. Losing the add-on also revokes
+      // custom-domain routing + the DO edge (spec §8.2). No-op when the
+      // add-on price env isn't configured.
+      let wl: 'enabled' | 'disabled' | 'unchanged' = 'unchanged';
+      if (whiteLabelPriceId()) {
+        wl = await applyWhiteLabelFromSubscription(trx, tenantId, subscriptionHasWhiteLabel(priceIds));
+      }
+      // Refresh subscriptionId so the local mirror reflects current
+      // Stripe state. trialEndsAt stays untouched — it's signup-owned.
+      await persistMerchantSubscription(trx, tenantId, {
+        stripeSubscriptionId: sub.id,
+      });
+      // HostedBillingState mirror (spec §4 finding 13): hasActivePlan and
+      // funding eligibility read this instead of live Stripe calls.
+      await mirrorHostedBillingState(trx, tenantId, sub.status as MirroredSubscriptionStatus);
+      // Cancellation (un)scheduling — previous_attributes carries the old
+      // values only when they actually changed in this event, so this
+      // fires on real transitions and alerts ops weeks before the
+      // subscription actually ends. Both scheduling mechanisms count:
+      // cancel_at_period_end (Customer Portal) and a bare cancel_at
+      // (dashboard "cancel at a date" / Subscription Schedules). Redelivery
+      // of the same event stays silent via the Config marker inside
+      // handleCancellationScheduleChanged.
+      const prev = event.data.previous_attributes as Partial<Stripe.Subscription> | undefined;
+      let cancelNote: string | null = null;
+      if (prev && ('cancel_at_period_end' in prev || 'cancel_at' in prev)) {
+        const scheduledNow = subscriptionCancelScheduled(sub);
+        const scheduledBefore =
+          ('cancel_at_period_end' in prev ? !!prev.cancel_at_period_end : !!sub.cancel_at_period_end) ||
+          ('cancel_at' in prev ? prev.cancel_at != null : sub.cancel_at != null);
+        if (scheduledNow !== scheduledBefore) {
+          cancelNote = await handleCancellationScheduleChanged(trx, tenantId, sub, scheduledNow);
+        }
+      }
+      const parts = [
+        newPlan ? `subscription_updated_plan_${newPlan}` : 'subscription_updated',
+        ...(wl !== 'unchanged' ? [`white_label_${wl}`] : []),
+        ...(cancelNote ? [cancelNote] : []),
+      ];
+      return parts.join('+');
+    }
+    case 'customer.subscription.deleted': {
+      // Cancellation (manual via Portal or dunning exhaustion). The shared
+      // transition clears the local subscription pointer, disables white-
+      // label (revoking custom-domain routing + DO edge), mirrors
+      // 'canceled', and alerts ops. Tenant stays active so the admin can
+      // re-subscribe via /billing/checkout without losing data. The
+      // conditional clear inside handleTenantSubscriptionEnded makes this
+      // safe against retries and stale events for a since-replaced sub —
+      // those return null and are acknowledged without touching state.
+      const sub = event.data.object as Stripe.Subscription;
+      const ids = await tenantBillingIds(trx, tenantId);
+      if (!isOwnBilling(ids, extractCustomerId(sub), sub.id)) return null;
+      const wl = await handleTenantSubscriptionEnded(trx, tenantId, 'webhook', sub.id);
+      if (wl === null) return 'subscription_deleted_stale_ignored';
+      return `subscription_deleted_${sub.status}${wl !== 'unchanged' ? `+white_label_${wl}` : ''}`;
+    }
+    case 'invoice.payment_failed': {
+      // Dunning on the tenant's own OpenPartner invoice → ops alert (and
+      // short-circuit: our own billing invoice is not a merchant
+      // conversion event). A merchant end-customer's failed invoice falls
+      // through to the attribution audit path instead. Deduped per
+      // (invoice, attempt) inside so Stripe redeliveries don't re-mail.
+      const invoice = event.data.object as Stripe.Invoice;
+      const ids = await tenantBillingIds(trx, tenantId);
+      if (!isOwnBilling(ids, extractCustomerId(invoice))) return null;
+      const outcome = await notifyTenantInvoicePaymentFailed(trx, tenantId, invoice);
+      return `tenant_invoice_payment_failed_${outcome}`;
+    }
+    case 'transfer.created': {
+      // DETECTOR ONLY — no state is written. This closes the observation
+      // gap behind the prove-absence limit (round 10): an operator action
+      // taken on an empty listing (dispose, all-reversed resolution) is a
+      // documented risk decision precisely because an unbounded in-flight
+      // POST can still land afterwards. When it does, Stripe tells us —
+      // this is where we listen. A transfer arriving for a payout that is
+      // no longer expecting one is money moved outside the ledger, and it
+      // must be LOUD; disposition stays with a human.
+      const transfer = event.data.object as Stripe.Transfer;
+      const payoutId = transfer.transfer_group ?? transfer.metadata?.openpartner_payout_id;
+      if (!payoutId) return null;
+      const payout = (await trx<PayoutRow>(TABLES.Payout)
+        .where({ id: payoutId })
+        .first()) as PayoutRow | undefined;
+      if (!payout) return null;
+      const state = (payout.metadata as { transferState?: string } | null)?.transferState;
+      const benign =
+        (state === 'posted' || state === 'reconcile_required' || state === 'intent') &&
+        payout.stripeTransferId == null;
+      if (benign || payout.stripeTransferId === transfer.id) {
+        return 'transfer_created_observed';
+      }
+      console.error(
+        `[payouts] ALERT: transfer ${transfer.id} was CREATED for payout ${payoutId} which is ${state ?? 'unknown'}/${payout.status} on transfer ${payout.stripeTransferId ?? 'none'} — money moved outside the ledger (a late POST landing after a disposition?); operator reconciliation required`,
+      );
+      return 'transfer_created_orphan';
+    }
     case 'transfer.updated':
     case 'transfer.reversed': {
       const transfer = event.data.object as Stripe.Transfer;
-      const payoutId = transfer.metadata?.openpartner_payout_id;
+      // transfer_group FIRST (round 10): it is immutable and stamped with
+      // the payout ULID at creation. Preferring the MUTABLE metadata stamp
+      // let a forged openpartner_payout_id redirect a reversal away from
+      // its real payout. Metadata remains only as the fallback for
+      // group-less transfers.
+      const payoutId = transfer.transfer_group ?? transfer.metadata?.openpartner_payout_id;
       if (!payoutId) return null;
       const reversed = event.type === 'transfer.reversed' || (transfer.reversed ?? false);
-      await db<PayoutRow>(TABLES.Payout).where({ id: payoutId }).update({
-        status: reversed ? 'failed' : 'paid',
-        completedAt: reversed ? null : new Date(),
-      });
+      const partialOnly = !reversed && Number(transfer.amount_reversed ?? 0) > 0;
+
+      // Serialize this whole decision against the executor's finalization.
+      //
+      // Round 7: the exact-id match and the metadata fallback below are two
+      // statements, and the executor commits its finalization in its OWN
+      // transaction. Without this lock the executor could stamp
+      // `stripeTransferId` BETWEEN them — the first match missed because the
+      // id was still null, the fallback then missed because it requires the
+      // id to be null, and the event fell through to "unmatched" and was
+      // acknowledged 2xx. A reversed transfer, a payout recorded paid, and
+      // no second chance: exactly the hole the fallback was added to close,
+      // reintroduced one statement later.
+      //
+      // Taking the row lock first means we either see the pre-finalization
+      // state (and the fallback applies) or the post-finalization state (and
+      // the exact-id match applies). There is no longer an in-between.
+      const locked = (await trx<PayoutRow>(TABLES.Payout)
+        .where({ id: payoutId })
+        .forUpdate()
+        .first()) as PayoutRow | undefined;
+
+      // A PARTIAL reversal on the recorded transfer must never re-assert
+      // `paid` (round 10): `transfer.updated` arrives with `reversed`
+      // still false and a non-zero amount_reversed, and the write below
+      // used to flip even a `failed` payout back to paid on it. Partial
+      // reversals have no ledger representation on this rail yet
+      // (documented gap) — so the rule is: never OVERWRITE status on one.
+      // Say so loudly and leave the row exactly as it is.
+      if (partialOnly && locked?.stripeTransferId === transfer.id) {
+        console.error(
+          `[payouts] ALERT: transfer ${transfer.id} on payout ${payoutId} is PARTIALLY reversed (${transfer.amount_reversed}/${transfer.amount}) — status left ${locked.status}; partial reversals need operator disposition on this rail`,
+        );
+        return 'transfer_partial_reversal_unrecorded';
+      }
+
+      // Apply ONLY to the transfer this payout actually recorded. A payout
+      // can have several transfers in its group across key generations
+      // (payout-transfers.ts) — without this, a reversal of a superseded
+      // attempt would mark the CURRENT, legitimately paid payout failed,
+      // and a stale `transfer.updated` could mark a pending one paid.
+      const updated = partialOnly
+        ? 0
+        : await trx<PayoutRow>(TABLES.Payout)
+            .where({ id: payoutId, stripeTransferId: transfer.id })
+            .update({
+              status: reversed ? 'failed' : 'paid',
+              completedAt: reversed ? null : new Date(),
+            });
+      if (updated === 0 && reversed) {
+        // NOT YET STAMPED is a different case from NOT OURS, and
+        // collapsing them lost reversals (round-6 review).
+        //
+        // The executor posts the transfer and only writes
+        // `stripeTransferId` when it finalizes. A reversal landing in that
+        // gap matched nothing, was logged as "unmatched", and the event
+        // was acknowledged — so the reversal was gone, and the executor
+        // then recorded the payout `paid` from a create response that
+        // still said `reversed: false`.
+        //
+        // The transfer carries what we need to identify it without the id:
+        // `openpartner_payout_id` and `openpartner_key_generation` are
+        // stamped at creation and are immutable. Match on those, fenced on
+        // the generation, and terminalize the intent so the executor's
+        // finalize CAS loses rather than overwriting this with `paid`.
+        const stampedGeneration = transfer.metadata?.openpartner_key_generation ?? '0';
+        const claimed = await trx<PayoutRow>(TABLES.Payout)
+          .where({ id: payoutId })
+          .whereNull('stripeTransferId')
+          .whereRaw(`coalesce("metadata"->>'keyGeneration', '0') = ?`, [stampedGeneration])
+          .whereRaw(`("metadata"->>'transferState') in ('posted','reconcile_required')`)
+          .update({
+            status: 'failed',
+            completedAt: null,
+            stripeTransferId: transfer.id,
+            metadata: trx.raw(
+              `"metadata" || ?::jsonb`,
+              [JSON.stringify({ transferState: 'confirmed', lastError: `reversed_before_finalize:${transfer.id}` })],
+            ),
+          });
+        if (claimed > 0) {
+          console.error(
+            `[payouts] transfer ${transfer.id} was reversed before payout ${payoutId} finalized — recorded failed from metadata; its commissions stay claimed for operator disposition`,
+          );
+          return 'transfer_reversed_before_finalize';
+        }
+      }
+      // A payout parked in `duplicate_review` is a HUMAN's problem, and
+      // this event changes what that human is looking at. Claiming or
+      // terminalizing here would be wrong — other transfers in the group
+      // may still hold money — but dropping the event as "unmatched" is
+      // worse (round 9): the only reversal notification gets consumed
+      // while an operator mid-resolution validates against a pre-reversal
+      // listing, then records the reversed transfer as the kept one,
+      // paid, with the money gone. So RECORD it and move the review
+      // nonce; `resolveDuplicateReview` fences its commit on the nonce it
+      // observed, so any resolution validated before this write loses its
+      // CAS and must re-look.
+      //
+      // Two deliberate widenings relative to the fallback above: no
+      // key-generation fence (a duplicate group spans generations by
+      // construction, and every member's reversal is relevant to the
+      // review), and PARTIAL reversals count — they arrive as
+      // transfer.updated with `reversed` still false but a non-zero
+      // amount_reversed, and a partially-reversed transfer can no longer
+      // be the kept one.
+      const reversalActivity = reversed || Number(transfer.amount_reversed ?? 0) > 0;
+      if (updated === 0 && reversalActivity) {
+        const lockedMeta = (locked?.metadata ?? {}) as {
+          transferState?: string;
+          reversedTransferIds?: unknown;
+        };
+        if (lockedMeta.transferState === 'duplicate_review') {
+          // We hold the row lock, so this read-modify-write cannot race
+          // another delivery; the state predicate below is belt-and-braces.
+          const seen = Array.isArray(lockedMeta.reversedTransferIds)
+            ? (lockedMeta.reversedTransferIds as unknown[]).filter(
+                (v): v is string => typeof v === 'string',
+              )
+            : [];
+          const reversedIds = seen.includes(transfer.id) ? seen : [...seen, transfer.id];
+          // The nonce is a FRESH ulid, never the event id (round 10).
+          // Connect events return before the event-id dedupe, so Stripe
+          // REDELIVERING an old event would write its id back — an ABA
+          // that let a resolution fenced on the older value commit against
+          // a listing that predates a newer reversal. A value that never
+          // repeats cannot be restored; a redelivery just forces one more
+          // (cheap) re-verification.
+          const recorded = await trx(TABLES.Payout)
+            .where({ id: payoutId })
+            .whereRaw(`("metadata"->>'transferState') = 'duplicate_review'`)
+            .update({
+              metadata: trx.raw(`"metadata" || ?::jsonb`, [
+                JSON.stringify({
+                  duplicateReviewNonce: ulid(),
+                  reversedTransferIds: reversedIds,
+                }),
+              ]),
+            });
+          if (recorded > 0) {
+            console.error(
+              `[payouts] transfer ${transfer.id} saw reversal activity while payout ${payoutId} sits in duplicate_review — recorded on the review; any in-flight operator resolution re-verifies`,
+            );
+            return 'transfer_reversal_in_duplicate_review';
+          }
+        }
+      }
+      if (updated === 0) {
+        // Either we never recorded this transfer, or the payout is on a
+        // different one. Both mean a transfer exists that our ledger does
+        // not own — exactly the state the executor's duplicate detection
+        // is for, and worth saying out loud when it's a reversal.
+        console.error(
+          `[payouts] ${event.type} for transfer ${transfer.id} does not match the transfer recorded on payout ${payoutId} — not applied; check for duplicate transfers`,
+        );
+        return `${event.type.replace('.', '_')}_unmatched`;
+      }
       return reversed ? 'transfer_reversed' : 'transfer_updated';
     }
     default:
@@ -138,10 +813,50 @@ interface MappedEvent {
   type: string;
   value?: number;
   currency?: string;
+  metadata?: Record<string, unknown>;
 }
 
-async function mapStripeEvent(stripe: Stripe, event: Stripe.Event): Promise<MappedEvent | null> {
+async function mapStripeEvent(
+  trx: Knex.Transaction,
+  stripe: Stripe,
+  event: Stripe.Event,
+): Promise<MappedEvent | null> {
   switch (event.type) {
+    case 'checkout.session.completed': {
+      // Rewardful-style flow: merchant adds client_reference_id (the cref)
+      // to Stripe Checkout. We stitch the resulting Stripe customer to that
+      // click here, so subsequent invoice.paid / subscription events resolve
+      // without an explicit op.identify() call from the merchant's app.
+      const session = event.data.object as Stripe.Checkout.Session;
+      const cref = session.client_reference_id;
+      const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
+      if (!cref || !customerId) return null;
+
+      // Validate the cref points at a real Click in this tenant — silently
+      // drop unknowns so a bad client_reference_id can't inflate a partner's
+      // numbers. RLS scopes the query to the resolved tenant.
+      const click = await trx<ClickRow>(TABLES.Click).where({ id: cref }).first();
+      if (!click) return null;
+
+      await trx<IdentityRow>(TABLES.Identity)
+        .insert({ id: ulid(), tenantId: click.tenantId, clickId: cref, userId: customerId })
+        .onConflict(['clickId', 'userId'])
+        .ignore();
+
+      // Backfill metadata so the cheaper resolve path (metadata lookup)
+      // works for downstream invoice.paid / subscription events. Best-
+      // effort: if the API call fails (deleted customer, network blip),
+      // resolveUserIdFromCustomer will fall back to the Identity table.
+      try {
+        await stripe.customers.update(customerId, {
+          metadata: { openpartner_user_id: customerId, openpartner_tenant_id: click.tenantId },
+        });
+      } catch {
+        // Non-fatal.
+      }
+
+      return { userId: customerId, type: 'signup' };
+    }
     case 'customer.created': {
       const customer = event.data.object as Stripe.Customer;
       const userId = customer.metadata?.openpartner_user_id;
@@ -150,19 +865,124 @@ async function mapStripeEvent(stripe: Stripe, event: Stripe.Event): Promise<Mapp
     }
     case 'customer.subscription.created': {
       const sub = event.data.object as Stripe.Subscription;
-      const userId = sub.metadata?.openpartner_user_id ?? (await resolveUserIdFromCustomer(stripe, sub.customer));
+      const userId = sub.metadata?.openpartner_user_id ?? (await resolveUserIdFromCustomer(trx, stripe, sub.customer));
       if (!userId) return null;
       return { userId, type: 'subscription_created' };
     }
     case 'invoice.paid': {
       const invoice = event.data.object as Stripe.Invoice;
-      const userId = await resolveUserIdFromCustomer(stripe, invoice.customer);
+      const userId = await resolveUserIdFromCustomer(trx, stripe, invoice.customer);
       if (!userId) return null;
+      // `charge` was moved off the Invoice type in recent SDK versions, but the
+      // webhook payload still carries it on older API versions and is useful
+      // for refund lookups. Read it tolerantly.
+      const rawCharge = (invoice as unknown as { charge?: string | { id: string } | null }).charge;
+      const chargeId = typeof rawCharge === 'string' ? rawCharge : rawCharge?.id ?? null;
       return {
         userId,
         type: 'invoice_paid',
         value: invoice.amount_paid / 100,
         currency: invoice.currency?.toUpperCase() ?? 'USD',
+        // Captured for refund/dispute lookup. Without these, charge.refunded
+        // can't find the original Event to walk back to its Commissions.
+        metadata: {
+          stripeInvoiceId: invoice.id,
+          ...(chargeId ? { stripeChargeId: chargeId } : {}),
+        },
+      };
+    }
+    case 'charge.refunded': {
+      const charge = event.data.object as Stripe.Charge;
+      const userId = await resolveUserIdFromCustomer(trx, stripe, charge.customer);
+      if (!userId) return null;
+      const rawInvoice = (charge as unknown as { invoice?: string | { id: string } | null }).invoice;
+      const invoiceId = typeof rawInvoice === 'string' ? rawInvoice : rawInvoice?.id ?? null;
+
+      // Stopgap for partial-refund over-clawback: the old path reversed 100%
+      // of an invoice's commissions on ANY refund, and charge.amount_refunded
+      // is cumulative — so a $1 refund on a $100 order wiped the whole
+      // commission, and successive partials mis-stated. Only auto-reverse on
+      // a FULL refund; partials are recorded for the audit trail and left for
+      // manual handling (proportional clawback is a separate ledger change).
+      // Commissions already 'paid' are flagged, not clawed back.
+      //
+      // "Full" is measured against what was actually COLLECTED
+      // (charge.amount_captured), NOT the intended charge.amount: a $100 auth
+      // captured for $60 and then fully refunded ($60) is a full refund even
+      // though amount_refunded (6000) < amount (10000). Fall back to
+      // charge.amount when amount_captured is absent.
+      const captured = typeof charge.amount_captured === 'number' ? charge.amount_captured : null;
+      const collected = captured ?? (typeof charge.amount === 'number' ? charge.amount : null);
+      const isFullRefund = collected != null && collected > 0 && charge.amount_refunded >= collected;
+      const reversal =
+        invoiceId && isFullRefund
+          ? await reverseCommissionsForInvoice(trx, invoiceId)
+          : { reversed: 0, alreadyPaid: 0, heldInTransfer: 0 };
+
+      return {
+        userId,
+        type: 'refund',
+        value: -(charge.amount_refunded / 100),
+        currency: charge.currency?.toUpperCase() ?? 'USD',
+        metadata: {
+          stripeChargeId: charge.id,
+          ...(invoiceId ? { stripeInvoiceId: invoiceId } : {}),
+          amountRefunded: charge.amount_refunded,
+          ...(collected != null ? { chargeCollected: collected } : {}),
+          fullRefund: isFullRefund,
+          // Surfaces a partial refund that needs manual commission handling.
+          ...(invoiceId && !isFullRefund ? { partialRefundReversalSkipped: true } : {}),
+          reversedCommissions: reversal.reversed,
+          alreadyPaidCommissions: reversal.alreadyPaid,
+          ...(reversal.heldInTransfer > 0 ? { heldInTransferCommissions: reversal.heldInTransfer } : {}),
+        },
+      };
+    }
+    case 'charge.dispute.created': {
+      // Disputes are flagged for admin review rather than auto-reversed —
+      // disputes can be won, and clawing back commissions on every chargeback
+      // would create a worse experience than the rare manual reversal.
+      const dispute = event.data.object as Stripe.Dispute;
+      const chargeId = typeof dispute.charge === 'string' ? dispute.charge : dispute.charge?.id;
+      let userId: string | null = null;
+      if (chargeId) {
+        try {
+          const charge = await stripe.charges.retrieve(chargeId);
+          userId = await resolveUserIdFromCustomer(trx, stripe, charge.customer);
+        } catch {
+          // Charge might be deleted or inaccessible — log without attribution.
+        }
+      }
+      if (!userId) return null;
+      return {
+        userId,
+        type: 'dispute_created',
+        value: -(dispute.amount / 100),
+        currency: dispute.currency?.toUpperCase() ?? 'USD',
+        metadata: {
+          stripeDisputeId: dispute.id,
+          ...(chargeId ? { stripeChargeId: chargeId } : {}),
+          reason: dispute.reason,
+          status: dispute.status,
+        },
+      };
+    }
+    case 'invoice.payment_failed': {
+      // Recorded for audit but no commission reversal — invoice.paid wouldn't
+      // have fired for this invoice in the first place, so there's nothing to
+      // reverse. Useful when an admin is debugging "why didn't this convert?"
+      const invoice = event.data.object as Stripe.Invoice;
+      const userId = await resolveUserIdFromCustomer(trx, stripe, invoice.customer);
+      if (!userId) return null;
+      return {
+        userId,
+        type: 'invoice_payment_failed',
+        value: -(invoice.amount_due / 100),
+        currency: invoice.currency?.toUpperCase() ?? 'USD',
+        metadata: {
+          stripeInvoiceId: invoice.id,
+          attemptCount: invoice.attempt_count,
+        },
       };
     }
     default:
@@ -170,16 +990,244 @@ async function mapStripeEvent(stripe: Stripe, event: Stripe.Event): Promise<Mapp
   }
 }
 
+/**
+ * Mark Commissions linked to a refunded invoice as 'reversed'. Walks
+ * Event(metadata.stripeInvoiceId) → Attribution → Commission. Only flips
+ * Commissions in 'accrued' or 'approved' status; 'paid' Commissions stay
+ * paid (the partner has the money) and the count is returned so the
+ * refund Event can record that admin attention is needed.
+ */
+async function reverseCommissionsForInvoice(
+  trx: Knex.Transaction,
+  invoiceId: string,
+): Promise<{ reversed: number; alreadyPaid: number; heldInTransfer: number }> {
+  const sourceEvents = await trx<EventRow>(TABLES.Event)
+    .whereRaw(`"metadata"->>'stripeInvoiceId' = ?`, [invoiceId])
+    .where('type', 'invoice_paid');
+  if (sourceEvents.length === 0) return { reversed: 0, alreadyPaid: 0, heldInTransfer: 0 };
+
+  const eventIds = sourceEvents.map((e) => e.id);
+  const attributions = await trx<AttributionRow>(TABLES.Attribution).whereIn('eventId', eventIds);
+  if (attributions.length === 0) return { reversed: 0, alreadyPaid: 0, heldInTransfer: 0 };
+  const attributionIds = attributions.map((a) => a.id);
+
+  // Funding interlock (spec §8): commissions in a live allocation can't be
+  // silently flipped — reserved allocations are canceled first (no charge
+  // fires for them), mid-transfer ones are held and surfaced like
+  // already-paid rows (the money is moving; claw back via adjustment).
+  const candidates = (await trx<CommissionRow>(TABLES.Commission)
+    .whereIn('attributionId', attributionIds)
+    .whereIn('status', ['accrued', 'approved'])
+    .select('id')) as Array<{ id: string }>;
+  const interlock = await interlockCommissionReversal(trx, candidates.map((c) => c.id));
+  if (interlock.held.length > 0) {
+    console.error(
+      `[funding] invoice ${invoiceId} refund: ${interlock.held.length} commission(s) mid-transfer — held for post-settlement adjustment`,
+    );
+  }
+
+  // Same check/use gap as the admin route: the interlock read and this
+  // flip are separate statements, so re-assert the direct-rail guard
+  // inside the UPDATE (a payout intent can claim a commission in between).
+  const reversedRows = interlock.flippable.length === 0
+    ? []
+    : ((await whereNotClaimedByOpenIntent(
+        trx,
+        trx<CommissionRow>(TABLES.Commission)
+          .whereIn(`${TABLES.Commission}.id`, interlock.flippable)
+          .whereIn('status', ['accrued', 'approved']),
+      )
+        .update({ status: 'reversed' })
+        .returning('id')) as Array<{ id: string }>);
+  const reversed = reversedRows.length;
+
+  const alreadyPaidRow = (await trx<CommissionRow>(TABLES.Commission)
+    .whereIn('attributionId', attributionIds)
+    .where('status', 'paid')
+    .count('id as c')
+    .first()) as { c: string | number } | undefined;
+  const alreadyPaid = Number(alreadyPaidRow?.c ?? 0);
+
+  // Commissions the guarded UPDATE refused because a payout intent
+  // claimed them AFTER the interlock read. They are neither reversed nor
+  // counted as held by the interlock, so without this they vanished from
+  // the report entirely: the refund looked fully handled while a
+  // commission for refunded revenue stayed payable.
+  // Anything in `flippable` the UPDATE didn't take. Do NOT assume why:
+  // a concurrent actor may have paid it, another refund may have already
+  // reversed it, or a payout intent may have claimed it. Counting them
+  // all as "held" produced false alerts and double-counted rows that were
+  // also reported as alreadyPaid.
+  const reversedIds = new Set(reversedRows.map((r) => r.id));
+  const missedIds = interlock.flippable.filter((id) => !reversedIds.has(id));
+  let lateHeld = 0;
+  let lateNewlyPaid = 0;
+  if (missedIds.length > 0) {
+    const missed = (await trx<CommissionRow>(TABLES.Commission)
+      .whereIn('id', missedIds)
+      .select('id', 'status', 'payoutId')) as Array<Pick<CommissionRow, 'id' | 'status' | 'payoutId'>>;
+    const stillPayable = missed.filter((c) => ['accrued', 'approved'].includes(c.status));
+    lateHeld = stillPayable.length;
+    if (lateHeld > 0) {
+      console.error(
+        `[funding] ALERT: invoice ${invoiceId} refund: ${lateHeld} commission(s) were claimed by a payout intent or a funding allocation while the reversal was in flight (${stillPayable
+          .map((c) => c.id)
+          .join(', ')}) — refunded revenue may still be paid out; operator action required`,
+      );
+    }
+    // A row that became `paid` between the alreadyPaid count and this
+    // read is in NEITHER total — it would vanish from the report while
+    // refunded revenue had just been paid out. Count it explicitly.
+    const paidLate = missed.filter((c) => c.status === 'paid').length;
+    if (paidLate > 0) {
+      lateNewlyPaid = paidLate;
+      console.error(
+        `[funding] ALERT: invoice ${invoiceId} refund: ${paidLate} commission(s) were PAID while the reversal was in flight — refunded revenue has left the platform; operator action required`,
+      );
+    }
+    const otherwiseMoved = missed.length - lateHeld - paidLate;
+    if (otherwiseMoved > 0) {
+      console.warn(
+        `[funding] invoice ${invoiceId} refund: ${otherwiseMoved} commission(s) were already reversed concurrently — not counted as held`,
+      );
+    }
+  }
+
+  return {
+    reversed,
+    // Includes rows that became paid between the two reads; leaving them
+    // out reported a cleanly-handled refund when money had just moved.
+    alreadyPaid: alreadyPaid + lateNewlyPaid,
+    heldInTransfer: interlock.held.length + lateHeld,
+  };
+}
+
 async function resolveUserIdFromCustomer(
+  trx: Knex.Transaction,
   stripe: Stripe,
   customer: string | Stripe.Customer | Stripe.DeletedCustomer | null,
 ): Promise<string | null> {
   if (!customer) return null;
+  let customerId: string | null = null;
+  let metadataUserId: string | null = null;
+
   if (typeof customer === 'string') {
+    customerId = customer;
     const fetched = await stripe.customers.retrieve(customer);
-    if (fetched.deleted) return null;
-    return fetched.metadata?.openpartner_user_id ?? null;
+    if (!fetched.deleted) metadataUserId = fetched.metadata?.openpartner_user_id ?? null;
+  } else {
+    if ('deleted' in customer && customer.deleted) return null;
+    customerId = (customer as Stripe.Customer).id;
+    metadataUserId = (customer as Stripe.Customer).metadata?.openpartner_user_id ?? null;
   }
-  if ('deleted' in customer && customer.deleted) return null;
-  return (customer as Stripe.Customer).metadata?.openpartner_user_id ?? null;
+
+  if (metadataUserId) return metadataUserId;
+  if (!customerId) return null;
+
+  // Fallback: Stripe Billing flow stitches Identity rows with userId =
+  // customer.id. This covers the race where invoice.paid arrives before our
+  // metadata-backfill on checkout.session.completed lands on Stripe's side.
+  const identity = await trx<IdentityRow>(TABLES.Identity).where({ userId: customerId }).first();
+  return identity ? customerId : null;
+}
+
+/**
+ * Auto-redeem any OpenPartner Coupons referenced by discount codes on
+ * the event. Runs BEFORE the standard event mapping — synthesizes the
+ * Click + Identity for the customer so the next attribution pass
+ * credits the partner. Returns the matched codes (for logging only).
+ *
+ * Stripe events that can carry discount codes:
+ *   - checkout.session.completed (session.discounts +
+ *                                  session.total_details.breakdown.discounts)
+ *   - invoice.paid (invoice.discounts)
+ *   - customer.subscription.created (subscription.discounts) — invoice
+ *     also fires for subs so this is partly redundant; covered for
+ *     consistency.
+ *
+ * The customer-facing code lives at promotion_code.code (when set).
+ * If the discount has only a Coupon (no PromotionCode), we fall back
+ * to coupon.id — brands setting their Stripe Coupon IDs to match
+ * OpenPartner codes works without an extra Stripe API call.
+ */
+async function maybeRedeemStripeCoupons(
+  trx: Knex.Transaction,
+  stripe: Stripe,
+  event: Stripe.Event,
+  tenantId: string,
+): Promise<string[]> {
+  const obj = event.data.object as unknown as Record<string, unknown>;
+  const ts = new Date(event.created * 1000);
+
+  // Customer ID — same shape across the event types we handle.
+  const customerRaw =
+    (obj.customer as string | { id: string } | null | undefined) ??
+    (obj.customer_email as string | undefined);
+  const userId = typeof customerRaw === 'string' ? customerRaw : customerRaw?.id;
+  if (!userId) return [];
+
+  // Collect candidate codes from wherever Stripe might surface them.
+  const candidateCodes: string[] = [];
+  for (const d of extractDiscounts(event)) {
+    const code = await resolveDiscountCode(stripe, d);
+    if (code) candidateCodes.push(code);
+  }
+  if (candidateCodes.length === 0) return [];
+
+  const matched: string[] = [];
+  for (const code of candidateCodes) {
+    const coupon = await findCouponByCode(trx, code);
+    if (!coupon) continue;
+    await ensureCouponClickAndIdentity(trx, tenantId, coupon, userId, ts);
+    matched.push(coupon.code);
+  }
+  return matched;
+}
+
+interface DiscountRef {
+  coupon?: string | { id: string } | null;
+  promotion_code?: string | { id: string; code?: string } | null;
+}
+
+function extractDiscounts(event: Stripe.Event): DiscountRef[] {
+  const obj = event.data.object as unknown as Record<string, unknown>;
+  const out: DiscountRef[] = [];
+
+  // checkout.session.completed: session.discounts + total_details.breakdown.discounts
+  if (Array.isArray(obj.discounts)) {
+    for (const d of obj.discounts as Array<DiscountRef | string>) {
+      if (typeof d === 'object' && d !== null) out.push(d);
+    }
+  }
+  const totalDetails = obj.total_details as
+    | { breakdown?: { discounts?: Array<{ discount?: DiscountRef }> } }
+    | undefined;
+  if (totalDetails?.breakdown?.discounts) {
+    for (const item of totalDetails.breakdown.discounts) {
+      if (item.discount) out.push(item.discount);
+    }
+  }
+  return out;
+}
+
+async function resolveDiscountCode(stripe: Stripe, d: DiscountRef): Promise<string | null> {
+  // Prefer the customer-facing PromotionCode string.
+  if (d.promotion_code) {
+    if (typeof d.promotion_code === 'object' && d.promotion_code.code) {
+      return d.promotion_code.code;
+    }
+    const id = typeof d.promotion_code === 'string' ? d.promotion_code : d.promotion_code.id;
+    try {
+      const promo = await stripe.promotionCodes.retrieve(id);
+      if (promo.code) return promo.code;
+    } catch (err) {
+      console.error('[stripe-webhook] promotion_code retrieve failed', { id, err });
+    }
+  }
+  // Fallback: use the Coupon's Stripe ID directly. Brands who set their
+  // Stripe Coupon IDs to match OpenPartner codes don't need the API call.
+  if (d.coupon) {
+    return typeof d.coupon === 'string' ? d.coupon : d.coupon.id;
+  }
+  return null;
 }

@@ -1,6 +1,6 @@
 # Quickstart
 
-End-to-end walkthrough: spin up the stack, create a partner + campaign + link, simulate a click, stitch an identity, post an event, approve the commission, run a payout, export the data.
+End-to-end walkthrough: spin up the stack, run first-run install, invite a partner, simulate a click, stitch an identity, post an event, approve the commission, run a payout, export the data.
 
 ## 1. Spin up
 
@@ -8,7 +8,9 @@ End-to-end walkthrough: spin up the stack, create a partner + campaign + link, s
 git clone https://github.com/getcoherence/openpartner
 cd openpartner
 cp .env.example .env
-# edit .env: set ADMIN_API_KEY to a strong random value
+# edit .env: set ADMIN_API_KEY (bootstrap) and SECRETS_ENCRYPTION_KEY
+# (both random 32-byte hex). Generate each with:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 pnpm install
 docker compose up -d postgres
 pnpm migrate
@@ -18,9 +20,21 @@ pnpm dev:router    # :4701
 pnpm dev:portal    # :5673
 ```
 
-## 2. Bootstrap
+## 2. First-run install (UI)
 
-All admin calls use your `ADMIN_API_KEY` as a bearer token.
+Open **http://localhost:5673/install** — a three-step wizard:
+
+1. **You** — admin name + email
+2. **Program** — program name + optional support email (surfaced to partners in their footer)
+3. **Email delivery** — SMTP or Postmark credentials (stored encrypted in the DB) or "None" to print magic links to the `pnpm dev:api` console
+
+On submit, OpenPartner emails you a one-time activation link. Click it and you're signed in as the first admin with a session cookie. From here, everything else is admin UI — no more curl bootstrap.
+
+> The `ADMIN_API_KEY` env remains valid as a headless / CI bearer. Everything below works with either auth mode.
+
+## 3. Bootstrap via API (headless)
+
+If you'd rather skip the wizard for scripted setups, the admin key still works as a bearer token.
 
 ```bash
 export ADMIN=$(grep '^ADMIN_API_KEY=' .env | cut -d= -f2)
@@ -30,6 +44,8 @@ PARTNER=$(curl -s -X POST http://localhost:4601/partners \
   -H "Authorization: Bearer $ADMIN" \
   -H "content-type: application/json" \
   -d '{"email":"ada@example.com","name":"Ada"}' | jq -r .id)
+# ^ Also emails Ada an invite with a magic link. She clicks it, sets
+#   up her own partner dashboard session — admin never sees her creds.
 
 # Create a campaign (20% recurring percent rule).
 CAMPAIGN=$(curl -s -X POST http://localhost:4601/campaigns \
@@ -37,20 +53,15 @@ CAMPAIGN=$(curl -s -X POST http://localhost:4601/campaigns \
   -H "content-type: application/json" \
   -d '{"name":"Default","commissionRule":{"type":"percent","value":20,"recurring":true}}' | jq -r .id)
 
-# Create a link.
+# Partners create their own Links — but admin can seed one for
+# testing. In the real UX the partner does this from their dashboard.
 curl -s -X POST http://localhost:4601/partners/$PARTNER/links \
   -H "Authorization: Bearer $ADMIN" \
   -H "content-type: application/json" \
   -d "{\"linkKey\":\"ada\",\"campaignId\":\"$CAMPAIGN\",\"destinationUrl\":\"https://example.com/signup\"}"
-
-# Issue a partner-scoped key so Ada can read her own dashboard.
-curl -s -X POST http://localhost:4601/partners/$PARTNER/api-keys \
-  -H "Authorization: Bearer $ADMIN" \
-  -H "content-type: application/json" \
-  -d '{"label":"ada personal"}'
 ```
 
-## 3. Simulate the funnel
+## 4. Simulate the funnel
 
 ```bash
 # Click — router sets _cref cookie, writes Click row, 302s to destinationUrl.
@@ -68,7 +79,7 @@ curl -s -X POST http://localhost:4601/attribution/events \
   -d '{"userId":"user_123","type":"invoice_paid","value":200,"currency":"USD"}'
 ```
 
-## 4. Review + payout
+## 5. Review + payout
 
 ```bash
 # The commission is 'accrued'; approve it.
@@ -89,7 +100,7 @@ curl -s -X POST http://localhost:4601/payouts/run \
   -H "Authorization: Bearer $ADMIN"
 ```
 
-## 5. Export / import
+## 6. Export / import
 
 ```bash
 # Full dump — round-trippable into a self-hosted instance.
@@ -107,7 +118,7 @@ curl -s -X POST http://localhost:4601/import \
   --data @export.json
 ```
 
-## 6. Deployment modes
+## 7. Deployment modes
 
 Set `OPENPARTNER_MODE` in `.env`:
 
@@ -119,7 +130,7 @@ Set `OPENPARTNER_MODE` in `.env`:
 
 See `/billing/status` for the current state, and `/billing/portal` in `flat` mode for the merchant's Stripe customer portal.
 
-## 7. Browser SDK
+## 8. Browser SDK
 
 ```ts
 import { OpenPartner } from '@openpartner/sdk';
@@ -132,7 +143,7 @@ op.identify(currentUser.id);
 
 The SDK captures `?cref=…` from the landing URL and the `_cref` cookie, stashes in localStorage so the attribution survives ITP / multi-session gaps, then POSTs to `/attribution/identify` when you call `identify()`.
 
-## 8. Server SDK
+## 9. Server SDK
 
 For conversion events your backend controls (custom events, non-Stripe billing):
 

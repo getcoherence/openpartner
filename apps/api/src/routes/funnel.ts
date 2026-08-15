@@ -23,12 +23,13 @@
 
 import { Router } from 'express';
 import { TABLES } from '@openpartner/db';
-import { db } from '../db.js';
 import { requireAuth, requirePartnerOrAdmin } from '../auth.js';
+import { tenantOf } from '../tenancy.js';
 
 export const funnelRouter = Router();
 
 funnelRouter.get('/partners/:id/funnel', requireAuth, requirePartnerOrAdmin('id'), async (req, res) => {
+  const { db } = tenantOf(req);
   const partnerId = req.params.id!;
   const since = req.query.since
     ? new Date(String(req.query.since))

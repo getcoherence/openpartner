@@ -1,96 +1,69 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { api, clearApiKey } from '../../api.js';
 import { theme } from '../../theme.js';
 import { AuthFrame } from './Shared.js';
 
-interface VerifyResponse {
-  ok: boolean;
-  role?: 'network_creator' | 'network_vendor';
-  status?: 'pending' | 'active';
-  vendor?: { id: string; name: string; slug: string };
-}
-
+/**
+ * Terminal page for an emailed magic link. URL shapes:
+ *   single-tenant: /auth/magic?token=...
+ *   multi-tenant brand: /t/<slug>/auth/magic?token=...
+ *
+ * After verify we redirect to the right home: /t/<slug>/ for a brand
+ * link (slug pulled from the URL we landed on), or / for single-tenant.
+ * Without this, multi-tenant brand admins were getting bounced back to
+ * the public Landing because / is the Landing in multi-tenant mode.
+ */
 export function MagicLandingPage() {
   const [params] = useSearchParams();
   const nav = useNavigate();
-  const [err, setErr] = useState<string | null>(null);
-  const [pending, setPending] = useState<VerifyResponse | null>(null);
+  const location = useLocation();
+  const qc = useQueryClient();
+  const [state, setState] = useState<'verifying' | 'ok' | 'failed'>('verifying');
+  const [detail, setDetail] = useState<string | null>(null);
 
   useEffect(() => {
     const token = params.get('token');
     if (!token) {
-      setErr('Missing token.');
+      setState('failed');
+      setDetail('No token in URL.');
       return;
     }
-    clearApiKey();
-    api<VerifyResponse>('/auth/magic/verify', { method: 'POST', body: { token } })
-      .then((resp) => {
-        // Vendor signup gives no session — the vendor still needs admin
-        // approval before they can sign in. Show a held state rather
-        // than redirecting to /.
-        if (resp.role === 'network_vendor' && resp.status === 'pending') {
-          setPending(resp);
-          return;
-        }
-        nav('/', { replace: true });
-      })
-      .catch((e) => {
-        const code = (e?.detail as { error?: string } | undefined)?.error ?? 'unknown';
-        const messages: Record<string, string> = {
-          expired: 'That link has expired. Request a new one.',
-          already_consumed: 'That link was already used.',
-          not_found: "We couldn't find that link.",
-          creator_not_active: 'Your account is suspended. Contact an admin.',
-          vendor_not_active: 'Your vendor account is still pending admin approval.',
-          email_or_handle_taken: 'Someone else claimed that email or handle in the meantime.',
-          slug_taken: 'Someone else claimed that slug in the meantime.',
-          invalid_signup_claim: 'That sign-up link is malformed.',
-          unknown_purpose: 'That link is for an unsupported flow.',
-        };
-        setErr(messages[code] ?? (e instanceof Error ? e.message : 'Something went wrong.'));
-      });
-  }, [params, nav]);
+    const slugMatch = location.pathname.match(/^\/t\/([a-z0-9-]+)\/auth\/magic$/);
+    const home = slugMatch ? `/t/${slugMatch[1]}/` : '/';
 
-  if (pending) {
-    return (
-      <AuthFrame title="Submitted for review" subtitle={`Welcome, ${pending.vendor?.name}.`}>
-        <div
-          style={{
-            background: theme.successSoft,
-            border: `1px solid ${theme.success}55`,
-            padding: 14,
-            borderRadius: theme.radiusSm,
-            fontSize: 13,
-            color: theme.success,
-          }}
-        >
-          Your email is verified and your vendor record is pending admin review. We'll let you sign in once your account is active.
-        </div>
-        <div style={{ marginTop: 16, fontSize: 12, color: theme.textDim }}>
-          Already active? <Link to="/login" style={{ color: theme.accent }}>Sign in</Link>
-        </div>
-      </AuthFrame>
-    );
-  }
+    clearApiKey();
+    api<{ ok: boolean }>('/auth/magic/verify', { method: 'POST', body: { token } })
+      .then(() => {
+        // After a successful first-run activation the install-status
+        // probe was cached (staleTime: Infinity) with needsSetup=true
+        // from app boot, so / would redirect right back to /install.
+        // Invalidate so the Shell re-reads and admits the newly
+        // activated admin into the dashboard.
+        qc.invalidateQueries({ queryKey: ['install-status'] });
+        setState('ok');
+        setTimeout(() => nav(home, { replace: true }), 400);
+      })
+      .catch((err) => {
+        setState('failed');
+        setDetail(
+          err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : 'Link is invalid or expired.',
+        );
+      });
+  }, [nav, params, qc, location.pathname]);
 
   return (
-    <AuthFrame title={err ? 'Sign-in failed' : 'Signing you in…'}>
-      {err ? (
-        <div
-          style={{
-            background: theme.dangerSoft,
-            border: `1px solid ${theme.danger}55`,
-            padding: 14,
-            borderRadius: theme.radiusSm,
-            fontSize: 13,
-            color: theme.danger,
-          }}
-        >
-          {err}
+    <AuthFrame title="Signing you in" subtitle="One moment…">
+      {state === 'verifying' && <div style={{ color: theme.textMuted, fontSize: 14 }}>Verifying your link…</div>}
+      {state === 'ok' && <div style={{ color: theme.success, fontSize: 14 }}>Signed in. Redirecting…</div>}
+      {state === 'failed' && (
+        <div style={{ color: theme.danger, fontSize: 14 }}>
+          {detail ?? 'Could not verify.'}
+          <div style={{ color: theme.textDim, fontSize: 13, marginTop: 10 }}>
+            Ask for a new link from the sign-in page.
+          </div>
         </div>
-      ) : (
-        <div style={{ fontSize: 13, color: theme.textMuted }}>One moment…</div>
       )}
     </AuthFrame>
   );

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import type { Knex } from 'knex';
+import { sslFromConnectionString } from './src/ssl.js';
 
 // In dev we run .ts migrations via tsx; in prod the package ships
 // compiled .js alongside this (also-compiled) knexfile, so the same
@@ -14,17 +15,31 @@ const common: Knex.Config = {
     directory: './migrations',
     extension: isProd ? 'js' : 'ts',
     loadExtensions: isProd ? ['.js'] : ['.ts'],
+    // We occasionally remove migrations that have already run against
+    // existing databases (e.g. the Network carve-out). Knex's default
+    // "corrupt directory" check refuses to boot in that case; instead
+    // we ship a targeted tear-down migration and let old applied rows
+    // live on in knex_migrations as history.
+    disableMigrationsListValidation: true,
   },
 };
+
+function buildConnection(originalUrl: string | undefined): Knex.PgConnectionConfig | string | undefined {
+  if (!originalUrl) return undefined;
+  const { ssl, url } = sslFromConnectionString(originalUrl);
+  return ssl ? { connectionString: url, ssl } : url;
+}
+
+const devUrl = process.env.DATABASE_URL ?? 'postgres://openpartner:openpartner@localhost:5433/openpartner';
 
 const config: { [env: string]: Knex.Config } = {
   development: {
     ...common,
-    connection: process.env.DATABASE_URL ?? 'postgres://openpartner:openpartner@localhost:5433/openpartner',
+    connection: buildConnection(devUrl)!,
   },
   production: {
     ...common,
-    connection: process.env.DATABASE_URL,
+    connection: buildConnection(process.env.DATABASE_URL)!,
     pool: { min: 2, max: 10 },
   },
 };

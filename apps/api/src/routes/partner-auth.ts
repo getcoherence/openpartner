@@ -1,0 +1,195 @@
+/**
+ * Human authentication — covers both admin and partner personas.
+ *
+ *   POST /auth/signin          email → magic-link email (whichever table
+ *                              the address lives in). 200 always so
+ *                              email existence can't be enumerated.
+ *   POST /auth/magic/verify    token → session cookie + whoami. Branches
+ *                              on the token's principalKind.
+ *   POST /auth/signout         revokes the session cookie.
+ *
+ * Invite-on-create sides live in /partners and /admins.
+ */
+
+import { Router } from 'express';
+import { z } from 'zod';
+import { TABLES, type AdminRow, type PartnerRow } from '@openpartner/db';
+import {
+  SESSION_COOKIE_NAME,
+  consumeMagicLink,
+  createSession,
+  issueMagicLink,
+  revokeSession,
+  revokeSessionByToken,
+  sessionCookieOptions,
+} from '../auth-sessions.js';
+import { getMailer } from '../mailer.js';
+import { ipRateLimit } from '../middleware/rate-limit.js';
+import { adminSigninEmail, buildMagicLinkUrl, partnerSigninEmail } from '../email-templates.js';
+import { linkTenantOf } from '../portal-url.js';
+import { tenantOf } from '../tenancy.js';
+
+export const partnerAuthRouter = Router();
+
+const mailAuthLimit = ipRateLimit({ name: 'partner-auth-mail', max: 10, windowMs: 60_000 });
+const verifyLimit = ipRateLimit({ name: 'partner-auth-verify', max: 30, windowMs: 60_000 });
+
+const signinSchema = z.object({ email: z.string().email() });
+const verifySchema = z.object({ token: z.string().min(8) });
+
+// -------- Signin --------
+
+partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = signinSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  const email = body.data.email.toLowerCase();
+
+  // Admin first — if the same email is registered as both an admin and a
+  // partner (unusual but possible on single-operator setups), admin wins.
+  const admin = await db<AdminRow>(TABLES.Admin).where({ email }).first();
+  if (admin?.activatedAt && !admin.revokedAt) {
+    const issued = await issueMagicLink(db, {
+      tenantId,
+      email,
+      purpose: 'admin_signin',
+      principalKind: 'admin',
+      principalId: admin.id,
+    });
+    const tmpl = adminSigninEmail(admin.name, buildMagicLinkUrl(issued.plaintext, linkTenantOf(req)));
+    await getMailer().send({ db, tenantId }, {
+      to: email,
+      subject: tmpl.subject,
+      text: tmpl.text,
+      html: tmpl.html,
+      tag: 'admin_signin',
+      metadata: { purpose: 'admin_signin', adminId: admin.id },
+    });
+    return res.json({ ok: true });
+  }
+
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ email }).first();
+  // Revoked partners fall through silently — they were notified at
+  // revoke time (if admin opted in) and emailing on every signin
+  // attempt turns /auth/signin into a harassment vector: anyone can
+  // cause arbitrary emails to the victim by POSTing their address
+  // here repeatedly.
+  if (partner?.activatedAt && !partner.revokedAt) {
+    const issued = await issueMagicLink(db, {
+      tenantId,
+      email,
+      purpose: 'partner_signin',
+      principalKind: 'partner',
+      principalId: partner.id,
+    });
+    const { resolveBrandName } = await import('../brand-name.js');
+    const brandName = await resolveBrandName(db, tenantId);
+    const tmpl = partnerSigninEmail(partner.name, buildMagicLinkUrl(issued.plaintext, linkTenantOf(req)), brandName);
+    await getMailer().send({ db, tenantId }, {
+      to: email,
+      subject: tmpl.subject,
+      text: tmpl.text,
+      html: tmpl.html,
+      tag: 'partner_signin',
+      metadata: { purpose: 'partner_signin', partnerId: partner.id },
+    });
+  }
+  // Unknown / pending / revoked → silent 200. No email sent.
+  res.json({ ok: true });
+});
+
+// -------- Verify --------
+
+partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = verifySchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  const consumed = await consumeMagicLink(db, body.data.token);
+  if (!consumed) return res.status(400).json({ error: 'invalid_or_expired_token' });
+  const token = consumed.token;
+
+  if (token.principalKind === 'admin') {
+    const admin = await db<AdminRow>(TABLES.Admin).where({ id: token.principalId }).first();
+    if (!admin) return res.status(404).json({ error: 'admin_not_found' });
+    if (admin.revokedAt) return res.status(403).json({ error: 'admin_revoked' });
+
+    if (token.purpose === 'admin_invite' && !admin.activatedAt) {
+      await db<AdminRow>(TABLES.Admin)
+        .where({ id: admin.id })
+        .update({ activatedAt: new Date(), updatedAt: new Date() });
+    }
+    await db<AdminRow>(TABLES.Admin).where({ id: admin.id }).update({ lastSignInAt: new Date() });
+
+    const session = await createSession(db, { tenantId, principalKind: 'admin', principalId: admin.id });
+    res.cookie(SESSION_COOKIE_NAME, session.plaintext, sessionCookieOptions());
+    return res.json({
+      ok: true,
+      role: 'admin',
+      admin: { id: admin.id, email: admin.email, name: admin.name },
+    });
+  }
+
+  // partner
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: token.principalId }).first();
+  if (!partner) return res.status(404).json({ error: 'partner_not_found' });
+  if (partner.revokedAt) return res.status(403).json({ error: 'partner_revoked' });
+
+  if (token.purpose === 'partner_invite' && !partner.activatedAt) {
+    await db<PartnerRow>(TABLES.Partner)
+      .where({ id: partner.id })
+      .update({ activatedAt: new Date(), updatedAt: new Date() });
+    // Fire once, on the actual activation. partner.created already
+    // fired at invite time; this is the "they accepted + are now
+    // promoting" signal Zapier subscribers want for welcome
+    // sequences, Slack pings, etc.
+    const { dispatchEvent } = await import('../webhook-dispatcher.js');
+    dispatchEvent(tenantId, 'partner.activated', {
+      partnerId: partner.id,
+      email: partner.email,
+      name: partner.name,
+      activatedAt: new Date().toISOString(),
+    });
+  }
+
+  const session = await createSession(db, { tenantId, principalKind: 'partner', principalId: partner.id });
+  res.cookie(SESSION_COOKIE_NAME, session.plaintext, sessionCookieOptions());
+  res.json({
+    ok: true,
+    role: 'partner',
+    partner: {
+      id: partner.id,
+      name: partner.name,
+      email: partner.email,
+      stripeConnected: !!partner.stripeConnectAccountId,
+    },
+  });
+});
+
+// -------- Signout --------
+
+partnerAuthRouter.post('/auth/signout', async (req, res) => {
+  const { db } = tenantOf(req);
+  const cookie = (req as unknown as { cookies?: Record<string, string> }).cookies?.[SESSION_COOKIE_NAME];
+  if (cookie) {
+    // Revoke the token PRESENTED, whichever tenant it belongs to.
+    //
+    // This went through resolveSession, which round 8 bound to the request
+    // tenant — and that broke logout (round 9). `op_session` is host-wide at
+    // path '/', so entering a second workspace overwrites it, and a signout
+    // from a stale tab carries tenant B's token to tenant A's URL. The
+    // filtered lookup found nothing, we cleared the browser cookie and
+    // returned 200, and B's session stayed live.
+    await revokeSessionByToken(db, cookie);
+  }
+  // Express's clearCookie only works when the options match the
+  // original cookie's attributes (path + secure + sameSite + domain
+  // — anything that would key the cookie distinctly in the browser).
+  // Passing just { path: '/' } would emit a Set-Cookie the browser
+  // sees as a DIFFERENT cookie (no secure, no sameSite) and the
+  // original op_session would persist. Reuse the same factory used
+  // at set time to guarantee they match.
+  res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
+  res.json({ ok: true });
+});

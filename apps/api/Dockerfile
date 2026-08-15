@@ -15,7 +15,7 @@
 # Entrypoint runs knex migrations before starting the server, so a
 # fresh deploy against an empty DB bootstraps on first boot.
 
-ARG NODE_VERSION=20-alpine
+ARG NODE_VERSION=22-alpine
 
 # ---------- deps: resolve and fetch every workspace package --------
 FROM node:${NODE_VERSION} AS deps
@@ -62,20 +62,24 @@ ENV NODE_ENV=production \
     MAIL_TRANSPORT=postmark
 WORKDIR /app
 
-# API dist + its workspace deps.
-COPY --from=builder /out/package.json ./package.json
-COPY --from=builder /out/node_modules ./node_modules
-COPY --from=builder /out/dist ./dist
+# API dist + its workspace deps. Owned by the unprivileged `node` user
+# (UID 1000) that ships with the official node:alpine image so the
+# runtime container doesn't run as root.
+COPY --from=builder --chown=node:node /out/package.json ./package.json
+COPY --from=builder --chown=node:node /out/node_modules ./node_modules
+COPY --from=builder --chown=node:node /out/dist ./dist
 
 # Migrations need the @openpartner/db package + knex bin. We ship it
 # alongside so the entrypoint can run them before API boot.
-COPY --from=builder /out/packages-db ./packages-db
+COPY --from=builder --chown=node:node /out/packages-db ./packages-db
 
 # Entrypoint runs migrations then execs the API. `exec` matters — we
 # want the node process to be PID 1 so signals (SIGTERM from Fly /
 # Docker) land on the app directly.
-COPY apps/api/docker-entrypoint.sh /usr/local/bin/openpartner-api
+COPY --chown=node:node apps/api/docker-entrypoint.sh /usr/local/bin/openpartner-api
 RUN chmod +x /usr/local/bin/openpartner-api
+
+USER node
 
 EXPOSE 4601
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

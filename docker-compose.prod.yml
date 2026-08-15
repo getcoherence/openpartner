@@ -13,9 +13,6 @@
 #   ROUTER_HOST              e.g. go.example.com         (default: go.$DOMAIN)
 #   CADDY_EMAIL              for Let's Encrypt registration
 #   ADMIN_API_KEY            bootstrap admin key
-#   NETWORK_ENCRYPTION_KEY   64 hex chars (AES-256-GCM)
-#   POSTMARK_SERVER_TOKEN    if MAIL_TRANSPORT=postmark
-#   MAIL_FROM                if MAIL_TRANSPORT=postmark
 #
 # Usage:
 #   cp .env.example .env     # fill in the above
@@ -55,13 +52,13 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-openpartner}:${POSTGRES_PASSWORD:-openpartner}@postgres:5432/${POSTGRES_DB:-openpartner}
       API_PORT: 4601
       ADMIN_API_KEY: ${ADMIN_API_KEY}
-      NETWORK_ENCRYPTION_KEY: ${NETWORK_ENCRYPTION_KEY}
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
       OPENPARTNER_MODE: ${OPENPARTNER_MODE:-selfhost}
-      MAIL_TRANSPORT: ${MAIL_TRANSPORT:-dev}
+      PORTAL_URL: https://${PORTAL_HOST:-portal.${OPENPARTNER_DOMAIN}}
       POSTMARK_SERVER_TOKEN: ${POSTMARK_SERVER_TOKEN:-}
       MAIL_FROM: ${MAIL_FROM:-}
       POSTMARK_MESSAGE_STREAM: ${POSTMARK_MESSAGE_STREAM:-outbound}
-      PORTAL_URL: https://${PORTAL_HOST:-portal.${OPENPARTNER_DOMAIN}}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       STRIPE_FLAT_PRICE_ID: ${STRIPE_FLAT_PRICE_ID:-}

@@ -1,150 +1,390 @@
 /**
- * HTML + plain-text templates for auth emails.
- *
- * Kept deliberately small: inline CSS only, safe fonts, single CTA
- * button. Plaintext fallback carries the same link for clients that
- * block HTML. Preheader text primes the inbox preview so the user sees
- * "Sign in to OpenPartner" before they open the message.
+ * Minimal email templates for partner invite + signin. Plain-text body
+ * is always authoritative — the HTML body is a simple wrapper so it
+ * renders cleanly in Gmail / Outlook without requiring MJML or a
+ * templating engine.
  */
 
-export interface MagicEmail {
+import { getPortalBaseUrl, type PortalLinkTenant } from './portal-url.js';
+
+/**
+ * The ONE place magic-link URLs are built (spec §4.4). Tenant-aware: a
+ * white-label tenant's links land on its custom domain (where the host-only
+ * session cookie will be set); path-based tenants get /t/<slug>/ links; the
+ * platform/single-host case gets a bare PORTAL_URL link. Note that a
+ * freshly-signed-up white-label tenant has no customDomain yet — its first
+ * admin invite is necessarily path-based until the domain verifies.
+ */
+export function buildMagicLinkUrl(token: string, tenant?: PortalLinkTenant | null): string {
+  return `${getPortalBaseUrl(tenant)}/auth/magic?token=${encodeURIComponent(token)}`;
+}
+
+export interface EmailTemplate {
   subject: string;
   text: string;
   html: string;
-  tag: string;
 }
 
-interface BuildParams {
-  headline: string;
-  preheader: string;
-  intro: string;
-  buttonLabel: string;
-  url: string;
-  note?: string;
-  tag: string;
-  subject: string;
+export function partnerInviteEmail(name: string, link: string, brandName: string | null = null): EmailTemplate {
+  const brand = brandName || 'the partner program';
+  const subject = brandName ? `You're invited to ${brandName}'s partner program` : `You're invited to the partner program`;
+  const text = [
+    `Hi ${name},`,
+    ``,
+    `You've been invited to join ${brand}. Click the link below to accept`,
+    `and set up your dashboard:`,
+    ``,
+    link,
+    ``,
+    `This link is good for 15 minutes.`,
+  ].join('\n');
+  return { subject, text, html: wrap(text, link, 'Accept invite') };
 }
 
-function esc(s: string): string {
-  return s
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
+export function partnerSigninEmail(name: string, link: string, brandName: string | null = null): EmailTemplate {
+  const subject = brandName ? `Sign in to ${brandName}` : `Your partner dashboard sign-in link`;
+  const text = [
+    `Hi ${name},`,
+    ``,
+    brandName
+      ? `Click the link below to sign in to ${brandName}:`
+      : `Click the link below to sign in to your partner dashboard:`,
+    ``,
+    link,
+    ``,
+    `This link is good for 15 minutes. If you didn't ask for it, ignore this email.`,
+  ].join('\n');
+  return { subject, text, html: wrap(text, link, 'Sign in') };
 }
 
-function build(params: BuildParams): MagicEmail {
-  const { headline, preheader, intro, buttonLabel, url, note, tag, subject } = params;
+export function adminInviteEmail(name: string, link: string, programName: string | null): EmailTemplate {
+  const brand = programName || 'your partner program';
+  const subject = `You've been invited to administer ${brand}`;
+  const text = [
+    `Hi ${name},`,
+    ``,
+    `You've been invited as an administrator for ${brand}. Click the link below`,
+    `to accept the invitation and sign in:`,
+    ``,
+    link,
+    ``,
+    `This link is good for 15 minutes.`,
+  ].join('\n');
+  return { subject, text, html: wrap(text, link, 'Accept invite') };
+}
 
-  const text =
-    `${headline}\n\n${intro}\n\n${buttonLabel}: ${url}\n\n` +
-    `This link expires in 15 minutes. If you didn't request it, ignore this email.` +
-    (note ? `\n\n${note}` : '');
+export function adminSigninEmail(name: string, link: string): EmailTemplate {
+  const subject = `Your admin dashboard sign-in link`;
+  const text = [
+    `Hi ${name},`,
+    ``,
+    `Click the link below to sign in:`,
+    ``,
+    link,
+    ``,
+    `This link is good for 15 minutes. If you didn't ask for it, ignore this email.`,
+  ].join('\n');
+  return { subject, text, html: wrap(text, link, 'Sign in') };
+}
 
-  const html = `<!doctype html>
+export function partnerRevokedEmail(name: string, reason: string | null): EmailTemplate {
+  const subject = `Your partner account has been suspended`;
+  const text = [
+    `Hi ${name},`,
+    ``,
+    `Your partner account has been suspended by the program administrator.`,
+    ...(reason ? [``, `Reason: ${reason}`] : []),
+    ``,
+    `If you believe this was done in error, please contact the administrator of the partner program directly.`,
+  ].join('\n');
+  // No CTA button on this template — there's nowhere for the partner
+  // to go. Plain-text-in-HTML is fine.
+  const html = `<!DOCTYPE html>
 <html>
-<head>
-<meta charset="utf-8">
-<title>${esc(subject)}</title>
-</head>
-<body style="margin:0;padding:0;background:#0b0d10;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;color:#e6e8eb;">
-  <span style="display:none;font-size:0;line-height:0;max-height:0;max-width:0;opacity:0;overflow:hidden;">${esc(preheader)}</span>
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0b0d10;padding:40px 16px;">
-    <tr>
-      <td align="center">
-        <table role="presentation" width="520" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#14171c;border:1px solid #242932;border-radius:14px;padding:32px;">
-          <tr>
-            <td style="padding-bottom:24px;">
-              <table role="presentation" cellpadding="0" cellspacing="0" border="0">
-                <tr>
-                  <td style="background:linear-gradient(135deg,#2dd4bf,#0891b2);width:28px;height:28px;border-radius:8px;text-align:center;color:#08141a;font-weight:700;font-size:15px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;">O</td>
-                  <td style="padding-left:10px;font-size:16px;font-weight:600;color:#e6e8eb;">OpenPartner</td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-          <tr>
-            <td style="font-size:22px;font-weight:600;color:#e6e8eb;padding-bottom:8px;letter-spacing:-0.01em;">${esc(headline)}</td>
-          </tr>
-          <tr>
-            <td style="font-size:14px;line-height:1.6;color:#8b929c;padding-bottom:24px;">${esc(intro)}</td>
-          </tr>
-          <tr>
-            <td style="padding-bottom:24px;">
-              <a href="${esc(url)}" style="display:inline-block;background:#2dd4bf;color:#08141a;text-decoration:none;padding:11px 20px;border-radius:6px;font-size:14px;font-weight:600;">${esc(buttonLabel)}</a>
-            </td>
-          </tr>
-          <tr>
-            <td style="font-size:12px;color:#5a6370;padding-bottom:16px;">
-              This link expires in 15 minutes. If you didn't request it, ignore this email.
-            </td>
-          </tr>
-          ${note ? `<tr><td style="font-size:12px;color:#8b929c;padding-top:16px;border-top:1px solid #242932;line-height:1.6;">${esc(note)}</td></tr>` : ''}
-          <tr>
-            <td style="font-size:11px;color:#5a6370;padding-top:16px;word-break:break-all;">
-              Or paste this URL into your browser:<br>
-              <span style="color:#8b929c;">${esc(url)}</span>
-            </td>
-          </tr>
+  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#f4f4f5; padding:24px 0; margin:0;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+      <tr><td align="center">
+        <table role="presentation" width="520" cellspacing="0" cellpadding="0" border="0" style="background:#ffffff; border-radius:8px; overflow:hidden;">
+          <tr><td style="padding:28px 32px; color:#1f2937; font-size:14px; line-height:1.6;">
+            ${text
+              .split('\n')
+              .map((l) => l.replace(/</g, '&lt;').replace(/>/g, '&gt;'))
+              .join('<br>')}
+          </td></tr>
         </table>
-      </td>
-    </tr>
-  </table>
-</body>
+      </td></tr>
+    </table>
+  </body>
 </html>`;
-
-  return { subject, text, html, tag };
+  return { subject, text, html };
 }
 
-export function creatorSignupEmail(name: string, url: string): MagicEmail {
-  return build({
-    subject: 'Finish your OpenPartner signup',
-    preheader: `Hi ${name} — one click to finish creating your OpenPartner account.`,
-    headline: `Hi ${name}, one click to finish.`,
-    intro:
-      'Click the button below to verify your email and finish setting up your OpenPartner creator account. Once verified, you can browse offerings and apply to promote any product.',
-    buttonLabel: 'Finish signup',
-    url,
-    tag: 'creator_signup',
-  });
+/** Brand admin: 7-day notice that a Campaign is about to end. */
+export function campaignEndingBrandEmail(
+  brandName: string | null,
+  campaignName: string,
+  endsAt: Date,
+  manageUrl: string,
+): EmailTemplate {
+  const dateStr = endsAt.toUTCString().replace(/ \d\d:\d\d:\d\d GMT$/, '');
+  const subject = `"${campaignName}" ends in 7 days`;
+  const text = [
+    `Hi${brandName ? ` from ${brandName}` : ''},`,
+    ``,
+    `Your campaign "${campaignName}" is scheduled to end ${dateStr}.`,
+    ``,
+    `Existing share-links will keep redirecting after that date — your`,
+    `partners' posted content stays alive — but no new commissions will`,
+    `accrue on conversions dated past the end.`,
+    ``,
+    `If you'd like to keep it running, edit the end date in your admin:`,
+    ``,
+    manageUrl,
+  ].join('\n');
+  return { subject, text, html: wrap(text, manageUrl, 'Manage campaign') };
 }
 
-export function creatorSigninEmail(url: string): MagicEmail {
-  return build({
-    subject: 'Your OpenPartner sign-in link',
-    preheader: 'One click to sign in to OpenPartner.',
-    headline: 'Sign in to OpenPartner',
-    intro: 'Click the button below to sign in.',
-    buttonLabel: 'Sign in',
-    url,
-    tag: 'creator_signin',
-  });
+/** Partner: 7-day notice that a Campaign they have at least one Link
+ *  in is about to end. */
+export function campaignEndingPartnerEmail(
+  partnerName: string,
+  brandName: string | null,
+  campaignName: string,
+  endsAt: Date,
+  programUrl: string,
+): EmailTemplate {
+  const dateStr = endsAt.toUTCString().replace(/ \d\d:\d\d:\d\d GMT$/, '');
+  const fromBrand = brandName ?? 'the brand';
+  const subject = `Heads up — "${campaignName}" ends in 7 days`;
+  const text = [
+    `Hi ${partnerName},`,
+    ``,
+    `The "${campaignName}" program from ${fromBrand} ends ${dateStr}.`,
+    ``,
+    `Your existing share-links keep working past that date, but clicks`,
+    `that come in afterward won't earn commission. Worth squeezing in any`,
+    `last promotion before then.`,
+    ``,
+    programUrl,
+  ].join('\n');
+  return { subject, text, html: wrap(text, programUrl, 'View program') };
 }
 
-export function vendorSignupEmail(name: string, url: string): MagicEmail {
-  return build({
-    subject: 'Finish your OpenPartner vendor signup',
-    preheader: `Verify your email to submit ${name} for Network review.`,
-    headline: `Welcome, ${name}.`,
-    intro:
-      'Click the button below to verify your email and submit your vendor application. An admin reviews your federation credentials and activates your account — usually within a day.',
-    buttonLabel: 'Verify email',
-    url,
-    tag: 'vendor_signup',
-    note:
-      "After your account is active, creators on the Network will be able to discover and apply to promote your offerings. You'll receive their applications in your portal inbox.",
-  });
+// ---------------------------------------------------------------------------
+// Brand review (approval gate) — brand-facing + platform-ops-facing.
+// ---------------------------------------------------------------------------
+
+/** Brand admin: your brand cleared review and is live. */
+export function brandApprovedEmail(
+  adminName: string,
+  brandName: string,
+  enterUrl: string,
+): EmailTemplate {
+  const subject = `${brandName} is approved — you're live`;
+  const text = [
+    `Hi ${adminName},`,
+    ``,
+    `Good news — ${brandName} has been approved on OpenPartner. Your`,
+    `partner links now redirect, and you can invite partners and go live.`,
+    ``,
+    `Jump back into your dashboard:`,
+    ``,
+    enterUrl,
+  ].join('\n');
+  return { subject, text, html: wrap(text, enterUrl, 'Open dashboard') };
 }
 
-export function vendorSigninEmail(url: string): MagicEmail {
-  return build({
-    subject: 'Your OpenPartner sign-in link',
-    preheader: 'One click to sign in to OpenPartner.',
-    headline: 'Sign in to OpenPartner',
-    intro: 'Click the button below to sign in.',
-    buttonLabel: 'Sign in',
-    url,
-    tag: 'vendor_signin',
-  });
+/** Brand admin: your brand was rejected. Only sent when the operator opts
+ *  to notify — spam/phishing rejections are silent by default. No CTA:
+ *  there's nowhere to send them. */
+export function brandRejectedEmail(brandName: string, reason: string | null): EmailTemplate {
+  const subject = `Your ${brandName} application wasn't approved`;
+  const text = [
+    `Hello,`,
+    ``,
+    `After review, we're unable to approve ${brandName} for OpenPartner at`,
+    `this time.`,
+    ...(reason ? [``, `Reason: ${reason}`] : []),
+    ``,
+    `If you believe this was a mistake, reply to this email and our team`,
+    `will take another look.`,
+  ].join('\n');
+  const html = plainHtml(text);
+  return { subject, text, html };
+}
+
+/** Platform operator: magic-link sign-in to the ops console. */
+export function platformAdminSigninEmail(link: string): EmailTemplate {
+  const subject = `Your OpenPartner ops sign-in link`;
+  const text = [
+    `Click the link below to sign in to the OpenPartner platform-ops console:`,
+    ``,
+    link,
+    ``,
+    `This link is good for 15 minutes. If you didn't request it, ignore this`,
+    `email — someone may have mistyped their address.`,
+  ].join('\n');
+  return { subject, text, html: wrap(text, link, 'Sign in to ops') };
+}
+
+/** Platform ops: a new brand signed up and is waiting for review. */
+export function opsBrandNeedsReviewEmail(
+  brandName: string,
+  slug: string,
+  adminEmail: string,
+  reviewUrl: string,
+): EmailTemplate {
+  const subject = `[Review] ${brandName} (${slug}) signed up`;
+  const text = [
+    `A new brand is waiting for review:`,
+    ``,
+    `  Brand:  ${brandName}`,
+    `  Slug:   ${slug}`,
+    `  Admin:  ${adminEmail}`,
+    ``,
+    `Approve or reject it in the ops console:`,
+    ``,
+    reviewUrl,
+  ].join('\n');
+  return { subject, text, html: wrap(text, reviewUrl, 'Review brand') };
+}
+
+/** Platform ops: a decision was recorded (audit copy to the ops inbox). */
+export function opsBrandDecisionEmail(
+  brandName: string,
+  slug: string,
+  decision: 'approved' | 'rejected' | 'reinstated',
+  operatorEmail: string,
+  reason: string | null,
+): EmailTemplate {
+  const subject = `[${decision}] ${brandName} (${slug})`;
+  const text = [
+    `${brandName} (${slug}) was ${decision} by ${operatorEmail}.`,
+    ...(reason ? [``, `Reason: ${reason}`] : []),
+  ].join('\n');
+  return { subject, text, html: plainHtml(text) };
+}
+
+/** Platform ops: a hosted brand scheduled their subscription to cancel at
+ *  period end (usually via the Stripe Customer Portal). */
+export function opsTenantCancellationScheduledEmail(
+  brandName: string,
+  slug: string,
+  effectiveAt: Date | null,
+  customerFeedback: string | null,
+  stripeSubscriptionUrl: string,
+): EmailTemplate {
+  const subject = `[Billing] ${brandName} (${slug}) scheduled a cancellation`;
+  const text = [
+    `${brandName} (${slug}) scheduled their OpenPartner subscription to cancel${
+      effectiveAt ? ` on ${effectiveAt.toISOString().slice(0, 10)}` : ' at the end of the current period'
+    }.`,
+    ...(customerFeedback ? [``, `Customer feedback: ${customerFeedback}`] : []),
+    ``,
+    `White-label branding + custom-domain routing will be revoked automatically`,
+    `when the subscription actually ends. Review the subscription in Stripe:`,
+    ``,
+    stripeSubscriptionUrl,
+  ].join('\n');
+  return { subject, text, html: wrap(text, stripeSubscriptionUrl, 'View subscription in Stripe') };
+}
+
+/** Platform ops: a previously scheduled cancellation was removed. */
+export function opsTenantCancellationResumedEmail(brandName: string, slug: string): EmailTemplate {
+  const subject = `[Billing] ${brandName} (${slug}) resumed their subscription`;
+  const text = `${brandName} (${slug}) removed their scheduled cancellation — the subscription renews as normal.`;
+  return { subject, text, html: plainHtml(text) };
+}
+
+/** Platform ops: a hosted brand's plan subscription ended. */
+export function opsTenantSubscriptionEndedEmail(
+  brandName: string,
+  slug: string,
+  via: 'webhook' | 'reconciliation',
+  whiteLabelRevoked: boolean,
+): EmailTemplate {
+  const subject = `[Billing] ${brandName} (${slug}) subscription ended`;
+  const text = [
+    `The OpenPartner plan subscription for ${brandName} (${slug}) has ended${
+      via === 'reconciliation'
+        ? ` — caught by the nightly Stripe reconciliation, which means the Stripe webhook delivery was missed (check the endpoint's subscribed events)`
+        : ''
+    }.`,
+    ``,
+    `Local billing state cleared.${whiteLabelRevoked ? ' White-label disabled and custom-domain routing revoked.' : ''}`,
+    `The brand keeps its data and can re-subscribe from the portal.`,
+  ].join('\n');
+  return { subject, text, html: plainHtml(text) };
+}
+
+/** Platform ops: Stripe failed to collect a tenant's own OpenPartner
+ *  invoice (dunning). */
+export function opsTenantInvoicePaymentFailedEmail(
+  brandName: string,
+  slug: string,
+  amountDue: string,
+  attemptCount: number,
+  invoiceUrl: string | null,
+): EmailTemplate {
+  const subject = `[Billing] Payment failed for ${brandName} (${slug}) — ${amountDue}`;
+  const text = [
+    `Stripe failed to collect ${amountDue} from ${brandName} (${slug}) (attempt ${attemptCount}).`,
+    ``,
+    `Stripe keeps retrying on its dunning schedule. If this brand has cancelled`,
+    `or the amount isn't actually owed, void the invoice in Stripe to stop the retries.`,
+    ...(invoiceUrl ? [``, invoiceUrl] : []),
+  ].join('\n');
+  return {
+    subject,
+    text,
+    html: invoiceUrl ? wrap(text, invoiceUrl, 'View invoice in Stripe') : plainHtml(text),
+  };
+}
+
+/** Plain-text-in-HTML wrapper for templates with no call-to-action button. */
+function plainHtml(text: string): string {
+  return `<!DOCTYPE html>
+<html>
+  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#f4f4f5; padding:24px 0; margin:0;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+      <tr><td align="center">
+        <table role="presentation" width="520" cellspacing="0" cellpadding="0" border="0" style="background:#ffffff; border-radius:8px; overflow:hidden;">
+          <tr><td style="padding:28px 32px; color:#1f2937; font-size:14px; line-height:1.6;">
+            ${text
+              .split('\n')
+              .map((l) => l.replace(/</g, '&lt;').replace(/>/g, '&gt;'))
+              .join('<br>')}
+          </td></tr>
+        </table>
+      </td></tr>
+    </table>
+  </body>
+</html>`;
+}
+
+function wrap(text: string, cta: string, ctaLabel: string): string {
+  const escaped = text
+    .split('\n')
+    .map((line) =>
+      line.startsWith('http')
+        ? `<a href="${cta}" style="color:#2dd4bf">${cta}</a>`
+        : line.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+    )
+    .join('<br>');
+  return `<!DOCTYPE html>
+<html>
+  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#f4f4f5; padding:24px 0; margin:0;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+      <tr><td align="center">
+        <table role="presentation" width="520" cellspacing="0" cellpadding="0" border="0" style="background:#ffffff; border-radius:8px; overflow:hidden;">
+          <tr><td style="padding:28px 32px; color:#1f2937; font-size:14px; line-height:1.6;">
+            ${escaped}
+            <br><br>
+            <a href="${cta}" style="display:inline-block; background:#2dd4bf; color:#041115; padding:10px 18px; border-radius:6px; text-decoration:none; font-weight:600;">${ctaLabel}</a>
+          </td></tr>
+        </table>
+      </td></tr>
+    </table>
+  </body>
+</html>`;
 }

@@ -6,63 +6,565 @@
  * between hosted and self-hosted tractable. If you add a column, update both.
  */
 
-export type CommissionRule =
-  | { type: 'percent'; value: number; recurring?: boolean }
-  | { type: 'fixed'; value: number; currency?: string; recurring?: boolean };
+/**
+ * Tenant: the top-level isolation boundary in multi-tenant deployments.
+ * In single-tenant (self-host) mode, every row's tenantId is the seeded
+ * 'default' tenant, so the same code paths work without changes.
+ */
+export interface TenantRow {
+  id: string;
+  slug: string;
+  displayName: string;
+  status: 'active' | 'suspended' | 'cancelled';
+  /** Brand-review decision, orthogonal to billing `status`. New signups
+   *  land 'pending' and can configure but not go live (router serves no
+   *  clicks, partner onboarding is 403-gated) until a platform operator
+   *  approves. 'rejected' brands are also status='suspended' (fully dark).
+   *  Existing/seeded/self-host tenants backfilled to 'approved'. See
+   *  migration 20260712000000_tenant_approval + approval-gate.ts. */
+  approvalStatus: 'pending' | 'approved' | 'rejected';
+  /** Rejection reason / review note, shown in the ops console + optionally
+   *  emailed to the brand on rejection. Null until reviewed. */
+  approvalReason: string | null;
+  /** When the last approve/reject/reinstate decision was made. */
+  reviewedAt: Date | null;
+  /** Email of the platform operator who made the last decision. */
+  reviewedByEmail: string | null;
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  customDomain: string | null;
+  /** White-label entitlement (provisioned flag). When true AND on an
+   *  entitling billing state, the portal drops all OpenPartner platform
+   *  branding. See apps/api/src/white-label.ts. Hosted-only; DESIGNED to
+   *  be inert on self-hosted import, though `Tenant` is not yet in the
+   *  export bundle (docs/data-portability.md). */
+  whiteLabel: boolean;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+  suspendedAt: Date | null;
+  pendingDeletionAt: Date | null;
+  deletionReason: string | null;
+  /** Set on the FIRST successful coupon redemption (any path). Used to
+   *  gate large coupon mints behind a "you've actually wired up the
+   *  /coupons/redeem integration" check. Null = never verified. */
+  couponIntegrationVerifiedAt: Date | null;
+  /** Public URL for the tenant's brand logo, set via the upload endpoint.
+   *  Null when the brand hasn't uploaded one — UI falls back to text. */
+  logoUrl: string | null;
+  /** Browser-tab icon, distinct from the logo (square mark vs lockup).
+   *  Null = fall back to logoUrl, then a generated monogram. */
+  faviconUrl: string | null;
+  /** Per-tenant billing tier. Null = legacy tenant predating per-tenant
+   *  pricing (resolver falls back to OPENPARTNER_MODE). 'enterprise' has
+   *  no Stripe subscription; billed out of band. */
+  billingPlan: BillingPlan | null;
+  /** Trial expiry. Null when no trial (legacy / enterprise) or when the
+   *  trial has already converted to a paid subscription. */
+  trialEndsAt: Date | null;
+  /** When the tenant first activated a trial. Set on the first
+   *  checkout.session.completed that includes a trial period; never
+   *  cleared. Used to refuse second-and-later trials so a user can't
+   *  trial-loop by cancelling and re-subscribing. */
+  firstTrialActivatedAt: Date | null;
+  /** Payout rail preference. Null = 'auto' (legacy: pick per-partner at
+   *  payout time). See migration 20260622000000_tenant_payout_settings. */
+  payoutRailPreference: PayoutRailPreference | null;
+  /** Minimum (partner, currency) balance to issue a payout, in cents.
+   *  Null or 0 = no threshold (legacy: pay any amount). */
+  payoutThresholdCents: number | null;
+  /** How often payouts run for this tenant. Null = 'weekly' (legacy:
+   *  every Monday). */
+  payoutCadence: PayoutCadence | null;
+  /** Hex brand color partners see in the portal. Null = fall back to the
+   *  default accent. See migration 20260623000000_brand_resources. */
+  brandColor: string | null;
+  /** Optional URL to a public terms page for this brand's partner
+   *  program. Rendered as a footer link in the partner portal. */
+  programTermsUrl: string | null;
+}
+
+export type BrandAssetKind = 'image' | 'document' | 'snippet';
+export const BRAND_ASSET_KINDS: readonly BrandAssetKind[] = ['image', 'document', 'snippet'];
+
+/**
+ * Per-tenant marketing asset partners can pull from in the portal.
+ * Image/document have a `url` pointing at object storage; snippet has a
+ * `body` of inline text. The DB CHECK constraint enforces the xor.
+ */
+export interface BrandAssetRow {
+  id: string;
+  tenantId: string;
+  kind: BrandAssetKind;
+  label: string;
+  description: string | null;
+  url: string | null;
+  body: string | null;
+  sortOrder: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type PortalDomainStatus = 'pending' | 'verified' | 'failed';
+export type PortalDomainEdgeKind = 'do_native' | 'droplet';
+
+/**
+ * White-label custom-domain registration (sidecar table — exported like
+ * every other table, but carries hosted-edge semantics that are inert on
+ * self-hosted import; a self-hosted instance re-derives its own edge).
+ * See migration 20260702000000_portal_custom_domain.
+ */
+export interface PortalCustomDomainRow {
+  id: string;
+  tenantId: string;
+  /** Globally unique host (e.g. "portal.xispark.com"). */
+  domain: string;
+  /** Hex token the customer publishes as `_openpartner.<domain>` TXT
+   *  (`openpartner-verify=<token>`). Rotated on registration and on every
+   *  failed (re-)verification cycle. */
+  verificationToken: string;
+  /** Not terminal — the re-verification job demotes verified → failed when
+   *  the TXT proof disappears. */
+  status: PortalDomainStatus;
+  edgeKind: PortalDomainEdgeKind;
+  verifiedAt: Date | null;
+  lastCheckedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type BillingPlan = 'flex' | 'revshare' | 'enterprise';
+export const BILLING_PLANS: readonly BillingPlan[] = ['flex', 'revshare', 'enterprise'];
+
+export type PayoutRailPreference = 'auto' | 'stripe_connect' | 'manual';
+export const PAYOUT_RAIL_PREFERENCES: readonly PayoutRailPreference[] = [
+  'auto',
+  'stripe_connect',
+  'manual',
+];
+
+export type PayoutCadence = 'weekly' | 'biweekly' | 'monthly' | 'manual';
+export const PAYOUT_CADENCES: readonly PayoutCadence[] = [
+  'weekly',
+  'biweekly',
+  'monthly',
+  'manual',
+];
+
+/** ID of the seeded default tenant — used in single-host mode and during migration backfills. */
+export const DEFAULT_TENANT_ID = '01J0000000DEFAULTTENANT0000';
+
+/**
+ * Commission rules.
+ *
+ * A Campaign's commissionRule is an ARRAY of triggered sub-rules. One event can
+ * fire multiple sub-rules (e.g., a `subscription_created` matches both a
+ * first-sale bonus AND an every-event recurring rule), each producing its own
+ * Commission row against the same Attribution.
+ *
+ * Triggers:
+ *   every      — fires on every event whose type matches `eventType` (or every
+ *                event if `eventType` is omitted; preserves single-rule behavior)
+ *   first      — fires only on the FIRST event of `eventType` for this
+ *                (partner, user) pair. "$200 first-sale bonus"-style payouts.
+ *   subsequent — fires on every event of `eventType` for this (partner, user)
+ *                EXCEPT the first. Pairs with a `first` rule to express
+ *                "50% on first invoice, 20% on every subsequent invoice"
+ *                without the rules double-firing on event #1.
+ *
+ * recurringMonths caps how long a `recurring` rule keeps firing, measured from
+ * the first attributed event of the rule's `eventType` for this (partner, user).
+ * Null = indefinite.
+ *
+ * Wire format is a JSON array on Campaign.commissionRule. The
+ * 20260520000000_compound_commission_rules migration backfilled pre-array rows
+ * into 1-element arrays — `parseCommissionRule` in attribution.ts also tolerates
+ * the legacy single-object shape so a half-applied migration can't break attribution.
+ */
+export type CommissionRuleTrigger = 'every' | 'first' | 'subsequent';
+
+export interface CommissionSubRule {
+  trigger: CommissionRuleTrigger;
+  /** Event-type filter. Required for `first`, optional for `every` (omit = all events). */
+  eventType?: string;
+  type: 'percent' | 'fixed';
+  /** Percent: 20 means 20%. Fixed: dollar amount. */
+  value: number;
+  /** Only meaningful for fixed rules. */
+  currency?: string;
+  /** When true, the rule keeps firing on subsequent matching events
+   *  (renewals). Combined with recurringMonths to cap duration. */
+  recurring?: boolean;
+  /** Cap (in months) after the first attributed event of this type for
+   *  the (partner, user) pair. Null/omitted = no cap. */
+  recurringMonths?: number;
+}
+
+export type CommissionRule = CommissionSubRule[];
+
+/**
+ * Customer-side reward (dual-sided incentives, Path A — coupon-based).
+ *
+ * Configured per-Campaign. When set, every auto-minted Coupon for that
+ * Campaign also provisions a matching Stripe Coupon + PromotionCode so
+ * the customer's discount applies automatically at checkout.
+ *
+ * Maps to Stripe's Coupon API:
+ *   percent_off  → coupon.percent_off
+ *   amount_off   → coupon.amount_off (cents) + currency
+ *   free_months  → coupon.percent_off=100 + duration='repeating' + duration_in_months=value
+ *
+ * `duration` controls how many invoices the discount applies to. 'once' = first
+ * invoice only, 'forever' = every invoice indefinitely, 'repeating' = first N
+ * invoices (durationInMonths required).
+ */
+export type CustomerRewardType = 'percent_off' | 'amount_off' | 'free_months';
+export type CustomerRewardDuration = 'once' | 'forever' | 'repeating';
+
+export interface CustomerReward {
+  type: CustomerRewardType;
+  /** percent_off: 20 = 20%. amount_off: 20 = $20 (currency required).
+   *  free_months: 1 = 1 free month (delivered as percent_off=100 over N months). */
+  value: number;
+  /** Required for amount_off. ISO 4217 lowercase, e.g. 'usd'. */
+  currency?: string;
+  /** Ignored for free_months (always treated as repeating). */
+  duration: CustomerRewardDuration;
+  /** Required when duration='repeating'. */
+  durationInMonths?: number;
+}
 
 export type AttributionModel = 'last_click' | 'first_click' | 'linear' | 'position';
 
 export type CommissionStatus = 'accrued' | 'approved' | 'paid' | 'reversed';
 
-export type PayoutStatus = 'pending' | 'paid' | 'failed';
+// partially_reversed / reversed are DERIVED from PayoutReversal rows
+// (spec §4, finding 11) — never set except by the reversal handler.
+export type PayoutStatus = 'pending' | 'paid' | 'failed' | 'partially_reversed' | 'reversed';
 
 export type PayoutMethod = 'stripe_connect' | 'manual' | 'external';
 
 export interface PartnerRow {
   id: string;
+  tenantId: string;
   email: string;
   name: string;
   stripeConnectAccountId: string | null;
   metadata: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
+  // null until the partner accepts their invite magic link
+  activatedAt: Date | null;
+  // non-null = admin has suspended the partner; sessions + future
+  // attribution stop, historical commissions untouched
+  revokedAt: Date | null;
+  // Admin-supplied free-text reason surfaced in the revoke notification
+  // email and shown if the partner later tries to sign in.
+  revokeReason: string | null;
 }
 
-export interface CampaignRow {
+export type CommissionType = 'percent' | 'fixed';
+export type PartnerCommissionSource = 'approval' | 'backfill' | 'amendment';
+
+/**
+ * Per-Partner commission snapshot. Sidecar to Partner. Presence of a
+ * row means commission accrual reads from here instead of the live
+ * Campaign rule — preserves the rate the partner was approved under
+ * even after the brand edits the Campaign. Absence falls back to the
+ * Campaign rule (legacy partners + non-Network partners).
+ */
+export interface PartnerCommissionRow {
+  partnerId: string;
+  tenantId: string;
+  /** Legacy single-rule columns. Still populated for backwards compat — the
+   *  resolver prefers `commissionRules` (the array form) when present and
+   *  only falls back to these for snapshots predating compound rules. */
+  commissionType: CommissionType;
+  /** Decimal — comes back as string from pg. Percent stored as 20 for 20%. */
+  commissionValue: string;
+  recurring: boolean;
+  /** Compound rule snapshot. Null = use legacy columns above. New snapshots
+   *  always populate this; resolveCommissionRule prefers it when present. */
+  commissionRules: CommissionRule | null;
+  holdbackDays: number | null;
+  source: PartnerCommissionSource;
+  snapshottedAt: Date;
+}
+
+export type MagicLinkPurpose =
+  | 'partner_invite'
+  | 'partner_signin'
+  | 'admin_invite'
+  | 'admin_signin'
+  | 'platform_signin'
+  /** Sign-in link for the platform-ops console (brand review). Consumed by
+   *  /auth/platform-admin-verify → PlatformAdminSession. Distinct from
+   *  platform_signin, which is the customer multi-brand identity. */
+  | 'platform_admin_signin'
+  /** Explicit "add this identity to the existing browser bundle" intent
+   *  (sent when the user clicks Add another account in the identity
+   *  switcher). Differentiates an intentional stack from a fresh sign-in
+   *  by a different user on the same device — the latter must NOT
+   *  silently inherit the prior bundle. */
+  | 'platform_add_account';
+
+export type PrincipalKind = 'partner' | 'admin' | 'platform';
+
+export interface MagicLinkTokenRow {
   id: string;
+  tenantId: string;
+  prefix: string;
+  tokenHash: string;
+  email: string;
+  purpose: MagicLinkPurpose;
+  principalKind: PrincipalKind;
+  principalId: string;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  createdAt: Date;
+}
+
+export interface SessionRow {
+  id: string;
+  tenantId: string;
+  prefix: string;
+  tokenHash: string;
+  principalKind: PrincipalKind;
+  principalId: string;
+  expiresAt: Date;
+  createdAt: Date;
+  lastSeenAt: Date | null;
+  revokedAt: Date | null;
+}
+
+export interface PlatformSessionRow {
+  id: string;
+  prefix: string;
+  tokenHash: string;
+  email: string;
+  expiresAt: Date;
+  createdAt: Date;
+  lastSeenAt: Date | null;
+  revokedAt: Date | null;
+  /** Null = legacy session not yet attached to a multi-identity bundle.
+   *  See migration 20260624000000_platform_session_bundle. */
+  bundleId: string | null;
+}
+
+/**
+ * Per-device "wallet" of authenticated identities. One bundle holds N
+ * PlatformSession rows; the active session is whichever one the
+ * op_platform_session cookie names. Switching rotates the target session's
+ * token in place and rewrites the cookie.
+ */
+export interface PlatformSessionBundleRow {
+  id: string;
+  createdAt: Date;
+  lastUsedAt: Date;
+}
+
+export interface AdminRow {
+  id: string;
+  tenantId: string;
+  email: string;
+  name: string;
+  activatedAt: Date | null;
+  revokedAt: Date | null;
+  revokeReason: string | null;
+  lastSignInAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Platform admins are Coherence support staff who can read across all
+ * tenants for triage / debugging. Stored separately from tenant-scoped
+ * Admins. Their requests set `app.platform_admin = 'on'`, which RLS
+ * policies treat as a wildcard match.
+ */
+export interface PlatformAdminRow {
+  id: string;
+  email: string;
+  name: string;
+  /** Restrict scope: 'support' = read-only, 'admin' = read+write across tenants. */
+  role: 'support' | 'admin';
+  createdAt: Date;
+  revokedAt: Date | null;
+}
+
+/**
+ * Cross-tenant operator session for the platform-ops console (brand
+ * review). Magic-link issued, cookie-backed (op_platform_admin_session).
+ * Platform-scoped — no tenantId, no RLS; only the privileged pool touches
+ * it. See apps/api/src/platform-admin-sessions.ts.
+ */
+export interface PlatformAdminSessionRow {
+  id: string;
+  prefix: string;
+  tokenHash: string;
+  platformAdminId: string;
+  email: string;
+  /** Snapshot of PlatformAdmin.role at issue time. 'support' = read-only,
+   *  'admin' = may approve/reject/ban. */
+  role: 'support' | 'admin';
+  expiresAt: Date;
+  revokedAt: Date | null;
+  lastSeenAt: Date | null;
+  createdAt: Date;
+}
+
+/** Signup blocklist entry. `type='email'` matches a full address exactly;
+ *  `type='domain'` matches the part after @. Checked in POST /signup. */
+export interface SignupBlocklistRow {
+  id: string;
+  type: 'email' | 'domain';
+  value: string;
+  reason: string | null;
+  createdByEmail: string | null;
+  createdAt: Date;
+}
+
+/** Append-only record of a platform-operator action for accountability. */
+export interface PlatformAuditLogRow {
+  id: string;
+  platformAdminId: string | null;
+  platformAdminEmail: string;
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  detail: Record<string, unknown>;
+  createdAt: Date;
+}
+
+export interface ProgramRow {
+  id: string;
+  tenantId: string;
   name: string;
   commissionRule: CommissionRule;
   attributionWindowDays: number;
   attributionModel: AttributionModel;
+  /** Where partner share-links for this Campaign land by default. Brand
+   *  controls this; partners can only override if deepLinkAllowedDomains
+   *  is set and their override matches. */
+  destinationUrl: string;
+  /** Comma-separated host allowlist enabling per-Link destination
+   *  overrides (deep-linking to product pages). Null = partners can't
+   *  override the Campaign default. */
+  deepLinkAllowedDomains: string | null;
+  /** Days a commission must age past accruedAt before it can be
+   *  approved + paid out. Null/0 = no holdback (immediately approvable).
+   *  Used by brands with a refund window or trial — e.g. set to 30
+   *  for a 30-day money-back guarantee so partners don't get paid on
+   *  conversions that might still refund. Surfaced on the offering
+   *  listing so creators see the terms before applying. */
+  holdbackDays: number | null;
+  /** Optional scheduled start. Null = no start gate (active immediately). */
+  startsAt: Date | null;
+  /** Optional scheduled end. Null = runs forever. After this date the
+   *  campaign is "ended" — links keep redirecting, but no new
+   *  applications + no commission accrual on later events. */
+  endsAt: Date | null;
+  /** When the "ends in 7 days" reminder was sent to brand admin +
+   *  participating partners. Null = not sent yet (or endsAt was
+   *  pushed back past the window and the flag was cleared so a fresh
+   *  reminder fires before the new end). */
+  endNotificationSentAt: Date | null;
+  /** Customer-side reward (dual-sided incentive). Null = partner-only.
+   *  When set, auto-minted Coupons for this Campaign also provision a
+   *  Stripe Coupon + PromotionCode. */
+  customerReward: CustomerReward | null;
+  /** Industry / product categories. Multi-value, drawn from the curated
+   *  PROGRAM_CATEGORIES list. Drives marketplace filtering + the
+   *  Category chip on the discover card. Empty array = uncategorized
+   *  (legitimate; the brand can leave this blank). */
+  categories: string[];
+  /** When true, partners may rename their own coupon code from the
+   *  creator portal. Defaults to false (admin-only). The vendor's
+   *  PATCH /partners/:id/coupons/:couponId gates federated callers on
+   *  this flag — admin auth always bypasses. */
+  partnersMayCustomizeCode: boolean;
+  /** When true AND the brand has a Network membership configured, every
+   *  campaign save upserts the corresponding Network Offering so the
+   *  marketplace listing stays in sync. False = private campaign,
+   *  partner-only — no marketplace presence. Defaults to false at the
+   *  DB level; the API route applies a smarter default (true when the
+   *  brand is on the Network) for new campaigns. */
+  shareOnNetwork: boolean;
+  /** Public-facing description shown on the Network marketplace card.
+   *  Null/empty = card renders without a description block (just brand
+   *  mark + chips + CTA). Internal `name` stays admin-only. */
+  marketplaceDescription: string | null;
+  /** The Network's Offering row id we're synced against. Null until
+   *  the first successful federation upsert; subsequent edits PATCH
+   *  this id instead of creating a new offering. */
+  networkOfferingId: string | null;
+  /** Platform-operator takedown (anti-spam). When set, the router refuses
+   *  to serve this program's partner links regardless of the brand's
+   *  approvalStatus — a per-program removal that leaves the brand live.
+   *  Null = normal. See migration 20260712020000_program_moderation. */
+  blockedAt: Date | null;
+  blockedReason: string | null;
+  /** Email of the operator who blocked it. */
+  blockedByEmail: string | null;
+  createdAt: Date;
+}
+
+export interface PartnerProgramRow {
+  id: string;
+  tenantId: string;
+  partnerId: string;
+  programId: string;
+  /** Why this grant exists. 'admin' = brand admin assignment;
+   *  'offering' = auto-granted when a Network application was approved
+   *  for the Offering tied to this Campaign. */
+  source: 'admin' | 'offering';
   createdAt: Date;
 }
 
 export interface LinkRow {
   id: string;
+  tenantId: string;
   linkKey: string;
   partnerId: string;
-  campaignId: string;
-  destinationUrl: string;
+  programId: string;
+  /** Override of Campaign.destinationUrl. Null = inherit. Set only when
+   *  the Campaign allows deep-linking and the partner picked a custom
+   *  destination on an allowed host. */
+  destinationUrl: string | null;
   createdAt: Date;
 }
 
-export type ClickFraudFlag = 'velocity' | 'manual' | null;
+export type ClickFraudFlag = 'velocity' | 'manual' | 'revoked' | null;
 
 export interface ClickRow {
   id: string;
-  linkId: string;
+  tenantId: string;
+  /** Null for synthetic clicks generated by coupon-code redemptions
+   *  (no Link involved — customer entered a code, not clicked a URL). */
+  linkId: string | null;
   partnerId: string;
-  campaignId: string;
+  programId: string;
   landingUrl: string;
   ipHash: string | null;
   userAgent: string | null;
   referer: string | null;
+  /** UTM params parsed off the inbound URL at click time. Null for
+   *  pre-Tier-3 rows + clicks without UTMs in the URL. */
+  utmSource: string | null;
+  utmMedium: string | null;
+  utmCampaign: string | null;
+  utmTerm: string | null;
+  utmContent: string | null;
+  /** ISO 3166-1 alpha-2, lowercase. From cf-ipcountry header. Null
+   *  when the click bypassed Cloudflare or pre-dates Tier 3. */
+  country: string | null;
   fraudFlag: ClickFraudFlag;
   ts: Date;
 }
 
 export interface IdentityRow {
   id: string;
+  tenantId: string;
   clickId: string;
   userId: string;
   stitchedAt: Date;
@@ -77,6 +579,7 @@ export type EventType =
 
 export interface EventRow {
   id: string;
+  tenantId: string;
   userId: string;
   type: EventType;
   value: string | null; // decimal comes back as string from pg
@@ -88,9 +591,10 @@ export interface EventRow {
 
 export interface AttributionRow {
   id: string;
+  tenantId: string;
   eventId: string;
   partnerId: string;
-  campaignId: string;
+  programId: string;
   clickId: string;
   model: AttributionModel;
   weight: string; // decimal as string
@@ -99,6 +603,7 @@ export interface AttributionRow {
 
 export interface CommissionRow {
   id: string;
+  tenantId: string;
   attributionId: string;
   partnerId: string;
   amount: string; // decimal as string
@@ -110,6 +615,7 @@ export interface CommissionRow {
 }
 
 export interface ConfigRow {
+  tenantId: string;
   key: string;
   value: unknown;
   updatedAt: Date;
@@ -125,11 +631,10 @@ export type ApiScope =
 
 export interface ApiKeyRow {
   id: string;
+  tenantId: string;
   prefix: string;
   keyHash: string;
   partnerId: string | null;
-  networkVendorId: string | null;
-  networkCreatorId: string | null;
   scopes: ApiScope[] | null;
   label: string | null;
   createdAt: Date;
@@ -137,179 +642,23 @@ export interface ApiKeyRow {
   revokedAt: Date | null;
 }
 
-// ---- OpenPartner Network ----
-
-export type NetworkVendorStatus = 'pending' | 'active' | 'suspended';
-export type NetworkCreatorStatus = 'pending' | 'active' | 'suspended';
-export type PartnershipRequestStatus = 'pending' | 'approving' | 'approved' | 'rejected' | 'cancelled';
-export type PartnershipRequestDirection = 'creator_to_vendor' | 'vendor_to_creator';
-export type PartnershipStatus = 'active' | 'ended';
-
-export interface CreatorPlatform {
-  platform: 'youtube' | 'twitter' | 'instagram' | 'tiktok' | 'blog' | 'podcast' | 'other';
-  url: string;
-  followers?: number;
-}
-
-export type OfferingPayout =
-  | { type: 'recurring_percent'; percent: number; durationMonths: number | null } // null = lifetime
-  | { type: 'one_time_fee'; amount: number; currency?: string }
-  | { type: 'tiered_percent'; tiers: Array<{ minRevenueUsd: number; percent: number }> };
-
-export interface OfferingBonus {
-  description: string;
-  triggerRevenueUsd: number;
-  bonusUsd: number;
-}
-
-export interface OfferingTerms {
-  payout: OfferingPayout;
-  bonuses?: OfferingBonus[];
-  cookieWindowDays: number;
-  exclusions?: string[];
-}
-
-export interface NetworkVendorRow {
-  id: string;
-  name: string;
-  slug: string;
-  email: string;
-  websiteUrl: string | null;
-  logoUrl: string | null;
-  description: string | null;
-  instanceUrl: string;
-  instanceKeyCiphertext: string;
-  instanceKeyPrefix: string;
-  routerUrl: string | null;
-  status: NetworkVendorStatus;
-  createdAt: Date;
-  activatedAt: Date | null;
-}
-
-export interface NetworkCreatorRow {
-  id: string;
-  name: string;
-  handle: string;
-  email: string;
-  bio: string | null;
-  avatarUrl: string | null;
-  platforms: CreatorPlatform[];
-  defaultPromoCode: string | null;
-  status: NetworkCreatorStatus;
-  createdAt: Date;
-  activatedAt: Date | null;
-}
-
-export interface OfferingRow {
-  id: string;
-  vendorId: string;
-  title: string;
-  productUrl: string;
-  description: string | null;
-  heroImageUrl: string | null;
-  vendorCampaignId: string;
-  terms: OfferingTerms;
-  published: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface PartnershipRequestRow {
-  id: string;
-  offeringId: string;
-  vendorId: string;
-  creatorId: string;
-  direction: PartnershipRequestDirection;
-  message: string | null;
-  promoCode: string | null;
-  status: PartnershipRequestStatus;
-  createdAt: Date;
-  decidedAt: Date | null;
-  decisionNote: string | null;
-}
-
-// ---- Human auth (magic-link + sessions) ----
-
-export type MagicLinkPurpose =
-  | 'creator_signup'
-  | 'creator_signin'
-  | 'vendor_signup'
-  | 'vendor_signin';
-
-export interface MagicLinkCreatorClaim {
-  kind: 'creator';
-  handle: string;
-  name: string;
-}
-
-export interface MagicLinkVendorClaim {
-  kind: 'vendor';
-  name: string;
-  slug: string;
-  instanceUrl: string;
-  // AES-256-GCM envelope of the vendor's instance API key. We only have
-  // the plaintext transiently during /auth/vendor/signup; the token sits
-  // in MagicLinkToken.claim (jsonb) for up to 15 minutes until consumed,
-  // and it must not store federation credentials in the clear.
-  instanceKeyCiphertext: string;
-  instanceKeyPrefix: string;
-  routerUrl?: string;
-  description?: string;
-  websiteUrl?: string;
-  logoUrl?: string;
-}
-
-export type MagicLinkClaim = MagicLinkCreatorClaim | MagicLinkVendorClaim;
-
-export interface MagicLinkTokenRow {
-  id: string;
-  prefix: string;
-  tokenHash: string;
-  email: string;
-  purpose: MagicLinkPurpose;
-  claim: MagicLinkClaim | null;
-  expiresAt: Date;
-  consumedAt: Date | null;
-  createdAt: Date;
-}
-
-export type SessionPrincipalKind = 'network_creator' | 'network_vendor' | 'partner' | 'admin';
-
-export interface SessionRow {
-  id: string;
-  prefix: string;
-  tokenHash: string;
-  principalKind: SessionPrincipalKind;
-  principalId: string;
-  expiresAt: Date;
-  createdAt: Date;
-  lastSeenAt: Date | null;
-  revokedAt: Date | null;
-}
-
-export interface DevMessageRow {
-  id: string;
-  to: string;
-  subject: string;
-  body: string;
-  html: string | null;
-  metadata: Record<string, unknown>;
-  createdAt: Date;
-}
-
 // ---- Outbound webhooks ----
 
 export type WebhookEventType =
   | 'attribution.created'
+  | 'commission.accrued'
   | 'commission.approved'
   | 'commission.paid'
   | 'commission.reversed'
-  | 'payout.created'
+  | 'partner.created'
+  | 'partner.activated'
   | 'partnership.approved'
+  | 'payout.created'
   | (string & {});
 
 export interface WebhookEndpointRow {
   id: string;
+  tenantId: string;
   url: string;
   secretPrefix: string;
   secret: string;
@@ -324,6 +673,7 @@ export type WebhookDeliveryStatus = 'pending' | 'delivered' | 'failed';
 
 export interface WebhookDeliveryRow {
   id: string;
+  tenantId: string;
   endpointId: string;
   eventId: string;
   eventType: WebhookEventType;
@@ -337,22 +687,9 @@ export interface WebhookDeliveryRow {
   lastAttemptAt: Date | null;
 }
 
-export interface PartnershipRow {
-  id: string;
-  requestId: string;
-  offeringId: string;
-  vendorId: string;
-  creatorId: string;
-  vendorPartnerId: string;
-  vendorLinkKey: string;
-  publicShareUrl: string;
-  status: PartnershipStatus;
-  createdAt: Date;
-  endedAt: Date | null;
-}
-
 export interface PayoutRow {
   id: string;
+  tenantId: string;
   partnerId: string;
   amount: string;
   currency: string;
@@ -362,4 +699,258 @@ export interface PayoutRow {
   metadata: Record<string, unknown>;
   createdAt: Date;
   completedAt: Date | null;
+}
+
+// ---- Partner postbacks ----
+
+/** Events a partner postback can subscribe to. Restricted to the
+ *  conversion ledger; partner-state events stay tenant-scoped. */
+export type PartnerPostbackEvent =
+  | 'commission.accrued'
+  | 'commission.approved'
+  | 'commission.paid'
+  | 'commission.reversed';
+
+export interface PartnerPostbackRow {
+  id: string;
+  tenantId: string;
+  partnerId: string;
+  url: string;
+  events: PartnerPostbackEvent[];
+  enabled: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  lastFiredAt: Date | null;
+  lastStatus: number | null;
+  lastError: string | null;
+  successCount: number;
+  failureCount: number;
+}
+
+export type NetworkOutboxOp = 'partner_upsert' | 'partner_revoke' | 'backfill_partner';
+export type NetworkOutboxStatus = 'pending' | 'dead';
+
+export interface NetworkOutboxRow {
+  id: string;
+  tenantId: string;
+  op: NetworkOutboxOp;
+  payload: Record<string, unknown>;
+  attempts: number;
+  nextAttemptAt: Date;
+  createdAt: Date;
+  lastAttemptAt: Date | null;
+  lastError: string | null;
+  status: NetworkOutboxStatus;
+}
+
+export interface CouponRow {
+  id: string;
+  tenantId: string;
+  partnerId: string;
+  programId: string;
+  /** User-facing string. Per-tenant unique. Lookups are case-insensitive
+   *  but storage is whatever the creator/admin picked at mint time. */
+  code: string;
+  /** Stripe Coupon ID provisioned alongside the OpenPartner Coupon when
+   *  the bound Campaign has a customerReward. Null = no customer-side
+   *  reward, OR Stripe wasn't configured at mint time. */
+  stripeCouponId: string | null;
+  /** Stripe PromotionCode ID — what the customer types at checkout. */
+  stripePromotionCodeId: string | null;
+  /** When the partner / admin retired this code. NULL = active (still
+   *  redeemable at checkout, still attributes). Non-null = deactivated:
+   *  the Stripe PromotionCode is disabled too, so customers entering the
+   *  old string get an invalid-code error. Historical redemptions remain
+   *  attributed to this row. */
+  deactivatedAt: Date | null;
+  createdAt: Date;
+}
+
+// ---------------------------------------------------------------------------
+// Hosted payout funding (docs/payout-funding.md §4). Hosted-only sidecars —
+// designed to export losslessly and be inert on self-hosted import — NOT
+// yet in EXPORT_TABLES, see docs/data-portability.md. All *Minor columns are
+// integer minor units with canonical lowercase currency.
+// ---------------------------------------------------------------------------
+
+export type FundingBatchStatus =
+  | 'reserved'
+  | 'invoicing'
+  | 'payment_processing'
+  | 'funded'
+  | 'transferring'
+  | 'settled'
+  | 'settled_with_residual'
+  | 'funding_failed'
+  | 'funding_disputed'
+  | 'release_requested'
+  | 'released'
+  | 'recovery_required';
+
+export type FundingAllocationState =
+  | 'reserved'
+  | 'canceled'
+  | 'transfer_pending'
+  | 'transferred'
+  | 'released'
+  | 'recovery_required';
+
+export type FundingTransferState = 'pending' | 'posted' | 'confirmed' | 'failed' | 'reconcile_required';
+
+export interface HostedFundingBatchRow {
+  id: string;
+  tenantId: string;
+  currency: string;
+  principalMinor: string; // bigint columns surface as strings via pg
+  grossChargeMinor: string;
+  quotedFeeMinor: string;
+  actualStripeFeeMinor: string | null;
+  paymentMethodType: string | null;
+  pricingVersion: string;
+  status: FundingBatchStatus;
+  stripePaymentIntentId: string | null;
+  stripeChargeId: string | null;
+  residualMinor: string;
+  residualDisposition: 'refund' | 'manual_payout' | 'credit_next_batch' | null;
+  failureReason: string | null;
+  fundingAttempts: number;
+  fundedAt: Date | null;
+  settledAt: Date | null;
+  releasedAt: Date | null;
+  /** Reconcile-sweep scheduling (per-object, see funding/reconcile.ts).
+   *  Null = never swept; ordered by eligibility time instead. */
+  sweepDueAt: Date | null;
+  sweepLeaseAt: Date | null;
+  sweepLeaseToken: string | null;
+  sweepFailCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface HostedFundingAllocationRow {
+  id: string;
+  tenantId: string;
+  batchId: string;
+  commissionId: string;
+  partnerId: string;
+  amountMinor: string;
+  state: FundingAllocationState;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface HostedFundingTransferRow {
+  id: string;
+  tenantId: string;
+  batchId: string;
+  partnerId: string;
+  currency: string;
+  amountMinor: string;
+  destinationAccountId: string;
+  idempotencyKey: string;
+  state: FundingTransferState;
+  stripeTransferId: string | null;
+  payoutId: string | null;
+  lastError: string | null;
+  postedAt: Date | null;
+  /** Reconcile-sweep scheduling (per-object, see funding/reconcile.ts). */
+  sweepDueAt: Date | null;
+  sweepLeaseAt: Date | null;
+  sweepLeaseToken: string | null;
+  sweepFailCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface HostedFundingAuthorizationRow {
+  id: string;
+  tenantId: string;
+  /** Null = authorized via the env operator key (no Admin row). */
+  adminId: string | null;
+  termsVersion: string;
+  stripePaymentMethodId: string;
+  paymentMethodType: string;
+  acceptedAt: Date;
+  revokedAt: Date | null;
+}
+
+export interface HostedBillingStateRow {
+  tenantId: string;
+  subscriptionStatus: 'active' | 'trialing' | 'past_due' | 'unpaid' | 'paused' | 'canceled' | null;
+  delinquentFundingCount: number;
+  updatedAt: Date;
+}
+
+export interface StripeWebhookInboxRow {
+  stripeEventId: string;
+  type: string;
+  outcome: string | null;
+  processedAt: Date;
+}
+
+export interface PayoutReversalRow {
+  id: string;
+  tenantId: string;
+  payoutId: string;
+  stripeReversalId: string;
+  amountMinor: string;
+  reason: string | null;
+  balanceTransactionId: string | null;
+  createdAt: Date;
+}
+
+/** CORE + portable: compensating-entry ledger. Paid commissions are
+ *  immutable history — clawbacks and corrections append here. */
+export interface CommissionAdjustmentRow {
+  id: string;
+  tenantId: string;
+  commissionId: string;
+  amount: string; // decimal, major units (core-table convention)
+  currency: string;
+  reason: 'transfer_reversed' | 'funding_disputed' | 'admin_correction' | 'refund_clawback';
+  actorAdminId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+}
+
+export type OperatorRecoveryRail = 'direct_connect' | 'hosted_funding';
+export type OperatorRecoveryKind =
+  | 'release_intent_for_retry'
+  | 'dispose_intent'
+  | 'resolve_duplicate_review'
+  | 'force_release_batch';
+export type OperatorRecoveryStatus = 'pending' | 'applied' | 'refused' | 'failed' | 'canceled';
+
+/** OPERATIONAL SIDECAR (not exported — see docs/data-portability.md):
+ *  durable, auditable operator decisions on frozen money state. The apply
+ *  loop (apps/api/src/operator-recovery.ts) calls the existing operator
+ *  functions under their own fences; this row is the tombstone recording
+ *  who accepted which risk, when, on what evidence. Terminal rows are
+ *  never edited into a new decision — a new decision is a new row. */
+export interface OperatorRecoveryRequestRow {
+  id: string;
+  tenantId: string;
+  rail: OperatorRecoveryRail;
+  kind: OperatorRecoveryKind;
+  /** payoutId (direct_connect) or batchId (hosted_funding). */
+  targetId: string;
+  params: Record<string, unknown>;
+  requestedBy: string;
+  note: string | null;
+  status: OperatorRecoveryStatus;
+  /** The operator function's literal return value from the last attempt,
+   *  or an apply-loop verdict (tenant_mismatch / invalid_request / ...). */
+  outcome: string | null;
+  attempts: number;
+  nextAttemptAt: Date | null;
+  /** Claim lease — apply loop + recheck pass, token-fenced writes. */
+  leaseAt: Date | null;
+  leaseToken: string | null;
+  /** Post-apply transfer-group re-check (direct_connect kinds only). */
+  recheckDueAt: Date | null;
+  recheckAttempts: number;
+  recheckOutcome: string | null;
+  appliedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
