@@ -450,6 +450,14 @@ function operatorStringFor(request: OperatorRecoveryRequestRow): string {
   const safe = request.requestedBy.replace(/[/:]/g, '_').slice(0, 254);
   return `${safe}/req_${request.id}`;
 }
+// Compatibility note (round 13): stamps written by the brief pre-sanitizer
+// build would not match the sanitized expectation and would settle as an
+// annotated refusal — the SAFE branch, with an alert pointing a human at
+// the target. Verified empirically: no OperatorRecoveryRequest row has
+// ever existed in any deployment (prod count 0 on 2026-08-14), so no
+// legacy stamp exists to mismatch. No legacy-form fallback is added on
+// purpose — matching the unsanitized shape would re-open the round-12
+// forgery for names containing '/'.
 
 /** Does the target's operator-audit field carry THIS request's marker?
  *
@@ -469,30 +477,39 @@ async function targetCarriesOurMarker(
   request: OperatorRecoveryRequestRow,
 ): Promise<boolean> {
   const operator = operatorStringFor(request);
-  const prefixes: Record<OperatorRecoveryKind, string[]> = {
+  // The kinds whose stamp has NO reason suffix are matched by EXACT
+  // equality — their full stored value is `operator_<action>:<operator>`
+  // and nothing else, always shorter than the 500-char truncation. A
+  // startsWith here was still forgeable (round 13): the schema does not
+  // constrain request ids to ULIDs, so an app-role insert with
+  // id = <A's id> + "X" produced a stamp of which A's marker was a strict
+  // prefix. The reason-carrying kinds keep the prefix form — their `:`
+  // after the id terminates it, so an extended id cannot collide.
+  const exact: Record<string, string[]> = {
     release_intent_for_retry: [`operator_rearm:${operator}`],
-    dispose_intent: [`operator_dispose:${operator}:`],
     resolve_duplicate_review: [
       `operator_kept_transfer:${operator}`,
       `operator_all_reversed:${operator}`,
     ],
+  };
+  const prefix: Record<string, string[]> = {
+    dispose_intent: [`operator_dispose:${operator}:`],
     force_release_batch: [`operator_force_release:${operator}:`],
   };
-  const expected = prefixes[request.kind] ?? [];
+  const matches = (stored: string | null | undefined): boolean =>
+    typeof stored === 'string' &&
+    ((exact[request.kind] ?? []).some((m) => stored === m) ||
+      (prefix[request.kind] ?? []).some((p) => stored.startsWith(p)));
   if (request.rail === 'direct_connect') {
     const payout = (await db<PayoutRow>(TABLES.Payout)
       .where({ id: request.targetId })
       .first()) as PayoutRow | undefined;
-    const lastError = (payout?.metadata as { lastError?: string } | null)?.lastError;
-    return typeof lastError === 'string' && expected.some((p) => lastError.startsWith(p));
+    return matches((payout?.metadata as { lastError?: string } | null)?.lastError);
   }
   const batch = (await db<HostedFundingBatchRow>(TABLES.HostedFundingBatch)
     .where({ id: request.targetId })
     .first(['failureReason'])) as Pick<HostedFundingBatchRow, 'failureReason'> | undefined;
-  return (
-    typeof batch?.failureReason === 'string' &&
-    expected.some((p) => batch.failureReason!.startsWith(p))
-  );
+  return matches(batch?.failureReason);
 }
 
 /** Terminal write, fenced on the claim token: only the claim holder may

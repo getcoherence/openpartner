@@ -176,6 +176,25 @@ async function pisForBatch(batchId: string): Promise<Stripe.PaymentIntent[]> {
   return out;
 }
 
+/** A client whose PI search deterministically returns `piId` — the probe
+ *  that separates "search was cold" (legitimate hold; Stripe search is
+ *  not monotonic even after one warm read — observed live, round 13)
+ *  from "the resume never ran" (the regression under test). */
+function warmSearchStripe(piId: string): Stripe {
+  return {
+    ...stripe,
+    paymentIntents: {
+      ...stripe.paymentIntents,
+      search: async () =>
+        ({ data: [await stripe.paymentIntents.retrieve(piId)], has_more: false }) as unknown as Stripe.ApiSearchResult<Stripe.PaymentIntent>,
+      retrieve: stripe.paymentIntents.retrieve.bind(stripe.paymentIntents),
+      cancel: stripe.paymentIntents.cancel.bind(stripe.paymentIntents),
+      create: stripe.paymentIntents.create.bind(stripe.paymentIntents),
+      confirm: stripe.paymentIntents.confirm.bind(stripe.paymentIntents),
+    },
+  } as unknown as Stripe;
+}
+
 /** A client whose PI create really succeeds, then loses the response. */
 function lostResponseStripe(onCreated?: (pi: Stripe.PaymentIntent) => void): Stripe {
   return {
@@ -563,11 +582,20 @@ async function h2PastWindowSearchOnly() {
     !(after?.failureReason ?? '').includes('H2 VIOLATION'), String(after?.failureReason));
   // Adoption must ADVANCE the batch, not just stamp an id — an adopt that
   // left the row funding_failed would pass the id assertion while the
-  // money sat unrecovered (round-12 review of this script).
-  check('H2: the batch actually progressed past funding_failed',
-    ['payment_processing', 'funded', 'transferring', 'settled', 'settled_with_residual'].includes(
-      after?.status ?? ''),
-    String(after?.status));
+  // money sat unrecovered (round-12 review of this script). EXCEPT when
+  // the adopted PI is already CANCELED: production deliberately stays put
+  // and lets the release protocol own terminalization (round 13).
+  const adoptedPi = createdPi ? await stripe.paymentIntents.retrieve(createdPi.id) : undefined;
+  if (adoptedPi?.status === 'canceled') {
+    note('adopted PI was already canceled — staying funding_failed for the release protocol is the correct landing');
+    check('H2: batch left for the release protocol', after?.status === 'funding_failed',
+      String(after?.status));
+  } else {
+    check('H2: the batch actually progressed past funding_failed',
+      ['payment_processing', 'funded', 'transferring', 'settled', 'settled_with_residual'].includes(
+        after?.status ?? ''),
+      String(after?.status));
+  }
   const pis = await pisForBatch(batchId);
   check('H2: STILL exactly one PI at Stripe', pis.length === 1, `got ${pis.length}`);
 }
@@ -649,11 +677,19 @@ async function h3CreateFailsWithIntent() {
     String(b2?.stripePaymentIntentId));
   // The confirm must MOVE the batch — a retry whose funding_failed →
   // payment_processing CAS was dropped would confirm at Stripe and leave
-  // the ledger behind (round-12 review of this script).
-  check('H3: batch advanced past funding_failed after the confirm',
-    ['payment_processing', 'funded', 'transferring', 'settled', 'settled_with_residual'].includes(
-      b2?.status ?? ''),
-    String(b2?.status));
+  // the ledger behind (round-12 review of this script). EXCEPT when the
+  // real confirm itself REJECTS: staying funding_failed with the attempt
+  // recorded is then the correct landing (round 13).
+  const advanced = ['payment_processing', 'funded', 'transferring', 'settled', 'settled_with_residual']
+    .includes(b2?.status ?? '');
+  const confirmRejected =
+    b2?.status === 'funding_failed' && confirms === 1 && Number(b2?.fundingAttempts) >= 2;
+  check('H3: confirm either advanced the batch or recorded its own rejection',
+    advanced || confirmRejected,
+    `status=${b2?.status} confirms=${confirms} attempts=${b2?.fundingAttempts}`);
+  if (confirmRejected) {
+    note('the real confirm rejected — funding_failed with the attempt recorded is the correct landing');
+  }
   const pis = await pisForBatch(batchId);
   check('H3: exactly one PI at Stripe', pis.length === 1, `got ${pis.length}`);
 }
@@ -727,8 +763,22 @@ async function h4ReleaseVsInflightCreate() {
         heldAllocs.every((s) => s === 'reserved'), heldAllocs.join(','));
       return;
     }
-    await runFundingCollector(db, { stripe }); // resume the half-done release
-    const final = await batchRow(batchId);
+    // Resume with bounded ticks — one warm read does NOT make the next
+    // search warm (non-monotonic, observed live) — then, if still held,
+    // probe with a deterministically warm search so a genuine
+    // scan-regression cannot hide behind index timing (round 13).
+    let final: HostedFundingBatchRow | undefined;
+    for (let i = 0; i < 12; i += 1) {
+      await runFundingCollector(db, { stripe });
+      final = await batchRow(batchId);
+      if (final?.status !== 'release_requested') break;
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+    if (final?.status === 'release_requested' && createdPi) {
+      note('search stayed cold through the resume window — probing with a deterministically warm search');
+      await runFundingCollector(db, { stripe: warmSearchStripe(createdPi.id) });
+      final = await batchRow(batchId);
+    }
     const finalAllocs = await allocStatuses(batchId);
     check('H4: batch reached released with allocations freed',
       final?.status === 'released' && finalAllocs.every((s) => s === 'released'),
@@ -855,19 +905,37 @@ async function h10ReleaseStoppedHalfwayResumes() {
     check('H11 landing: allocations NOT freed', finalAllocs.every((s) => s !== 'released'),
       finalAllocs.join(','));
   } else {
-    // An ACH PI in 'processing' can be neither canceled nor confirmed-past;
-    // the batch must still be held safely. But held-with-a-TERMINAL-PI is
-    // not safety, it is the resume never running — the regression where
-    // release_requested drops out of the collector scan (round-12 review
-    // of this script).
-    const piTerminal = pi?.status === 'canceled' || pi?.status === 'succeeded';
-    check('H10: not stuck in release_requested while the PI is terminal',
-      !(final?.status === 'release_requested' && piTerminal),
-      `status=${final?.status} pi=${pi?.status}`);
+    // Held after the window. That is EITHER the legitimate cold-search /
+    // processing-PI hold, OR the scan-regression this scenario exists to
+    // catch. A terminal-PI heuristic could not tell them apart (search is
+    // non-monotonic — a full window of cold reads is possible; round 13),
+    // so probe with a deterministically warm search: if the resume is
+    // alive it MUST act on this tick.
     check('H10: still held safely (no free while the PI lives)',
       finalAllocs.every((s) => s !== 'released'),
       `status=${final?.status} allocs=${finalAllocs.join(',')}`);
-    note(`resume could not terminalize (PI ${pi?.status}) — held, which is the safe landing`);
+    if (final?.status === 'release_requested' && createdPi) {
+      await runFundingCollector(db, { stripe: warmSearchStripe(createdPi.id) });
+      const probed = await batchRow(batchId);
+      const probedAllocs = await allocStatuses(batchId);
+      const piNow = await stripe.paymentIntents.retrieve(createdPi.id);
+      if (probed?.status === 'funded' || probed?.status === 'transferring') {
+        check('H10/H11 (warm probe): payment won — charge id stamped', !!probed?.stripeChargeId,
+          String(probed?.stripeChargeId));
+      } else if (probed?.status === 'released') {
+        check('H10 (warm probe): released with the PI terminal', piNow.status === 'canceled',
+          piNow.status);
+        check('H10 (warm probe): allocations freed', probedAllocs.every((s) => s === 'released'),
+          probedAllocs.join(','));
+      } else if (piNow.status === 'processing') {
+        note('PI still processing — the hold remains the only safe landing');
+        check('H10: nothing freed while the debit lives',
+          probedAllocs.every((s) => s !== 'released'), probedAllocs.join(','));
+      } else {
+        check('H10: resume acted once the search was guaranteed warm', false,
+          `status=${probed?.status} pi=${piNow.status}`);
+      }
+    }
   }
 }
 

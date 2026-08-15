@@ -635,6 +635,55 @@ describe.skipIf(skipIntegration)('applyRecoveryRequests — tenancy, pacing, fen
     expect(a.outcome).toBe('not_disposable:after_interrupted_attempt');
   });
 
+  it('an EXTENDED request id cannot forge a suffix-less marker (rearm)', async () => {
+    // Round 13: ids are schema-unconstrained (varchar 32, no ULID check),
+    // so request B with id = <A's id> + "X" produced a rearm stamp of
+    // which A's marker was a strict PREFIX — startsWith settled A applied
+    // though A never acted. The suffix-less kinds now match by exact
+    // equality; this drives the full interleaving through the real paths.
+    const { payoutId } = await seedHeldIntent();
+    const requestA = ulid();
+    await db(TABLES.OperatorRecoveryRequest).insert({
+      id: requestA,
+      tenantId: TENANT,
+      rail: 'direct_connect',
+      kind: 'release_intent_for_retry',
+      targetId: payoutId,
+      params: JSON.stringify({ observedGeneration: 0 }),
+      requestedBy: 'api_key:K', // sanitizes to api_key_K
+      status: 'pending',
+    });
+    const requestB = `${requestA}X`; // 27 chars — fits varchar(32)
+    await db(TABLES.OperatorRecoveryRequest).insert({
+      id: requestB,
+      tenantId: TENANT,
+      rail: 'direct_connect',
+      kind: 'release_intent_for_retry',
+      targetId: payoutId,
+      params: JSON.stringify({ observedGeneration: 0 }),
+      requestedBy: 'api_key_K', // sanitizes identically
+      status: 'pending',
+    });
+    const { stripe } = mockStripe({ listed: [] });
+
+    // B applies for real: generation 0 → 1, stamp operator_rearm:...req_<A>X
+    await applyRecoveryRequests(db, { rail: 'direct_connect', requestId: requestB, stripe });
+    expect((await requestOf(requestB)).status).toBe('applied');
+
+    // A's dead claim is taken over; the function refuses (generation
+    // moved), and the marker check must NOT read B's stamp as A's own.
+    await db(TABLES.OperatorRecoveryRequest)
+      .where({ id: requestA })
+      .update({ leaseAt: hoursAgo(2), leaseToken: 'dead-run', attempts: 1 });
+    await applyRecoveryRequests(db, { rail: 'direct_connect', requestId: requestA, stripe });
+    const a = await requestOf(requestA);
+    expect(a.status).toBe('refused');
+    // not_held (the rearmed intent left reconcile_required) or
+    // generation_moved — either refusal literal is right; what matters is
+    // that it is annotated and NEVER settled applied off B's stamp.
+    expect(a.outcome).toMatch(/^(not_held|generation_moved):after_interrupted_attempt$/);
+  });
+
   it('a NEGATIVE poisoned attempts counter is repaired at claim, not honored', async () => {
     // least() alone left a negative counter negative, holding the cap
     // check false for ~2^31 claims (round 12). greatest(...,0)+1 repairs
