@@ -273,29 +273,31 @@ async function raceAFreshIntent() {
 
   const transfers = await transfersForGroup(payoutId);
   check('A: EXACTLY ONE transfer at Stripe', transfers.length === 1, `got ${transfers.length}`);
+  const posted = (await db<PayoutRow>(TABLES.Payout).where({ id: payoutId }).first()) as PayoutRow;
+  const postedMeta = posted.metadata as { transferState?: string; keyGeneration?: number };
+  if (postedMeta.transferState === 'posted' && transfers.length === 1) {
+    // A Stripe attempt that stalls past the workers' window leaves the
+    // intent safely posted under its warm lease. Accepting that as
+    // terminal also accepted a BROKEN finalizer (round 15) — so complete
+    // it here through the real finalization path with the transfer we
+    // just listed, and hold the full paid-once assertions below either
+    // way. The cooldown only gates the executor's scan, not this seam.
+    note('intent still posted at window end — completing through the real finalizer');
+    const { __testFinalizeStale } = await import('../src/payout-transfers.js');
+    await __testFinalizeStale(db, stripe, payoutId, transfers[0]!, Number(postedMeta.keyGeneration ?? 0));
+  }
   const payout = (await db<PayoutRow>(TABLES.Payout).where({ id: payoutId }).first()) as PayoutRow;
   const meta = payout.metadata as { transferState?: string };
-  if (meta.transferState === 'posted') {
-    // A legitimate landing (round 14): a Stripe attempt that stalls past
-    // the workers' window leaves the intent safely posted under its warm
-    // lease — the 180s cooldown means neither worker may touch it again,
-    // and a later scheduler tick finalizes. One transfer + held-not-doubled
-    // IS the exactly-once property; finalization timing is not.
-    note('intent still posted at window end (slow Stripe attempt) — safe hold, one transfer, finalization belongs to a later tick');
-    check('A: held safely, nothing doubled', transfers.length === 1 && payout.status !== 'paid',
-      `${payout.status}`);
-  } else {
-    check('A: payout confirmed + paid once', meta.transferState === 'confirmed' && payout.status === 'paid',
-      `${meta.transferState}/${payout.status}`);
-    check('A: recorded transfer is THE transfer',
-      transfers.length === 1 && payout.stripeTransferId === transfers[0]!.id,
-      `${payout.stripeTransferId} vs ${transfers[0]?.id}`);
-    const commission = (await db<CommissionRow>(TABLES.Commission)
-      .where({ id: commissionId }).first()) as CommissionRow;
-    check('A: commission paid exactly once, still claimed by this payout',
-      commission.status === 'paid' && commission.payoutId === payoutId,
-      `${commission.status}/${commission.payoutId}`);
-  }
+  check('A: payout confirmed + paid once', meta.transferState === 'confirmed' && payout.status === 'paid',
+    `${meta.transferState}/${payout.status}`);
+  check('A: recorded transfer is THE transfer',
+    transfers.length === 1 && payout.stripeTransferId === transfers[0]!.id,
+    `${payout.stripeTransferId} vs ${transfers[0]?.id}`);
+  const commission = (await db<CommissionRow>(TABLES.Commission)
+    .where({ id: commissionId }).first()) as CommissionRow;
+  check('A: commission paid exactly once, still claimed by this payout',
+    commission.status === 'paid' && commission.payoutId === payoutId,
+    `${commission.status}/${commission.payoutId}`);
 }
 
 async function raceA2ReconcileDuel() {

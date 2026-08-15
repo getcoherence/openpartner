@@ -49,6 +49,7 @@ import { reserveFundingBatch } from '../src/funding/reserve.js';
 import { runFundingCollector } from '../src/funding/collect.js';
 import { releaseBatch } from '../src/funding/release.js';
 import { claimInboxEvent, stampInboxOutcome, INBOX_CLAIM_LEASE_MS } from '../src/funding/inbox.js';
+import { FUNDING_BATCH_METADATA_KEY } from '../src/funding/stripe-lookup.js';
 import { FUNDING_TERMS_VERSION } from '../src/funding/state.js';
 
 const TENANT = DEFAULT_TENANT_ID;
@@ -185,12 +186,13 @@ function warmSearchStripe(piId: string, batchId: string): Stripe {
     ...stripe,
     paymentIntents: {
       ...stripe.paymentIntents,
-      // Honors the QUERY: only a search actually asking about this batch
-      // gets the PI. An argument-blind stub would mask a query-scoping
-      // regression (wrong metadata key, constant batch id) by answering
-      // every search correctly anyway (round 14).
+      // Honors the QUERY, and EXACTLY: only the precise query production
+      // is supposed to send (the metadata key + this batch id, the shape
+      // findFundingPaymentIntent builds) gets the PI. A substring check
+      // still certified a wrong-metadata-key regression, since the batch
+      // id appeared in the malformed query too (round 15).
       search: async (params: Stripe.PaymentIntentSearchParams) =>
-        (params?.query?.includes(batchId)
+        (params?.query === `metadata['${FUNDING_BATCH_METADATA_KEY}']:'${batchId}'`
           ? { data: [await stripe.paymentIntents.retrieve(piId)], has_more: false }
           : { data: [], has_more: false }) as unknown as Stripe.ApiSearchResult<Stripe.PaymentIntent>,
       retrieve: stripe.paymentIntents.retrieve.bind(stripe.paymentIntents),

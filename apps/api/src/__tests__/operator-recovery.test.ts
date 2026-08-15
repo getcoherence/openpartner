@@ -674,6 +674,32 @@ describe.skipIf(skipIntegration)('applyRecoveryRequests — tenancy, pacing, fen
     expect(a.outcome).toBe('not_disposable:after_interrupted_attempt');
   });
 
+  it('a malformed id does NOT suppress the cross-tenant alert — boundary refusals win', async () => {
+    // Round 15: the id gate used to run first, so a hand-insert that was
+    // BOTH malformed and cross-tenant settled quietly as invalid_request:id
+    // — hiding the loud tenant_mismatch alert the same row would have
+    // raised with a well-formed id. Boundary problems refuse loudly.
+    const { payoutId } = await seedHeldIntent(); // tenant A
+    await db(TABLES.OperatorRecoveryRequest).insert({
+      id: 'bad-id-and-wrong-tenant',
+      tenantId: TENANT_B,
+      rail: 'direct_connect',
+      kind: 'dispose_intent',
+      targetId: payoutId,
+      params: JSON.stringify({ reason: 'x' }),
+      requestedBy: 'rogue@b.example',
+      status: 'pending',
+    });
+    const { stripe } = mockStripe({ listed: [] });
+
+    await applyRecoveryRequests(db, { rail: 'direct_connect', stripe });
+    const row = (await db(TABLES.OperatorRecoveryRequest)
+      .where({ id: 'bad-id-and-wrong-tenant' })
+      .first()) as { status: string; outcome: string | null };
+    expect(row.status).toBe('refused');
+    expect(row.outcome).toBe('tenant_mismatch'); // not invalid_request:id
+  });
+
   it('a NON-ULID request id is refused at the door — the marker namespace stays unambiguous', async () => {
     // Rounds 13/14: ids were schema-unconstrained varchar(32), and both an
     // EXTENDED id (<A>+'X', defeating startsWith) and a COLON-bearing id

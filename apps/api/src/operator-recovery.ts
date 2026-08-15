@@ -301,26 +301,13 @@ async function applyOne(
   takeover: boolean,
   result: RecoveryApplyResult,
 ): Promise<void> {
-  // ID shape first: the API only ever generates ULIDs, and the audit
-  // marker namespace is only unambiguous when the id segment is a
-  // fixed-length, delimiter-free token. An arbitrary varchar(32) id let
-  // two generations of forgery through (round 13: <A>+'X' extended past
-  // a startsWith; round 14: <A>+':B' recreated the reason-prefix
-  // ambiguity). Refusing non-ULID ids at the door closes the id-shaped
-  // class outright; the exact/prefix marker logic below stays as
-  // defense-in-depth.
-  if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(request.id)) {
-    await settleTerminal(db, request, token, 'refused', 'invalid_request:id', result);
-    return;
-  }
-  // Kind↔rail pairing next. The API validates this, but the row is jsonb
-  // + strings and can be inserted by hand — the loop trusts nothing.
-  if (!RAIL_KINDS[request.rail]?.has(request.kind)) {
-    await settleTerminal(db, request, token, 'refused', 'invalid_request:kind_rail_mismatch', result);
-    return;
-  }
-
-  // THE TENANT BOUNDARY — before anything else (see file header).
+  // THE TENANT BOUNDARY — before anything else (see file header). The
+  // read is by rail, which the table's CHECK constraint pins to the two
+  // known values, so it is safe even for otherwise-malformed rows. This
+  // deliberately runs BEFORE the id-shape gate (round 15): a malformed id
+  // must not suppress the cross-tenant ALERT a well-formed hand-insert
+  // would have raised — shape problems refuse quietly, boundary problems
+  // refuse loudly.
   const target =
     request.rail === 'direct_connect'
       ? ((await db<PayoutRow>(TABLES.Payout)
@@ -341,6 +328,25 @@ async function applyOne(
       `[recovery] ALERT: request ${request.id} (tenant ${request.tenantId}) targets ${request.targetId} which belongs to tenant ${target.tenantId} — refused; investigate how this row was written`,
     );
     await settleTerminal(db, request, token, 'refused', 'tenant_mismatch', result);
+    return;
+  }
+
+  // ID shape next, and always before any operator-function call or marker
+  // use: the audit marker namespace is only unambiguous when the id
+  // segment is a fixed-length, delimiter-free token. An arbitrary
+  // varchar(32) id let two generations of forgery through (round 13:
+  // <A>+'X' extended past a startsWith; round 14: <A>+':B' recreated the
+  // reason-prefix ambiguity). Refusing non-ULID ids closes the id-shaped
+  // class outright; the exact/prefix marker logic stays as
+  // defense-in-depth.
+  if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(request.id)) {
+    await settleTerminal(db, request, token, 'refused', 'invalid_request:id', result);
+    return;
+  }
+  // Kind↔rail pairing. The API validates this, but the row is jsonb +
+  // strings and can be inserted by hand — the loop trusts nothing.
+  if (!RAIL_KINDS[request.rail]?.has(request.kind)) {
+    await settleTerminal(db, request, token, 'refused', 'invalid_request:kind_rail_mismatch', result);
     return;
   }
 
