@@ -1,11 +1,12 @@
 import { useState } from 'react';
+import type { CustomerReward } from '@openpartner/db';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { api, ApiError } from '../api.js';
 import { theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
-import { Button, Card, ErrorBanner, Input, Label, Page } from '../ui.js';
+import { Button, Card, ErrorBanner, Input, Label, Page, money } from '../ui.js';
 
 interface Partner {
   id: string;
@@ -15,6 +16,7 @@ interface Partner {
 interface CouponRow {
   id: string;
   canEdit?: boolean;
+  stripePromotionCodeId?: string | null;
   code: string;
   programId: string;
   createdAt: string;
@@ -27,6 +29,7 @@ interface CouponRow {
 }
 
 interface ProgramBrief {
+  customerReward?: CustomerReward | null;
   partnersMayCustomizeCode?: boolean;
   id: string;
   name: string;
@@ -56,6 +59,7 @@ export function AdminPartnerCoupons({ ownPartnerId }: { ownPartnerId?: string } 
 
   const [pickedProgram, setPickedProgram] = useState('');
   const [customCode, setCustomCode] = useState('');
+  const selectedProgram = campaigns.data?.programs.find((program) => program.id === pickedProgram);
 
   const mint = useMutation({
     mutationFn: () =>
@@ -117,6 +121,9 @@ export function AdminPartnerCoupons({ ownPartnerId }: { ownPartnerId?: string } 
         </div>
       )}
       <Card>
+        {selfService && (
+          <p style={{ color: theme.textMuted, fontSize: 13 }}>Your brand controls discount terms. Existing codes may retain earlier terms when a program changes. Discount duration does not indicate a code's expiry or redemption limit.</p>
+        )}
         {coupons.isLoading ? (
           <p style={{ color: theme.textMuted, fontSize: 13 }}>Loading…</p>
         ) : (
@@ -142,9 +149,18 @@ export function AdminPartnerCoupons({ ownPartnerId }: { ownPartnerId?: string } 
                       <code style={{ fontSize: 14, fontWeight: 500, color: theme.text, flex: 1, textDecoration: isDeactivated ? 'line-through' : 'none' }}>
                         {c.code}
                       </code>
-                      <span style={{ color: theme.textMuted, fontSize: 12 }}>
-                        {campaignNameById.get(c.programId) ?? c.programId}
-                      </span>
+                      <div style={{ color: theme.textMuted, fontSize: 12 }}>
+                        <div>{campaignNameById.get(c.programId) ?? c.programId}</div>
+                        <div>Current program discount: {customerDiscount(campaigns.data?.programs.find((program) => program.id === c.programId)?.customerReward)}</div>
+                        {/* Only say something when it's true and useful: hosted
+                            brands' rewards never live in our Stripe, and a
+                            program without a reward has nothing to create. */}
+                        {c.deactivatedAt ? (
+                          <div>Code deactivated</div>
+                        ) : c.stripePromotionCodeId ? (
+                          <div>Discount applies automatically at checkout</div>
+                        ) : null}
+                      </div>
                       <span style={{ color: theme.textMuted, fontSize: 11, whiteSpace: 'nowrap' }}>
                         {(c.redemptions90d ?? 0) > 0
                           ? `${c.redemptions90d} redemption${c.redemptions90d === 1 ? '' : 's'} (90d)`
@@ -188,6 +204,7 @@ export function AdminPartnerCoupons({ ownPartnerId }: { ownPartnerId?: string } 
                     <option value="">— pick a campaign —</option>
                     {availableCampaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
+                  {selectedProgram && <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>Customer discount: {customerDiscount(selectedProgram.customerReward)}</div>}
                 </div>
                 <div>
                   <Label>Code (optional)</Label>
@@ -214,4 +231,17 @@ export function AdminPartnerCoupons({ ownPartnerId }: { ownPartnerId?: string } 
       </Card>
     </Page>
   );
+}
+
+function customerDiscount(reward: CustomerReward | null | undefined): string {
+  if (reward === undefined) return 'Discount details unavailable';
+  if (!reward) return 'No customer discount configured';
+  if (reward.type === 'free_months') return `${reward.value} ${reward.value === 1 ? 'month' : 'months'} free`;
+  const amount = reward.type === 'percent_off'
+    ? `${reward.value}% off`
+    : reward.currency ? `${money(reward.value, reward.currency.toUpperCase())} off` : 'Fixed discount (currency not configured)';
+  const duration = reward.duration === 'once' ? 'first payment only'
+    : reward.duration === 'forever' ? 'every eligible payment'
+    : `for ${reward.durationInMonths} months`;
+  return `${amount}, ${duration}`;
 }
