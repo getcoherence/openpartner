@@ -618,7 +618,7 @@ export class NetworkAdminError extends Error {
 
 async function callNetworkAdmin<T = void>(
   networkUrl: string,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'PUT',
   path: string,
   body?: Record<string, unknown>,
 ): Promise<T> {
@@ -669,6 +669,22 @@ export async function adminReactivateVendor(networkUrl: string, vendorId: string
   await callNetworkAdmin(networkUrl, 'POST', `/admin/vendors/${encodeURIComponent(vendorId)}/reactivate`, {});
 }
 
+// ---------- Marketplace featured placement (platform-ops console) ----------
+//
+// The Network decides what the marketplace lists, so featured placement is a
+// Vendor field there. GET /offerings sorts featured vendors' offerings first
+// and flags them `featured`; the public /marketplace page renders them in
+// their own section. The console reads state from adminListVendors.
+
+/** Replace the featured list. Order is display order; vendors left out are
+ *  unfeatured. Throws NetworkAdminError `vendor_not_found` on an unknown id. */
+export async function adminSetFeaturedVendors(
+  networkUrl: string,
+  vendors: Array<{ id: string; until: string | null }>,
+): Promise<void> {
+  await callNetworkAdmin(networkUrl, 'PUT', '/admin/featured-vendors', { vendors });
+}
+
 /** Mirrors Tenant.approvalStatus onto the Network's Vendor.reviewStatus. */
 export type VendorReviewStatus = 'pending' | 'approved' | 'rejected';
 
@@ -693,6 +709,16 @@ export interface NetworkVendorSummary {
   status: string;
   /** Absent on a Network that predates the review gate. */
   reviewStatus?: VendorReviewStatus;
+  displayName?: string;
+  logoUrl?: string | null;
+  partnerCount?: number;
+  createdAt?: string;
+  /** Featured placement — absent on a Network that predates it. Null = not
+   *  featured; lower ranks list first. */
+  featuredRank?: number | null;
+  /** ISO end of the placement; null = no end date. */
+  featuredUntil?: string | null;
+  publishedOfferingCount?: number;
 }
 
 export async function adminListVendors(networkUrl: string): Promise<NetworkVendorSummary[]> {

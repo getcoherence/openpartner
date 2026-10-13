@@ -7,6 +7,7 @@ import { Logo } from '../auth/Shared.js';
 import { papi, type PlatformOperator } from './lib.js';
 import { BrandsPage } from './Brands.js';
 import { CreatorsPage } from './Creators.js';
+import { MarketplacePage } from './Marketplace.js';
 import { BlocklistPage } from './Blocklist.js';
 import { AuditPage } from './Audit.js';
 import { NotificationsPage } from './Notifications.js';
@@ -14,6 +15,7 @@ import { NotificationsPage } from './Notifications.js';
 const TABS = [
   { to: '/platform/brands', label: 'Brands' },
   { to: '/platform/creators', label: 'Creators' },
+  { to: '/platform/marketplace', label: 'Marketplace' },
   { to: '/platform/notifications', label: 'Notifications' },
   { to: '/platform/blocklist', label: 'Blocklist' },
   { to: '/platform/audit', label: 'Audit' },
@@ -69,6 +71,7 @@ export function PlatformConsole() {
         <Route index element={<Navigate to="/platform/brands" replace />} />
         <Route path="brands" element={<BrandsPage operator={operator} />} />
         <Route path="creators" element={<CreatorsPage operator={operator} />} />
+        <Route path="marketplace" element={<MarketplacePage operator={operator} />} />
         <Route path="notifications" element={<NotificationsPage operator={operator} />} />
         <Route path="blocklist" element={<BlocklistPage operator={operator} />} />
         <Route path="audit" element={<AuditPage />} />
@@ -109,7 +112,8 @@ function TopNav({ operator, onSignOut }: { operator: PlatformOperator; onSignOut
           </div>
         </div>
 
-        <nav style={{ display: 'flex', gap: 2, flex: 1, minWidth: 0 }}>
+        {/* Scrolls sideways on a phone rather than widening the page. */}
+        <nav style={{ display: 'flex', gap: 2, flex: 1, minWidth: 0, overflowX: 'auto' }}>
           {TABS.map((t) => {
             const active = location.pathname === t.to || location.pathname.startsWith(`${t.to}/`);
             return (
@@ -117,6 +121,8 @@ function TopNav({ operator, onSignOut }: { operator: PlatformOperator; onSignOut
                 key={t.to}
                 to={t.to}
                 style={{
+                  flexShrink: 0,
+                  whiteSpace: 'nowrap',
                   padding: '7px 12px',
                   borderRadius: theme.radiusSm,
                   fontSize: 13.5,

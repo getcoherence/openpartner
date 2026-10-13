@@ -51,8 +51,10 @@ import {
 import {
   adminBlockCreator,
   adminListCreators,
+  adminListVendors,
   adminRemindCreator,
   adminRunCreatorReminders,
+  adminSetFeaturedVendors,
   adminUnblockCreator,
   NetworkAdminError,
   platformNetworkUrl,
@@ -580,6 +582,66 @@ platformAdminRouter.post(
       detail: {},
     });
     res.json({ ok: true, blocked: false });
+  },
+);
+
+// --------------------------------------------------------------------------
+// Marketplace featured placement — Network-owned (the Network decides what
+// the marketplace lists), so these proxy its admin API too.
+// --------------------------------------------------------------------------
+
+/** Every Network vendor with its listing + featured state. The console
+ *  narrows this to what's actually on the marketplace. */
+platformAdminRouter.get('/platform-admin/marketplace', requirePlatformAdmin, async (_req, res) => {
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  try {
+    const vendors = await adminListVendors(networkUrl);
+    res.json({ vendors });
+  } catch (err) {
+    res.status(502).json(networkErrorBody(err));
+  }
+});
+
+const featuredSchema = z.object({
+  /** The whole featured list in display order; anything left out is
+   *  unfeatured. Mirrors the Network's PUT /admin/featured-vendors. */
+  vendors: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(64),
+        until: z.string().datetime({ offset: true }).nullable().optional(),
+      }),
+    )
+    .max(24)
+    .refine((v) => new Set(v.map((x) => x.id)).size === v.length, { message: 'duplicate vendor id' }),
+});
+
+platformAdminRouter.put(
+  '/platform-admin/marketplace/featured',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = featuredSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    const vendors = body.data.vendors.map((v) => ({ id: v.id, until: v.until ?? null }));
+    try {
+      await adminSetFeaturedVendors(networkUrl, vendors);
+    } catch (err) {
+      if (err instanceof NetworkAdminError && err.code && err.status < 500) {
+        return res.status(err.status).json({ error: err.code });
+      }
+      return res.status(502).json(networkErrorBody(err));
+    }
+    await writeAudit(db, {
+      actor: req.platformAdminActor!,
+      action: 'marketplace.featured',
+      targetType: 'platform',
+      detail: { vendors },
+    });
+    res.json({ ok: true });
   },
 );
 
