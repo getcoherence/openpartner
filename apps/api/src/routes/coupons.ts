@@ -44,7 +44,8 @@ import {
   type PartnerRow,
 } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
-import { tenantOf } from '../tenancy.js';
+import { getTenancyMode, tenantOf } from '../tenancy.js';
+import { getMode } from '../stripe.js';
 import { attributeEvent } from '../attribution.js';
 import { deactivateCustomerReward, provisionCustomerReward } from '../customer-rewards.js';
 
@@ -135,6 +136,20 @@ const COUPON_VERIFICATION_THRESHOLD = 5;
  *  rows — partners can deactivate then re-add freely. */
 const ACTIVE_CODES_PER_PROGRAM_CAP = 5;
 
+/** 409 detail for the verification gate. Only a single-tenant self-host
+ *  can offer the Stripe webhook as an alternative: /webhooks/stripe
+ *  verifies OpenPartner's own signing secrets and resolves tenants from
+ *  platform or connected-account objects, so checkout and invoice
+ *  events from a hosted brand's own Stripe account never arrive there.
+ *  Everywhere else POST /coupons/redeem is the only coupon path. */
+export function couponVerificationDetail(existing: number): string {
+  const howTo =
+    getMode() === 'selfhost' && getTenancyMode() === 'single'
+      ? 'Wire up POST /coupons/redeem on your checkout — or set up a Stripe webhook pointing at /webhooks/stripe — and process one test redemption'
+      : 'Wire up POST /coupons/redeem on your checkout and process one test redemption';
+  return `You have ${existing} coupons but no successful redemption yet. ${howTo} to unlock further mints. This protects creators from sharing codes that don't actually attribute.`;
+}
+
 couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
   // Authorization:
   //   - admin → always allowed.
@@ -155,9 +170,9 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
 
   // Verification gate: past N coupons without a successful redemption
   // ever recorded, refuse new manual mints. Forces the brand to
-  // actually wire up /coupons/redeem (or the Stripe webhook auto-
-  // redemption path) before they hand more codes to creators that
-  // won't attribute.
+  // actually wire up /coupons/redeem (or, on a single-tenant self-host,
+  // the Stripe webhook auto-redemption path) before they hand more
+  // codes to creators that won't attribute.
   const tenant = (await db('Tenant').where({ id: tenantId }).first(['couponIntegrationVerifiedAt'])) as
     | { couponIntegrationVerifiedAt: Date | null }
     | undefined;
@@ -167,7 +182,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
     if (existing >= COUPON_VERIFICATION_THRESHOLD) {
       return res.status(409).json({
         error: 'verification_required',
-        detail: `You have ${existing} coupons but no successful redemption yet. Wire up POST /coupons/redeem on your checkout — or set up a Stripe webhook pointing at /webhooks/stripe — and process one test redemption to unlock further mints. This protects creators from sharing codes that don't actually attribute.`,
+        detail: couponVerificationDetail(existing),
         threshold: COUPON_VERIFICATION_THRESHOLD,
         existing,
       });
