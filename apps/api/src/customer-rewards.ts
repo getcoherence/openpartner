@@ -206,3 +206,27 @@ function durationParams(
   }
   return { duration: reward.duration };
 }
+
+/**
+ * How a Program's customerReward reaches the customer on this
+ * deployment. The admin Programs page words the reward editor from it,
+ * so keep it in step with the provisioning gate in this file.
+ *
+ *   stripe        single-tenant self-host with STRIPE_SECRET_KEY set:
+ *                 that key IS the brand's, so each partner code gets its
+ *                 own Stripe Coupon + PromotionCode.
+ *   unconfigured  single-tenant self-host without a Stripe key: nothing
+ *                 is provisioned until one is set.
+ *   brand         hosted (flat / revshare) or multi-tenant: our key isn't
+ *                 the brand's, so the brand creates the matching discount
+ *                 in its own Stripe or checkout.
+ *
+ * Attribution doesn't depend on this — POST /coupons/redeem matches on
+ * the code string alone.
+ */
+export type CustomerRewardDelivery = 'stripe' | 'unconfigured' | 'brand';
+
+export function customerRewardDelivery(): CustomerRewardDelivery {
+  if (getMode() !== 'selfhost' || getTenancyMode() !== 'single') return 'brand';
+  return stripe ? 'stripe' : 'unconfigured';
+}

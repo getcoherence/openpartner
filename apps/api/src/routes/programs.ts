@@ -20,6 +20,7 @@ import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { campaignAcceptsNewActivity } from '../campaign-lifecycle.js';
 import { getWhiteLabelState } from '../white-label.js';
+import { customerRewardDelivery } from '../customer-rewards.js';
 
 /**
  * Commission rule schema. The wire format is an array of triggered sub-rules.
@@ -196,7 +197,9 @@ export const programsRouter = Router();
 programsRouter.get('/programs', requireAuth, requireAdmin, async (req, res) => {
   const { db } = tenantOf(req);
   const campaigns = await db<ProgramRow>(TABLES.Program).orderBy('createdAt', 'desc');
-  res.json({ programs: campaigns });
+  // Deployment-level, but the reward editor is the only reader and it
+  // already loads this list — saves the portal a round trip.
+  res.json({ programs: campaigns, customerRewardDelivery: customerRewardDelivery() });
 });
 
 /**
