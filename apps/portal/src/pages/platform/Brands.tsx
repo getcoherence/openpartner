@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { theme } from '../../theme.js';
-import { Button, Card, ErrorBanner, Label, Page, Textarea, formatDate } from '../../ui.js';
+import { Button, Card, ErrorBanner, Label, Page, Select, Textarea, formatDate } from '../../ui.js';
 import { ApprovalBadge, StatusBadge } from './components.js';
 import {
   papi,
@@ -166,9 +166,35 @@ function BrandCard({
   onReject: (v: Omit<RejectVars, 'id'>, opts?: { onSuccess?: () => void }) => void;
 }) {
   // 'reject' for a pending brand, 'remove' for a retroactive takedown of an
-  // already-approved brand — both hit the reject endpoint.
-  const [form, setForm] = useState<null | 'reject' | 'remove'>(null);
+  // already-approved brand — both hit the reject endpoint. 'warn' is the
+  // marketplace policy warning.
+  const [form, setForm] = useState<null | 'reject' | 'remove' | 'warn'>(null);
   const [showPrograms, setShowPrograms] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const qc = useQueryClient();
+  const refresh = () => qc.invalidateQueries({ queryKey: ['platform-brands'] });
+
+  const remind = useMutation({
+    mutationFn: () =>
+      papi<{ step: number; to: string }>(`/platform-admin/brands/${brand.id}/setup-reminder`, { method: 'POST' }),
+    onSuccess: (r) => {
+      setNotice(`Setup reminder ${r.step} of 3 sent to ${r.to}.`);
+      void refresh();
+    },
+  });
+  const warn = useMutation({
+    mutationFn: (v: { details: string; deadlineDays: number }) =>
+      papi<{ sentTo: string; deadline: string }>(`/platform-admin/brands/${brand.id}/policy-warning`, {
+        method: 'POST',
+        body: v,
+      }),
+    onSuccess: (r) => {
+      setForm(null);
+      setNotice(`Policy warning sent to ${r.sentTo}. Deadline ${formatDate(r.deadline)}.`);
+      void refresh();
+    },
+  });
+  const live = brand.approvalStatus !== 'rejected';
 
   return (
     <Card>
@@ -192,7 +218,17 @@ function BrandCard({
           </div>
         </div>
         {canWrite && (
-          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0, flexWrap: 'wrap' }}>
+            {live && !brand.setupComplete && (
+              <Button size="sm" variant="ghost" disabled={remind.isPending} onClick={() => remind.mutate()}>
+                {remind.isPending ? 'Sending…' : 'Send setup reminder'}
+              </Button>
+            )}
+            {live && (
+              <Button size="sm" variant="secondary" onClick={() => setForm(form === 'warn' ? null : 'warn')}>
+                Policy warning
+              </Button>
+            )}
             {brand.approvalStatus === 'pending' && (
               <>
                 <Button onClick={onApprove} disabled={approveBusy} size="sm">
@@ -239,9 +275,49 @@ function BrandCard({
           </Field>
         )}
         {brand.approvalReason && <Field label="Reason on file">{brand.approvalReason}</Field>}
+        <Field label="Setup">
+          {brand.setupComplete ? (
+            <span style={{ color: theme.success }}>Complete</span>
+          ) : (
+            <span style={{ color: theme.warn }}>
+              {brand.setupMissing.length} step{brand.setupMissing.length === 1 ? '' : 's'} left
+            </span>
+          )}
+          {brand.setupRemindersSent > 0 &&
+            ` · ${brand.setupRemindersSent} reminder${brand.setupRemindersSent === 1 ? '' : 's'}${
+              brand.lastSetupReminderAt ? `, last ${formatDate(brand.lastSetupReminderAt, { relative: true })}` : ''
+            }`}
+        </Field>
+        {brand.lastPolicyWarningAt && (
+          <Field label="Policy warning">
+            <span style={{ color: theme.danger }}>Sent {formatDate(brand.lastPolicyWarningAt, { relative: true })}</span>
+            {brand.policyWarningDeadline ? ` · deadline ${formatDate(brand.policyWarningDeadline)}` : ''}
+          </Field>
+        )}
       </div>
 
-      {form && (
+      {!brand.setupComplete && brand.setupMissing.length > 0 && (
+        <div style={{ fontSize: 12, color: theme.textDim, marginTop: 8 }}>Missing: {brand.setupMissing.join(' · ')}</div>
+      )}
+
+      {notice && <div style={{ fontSize: 12.5, color: theme.success, marginTop: 10 }}>{notice}</div>}
+      {(remind.error || warn.error) && (
+        <div style={{ marginTop: 10 }}>
+          <ErrorBanner error={friendlyPlatformError(remind.error ?? warn.error)} />
+        </div>
+      )}
+
+      {form === 'warn' && (
+        <PolicyWarningForm
+          brandName={brand.displayName}
+          adminEmail={brand.adminEmail}
+          busy={warn.isPending}
+          onCancel={() => setForm(null)}
+          onSubmit={(v) => warn.mutate(v)}
+        />
+      )}
+
+      {(form === 'reject' || form === 'remove') && (
         <RejectForm
           mode={form}
           busy={rejectBusy}
@@ -406,6 +482,78 @@ function ProgramsSection({ brandId, canWrite }: { brandId: string; canWrite: boo
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * Marketplace policy warning, for a listing that funnels creators to a
+ * different affiliate platform. The operator describes what they found; the
+ * server wraps it in the standard notice (free listing means creators must
+ * join and be tracked through OpenPartner; fix by the deadline or the
+ * listing is removed). Removal itself stays a manual block/remove.
+ */
+function PolicyWarningForm({
+  brandName,
+  adminEmail,
+  busy,
+  onCancel,
+  onSubmit,
+}: {
+  brandName: string;
+  adminEmail: string | null;
+  busy: boolean;
+  onCancel: () => void;
+  onSubmit: (v: { details: string; deadlineDays: number }) => void;
+}) {
+  const [details, setDetails] = useState('');
+  const [deadlineDays, setDeadlineDays] = useState(7);
+  const tooShort = details.trim().length < 10;
+
+  return (
+    <div
+      style={{
+        marginTop: 16,
+        paddingTop: 16,
+        borderTop: `1px solid ${theme.borderSubtle}`,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+      }}
+    >
+      <div style={{ fontSize: 14, fontWeight: 600, color: theme.warn }}>Send a marketplace policy warning</div>
+      <div style={{ fontSize: 12.5, color: theme.textMuted, lineHeight: 1.55 }}>
+        Emails {adminEmail ?? 'the brand’s admin'} from OpenPartner: listings are free because creators join and are
+        tracked through OpenPartner, so sending them to another affiliate platform isn’t allowed. Fix it by the
+        deadline or the listing is removed. Replies go to the ops inbox. Removing the listing afterwards is still up
+        to you (block the program, or remove the brand).
+      </div>
+      <div>
+        <Label>What you found (goes into the email)</Label>
+        <Textarea
+          rows={4}
+          value={details}
+          onChange={(e) => setDetails(e.target.value)}
+          placeholder={`e.g. The ${brandName} listing tells creators to apply at partners.example.com (Rewardful) instead of joining through OpenPartner.`}
+          maxLength={2000}
+        />
+      </div>
+      <div style={{ maxWidth: 220 }}>
+        <Label>Deadline</Label>
+        <Select value={String(deadlineDays)} onChange={(e) => setDeadlineDays(Number(e.target.value))}>
+          <option value="3">3 days</option>
+          <option value="7">7 days</option>
+          <option value="14">14 days</option>
+        </Select>
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button disabled={busy || tooShort} onClick={() => onSubmit({ details: details.trim(), deadlineDays })}>
+          {busy ? 'Sending…' : 'Send warning'}
+        </Button>
+        <Button variant="secondary" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Button>
+      </div>
     </div>
   );
 }

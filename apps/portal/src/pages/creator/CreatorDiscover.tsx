@@ -730,6 +730,9 @@ interface CreatorProfile {
   name: string;
   handle: string | null;
   bio: string | null;
+  /** The Network's discovery bar. Absent on an older Network. */
+  profileComplete?: boolean;
+  profileMissing?: Array<{ field: string; label: string }>;
 }
 
 interface RequestRow {
@@ -737,9 +740,9 @@ interface RequestRow {
   status: string;
 }
 
-/** Three-step nudge for new creators: handle, bio, first application.
- *  Card disappears once everything's done; never shown for creators
- *  who already filled in their profile. */
+/** Nudge for new creators: finish the profile (the Network's discovery
+ *  bar, so brands can find them) and send a first application. Card
+ *  disappears once both are done. */
 function CreatorOnboarding() {
   const profile = useQuery({
     queryKey: ['creator-my-profile'],
@@ -755,16 +758,26 @@ function CreatorOnboarding() {
   });
 
   if (!profile.data) return null;
-  const handleSet = !!profile.data.handle && profile.data.handle.length > 0;
-  const bioSet = !!profile.data.bio && profile.data.bio.length > 0;
+  // Older Network without the completeness fields: fall back to the
+  // handle + bio check this card used before.
+  const profileDone =
+    profile.data.profileComplete ?? (!!profile.data.handle && !!profile.data.bio && profile.data.bio.length > 0);
+  const missing = profile.data.profileMissing ?? [];
   const hasApplied = (requests.data?.requests ?? []).length > 0;
-  const complete = handleSet && bioSet && hasApplied;
-  if (complete) return null;
+  if (profileDone && hasApplied) return null;
 
   const items = [
     { done: true, label: 'Account created', href: null as string | null },
-    { done: handleSet, label: 'Pick a handle', hint: 'Used as the default slug for your share links.', href: '/creator/profile' },
-    { done: bioSet, label: 'Add a short bio', hint: 'Brands see this on your applications.', href: '/creator/profile' },
+    {
+      done: profileDone,
+      label: 'Complete your profile so brands can find you',
+      hint: profileDone
+        ? 'You show up when brands search the Network for creators.'
+        : missing.length > 0
+          ? `Still needed: ${missing.map((m) => m.label.toLowerCase()).join(', ')}.`
+          : 'Add a handle, photo, bio, a category, and a social platform.',
+      href: '/creator/profile',
+    },
     { done: hasApplied, label: 'Apply to your first program', hint: 'Browse below and click "View & apply" on anything that fits.', href: null },
   ];
 
@@ -772,7 +785,7 @@ function CreatorOnboarding() {
     <Card style={{ marginBottom: 18 }}>
       <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Getting started</div>
       <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
-        Three quick steps to put your best foot forward when applying. Card disappears when done.
+        Brands only see complete profiles when they search for creators. Card disappears when done.
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {items.map((it, i) => (

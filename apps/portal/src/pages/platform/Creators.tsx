@@ -45,12 +45,21 @@ export function CreatorsPage({ operator }: { operator: PlatformOperator }) {
     mutationFn: (id: string) => papi(`/platform-admin/creators/${id}/unblock`, { method: 'POST' }),
     onSuccess: invalidate,
   });
+  const [notice, setNotice] = useState<string | null>(null);
+  const remind = useMutation({
+    mutationFn: (c: NetworkCreator) =>
+      papi<{ step: number }>(`/platform-admin/creators/${c.id}/remind`, { method: 'POST' }),
+    onSuccess: (r, c) => {
+      setNotice(`Profile reminder ${r.step} of 3 sent to ${c.email}.`);
+      void invalidate();
+    },
+  });
 
   const all = creators.data?.creators ?? [];
   const rows = all.filter((c) =>
     filter === 'blocked' ? c.status === 'blocked' : filter === 'incomplete' ? !c.profileComplete : true,
   );
-  const actionError = block.error ?? unblock.error;
+  const actionError = block.error ?? unblock.error ?? remind.error;
 
   return (
     <Page
@@ -104,6 +113,9 @@ export function CreatorsPage({ operator }: { operator: PlatformOperator }) {
       )}
 
       <ErrorBanner error={actionError ? friendlyPlatformError(actionError) : creators.error} />
+      {notice && !actionError && (
+        <div style={{ fontSize: 13, color: theme.success, marginBottom: 12 }}>{notice}</div>
+      )}
 
       {creators.isLoading ? (
         <Card>Loading…</Card>
@@ -124,6 +136,8 @@ export function CreatorsPage({ operator }: { operator: PlatformOperator }) {
               }
               onBlock={(reason) => block.mutate({ id: c.id, reason })}
               onUnblock={() => unblock.mutate(c.id)}
+              reminding={remind.isPending && remind.variables?.id === c.id}
+              onRemind={() => remind.mutate(c)}
             />
           ))}
         </div>
@@ -138,14 +152,21 @@ function CreatorCard({
   busy,
   onBlock,
   onUnblock,
+  reminding,
+  onRemind,
 }: {
   creator: NetworkCreator;
   canWrite: boolean;
   busy: boolean;
   onBlock: (reason: string) => void;
   onUnblock: () => void;
+  reminding: boolean;
+  onRemind: () => void;
 }) {
   const blocked = c.status === 'blocked';
+  // Reminders only go to creators who proved their email by signing in.
+  const canRemind =
+    !blocked && !c.profileComplete && !c.emailOptOutAt && !!c.lastSignInAt && (c.remindersSent ?? 0) < 3;
   return (
     <Card>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
@@ -191,6 +212,18 @@ function CreatorCard({
             </div>
           )}
 
+          {!c.profileComplete && (
+            <div style={{ fontSize: 11.5, color: theme.textDim, marginTop: 4 }}>
+              {!c.lastSignInAt
+                ? 'Never signed in, so no reminders (email unconfirmed)'
+                : c.emailOptOutAt
+                  ? `Unsubscribed from reminders ${formatDate(c.emailOptOutAt, { relative: true })}`
+                  : (c.remindersSent ?? 0) > 0
+                    ? `${c.remindersSent} of 3 reminders sent${c.lastRemindedAt ? `, last ${formatDate(c.lastRemindedAt, { relative: true })}` : ''}`
+                    : 'No reminders sent yet'}
+            </div>
+          )}
+
           {blocked && (
             <div style={{ fontSize: 11.5, color: theme.danger, marginTop: 6 }}>
               {c.blockedReason ? `Reason: ${c.blockedReason}` : 'Blocked'}
@@ -201,7 +234,12 @@ function CreatorCard({
         </div>
 
         {canWrite && (
-          <div style={{ flexShrink: 0 }}>
+          <div style={{ flexShrink: 0, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {canRemind && (
+              <Button size="sm" variant="ghost" disabled={reminding} onClick={onRemind}>
+                {reminding ? 'Sending…' : 'Send reminder'}
+              </Button>
+            )}
             {blocked ? (
               <Button size="sm" disabled={busy} onClick={onUnblock}>
                 {busy ? 'Working…' : 'Unblock'}

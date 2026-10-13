@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, X } from 'lucide-react';
+import { CheckCircle2, Circle, Plus, X } from 'lucide-react';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
@@ -21,7 +21,15 @@ interface Profile {
   portfolioLinks: string[];
   pastBrands: string[];
   createdAt: string;
+  /** The discovery bar (Network-computed). Absent on an older Network. */
+  profileComplete?: boolean;
+  profileMissing?: Array<{ field: string; label: string }>;
+  /** Every requirement with its state, in display order. */
+  profileChecklist?: Array<{ field: string; label: string; done: boolean }>;
 }
+
+/** Minimum bio length the Network's discovery bar requires. */
+const MIN_BIO_LENGTH = 40;
 
 type Platform = 'tiktok' | 'instagram' | 'youtube' | 'twitter' | 'linkedin' | 'substack' | 'twitch' | 'podcast' | 'website';
 
@@ -130,6 +138,10 @@ export function CreatorMyProfilePage() {
         <Card>Loading…</Card>
       ) : data ? (
         <>
+          <ProfileChecklistCard profile={data} />
+
+          <div style={{ height: 14 }} />
+
           <Card>
             <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 12 }}>Basics</div>
             <div style={{ display: 'grid', gap: 12, maxWidth: 520 }}>
@@ -139,13 +151,16 @@ export function CreatorMyProfilePage() {
               <Field label="Display name">
                 <Input value={name} onChange={(e) => setName(e.target.value)} />
               </Field>
-              <Field label="Handle" hint="Used as your default share-link slug and your /creators/<handle> URL.">
+              <Field label="Handle" hint="Required. Used as your default share-link slug and your /creators/<handle> URL.">
                 <Input value={handle} onChange={(e) => setHandle(e.target.value)} placeholder="your-handle" />
               </Field>
               <Field label="Avatar">
                 <AvatarUploader value={avatarUrl} onChange={setAvatarUrl} name={name} />
               </Field>
-              <Field label="Bio">
+              <Field
+                label="Bio"
+                hint={`Required, at least ${MIN_BIO_LENGTH} characters. Brands read this first: who you create for and what you make. (${bio.trim().length}/${MIN_BIO_LENGTH})`}
+              >
                 <Textarea value={bio} onChange={(e) => setBio(e.target.value)} rows={4} />
               </Field>
             </div>
@@ -160,7 +175,7 @@ export function CreatorMyProfilePage() {
               numbers come once you connect platforms (coming soon).
             </p>
             <div style={{ display: 'grid', gap: 14 }}>
-              <Field label="Categories" hint="Pick the niches you create in. Brands filter by these.">
+              <Field label="Categories" hint="Required, pick at least one. Brands filter by these.">
                 <CategoryChips selected={categories} onChange={setCategories} />
               </Field>
               <Field label="Audience locations" hint="Top countries your audience comes from. ISO-3166 alpha-2 codes (e.g. US, CA, GB), max 5, comma-separated. Validated on save.">
@@ -425,6 +440,68 @@ function UrlList({ value, onChange, max, placeholder }: { value: string[]; onCha
  *  PUT/DELETE on Network rather than a bulk PATCH, since users add /
  *  remove platforms one at a time and we want optimistic per-row save
  *  feedback. */
+/**
+ * What stands between this creator and being discoverable. Brands only see
+ * complete profiles (handle, photo, bio, a category, a platform) in Network
+ * discovery and on public profile pages, so an incomplete profile is
+ * effectively invisible. This card says so plainly and lists exactly what's
+ * left. Driven by the Network's own rules via GET /creators/me.
+ */
+function ProfileChecklistCard({ profile }: { profile: Profile }) {
+  const items =
+    profile.profileChecklist ??
+    (profile.profileMissing ?? []).map((m) => ({ ...m, done: false }));
+  if (profile.profileComplete === undefined && items.length === 0) return null;
+
+  if (profile.profileComplete) {
+    return (
+      <Card>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <CheckCircle2 size={18} color={theme.success} />
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>Your profile is live</div>
+            <div style={{ fontSize: 13, color: theme.textMuted }}>
+              Brands can find you in Network discovery and on your public profile page.
+            </div>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  const left = items.filter((i) => !i.done).length;
+  return (
+    <Card style={{ border: `1px solid ${theme.warn}55`, background: theme.warnSoft }}>
+      <div style={{ fontSize: 15, fontWeight: 600, color: theme.text }}>
+        Your profile is hidden from brands
+      </div>
+      <p style={{ fontSize: 13, color: theme.textMuted, margin: '4px 0 14px', lineHeight: 1.55 }}>
+        Brands only see complete profiles when they search the Network for creators. Finish the{' '}
+        {left === 1 ? 'last step' : `${left} steps`} below, save, and you&rsquo;ll show up right away.
+        You can still apply to programs in the meantime.
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {items.map((i) => (
+          <div key={i.field} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13.5 }}>
+            {i.done ? <CheckCircle2 size={16} color={theme.success} /> : <Circle size={16} color={theme.warn} />}
+            <span
+              style={{
+                color: i.done ? theme.textMuted : theme.text,
+                textDecoration: i.done ? 'line-through' : 'none',
+              }}
+            >
+              {i.label}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div style={{ fontSize: 12, color: theme.textDim, marginTop: 12 }}>
+        Basics and categories save with the Save button at the bottom. Platforms save as you add them.
+      </div>
+    </Card>
+  );
+}
+
 function PlatformsCard() {
   const qc = useQueryClient();
   const list = useQuery({
@@ -453,7 +530,11 @@ function PlatformsCard() {
                 label={p.label}
                 placeholder={p.placeholder}
                 existing={existing}
-                onChanged={() => qc.invalidateQueries({ queryKey: ['creator-my-platforms'] })}
+                onChanged={() => {
+                  void qc.invalidateQueries({ queryKey: ['creator-my-platforms'] });
+                  // Platforms count toward the discovery checklist.
+                  void qc.invalidateQueries({ queryKey: ['creator-my-profile'] });
+                }}
               />
             );
           })}

@@ -38,9 +38,15 @@ export interface Message {
   html?: string;
   tag?: string;
   metadata?: Record<string, unknown>;
-  /** Platform-voice mail (ops alerts, platform sign-in): OpenPartner talking,
-   *  not a brand, so it is never painted in a tenant's brand color — even
-   *  when the send context is some brand's tenant. */
+  /** Extra MIME headers (e.g. List-Unsubscribe on reminder mail). */
+  headers?: Record<string, string>;
+  /** Platform-voice mail — OpenPartner talking, not a brand (ops alerts,
+   *  platform sign-in, setup reminders, policy notices). Never painted in
+   *  a tenant's brand color, even when the send context is some brand's
+   *  tenant, and sent from "OpenPartner" with Reply-To the platform-ops
+   *  inbox rather than a brand's name or support address. Reminders and
+   *  notices use the DEFAULT_TENANT_ID context so the platform transport
+   *  is used. */
   platform?: boolean;
 }
 
@@ -85,7 +91,11 @@ class RoutingMailer implements Mailer {
     // From and don't second-guess it.
     let from = cfg.from ?? null;
     let replyTo: string | undefined;
-    if (cfg.source === 'env' && from) {
+    if (msg.platform && from) {
+      from = `"OpenPartner" <${extractAddress(from)}>`;
+      const ops = (process.env.PLATFORM_OPS_EMAIL ?? '').trim();
+      if (ops) replyTo = ops;
+    } else if (cfg.source === 'env' && from) {
       const brandName = await resolveBrandName(ctx.db, ctx.tenantId);
       if (brandName) {
         // White-label tenants get a clean brand-only From — no "via
@@ -145,7 +155,7 @@ class RoutingMailer implements Mailer {
         subject: msg.subject,
         text: msg.text,
         html,
-        headers: msg.tag ? { 'X-Tag': msg.tag } : undefined,
+        headers: msg.tag || msg.headers ? { ...(msg.tag ? { 'X-Tag': msg.tag } : {}), ...msg.headers } : undefined,
       });
       return;
     }
@@ -167,6 +177,9 @@ class RoutingMailer implements Mailer {
           Tag: msg.tag,
           MessageStream: cfg.postmark.messageStream,
           Metadata: msg.metadata,
+          Headers: msg.headers
+            ? Object.entries(msg.headers).map(([Name, Value]) => ({ Name, Value }))
+            : undefined,
         }),
       });
       if (!res.ok) {

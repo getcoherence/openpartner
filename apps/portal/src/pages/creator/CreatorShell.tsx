@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { Globe, Inbox, Link2, LogOut, Megaphone, Menu, Network, UserCog } from 'lucide-react';
 import { theme } from '../../theme.js';
@@ -54,6 +55,7 @@ export function CreatorShell() {
       )}
       <main style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
         {isMobile && <CreatorMobileTopBar onMenu={() => setDrawerOpen(true)} />}
+        {!location.pathname.startsWith('/creator/profile') && <ProfileIncompleteBanner isMobile={isMobile} />}
         <Routes>
           <Route index element={<Navigate to="discover" replace />} />
           <Route path="discover" element={<CreatorDiscoverPage />} />
@@ -68,6 +70,54 @@ export function CreatorShell() {
           <Route path="*" element={<Navigate to="discover" replace />} />
         </Routes>
       </main>
+    </div>
+  );
+}
+
+/**
+ * Site-wide nudge while the creator's profile is below the discovery bar.
+ * Shares the ['creator-my-profile'] cache with the profile page, so it
+ * disappears as soon as they finish. Hidden on the profile page itself,
+ * which carries the full checklist.
+ */
+function ProfileIncompleteBanner({ isMobile }: { isMobile: boolean }) {
+  const { data } = useQuery({
+    queryKey: ['creator-my-profile'],
+    queryFn: () =>
+      creatorApi<{ profileComplete?: boolean; profileMissing?: Array<{ field: string; label: string }> }>('/creators/me'),
+    retry: false,
+    staleTime: 60_000,
+  });
+  if (!data || data.profileComplete !== false) return null;
+  const left = data.profileMissing?.length ?? 0;
+  return (
+    <div style={{ padding: isMobile ? '16px 16px 0' : '24px 40px 0', maxWidth: 1280, margin: '0 auto' }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          flexWrap: 'wrap',
+          background: theme.warnSoft,
+          border: `1px solid ${theme.warn}55`,
+          borderRadius: theme.radiusMd,
+          padding: '12px 14px',
+          fontSize: 13,
+          lineHeight: 1.5,
+        }}
+      >
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <strong style={{ color: theme.warn }}>Brands can&rsquo;t find you yet.</strong>{' '}
+          Your profile is hidden from Network discovery until it&rsquo;s complete
+          {left > 0 ? ` (${left} step${left === 1 ? '' : 's'} left)` : ''}.
+        </div>
+        <Link
+          to="/creator/profile"
+          style={{ color: theme.accent, fontWeight: 600, textDecoration: 'none', whiteSpace: 'nowrap' }}
+        >
+          Finish my profile &rarr;
+        </Link>
+      </div>
     </div>
   );
 }

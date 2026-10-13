@@ -12,7 +12,7 @@
  * different plaintext than what was stored.
  */
 
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 const ALG = 'aes-256-gcm';
 const IV_LEN = 12;
@@ -36,6 +36,24 @@ function masterKey(): Buffer {
   if (buf.length !== 32) throw new Error('SECRETS_ENCRYPTION_KEY must decode to exactly 32 bytes');
   cachedKey = buf;
   return buf;
+}
+
+/**
+ * Keyed MAC for signed links (e.g. one-click unsubscribe). The key is derived
+ * per `purpose` from the master secret, so a MAC minted for one purpose never
+ * verifies for another and the master key itself never signs user-visible
+ * values. base64url, safe to drop in a query string.
+ */
+export function macValue(purpose: string, value: string): string {
+  const k = createHmac('sha256', masterKey()).update(`openpartner-mac:${purpose}`).digest();
+  return createHmac('sha256', k).update(value).digest('base64url');
+}
+
+/** Constant-time check of a macValue() output. */
+export function verifyMac(purpose: string, value: string, mac: string): boolean {
+  const expected = Buffer.from(macValue(purpose, value));
+  const given = Buffer.from(mac);
+  return expected.length === given.length && timingSafeEqual(expected, given);
 }
 
 export function encryptSecret(plaintext: string): string {

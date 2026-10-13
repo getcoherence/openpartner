@@ -36,7 +36,7 @@ import { Cron } from 'croner';
 import type { Knex } from 'knex';
 import { TABLES, type PayoutCadence, type TenantRow } from '@openpartner/db';
 import { db } from './db.js';
-import { withTenantTransaction } from './tenancy.js';
+import { getTenancyMode, withTenantTransaction } from './tenancy.js';
 import { reportUsageToStripe } from './usage-billing.js';
 import { runPayouts } from './payouts.js';
 import { drainOutbox, reportNetworkPayoutsToNetwork, sendHeartbeat } from './network-client.js';
@@ -172,6 +172,36 @@ const JOBS: ScheduledJob[] = [
     cronExpr: '0 9 * * *',
     description: 'Email brand admins + participating partners ~7 days before a campaign ends (daily 09:00 UTC)',
     handler: async () => sweepCampaignEndNotifications(),
+  },
+  {
+    name: 'brand-setup-reminders',
+    cronExpr: '0 15 * * *',
+    description:
+      'Hosted multi-tenant, when switched on in the ops console: email brand admins whose setup is incomplete (max 3, spaced 2/4/7 days; daily 15:00 UTC)',
+    handler: async () => {
+      if (getTenancyMode() !== 'multi') return { skipped: 'single_tenant' };
+      const { getNotificationSettings } = await import('./platform-settings.js');
+      if (!(await getNotificationSettings(db)).brandSetupReminders) return { skipped: 'disabled' };
+      const { runBrandSetupReminders } = await import('./brand-setup-reminders.js');
+      const r = await runBrandSetupReminders(db);
+      return { sent: r.sent, failed: r.failed, eligible: r.eligible.length };
+    },
+  },
+  {
+    name: 'creator-profile-reminders',
+    cronExpr: '30 15 * * *',
+    description:
+      'Hosted multi-tenant, when switched on in the ops console: trigger the Network to email creators with incomplete profiles (daily 15:30 UTC)',
+    handler: async () => {
+      if (getTenancyMode() !== 'multi') return { skipped: 'single_tenant' };
+      const { getNotificationSettings } = await import('./platform-settings.js');
+      if (!(await getNotificationSettings(db)).creatorProfileReminders) return { skipped: 'disabled' };
+      const { adminRunCreatorReminders, platformNetworkUrl } = await import('./network-client.js');
+      const networkUrl = platformNetworkUrl();
+      if (!networkUrl || !process.env.NETWORK_ADMIN_API_KEY) return { skipped: 'network_admin_not_configured' };
+      const r = await adminRunCreatorReminders(networkUrl, { dryRun: false });
+      return { sent: r.sent, failed: r.failed, eligible: r.eligible.length };
+    },
   },
   {
     name: 'funding-collector',

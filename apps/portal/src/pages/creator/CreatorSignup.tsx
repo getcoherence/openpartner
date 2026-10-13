@@ -69,6 +69,11 @@ export function CreatorSignupPage() {
             Click the link in the email to finish signing in. It&rsquo;s good for 15 minutes.
           </div>
         </div>
+        <div style={{ marginTop: 14, fontSize: 13, color: theme.textMuted, lineHeight: 1.55 }}>
+          <strong style={{ color: theme.text }}>Next, so brands can find you:</strong> add a handle, a profile photo,
+          a short bio (40+ characters), at least one category, and one social platform. Brands only see complete
+          profiles when they search for creators.
+        </div>
       </AuthFrame>
     );
   }
@@ -84,7 +89,7 @@ export function CreatorSignupPage() {
           <input type="email" name="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ada@example.com" required style={inputStyle} />
         </Field>
         <Field
-          label="Handle (optional)"
+          label="Handle (you can add it later)"
           hint={
             handleStatus === 'checking' ? <span style={{ color: theme.textMuted }}>Checking…</span>
             : handleStatus === 'available' ? <span style={{ color: theme.success }}>✓ Available</span>
