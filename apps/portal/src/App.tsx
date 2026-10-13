@@ -1385,8 +1385,8 @@ function PendingReviewBanner({ isMobile, onDismiss }: { isMobile: boolean; onDis
         <AlertTriangle size={18} color={theme.warn} style={{ flexShrink: 0, marginTop: 1 }} />
         <div style={{ flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.5, color: theme.text }}>
           <strong style={{ color: theme.warn }}>Your brand is under review.</strong>{' '}
-          You can set up your program now, but partner links won&rsquo;t redirect and you can&rsquo;t invite
-          partners until an OpenPartner operator approves your account.
+          You can set up your program now, but partner links won&rsquo;t redirect, your marketplace listing
+          stays hidden, and you can&rsquo;t invite partners until an OpenPartner operator approves your account.
         </div>
         <button
           onClick={onDismiss}

@@ -210,6 +210,8 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
     contactEmail: adminEmail,
     contactName: body.data.adminName,
     protoHost: `${req.protocol}://${req.get('host') ?? ''}`,
+    // Public signup always lands in the review queue.
+    approvalStatus: 'pending',
   });
 
   // Tell the platform-ops inbox a new brand is waiting for review.
@@ -249,6 +251,9 @@ export async function autoEnrollBrandOnNetwork(opts: {
   contactEmail: string;
   contactName: string;
   protoHost: string;
+  /** The tenant's approval state at enrollment. Sent to the Network so a
+   *  brand still in operator review is federated but NOT discoverable. */
+  approvalStatus: TenantRow['approvalStatus'];
 }): Promise<{ status: 'active' | 'pending' | 'skipped' | 'failed'; vendorId: string | null }> {
   const networkUrl = process.env.NETWORK_URL;
   const networkAdminKey = process.env.NETWORK_ADMIN_API_KEY;
@@ -277,6 +282,7 @@ export async function autoEnrollBrandOnNetwork(opts: {
       tier: 'hosted',
       portalCallbackUrl: `${opts.protoHost}/t/${opts.slug}/admin/network/complete`,
       adminAuthToken: networkAdminKey,
+      reviewStatus: opts.approvalStatus,
     });
     if (signupResult.status === 'active') {
       await saveNetworkMembership(db, opts.tenantId, {
