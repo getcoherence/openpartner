@@ -70,6 +70,19 @@ beforeEach(async () => {
 });
 
 describe.skipIf(skipIntegration)('api integration', () => {
+  it('validates and persists the public router origin across settings saves', async () => {
+    for (const routerUrl of ['javascript:alert(1)', 'https://user:pass@example.com', 'https://example.com/r', 'https://example.com?x=1', 'https://example.com/#x']) {
+      const rejected = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ routerUrl });
+      expect(rejected.status).toBe(400);
+    }
+    const saved = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ routerUrl: 'https://links.example.com/' });
+    expect(saved.status).toBe(200);
+    expect(saved.body.routerUrl).toBe('https://links.example.com');
+    const other = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ programName: 'Brand' });
+    expect(other.body.routerUrl).toBe('https://links.example.com');
+    const cleared = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ routerUrl: '' });
+    expect(cleared.body.routerUrl).toBeNull();
+  });
   it('full funnel: partner → link → click → identify → event → attribution → payout', async () => {
     // 1. Admin creates a partner.
     const partnerRes = await request(app)

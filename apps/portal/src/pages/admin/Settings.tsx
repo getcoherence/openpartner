@@ -15,6 +15,7 @@ interface PayoutSettings {
 }
 
 interface ProgramSettings {
+  routerUrl: string | null;
   programName: string | null;
   supportEmail: string | null;
   logoUrl: string | null;
@@ -161,6 +162,7 @@ function ProgramSection() {
     queryFn: () => api<ProgramSettings>('/config/program'),
   });
 
+  const [routerUrl, setRouterUrl] = useState('');
   const [programName, setProgramName] = useState('');
   const [supportEmail, setSupportEmail] = useState('');
   const [brandColor, setBrandColor] = useState('');
@@ -169,6 +171,7 @@ function ProgramSection() {
 
   useEffect(() => {
     if (!data) return;
+    setRouterUrl(data.routerUrl ?? '');
     setProgramName(data.programName ?? '');
     setSupportEmail(data.supportEmail ?? '');
     setBrandColor(data.brandColor ?? '');
@@ -179,7 +182,7 @@ function ProgramSection() {
     mutationFn: () =>
       api<ProgramSettings>('/config/program', {
         method: 'POST',
-        body: { programName, supportEmail, brandColor, programTermsUrl },
+        body: { programName, supportEmail, brandColor, programTermsUrl, routerUrl },
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['program-settings'] });
@@ -270,6 +273,11 @@ function ProgramSection() {
           />
           <Hint>Linked from the partner portal footer. Blank = no terms link shown.</Hint>
         </div>
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <Label>Public router URL</Label>
+        <Input type="url" value={routerUrl} onChange={(e) => setRouterUrl(e.target.value)} placeholder="https://links.yourdomain.com" maxLength={2048} />
+        <Hint>Public origin serving /r links. Required for complete share links on single-tenant self-host installations.</Hint>
       </div>
       <Row>
         <Button onClick={() => mut.mutate()} disabled={mut.isPending}>

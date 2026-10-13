@@ -4,23 +4,23 @@ import { Link2, Plus, ArrowRight, Check, Copy } from 'lucide-react';
 import { api, currentTenantSlug, type Principal } from '../api.js';
 import { theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
-import { usePublicBrand } from '../lib/useBrand.js';
+import { useBrand, usePublicBrand } from '../lib/useBrand.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 
 /**
  * The full share URL for a link key, matching how the router resolves it:
  *   platform origin (path-based tenant) → https://app…/r/<slug>/<key>
  *   white-label custom domain           → https://portal.brand.com/r/<key>
- *   single-tenant self-host             → null (the portal origin doesn't
- *     necessarily serve /r; show the relative key and let the operator's
- *     own router URL apply)
+ *   single-tenant self-host             → configured public router origin
+ *     (the portal origin does not necessarily serve /r)
  */
 function useShareUrlBase(): string | null {
   const pathSlug = currentTenantSlug();
   const { tenantSlug } = usePublicBrand();
+  const { routerUrl } = useBrand();
   if (pathSlug) return `${window.location.origin}/r/${pathSlug}`;
   if (tenantSlug && tenantSlug !== 'default') return `${window.location.origin}/r`;
-  return null;
+  return routerUrl ? `${routerUrl}/r` : null;
 }
 
 function CopyableShareLink({ linkKey, base }: { linkKey: string; base: string | null }) {
@@ -51,7 +51,7 @@ function CopyableShareLink({ linkKey, base }: { linkKey: string; base: string | 
         whiteSpace: 'nowrap',
       }}
     >
-      {url.replace(/^https?:\/\//, '')}
+      {url}
       {copied ? <Check size={13} style={{ color: theme.success }} /> : <Copy size={13} style={{ color: theme.textDim }} />}
     </button>
   );
@@ -154,7 +154,7 @@ function PartnerLinks({ partnerId, readOnly }: { partnerId: string; readOnly: bo
       subtitle={
         readOnly
           ? "Links this partner has created. Partners manage their own; admins view only."
-          : "Your share links — the router turns /r/<key> into an attributed click."
+          : "Copy your share link and publish it. Visitors are redirected to the destination and their clicks are attributed to you."
       }
       actions={
         readOnly ? undefined : (
@@ -165,9 +165,11 @@ function PartnerLinks({ partnerId, readOnly }: { partnerId: string; readOnly: bo
       }
     >
       <ErrorBanner error={links.error} />
+      {!shareBase && <Card style={{ marginBottom: 16 }}>Full share links are unavailable. Ask your brand admin to set the public router URL in Settings before sharing these paths.</Card>}
       {showCreate && !readOnly && (
         <CreateLink
           partnerId={partnerId}
+          shareBase={shareBase}
           campaigns={campaigns.data?.programs ?? []}
           onClose={() => setShowCreate(false)}
           onCreated={() => {
@@ -186,7 +188,7 @@ function PartnerLinks({ partnerId, readOnly }: { partnerId: string; readOnly: bo
         />
       ) : (
         <Table
-          columns={['Key', 'Destination', 'Program', 'Created']}
+          columns={['Share link', 'Destination', 'Program', 'Created']}
           rows={(links.data?.links ?? []).map((l) => {
             const campaign = campaigns.data?.programs.find((c) => c.id === l.programId);
             const dest = l.destinationUrl ?? campaign?.destinationUrl ?? '—';
@@ -210,11 +212,13 @@ function PartnerLinks({ partnerId, readOnly }: { partnerId: string; readOnly: bo
 
 function CreateLink({
   partnerId,
+  shareBase,
   campaigns,
   onClose,
   onCreated,
 }: {
   partnerId: string;
+  shareBase: string | null;
   campaigns: Program[];
   onClose: () => void;
   onCreated: () => void;
@@ -269,7 +273,7 @@ function CreateLink({
         <Label>Link key</Label>
         <Input value={linkKey} onChange={(e) => setLinkKey(e.target.value)} placeholder="ada" />
         <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
-          Becomes <code style={{ color: theme.textDim }}>/r/{linkKey || 'your-key'}</code>.
+          Becomes <code style={{ color: theme.textDim }}>{shareBase ?? '/r'}/{linkKey || 'your-key'}</code>.
         </div>
       </div>
       {deepLinkAllowed && (

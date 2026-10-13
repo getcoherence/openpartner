@@ -39,6 +39,7 @@ export async function sendOpsEmail(db: Knex, tmpl: EmailTemplate, tag: string): 
         html: tmpl.html,
         tag,
         metadata: { channel: 'platform_ops' },
+        platform: true,
       },
     );
     return true;
