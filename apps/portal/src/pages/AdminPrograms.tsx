@@ -49,6 +49,14 @@ interface Program {
   createdAt: string;
 }
 
+/** Mirror of the API's customerRewardDelivery(): who puts the customer
+ *  discount into checkout on this deployment. 'stripe' = we mint it in
+ *  the brand's Stripe (single-tenant self-host with a key). 'brand' =
+ *  hosted / multi-tenant, the brand sets it up in its own Stripe.
+ *  'unconfigured' = self-host with no Stripe key yet. Undefined while
+ *  the program list loads (or from an API that predates the field). */
+type CustomerRewardDelivery = 'stripe' | 'unconfigured' | 'brand';
+
 interface NetworkConnectionState {
   enabled: boolean;
 }
@@ -75,8 +83,9 @@ export function AdminPrograms() {
   const [editing, setEditing] = useState<Program | null>(null);
   const campaigns = useQuery({
     queryKey: ['campaigns'],
-    queryFn: () => api<{ programs: Program[] }>('/programs'),
+    queryFn: () => api<{ programs: Program[]; customerRewardDelivery?: CustomerRewardDelivery }>('/programs'),
   });
+  const rewardDelivery = campaigns.data?.customerRewardDelivery;
 
   // End-now sets endsAt = current time. Existing share-links keep
   // redirecting (the router doesn't gate on endsAt — that would break
@@ -104,6 +113,7 @@ export function AdminPrograms() {
       <ErrorBanner error={campaigns.error ?? endNow.error} />
       {showCreate && (
         <CreateProgram
+          rewardDelivery={rewardDelivery}
           onClose={() => setShowCreate(false)}
           onCreated={() => {
             setShowCreate(false);
@@ -114,6 +124,7 @@ export function AdminPrograms() {
       {editing && (
         <EditProgramDates
           campaign={editing}
+          rewardDelivery={rewardDelivery}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -209,10 +220,12 @@ function smallActionStyle(color: string): React.CSSProperties {
  */
 function EditProgramDates({
   campaign,
+  rewardDelivery,
   onClose,
   onSaved,
 }: {
   campaign: Program;
+  rewardDelivery: CustomerRewardDelivery | undefined;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -300,9 +313,10 @@ function EditProgramDates({
         time and stored on PartnerCommission, queried at accrual.
       </div>
       <CompoundRuleEditor rules={rules} onChange={setRules} />
-      <CustomerRewardEditor reward={customerReward} onChange={setCustomerReward} />
+      <CustomerRewardEditor reward={customerReward} delivery={rewardDelivery} onChange={setCustomerReward} />
       <PartnerCodeCustomizationField
         enabled={partnersMayCustomizeCode}
+        delivery={rewardDelivery}
         onChange={setPartnersMayCustomizeCode}
       />
       {/* Network listing is a shared-marketplace surface — hidden for
@@ -355,7 +369,15 @@ function toDateTimeLocal(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function CreateProgram({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+function CreateProgram({
+  rewardDelivery,
+  onClose,
+  onCreated,
+}: {
+  rewardDelivery: CustomerRewardDelivery | undefined;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
   // Network status drives the smart default for shareOnNetwork. When the
   // brand is connected, default ON; otherwise hide the toggle entirely
   // (no point promising marketplace listing for a brand that isn't on
@@ -477,9 +499,10 @@ function CreateProgram({ onClose, onCreated }: { onClose: () => void; onCreated:
         </div>
       </div>
       <CompoundRuleEditor rules={rules} onChange={setRules} />
-      <CustomerRewardEditor reward={customerReward} onChange={setCustomerReward} />
+      <CustomerRewardEditor reward={customerReward} delivery={rewardDelivery} onChange={setCustomerReward} />
       <PartnerCodeCustomizationField
         enabled={partnersMayCustomizeCode}
+        delivery={rewardDelivery}
         onChange={setPartnersMayCustomizeCode}
       />
       {networkEnabled && (
@@ -814,9 +837,11 @@ function SubRuleRow({
  */
 function PartnerCodeCustomizationField({
   enabled,
+  delivery,
   onChange,
 }: {
   enabled: boolean;
+  delivery: CustomerRewardDelivery | undefined;
   onChange: (v: boolean) => void;
 }) {
   return (
@@ -831,8 +856,15 @@ function PartnerCodeCustomizationField({
         <code>GRACIE15</code>), up to 5 active per program. The discount terms
         above stay locked — partners only choose the string. Codes are matched
         by name at checkout, so a partner code that equals one of your own
-        promo codes would be credited to that partner. A deactivated code stops
-        working at checkout.
+        promo codes would be credited to that partner.
+        {delivery === 'stripe' && <>{' '}A deactivated code stops working at checkout.</>}
+        {(delivery === 'brand' || delivery === 'unconfigured') && (
+          <>
+            {' '}Your checkout isn&rsquo;t updated for you: add each new code
+            there, and retire deactivated ones there too — OpenPartner stops
+            crediting a deactivated code, but it keeps discounting until you do.
+          </>
+        )}
       </div>
     </div>
   );
@@ -949,17 +981,56 @@ function MarketplaceFields({
   );
 }
 
+/** Where the customer discount comes from. Only a single-tenant
+ *  self-host mints it in Stripe; anywhere else, promising "applies
+ *  automatically" would have brands advertise discounts that never
+ *  reach their checkout. */
+function rewardDeliveryHint(delivery: CustomerRewardDelivery | undefined): React.ReactNode {
+  switch (delivery) {
+    case 'stripe':
+      return (
+        <>
+          Auto-provisioned as a Stripe coupon on each partner's code. Customer types
+          the code at your Stripe checkout → discount applies automatically.
+        </>
+      );
+    case 'brand':
+      return (
+        <>
+          You set up the discount: in your own Stripe, create a promotion code with
+          the same string as each partner&rsquo;s code and the terms set here (or
+          apply the discount in your own checkout). OpenPartner attributes the
+          redemption when your checkout sends the code to <code>POST /coupons/redeem</code>.
+        </>
+      );
+    case 'unconfigured':
+      return (
+        <>
+          Not applied automatically: no Stripe key is configured. Set{' '}
+          <code>STRIPE_SECRET_KEY</code> to your Stripe secret key and codes minted
+          from then on get a matching Stripe coupon. Until then, apply the discount
+          in your own checkout.
+        </>
+      );
+    default:
+      return null;
+  }
+}
+
 function CustomerRewardEditor({
   reward,
+  delivery,
   onChange,
 }: {
   reward: CustomerReward | null;
+  delivery: CustomerRewardDelivery | undefined;
   onChange: (reward: CustomerReward | null) => void;
 }) {
   const enabled = reward != null;
   const update = (patch: Partial<CustomerReward>) => {
     onChange({ ...(reward as CustomerReward), ...patch });
   };
+  const hint = rewardDeliveryHint(delivery);
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -977,10 +1048,11 @@ function CustomerRewardEditor({
         />
         Offer customer-side discount (dual-sided)
       </label>
-      <div style={{ fontSize: 12, color: theme.textDim, marginLeft: 24, marginBottom: 8 }}>
-        Auto-provisioned as a Stripe coupon on each partner's code. Customer types
-        the code at your Stripe checkout → discount applies automatically.
-      </div>
+      {hint && (
+        <div style={{ fontSize: 12, color: theme.textDim, marginLeft: 24, marginBottom: 8 }}>
+          {hint}
+        </div>
+      )}
       {enabled && reward && (
         <div
           className="op-grid-collapse"
@@ -1034,7 +1106,9 @@ function CustomerRewardEditor({
           )}
           {reward.type === 'free_months' ? (
             <span style={{ fontSize: 12, color: theme.textDim, paddingBottom: 8 }}>
-              Delivered as a 100% Stripe coupon for the configured number of months.
+              {delivery === 'stripe'
+                ? 'Delivered as a 100% Stripe coupon for the configured number of months.'
+                : 'In Stripe, that’s a 100% coupon repeating for the configured number of months.'}
             </span>
           ) : (
             <div>
