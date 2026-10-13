@@ -16,6 +16,7 @@ import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { getNetworkMembership, networkProxy, NetworkProxyError } from '../network-client.js';
 import { getTenantBillingState } from '../billing-plan.js';
+import { brandSetupFor } from '../brand-setup.js';
 
 export const onboardingRouter = Router();
 
@@ -38,6 +39,11 @@ interface BrandOnboardingStatus {
   /** Whole days from now until trialEndsAt. Negative when expired. Null
    *  when trialEndsAt is null. */
   trialDaysRemaining: number | null;
+  /** OpenPartner has seen real conversion data (SDK identify / events /
+   *  a verified coupon redemption) — partners can actually be credited. */
+  trackingInstalled: boolean;
+  /** Brand review state; a pending brand's listing stays hidden. */
+  approvalStatus: 'pending' | 'approved' | 'rejected';
   /** True once everything actionable is done — card hides. */
   complete: boolean;
 }
@@ -112,7 +118,13 @@ onboardingRouter.get('/admin/onboarding-status', requireAuth, requireAdmin, asyn
     trialDaysRemaining = Math.ceil((trialEndsAt.getTime() - Date.now()) / msPerDay);
   }
 
+  const setup = (await brandSetupFor(db, [tenantId])).get(tenantId);
+  const trackingInstalled = !!setup?.steps.find((s) => s.key === 'tracking')?.done;
+  const approvalRow = await db('Tenant').where({ id: tenantId }).first(['approvalStatus']);
+  const approvalStatus = (approvalRow?.approvalStatus as BrandOnboardingStatus['approvalStatus'] | undefined) ?? 'approved';
+
   const complete =
+    trackingInstalled &&
     brandInfoComplete &&
     campaignCount > 0 &&
     networkConnected &&
@@ -130,6 +142,8 @@ onboardingRouter.get('/admin/onboarding-status', requireAuth, requireAdmin, asyn
     billingReady,
     trialEndsAt: trialEndsAt ? trialEndsAt.toISOString() : null,
     trialDaysRemaining,
+    trackingInstalled,
+    approvalStatus,
     complete,
   };
   res.json(out);

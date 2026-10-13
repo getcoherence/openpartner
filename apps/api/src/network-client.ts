@@ -596,6 +596,20 @@ export const networkProxy = {
  * dark locally even if the Network is unreachable; the operator can re-run
  * the action to retry the propagation.
  */
+/** A non-2xx from a Network admin call. `code` is the Network's `{ error }`
+ *  when it sent one (e.g. 'profile_complete'), so the ops console can show
+ *  the actual reason instead of a status line. */
+export class NetworkAdminError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public code: string | null,
+  ) {
+    super(message);
+    this.name = 'NetworkAdminError';
+  }
+}
+
 async function callNetworkAdmin<T = void>(
   networkUrl: string,
   method: 'GET' | 'POST',
@@ -617,7 +631,14 @@ async function callNetworkAdmin<T = void>(
   });
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(`network admin call failed (${res.status}): ${text.slice(0, 300)}`);
+    let code: string | null = null;
+    try {
+      const parsed = JSON.parse(text) as { error?: unknown };
+      if (typeof parsed.error === 'string') code = parsed.error;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new NetworkAdminError(`network admin call failed (${res.status}): ${text.slice(0, 300)}`, res.status, code);
   }
   return (text ? JSON.parse(text) : undefined) as T;
 }
@@ -670,6 +691,11 @@ export interface NetworkCreatorSummary {
    *  until they do. */
   profileComplete: boolean;
   profileMissing: Array<{ field: string; label: string }>;
+  /** Profile-completion reminders sent so far (absent on an older Network). */
+  remindersSent?: number;
+  lastRemindedAt?: string | null;
+  /** Set when the creator unsubscribed from reminder emails. */
+  emailOptOutAt?: string | null;
 }
 
 export async function adminListCreators(networkUrl: string): Promise<NetworkCreatorSummary[]> {
@@ -695,6 +721,50 @@ export async function adminBlockCreator(
 
 export async function adminUnblockCreator(networkUrl: string, creatorId: string): Promise<void> {
   await callNetworkAdmin(networkUrl, 'POST', `/admin/creators/${encodeURIComponent(creatorId)}/unblock`, {});
+}
+
+// ---------- Creator profile-completion reminders ----------
+//
+// The Network owns creators, their completeness rules, the sent log and the
+// unsubscribe flow; openpartner only decides WHEN a sweep runs (its
+// scheduler + the operator switch in the ops console) and offers a manual
+// send. See the Network's src/creator-reminders.ts.
+
+export interface CreatorReminderPreview {
+  creatorId: string;
+  email: string;
+  name: string;
+  step: number;
+  missing: string[];
+}
+
+export interface CreatorReminderRunResult {
+  dryRun: boolean;
+  eligible: CreatorReminderPreview[];
+  sent: number;
+  failed: number;
+}
+
+export async function adminRunCreatorReminders(
+  networkUrl: string,
+  opts: { dryRun: boolean; limit?: number },
+): Promise<CreatorReminderRunResult> {
+  return callNetworkAdmin<CreatorReminderRunResult>(networkUrl, 'POST', '/admin/creator-reminders/run', {
+    dryRun: opts.dryRun,
+    ...(opts.limit ? { limit: opts.limit } : {}),
+  });
+}
+
+/** Send one creator their next reminder now. Throws NetworkAdminError with
+ *  `code` profile_complete | opted_out | not_eligible | email_unverified |
+ *  max_reminders_sent | not_found when it can't. */
+export async function adminRemindCreator(networkUrl: string, creatorId: string): Promise<{ ok: true; step: number }> {
+  return callNetworkAdmin<{ ok: true; step: number }>(
+    networkUrl,
+    'POST',
+    `/admin/creators/${encodeURIComponent(creatorId)}/remind`,
+    {},
+  );
 }
 
 export async function adminRestoreVendor(networkUrl: string, vendorId: string): Promise<{ vendorId: string; vendorToken: string }> {

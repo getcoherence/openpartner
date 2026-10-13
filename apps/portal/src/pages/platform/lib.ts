@@ -32,6 +32,14 @@ export interface PlatformBrand {
   adminName: string | null;
   programCount: number;
   blockedProgramCount: number;
+  /** Local setup checklist (program / listing / tracking / partners). */
+  setupComplete: boolean;
+  setupMissing: string[];
+  setupRemindersSent: number;
+  lastSetupReminderAt: string | null;
+  /** Latest marketplace policy warning sent to this brand, if any. */
+  lastPolicyWarningAt: string | null;
+  policyWarningDeadline: string | null;
 }
 
 export interface PlatformProgram {
@@ -73,6 +81,39 @@ export interface NetworkCreator {
    *  until they fill their profile in. */
   profileComplete: boolean;
   profileMissing: Array<{ field: string; label: string }>;
+  /** Profile reminders sent so far (absent on an older Network). */
+  remindersSent?: number;
+  lastRemindedAt?: string | null;
+  /** Set when the creator unsubscribed from reminder emails. */
+  emailOptOutAt?: string | null;
+}
+
+export interface NotificationSettings {
+  brandSetupReminders: boolean;
+  creatorProfileReminders: boolean;
+}
+
+export interface NotificationsState {
+  settings: NotificationSettings;
+  brandRemindersSentLast7Days: number;
+  networkConfigured: boolean;
+}
+
+/** Who a reminder run would email (dryRun) or did email. Brand rows carry a
+ *  slug, creator rows a name. */
+export interface ReminderRunResult {
+  dryRun: boolean;
+  eligible: Array<{
+    tenantId?: string;
+    slug?: string;
+    creatorId?: string;
+    name?: string;
+    email: string;
+    step: number;
+    missing: string[];
+  }>;
+  sent: number;
+  failed: number;
 }
 
 export interface BlocklistEntry {
@@ -149,6 +190,26 @@ export function friendlyPlatformError(err: unknown): string {
       return 'Your operator account is read-only — ask an admin to make this change.';
     case 'not_an_operator':
       return 'This account isn’t an OpenPartner operator.';
+    case 'setup_complete':
+      return 'That brand has finished setup — nothing to remind them about.';
+    case 'profile_complete':
+      return 'That creator’s profile is already complete.';
+    case 'opted_out':
+      return 'They unsubscribed from reminder emails.';
+    case 'max_reminders_sent':
+      return 'They’ve already had all three reminders.';
+    case 'no_signed_in_admin':
+      return 'No admin on this brand has signed in yet, so their email isn’t confirmed.';
+    case 'email_unverified':
+      return 'This creator never confirmed their email, so we don’t send them reminders.';
+    case 'not_eligible':
+      return 'Not eligible for reminders (blocked, suspended, rejected, or being deleted).';
+    case 'no_admin':
+      return 'This brand has no admin to email.';
+    case 'mail_failed':
+      return 'The email couldn’t be sent — check the platform mail settings and try again.';
+    case 'network_not_configured':
+      return 'NETWORK_URL / NETWORK_ADMIN_API_KEY aren’t set, so creator reminders can’t reach the Network.';
     default:
       return raw;
   }

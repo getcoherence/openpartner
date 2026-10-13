@@ -424,6 +424,9 @@ interface BrandOnboardingStatus {
   billingReady: boolean;
   trialEndsAt: string | null;
   trialDaysRemaining: number | null;
+  /** Absent on an older API — treated as not-yet-known (step hidden). */
+  trackingInstalled?: boolean;
+  approvalStatus?: 'pending' | 'approved' | 'rejected';
   complete: boolean;
 }
 
@@ -515,15 +518,32 @@ function BrandOnboarding() {
             href: `${tenantBase}/admin/network`,
           },
         ]),
-    {
-      done: data.offeringPublishedCount > 0,
-      label: 'Create your first program',
-      hint:
-        data.networkConnected && !whiteLabel
-          ? 'Auto-listed on the OpenPartner Network when shareOnNetwork is on.'
-          : 'Defines your commission rule + destination URL.',
-      href: `${tenantBase}/admin/programs`,
-    },
+    // Listing = a program shared to the marketplace (the "Share on the
+    // OpenPartner Network" toggle on the program). Only meaningful for
+    // on-Network, non-white-label brands.
+    ...(data.networkConnected && !whiteLabel
+      ? [
+          {
+            done: data.offeringPublishedCount > 0,
+            label: 'Publish a program on the marketplace',
+            hint:
+              data.approvalStatus === 'pending'
+                ? 'Turn on "Share on the OpenPartner Network" for a program. It appears to creators once your brand is approved.'
+                : 'Turn on "Share on the OpenPartner Network" for a program so creators can find and apply to it.',
+            href: `${tenantBase}/admin/programs`,
+          },
+        ]
+      : []),
+    ...(data.trackingInstalled === undefined
+      ? []
+      : [
+          {
+            done: data.trackingInstalled,
+            label: 'Connect conversion tracking',
+            hint: 'Install the OpenPartner SDK (identify signups) or connect Stripe so partner referrals are credited.',
+            href: `${tenantBase}/admin/integrations`,
+          },
+        ]),
     {
       done: data.partnerCount > 0,
       label: whiteLabel ? 'Invite a partner' : 'Invite a partner — or wait for Network applications',

@@ -36,7 +36,7 @@ import { db } from '../db.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { consumeMagicLink, issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
-import { platformAdminSigninEmail } from '../email-templates.js';
+import { marketplacePolicyWarningEmail, platformAdminSigninEmail } from '../email-templates.js';
 import { getPortalBaseUrl } from '../portal-url.js';
 import { getTenancyMode } from '../tenancy.js';
 import {
@@ -51,9 +51,16 @@ import {
 import {
   adminBlockCreator,
   adminListCreators,
+  adminRemindCreator,
+  adminRunCreatorReminders,
   adminUnblockCreator,
+  NetworkAdminError,
   platformNetworkUrl,
 } from '../network-client.js';
+import { brandSetupFor } from '../brand-setup.js';
+import { brandReminderHistory, remindBrandNow, runBrandSetupReminders } from '../brand-setup-reminders.js';
+import { getNotificationSettings, setNotificationSettings } from '../platform-settings.js';
+import { resolveBrandName } from '../brand-name.js';
 import {
   createPlatformAdminSession,
   PLATFORM_ADMIN_SESSION_COOKIE,
@@ -298,6 +305,26 @@ platformAdminRouter.get('/platform-admin/brands', requirePlatformAdmin, async (r
     : [];
   const countsByTenant = new Map(programCounts.map((r) => [r.tenantId, r]));
 
+  // Setup progress, reminder history, and the latest policy warning — so an
+  // operator sees "stalled at tracking, reminded twice, warned on the 3rd"
+  // without opening anything.
+  const setups = await brandSetupFor(db, ids);
+  const reminders = await brandReminderHistory(db, ids);
+  const warnings = ids.length
+    ? ((await db<PlatformAuditLogRow>(TABLES.PlatformAuditLog)
+        .where({ action: 'brand.policy_warning', targetType: 'tenant' })
+        .whereIn('targetId', ids)
+        .orderBy('createdAt', 'desc')
+        .select('targetId', 'createdAt', 'detail')) as Array<Pick<PlatformAuditLogRow, 'targetId' | 'createdAt' | 'detail'>>)
+    : [];
+  const lastWarningBy = new Map<string, { at: Date; deadline: string | null }>();
+  for (const w of warnings) {
+    if (w.targetId && !lastWarningBy.has(w.targetId)) {
+      const deadline = (w.detail as { deadline?: unknown } | null)?.deadline;
+      lastWarningBy.set(w.targetId, { at: w.createdAt, deadline: typeof deadline === 'string' ? deadline : null });
+    }
+  }
+
   res.json({
     brands: tenants.map((t) => ({
       id: t.id,
@@ -315,6 +342,12 @@ platformAdminRouter.get('/platform-admin/brands', requirePlatformAdmin, async (r
       adminName: primaryByTenant.get(t.id)?.name ?? null,
       programCount: Number(countsByTenant.get(t.id)?.total ?? 0),
       blockedProgramCount: Number(countsByTenant.get(t.id)?.blocked ?? 0),
+      setupComplete: setups.get(t.id)?.complete ?? false,
+      setupMissing: setups.get(t.id)?.missing ?? [],
+      setupRemindersSent: reminders.get(t.id)?.sent ?? 0,
+      lastSetupReminderAt: reminders.get(t.id)?.lastSentAt ?? null,
+      lastPolicyWarningAt: lastWarningBy.get(t.id)?.at ?? null,
+      policyWarningDeadline: lastWarningBy.get(t.id)?.deadline ?? null,
     })),
   });
 });
@@ -613,6 +646,233 @@ platformAdminRouter.delete(
       detail: { type: row.type, value: row.value },
     });
     res.json({ ok: true });
+  },
+);
+
+// --------------------------------------------------------------------------
+// Notifications — setup reminders to brands + profile reminders to creators
+// --------------------------------------------------------------------------
+//
+// Both sweeps are OFF until an operator turns them on here (they email real
+// people). The console previews exactly who the next run would email
+// (dryRun), can run one now, and can nudge a single brand/creator. Brand
+// reminders run in openpartner; creator reminders run on the Network (which
+// owns creators + the unsubscribe flow) and are triggered from here.
+
+platformAdminRouter.get('/platform-admin/notifications', requirePlatformAdmin, async (_req, res) => {
+  const settings = await getNotificationSettings(db);
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const [recent] = (await db(TABLES.BrandNotification)
+    .where('sentAt', '>=', weekAgo)
+    .count({ c: '*' })) as Array<{ c: string | number }>;
+  res.json({
+    settings,
+    brandRemindersSentLast7Days: Number(recent?.c ?? 0),
+    networkConfigured: !!platformNetworkUrl() && !!process.env.NETWORK_ADMIN_API_KEY,
+  });
+});
+
+const notificationSettingsSchema = z
+  .object({
+    brandSetupReminders: z.boolean().optional(),
+    creatorProfileReminders: z.boolean().optional(),
+  })
+  .strict();
+
+platformAdminRouter.put(
+  '/platform-admin/notifications',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = notificationSettingsSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const actor = req.platformAdminActor!;
+    const settings = await setNotificationSettings(db, body.data, actor.email);
+    await writeAudit(db, { actor, action: 'notifications.settings', targetType: 'platform', detail: body.data });
+    res.json({ settings });
+  },
+);
+
+const runSchema = z.object({ dryRun: z.boolean().default(true) });
+
+/** Preview (dryRun, the default — read-only operators may preview) or send
+ *  the brand setup reminders that are due right now. */
+platformAdminRouter.post('/platform-admin/notifications/brand-setup/run', requirePlatformAdmin, async (req, res) => {
+  const body = runSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const actor = req.platformAdminActor!;
+  if (!body.data.dryRun && actor.role !== 'admin') return res.status(403).json({ error: 'read_only_operator' });
+  const result = await runBrandSetupReminders(db, { dryRun: body.data.dryRun });
+  if (!body.data.dryRun) {
+    await writeAudit(db, {
+      actor,
+      action: 'notifications.brand_setup.run',
+      targetType: 'platform',
+      detail: { sent: result.sent, failed: result.failed },
+    });
+  }
+  res.json(result);
+});
+
+platformAdminRouter.post('/platform-admin/notifications/creator-profile/run', requirePlatformAdmin, async (req, res) => {
+  const body = runSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const actor = req.platformAdminActor!;
+  if (!body.data.dryRun && actor.role !== 'admin') return res.status(403).json({ error: 'read_only_operator' });
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  let result;
+  try {
+    result = await adminRunCreatorReminders(networkUrl, { dryRun: body.data.dryRun });
+  } catch (err) {
+    return res.status(502).json(networkErrorBody(err));
+  }
+  if (!body.data.dryRun) {
+    await writeAudit(db, {
+      actor,
+      action: 'notifications.creator_profile.run',
+      targetType: 'platform',
+      detail: { sent: result.sent, failed: result.failed },
+    });
+  }
+  res.json(result);
+});
+
+platformAdminRouter.post(
+  '/platform-admin/brands/:id/setup-reminder',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const actor = req.platformAdminActor!;
+    const result = await remindBrandNow(db, req.params.id!, actor.email);
+    if (!result.ok) {
+      const status = result.error === 'brand_not_found' ? 404 : result.error === 'send_failed' ? 502 : 409;
+      return res.status(status).json({ error: result.error });
+    }
+    await writeAudit(db, {
+      actor,
+      action: 'brand.setup_reminder',
+      targetType: 'tenant',
+      targetId: req.params.id!,
+      detail: { step: result.step, to: result.to },
+    });
+    res.json(result);
+  },
+);
+
+platformAdminRouter.post(
+  '/platform-admin/creators/:id/remind',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    const actor = req.platformAdminActor!;
+    let result: { ok: true; step: number };
+    try {
+      result = await adminRemindCreator(networkUrl, req.params.id!);
+    } catch (err) {
+      // The Network's reason (profile_complete, opted_out, …) is the useful
+      // part — pass it through with its status instead of a blanket 502.
+      if (err instanceof NetworkAdminError && err.code && err.status < 500) {
+        return res.status(err.status).json({ error: err.code });
+      }
+      return res.status(502).json(networkErrorBody(err));
+    }
+    await writeAudit(db, {
+      actor,
+      action: 'creator.profile_reminder',
+      targetType: 'creator',
+      targetId: req.params.id!,
+      detail: { step: result.step },
+    });
+    res.json(result);
+  },
+);
+
+// --------------------------------------------------------------------------
+// Marketplace policy warnings
+// --------------------------------------------------------------------------
+//
+// Free marketplace listings exist so creators join (and get tracked + paid)
+// through OpenPartner. When an operator finds a listing funnelling creators
+// to a different affiliate platform, this emails the brand a templated
+// warning with a deadline, in the platform voice, and records it in the
+// audit log (the brand card shows the latest one). Removing the listing
+// after the deadline is the existing program block / brand removal — an
+// operator decision, not automated.
+
+const policyWarningSchema = z.object({
+  /** What the operator found, in their own words — goes into the email. */
+  details: z.string().trim().min(10).max(2000),
+  deadlineDays: z.number().int().min(1).max(30).default(7),
+});
+
+platformAdminRouter.post(
+  '/platform-admin/brands/:id/policy-warning',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = policyWarningSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const tenant = await loadTenant(req.params.id!);
+    if (!tenant) return res.status(404).json({ error: 'brand_not_found' });
+
+    // Prefer an admin who has signed in (address proven); fall back to the
+    // oldest non-revoked one.
+    const admin =
+      (await db<AdminRow>(TABLES.Admin)
+        .where({ tenantId: tenant.id })
+        .whereNull('revokedAt')
+        .whereNotNull('activatedAt')
+        .orderBy('activatedAt', 'asc')
+        .first(['email', 'name'])) ??
+      (await db<AdminRow>(TABLES.Admin)
+        .where({ tenantId: tenant.id })
+        .whereNull('revokedAt')
+        .orderBy('createdAt', 'asc')
+        .first(['email', 'name']));
+    if (!admin) return res.status(409).json({ error: 'no_admin' });
+
+    const deadline = new Date(Date.now() + body.data.deadlineDays * 24 * 60 * 60 * 1000);
+    const deadlineLabel = deadline.toLocaleDateString('en-US', {
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+      timeZone: 'UTC',
+    });
+    const tmpl = marketplacePolicyWarningEmail({
+      adminName: admin.name,
+      brandName: (await resolveBrandName(db, tenant.id)) ?? tenant.displayName,
+      details: body.data.details,
+      deadline: deadlineLabel,
+      dashboardUrl: `${getPortalBaseUrl({ slug: tenant.slug, customDomain: tenant.customDomain })}/admin/programs`,
+    });
+    try {
+      await getMailer().send(
+        { db, tenantId: DEFAULT_TENANT_ID },
+        {
+          to: admin.email,
+          subject: tmpl.subject,
+          text: tmpl.text,
+          html: tmpl.html,
+          tag: 'marketplace_policy_warning',
+          metadata: { tenantId: tenant.id },
+          platform: true,
+        },
+      );
+    } catch (err) {
+      return res.status(502).json({ error: 'mail_failed', detail: err instanceof Error ? err.message : String(err) });
+    }
+    const actor = req.platformAdminActor!;
+    await writeAudit(db, {
+      actor,
+      action: 'brand.policy_warning',
+      targetType: 'tenant',
+      targetId: tenant.id,
+      detail: { details: body.data.details, deadline: deadline.toISOString(), sentTo: admin.email },
+    });
+    res.json({ ok: true, sentTo: admin.email, deadline: deadline.toISOString() });
   },
 );
 

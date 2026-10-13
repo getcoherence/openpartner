@@ -51,6 +51,7 @@ import { clicksRouter } from './routes/clicks.js';
 import { sessionHomeRouter } from './routes/session-home.js';
 import { platformAuthRouter } from './routes/platform-auth.js';
 import { platformAdminRouter } from './routes/platform-admin.js';
+import { emailPreferencesRouter } from './routes/email-preferences.js';
 import { tenantMiddleware } from './tenancy.js';
 import { trialGate } from './middleware/trial-gate.js';
 import { approvalGate } from './middleware/approval-gate.js';
@@ -210,6 +211,8 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   // Platform-ops console (brand review). Cross-tenant, privileged-pool,
   // its own operator auth — must sit before tenantMiddleware.
   app.use(platformAdminRouter);
+  // Signed one-click unsubscribe for platform reminder mail.
+  app.use(emailPreferencesRouter);
   app.use(metricsRouter);
   // Cert/entitlement allow-gate for white-label custom domains — public,
   // server-to-server (the Phase-3 Caddy droplet's on_demand_tls `ask`).

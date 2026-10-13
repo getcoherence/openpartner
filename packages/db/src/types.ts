@@ -436,6 +436,34 @@ export interface PlatformAuditLogRow {
   createdAt: Date;
 }
 
+/** Operator runtime switch (platform-scoped; migration 20261012000000). */
+export interface PlatformSettingRow {
+  key: string;
+  value: Record<string, unknown>;
+  updatedByEmail: string | null;
+  updatedAt: Date;
+}
+
+/** A platform reminder actually sent to a brand admin. Unique per
+ *  (tenantId, kind, step) — the row is the dedupe claim. */
+export interface BrandNotificationRow {
+  id: string;
+  tenantId: string;
+  kind: 'setup_incomplete';
+  step: number;
+  recipientEmail: string;
+  sentByEmail: string | null;
+  sentAt: Date;
+}
+
+/** Opt-out from one scope of platform-sent, non-essential email. */
+export interface EmailOptOutRow {
+  id: string;
+  email: string;
+  scope: 'brand_setup';
+  createdAt: Date;
+}
+
 export interface ProgramRow {
   id: string;
   tenantId: string;

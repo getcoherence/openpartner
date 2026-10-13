@@ -341,6 +341,111 @@ export function opsTenantInvoicePaymentFailedEmail(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Platform → brand: setup reminders + marketplace policy notices. Sent in the
+// platform voice (Message.platform), never brand-branded.
+// ---------------------------------------------------------------------------
+
+/** Brand admin: your setup is incomplete (step 1–3 of the reminder sequence). */
+export function brandSetupReminderEmail(opts: {
+  adminName: string | null;
+  brandName: string;
+  missing: string[];
+  step: number;
+  dashboardUrl: string;
+  unsubscribeUrl: string;
+  pendingReview: boolean;
+}): EmailTemplate {
+  const left = opts.missing.length;
+  const subject =
+    opts.step === 1
+      ? `Finish setting up ${opts.brandName} on OpenPartner`
+      : opts.step === 2
+        ? `${opts.brandName}: ${left} step${left === 1 ? '' : 's'} left before partners can earn for you`
+        : `Last reminder: ${opts.brandName} isn't fully set up on OpenPartner`;
+  const text = [
+    `Hi ${opts.adminName?.trim() || 'there'},`,
+    ``,
+    opts.step === 1
+      ? `Thanks for signing ${opts.brandName} up for OpenPartner. A few steps are still open before partners can start sending you customers and getting credited for them:`
+      : `${opts.brandName} still has ${left} setup step${left === 1 ? '' : 's'} open on OpenPartner:`,
+    ``,
+    ...opts.missing.map((m) => `  - ${m}`),
+    ``,
+    ...(opts.pendingReview
+      ? [
+          `Your brand is still in our review queue. You can finish all of this now, and it goes live the moment you're approved.`,
+          ``,
+        ]
+      : []),
+    `Pick up where you left off:`,
+    ``,
+    opts.dashboardUrl,
+    ``,
+    `Questions? Just reply to this email.`,
+  ].join('\n');
+  return {
+    subject,
+    text: `${text}\n\n--\nYou're receiving this because you manage ${opts.brandName} on OpenPartner. Stop setup reminders: ${opts.unsubscribeUrl}`,
+    html: wrapWithFooter(
+      text,
+      opts.dashboardUrl,
+      'Finish setup',
+      `You're receiving this because you manage ${escapeHtml(opts.brandName)} on OpenPartner. <a href="${escapeHtml(opts.unsubscribeUrl)}" style="color:#6b7280">Stop setup reminders</a>.`,
+    ),
+  };
+}
+
+/**
+ * Brand admin: a marketplace listing breaks the listing policy (typically,
+ * it funnels creators to a different affiliate platform). Sent manually by
+ * an operator from the ops console; `details` is the operator's own
+ * explanation of what was found.
+ */
+export function marketplacePolicyWarningEmail(opts: {
+  adminName: string | null;
+  brandName: string;
+  details: string;
+  deadline: string;
+  dashboardUrl: string;
+}): EmailTemplate {
+  const subject = `Action needed: your ${opts.brandName} marketplace listing`;
+  const text = [
+    `Hi ${opts.adminName?.trim() || 'there'},`,
+    ``,
+    `Listing on the OpenPartner marketplace is free because creators who find your program there join it, and are tracked and paid, through OpenPartner. Sending creators from your listing to sign up on a different affiliate platform, or to track their referrals elsewhere, isn't allowed.`,
+    ``,
+    `Here's what we found:`,
+    ``,
+    ...opts.details.split('\n').map((l) => `  ${l}`),
+    ``,
+    `Please update your listing by ${opts.deadline} so creators join and are credited through your OpenPartner program. If it isn't fixed by then, we'll remove the listing from the marketplace. Your OpenPartner account and existing partners aren't affected.`,
+    ``,
+    `Review your programs:`,
+    ``,
+    opts.dashboardUrl,
+    ``,
+    `If you think we've got this wrong, reply to this email and we'll take another look.`,
+  ].join('\n');
+  return { subject, text, html: wrap(text, opts.dashboardUrl, 'Review my programs') };
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/** {@link wrap} plus a small muted footer line (raw HTML — callers escape). */
+function wrapWithFooter(text: string, cta: string, ctaLabel: string, footerHtml: string): string {
+  const html = wrap(text, cta, ctaLabel);
+  const row = `<tr><td style="padding:0 32px 22px; color:#6b7280; font-size:12px; line-height:1.5;">${footerHtml}</td></tr>`;
+  const anchor = '</td></tr>\n        </table>';
+  // Inside the card when the layout is the familiar one; otherwise still
+  // present — an unsubscribe link must never silently disappear.
+  return html.includes(anchor)
+    ? html.replace(anchor, `</td></tr>\n          ${row}\n        </table>`)
+    : html.replace('</body>', `<table role="presentation" align="center">${row}</table>\n  </body>`);
+}
+
 /** Plain-text-in-HTML wrapper for templates with no call-to-action button. */
 function plainHtml(text: string): string {
   return `<!DOCTYPE html>

@@ -36,6 +36,14 @@ export interface Message {
   html?: string;
   tag?: string;
   metadata?: Record<string, unknown>;
+  /** Extra MIME headers (e.g. List-Unsubscribe on reminder mail). */
+  headers?: Record<string, string>;
+  /** OpenPartner speaking to a customer (setup reminders, policy notices)
+   *  rather than a brand speaking to its partners. Sent from "OpenPartner"
+   *  with Reply-To the platform-ops inbox, never a brand's name or support
+   *  address. Use with the DEFAULT_TENANT_ID context so the platform
+   *  transport is used. */
+  platform?: boolean;
 }
 
 export interface SendContext {
@@ -75,7 +83,11 @@ class RoutingMailer implements Mailer {
     // From and don't second-guess it.
     let from = cfg.from ?? null;
     let replyTo: string | undefined;
-    if (cfg.source === 'env' && from) {
+    if (msg.platform && from) {
+      from = `"OpenPartner" <${extractAddress(from)}>`;
+      const ops = (process.env.PLATFORM_OPS_EMAIL ?? '').trim();
+      if (ops) replyTo = ops;
+    } else if (cfg.source === 'env' && from) {
       const brandName = await resolveBrandName(ctx.db, ctx.tenantId);
       if (brandName) {
         // White-label tenants get a clean brand-only From — no "via
@@ -135,7 +147,7 @@ class RoutingMailer implements Mailer {
         subject: msg.subject,
         text: msg.text,
         html: msg.html,
-        headers: msg.tag ? { 'X-Tag': msg.tag } : undefined,
+        headers: msg.tag || msg.headers ? { ...(msg.tag ? { 'X-Tag': msg.tag } : {}), ...msg.headers } : undefined,
       });
       return;
     }
@@ -157,6 +169,9 @@ class RoutingMailer implements Mailer {
           Tag: msg.tag,
           MessageStream: cfg.postmark.messageStream,
           Metadata: msg.metadata,
+          Headers: msg.headers
+            ? Object.entries(msg.headers).map(([Name, Value]) => ({ Name, Value }))
+            : undefined,
         }),
       });
       if (!res.ok) {
