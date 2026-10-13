@@ -834,7 +834,12 @@ platformAdminRouter.post(
         .first(['email', 'name']));
     if (!admin) return res.status(409).json({ error: 'no_admin' });
 
-    const deadline = new Date(Date.now() + body.data.deadlineDays * 24 * 60 * 60 * 1000);
+    // End of the deadline day (UTC), so the date in the email and the one
+    // the console shows agree in any operator/brand timezone west of UTC.
+    const now = new Date();
+    const deadline = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + body.data.deadlineDays, 23, 59, 59),
+    );
     const deadlineLabel = deadline.toLocaleDateString('en-US', {
       month: 'long',
       day: 'numeric',
