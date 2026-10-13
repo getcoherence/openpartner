@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { TABLES, type AdminRow, type PartnerRow } from '@openpartner/db';
 import {
   SESSION_COOKIE_NAME,
+  clearSessionCookie,
   consumeMagicLink,
   createSession,
   issueMagicLink,
@@ -190,6 +191,6 @@ partnerAuthRouter.post('/auth/signout', async (req, res) => {
   // sees as a DIFFERENT cookie (no secure, no sameSite) and the
   // original op_session would persist. Reuse the same factory used
   // at set time to guarantee they match.
-  res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
+  clearSessionCookie(res, SESSION_COOKIE_NAME, sessionCookieOptions());
   res.json({ ok: true });
 });

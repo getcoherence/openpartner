@@ -108,3 +108,15 @@ describe('the assertions can fail (inverse case)', () => {
     expect(container.textContent ?? '').toMatch(/network/i);
   });
 });
+
+describe('partner Network visibility preference', () => {
+  it('hides partner Network navigation while preserving admin Network access', () => {
+    const client = makeClient(false);
+    client.setQueryData(['program-settings'], { ...BRAND, whiteLabel: false, partnerNetworkVisible: false });
+    const partner = render(<MemoryRouter><QueryClientProvider client={client}><Sidebar principal={partnerPrincipal} /></QueryClientProvider></MemoryRouter>);
+    expect(partner.container.textContent).not.toMatch(/network/i);
+    partner.unmount();
+    const admin = render(<MemoryRouter><QueryClientProvider client={client}><Sidebar principal={adminPrincipal} /></QueryClientProvider></MemoryRouter>);
+    expect(admin.container.textContent).toMatch(/network/i);
+  });
+});

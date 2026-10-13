@@ -8,8 +8,9 @@
  *      the link's host must be the host the user will use — a xispark
  *      partner emailed an app.openpartner.dev link would authenticate on
  *      the wrong origin and never be signed in on portal.xispark.com.
- *   2. Tenant slug known → PORTAL_URL + /t/<slug> (path-based portal).
- *   3. Otherwise → PORTAL_URL (platform / pre-tenant surfaces).
+ *   2. Single-tenant/self-host mode → PORTAL_URL with no tenant path.
+ *   3. Tenant slug known → PORTAL_URL + /t/<slug> (path-based portal).
+ *   4. Otherwise → PORTAL_URL (platform / pre-tenant surfaces).
  *
  * Stripe Checkout/Connect redirect URLs are deliberately NOT built here —
  * they are client-supplied from window.location.origin and already land on
@@ -30,6 +31,13 @@ export interface PortalLinkTenant {
 export function getPortalBaseUrl(tenant?: PortalLinkTenant | null): string {
   const env = (process.env.PORTAL_URL ?? 'http://localhost:5673').replace(/\/$/, '');
   if (tenant?.customDomain) return `https://${tenant.customDomain}`;
+
+  // The seeded single-tenant is internally called "default", but that is a
+  // database identity, not a public URL prefix. Emitting /t/default/... in
+  // self-host mode sends the SPA into the multi-tenant route family and can
+  // leave login/magic-link pages blank. Keep single-tenant URLs at root.
+  if ((process.env.OPENPARTNER_TENANCY ?? 'single') === 'single') return env;
+
   if (tenant?.slug) return `${env}/t/${tenant.slug}`;
   return env;
 }

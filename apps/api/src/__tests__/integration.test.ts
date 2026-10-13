@@ -70,6 +70,141 @@ beforeEach(async () => {
 });
 
 describe.skipIf(skipIntegration)('api integration', () => {
+  it('local partner sessions manage only their own granted customizable coupon codes', async () => {
+    const { createSession } = await import('../auth-sessions.js');
+    const createPartner = async (email: string) => {
+      const response = await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email, name: email, programIds: [] });
+      expect(response.status).toBe(201);
+      return response.body.id as string;
+    };
+    const owner = await createPartner('coupon-owner@example.com');
+    const other = await createPartner('coupon-other@example.com');
+    const program = await request(app).post('/programs').set('Authorization', `Bearer ${ADMIN_KEY}`).send({
+      name: 'Coupons', destinationUrl: 'https://example.com', commissionRule: { type: 'percent', value: 10 }, partnersMayCustomizeCode: true,
+    });
+    expect(program.status).toBe(201);
+    const programId = program.body.id as string;
+    const session = await createSession(db, { tenantId: DEFAULT_TENANT_ID, principalKind: 'partner', principalId: owner });
+    const cookie = `op_session=${session.plaintext}`;
+    const oldTenant = await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first('couponIntegrationVerifiedAt');
+    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ couponIntegrationVerifiedAt: new Date() });
+    try {
+      const post = (partnerId: string, code: string) => request(app).post(`/partners/${partnerId}/coupons`).set('Cookie', cookie).send({ programId, code });
+      expect((await post(other, 'OTHER')).status).toBe(403);
+      const ungranted = await post(owner, 'UNGRANTED');
+      expect(ungranted.status).toBe(403);
+      expect(ungranted.body.error).toBe('campaign_not_granted');
+      await db(TABLES.PartnerProgram).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, partnerId: owner, programId, source: 'admin' });
+      const reward = { type: 'percent_off', value: 15, duration: 'repeating', durationInMonths: 3 };
+      await db(TABLES.Program).where({ id: programId }).update({ customerReward: JSON.stringify(reward) });
+      const programs = await request(app).get('/me/programs').set('Cookie', cookie);
+      expect(programs.body.programs).toHaveLength(1);
+      expect(programs.body.programs[0].customerReward).toEqual(reward);
+      expect(programs.body.programs[0].commissionRule).toBeUndefined();
+      const adminPrograms = await request(app).get('/me/programs').set('Authorization', `Bearer ${ADMIN_KEY}`);
+      expect(adminPrograms.body.programs[0].customerReward).toEqual(reward);
+      await db(TABLES.Program).where({ id: programId }).update({ customerReward: null });
+      expect(programs.body.programs[0].partnersMayCustomizeCode).toBe(true);
+      await db(TABLES.Program).where({ id: programId }).update({ partnersMayCustomizeCode: false });
+      expect((await post(owner, 'DISABLED')).body.error).toBe('partner_customization_disabled');
+      await db(TABLES.Program).where({ id: programId }).update({ partnersMayCustomizeCode: true, endsAt: new Date(Date.now() - 1000) });
+      expect((await post(owner, 'ENDED')).body.error).toBe('campaign_not_active');
+      await db(TABLES.Program).where({ id: programId }).update({ endsAt: null });
+      const created = await post(owner, 'MYCODE');
+      expect(created.status).toBe(201);
+      const couponId = created.body.id as string;
+      const otherCoupon = await request(app).post(`/partners/${other}/coupons`).set('Authorization', `Bearer ${ADMIN_KEY}`).send({ programId, code: 'OTHERCODE' });
+      expect(otherCoupon.status).toBe(201);
+      expect((await request(app).delete(`/partners/${other}/coupons/${otherCoupon.body.id}`).set('Cookie', cookie)).status).toBe(403);
+      expect((await request(app).delete(`/partners/${owner}/coupons/${otherCoupon.body.id}`).set('Cookie', cookie)).status).toBe(404);
+      for (let index = 0; index < 4; index++) expect((await post(owner, `CODE${index}`)).status).toBe(201);
+      expect((await post(owner, 'LIMIT')).body.error).toBe('active_codes_cap_reached');
+      await db(TABLES.Program).where({ id: programId }).update({ partnersMayCustomizeCode: false });
+      expect((await request(app).delete(`/partners/${owner}/coupons/${couponId}`).set('Cookie', cookie)).body.error).toBe('partner_customization_disabled');
+      await db(TABLES.Program).where({ id: programId }).update({ partnersMayCustomizeCode: true });
+      expect((await request(app).delete(`/partners/${owner}/coupons/${couponId}`).set('Cookie', cookie)).status).toBe(200);
+      const replacement = await post(owner, 'REPLACEMENT');
+      expect(replacement.status).toBe(201);
+      expect((await request(app).post('/coupons/redeem').set('Cookie', cookie).send({})).status).toBe(403);
+
+      // Create/deactivate churn is capped per 24h (each mint can create
+      // Stripe objects on self-host). Six created so far; four more cycles
+      // reach the cap of ten, then the next create is refused.
+      let latest = replacement.body.id as string;
+      for (let index = 0; index < 4; index++) {
+        expect((await request(app).delete(`/partners/${owner}/coupons/${latest}`).set('Cookie', cookie)).status).toBe(200);
+        const churn = await post(owner, `CHURN${index}`);
+        expect(churn.status).toBe(201);
+        latest = churn.body.id as string;
+      }
+      expect((await request(app).delete(`/partners/${owner}/coupons/${latest}`).set('Cookie', cookie)).status).toBe(200);
+      const capped = await post(owner, 'ONEMORE');
+      expect(capped.status).toBe(429);
+      expect(capped.body.error).toBe('daily_code_limit_reached');
+
+      // The brand-wide verification gate runs after the access checks and
+      // gives partners a partner-facing message, not the brand's coupon
+      // count or integration instructions.
+      await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ couponIntegrationVerifiedAt: null });
+      expect((await post(other, 'NOTMINE')).status).toBe(403);
+      await db(TABLES.Coupon).where({ partnerId: owner }).update({ createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) });
+      const gated = await post(owner, 'GATED');
+      expect(gated.status).toBe(409);
+      expect(gated.body.error).toBe('verification_required');
+      expect(gated.body.existing).toBeUndefined();
+      expect(gated.body.detail).not.toMatch(/coupons\/redeem|webhook/);
+    } finally {
+      await db(TABLES.Session).where({ id: session.id }).del();
+      await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ couponIntegrationVerifiedAt: oldTenant?.couponIntegrationVerifiedAt ?? null });
+    }
+  });
+  it('persists partner Network visibility across unrelated settings saves', async () => {
+    const initial = await request(app).get('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(initial.body.partnerNetworkVisible).toBe(true);
+    const saved = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ partnerNetworkVisible: false });
+    expect(saved.status).toBe(200);
+    expect(saved.body.partnerNetworkVisible).toBe(false);
+    const other = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ programName: 'Brand' });
+    expect(other.body.partnerNetworkVisible).toBe(false);
+    const invalid = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ partnerNetworkVisible: 'false' });
+    expect(invalid.status).toBe(400);
+    expect(other.body.partnerNetworkToggleAvailable).toBe(true);
+  });
+  it('the hosted (multi-tenant) platform ignores the partner Network toggle', async () => {
+    // The stored value from a self-host era (or a direct API call) must not
+    // hide Network discovery from a hosted brand's partners.
+    const tenantId = ulid();
+    const slug = `hosted${tenantId.slice(-8).toLowerCase()}`;
+    await db(TABLES.Tenant).insert({ id: tenantId, slug, displayName: 'Hosted Brand', status: 'active', approvalStatus: 'approved' });
+    await db(TABLES.Config).insert({ tenantId, key: 'program_settings', value: { partnerNetworkVisible: false } as never, updatedAt: new Date() });
+    process.env.OPENPARTNER_TENANCY = 'multi';
+    try {
+      const read = await request(app).get(`/t/${slug}/config/program`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+      expect(read.status).toBe(200);
+      expect(read.body.partnerNetworkVisible).toBe(true);
+      expect(read.body.partnerNetworkToggleAvailable).toBe(false);
+      const save = await request(app).post(`/t/${slug}/config/program`).set('Authorization', `Bearer ${ADMIN_KEY}`).send({ partnerNetworkVisible: false });
+      expect(save.status).toBe(200);
+      expect(save.body.partnerNetworkVisible).toBe(true);
+    } finally {
+      process.env.OPENPARTNER_TENANCY = 'single';
+      await db(TABLES.Config).where({ tenantId }).del();
+      await db(TABLES.Tenant).where({ id: tenantId }).del();
+    }
+  });
+  it('validates and persists the public router origin across settings saves', async () => {
+    for (const routerUrl of ['javascript:alert(1)', 'https://user:pass@example.com', 'https://example.com/r', 'https://example.com?x=1', 'https://example.com/#x']) {
+      const rejected = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ routerUrl });
+      expect(rejected.status).toBe(400);
+    }
+    const saved = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ routerUrl: 'https://links.example.com/' });
+    expect(saved.status).toBe(200);
+    expect(saved.body.routerUrl).toBe('https://links.example.com');
+    const other = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ programName: 'Brand' });
+    expect(other.body.routerUrl).toBe('https://links.example.com');
+    const cleared = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ routerUrl: '' });
+    expect(cleared.body.routerUrl).toBeNull();
+  });
   it('full funnel: partner → link → click → identify → event → attribution → payout', async () => {
     // 1. Admin creates a partner.
     const partnerRes = await request(app)

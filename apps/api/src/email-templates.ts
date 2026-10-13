@@ -97,25 +97,7 @@ export function partnerRevokedEmail(name: string, reason: string | null): EmailT
     ``,
     `If you believe this was done in error, please contact the administrator of the partner program directly.`,
   ].join('\n');
-  // No CTA button on this template — there's nowhere for the partner
-  // to go. Plain-text-in-HTML is fine.
-  const html = `<!DOCTYPE html>
-<html>
-  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#f4f4f5; padding:24px 0; margin:0;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-      <tr><td align="center">
-        <table role="presentation" width="520" cellspacing="0" cellpadding="0" border="0" style="background:#ffffff; border-radius:8px; overflow:hidden;">
-          <tr><td style="padding:28px 32px; color:#1f2937; font-size:14px; line-height:1.6;">
-            ${text
-              .split('\n')
-              .map((l) => l.replace(/</g, '&lt;').replace(/>/g, '&gt;'))
-              .join('<br>')}
-          </td></tr>
-        </table>
-      </td></tr>
-    </table>
-  </body>
-</html>`;
+  const html = plainHtml(text);
   return { subject, text, html };
 }
 
@@ -447,13 +429,13 @@ function wrapWithFooter(text: string, cta: string, ctaLabel: string, footerHtml:
 }
 
 /** Plain-text-in-HTML wrapper for templates with no call-to-action button. */
-function plainHtml(text: string): string {
+export function plainHtml(text: string): string {
   return `<!DOCTYPE html>
 <html>
   <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#f4f4f5; padding:24px 0; margin:0;">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
       <tr><td align="center">
-        <table role="presentation" width="520" cellspacing="0" cellpadding="0" border="0" style="background:#ffffff; border-radius:8px; overflow:hidden;">
+        <table role="presentation" width="520" cellspacing="0" cellpadding="0" border="0" data-op-email="card" style="background:#ffffff; border-radius:8px; overflow:hidden;">
           <tr><td style="padding:28px 32px; color:#1f2937; font-size:14px; line-height:1.6;">
             ${text
               .split('\n')
@@ -472,7 +454,7 @@ function wrap(text: string, cta: string, ctaLabel: string): string {
     .split('\n')
     .map((line) =>
       line.startsWith('http')
-        ? `<a href="${cta}" style="color:#2dd4bf">${cta}</a>`
+        ? `<a href="${cta}" data-op-email="link" style="color:#2dd4bf">${cta}</a>`
         : line.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
     )
     .join('<br>');
@@ -481,11 +463,11 @@ function wrap(text: string, cta: string, ctaLabel: string): string {
   <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#f4f4f5; padding:24px 0; margin:0;">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
       <tr><td align="center">
-        <table role="presentation" width="520" cellspacing="0" cellpadding="0" border="0" style="background:#ffffff; border-radius:8px; overflow:hidden;">
+        <table role="presentation" width="520" cellspacing="0" cellpadding="0" border="0" data-op-email="card" style="background:#ffffff; border-radius:8px; overflow:hidden;">
           <tr><td style="padding:28px 32px; color:#1f2937; font-size:14px; line-height:1.6;">
             ${escaped}
             <br><br>
-            <a href="${cta}" style="display:inline-block; background:#2dd4bf; color:#041115; padding:10px 18px; border-radius:6px; text-decoration:none; font-weight:600;">${ctaLabel}</a>
+            <a href="${cta}" data-op-email="button" style="display:inline-block; background:#2dd4bf; color:#041115; padding:10px 18px; border-radius:6px; text-decoration:none; font-weight:600;">${ctaLabel}</a>
           </td></tr>
         </table>
       </td></tr>

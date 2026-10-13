@@ -27,7 +27,9 @@ import nodemailer from 'nodemailer';
 import { resolveMailConfig } from './mail-settings.js';
 import { resolveBrandName } from './brand-name.js';
 import { getWhiteLabelState } from './white-label.js';
-import { TABLES, type ConfigRow } from '@openpartner/db';
+import { brandEmailHtml } from './email-branding.js';
+import { plainHtml } from './email-templates.js';
+import { TABLES, type ConfigRow, type TenantRow } from '@openpartner/db';
 
 export interface Message {
   to: string;
@@ -38,11 +40,13 @@ export interface Message {
   metadata?: Record<string, unknown>;
   /** Extra MIME headers (e.g. List-Unsubscribe on reminder mail). */
   headers?: Record<string, string>;
-  /** OpenPartner speaking to a customer (setup reminders, policy notices)
-   *  rather than a brand speaking to its partners. Sent from "OpenPartner"
-   *  with Reply-To the platform-ops inbox, never a brand's name or support
-   *  address. Use with the DEFAULT_TENANT_ID context so the platform
-   *  transport is used. */
+  /** Platform-voice mail — OpenPartner talking, not a brand (ops alerts,
+   *  platform sign-in, setup reminders, policy notices). Never painted in
+   *  a tenant's brand color, even when the send context is some brand's
+   *  tenant, and sent from "OpenPartner" with Reply-To the platform-ops
+   *  inbox rather than a brand's name or support address. Reminders and
+   *  notices use the DEFAULT_TENANT_ID context so the platform transport
+   *  is used. */
   platform?: boolean;
 }
 
@@ -74,6 +78,10 @@ function extractAddress(from: string): string {
 class RoutingMailer implements Mailer {
   async send(ctx: SendContext, msg: Message): Promise<void> {
     const cfg = await resolveMailConfig(ctx.db, ctx.tenantId);
+    const brandColor = msg.platform
+      ? null
+      : ((await ctx.db<TenantRow>(TABLES.Tenant).where({ id: ctx.tenantId }).first(['brandColor']))?.brandColor ?? null);
+    const html = brandEmailHtml(msg.html ?? plainHtml(msg.text), brandColor);
 
     // Brand-aware From + Reply-To when we're using the platform fallback
     // (source='env'). Pattern: `"Acme via OpenPartner" <noreply@openpartner.dev>`,
@@ -146,7 +154,7 @@ class RoutingMailer implements Mailer {
         replyTo,
         subject: msg.subject,
         text: msg.text,
-        html: msg.html,
+        html,
         headers: msg.tag || msg.headers ? { ...(msg.tag ? { 'X-Tag': msg.tag } : {}), ...msg.headers } : undefined,
       });
       return;
@@ -165,7 +173,7 @@ class RoutingMailer implements Mailer {
           ReplyTo: replyTo,
           Subject: msg.subject,
           TextBody: msg.text,
-          HtmlBody: msg.html,
+          HtmlBody: html,
           Tag: msg.tag,
           MessageStream: cfg.postmark.messageStream,
           Metadata: msg.metadata,

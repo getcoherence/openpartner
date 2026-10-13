@@ -34,7 +34,7 @@ import {
 } from '@openpartner/db';
 import { db } from '../db.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
-import { consumeMagicLink, issueMagicLink } from '../auth-sessions.js';
+import { clearSessionCookie, consumeMagicLink, issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
 import { marketplacePolicyWarningEmail, platformAdminSigninEmail } from '../email-templates.js';
 import { getPortalBaseUrl } from '../portal-url.js';
@@ -200,6 +200,7 @@ platformAdminRouter.post('/platform-admin/signin', signinLimit, async (req, res)
         html: tmpl.html,
         tag: 'platform_admin_signin',
         metadata: { channel: 'platform_ops', email },
+        platform: true,
       });
     } catch (err) {
       console.error('[platform-admin] signin mail failed', err);
@@ -233,7 +234,7 @@ platformAdminRouter.post('/auth/platform-admin-verify', async (req, res) => {
 platformAdminRouter.post('/platform-admin/signout', async (req, res) => {
   const cookie = readSessionCookie(req);
   if (cookie) await revokePlatformAdminSession(db, cookie);
-  res.clearCookie(PLATFORM_ADMIN_SESSION_COOKIE, platformAdminSessionCookieOptions());
+  clearSessionCookie(res, PLATFORM_ADMIN_SESSION_COOKIE, platformAdminSessionCookieOptions());
   res.json({ ok: true });
 });
 
