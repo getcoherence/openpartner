@@ -84,10 +84,12 @@ export async function syncCampaignToMarketplace(
 
   const terms = buildTermsPayload(campaign, derivedSummary);
 
-  // Path A: campaign opted out of the marketplace. If we have a
-  // networkOfferingId on file, flip its published flag to false. We
-  // don't DELETE — preserves history + the path back if they re-enable.
-  if (!campaign.shareOnNetwork) {
+  // Path A: campaign opted out of the marketplace — or an operator blocked
+  // it (blockProgram unpublished the offering; a brand re-saving the program
+  // must not quietly re-list it). If we have a networkOfferingId on file,
+  // flip its published flag to false. We don't DELETE — preserves history +
+  // the path back if they re-enable / the block is lifted.
+  if (!campaign.shareOnNetwork || campaign.blockedAt) {
     if (!campaign.networkOfferingId) return null;
     try {
       await networkProxy.updateOffering(db, tenantId, campaign.networkOfferingId, {

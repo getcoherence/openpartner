@@ -131,6 +131,8 @@ interface NetCall { method: string; path: string; authorization?: string; body: 
 let netServer: Server;
 let netUrl = '';
 let netCalls: NetCall[] = [];
+/** What the fake Network returns for GET /admin/vendors (reconcile job). */
+let netVendors: Array<{ id: string; instanceUrl: string; status: string; reviewStatus?: string }> = [];
 
 beforeAll(async () => {
   if (skipIntegration) return;
@@ -147,6 +149,9 @@ beforeAll(async () => {
           body: chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : null,
         });
         res.writeHead(200, { 'content-type': 'application/json' });
+        if (req.method === 'GET' && req.url === '/admin/vendors') {
+          return res.end(JSON.stringify({ vendors: netVendors }));
+        }
         res.end(JSON.stringify({ ok: true }));
       });
     }).listen(0, '127.0.0.1', () => {
@@ -178,6 +183,8 @@ async function federate(tenantId: string, vendorId: string): Promise<void> {
 afterEach(async () => {
   if (skipIntegration) return;
   netCalls = [];
+  netVendors = [];
+  delete process.env.NETWORK_URL;
   for (const slug of createdSlugs.splice(0)) await purgeSlug(slug);
   if (createdBlocklistValues.length) {
     await db(TABLES.SignupBlocklist).whereIn('value', createdBlocklistValues.splice(0)).del();
@@ -347,8 +354,12 @@ describe.skipIf(skipIntegration)('brand approval — operator console', () => {
     expect(suspend!.method).toBe('POST');
     expect(suspend!.authorization).toBe('Bearer netadm_test_key_0123456789abcdef');
     expect((suspend!.body as { reason: string }).reason).toBe('phishing');
+    // ...and its review is marked rejected, so it stays out of discovery even
+    // if the suspension is later lifted by some other path.
+    const reviewCall = netCalls.find((c) => c.path === '/admin/vendors/vnd_spam/review');
+    expect((reviewCall?.body as { status: string } | undefined)?.status).toBe('rejected');
 
-    // Reinstating puts them back.
+    // Reinstating puts them back: review approved + the suspension undone.
     netCalls = [];
     await request(app)
       .post(`/platform-admin/brands/${t.id}/reinstate`)
@@ -356,6 +367,75 @@ describe.skipIf(skipIntegration)('brand approval — operator console', () => {
       .send({})
       .expect(200);
     expect(netCalls.find((c) => c.path === '/admin/vendors/vnd_spam/reactivate')).toBeDefined();
+    const reinstated = netCalls.find((c) => c.path === '/admin/vendors/vnd_spam/review');
+    expect((reinstated?.body as { status: string } | undefined)?.status).toBe('approved');
+  });
+
+  it('approving a pending brand lists it on the Network (review approved, no reactivate)', async () => {
+    process.env.NETWORK_ADMIN_API_KEY = 'netadm_test_key_0123456789abcdef';
+    const { slug } = await signup();
+    const t = (await tenantBySlug(slug))!;
+    await federate(t.id, 'vnd_new');
+
+    const cookie = await makeOperator('admin');
+    await request(app).post(`/platform-admin/brands/${t.id}/approve`).set('Cookie', cookie).send({}).expect(200);
+
+    const review = netCalls.find((c) => c.path === '/admin/vendors/vnd_new/review');
+    expect(review, 'expected the approval to reach the Network').toBeDefined();
+    expect(review!.authorization).toBe('Bearer netadm_test_key_0123456789abcdef');
+    expect((review!.body as { status: string }).status).toBe('approved');
+    // A pending brand's vendor was never suspended, so reactivate would 404.
+    expect(netCalls.find((c) => c.path.endsWith('/reactivate'))).toBeUndefined();
+  });
+
+  it('hosted signup enrolls the brand on the Network as pending review', async () => {
+    process.env.NETWORK_ADMIN_API_KEY = 'netadm_test_key_0123456789abcdef';
+    process.env.NETWORK_URL = netUrl;
+    await signup();
+    const enroll = netCalls.find((c) => c.method === 'POST' && c.path === '/vendors/signup');
+    expect(enroll, 'expected auto-enroll on the Network').toBeDefined();
+    expect((enroll!.body as { reviewStatus?: string }).reviewStatus).toBe('pending');
+  });
+
+  it('reconcile job pushes drifted review states and leaves matching ones alone', async () => {
+    process.env.NETWORK_ADMIN_API_KEY = 'netadm_test_key_0123456789abcdef';
+    process.env.NETWORK_URL = netUrl;
+    const { slug: pendingSlug } = await signup();
+    const { slug: approvedSlug } = await signup();
+    const { slug: rejectedSlug } = await signup();
+    const pending = (await tenantBySlug(pendingSlug))!;
+    const approved = (await tenantBySlug(approvedSlug))!;
+    const rejected = (await tenantBySlug(rejectedSlug))!;
+    await db(TABLES.Tenant).where({ id: approved.id }).update({ approvalStatus: 'approved' });
+    await db(TABLES.Tenant).where({ id: rejected.id }).update({ approvalStatus: 'rejected', status: 'suspended' });
+    await federate(pending.id, 'vnd_p');
+    await federate(approved.id, 'vnd_a');
+    await federate(rejected.id, 'vnd_r');
+    // What the Network migration leaves behind: everyone backfilled approved.
+    netVendors = [
+      { id: 'vnd_p', instanceUrl: 'x', status: 'active', reviewStatus: 'approved' },
+      { id: 'vnd_a', instanceUrl: 'y', status: 'active', reviewStatus: 'approved' },
+      { id: 'vnd_r', instanceUrl: 'z', status: 'suspended', reviewStatus: 'approved' },
+    ];
+    netCalls = [];
+
+    const { reconcileNetworkReview } = await import('../network-review-reconcile.js');
+    const result = await reconcileNetworkReview();
+    expect(result.failed).toBe(0);
+    expect(result.pushed).toBeGreaterThanOrEqual(2);
+
+    const pushed = (id: string) =>
+      (netCalls.find((c) => c.path === `/admin/vendors/${id}/review`)?.body as { status: string } | undefined)?.status;
+    expect(pushed('vnd_p')).toBe('pending');
+    expect(pushed('vnd_r')).toBe('rejected');
+    expect(pushed('vnd_a')).toBeUndefined(); // already in sync, so no call
+
+    // A Network that predates the gate (no reviewStatus field) is skipped.
+    netVendors = [{ id: 'vnd_p', instanceUrl: 'x', status: 'active' }];
+    netCalls = [];
+    const old = await reconcileNetworkReview();
+    expect(old.skipped).toBe('network_predates_review_gate');
+    expect(netCalls.filter((c) => c.method === 'POST')).toHaveLength(0);
   });
 
   it('a support operator is read-only', async () => {
@@ -475,6 +555,16 @@ describe.skipIf(skipIntegration)('program moderation', () => {
     const patch = netCalls.find((c) => c.path.includes('/offerings/off_123'));
     expect(patch, 'expected a PATCH to the offering').toBeDefined();
     expect((patch!.body as { published: boolean }).published).toBe(false);
+
+    // The brand re-saving the blocked program must not quietly re-list it.
+    netCalls = [];
+    const { syncCampaignToMarketplace } = await import('../campaign-marketplace-sync.js');
+    const blocked = await db(TABLES.Program).where({ id: programId }).first();
+    expect(blocked.blockedAt).not.toBeNull();
+    await syncCampaignToMarketplace(db, t.id, blocked, '20% of every sale');
+    const resync = netCalls.find((c) => c.path.includes('/offerings/off_123'));
+    expect(resync, 'expected the sync to touch the offering').toBeDefined();
+    expect((resync!.body as { published: boolean }).published).toBe(false);
   });
 
   it('a support operator cannot block a program', async () => {

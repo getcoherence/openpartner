@@ -355,6 +355,11 @@ export interface SignupInput {
    *  tenants where the brand admin's email was already verified by
    *  openpartner's signup. */
   adminAuthToken?: string;
+  /** The brand's operator-review state (Tenant.approvalStatus). Honored by
+   *  the Network only on the admin fast path; it keeps the brand's listings
+   *  out of discovery until approved. Omitted → the Network fails closed to
+   *  'pending' on the admin path. */
+  reviewStatus?: VendorReviewStatus;
 }
 
 export type SignupResult =
@@ -380,6 +385,7 @@ export async function signupWithNetwork(input: SignupInput): Promise<SignupResul
       tier: input.tier,
       contact: { email: input.contactEmail, name: input.contactName },
       portalCallbackUrl: input.portalCallbackUrl,
+      ...(input.reviewStatus ? { reviewStatus: input.reviewStatus } : {}),
     }),
     // Network's signup is synchronous: row insert + magic-link insert +
     // Postmark send all inside one transaction. Cold-start can push the
@@ -636,9 +642,41 @@ export async function adminSuspendVendor(networkUrl: string, vendorId: string, r
 }
 
 /** Undo adminSuspendVendor — the brand's offerings become listable again
- *  (subject to their own published flags). */
+ *  (subject to their own published flags). The Network only reactivates a
+ *  SUSPENDED vendor; anything else 404s. */
 export async function adminReactivateVendor(networkUrl: string, vendorId: string): Promise<void> {
   await callNetworkAdmin(networkUrl, 'POST', `/admin/vendors/${encodeURIComponent(vendorId)}/reactivate`, {});
+}
+
+/** Mirrors Tenant.approvalStatus onto the Network's Vendor.reviewStatus. */
+export type VendorReviewStatus = 'pending' | 'approved' | 'rejected';
+
+/** Push the brand's approval decision to the Network. Only reviewStatus=
+ *  'approved' vendors are discoverable, so this is what lists (or hides) a
+ *  brand's marketplace offerings. Idempotent on the Network side. */
+export async function adminSetVendorReview(
+  networkUrl: string,
+  vendorId: string,
+  status: VendorReviewStatus,
+  reason?: string | null,
+): Promise<void> {
+  await callNetworkAdmin(networkUrl, 'POST', `/admin/vendors/${encodeURIComponent(vendorId)}/review`, {
+    status,
+    ...(reason ? { reason: reason.slice(0, 500) } : {}),
+  });
+}
+
+export interface NetworkVendorSummary {
+  id: string;
+  instanceUrl: string;
+  status: string;
+  /** Absent on a Network that predates the review gate. */
+  reviewStatus?: VendorReviewStatus;
+}
+
+export async function adminListVendors(networkUrl: string): Promise<NetworkVendorSummary[]> {
+  const res = await callNetworkAdmin<{ vendors: NetworkVendorSummary[] }>(networkUrl, 'GET', '/admin/vendors');
+  return res.vendors ?? [];
 }
 
 // ---------- Creator moderation (platform-ops console) ----------

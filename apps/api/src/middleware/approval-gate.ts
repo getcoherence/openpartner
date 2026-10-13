@@ -10,10 +10,21 @@
  *   - POST /partner-signup                        (public creator self-signup)
  *   - POST /import/partners-csv                   (bulk roster import)
  *   - POST /admin/network/offerings               (publish on the marketplace)
+ *   - POST /admin/network/offerings/:id/invite-creator (email a creator)
  *   - POST /admin/network/requests/:id/approve    (approve a creator application)
+ *   - POST /config/network/start-connect|complete-connect, and
+ *     POST /config/network carrying a token/URL   (re-federate under a
+ *                                                  different vendor identity)
  *
  * The click router refuses to serve links for an unapproved brand
  * separately (apps/router), so no attribution data is collected either.
+ *
+ * Marketplace LISTING is not fenced here: saving a program syncs its
+ * offering to the Network (campaign-marketplace-sync.ts), and the Network
+ * itself keeps a vendor's offerings out of discovery until its
+ * reviewStatus is 'approved' (pushed by brand-review.ts + the
+ * network-review-reconcile job). The re-federation routes above are gated
+ * because they'd let a pending brand mint a second, un-reviewed vendor.
  * Everything else — reads, program/branding config, billing, auth, SDK
  * callbacks — stays open so a legitimate brand can be fully set up and
  * ready the moment an operator approves it.
@@ -33,6 +44,8 @@ import { tenantOf } from '../tenancy.js';
 interface GatedRoute {
   method: string;
   test: (path: string) => boolean;
+  /** Optional body predicate — the route is only go-live when it holds. */
+  when?: (body: Record<string, unknown>) => boolean;
 }
 
 const GO_LIVE_ROUTES: GatedRoute[] = [
@@ -40,16 +53,41 @@ const GO_LIVE_ROUTES: GatedRoute[] = [
   { method: 'POST', test: (p) => p === '/partner-signup' },
   { method: 'POST', test: (p) => p === '/import/partners-csv' },
   { method: 'POST', test: (p) => p === '/admin/network/offerings' },
+  { method: 'POST', test: (p) => /^\/admin\/network\/offerings\/[^/]+\/invite-creator$/.test(p) },
   { method: 'POST', test: (p) => /^\/admin\/network\/requests\/[^/]+\/approve$/.test(p) },
+  { method: 'POST', test: (p) => p === '/config/network/start-connect' },
+  { method: 'POST', test: (p) => p === '/config/network/complete-connect' },
+  {
+    method: 'POST',
+    test: (p) => p === '/config/network',
+    // Toggling membership off (or autoEnroll) is configuration; swapping in
+    // a vendor token or Network URL is re-federation.
+    when: (b) => b.vendorToken !== undefined || (typeof b.networkUrl === 'string' && b.networkUrl !== ''),
+  },
 ];
 
-/** Exported for tests: is this (method, path) a go-live action? */
-export function isGoLiveRoute(method: string, path: string): boolean {
-  return GO_LIVE_ROUTES.some((g) => g.method === method && g.test(path));
+/**
+ * Express matches routes case-insensitively and ignores a trailing slash
+ * (no `caseSensitive` / `strict` on the app), so `POST /Partners/` reaches
+ * the /partners handler. Match on the same canonical form, or the gate is
+ * one capital letter from bypassed.
+ */
+function canonicalPath(path: string): string {
+  const lower = path.toLowerCase();
+  const trimmed = lower.replace(/\/+$/, '');
+  return trimmed === '' ? '/' : trimmed;
+}
+
+/** Exported for tests: is this (method, path[, body]) a go-live action? */
+export function isGoLiveRoute(method: string, path: string, body: unknown = {}): boolean {
+  const p = canonicalPath(path);
+  const m = method.toUpperCase();
+  const b = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+  return GO_LIVE_ROUTES.some((g) => g.method === m && g.test(p) && (g.when ? g.when(b) : true));
 }
 
 export async function approvalGate(req: Request, res: Response, next: NextFunction): Promise<void> {
-  if (!isGoLiveRoute(req.method, req.path)) return next();
+  if (!isGoLiveRoute(req.method, req.path, req.body)) return next();
 
   let scope: ReturnType<typeof tenantOf>;
   try {

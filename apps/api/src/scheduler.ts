@@ -149,6 +149,19 @@ const JOBS: ScheduledJob[] = [
     handler: async () => forEachActiveTenant((trx, tenantId) => sendHeartbeat(trx, tenantId)),
   },
   {
+    name: 'network-review-reconcile',
+    cronExpr: '*/15 * * * *',
+    // Backstop for the best-effort approve/reject pushes, and the backfill
+    // that hides already-pending brands after the Network review-gate
+    // migration (which defaults existing vendors to 'approved').
+    description:
+      'Hosted multi-tenant: mirror each brand approvalStatus onto its Network vendor reviewStatus so unapproved brands never list on the marketplace (every 15 minutes)',
+    handler: async () => {
+      const { reconcileNetworkReview } = await import('./network-review-reconcile.js');
+      return reconcileNetworkReview();
+    },
+  },
+  {
     name: 'tenant-hard-delete',
     cronExpr: '0 4 * * *',
     description: 'Hard-delete tenants whose 30-day deletion grace window has lapsed (daily 04:00 UTC)',

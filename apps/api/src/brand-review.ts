@@ -242,9 +242,14 @@ export async function approveBrand(
     targetId: tenant.id,
     detail: { slug: tenant.slug, priorApprovalStatus: tenant.approvalStatus },
   });
-  // Undo any Network-side suspension from a prior rejection so the brand's
-  // marketplace listings can come back.
-  await reactivateBrandOnNetwork(db, tenant.id);
+  // List the brand on the marketplace — the Network keeps every offering of
+  // a vendor whose review isn't 'approved' out of discovery — and undo the
+  // Network-side suspension a prior rejection applied. A failed push is
+  // retried by the network-review-reconcile job.
+  await setBrandReviewOnNetwork(db, tenant.id, 'approved');
+  if (tenant.approvalStatus === 'rejected') {
+    await reactivateBrandOnNetwork(db, tenant.id);
+  }
 
   await notifyBrandApproved(db, { ...tenant, status: 'active', approvalStatus: 'approved' });
   await notifyOpsDecision(db, {
@@ -325,9 +330,11 @@ export async function rejectBrand(
     },
   });
 
-  // Suspend the brand's Vendor on the Network. This is what actually pulls
-  // its programs off the public marketplace — a local suspend alone leaves
-  // the listing up and still accepting creator applications.
+  // Mark the review rejected and suspend the brand's Vendor on the Network.
+  // This is what actually pulls its programs off the public marketplace — a
+  // local suspend alone leaves the listing up and still accepting creator
+  // applications.
+  await setBrandReviewOnNetwork(db, tenant.id, 'rejected', reason);
   await suspendBrandOnNetwork(db, tenant.id, reason ?? `brand rejected by ${actor.email}`);
 
   if (opts.notifyBrand) {
@@ -353,10 +360,13 @@ export async function rejectBrand(
 // does nothing to its public marketplace listing, so without these calls a
 // rejected spam brand stays listed and keeps taking creator applications.
 //
-// The Network already filters `Offering.published = true AND
-// Vendor.status = 'active'` on both the marketplace list and the offering
-// detail page — it just has to be TOLD. Brand reject → suspend the Vendor
-// (pulls every offering at once); program block → unpublish that offering.
+// The Network filters `Offering.published = true AND Vendor.status =
+// 'active' AND Vendor.reviewStatus = 'approved'` on the marketplace list,
+// the offering detail page, and creator apply — it just has to be TOLD.
+// Brand approve/reject → set the Vendor's review (a pending brand is
+// federated at signup but never listed until approved); reject also
+// suspends the Vendor (pulls every offering at once and kills its token);
+// program block → unpublish that offering.
 //
 // All best-effort: a Network outage must not block a local takedown. We log
 // and continue; re-running the action retries the propagation.
@@ -388,7 +398,24 @@ async function suspendBrandOnNetwork(db: Knex, tenantId: string, reason: string)
   }
 }
 
-/** Undo suspendBrandOnNetwork on approve/reinstate. */
+/** Mirror the approval decision onto the Network's Vendor.reviewStatus. */
+async function setBrandReviewOnNetwork(
+  db: Knex,
+  tenantId: string,
+  status: 'approved' | 'rejected',
+  reason?: string | null,
+): Promise<void> {
+  const v = await networkVendorOf(db, tenantId);
+  if (!v) return;
+  try {
+    const { adminSetVendorReview } = await import('./network-client.js');
+    await adminSetVendorReview(v.networkUrl, v.vendorId, status, reason);
+  } catch (err) {
+    console.error('[brand-review] network vendor review push failed', { tenantId, status, err });
+  }
+}
+
+/** Undo suspendBrandOnNetwork when reinstating a rejected brand. */
 async function reactivateBrandOnNetwork(db: Knex, tenantId: string): Promise<void> {
   const v = await networkVendorOf(db, tenantId);
   if (!v) return;

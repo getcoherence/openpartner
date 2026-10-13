@@ -649,6 +649,7 @@ settingsRouter.post('/config/network/auto-enroll', requireAuth, requireAdmin, as
       tier: 'hosted',
       portalCallbackUrl: inferredCallback,
       adminAuthToken: adminToken,
+      reviewStatus: tenantRow.approvalStatus,
     });
   } catch (err) {
     return res.status(502).json({ error: 'network_signup_failed', detail: err instanceof Error ? err.message : String(err) });

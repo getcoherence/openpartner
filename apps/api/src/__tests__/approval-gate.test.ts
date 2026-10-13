@@ -15,11 +15,33 @@ describe('isGoLiveRoute', () => {
     expect(isGoLiveRoute('POST', '/import/partners-csv')).toBe(true);
     expect(isGoLiveRoute('POST', '/admin/network/offerings')).toBe(true);
     expect(isGoLiveRoute('POST', '/admin/network/requests/req_123/approve')).toBe(true);
+    expect(isGoLiveRoute('POST', '/admin/network/offerings/off_1/invite-creator')).toBe(true);
+  });
+
+  it('cannot be bypassed with case or a trailing slash (Express routes both)', () => {
+    expect(isGoLiveRoute('POST', '/partners/')).toBe(true);
+    expect(isGoLiveRoute('POST', '/Partners')).toBe(true);
+    expect(isGoLiveRoute('POST', '/Admin/Network/Offerings/')).toBe(true);
+    expect(isGoLiveRoute('POST', '/admin/network/requests/REQ_1/APPROVE//')).toBe(true);
+    expect(isGoLiveRoute('post', '/partner-signup')).toBe(true);
+  });
+
+  it('gates re-federating under a new vendor identity', () => {
+    expect(isGoLiveRoute('POST', '/config/network/start-connect')).toBe(true);
+    expect(isGoLiveRoute('POST', '/config/network/complete-connect')).toBe(true);
+    expect(isGoLiveRoute('POST', '/config/network', { vendorToken: 'vntok_x' })).toBe(true);
+    expect(isGoLiveRoute('POST', '/config/network', { networkUrl: 'https://other.example' })).toBe(true);
+    // Turning membership off / toggling autoEnroll is just configuration.
+    expect(isGoLiveRoute('POST', '/config/network', { enabled: false })).toBe(false);
+    expect(isGoLiveRoute('POST', '/config/network', { autoEnroll: true, networkUrl: '' })).toBe(false);
   });
 
   it('leaves configuration + reads open', () => {
     // Creating a program / setting branding is configuration, not going live.
+    // (Its marketplace offering is synced, but the Network keeps it out of
+    // discovery until the brand's review is approved.)
     expect(isGoLiveRoute('POST', '/programs')).toBe(false);
+    expect(isGoLiveRoute('PATCH', '/admin/network/offerings/off_1')).toBe(false);
     expect(isGoLiveRoute('POST', '/config/program')).toBe(false);
     // Reads are never gated.
     expect(isGoLiveRoute('GET', '/partners')).toBe(false);

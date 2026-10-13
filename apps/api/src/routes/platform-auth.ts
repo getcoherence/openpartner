@@ -294,6 +294,7 @@ platformAuthRouter.post('/me/brands', addBrandLimit, async (req, res) => {
     contactEmail: email,
     contactName: adminName,
     protoHost: `${req.protocol}://${req.get('host') ?? ''}`,
+    approvalStatus,
   });
 
   // A first-time brand that lands pending goes into the ops review queue.
