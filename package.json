@@ -20,6 +20,11 @@
     "dev:api": "pnpm --filter @openpartner/api dev",
     "dev:portal": "pnpm --filter @openpartner/portal dev"
   },
+  "pnpm": {
+    "overrides": {
+      "proxy-addr": "2.0.8"
+    }
+  },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@types/node": "^25.7.0",

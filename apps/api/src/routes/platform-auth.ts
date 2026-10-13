@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { ulid } from 'ulid';
 import { TABLES, type AdminRow, type PlatformSessionRow, type TenantRow } from '@openpartner/db';
 import { db, appDb } from '../db.js';
-import { consumeMagicLink, createSession, SESSION_COOKIE_NAME, sessionCookieOptions } from '../auth-sessions.js';
+import { clearSessionCookie, consumeMagicLink, createSession, SESSION_COOKIE_NAME, sessionCookieOptions } from '../auth-sessions.js';
 import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
 import { newTrialEnd } from '../billing-plan.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
@@ -426,7 +426,7 @@ platformAuthRouter.post('/identities/switch', async (req, res) => {
   res.cookie(PLATFORM_SESSION_COOKIE, rotated.plaintext, platformSessionCookieOptions());
   // Tenant cookie belongs to the previous identity — clear so the SPA
   // routes through /workspaces and picks a brand for the new identity.
-  res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
+  clearSessionCookie(res, SESSION_COOKIE_NAME, sessionCookieOptions());
   res.json({ ok: true, email: target.email, sessionId: target.id });
 });
 
@@ -458,15 +458,15 @@ platformAuthRouter.delete('/identities/:sessionId', async (req, res) => {
   const siblings = await listBundleSessions(db, bundle.id);
   const next = siblings[siblings.length - 1] ?? null;
   if (!next) {
-    res.clearCookie(PLATFORM_SESSION_COOKIE, platformSessionCookieOptions());
-    res.clearCookie(PLATFORM_BUNDLE_COOKIE, platformBundleCookieOptions());
-    res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
+    clearSessionCookie(res, PLATFORM_SESSION_COOKIE, platformSessionCookieOptions());
+    clearSessionCookie(res, PLATFORM_BUNDLE_COOKIE, platformBundleCookieOptions());
+    clearSessionCookie(res, SESSION_COOKIE_NAME, sessionCookieOptions());
     return res.json({ ok: true, removed: target.id, fellThroughTo: null });
   }
   const rotated = await rotatePlatformSessionToken(db, next.id);
   await touchBundle(db, bundle.id);
   res.cookie(PLATFORM_SESSION_COOKIE, rotated.plaintext, platformSessionCookieOptions());
-  res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
+  clearSessionCookie(res, SESSION_COOKIE_NAME, sessionCookieOptions());
   res.json({ ok: true, removed: target.id, fellThroughTo: next.id });
 });
 
@@ -499,9 +499,9 @@ platformAuthRouter.post('/auth/platform-signout', async (req, res) => {
         .whereIn('id', sessions.map((s) => s.id))
         .update({ revokedAt: new Date() });
     }
-    res.clearCookie(PLATFORM_SESSION_COOKIE, platformSessionCookieOptions());
-    res.clearCookie(PLATFORM_BUNDLE_COOKIE, platformBundleCookieOptions());
-    res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
+    clearSessionCookie(res, PLATFORM_SESSION_COOKIE, platformSessionCookieOptions());
+    clearSessionCookie(res, PLATFORM_BUNDLE_COOKIE, platformBundleCookieOptions());
+    clearSessionCookie(res, SESSION_COOKIE_NAME, sessionCookieOptions());
     return res.json({ ok: true, signedOutAll: true });
   }
 
@@ -517,14 +517,14 @@ platformAuthRouter.post('/auth/platform-signout', async (req, res) => {
       const rotated = await rotatePlatformSessionToken(db, next.id);
       await touchBundle(db, bundle.id);
       res.cookie(PLATFORM_SESSION_COOKIE, rotated.plaintext, platformSessionCookieOptions());
-      res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
+      clearSessionCookie(res, SESSION_COOKIE_NAME, sessionCookieOptions());
       return res.json({ ok: true, fellThroughTo: next.id, email: next.email });
     }
   }
 
   // No bundle or no fall-through — clear everything.
-  res.clearCookie(PLATFORM_SESSION_COOKIE, platformSessionCookieOptions());
-  res.clearCookie(PLATFORM_BUNDLE_COOKIE, platformBundleCookieOptions());
-  res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions());
+  clearSessionCookie(res, PLATFORM_SESSION_COOKIE, platformSessionCookieOptions());
+  clearSessionCookie(res, PLATFORM_BUNDLE_COOKIE, platformBundleCookieOptions());
+  clearSessionCookie(res, SESSION_COOKIE_NAME, sessionCookieOptions());
   res.json({ ok: true });
 });

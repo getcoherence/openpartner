@@ -41,7 +41,7 @@ import {
   signupWithNetwork,
 } from '../network-client.js';
 import { createApiKeyRow } from '../auth.js';
-import { tenantOf } from '../tenancy.js';
+import { getTenancyMode, tenantOf } from '../tenancy.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
 import { getTenantBillingState } from '../billing-plan.js';
 import { isWhiteLabelEntitled, getWhiteLabelState } from '../white-label.js';
@@ -51,6 +51,15 @@ export const settingsRouter = Router();
 const CONFIG_KEY = 'program_settings';
 
 const settingsSchema = z.object({
+  partnerNetworkVisible: z.boolean().optional(),
+  routerUrl: z.string().trim().max(2048).refine((value) => {
+    if (!value) return true;
+    try {
+      const url = new URL(value);
+      return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password &&
+        url.pathname === '/' && !url.search && !url.hash;
+    } catch { return false; }
+  }, 'Use an HTTP(S) origin without a path, credentials, query or fragment').optional(),
   programName: z.string().trim().max(120).optional(),
   supportEmail: z.string().trim().email().max(254).optional().or(z.literal('')),
   // Hex format mirrors the DB CHECK constraint (#RGB / #RRGGBB / #RRGGBBAA).
@@ -66,6 +75,8 @@ const settingsSchema = z.object({
 /** What we persist into the Config row. Logo lives on Tenant; everything
  *  else is per-tenant program settings. */
 interface PersistedProgramSettings {
+  partnerNetworkVisible: boolean;
+  routerUrl: string | null;
   programName: string | null;
   supportEmail: string | null;
 }
@@ -79,6 +90,16 @@ export interface ProgramSettings extends PersistedProgramSettings {
    *  + Network-surface hiding on this (provisioned flag AND entitling
    *  billing state — see white-label.ts). */
   whiteLabel: boolean;
+  /** Whether this deployment lets a brand hide the Network from its
+   *  partners. Self-host (single-tenant) only: on the hosted multi-tenant
+   *  platform partner Network discovery is part of the product, and hiding
+   *  it is what the paid white-label add-on does. */
+  partnerNetworkToggleAvailable: boolean;
+}
+
+/** See ProgramSettings.partnerNetworkToggleAvailable. */
+function partnerNetworkToggleAvailable(): boolean {
+  return getTenancyMode() === 'single';
 }
 
 async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings> {
@@ -107,12 +128,16 @@ async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings
   );
   return {
     programName,
+    // Hosted always shows it, whatever a stale Config row says.
+    partnerNetworkVisible: partnerNetworkToggleAvailable() ? (value.partnerNetworkVisible ?? true) : true,
+    routerUrl: value.routerUrl ?? null,
     supportEmail: value.supportEmail ?? null,
     logoUrl: tenant?.logoUrl ?? null,
     faviconUrl: tenant?.faviconUrl ?? null,
     brandColor: tenant?.brandColor ?? null,
     programTermsUrl: tenant?.programTermsUrl ?? null,
     whiteLabel,
+    partnerNetworkToggleAvailable: partnerNetworkToggleAvailable(),
   };
 }
 
@@ -174,7 +199,12 @@ settingsRouter.post('/config/program', requireAuth, requireAdmin, async (req, re
   const body = settingsSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
+  const previous = await readSettings(db, tenantId);
   const next: PersistedProgramSettings = {
+    partnerNetworkVisible: partnerNetworkToggleAvailable()
+      ? (body.data.partnerNetworkVisible ?? previous.partnerNetworkVisible)
+      : true,
+    routerUrl: body.data.routerUrl === undefined ? previous.routerUrl : (body.data.routerUrl ? new URL(body.data.routerUrl).origin : null),
     programName: body.data.programName?.trim() || null,
     supportEmail: body.data.supportEmail?.trim() || null,
   };

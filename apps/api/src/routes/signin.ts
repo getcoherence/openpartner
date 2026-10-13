@@ -76,6 +76,10 @@ signinRouter.post('/signin', async (req, res) => {
         html: tmpl.html,
         tag: 'platform_signin',
         metadata: { purpose: 'platform_signin', email, source: 'unified_signin' },
+        // Workspace sign-in spans every brand the person admins; the tenant
+        // context above is just whichever Admin row matched first, so its
+        // brand color would be arbitrary.
+        platform: true,
       });
     } catch (err) {
       console.error('[signin] platform mail failed', { email, err });

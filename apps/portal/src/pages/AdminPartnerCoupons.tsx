@@ -1,11 +1,12 @@
 import { useState } from 'react';
+import type { CustomerReward } from '@openpartner/db';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { api, ApiError } from '../api.js';
 import { theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
-import { Button, Card, ErrorBanner, Input, Label, Page } from '../ui.js';
+import { Button, Card, ErrorBanner, Input, Label, Page, money } from '../ui.js';
 
 interface Partner {
   id: string;
@@ -14,6 +15,8 @@ interface Partner {
 
 interface CouponRow {
   id: string;
+  canEdit?: boolean;
+  stripePromotionCodeId?: string | null;
   code: string;
   programId: string;
   createdAt: string;
@@ -26,13 +29,16 @@ interface CouponRow {
 }
 
 interface ProgramBrief {
+  customerReward?: CustomerReward | null;
+  partnersMayCustomizeCode?: boolean;
   id: string;
   name: string;
 }
 
-export function AdminPartnerCoupons() {
+export function AdminPartnerCoupons({ ownPartnerId }: { ownPartnerId?: string } = {}) {
   const { id } = useParams<{ id: string }>();
-  const partnerId = id ?? '';
+  const partnerId = ownPartnerId ?? id ?? '';
+  const selfService = !!ownPartnerId;
   const qc = useQueryClient();
 
   const partner = useQuery({
@@ -47,12 +53,13 @@ export function AdminPartnerCoupons() {
     enabled: !!partnerId,
   });
   const campaigns = useQuery({
-    queryKey: ['campaigns'],
-    queryFn: () => api<{ programs: ProgramBrief[] }>('/programs'),
+    queryKey: [selfService ? 'me-campaigns' : 'campaigns'],
+    queryFn: () => api<{ programs: ProgramBrief[] }>(selfService ? '/me/programs' : '/programs'),
   });
 
   const [pickedProgram, setPickedProgram] = useState('');
   const [customCode, setCustomCode] = useState('');
+  const selectedProgram = campaigns.data?.programs.find((program) => program.id === pickedProgram);
 
   const mint = useMutation({
     mutationFn: () =>
@@ -77,7 +84,9 @@ export function AdminPartnerCoupons() {
     (coupons.data?.coupons ?? []).filter((c) => !c.deactivatedAt).map((c) => c.programId),
   );
   const availableCampaigns = (campaigns.data?.programs ?? []).filter(
-    (c) => !programsWithActiveCoupon.has(c.id),
+    (c) => selfService
+      ? c.partnersMayCustomizeCode && (coupons.data?.coupons ?? []).filter((coupon) => coupon.programId === c.id && !coupon.deactivatedAt).length < 5
+      : !programsWithActiveCoupon.has(c.id),
   );
 
   const deactivate = useMutation({
@@ -90,15 +99,17 @@ export function AdminPartnerCoupons() {
 
   return (
     <Page
-      title={`Coupons · ${partnerName}`}
-      subtitle="Coupons attribute conversions when customers enter a code at checkout instead of clicking a share link. Your site calls POST /coupons/redeem with the code; same downstream commission flow as click-driven attribution."
+      title={selfService ? 'Your coupon codes' : `Coupons · ${partnerName}`}
+      subtitle={selfService
+        ? 'Share your codes with your audience. Your brand sets the discount; you choose the code when customization is enabled. Existing codes remain active until you deactivate them.'
+        : 'Coupons attribute conversions when customers enter a code at checkout instead of clicking a share link. Your site calls POST /coupons/redeem with the code; same downstream commission flow as click-driven attribution.'}
     >
-      <div style={{ marginBottom: 14 }}>
+      {!selfService && <div style={{ marginBottom: 14 }}>
         <TenantLink to="/admin/partners" style={{ color: theme.textMuted, fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <ArrowLeft size={14} /> Back to Partners
         </TenantLink>
-      </div>
-      <ErrorBanner error={partner.error ?? coupons.error ?? (gateError ? null : mint.error)} />
+      </div>}
+      <ErrorBanner error={partner.error ?? campaigns.error ?? coupons.error ?? deactivate.error ?? (gateError ? null : mint.error)} />
       {gateError && (
         <div style={{ background: `${theme.danger}10`, border: `1px solid ${theme.danger}55`, borderRadius: theme.radiusSm, padding: 12, marginBottom: 12 }}>
           <div style={{ fontSize: 13, color: theme.danger, fontWeight: 500, marginBottom: 6 }}>
@@ -110,6 +121,9 @@ export function AdminPartnerCoupons() {
         </div>
       )}
       <Card>
+        {selfService && (
+          <p style={{ color: theme.textMuted, fontSize: 13 }}>Your brand controls discount terms. Existing codes may retain earlier terms when a program changes. Discount duration does not indicate a code's expiry or redemption limit.</p>
+        )}
         {coupons.isLoading ? (
           <p style={{ color: theme.textMuted, fontSize: 13 }}>Loading…</p>
         ) : (
@@ -135,9 +149,18 @@ export function AdminPartnerCoupons() {
                       <code style={{ fontSize: 14, fontWeight: 500, color: theme.text, flex: 1, textDecoration: isDeactivated ? 'line-through' : 'none' }}>
                         {c.code}
                       </code>
-                      <span style={{ color: theme.textMuted, fontSize: 12 }}>
-                        {campaignNameById.get(c.programId) ?? c.programId}
-                      </span>
+                      <div style={{ color: theme.textMuted, fontSize: 12 }}>
+                        <div>{campaignNameById.get(c.programId) ?? c.programId}</div>
+                        <div>Current program discount: {customerDiscount(campaigns.data?.programs.find((program) => program.id === c.programId)?.customerReward)}</div>
+                        {/* Only say something when it's true and useful: hosted
+                            brands' rewards never live in our Stripe, and a
+                            program without a reward has nothing to create. */}
+                        {c.deactivatedAt ? (
+                          <div>Code deactivated</div>
+                        ) : c.stripePromotionCodeId ? (
+                          <div>Discount applies automatically at checkout</div>
+                        ) : null}
+                      </div>
                       <span style={{ color: theme.textMuted, fontSize: 11, whiteSpace: 'nowrap' }}>
                         {(c.redemptions90d ?? 0) > 0
                           ? `${c.redemptions90d} redemption${c.redemptions90d === 1 ? '' : 's'} (90d)`
@@ -147,7 +170,7 @@ export function AdminPartnerCoupons() {
                         <span style={{ fontSize: 11, color: theme.textDim, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                           Deactivated
                         </span>
-                      ) : (
+                      ) : (!selfService || c.canEdit) ? (
                         <button
                           onClick={() => deactivate.mutate(c.id)}
                           disabled={deactivate.isPending}
@@ -163,7 +186,7 @@ export function AdminPartnerCoupons() {
                         >
                           Deactivate
                         </button>
-                      )}
+                      ) : <span style={{ fontSize: 12, color: theme.textMuted }}>Managed by brand</span>}
                     </div>
                   );
                 })}
@@ -181,6 +204,7 @@ export function AdminPartnerCoupons() {
                     <option value="">— pick a campaign —</option>
                     {availableCampaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
+                  {selectedProgram && <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>Customer discount: {customerDiscount(selectedProgram.customerReward)}</div>}
                 </div>
                 <div>
                   <Label>Code (optional)</Label>
@@ -198,8 +222,8 @@ export function AdminPartnerCoupons() {
             ) : (
               <p style={{ color: theme.textMuted, fontSize: 13, margin: 0 }}>
                 {(coupons.data?.coupons ?? []).length === 0
-                  ? 'No campaigns available. Create one in Campaigns first.'
-                  : 'This partner has a coupon for every campaign already.'}
+                  ? (selfService ? 'No programs available for customization. Ask your brand admin to enable coupon customization for your program.' : 'No campaigns available. Create one in Campaigns first.')
+                  : (selfService ? 'No additional codes available. Your brand controls customization; each program allows up to five active codes.' : 'This partner has a coupon for every campaign already.')}
               </p>
             )}
           </>
@@ -207,4 +231,17 @@ export function AdminPartnerCoupons() {
       </Card>
     </Page>
   );
+}
+
+function customerDiscount(reward: CustomerReward | null | undefined): string {
+  if (reward === undefined) return 'Discount details unavailable';
+  if (!reward) return 'No customer discount configured';
+  if (reward.type === 'free_months') return `${reward.value} ${reward.value === 1 ? 'month' : 'months'} free`;
+  const amount = reward.type === 'percent_off'
+    ? `${reward.value}% off`
+    : reward.currency ? `${money(reward.value, reward.currency.toUpperCase())} off` : 'Fixed discount (currency not configured)';
+  const duration = reward.duration === 'once' ? 'first payment only'
+    : reward.duration === 'forever' ? 'every eligible payment'
+    : `for ${reward.durationInMonths} months`;
+  return `${amount}, ${duration}`;
 }
