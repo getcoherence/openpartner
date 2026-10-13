@@ -851,20 +851,18 @@ function PartnerCodeCustomizationField({
         Let partners customize their coupon code
       </label>
       <div style={{ fontSize: 12, color: theme.textDim, marginLeft: 24 }}>
-        Off (default) = you control every code. On = creators can pick a
-        vanity code from their dashboard (e.g. <code>GRACIE15</code>). The
-        discount terms above stay locked — partners only change the string.
-        {delivery === 'stripe' && (
-          <>
-            {' '}Renaming replaces the previous code; anyone using the old one at
-            checkout gets an invalid-code error.
-          </>
-        )}
+        Off (default) = you control every code. On = partners on your roster
+        and Network creators can add vanity codes from their dashboard (e.g.{' '}
+        <code>GRACIE15</code>), up to 5 active per program. The discount terms
+        above stay locked — partners only choose the string. Codes are matched
+        by name at checkout, so a partner code that equals one of your own
+        promo codes would be credited to that partner.
+        {delivery === 'stripe' && <>{' '}A deactivated code stops working at checkout.</>}
         {(delivery === 'brand' || delivery === 'unconfigured') && (
           <>
-            {' '}Renaming replaces the previous code in OpenPartner only — your
-            checkout isn&rsquo;t updated for you, so add each new code there
-            and retire the old one.
+            {' '}Your checkout isn&rsquo;t updated for you: add each new code
+            there, and retire deactivated ones there too — OpenPartner stops
+            crediting a deactivated code, but it keeps discounting until you do.
           </>
         )}
       </div>

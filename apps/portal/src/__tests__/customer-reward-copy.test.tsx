@@ -94,7 +94,7 @@ describe('customer reward copy per deployment', () => {
     renderPrograms('stripe');
     openCreate();
     expect(text()).toMatch(/discount applies automatically/);
-    expect(text()).toMatch(/old one at\s+checkout gets an invalid-code error/);
+    expect(text()).toMatch(/A deactivated code stops working at checkout/);
     pickFreeMonths();
     expect(text()).toMatch(/Delivered as a 100% Stripe coupon/);
   });
@@ -106,7 +106,8 @@ describe('customer reward copy per deployment', () => {
     expect(text()).toMatch(/in your own Stripe, create a promotion code with\s+the same string/);
     expect(text()).toMatch(/POST \/coupons\/redeem/);
     expect(text()).toMatch(/checkout isn’t updated for you/);
-    expect(text()).not.toMatch(/invalid-code error/);
+    expect(text()).toMatch(/keeps discounting until you do/);
+    expect(text()).not.toMatch(/stops working at checkout/);
     pickFreeMonths();
     expect(text()).not.toMatch(/Delivered as a 100% Stripe coupon/);
     expect(text()).toMatch(/In Stripe, that’s a 100% coupon repeating/);
@@ -133,7 +134,8 @@ describe('customer reward copy per deployment', () => {
     openCreate();
     expect(text()).not.toMatch(/applies automatically/);
     expect(text()).not.toMatch(/create a promotion code/);
-    expect(text()).not.toMatch(/invalid-code error/);
+    expect(text()).not.toMatch(/stops working at checkout/);
+    expect(text()).not.toMatch(/keeps discounting/);
     pickFreeMonths();
     expect(text()).not.toMatch(/Delivered as a 100% Stripe coupon/);
   });

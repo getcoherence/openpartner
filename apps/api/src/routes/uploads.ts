@@ -142,6 +142,12 @@ export function mountStaticUploads(app: import('express').Express): void {
       // re-upload so immutable is safe.
       maxAge: '365d',
       immutable: true,
+      // These assets are intentionally public and may be embedded by a
+      // portal, custom domain, or Network page on a different origin.
+      // Helmet defaults CORP to same-origin, which blocks that valid use.
+      setHeaders: (res) => {
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      },
       // Don't fall through to the next handler on 404 — return a clean
       // 404 instead of attempting to interpret /uploads/<key> as
       // something else further down the stack.

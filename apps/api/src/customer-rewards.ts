@@ -6,6 +6,10 @@
  * customer's discount applies automatically when they enter the code at
  * the brand's checkout.
  *
+ * Rewards are only ever provisioned in the BRAND's own Stripe account —
+ * see rewardStripe(). On hosted deployments there is no such account to
+ * reach, so provisioning is skipped and the stripe ids stay null.
+ *
  * Failures are non-fatal: if Stripe isn't configured, or the API call
  * fails, the Coupon row is still written and stripeCouponId stays null.
  * The partner attribution path (POST /coupons/redeem) is independent of
@@ -24,6 +28,64 @@ export interface ProvisionedReward {
 }
 
 /**
+ * The Stripe client customer rewards are provisioned in: the brand's own
+ * account, or null when this deployment has no way to reach it.
+ *
+ * Only a single-tenant self-host qualifies — there STRIPE_SECRET_KEY IS
+ * the brand's key. On hosted deployments (flat / revshare) it's
+ * OpenPartner's own billing account, whose plan Checkout runs with
+ * allow_promotion_codes: a reward minted there would be redeemable
+ * against OpenPartner's plans, would never exist at the brand's
+ * checkout, and would share one code namespace across every tenant. A
+ * multi-tenant self-host has the same shape (one key, many brands).
+ *
+ * There is no per-tenant brand Stripe connection today (Partner
+ * .stripeConnectAccountId is a payout destination, not the brand). If
+ * one is added, resolve it here and pass { stripeAccount } on each call.
+ */
+export function rewardStripe(): Stripe | null {
+  if (getMode() !== 'selfhost' || getTenancyMode() !== 'single') return null;
+  return stripe;
+}
+
+/**
+ * Does `code` already exist in the brand's Stripe account as a promotion
+ * code (active or not — inactive promos still ride on live subscriptions'
+ * invoices) or as a coupon id (the webhook falls back to coupon.id when a
+ * discount has no promotion code)?
+ *
+ * Coupon redemption matches on the code string alone, so a partner coupon
+ * that shadows a brand promo like WELCOME10 would be credited with every
+ * order using it. Callers refuse such codes unless the brand's admin chose
+ * the code deliberately.
+ *
+ * Coupon ids are case-sensitive in Stripe while our match is not; we check
+ * the code as given and lowercased, which covers the common spellings but
+ * not arbitrary mixed case.
+ *
+ * Returns false when there's no Stripe target (nothing to collide with).
+ * Throws on Stripe errors — the caller picks fail-open or fail-closed.
+ */
+export async function codeExistsInStripe(code: string): Promise<boolean> {
+  const client = rewardStripe();
+  if (!client) return false;
+
+  const promos = await client.promotionCodes.list({ code, limit: 1 });
+  if (promos.data.length > 0) return true;
+
+  for (const id of new Set([code, code.toLowerCase()])) {
+    try {
+      await client.coupons.retrieve(id);
+      return true;
+    } catch (err) {
+      if ((err as { code?: string }).code === 'resource_missing') continue;
+      throw err;
+    }
+  }
+  return false;
+}
+
+/**
  * Provision a Stripe Coupon + PromotionCode for the (campaign, code)
  * pair. Returns null when Stripe isn't configured OR the API call fails
  * — caller should still write the OpenPartner Coupon row and leave the
@@ -38,14 +100,15 @@ export async function provisionCustomerReward(
   code: string,
   campaignName: string,
 ): Promise<ProvisionedReward | null> {
-  if (!stripe) return null;
+  const client = rewardStripe();
+  if (!client) return null;
 
   const couponParams = toStripeCouponParams(reward, `OpenPartner — ${campaignName} (${code})`);
   if (!couponParams) return null;
 
   try {
-    const coupon = await stripe.coupons.create(couponParams);
-    const promo = await stripe.promotionCodes.create({
+    const coupon = await client.coupons.create(couponParams);
+    const promo = await client.promotionCodes.create({
       promotion: { type: 'coupon', coupon: coupon.id },
       code,
       metadata: { source: 'openpartner', openpartner_code: code },
@@ -60,7 +123,8 @@ export async function provisionCustomerReward(
 /**
  * Disable a Stripe PromotionCode so customers entering the string at
  * checkout get "promotion code is no longer valid" instead of a discount.
- * Used by the coupon-deactivate flow (partner retiring an old code).
+ * Used by the coupon-deactivate flow (partner retiring an old code), and
+ * to release a promo whose Coupon row then failed to insert.
  *
  * We deactivate the PromotionCode but leave the parent Coupon alone:
  * Stripe rejects coupon deletion once redemptions exist, and the cost of
@@ -75,9 +139,10 @@ export async function provisionCustomerReward(
  * attribute (the OpenPartner Coupon lookup excludes deactivated rows).
  */
 export async function deactivateCustomerReward(stripePromotionCodeId: string): Promise<void> {
-  if (!stripe) return;
+  const client = rewardStripe();
+  if (!client) return;
   try {
-    await stripe.promotionCodes.update(stripePromotionCodeId, { active: false });
+    await client.promotionCodes.update(stripePromotionCodeId, { active: false });
   } catch (err) {
     console.error('[customer-rewards] deactivate promo failed', { stripePromotionCodeId, err });
   }

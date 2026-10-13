@@ -14,6 +14,7 @@ interface Partner {
 
 interface CouponRow {
   id: string;
+  canEdit?: boolean;
   code: string;
   programId: string;
   createdAt: string;
@@ -26,13 +27,15 @@ interface CouponRow {
 }
 
 interface ProgramBrief {
+  partnersMayCustomizeCode?: boolean;
   id: string;
   name: string;
 }
 
-export function AdminPartnerCoupons() {
+export function AdminPartnerCoupons({ ownPartnerId }: { ownPartnerId?: string } = {}) {
   const { id } = useParams<{ id: string }>();
-  const partnerId = id ?? '';
+  const partnerId = ownPartnerId ?? id ?? '';
+  const selfService = !!ownPartnerId;
   const qc = useQueryClient();
 
   const partner = useQuery({
@@ -47,8 +50,8 @@ export function AdminPartnerCoupons() {
     enabled: !!partnerId,
   });
   const campaigns = useQuery({
-    queryKey: ['campaigns'],
-    queryFn: () => api<{ programs: ProgramBrief[] }>('/programs'),
+    queryKey: [selfService ? 'me-campaigns' : 'campaigns'],
+    queryFn: () => api<{ programs: ProgramBrief[] }>(selfService ? '/me/programs' : '/programs'),
   });
 
   const [pickedProgram, setPickedProgram] = useState('');
@@ -77,7 +80,9 @@ export function AdminPartnerCoupons() {
     (coupons.data?.coupons ?? []).filter((c) => !c.deactivatedAt).map((c) => c.programId),
   );
   const availableCampaigns = (campaigns.data?.programs ?? []).filter(
-    (c) => !programsWithActiveCoupon.has(c.id),
+    (c) => selfService
+      ? c.partnersMayCustomizeCode && (coupons.data?.coupons ?? []).filter((coupon) => coupon.programId === c.id && !coupon.deactivatedAt).length < 5
+      : !programsWithActiveCoupon.has(c.id),
   );
 
   const deactivate = useMutation({
@@ -90,15 +95,17 @@ export function AdminPartnerCoupons() {
 
   return (
     <Page
-      title={`Coupons · ${partnerName}`}
-      subtitle="Coupons attribute conversions when customers enter a code at checkout instead of clicking a share link. Your site calls POST /coupons/redeem with the code; same downstream commission flow as click-driven attribution."
+      title={selfService ? 'Your coupon codes' : `Coupons · ${partnerName}`}
+      subtitle={selfService
+        ? 'Share your codes with your audience. Your brand sets the discount; you choose the code when customization is enabled. Existing codes remain active until you deactivate them.'
+        : 'Coupons attribute conversions when customers enter a code at checkout instead of clicking a share link. Your site calls POST /coupons/redeem with the code; same downstream commission flow as click-driven attribution.'}
     >
-      <div style={{ marginBottom: 14 }}>
+      {!selfService && <div style={{ marginBottom: 14 }}>
         <TenantLink to="/admin/partners" style={{ color: theme.textMuted, fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <ArrowLeft size={14} /> Back to Partners
         </TenantLink>
-      </div>
-      <ErrorBanner error={partner.error ?? coupons.error ?? (gateError ? null : mint.error)} />
+      </div>}
+      <ErrorBanner error={partner.error ?? campaigns.error ?? coupons.error ?? deactivate.error ?? (gateError ? null : mint.error)} />
       {gateError && (
         <div style={{ background: `${theme.danger}10`, border: `1px solid ${theme.danger}55`, borderRadius: theme.radiusSm, padding: 12, marginBottom: 12 }}>
           <div style={{ fontSize: 13, color: theme.danger, fontWeight: 500, marginBottom: 6 }}>
@@ -147,7 +154,7 @@ export function AdminPartnerCoupons() {
                         <span style={{ fontSize: 11, color: theme.textDim, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                           Deactivated
                         </span>
-                      ) : (
+                      ) : (!selfService || c.canEdit) ? (
                         <button
                           onClick={() => deactivate.mutate(c.id)}
                           disabled={deactivate.isPending}
@@ -163,7 +170,7 @@ export function AdminPartnerCoupons() {
                         >
                           Deactivate
                         </button>
-                      )}
+                      ) : <span style={{ fontSize: 12, color: theme.textMuted }}>Managed by brand</span>}
                     </div>
                   );
                 })}
@@ -198,8 +205,8 @@ export function AdminPartnerCoupons() {
             ) : (
               <p style={{ color: theme.textMuted, fontSize: 13, margin: 0 }}>
                 {(coupons.data?.coupons ?? []).length === 0
-                  ? 'No campaigns available. Create one in Campaigns first.'
-                  : 'This partner has a coupon for every campaign already.'}
+                  ? (selfService ? 'No programs available for customization. Ask your brand admin to enable coupon customization for your program.' : 'No campaigns available. Create one in Campaigns first.')
+                  : (selfService ? 'No additional codes available. Your brand controls customization; each program allows up to five active codes.' : 'This partner has a coupon for every campaign already.')}
               </p>
             )}
           </>
