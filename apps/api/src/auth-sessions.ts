@@ -16,7 +16,7 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
-import type { CookieOptions } from 'express';
+import type { CookieOptions, Response } from 'express';
 import type { Knex } from 'knex';
 import { ulid } from 'ulid';
 import {
@@ -220,4 +220,10 @@ export function sessionCookieOptions(): CookieOptions {
     path: '/',
     maxAge: SESSION_TTL_MS,
   };
+}
+
+/** Keep cookie scope, but let Express expire it instead of renewing its lifetime. */
+export function clearSessionCookie(res: Response, name: string, options: CookieOptions): void {
+  const { maxAge: _maxAge, expires: _expires, ...scope } = options;
+  res.clearCookie(name, scope);
 }

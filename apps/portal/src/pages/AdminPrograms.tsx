@@ -826,11 +826,13 @@ function PartnerCodeCustomizationField({
         Let partners customize their coupon code
       </label>
       <div style={{ fontSize: 12, color: theme.textDim, marginLeft: 24 }}>
-        Off (default) = you control every code. On = creators can pick a
-        vanity code from their dashboard (e.g. <code>GRACIE15</code>). The
-        discount terms above stay locked — partners only change the string.
-        Renaming replaces the previous code; anyone using the old one at
-        checkout gets an invalid-code error.
+        Off (default) = you control every code. On = partners on your roster
+        and Network creators can add vanity codes from their dashboard (e.g.{' '}
+        <code>GRACIE15</code>), up to 5 active per program. The discount terms
+        above stay locked — partners only choose the string. Codes are matched
+        by name at checkout, so a partner code that equals one of your own
+        promo codes would be credited to that partner. A deactivated code stops
+        working at checkout.
       </div>
     </div>
   );

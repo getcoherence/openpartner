@@ -47,7 +47,7 @@ import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '..
 import { getTenancyMode, tenantOf } from '../tenancy.js';
 import { getMode } from '../stripe.js';
 import { attributeEvent } from '../attribution.js';
-import { deactivateCustomerReward, provisionCustomerReward } from '../customer-rewards.js';
+import { codeExistsInStripe, deactivateCustomerReward, provisionCustomerReward } from '../customer-rewards.js';
 
 export const couponsRouter = Router();
 
@@ -136,6 +136,12 @@ const COUPON_VERIFICATION_THRESHOLD = 5;
  *  rows — partners can deactivate then re-add freely. */
 const ACTIVE_CODES_PER_PROGRAM_CAP = 5;
 
+/** Rolling 24h creation cap per (partner, program) for self-service mints
+ *  (partners + federated creators). The active-codes cap alone doesn't bound
+ *  churn: create/deactivate loops each mint a fresh Stripe Coupon +
+ *  PromotionCode on self-host. Counts deactivated rows too. Admins bypass. */
+const CREATIONS_PER_DAY_CAP = 10;
+
 /** 409 detail for the verification gate. Only a single-tenant self-host
  *  can offer the Stripe webhook as an alternative: /webhooks/stripe
  *  verifies OpenPartner's own signing secrets and resolves tenants from
@@ -156,38 +162,17 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
   //   - scoped key with 'partners:write' → allowed only when the bound
   //     program's partnersMayCustomizeCode flag is true. Network proxies
   //     a creator's "Add another code" through this path.
-  //   - everything else → 403. (Partner-session principals do NOT auto-
-  //     get this; partners only manage codes via the Network's federated
-  //     PATCH/POST surface, never against the vendor instance directly.)
+  //   - local partner → own codes only, with program access and customization enabled.
+  //   - everything else → 403.
   const principal = req.principal;
   const isAdmin = principal?.role === 'admin';
   const isFederated = principal?.role === 'scoped' && principal.scopes.includes('partners:write');
-  if (!isAdmin && !isFederated) return res.status(403).json({ error: 'forbidden' });
+  const isPartner = principal?.role === 'partner' && principal.partnerId === req.params.id;
+  if (!isAdmin && !isFederated && !isPartner) return res.status(403).json({ error: 'forbidden' });
 
   const { db, tenantId } = tenantOf(req);
   const body = createSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
-
-  // Verification gate: past N coupons without a successful redemption
-  // ever recorded, refuse new manual mints. Forces the brand to
-  // actually wire up /coupons/redeem (or, on a single-tenant self-host,
-  // the Stripe webhook auto-redemption path) before they hand more
-  // codes to creators that won't attribute.
-  const tenant = (await db('Tenant').where({ id: tenantId }).first(['couponIntegrationVerifiedAt'])) as
-    | { couponIntegrationVerifiedAt: Date | null }
-    | undefined;
-  if (!tenant?.couponIntegrationVerifiedAt) {
-    const countRow = (await db(TABLES.Coupon).count<{ count: string }[]>({ count: '*' })) as Array<{ count: string }>;
-    const existing = Number(countRow[0]?.count ?? 0);
-    if (existing >= COUPON_VERIFICATION_THRESHOLD) {
-      return res.status(409).json({
-        error: 'verification_required',
-        detail: couponVerificationDetail(existing),
-        threshold: COUPON_VERIFICATION_THRESHOLD,
-        existing,
-      });
-    }
-  }
 
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
@@ -200,6 +185,42 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
   // want regardless of the partner-self-service setting.
   if (!isAdmin && !program.partnersMayCustomizeCode) {
     return res.status(403).json({ error: 'partner_customization_disabled' });
+  }
+
+  if (isPartner) {
+    const grant = await db(TABLES.PartnerProgram).where({ partnerId: partner.id, programId: program.id }).first();
+    if (!grant) return res.status(403).json({ error: 'campaign_not_granted' });
+    const { campaignAcceptsNewActivity } = await import('../campaign-lifecycle.js');
+    if (!campaignAcceptsNewActivity(program)) return res.status(409).json({ error: 'campaign_not_active' });
+  }
+
+  // Verification gate: past N coupons without a successful redemption
+  // ever recorded, refuse new manual mints. Forces the brand to
+  // actually wire up /coupons/redeem (or, on a single-tenant self-host,
+  // the Stripe webhook auto-redemption path) before they hand more
+  // codes to creators that won't attribute. Runs after the access checks
+  // so a caller who can't mint here never learns the brand's coupon
+  // count or integration state.
+  const tenant = (await db('Tenant').where({ id: tenantId }).first(['couponIntegrationVerifiedAt'])) as
+    | { couponIntegrationVerifiedAt: Date | null }
+    | undefined;
+  if (!tenant?.couponIntegrationVerifiedAt) {
+    const countRow = (await db(TABLES.Coupon).count<{ count: string }[]>({ count: '*' })) as Array<{ count: string }>;
+    const existing = Number(countRow[0]?.count ?? 0);
+    if (existing >= COUPON_VERIFICATION_THRESHOLD) {
+      if (!isAdmin) {
+        return res.status(409).json({
+          error: 'verification_required',
+          detail: "This brand hasn't finished setting up coupon tracking yet, so new codes are paused. Ask the brand to complete their coupon integration.",
+        });
+      }
+      return res.status(409).json({
+        error: 'verification_required',
+        detail: couponVerificationDetail(existing),
+        threshold: COUPON_VERIFICATION_THRESHOLD,
+        existing,
+      });
+    }
   }
 
   // Active-codes cap. Counts only non-deactivated rows so a partner who
@@ -219,9 +240,43 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
         cap: ACTIVE_CODES_PER_PROGRAM_CAP,
       });
     }
+    const createdToday = (await db(TABLES.Coupon)
+      .where({ partnerId: partner.id, programId: program.id })
+      .where('createdAt', '>', new Date(Date.now() - 24 * 60 * 60 * 1000))
+      .count<{ count: string }[]>({ count: '*' })) as Array<{ count: string }>;
+    if (Number(createdToday[0]?.count ?? 0) >= CREATIONS_PER_DAY_CAP) {
+      return res.status(429).json({
+        error: 'daily_code_limit_reached',
+        detail: `You've created ${CREATIONS_PER_DAY_CAP} codes for this program in the last 24 hours. Try again tomorrow.`,
+        cap: CREATIONS_PER_DAY_CAP,
+      });
+    }
   }
 
   const code = body.data.code ?? defaultCode(partner.email);
+
+  // A code the brand's admin typed is theirs to pick — including mapping
+  // a promo that already exists in their Stripe onto a partner. Any other
+  // code (a partner's choice, or a generated one) must not shadow an
+  // existing promotion code / coupon id there: redemption matches on the
+  // string, so a partner holding WELCOME10 would be credited with every
+  // order using the brand's own sitewide promo. Fail closed when Stripe
+  // can't answer.
+  const adminChosen = isAdmin && body.data.code !== undefined;
+  if (!adminChosen) {
+    let shadowsStripe: boolean;
+    try {
+      shadowsStripe = await codeExistsInStripe(code);
+    } catch (err) {
+      console.error('[coupons] Stripe code check failed', { code, err });
+      return res.status(503).json({
+        error: 'code_check_unavailable',
+        detail: "Couldn't confirm the code is free in Stripe. Try again shortly.",
+      });
+    }
+    if (shadowsStripe) return res.status(409).json({ error: 'code_taken' });
+  }
+
   // Provision the Stripe customer-side discount BEFORE writing our row
   // so a Stripe failure doesn't leave a dangling Coupon with stale
   // stripeCouponId fields. provisionCustomerReward returns null on
@@ -246,6 +301,9 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
     const row = await db<CouponRow>(TABLES.Coupon).where({ id }).first();
     return res.status(201).json({ ...row, canEdit: program.partnersMayCustomizeCode });
   } catch (err) {
+    // No row owns the promo we just provisioned — release it so the code
+    // doesn't keep discounting at checkout with nothing to attribute to.
+    if (provisioned) await deactivateCustomerReward(provisioned.stripePromotionCodeId);
     if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505') {
       // Per-tenant code uniqueness only — the (partner, program) unique
       // is gone after the append-only migration.
@@ -270,7 +328,8 @@ couponsRouter.delete('/partners/:id/coupons/:couponId', requireAuth, async (req,
   const principal = req.principal;
   const isAdmin = principal?.role === 'admin';
   const isFederated = principal?.role === 'scoped' && principal.scopes.includes('partners:write');
-  if (!isAdmin && !isFederated) return res.status(403).json({ error: 'forbidden' });
+  const isPartner = principal?.role === 'partner' && principal.partnerId === req.params.id;
+  if (!isAdmin && !isFederated && !isPartner) return res.status(403).json({ error: 'forbidden' });
 
   const { db } = tenantOf(req);
   const coupon = await db<CouponRow>(TABLES.Coupon)
@@ -283,6 +342,11 @@ couponsRouter.delete('/partners/:id/coupons/:couponId', requireAuth, async (req,
 
   if (!isAdmin && !program.partnersMayCustomizeCode) {
     return res.status(403).json({ error: 'partner_customization_disabled' });
+  }
+
+  if (isPartner) {
+    const grant = await db(TABLES.PartnerProgram).where({ partnerId: req.params.id, programId: program.id }).first();
+    if (!grant) return res.status(403).json({ error: 'campaign_not_granted' });
   }
 
   // Idempotent: re-deactivating a deactivated coupon is a no-op +
@@ -352,11 +416,7 @@ couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), r
   const body = redeemSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  // Case-insensitive lookup so customers entering keithf15a2x or
-  // KEITHF15A2X both resolve. Storage stays whatever the partner set.
-  const coupon = await db<CouponRow>(TABLES.Coupon)
-    .whereRaw('lower("code") = ?', [body.data.code.toLowerCase()])
-    .first();
+  const coupon = await findCouponByCode(db, body.data.code);
   if (!coupon) return res.status(404).json({ error: 'coupon_not_found' });
 
   // Idempotency: same externalEventId already processed → 200 + replayed flag.
@@ -400,7 +460,11 @@ couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), r
 });
 
 /**
- * Lookup a Coupon by code (case-insensitive) within the current tenant.
+ * Lookup an ACTIVE Coupon by code within the current tenant. Case-
+ * insensitive so customers entering keithf15a2x or KEITHF15A2X both
+ * resolve; storage stays whatever the partner set. Deactivated codes
+ * don't match — retiring a code stops new redemptions from attributing,
+ * while users it already stitched keep attributing via their Identity.
  * Used by both the /coupons/redeem route and the Stripe webhook auto-
  * redemption path. Returns null when the code doesn't match anything in
  * this tenant — letting the caller no-op rather than 404.
@@ -411,6 +475,7 @@ export async function findCouponByCode(
 ): Promise<CouponRow | null> {
   const row = await db<CouponRow>(TABLES.Coupon)
     .whereRaw('lower("code") = ?', [code.toLowerCase()])
+    .whereNull('deactivatedAt')
     .first();
   return row ?? null;
 }
@@ -489,6 +554,18 @@ function defaultCode(email: string): string {
   return `${slug}${rand}`;
 }
 
+/** Auto-mint's use of codeExistsInStripe. A generated code is a random
+ *  draw rather than anyone's choice, so a Stripe outage shouldn't block
+ *  the grant: fail open and log. (The POST route fails closed.) */
+async function generatedCodeShadowsStripe(code: string): Promise<boolean> {
+  try {
+    return await codeExistsInStripe(code);
+  } catch (err) {
+    console.error('[coupons] auto-mint Stripe code check failed; proceeding', { code, err });
+    return false;
+  }
+}
+
 /**
  * Best-effort coupon mint after a PartnerCampaign grant. Used by:
  *   - POST /partners (auto-grants all current campaigns by default)
@@ -534,23 +611,22 @@ export async function autoMintCouponsForGrants(
       .first('id');
     if (existing) continue;
 
-    let attempts = 0;
-    let provisioned: Awaited<ReturnType<typeof provisionCustomerReward>> = null;
-    while (attempts < 2) {
-      attempts += 1;
+    // Two draws: defaultCode re-rolls 16 bits each call. A draw is
+    // discarded when it shadows a promo in the brand's Stripe, or when it
+    // collides with an existing code in this tenant. If both draws fail,
+    // drop on the floor — better to skip auto-mint than to fail the
+    // partner-grant operation.
+    for (let attempt = 1; attempt <= 2; attempt++) {
       const code = defaultCode(partner.email);
+      if (await generatedCodeShadowsStripe(code)) continue;
 
-      // Provision the customer-side Stripe coupon on the FIRST attempt.
-      // On a code-collision retry we'd want to delete the prior Stripe
-      // promo and re-provision under the new code, but the collision is
-      // rare (16-bit random suffix) and a single dangling Stripe coupon
-      // per ~65k partners is acceptable. Skip re-provisioning on retry.
-      if (attempts === 1 && campaign.customerReward) {
-        provisioned = await provisionCustomerReward(campaign.customerReward, code, campaign.name);
-      }
+      const provisioned = campaign.customerReward
+        ? await provisionCustomerReward(campaign.customerReward, code, campaign.name)
+        : null;
 
+      let inserted: Array<Pick<CouponRow, 'id'>>;
       try {
-        await db<CouponRow>(TABLES.Coupon)
+        inserted = (await db<CouponRow>(TABLES.Coupon)
           .insert({
             id: `cpn_${ulid()}`,
             tenantId,
@@ -562,23 +638,20 @@ export async function autoMintCouponsForGrants(
           })
           // (partner, program) is no longer unique on Coupon — the only
           // surviving conflict here is (tenantId, code) when the random
-          // suffix happens to collide with an existing code. The 23505
-          // catch below handles that with a single retry.
+          // suffix collides with an existing code. DO NOTHING rather than
+          // a caught 23505 so the collision can't abort the caller's
+          // transaction; an empty RETURNING is the collision signal.
           .onConflict(['tenantId', 'code'])
-          .ignore();
-        break;
+          .ignore()
+          .returning('id')) as Array<Pick<CouponRow, 'id'>>;
       } catch (err) {
-        // Code collision (the (tenantId, code) unique constraint
-        // fired). Retry once with a fresh random suffix; defaultCode
-        // re-rolls 16 bits each call. If it still collides, drop on
-        // the floor — better to skip auto-mint than to fail the
-        // partner-grant operation.
-        if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505' && attempts < 2) {
-          continue;
-        }
+        if (provisioned) await deactivateCustomerReward(provisioned.stripePromotionCodeId);
         console.error('[coupons] auto-mint failed', { partnerId: partner.id, programId, err });
         break;
       }
+      if (inserted.length > 0) break;
+      // Collided: no row owns the promo provisioned for this draw.
+      if (provisioned) await deactivateCustomerReward(provisioned.stripePromotionCodeId);
     }
   }
 }
