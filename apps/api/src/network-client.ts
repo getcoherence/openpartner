@@ -752,6 +752,9 @@ export async function adminRunCreatorReminders(
   return callNetworkAdmin<CreatorReminderRunResult>(networkUrl, 'POST', '/admin/creator-reminders/run', {
     dryRun: opts.dryRun,
     ...(opts.limit ? { limit: opts.limit } : {}),
+    // The public base the Network should put in unsubscribe links — the
+    // same URL we reach it on, including any ingress path prefix.
+    publicUrl: networkUrl,
   });
 }
 
@@ -763,7 +766,7 @@ export async function adminRemindCreator(networkUrl: string, creatorId: string):
     networkUrl,
     'POST',
     `/admin/creators/${encodeURIComponent(creatorId)}/remind`,
-    {},
+    { publicUrl: networkUrl },
   );
 }
 

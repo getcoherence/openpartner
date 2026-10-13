@@ -379,7 +379,11 @@ describe.skipIf(skipIntegration)('ops console — notifications', () => {
     const preview = await request(app).post('/platform-admin/notifications/creator-profile/run').set('Cookie', admin).send({ dryRun: true });
     expect(preview.status).toBe(200);
     expect(preview.body.eligible).toHaveLength(1);
-    expect(netCalls.at(-1)).toMatchObject({ method: 'POST', path: '/admin/creator-reminders/run', body: { dryRun: true } });
+    expect(netCalls.at(-1)).toMatchObject({
+      method: 'POST',
+      path: '/admin/creator-reminders/run',
+      body: { dryRun: true, publicUrl: netUrl },
+    });
 
     netReply = { status: 409, body: { error: 'profile_complete' } };
     const refused = await request(app).post('/platform-admin/creators/crt_1/remind').set('Cookie', admin).send({});
