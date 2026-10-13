@@ -222,9 +222,9 @@ programsRouter.get('/me/programs', requireAuth, async (req, res) => {
 
   if (p.role === 'admin') {
     const campaigns = (await db<ProgramRow>(TABLES.Program)
-      .select('id', 'name', 'destinationUrl', 'deepLinkAllowedDomains', 'startsAt', 'endsAt', 'partnersMayCustomizeCode')
+      .select('id', 'name', 'destinationUrl', 'deepLinkAllowedDomains', 'startsAt', 'endsAt', 'partnersMayCustomizeCode', 'customerReward')
       .orderBy('createdAt', 'desc')) as Array<
-        Pick<ProgramRow, 'id' | 'name' | 'destinationUrl' | 'deepLinkAllowedDomains' | 'startsAt' | 'endsAt' | 'partnersMayCustomizeCode'>
+        Pick<ProgramRow, 'id' | 'name' | 'destinationUrl' | 'deepLinkAllowedDomains' | 'startsAt' | 'endsAt' | 'partnersMayCustomizeCode' | 'customerReward'>
       >;
     return res.json({ programs: campaigns });
   }
@@ -242,6 +242,7 @@ programsRouter.get('/me/programs', requireAuth, async (req, res) => {
       `${TABLES.Program}.destinationUrl`,
       `${TABLES.Program}.deepLinkAllowedDomains`,
       `${TABLES.Program}.partnersMayCustomizeCode`,
+      `${TABLES.Program}.customerReward`,
       `${TABLES.Program}.startsAt as startsAt`,
       `${TABLES.Program}.endsAt as endsAt`,
       `${TABLES.PartnerProgram}.source as source`,
@@ -254,6 +255,7 @@ programsRouter.get('/me/programs', requireAuth, async (req, res) => {
       startsAt: Date | null;
       endsAt: Date | null;
       partnersMayCustomizeCode: boolean;
+      customerReward: CustomerReward | null;
       source: 'admin' | 'offering';
     }>;
   const campaigns = rows.filter((r) => campaignAcceptsNewActivity(r));

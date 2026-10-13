@@ -95,7 +95,15 @@ describe.skipIf(skipIntegration)('api integration', () => {
       expect(ungranted.status).toBe(403);
       expect(ungranted.body.error).toBe('campaign_not_granted');
       await db(TABLES.PartnerProgram).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, partnerId: owner, programId, source: 'admin' });
+      const reward = { type: 'percent_off', value: 15, duration: 'repeating', durationInMonths: 3 };
+      await db(TABLES.Program).where({ id: programId }).update({ customerReward: JSON.stringify(reward) });
       const programs = await request(app).get('/me/programs').set('Cookie', cookie);
+      expect(programs.body.programs).toHaveLength(1);
+      expect(programs.body.programs[0].customerReward).toEqual(reward);
+      expect(programs.body.programs[0].commissionRule).toBeUndefined();
+      const adminPrograms = await request(app).get('/me/programs').set('Authorization', `Bearer ${ADMIN_KEY}`);
+      expect(adminPrograms.body.programs[0].customerReward).toEqual(reward);
+      await db(TABLES.Program).where({ id: programId }).update({ customerReward: null });
       expect(programs.body.programs[0].partnersMayCustomizeCode).toBe(true);
       await db(TABLES.Program).where({ id: programId }).update({ partnersMayCustomizeCode: false });
       expect((await post(owner, 'DISABLED')).body.error).toBe('partner_customization_disabled');
