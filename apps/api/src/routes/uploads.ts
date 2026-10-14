@@ -125,14 +125,17 @@ uploadsRouter.post(
   requireAdmin,
   async (req, res) => {
     const { tenantId } = tenantOf(req);
-    // Guarded local, not req.body — see the logo route above.
+    // Guarded local, not req.body — see the logo route above. byteLength,
+    // not length: CodeQL doesn't treat Buffer.isBuffer as a guard, so a
+    // .length read here is flagged as array/string type confusion (the
+    // routes above carry dismissed false positives for exactly that).
     const body: unknown = req.body;
-    if (!Buffer.isBuffer(body) || body.length === 0) {
+    if (!Buffer.isBuffer(body) || body.byteLength === 0) {
       return res.status(400).json({ error: 'empty_body' });
     }
     let validated;
     try {
-      validated = validateImageUpload(req.header('content-type'), body.length);
+      validated = validateImageUpload(req.header('content-type'), body.byteLength);
     } catch (err) {
       if (err instanceof UploadError) return res.status(400).json({ error: err.code, detail: err.message });
       throw err;
