@@ -57,6 +57,8 @@ interface OfferingListItem {
   terms: OfferingTerms;
   createdAt: string;
   myStatus: MyStatus;
+  /** Operator-featured brand — the Network lists these first. */
+  featured?: boolean;
 }
 
 const MODEL_LABELS: Record<AttributionModel, string> = {
@@ -447,6 +449,25 @@ function OfferingDiscoverCard({ offering: o }: { offering: OfferingListItem }) {
             </div>
           )}
         </div>
+        {/* Featured brands sort to the top of the feed — say so, rather
+            than leave the placement looking organic. */}
+        {o.featured && (
+          <span
+            style={{
+              flexShrink: 0,
+              fontSize: 10.5,
+              fontWeight: 700,
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em',
+              color: theme.accent,
+              background: theme.accentA15,
+              borderRadius: 4,
+              padding: '2px 6px',
+            }}
+          >
+            Featured
+          </span>
+        )}
       </div>
 
       {o.description && (

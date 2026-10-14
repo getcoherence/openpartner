@@ -500,6 +500,60 @@ describe.skipIf(skipIntegration)('creator moderation (Network-proxied)', () => {
   });
 });
 
+describe.skipIf(skipIntegration)('marketplace featured placement (Network-proxied)', () => {
+  afterEach(() => {
+    delete process.env.NETWORK_URL;
+  });
+
+  it('lists Network vendors and replaces the featured list, with an audit row', async () => {
+    process.env.NETWORK_URL = netUrl;
+    process.env.NETWORK_ADMIN_API_KEY = 'netadm_test_key_0123456789abcdef';
+    const cookie = await makeOperator('admin');
+    netVendors = [{ id: 'vnd_coh', instanceUrl: 'x', status: 'active', reviewStatus: 'approved' }];
+
+    const list = await request(app).get('/platform-admin/marketplace').set('Cookie', cookie);
+    expect(list.status).toBe(200);
+    expect(list.body.vendors.map((v: { id: string }) => v.id)).toEqual(['vnd_coh']);
+
+    netCalls = [];
+    const until = '2026-12-31T23:59:59Z';
+    const put = await request(app)
+      .put('/platform-admin/marketplace/featured')
+      .set('Cookie', cookie)
+      .send({ vendors: [{ id: 'vnd_coh' }, { id: 'vnd_op', until }] });
+    expect(put.status).toBe(200);
+    const call = netCalls.find((c) => c.method === 'PUT' && c.path === '/admin/featured-vendors');
+    expect(call?.authorization).toBe('Bearer netadm_test_key_0123456789abcdef');
+    expect(call?.body).toEqual({ vendors: [{ id: 'vnd_coh', until: null }, { id: 'vnd_op', until }] });
+
+    const audit = await db(TABLES.PlatformAuditLog)
+      .where({ action: 'marketplace.featured' })
+      .orderBy('createdAt', 'desc')
+      .first();
+    expect(audit?.platformAdminEmail).toBe('ops@openpartner.test');
+    expect(audit?.detail).toEqual({ vendors: [{ id: 'vnd_coh', until: null }, { id: 'vnd_op', until }] });
+    await db(TABLES.PlatformAuditLog).where({ id: audit!.id }).del();
+  });
+
+  it('refuses duplicates and read-only operators without calling the Network', async () => {
+    process.env.NETWORK_URL = netUrl;
+    const admin = await makeOperator('admin');
+    const dup = await request(app)
+      .put('/platform-admin/marketplace/featured')
+      .set('Cookie', admin)
+      .send({ vendors: [{ id: 'vnd_a' }, { id: 'vnd_a' }] });
+    expect(dup.status).toBe(400);
+
+    const support = await makeOperator('support');
+    const res = await request(app)
+      .put('/platform-admin/marketplace/featured')
+      .set('Cookie', support)
+      .send({ vendors: [] });
+    expect(res.status).toBe(403);
+    expect(netCalls.filter((c) => c.method === 'PUT')).toHaveLength(0);
+  });
+});
+
 describe.skipIf(skipIntegration)('program moderation', () => {
   it('lists a brand programs (with destination) and blocks/unblocks one', async () => {
     const { slug } = await signup();

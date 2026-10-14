@@ -88,6 +88,27 @@ export interface NetworkCreator {
   emailOptOutAt?: string | null;
 }
 
+/** A Network vendor (brand) as the marketplace sees it. Featured fields are
+ *  absent when the Network predates featured placement. */
+export interface NetworkVendor {
+  id: string;
+  displayName?: string;
+  logoUrl?: string | null;
+  status: string;
+  reviewStatus?: ApprovalStatus;
+  partnerCount?: number;
+  /** Null = not featured; lower ranks list first. */
+  featuredRank?: number | null;
+  /** ISO end of the placement; null = no end date. */
+  featuredUntil?: string | null;
+  publishedOfferingCount?: number;
+}
+
+export interface FeaturedEntry {
+  id: string;
+  until: string | null;
+}
+
 export interface NotificationSettings {
   brandSetupReminders: boolean;
   creatorProfileReminders: boolean;
@@ -208,6 +229,8 @@ export function friendlyPlatformError(err: unknown): string {
       return 'This brand has no admin to email.';
     case 'mail_failed':
       return 'The email couldn’t be sent — check the platform mail settings and try again.';
+    case 'vendor_not_found':
+      return 'That brand is no longer on the Network — refresh and try again.';
     case 'network_not_configured':
       return 'NETWORK_URL / NETWORK_ADMIN_API_KEY aren’t set, so creator reminders can’t reach the Network.';
     default:
