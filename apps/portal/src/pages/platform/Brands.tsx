@@ -452,6 +452,38 @@ function ProgramsSection({ brandId, canWrite }: { brandId: string; canWrite: boo
                   {blocked && p.blockedReason ? ` · reason: ${p.blockedReason}` : ''}
                   {blocked && p.blockedByEmail ? ` · by ${p.blockedByEmail}` : ''}
                 </div>
+                {/* Marketplace media — images are an easy way to slip spam
+                    text past a text-only review, so show the cover itself. */}
+                {(p.marketplaceCoverUrl || p.marketplaceVideoUrl) && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
+                    {p.marketplaceCoverUrl && (
+                      <a href={p.marketplaceCoverUrl} target="_blank" rel="noopener noreferrer" title="Open cover image">
+                        <img
+                          src={p.marketplaceCoverUrl}
+                          alt="Marketplace cover"
+                          style={{
+                            width: 150,
+                            height: 50,
+                            objectFit: 'cover',
+                            borderRadius: 4,
+                            border: `1px solid ${theme.borderSubtle}`,
+                            display: 'block',
+                          }}
+                        />
+                      </a>
+                    )}
+                    {p.marketplaceVideoUrl && (
+                      <a
+                        href={p.marketplaceVideoUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ fontSize: 12, color: theme.accent, wordBreak: 'break-all' }}
+                      >
+                        Video: {p.marketplaceVideoUrl}
+                      </a>
+                    )}
+                  </div>
+                )}
               </div>
               {canWrite && (
                 <div style={{ flexShrink: 0 }}>

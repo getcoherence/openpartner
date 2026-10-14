@@ -5,6 +5,7 @@ import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../u
 import { theme } from '../../theme.js';
 import { creatorApi, ApiError } from './creator-api.js';
 import { categoryLabel } from '@openpartner/db';
+import { ListingBanner, ListingVideo, type OfferingVideo } from './ListingBanner.js';
 
 interface InvitationContext {
   id: string;
@@ -67,6 +68,10 @@ interface Offering {
      *  indefinite (no end date). Absent = legacy offering. */
     campaignEndsAt?: string | null;
   };
+  /** Brand's banner; null = logo-wash fallback. */
+  coverImageUrl?: string | null;
+  /** YouTube / Vimeo / Loom player, built by the Network. */
+  video?: OfferingVideo | null;
   createdAt: string;
   myStatus: MyStatus;
 }
@@ -240,6 +245,11 @@ function OfferingDetailBody({
   const cats = offering.terms.categories ?? [];
   return (
     <>
+      <ListingBanner
+        coverUrl={offering.coverImageUrl}
+        logoUrl={offering.vendorLogoUrl}
+        style={{ borderRadius: theme.radiusMd, maxHeight: 280, width: '100%', marginBottom: 18 }}
+      />
       <header style={{ display: 'flex', gap: 18, alignItems: 'flex-start', marginBottom: 18 }}>
         <BrandMark logoUrl={offering.vendorLogoUrl ?? null} name={offering.vendorName} size={56} />
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -331,6 +341,12 @@ function OfferingDetailBody({
           </QuickCell>
         )}
       </div>
+
+      {offering.video && (
+        <div style={{ maxWidth: 860, marginBottom: 18 }}>
+          <ListingVideo video={offering.video} title={`${offering.vendorName} video`} />
+        </div>
+      )}
 
       {/* Two-column body */}
       <div

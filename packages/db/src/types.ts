@@ -522,6 +522,12 @@ export interface ProgramRow {
    *  Null/empty = card renders without a description block (just brand
    *  mark + chips + CTA). Internal `name` stays admin-only. */
   marketplaceDescription: string | null;
+  /** Wide (≈3:1) banner for the marketplace card + detail page, uploaded
+   *  via POST /uploads/program-cover. Null = logo-washed fallback banner. */
+  marketplaceCoverUrl: string | null;
+  /** Canonical YouTube / Vimeo / Loom URL (see program-video.ts), embedded
+   *  on the marketplace detail page. */
+  marketplaceVideoUrl: string | null;
   /** The Network's Offering row id we're synced against. Null until
    *  the first successful federation upsert; subsequent edits PATCH
    *  this id instead of creating a new offering. */

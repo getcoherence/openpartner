@@ -6,7 +6,7 @@ import { theme } from '../theme.js';
 import { useBrand } from '../lib/useBrand.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
-import { PROGRAM_CATEGORIES, categoryLabel } from '@openpartner/db';
+import { PROGRAM_CATEGORIES, categoryLabel, parseVideoUrl } from '@openpartner/db';
 
 interface CommissionSubRule {
   trigger: 'every' | 'first' | 'subsequent';
@@ -44,6 +44,8 @@ interface Program {
   shareOnNetwork: boolean;
   partnersMayCustomizeCode?: boolean;
   marketplaceDescription: string | null;
+  marketplaceCoverUrl?: string | null;
+  marketplaceVideoUrl?: string | null;
   networkOfferingId: string | null;
   categories: string[];
   createdAt: string;
@@ -236,6 +238,8 @@ function EditProgramDates({
   const { whiteLabel } = useBrand();
   const [shareOnNetwork, setShareOnNetwork] = useState(campaign.shareOnNetwork);
   const [marketplaceDescription, setMarketplaceDescription] = useState(campaign.marketplaceDescription ?? '');
+  const [coverUrl, setCoverUrl] = useState<string | null>(campaign.marketplaceCoverUrl ?? null);
+  const [videoUrl, setVideoUrl] = useState(campaign.marketplaceVideoUrl ?? '');
   const [categories, setCategories] = useState<string[]>(campaign.categories ?? []);
   const [partnersMayCustomizeCode, setPartnersMayCustomizeCode] = useState(
     campaign.partnersMayCustomizeCode ?? false,
@@ -255,6 +259,8 @@ function EditProgramDates({
           customerReward,
           shareOnNetwork,
           marketplaceDescription: marketplaceDescription.trim() || null,
+          marketplaceCoverUrl: coverUrl,
+          marketplaceVideoUrl: videoUrl.trim() || null,
           categories,
           partnersMayCustomizeCode,
           holdbackDays: Number(holdbackDays) || 0,
@@ -329,6 +335,10 @@ function EditProgramDates({
           onDescriptionChange={setMarketplaceDescription}
           categories={categories}
           onCategoriesChange={setCategories}
+          coverUrl={coverUrl}
+          onCoverChange={setCoverUrl}
+          videoUrl={videoUrl}
+          onVideoChange={setVideoUrl}
         />
       )}
       <div style={{ marginBottom: 16 }}>
@@ -349,7 +359,8 @@ function EditProgramDates({
           disabled={
             save.isPending ||
             rules.length === 0 ||
-            (shareOnNetwork && !marketplaceDescription.trim())
+            (shareOnNetwork && !marketplaceDescription.trim()) ||
+            (shareOnNetwork && videoLinkInvalid(videoUrl))
           }
         >
           {save.isPending ? 'Saving…' : 'Save changes'}
@@ -400,6 +411,8 @@ function CreateProgram({
   const [customerReward, setCustomerReward] = useState<CustomerReward | null>(null);
   const [shareOnNetwork, setShareOnNetwork] = useState(true);
   const [marketplaceDescription, setMarketplaceDescription] = useState('');
+  const [coverUrl, setCoverUrl] = useState<string | null>(null);
+  const [videoUrl, setVideoUrl] = useState('');
   const [categories, setCategories] = useState<string[]>([]);
   const [partnersMayCustomizeCode, setPartnersMayCustomizeCode] = useState(false);
   const [windowDays, setWindowDays] = useState('60');
@@ -441,6 +454,9 @@ function CreateProgram({
             networkEnabled && shareOnNetwork && marketplaceDescription.trim()
               ? marketplaceDescription.trim()
               : undefined,
+          marketplaceCoverUrl: networkEnabled && shareOnNetwork && coverUrl ? coverUrl : undefined,
+          marketplaceVideoUrl:
+            networkEnabled && shareOnNetwork && videoUrl.trim() ? videoUrl.trim() : undefined,
           categories: categories.length > 0 ? categories : undefined,
           partnersMayCustomizeCode: partnersMayCustomizeCode || undefined,
           grantToAllPartners: grantToAllPartners || undefined,
@@ -513,6 +529,10 @@ function CreateProgram({
           onDescriptionChange={setMarketplaceDescription}
           categories={categories}
           onCategoriesChange={setCategories}
+          coverUrl={coverUrl}
+          onCoverChange={setCoverUrl}
+          videoUrl={videoUrl}
+          onVideoChange={setVideoUrl}
         />
       )}
       <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 14, marginBottom: 16 }}>
@@ -602,6 +622,7 @@ function CreateProgram({
             !destinationUrl ||
             urlProblem != null ||
             (networkEnabled && shareOnNetwork && !marketplaceDescription.trim()) ||
+            (networkEnabled && shareOnNetwork && videoLinkInvalid(videoUrl)) ||
             mut.isPending
           }
         >
@@ -888,6 +909,10 @@ function MarketplaceFields({
   onDescriptionChange,
   categories,
   onCategoriesChange,
+  coverUrl,
+  onCoverChange,
+  videoUrl,
+  onVideoChange,
 }: {
   shareOnNetwork: boolean;
   onShareChange: (v: boolean) => void;
@@ -895,6 +920,10 @@ function MarketplaceFields({
   onDescriptionChange: (v: string) => void;
   categories: string[];
   onCategoriesChange: (v: string[]) => void;
+  coverUrl: string | null;
+  onCoverChange: (v: string | null) => void;
+  videoUrl: string;
+  onVideoChange: (v: string) => void;
 }) {
   const toggleCategory = (slug: string) => {
     if (categories.includes(slug)) {
@@ -975,6 +1004,152 @@ function MarketplaceFields({
             Helps creators filter the marketplace. Pick the closest matches —
             don&rsquo;t tag every category, it dilutes filtering.
           </div>
+          <ProgramCoverField url={coverUrl} onChange={onCoverChange} />
+          <ProgramVideoField value={videoUrl} onChange={onVideoChange} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Non-empty and not a YouTube / Vimeo / Loom link — Save stays disabled
+ *  (the API would 400 it anyway). */
+function videoLinkInvalid(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed !== '' && parseVideoUrl(trimmed) === null;
+}
+
+/**
+ * Cover image for the marketplace card + program page. Uploads straight
+ * away (POST /uploads/program-cover) but only attaches to the program on
+ * Save, like every other field in the form.
+ */
+function ProgramCoverField({ url, onChange }: { url: string | null; onChange: (v: string | null) => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const upload = useMutation({
+    mutationFn: (file: File) => api<{ url: string }>('/uploads/program-cover', { method: 'POST', body: file }),
+    onSuccess: (r) => {
+      setError(null);
+      onChange(r.url);
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : 'Upload failed'),
+  });
+
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setError('Use a JPEG, PNG or WebP image.');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setError('Image too large — max 2 MB.');
+      return;
+    }
+    upload.mutate(file);
+  };
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <Label>Cover image (optional)</Label>
+      {url && (
+        <div
+          style={{
+            maxWidth: 480,
+            aspectRatio: '3 / 1',
+            borderRadius: 8,
+            overflow: 'hidden',
+            border: `1px solid ${theme.borderSubtle}`,
+            background: theme.surface2,
+            marginBottom: 8,
+          }}
+        >
+          <img src={url} alt="Cover preview" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <label style={{ display: 'inline-block' }}>
+          <input
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            onChange={onPick}
+            style={{ display: 'none' }}
+            disabled={upload.isPending}
+          />
+          <span
+            style={{
+              display: 'inline-block',
+              padding: '6px 12px',
+              background: theme.surface2,
+              border: `1px solid ${theme.border}`,
+              borderRadius: theme.radiusSm,
+              fontSize: 13,
+              color: theme.text,
+              cursor: upload.isPending ? 'wait' : 'pointer',
+              opacity: upload.isPending ? 0.6 : 1,
+            }}
+          >
+            {upload.isPending ? 'Uploading…' : url ? 'Replace image' : 'Upload image'}
+          </span>
+        </label>
+        {url && (
+          <Button size="sm" variant="ghost" onClick={() => onChange(null)}>
+            Remove
+          </Button>
+        )}
+      </div>
+      <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+        A wide banner across the top of your marketplace card and program page. 1500×500
+        (3:1) works best; JPEG, PNG or WebP up to 2 MB. Without one, the card shows a banner
+        made from your logo.
+      </div>
+      {error && <div style={{ marginTop: 6, fontSize: 12, color: theme.danger }}>{error}</div>}
+    </div>
+  );
+}
+
+/** YouTube / Vimeo / Loom link with a live player preview, parsed with the
+ *  same allowlist the API and the Network enforce. */
+function ProgramVideoField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const trimmed = value.trim();
+  const video = trimmed ? parseVideoUrl(trimmed) : null;
+  const invalid = trimmed !== '' && !video;
+  return (
+    <div style={{ marginTop: 16 }}>
+      <Label>Video (optional)</Label>
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="https://www.youtube.com/watch?v=…"
+        style={invalid ? { borderColor: `${theme.danger}88` } : undefined}
+      />
+      <div style={{ fontSize: 12, color: invalid ? theme.danger : theme.textDim, marginTop: 4 }}>
+        {invalid
+          ? 'Use a YouTube, Vimeo or Loom link.'
+          : 'A YouTube, Vimeo or Loom link, shown on your program’s marketplace page. Unlisted videos work too.'}
+      </div>
+      {video && (
+        <div
+          style={{
+            marginTop: 8,
+            maxWidth: 480,
+            aspectRatio: '16 / 9',
+            borderRadius: 8,
+            overflow: 'hidden',
+            border: `1px solid ${theme.borderSubtle}`,
+            background: '#000',
+          }}
+        >
+          <iframe
+            src={video.embedUrl}
+            title="Program video preview"
+            style={{ width: '100%', height: '100%', border: 0, display: 'block' }}
+            allow="encrypted-media; fullscreen; picture-in-picture"
+            allowFullScreen
+            loading="lazy"
+            referrerPolicy="strict-origin-when-cross-origin"
+          />
         </div>
       )}
     </div>

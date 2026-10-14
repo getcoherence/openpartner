@@ -49,6 +49,8 @@ export interface PlatformProgram {
   destinationUrl: string;
   deepLinkAllowedDomains: string | null;
   marketplaceDescription: string | null;
+  marketplaceCoverUrl: string | null;
+  marketplaceVideoUrl: string | null;
   categories: string[];
   shareOnNetwork: boolean;
   endsAt: string | null;
