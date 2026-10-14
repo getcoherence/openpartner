@@ -435,6 +435,8 @@ platformAdminRouter.get('/platform-admin/brands/:id/programs', requirePlatformAd
       'destinationUrl',
       'deepLinkAllowedDomains',
       'marketplaceDescription',
+      'marketplaceCoverUrl',
+      'marketplaceVideoUrl',
       'categories',
       'shareOnNetwork',
       'endsAt',

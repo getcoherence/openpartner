@@ -12,6 +12,7 @@ import {
   type CustomerRewardLike,
 } from '../../lib/commission-summary.js';
 import { PROGRAM_CATEGORIES, categoryLabel } from '@openpartner/db';
+import { ListingBanner, type OfferingVideo } from './ListingBanner.js';
 
 type MyStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'cancelled';
 type AttributionModel = 'last_click' | 'first_click' | 'linear' | 'position';
@@ -59,6 +60,9 @@ interface OfferingListItem {
   myStatus: MyStatus;
   /** Operator-featured brand — the Network lists these first. */
   featured?: boolean;
+  /** Brand's banner; null = logo-wash fallback. */
+  coverImageUrl?: string | null;
+  video?: OfferingVideo | null;
 }
 
 const MODEL_LABELS: Record<AttributionModel, string> = {
@@ -424,8 +428,11 @@ function OfferingDiscoverCard({ offering: o }: { offering: OfferingListItem }) {
         display: 'flex',
         flexDirection: 'column',
         minHeight: 280,
+        overflow: 'hidden',
       }}
     >
+      {/* Bleeds to the card edges over the Card's 20px padding. */}
+      <ListingBanner coverUrl={o.coverImageUrl} logoUrl={o.vendorLogoUrl} style={{ margin: '-20px -20px 14px' }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
         <BrandMark logoUrl={o.vendorLogoUrl} name={o.vendorName} />
         <div style={{ minWidth: 0, flex: 1 }}>

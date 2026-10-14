@@ -4,6 +4,7 @@ import { ulid } from 'ulid';
 import {
   PROGRAM_CATEGORY_SLUGS,
   TABLES,
+  parseVideoUrl,
   renderCommissionSummary,
   type ProgramRow,
   type CommissionRule,
@@ -21,6 +22,7 @@ import { tenantOf } from '../tenancy.js';
 import { campaignAcceptsNewActivity } from '../campaign-lifecycle.js';
 import { getWhiteLabelState } from '../white-label.js';
 import { customerRewardDelivery } from '../customer-rewards.js';
+import { getStorage } from '../storage.js';
 
 /**
  * Commission rule schema. The wire format is an array of triggered sub-rules.
@@ -126,6 +128,35 @@ const customerRewardSchema = z
     }
   });
 
+/** YouTube / Vimeo / Loom link, stored as its canonical share URL. Same
+ *  parser the Network uses, so anything accepted here also syncs. */
+const marketplaceVideoUrlSchema = z
+  .string()
+  .max(500)
+  .transform((s, ctx) => {
+    const video = parseVideoUrl(s);
+    if (!video) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Use a YouTube, Vimeo or Loom link' });
+      return z.NEVER;
+    }
+    return video.url;
+  });
+
+/** Where this tenant's program covers are stored. A cover must be one we
+ *  stored (POST /uploads/program-cover) — never an arbitrary third-party
+ *  image hotlinked onto the public marketplace. */
+function programCoverPrefix(tenantId: string): string {
+  return getStorage().publicUrl(`tenants/${tenantId}/program-covers/`);
+}
+
+function coverUrlProblem(tenantId: string, url: string | null | undefined) {
+  if (!url || url.startsWith(programCoverPrefix(tenantId))) return null;
+  return {
+    error: 'invalid_body',
+    detail: { fieldErrors: { marketplaceCoverUrl: ['upload the cover via POST /uploads/program-cover'] } },
+  };
+}
+
 const createSchema = z.object({
   name: z.string().min(1),
   commissionRule: commissionRuleSchema,
@@ -152,6 +183,11 @@ const createSchema = z.object({
   /** Public-facing description for the marketplace card. Optional —
    *  the card renders without a description block when null. */
   marketplaceDescription: z.string().max(4000).nullable().optional(),
+  /** Banner for the marketplace card + detail page; must be this brand's
+   *  upload from POST /uploads/program-cover. */
+  marketplaceCoverUrl: z.string().trim().max(1000).nullable().optional(),
+  /** YouTube / Vimeo / Loom link shown on the marketplace detail page. */
+  marketplaceVideoUrl: marketplaceVideoUrlSchema.nullable().optional(),
   /** Curated category slugs (see PROGRAM_CATEGORIES). Validated against
    *  the curated list — unknown slugs are rejected so a typo doesn't
    *  silently leak through. Empty array allowed (uncategorized). Capped
@@ -185,6 +221,8 @@ const updateSchema = z.object({
   customerReward: customerRewardSchema.nullable().optional(),
   shareOnNetwork: z.boolean().optional(),
   marketplaceDescription: z.string().max(4000).nullable().optional(),
+  marketplaceCoverUrl: z.string().trim().max(1000).nullable().optional(),
+  marketplaceVideoUrl: marketplaceVideoUrlSchema.nullable().optional(),
   categories: z
     .array(z.string().refine((s) => PROGRAM_CATEGORY_SLUGS.has(s), { message: 'unknown category' }))
     .max(5)
@@ -266,6 +304,8 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
   const { db, tenantId } = tenantOf(req);
   const body = createSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const coverProblem = coverUrlProblem(tenantId, body.data.marketplaceCoverUrl);
+  if (coverProblem) return res.status(400).json(coverProblem);
 
   // Smart default: shareOnNetwork=true when the brand is on the Network so
   // the common case is "create campaign, immediately listed." Brand can opt
@@ -312,6 +352,8 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
         : null,
       shareOnNetwork,
       marketplaceDescription: body.data.marketplaceDescription ?? null,
+      marketplaceCoverUrl: body.data.marketplaceCoverUrl || null,
+      marketplaceVideoUrl: body.data.marketplaceVideoUrl ?? null,
       categories: body.data.categories ?? [],
       partnersMayCustomizeCode: body.data.partnersMayCustomizeCode ?? false,
     })
@@ -387,6 +429,17 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
   if (body.data.marketplaceDescription !== undefined) {
     patch.marketplaceDescription = body.data.marketplaceDescription;
   }
+  if (body.data.marketplaceCoverUrl !== undefined) {
+    const cover = body.data.marketplaceCoverUrl || null;
+    // Only a changed cover is checked, so an existing one stays saveable
+    // even if the storage backend's public base has since moved.
+    if (cover !== existing.marketplaceCoverUrl) {
+      const coverProblem = coverUrlProblem(tenantId, cover);
+      if (coverProblem) return res.status(400).json(coverProblem);
+    }
+    patch.marketplaceCoverUrl = cover;
+  }
+  if (body.data.marketplaceVideoUrl !== undefined) patch.marketplaceVideoUrl = body.data.marketplaceVideoUrl;
   if (body.data.categories !== undefined) patch.categories = body.data.categories;
   if (body.data.partnersMayCustomizeCode !== undefined) {
     patch.partnersMayCustomizeCode = body.data.partnersMayCustomizeCode;

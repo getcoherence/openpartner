@@ -25,6 +25,8 @@ export {
   categoryLabel,
 } from './categories.js';
 export type { ProgramCategory } from './categories.js';
+export { parseVideoUrl, isTrustedEmbedUrl } from './program-video.js';
+export type { ProgramVideo, VideoProvider } from './program-video.js';
 
 export interface DbConfig {
   connectionString: string;

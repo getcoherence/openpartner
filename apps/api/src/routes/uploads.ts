@@ -109,6 +109,40 @@ uploadsRouter.post(
   },
 );
 
+// ---------- Program cover upload ----------
+//
+// Wide banner for a program's marketplace card + detail page. Returns the
+// URL instead of stamping a row: the program editor holds it until Save,
+// and the program routes only accept a cover under this tenant's
+// program-covers/ prefix, so nothing else can be passed off as one.
+uploadsRouter.post(
+  '/uploads/program-cover',
+  express.raw({
+    type: ['image/jpeg', 'image/png', 'image/webp'],
+    limit: MAX_UPLOAD_BYTES,
+  }),
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    const { tenantId } = tenantOf(req);
+    // Guarded local, not req.body — see the logo route above.
+    const body: unknown = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      return res.status(400).json({ error: 'empty_body' });
+    }
+    let validated;
+    try {
+      validated = validateImageUpload(req.header('content-type'), body.length);
+    } catch (err) {
+      if (err instanceof UploadError) return res.status(400).json({ error: err.code, detail: err.message });
+      throw err;
+    }
+    const key = newUploadKey(`tenants/${tenantId}/program-covers`, validated.ext);
+    await getStorage().put(key, body, { contentType: validated.contentType });
+    res.json({ url: getStorage().publicUrl(key) });
+  },
+);
+
 // ---------- Brand asset image upload ----------
 //
 // Same pattern as /uploads/logo but the URL goes back to the client
@@ -135,25 +169,34 @@ uploadsRouter.post(
 export function mountStaticUploads(app: import('express').Express): void {
   const dir = fsStorageDir();
   if (!dir) return;
-  app.use(
-    '/uploads',
-    express.static(dir, {
-      // Same cache header as S3 ACLs above. Keys change on every
-      // re-upload so immutable is safe.
-      maxAge: '365d',
-      immutable: true,
-      // These assets are intentionally public and may be embedded by a
-      // portal, custom domain, or Network page on a different origin.
-      // Helmet defaults CORP to same-origin, which blocks that valid use.
-      setHeaders: (res) => {
-        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-      },
-      // Don't fall through to the next handler on 404 — return a clean
-      // 404 instead of attempting to interpret /uploads/<key> as
-      // something else further down the stack.
-      fallthrough: false,
-      // Don't ever serve a directory listing.
-      index: false,
-    }),
-  );
+  const serve = express.static(dir, {
+    // Same cache header as S3 ACLs above. Keys change on every
+    // re-upload so immutable is safe.
+    maxAge: '365d',
+    immutable: true,
+    // These assets are intentionally public and may be embedded by a
+    // portal, custom domain, or Network page on a different origin.
+    // Helmet defaults CORP to same-origin, which blocks that valid use.
+    setHeaders: (res) => {
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    },
+    // Don't fall through to the next handler on 404 — return a clean
+    // 404 instead of attempting to interpret /uploads/<key> as
+    // something else further down the stack.
+    fallthrough: false,
+    // Don't ever serve a directory listing.
+    index: false,
+  });
+  // Reads only. With fallthrough:false the static handler would answer a
+  // POST with 405, and in single-tenant mode the upload routes themselves
+  // live under /uploads (POST /uploads/logo, /uploads/program-cover, …).
+  app.use('/uploads', (req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    serve(req, res, (err?: unknown) => {
+      // fallthrough:false hands a missing file to next(err) as a 404 —
+      // answer it here, or the app's error handler turns it into a 500.
+      if ((err as { status?: number } | undefined)?.status === 404) return void res.status(404).end();
+      next(err);
+    });
+  });
 }

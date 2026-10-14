@@ -111,6 +111,7 @@ export async function syncCampaignToMarketplace(
         productUrl: campaign.destinationUrl,
         terms,
         published: true,
+        ...mediaPayload(campaign),
       });
     } catch (err) {
       logSyncError('update', campaign.id, err);
@@ -126,12 +127,28 @@ export async function syncCampaignToMarketplace(
       vendorProgramId: campaign.id,
       terms,
       published: true,
+      ...mediaPayload(campaign),
     })) as { id?: string } | null;
     return created?.id ?? null;
   } catch (err) {
     logSyncError('create', campaign.id, err);
     return null;
   }
+}
+
+/**
+ * Cover + video for the listing. The Network only accepts an https cover
+ * (it renders on the public marketplace), and one refused field fails the
+ * whole offering write — so a self-host serving uploads over plain http
+ * lists without a cover rather than not syncing at all. An older Network
+ * that predates these fields ignores them.
+ */
+function mediaPayload(campaign: ProgramRow): { coverImageUrl: string | null; videoUrl: string | null } {
+  const cover = campaign.marketplaceCoverUrl;
+  return {
+    coverImageUrl: cover && cover.startsWith('https://') ? cover : null,
+    videoUrl: campaign.marketplaceVideoUrl ?? null,
+  };
 }
 
 function buildTermsPayload(campaign: ProgramRow, derivedSummary: string): OfferingTerms {
