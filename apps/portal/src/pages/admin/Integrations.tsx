@@ -98,7 +98,9 @@ function WhyCard() {
         with the key as a Bearer token. {programName} ties the event to the
         originating click via the <code>userId</code> you assigned at
         signup, then accrues commission per the bound campaign&rsquo;s
-        rule.
+        rule. Include an <code>externalEventId</code> (your CRM&rsquo;s id
+        for that deal stage change) so a retried webhook is recognised
+        instead of paying the commission twice.
       </p>
       <p style={{ fontSize: 13, color: theme.textMuted, margin: 0, lineHeight: 1.55 }}>
         Keys here carry five scopes (events:write, partners:write,
@@ -385,6 +387,13 @@ function PayloadGuide() {
         can be any string — use <code>opportunity_won</code> for B2B sales,{' '}
         <code>trial_converted</code> for trial→paid, or your own conventions.
       </p>
+      <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 12px' }}>
+        Always send <code>externalEventId</code>, a stable id for this one event (deal id plus
+        stage works). Zapier, Make and CRM webhooks retry on timeouts. A retry with the same key
+        returns the original result with <code>&quot;replayed&quot;: true</code> and records
+        nothing new, so the commission is paid once. Reusing a key for a different event returns
+        a <code>409</code>.
+      </p>
       <pre
         style={{
           padding: 14,
@@ -403,6 +412,7 @@ function PayloadGuide() {
     "type": "opportunity_won",
     "value": 4500.00,
     "currency": "USD",
+    "externalEventId": "0061k00000ABC:closed_won",
     "metadata": {
       "deal_id": "0061k00000ABC",
       "stage": "Closed Won"

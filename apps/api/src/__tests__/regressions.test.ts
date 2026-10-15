@@ -4,7 +4,7 @@
  * stay fixed even as surrounding code changes.
  *
  * Groups:
- *   1. Stripe webhook idempotency (externalEventId + partial unique idx)
+ *   1. Stripe webhook idempotency ((tenantId, externalEventId) unique)
  *   2. Dashboard multi-touch weight math (Σ value × weight)
  *   3. Fraud-unflag over-attribution (drop accrued rows before re-run)
  *   4. Webhook retry endpoint-mismatch verified before firing
@@ -83,8 +83,8 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
     await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId, userId });
 
     // Directly insert two rows with the same externalEventId — emulates
-    // what the Stripe handler would try on a retry. The partial unique
-    // index must block the second.
+    // what the Stripe handler would try on a retry. The per-tenant unique
+    // constraint must block the second.
     const externalEventId = `evt_${ulid()}`;
     await db(TABLES.Event).insert({
       id: ulid(),
@@ -110,7 +110,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
         metadata: { stripeEventId: externalEventId },
         ts: new Date(),
       })
-      .onConflict('externalEventId')
+      .onConflict(['tenantId', 'externalEventId'])
       .ignore()
       .returning('id');
 

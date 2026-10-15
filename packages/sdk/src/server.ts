@@ -16,8 +16,8 @@
  *   // On signup:
  *   await op.trackEvent({ userId, type: 'signup' });
  *
- *   // On invoice paid:
- *   await op.trackEvent({ userId, type: 'invoice_paid', value: 249, currency: 'USD' });
+ *   // On invoice paid — externalEventId makes retries safe:
+ *   await op.trackEvent({ userId, type: 'invoice_paid', value: 249, currency: 'USD', externalEventId: invoice.id });
  */
 
 import { OpenPartnerError, requestJson, type EventResponse, type IdentifyResponse, type JsonRequestInit } from './shared.js';
@@ -52,6 +52,17 @@ export interface TrackEventParams {
   metadata?: Record<string, unknown>;
   /** Event time. Defaults to now on the server. Pass ISO 8601 to override. */
   ts?: string;
+  /**
+   * Idempotency key: your system's stable id for this one event (order id,
+   * invoice id, CRM deal-stage change id), max 120 chars. Strongly
+   * recommended. A retried call with the same key returns the original
+   * event and attribution (`replayed: true`) instead of recording and
+   * commissioning it twice. Unique per event, not per order: an order's
+   * `subscription_created` and its `invoice_paid` need different keys.
+   * Reusing a key for a different userId / type / value / currency throws
+   * an `OpenPartnerError` with code `external_event_id_conflict` (409).
+   */
+  externalEventId?: string;
 }
 
 export class OpenPartnerServer {

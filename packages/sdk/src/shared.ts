@@ -27,7 +27,11 @@ export interface IdentifyResponse {
 }
 
 export interface EventAttribution {
-  status: 'attributed' | 'no_identity' | 'no_click' | 'outside_window' | 'already_attributed';
+  /**
+   * 'not_attributed' only appears on a replay (`replayed: true`) of an event
+   * that didn't attribute the first time; which miss it was isn't stored.
+   */
+  status: 'attributed' | 'no_identity' | 'no_click' | 'outside_window' | 'already_attributed' | 'not_attributed';
   model?: 'last_click' | 'first_click' | 'linear' | 'position';
   touches?: Array<{
     clickId: string;
@@ -42,6 +46,9 @@ export interface EventResponse {
   ok: boolean;
   eventId: string;
   attribution: EventAttribution;
+  /** True when an earlier call with the same externalEventId already
+   *  recorded this event; eventId and attribution are that call's. */
+  replayed?: boolean;
 }
 
 /**

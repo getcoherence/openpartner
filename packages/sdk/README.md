@@ -68,9 +68,12 @@ await op.trackEvent({
   type: 'invoice_paid',
   value: 249,
   currency: 'USD',
+  externalEventId: invoice.id, // makes retries safe; see below
   metadata: { stripeInvoiceId: invoice.id },
 });
 ```
+
+Pass `externalEventId` on every call. Use your system's stable id for that one event, such as the invoice id or order id. Your job queue or HTTP client will retry when a request times out. Without a key, each retry records a second event and pays a second commission. With a key, a retry resolves with the original `eventId` and attribution plus `replayed: true`, and nothing new is written. That includes duplicates sent at the same moment. Use one key per event, not per order: an order's `subscription_created` and its `invoice_paid` need different keys. Reusing a key for a different `userId`, `type`, `value` or `currency` throws an `OpenPartnerError` with code `external_event_id_conflict` (409).
 
 The response includes the attribution result:
 
@@ -87,6 +90,8 @@ The response includes the attribution result:
   }
 }
 ```
+
+A replay adds `replayed: true`. Its `attribution` is rebuilt from the rows the first call wrote. If that call didn't attribute, the status is `'not_attributed'`, because the specific reason isn't stored.
 
 For multi-touch campaigns (`linear`, `position`, etc.) `touches` will contain one entry per attributed click with a fractional `weight`.
 
