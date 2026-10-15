@@ -137,7 +137,7 @@ Set `OPENPARTNER_MODE` in `.env`:
 | Mode | Billing | Partner payouts |
 | --- | --- | --- |
 | `selfhost` | none | operator handles out-of-band |
-| `flat` | merchant subscription (Stripe Checkout via `POST /billing/checkout`; set `STRIPE_FLAT_PRICE_ID`) | Stripe Connect Standard |
+| `flat` | Flex subscription via Stripe Checkout (`POST /billing/checkout`): a monthly base price (`STRIPE_FLAT_PRICE_ID`), plus 1.5% of attributed GMV on the attributed-GMV usage meter when `STRIPE_FLAT_USAGE_PRICE_ID` is set. Without it, Checkout bills only the base. `apps/api/scripts/setup-stripe.mjs` creates both ($49/mo + 1.5%). | Stripe Connect Standard |
 | `revshare` | 3% of attributed GMV, billed to the merchant through a Stripe usage meter (`STRIPE_REVSHARE_USAGE_PRICE_ID`; usage is reported daily by the scheduler, or on demand via `POST /billing/report-usage`). Partners receive their full commission — `Payout.metadata.platformFee` is a ledger note, not a deduction. | Stripe Connect Standard |
 
 See `/billing/status` for the current state, and `/billing/portal` in `flat` mode for the merchant's Stripe customer portal.
