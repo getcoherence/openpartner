@@ -31,6 +31,7 @@ import { mirrorHostedBillingState, type MirroredSubscriptionStatus } from '../bi
 import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
 import { getMode } from '../stripe.js';
 import { getTenancyMode } from '../tenancy.js';
+import { dispatchCommissionEvents } from '../commission-events.js';
 
 const stripeKey = process.env.STRIPE_SECRET_KEY;
 
@@ -224,6 +225,10 @@ stripeWebhookRouter.post(
       return res.json({ ok: true, skipped: event.type, reason: 'unresolved_tenant' });
     }
 
+    // Commissions a full refund reversed inside the transaction below.
+    // commission.reversed fires only once runInTenant has committed, so a
+    // rollback never announces a reversal that didn't happen.
+    let reversedCommissions: CommissionRow[] = [];
     const result = await runInTenant(tenantId, async (trx) => {
       const connectResult = await handleConnectEvent(trx, event!, tenantId);
       if (connectResult) return { connect: connectResult };
@@ -241,6 +246,7 @@ stripeWebhookRouter.post(
 
       const mapped = await mapStripeEvent(trx, stripe!, event!, tenantId, redeemed);
       if (!mapped) return { skipped: event!.type };
+      reversedCommissions = mapped.reversedCommissions ?? [];
 
       // Idempotency: a Stripe retry (5xx, timeout) re-delivers the same
       // event.id. Insert with ON CONFLICT DO NOTHING on the per-tenant
@@ -281,6 +287,7 @@ stripeWebhookRouter.post(
       return { eventId, attribution };
     });
 
+    void dispatchCommissionEvents(tenantId, 'commission.reversed', reversedCommissions, { reason: 'refund' });
     res.json({ ok: true, ...result });
   },
 );
@@ -869,6 +876,10 @@ interface MappedEvent {
   value?: number;
   currency?: string;
   metadata?: Record<string, unknown>;
+  /** Rows a full refund flipped to 'reversed'. Not persisted on the
+   *  Event; the webhook handler fires commission.reversed for them
+   *  after commit. */
+  reversedCommissions?: CommissionRow[];
 }
 
 // invoice.billing_reason values for invoices after a subscription's first.
@@ -1023,7 +1034,7 @@ async function mapStripeEvent(
       const reversal =
         invoiceId && isFullRefund
           ? await reverseCommissionsForInvoice(trx, invoiceId)
-          : { reversed: 0, alreadyPaid: 0, heldInTransfer: 0 };
+          : { reversed: 0, reversedRows: [], alreadyPaid: 0, heldInTransfer: 0 };
 
       return {
         userId,
@@ -1042,6 +1053,7 @@ async function mapStripeEvent(
           alreadyPaidCommissions: reversal.alreadyPaid,
           ...(reversal.heldInTransfer > 0 ? { heldInTransferCommissions: reversal.heldInTransfer } : {}),
         },
+        reversedCommissions: reversal.reversedRows,
       };
     }
     case 'charge.dispute.created': {
@@ -1101,20 +1113,22 @@ async function mapStripeEvent(
  * Event(metadata.stripeInvoiceId) → Attribution → Commission. Only flips
  * Commissions in 'accrued' or 'approved' status; 'paid' Commissions stay
  * paid (the partner has the money) and the count is returned so the
- * refund Event can record that admin attention is needed.
+ * refund Event can record that admin attention is needed. The flipped
+ * rows are returned too, for the caller's post-commit
+ * commission.reversed dispatch.
  */
 async function reverseCommissionsForInvoice(
   trx: Knex.Transaction,
   invoiceId: string,
-): Promise<{ reversed: number; alreadyPaid: number; heldInTransfer: number }> {
+): Promise<{ reversed: number; reversedRows: CommissionRow[]; alreadyPaid: number; heldInTransfer: number }> {
   const sourceEvents = await trx<EventRow>(TABLES.Event)
     .whereRaw(`"metadata"->>'stripeInvoiceId' = ?`, [invoiceId])
     .where('type', 'invoice_paid');
-  if (sourceEvents.length === 0) return { reversed: 0, alreadyPaid: 0, heldInTransfer: 0 };
+  if (sourceEvents.length === 0) return { reversed: 0, reversedRows: [], alreadyPaid: 0, heldInTransfer: 0 };
 
   const eventIds = sourceEvents.map((e) => e.id);
   const attributions = await trx<AttributionRow>(TABLES.Attribution).whereIn('eventId', eventIds);
-  if (attributions.length === 0) return { reversed: 0, alreadyPaid: 0, heldInTransfer: 0 };
+  if (attributions.length === 0) return { reversed: 0, reversedRows: [], alreadyPaid: 0, heldInTransfer: 0 };
   const attributionIds = attributions.map((a) => a.id);
 
   // Funding interlock (spec §8): commissions in a live allocation can't be
@@ -1144,7 +1158,7 @@ async function reverseCommissionsForInvoice(
           .whereIn('status', ['accrued', 'approved']),
       )
         .update({ status: 'reversed' })
-        .returning('id')) as Array<{ id: string }>);
+        .returning('*')) as CommissionRow[]);
   const reversed = reversedRows.length;
 
   const alreadyPaidRow = (await trx<CommissionRow>(TABLES.Commission)
@@ -1201,6 +1215,7 @@ async function reverseCommissionsForInvoice(
 
   return {
     reversed,
+    reversedRows,
     // Includes rows that became paid between the two reads; leaving them
     // out reported a cleanly-handled refund when money had just moved.
     alreadyPaid: alreadyPaid + lateNewlyPaid,

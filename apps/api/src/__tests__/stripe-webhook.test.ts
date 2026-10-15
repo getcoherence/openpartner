@@ -72,10 +72,26 @@ vi.mock('stripe', async () => {
   return { default: MockedStripe };
 });
 
+// Capture outbound commission.* events; everything else in the
+// dispatcher module stays real.
+vi.mock('../webhook-dispatcher.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../webhook-dispatcher.js')>();
+  return { ...actual, dispatchEvent: vi.fn() };
+});
+
 // Imports must follow the env + mock setup so they pick up the right config.
 const { DEFAULT_TENANT_ID, TABLES } = await import('@openpartner/db');
 const { db } = await import('../db.js');
 const { createApp } = await import('../app.js');
+const { dispatchEvent } = await import('../webhook-dispatcher.js');
+
+/** Payloads of every dispatchEvent call for `event`. */
+function dispatched(event: string): Array<Record<string, unknown>> {
+  return vi
+    .mocked(dispatchEvent)
+    .mock.calls.filter((c) => c[1] === event)
+    .map((c) => c[2] as Record<string, unknown>);
+}
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
@@ -169,6 +185,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   resetStripeApi();
+  vi.mocked(dispatchEvent).mockClear();
   if (skipIntegration) return;
   for (const t of TABLES_TO_CLEAN) await db(t).del();
 });
@@ -1333,7 +1350,7 @@ describe.skipIf(skipIntegration)('stripe webhook — refund + reversal flow', ()
 
     // 2. The refund: charge.refunded with .invoice pointing at our stored
     //    stripeInvoiceId. Customer is embedded so no real API call.
-    const refundRes = await postWebhook({
+    const refundStripeEvent = {
       id: `evt_${ulid()}`,
       type: 'charge.refunded',
       created: Math.floor(Date.now() / 1000),
@@ -1347,9 +1364,36 @@ describe.skipIf(skipIntegration)('stripe webhook — refund + reversal flow', ()
           currency: 'usd',
         },
       },
-    });
+    };
+    const refundRes = await postWebhook(refundStripeEvent);
 
     expect(refundRes.status).toBe(200);
+
+    // commission.reversed fires once per reversed commission (reason
+    // 'refund'), carrying the click + conversion event it came from so
+    // partner postbacks can match it to the original conversion.
+    await vi.waitFor(() => expect(dispatched('commission.reversed')).toHaveLength(accruedBefore.length));
+    for (const c of accruedBefore) {
+      const attribution = invoiceAttributions.find((a) => a.id === c.attributionId)!;
+      expect(dispatched('commission.reversed')).toContainEqual({
+        commissionId: c.id,
+        partnerId: c.partnerId,
+        attributionId: c.attributionId,
+        amount: c.amount,
+        currency: c.currency,
+        clickId: attribution.clickId,
+        eventId: invoicePaidEvent!.id,
+        eventType: 'invoice_paid',
+        programId: attribution.programId,
+        reason: 'refund',
+      });
+    }
+    // Stripe redelivering the same event reverses nothing new and must
+    // not announce the reversal twice.
+    const redelivery = await postWebhook(refundStripeEvent);
+    expect(redelivery.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(dispatched('commission.reversed')).toHaveLength(accruedBefore.length);
 
     // Post-condition: invoice-derived Commissions are now reversed; other
     // commissions (e.g. the signup $0) are untouched.
@@ -1549,6 +1593,8 @@ describe.skipIf(skipIntegration)('stripe webhook — partial refund stopgap', ()
     const after = await db(TABLES.Commission)
       .whereIn('attributionId', invoiceAttributions.map((a) => a.id));
     expect(after.every((c) => c.status === 'accrued')).toBe(true);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(dispatched('commission.reversed')).toHaveLength(0);
 
     const refundEvent = await db(TABLES.Event).where({ type: 'refund' }).first();
     const md = refundEvent!.metadata as { reversedCommissions?: number; partialRefundReversalSkipped?: boolean; fullRefund?: boolean };

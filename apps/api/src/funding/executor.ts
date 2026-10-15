@@ -28,6 +28,7 @@ import {
 } from '@openpartner/db';
 import { requireStripe } from '../stripe.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
+import { dispatchCommissionEvents } from '../commission-events.js';
 import { casBatch, minorToMajorString, TRANSFER_DEADLINE_DAYS } from './state.js';
 
 /** Ambiguity window: within it, retrying the frozen key is safe (Stripe
@@ -428,15 +429,7 @@ async function finalizeTransfer(
     method: 'stripe_connect',
     commissionIds,
   });
-  for (const c of commissions) {
-    dispatchEvent(batch.tenantId, 'commission.paid', {
-      commissionId: c.id,
-      partnerId: c.partnerId,
-      amount: c.amount,
-      currency: c.currency,
-      payoutId,
-    });
-  }
+  void dispatchCommissionEvents(batch.tenantId, 'commission.paid', commissions, { payoutId });
 }
 
 /**

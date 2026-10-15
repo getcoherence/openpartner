@@ -119,6 +119,9 @@ describe.skipIf(skipIntegration)('autoApproveMatureCommissions', () => {
     const id = await seedAccruedCommission({ programHoldbackDays: 7, accruedDaysAgo: 10 });
     const res = await autoApproveMatureCommissions(db);
     expect(res.approvedCount).toBe(1);
+    // The approved rows come back for the post-commit commission.approved
+    // dispatch (scheduler.ts runCommissionAutoApproveJob).
+    expect(res.approved.map((c) => [c.id, c.status])).toEqual([[id, 'approved']]);
     expect(await statusOf(id)).toBe('approved');
   });
 

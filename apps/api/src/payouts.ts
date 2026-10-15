@@ -51,6 +51,7 @@ import { REVSHARE_FEE_BPS, type OpenPartnerMode } from './stripe.js';
 import type { PayoutTransferMeta } from './payout-transfers.js';
 import { getTenantBillingState } from './billing-plan.js';
 import { dispatchEvent } from './webhook-dispatcher.js';
+import { dispatchCommissionEvents } from './commission-events.js';
 import { fundingEnabled, tryTenantPayoutLock } from './funding/state.js';
 import {
   getFundingAuthorization,
@@ -331,15 +332,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
         commissionIds: commissions.map((c) => c.id),
         platformFee: platformFee || undefined,
       });
-      for (const c of commissions) {
-        dispatchEvent(tenantId, 'commission.paid', {
-          commissionId: c.id,
-          partnerId: c.partnerId,
-          amount: c.amount,
-          currency: c.currency,
-          payoutId,
-        });
-      }
+      void dispatchCommissionEvents(tenantId, 'commission.paid', commissions, { payoutId });
       results.push({
         payoutId,
         partnerId: partner.id,

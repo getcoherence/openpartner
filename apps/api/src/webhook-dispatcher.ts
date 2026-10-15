@@ -176,33 +176,18 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     commissionId: `01J${'0'.repeat(23)}`,
     partnerId: `01J${'1'.repeat(23)}`,
     attributionId: `01J${'2'.repeat(23)}`,
+    clickId: `01J${'4'.repeat(23)}`,
+    eventId: `01J${'3'.repeat(23)}`,
     programId: 'cmp_default',
     amount: '12.00',
     currency: 'USD',
     eventType: 'invoice_paid',
     eventValue: 60.0,
   }),
-  'commission.approved': () => ({
-    commissionId: `01J${'0'.repeat(23)}`,
-    partnerId: `01J${'1'.repeat(23)}`,
-    amount: '12.00',
-    currency: 'USD',
-    approvedAt: new Date().toISOString(),
-  }),
-  'commission.paid': () => ({
-    commissionId: `01J${'0'.repeat(23)}`,
-    payoutId: `01J${'5'.repeat(23)}`,
-    partnerId: `01J${'1'.repeat(23)}`,
-    amount: '12.00',
-    currency: 'USD',
-  }),
-  'commission.reversed': () => ({
-    commissionId: `01J${'0'.repeat(23)}`,
-    partnerId: `01J${'1'.repeat(23)}`,
-    amount: '12.00',
-    currency: 'USD',
-    reason: 'refund',
-  }),
+  // Lifecycle events share commission-events.ts's payload shape.
+  'commission.approved': () => sampleLifecyclePayload(),
+  'commission.paid': () => sampleLifecyclePayload({ payoutId: `01J${'5'.repeat(23)}` }),
+  'commission.reversed': () => sampleLifecyclePayload({ reason: 'refund' }),
   'partner.created': () => ({
     partnerId: `01J${'1'.repeat(23)}`,
     email: 'sample@example.com',
@@ -232,6 +217,21 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     commissionCount: 10,
   }),
 };
+
+function sampleLifecyclePayload(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    commissionId: `01J${'0'.repeat(23)}`,
+    partnerId: `01J${'1'.repeat(23)}`,
+    attributionId: `01J${'2'.repeat(23)}`,
+    amount: '12.00',
+    currency: 'USD',
+    clickId: `01J${'4'.repeat(23)}`,
+    eventId: `01J${'3'.repeat(23)}`,
+    eventType: 'invoice_paid',
+    programId: 'cmp_default',
+    ...extra,
+  };
+}
 
 function payloadFor(eventType: string, endpointId: string): Record<string, unknown> {
   const factory = SYNTHETIC_PAYLOADS[eventType];

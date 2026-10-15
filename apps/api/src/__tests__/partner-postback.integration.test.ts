@@ -262,4 +262,79 @@ describe.skipIf(skipIntegration)('partner postback', () => {
     await new Promise((r) => setTimeout(r, 200));
     expect(calls).toHaveLength(0);
   });
+
+  it('fills {click_id} / {event_id} / {event_type} on commission.approved and commission.reversed', async () => {
+    // These macros used to resolve on commission.accrued only, so a
+    // tracker got approvals and reversals it couldn't match to a click.
+    const partnerRes = await request(app)
+      .post('/partners')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ email: 'pb-lifecycle@example.com', name: 'Lifecycle' });
+    const partnerId = partnerRes.body.id;
+    const campaignRes = await request(app)
+      .post('/programs')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({
+        name: 'Lifecycle',
+        commissionRule: { type: 'percent', value: 20 },
+        destinationUrl: 'https://example.com/',
+      });
+    const programId = campaignRes.body.id;
+    const linkRes = await request(app)
+      .post(`/partners/${partnerId}/links`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ linkKey: `life_${Date.now()}`, programId });
+
+    for (const event of ['commission.approved', 'commission.reversed']) {
+      await db<PartnerPostbackRow>(TABLES.PartnerPostback).insert({
+        id: ulid(),
+        tenantId: DEFAULT_TENANT_ID,
+        partnerId,
+        url: `${receiverUrl}/${event}?cid={click_id}&tx={event_id}&et={event_type}&prog={program_id}`,
+        events: JSON.stringify([event]) as never,
+        enabled: true,
+      });
+    }
+
+    const clickId = ulid();
+    await db(TABLES.Click).insert({
+      id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
+      linkId: linkRes.body.id,
+      partnerId,
+      programId,
+      landingUrl: 'https://example.com/',
+      ipHash: 'h',
+      userAgent: 't',
+      referer: null,
+      fraudFlag: null,
+    });
+    const userId = `u_${Date.now()}_life`;
+    await request(app).post('/attribution/identify').send({ cref: clickId, userId });
+    await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId, type: 'invoice_paid', value: 100, currency: 'USD' });
+    const commission = await waitFor(async () => db(TABLES.Commission).where({ partnerId }).first());
+    const sourceEvent = await db(TABLES.Event).where({ userId, type: 'invoice_paid' }).first();
+
+    const approve = await request(app)
+      .post(`/commissions/${commission.id}/approve`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(approve.status).toBe(200);
+    const approved = await waitFor(async () => calls.find((c) => c.url.startsWith('/commission.approved')));
+
+    const reverse = await request(app)
+      .post(`/commissions/${commission.id}/reverse`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(reverse.status).toBe(200);
+    const reversed = await waitFor(async () => calls.find((c) => c.url.startsWith('/commission.reversed')));
+
+    for (const call of [approved, reversed]) {
+      expect(call.url).toContain(`cid=${clickId}`);
+      expect(call.url).toContain(`tx=${sourceEvent!.id}`);
+      expect(call.url).toContain('et=invoice_paid');
+      expect(call.url).toContain(`prog=${programId}`);
+    }
+  });
 });

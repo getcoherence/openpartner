@@ -6,13 +6,19 @@
  * require manual approval (no behavior change for legacy / opted-out
  * brands). The job is safe to re-run; the WHERE clause is the source
  * of truth and a no-op once everything's been swept.
+ *
+ * Returns the approved rows so the caller can fire commission.approved
+ * once the sweep's transaction has committed — this runs inside the
+ * scheduler's per-tenant transaction, so dispatching from here would
+ * announce approvals a rollback could still undo.
  */
 
 import type { Knex } from 'knex';
-import { TABLES } from '@openpartner/db';
+import { TABLES, type CommissionRow } from '@openpartner/db';
 
 export interface AutoApproveResult {
   approvedCount: number;
+  approved: CommissionRow[];
 }
 
 export async function autoApproveMatureCommissions(
@@ -48,9 +54,9 @@ export async function autoApproveMatureCommissions(
        and coalesce(pc."holdbackDays", cp."holdbackDays") is not null
        and coalesce(pc."holdbackDays", cp."holdbackDays") > 0
        and c."accruedAt" + (coalesce(pc."holdbackDays", cp."holdbackDays") * interval '1 day') <= now()
-    returning c.id
+    returning c.*
     `,
-  )) as { rows: Array<{ id: string }> };
+  )) as { rows: CommissionRow[] };
 
-  return { approvedCount: result.rows.length };
+  return { approvedCount: result.rows.length, approved: result.rows };
 }

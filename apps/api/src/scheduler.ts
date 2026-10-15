@@ -43,6 +43,7 @@ import { drainOutbox, reportNetworkPayoutsToNetwork, sendHeartbeat } from './net
 import { getMode } from './stripe.js';
 import { sweepCampaignEndNotifications } from './campaign-end-notifications.js';
 import { autoApproveMatureCommissions } from './commission-auto-approve.js';
+import { dispatchCommissionEvents } from './commission-events.js';
 import { reverifyPortalDomains, sweepWhiteLabelEntitlement } from './portal-domains.js';
 
 interface ScheduledJob {
@@ -276,10 +277,26 @@ const JOBS: ScheduledJob[] = [
   {
     name: 'commission-auto-approve',
     cronExpr: '15 5 * * *',
-    description: 'Per tenant: auto-approve accrued commissions whose holdback has elapsed (daily 05:15 UTC)',
-    handler: async () => forEachActiveTenant((trx) => autoApproveMatureCommissions(trx)),
+    description: 'Per tenant: auto-approve accrued commissions whose holdback has elapsed, then fire commission.approved (daily 05:15 UTC)',
+    handler: runCommissionAutoApproveJob,
   },
 ];
+
+/**
+ * The holdback sweep, then commission.approved (webhook + partner
+ * postback) for every row it approved. Dispatch waits for
+ * forEachActiveTenant to return, by which point each tenant's
+ * transaction has committed, so a subscriber that re-fetches sees the
+ * commission approved and a rolled-back tenant announces nothing.
+ * Returns counts only; the approved rows would flood the job log.
+ */
+export async function runCommissionAutoApproveJob() {
+  const swept = await forEachActiveTenant((trx) => autoApproveMatureCommissions(trx));
+  for (const t of swept) {
+    if (t.result) void dispatchCommissionEvents(t.tenantId, 'commission.approved', t.result.approved);
+  }
+  return swept.map(({ result, ...t }) => (result ? { ...t, approvedCount: result.approvedCount } : t));
+}
 
 /** Cascade-delete tenants whose pendingDeletionAt is older than the
  *  grace window. Runs in the privileged db (we need to bypass RLS to
