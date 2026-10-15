@@ -2,12 +2,15 @@
  * White-label entitlement.
  *
  * `Tenant.whiteLabel` is the *provisioned* flag (flipped on by the hosted
- * billing add-on). The *effective* entitlement — what the portal keys all
- * branding removal and Network-hiding on, and what the custom-domain cert
- * gate will key on in Phase 1 — additionally requires that the tenant is
- * actually entitled right now:
+ * billing add-on, or for free by the admin on self-host). The *effective*
+ * entitlement — what the portal keys all branding removal and
+ * Network-hiding on, and what the custom-domain cert gate will key on in
+ * Phase 1 — additionally requires that the tenant is actually entitled
+ * right now:
  *
- *   - self-host: always (a single-tenant install they own is their brand);
+ *   - self-host: always (a single-tenant install they own is their brand).
+ *     The flag is still required: white-label isolates the tenant from
+ *     the Network, so it can't be implied for every self-host install;
  *   - hosted: an enterprise (sales-led) plan, OR an active Stripe
  *     subscription, OR an in-flight trial.
  *

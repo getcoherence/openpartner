@@ -161,22 +161,27 @@ billingRouter.get('/billing/white-label', requireAuth, requireAdmin, async (req,
  * Enable the add-on. Hosted flex/revshare: attaches the add-on price to
  * the tenant's ACTIVE subscription as a prorated line item, then mirrors
  * the flag locally (the webhook re-confirms). Enterprise: flag only —
- * sales-led, no Stripe item. No subscription → 409; the wizard sends the
- * admin through plan checkout first (checkout accepts whiteLabel:true to
- * bundle the add-on from the start).
+ * sales-led, no Stripe item. Self-host: flag only and free — entitled
+ * without billing, but still the admin's choice rather than a default,
+ * because white-label isolates the tenant from the Network and a self-host
+ * install on the Network plan must be able to stay connected. No
+ * subscription → 409; the wizard sends the admin through plan checkout
+ * first (checkout accepts whiteLabel:true to bundle the add-on from the
+ * start).
  */
 billingRouter.post('/billing/white-label', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const state = await getTenantBillingState(db, tenantId);
 
-  if (state.mode === 'selfhost') {
-    return res.status(400).json({ error: 'no_billing_in_selfhost', detail: 'Self-host installs are always white-label entitled.' });
-  }
-  if (state.plan === 'enterprise') {
+  if (state.mode === 'selfhost' || state.plan === 'enterprise') {
     // Shares the transition path with the webhook so enabling also
     // withdraws the brand from the shared marketplace.
     await applyWhiteLabelFromSubscription(db, tenantId, true);
-    return res.json({ ok: true, provisioned: true, billedVia: 'enterprise_contract' });
+    return res.json({
+      ok: true,
+      provisioned: true,
+      billedVia: state.mode === 'selfhost' ? 'selfhost' : 'enterprise_contract',
+    });
   }
   if (!state.stripeSubscriptionId) {
     return res.status(409).json({
@@ -214,11 +219,9 @@ billingRouter.delete('/billing/white-label', requireAuth, requireAdmin, async (r
   const { db, tenantId } = tenantOf(req);
   const state = await getTenantBillingState(db, tenantId);
 
-  if (state.mode === 'selfhost') {
-    return res.status(400).json({ error: 'no_billing_in_selfhost' });
-  }
-  if (state.plan === 'enterprise') {
-    // Sales-led: flip the flag; contract changes happen out of band.
+  if (state.mode === 'selfhost' || state.plan === 'enterprise') {
+    // Flip the flag only: self-host has no subscription item to remove,
+    // and enterprise contract changes happen out of band.
     await applyWhiteLabelFromSubscription(db, tenantId, false);
     return res.json({ ok: true, provisioned: false });
   }
