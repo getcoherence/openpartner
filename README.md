@@ -37,7 +37,7 @@ Self-hosted is the GitHub repo you're reading. Hosted tiers run the same code on
 
 ### Your data stays yours
 
-- **One-click export** — partners, programs, attribution and the commission/payout ledger, as CSV + JSON + SQL. On demand or scheduled to your own S3. ([what's in the bundle, and what isn't](./docs/data-portability.md))
+- **One-click export** — partners, programs, attribution and the commission/payout ledger, as CSV + JSON + SQL, on demand. Scheduled export to your own S3 is planned. ([what's in the bundle, and what isn't](./docs/data-portability.md))
 - **Open schema, open API** — documented, versioned, stable.
 - **Round-trip portability** — exports from the hosted version re-import cleanly into the self-hosted version.
 - **No resale, no training** — your partner attribution data is not a product.

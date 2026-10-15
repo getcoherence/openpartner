@@ -95,22 +95,42 @@ A replay adds `replayed: true`. Its `attribution` is rebuilt from the rows the f
 
 For multi-touch campaigns (`linear`, `position`, etc.) `touches` will contain one entry per attributed click with a fractional `weight`.
 
-### Stripe webhooks
+### Stripe
 
-On a single-tenant self-host whose `STRIPE_SECRET_KEY` and webhook signing secret belong to *your* Stripe account, OpenPartner's built-in `/webhooks/stripe` handler ingests `checkout.session.completed`, `customer.created`, `customer.subscription.created` and `invoice.paid` for you. Point a webhook in your Stripe account at `https://<your-openpartner-api>/webhooks/stripe`, and you don't need to call `trackEvent` for Stripe revenue. Hosted OpenPartner only accepts events signed with its own Stripe secrets, so on hosted, call `trackEvent` from your backend instead.
+How Stripe revenue reaches OpenPartner depends on where OpenPartner runs.
+
+**Hosted OpenPartner.** Call `trackEvent` from your own backend, for example in your `invoice.paid` webhook handler as shown above. OpenPartner's `/webhooks/stripe` endpoint accepts only events signed with OpenPartner's own Stripe signing secrets. A webhook you point at it from your Stripe account fails verification. A scoped API key with `events:write` is enough to call `trackEvent`; you don't need an admin key.
+
+**Self-hosted, single tenant.** If the instance's `STRIPE_SECRET_KEY` and webhook signing secret (`STRIPE_WEBHOOK_SECRET_PLATFORM`, or the legacy `STRIPE_WEBHOOK_SECRET`) belong to *your* Stripe account, you can skip `trackEvent` for invoiced Stripe revenue, such as subscriptions. OpenPartner takes revenue only from `invoice.paid`. Point a webhook in your Stripe account at `https://<your-openpartner-api>/webhooks/stripe`. Subscribe it to `checkout.session.completed`, `customer.created`, `customer.subscription.created`, `invoice.paid`, `charge.refunded` and `charge.dispute.created`.
 
 OpenPartner has to know which Stripe customer is which referred user. Link them in one of two ways:
 
-- **Checkout `client_reference_id`.** When you create the Checkout Session, pass the referral the browser captured: `client_reference_id: ref ?? undefined`, where `ref` is `op.getReferral()` sent up from the browser. OpenPartner stitches the session's customer to the partner click, and its events are keyed to the Stripe customer id (`cus_…`). Stripe doesn't deliver events in order. If the first `invoice.paid` or `customer.subscription.created` arrives before `checkout.session.completed`, OpenPartner looks up the customer's completed Checkout Sessions in Stripe and stitches then.
+- **Checkout `client_reference_id`.** Pass the captured referral through when you create the Checkout Session:
+
+  ```ts
+  // Browser: the captured referral, or null if the visitor didn't come from a partner link.
+  const ref = op.getReferral();
+
+  // Your backend, with `ref` sent up from the browser:
+  const session = await stripe.checkout.sessions.create({
+    client_reference_id: ref ?? undefined,
+    // ...line_items, mode, success_url, etc.
+  });
+  ```
+
+  On `checkout.session.completed`, OpenPartner stitches the session's customer to that click and records a `signup` event. The customer's events are keyed to the Stripe customer id (`cus_…`). Stripe doesn't deliver events in order. If the first `invoice.paid` or `customer.subscription.created` arrives before `checkout.session.completed`, OpenPartner looks up the customer's completed Checkout Sessions in Stripe and stitches then.
 - **Customer metadata `openpartner_user_id`.** Set it on the Stripe Customer to the user id you pass to `identify()`. Set it before the customer pays, for example by creating the Customer with the metadata and passing `customer` when you create the Checkout Session. An invoice that arrives before the metadata is set is skipped, and Stripe won't redeliver it.
 
 You can use both. If the Customer already carries your `openpartner_user_id` when the checkout completes, OpenPartner stitches the click to that id instead of the `cus_…` id and leaves your metadata as you set it. The user gets one signup, although `customer.created` and `checkout.session.completed` both report it.
+
+Once a customer is linked, OpenPartner ingests and attributes their `customer.subscription.created` and `invoice.paid` automatically. A full refund of an invoice's charge (`charge.refunded` for the whole collected amount) reverses that invoice's commissions that are still accrued or approved and not part of a payout already in progress. Paid commissions stay paid; the refund event records how many, for you to recover by hand. A partial refund reverses nothing. A dispute is recorded but doesn't reverse anything automatically. Don't also `trackEvent` the same invoices from your backend, or the revenue is counted twice.
 
 If `STRIPE_SECRET_KEY` is a restricted key, give it read access to Customers and Checkout Sessions. When the key isn't allowed to read one of them, OpenPartner skips that lookup instead of failing the webhook, and the event can go unattributed.
 
 Call `trackEvent` from your backend when:
 
-- You don't use Stripe (or Stripe isn't the source of the conversion).
+- You're on hosted OpenPartner.
+- You don't use Stripe, or the customer is linked neither by a Checkout `client_reference_id` nor by `openpartner_user_id` metadata.
 - You want to track custom event types (`trial_started`, `feature_activated`, etc.).
 - You want to override the event timestamp (`ts: '2026-04-20T12:00:00Z'`).
 

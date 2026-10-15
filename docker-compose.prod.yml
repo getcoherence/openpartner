@@ -54,6 +54,10 @@ services:
       ADMIN_API_KEY: ${ADMIN_API_KEY}
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
       OPENPARTNER_MODE: ${OPENPARTNER_MODE:-selfhost}
+      # In-process scheduler: payouts, transfer retries, auto-approve,
+      # usage reporting, sweeps. Must run on exactly ONE api process —
+      # don't `--scale api=N` with this on. See docs/deploy.md.
+      OPENPARTNER_ENABLE_SCHEDULER: ${OPENPARTNER_ENABLE_SCHEDULER:-1}
       PORTAL_URL: https://${PORTAL_HOST:-portal.${OPENPARTNER_DOMAIN}}
       POSTMARK_SERVER_TOKEN: ${POSTMARK_SERVER_TOKEN:-}
       MAIL_FROM: ${MAIL_FROM:-}

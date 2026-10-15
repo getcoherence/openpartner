@@ -75,6 +75,14 @@ cp .env.example .env
 docker compose -f docker-compose.prod.yml up -d
 ```
 
+### Scheduled jobs
+
+Scheduled payouts, Connect transfer retries, commission auto-approval, usage reporting, and the reminder and cleanup sweeps all run on the API's in-process scheduler. It only starts when `OPENPARTNER_ENABLE_SCHEDULER=1`. Without that flag none of these jobs run, and you have to trigger payouts by hand.
+
+- `docker-compose.prod.yml` sets it to `1` on its single `api` service. To turn it off, set `OPENPARTNER_ENABLE_SCHEDULER=0` in `.env`. `.do/app.yaml` sets it for App Platform.
+- **Enable it on exactly one API process.** Every process with the flag runs the full schedule. Don't `docker compose up --scale api=N`. If you need more API replicas, run the extra ones as a separate service with `OPENPARTNER_ENABLE_SCHEDULER=0`. See [deploy-production.md](./deploy-production.md#scheduled-jobs).
+- **Upgrading a compose deploy from before this was set?** Your next `up -d` starts the scheduler. The Monday 09:00 UTC payout run then batches approved commissions on the cadence set in **Settings → Payouts → Payout cadence** (default: weekly). On the manual rail, that run marks the commissions `paid` and leaves the transfer to you. To keep running payouts by hand, set the cadence to **Manual** before upgrading.
+
 ### Skipping the build — prebuilt images
 
 Every push to `main` publishes three images to GitHub Container Registry:
