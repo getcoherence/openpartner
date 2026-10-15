@@ -113,11 +113,30 @@ async function configureNetwork(opts: { enabled: boolean; url?: string }): Promi
     .merge({ value: value as unknown as never, updatedAt: new Date() });
 }
 
-async function seedPartner(opts: { id?: string; networkCreatorId: string | null }): Promise<string> {
+/**
+ * Partner metadata shapes as the real write paths leave them:
+ *   - origin 'network': provisioned by the Network's approve federation
+ *     (metadata.source='openpartner_network'); `synced` adds the
+ *     metadata.network stamp auto-enroll writes when it's on.
+ *   - origin 'direct': recruited by the brand; `synced` = pushed to the
+ *     Network by auto-enroll or the roster backfill, which stamps
+ *     metadata.network.creatorId even though the Network didn't bring them.
+ */
+async function seedPartner(opts: {
+  id?: string;
+  origin: 'network' | 'direct';
+  networkCreatorId?: string;
+  synced?: boolean;
+}): Promise<string> {
   const id = opts.id ?? ulid();
-  const metadata = opts.networkCreatorId
-    ? { network: { creatorId: opts.networkCreatorId, preExisting: false, syncedAt: new Date().toISOString() } }
-    : {};
+  const creatorId = opts.networkCreatorId ?? `crt_${id}`;
+  const metadata: Record<string, unknown> =
+    opts.origin === 'network'
+      ? { source: 'openpartner_network', networkCreatorId: creatorId }
+      : {};
+  if (opts.synced) {
+    metadata.network = { creatorId, preExisting: false, syncedAt: new Date().toISOString() };
+  }
   await db(TABLES.Partner).insert({
     id,
     tenantId: DEFAULT_TENANT_ID,
@@ -149,9 +168,9 @@ async function seedPayout(opts: {
 }
 
 describe.skipIf(skipIntegration)('aggregateNetworkOriginatedPayouts', () => {
-  it('sums only paid payouts whose Partner has metadata.network.creatorId', async () => {
-    const networkPartner = await seedPartner({ networkCreatorId: 'crt_alice' });
-    const directPartner = await seedPartner({ networkCreatorId: null });
+  it('sums only paid payouts whose Partner came from the Network', async () => {
+    const networkPartner = await seedPartner({ origin: 'network', networkCreatorId: 'crt_alice', synced: true });
+    const directPartner = await seedPartner({ origin: 'direct' });
     await seedPayout({ partnerId: networkPartner, amount: 100, status: 'paid' });
     await seedPayout({ partnerId: networkPartner, amount: 250, status: 'paid' });
     // Pending: doesn't count.
@@ -163,8 +182,27 @@ describe.skipIf(skipIntegration)('aggregateNetworkOriginatedPayouts', () => {
     expect(total).toBe(350);
   });
 
+  it('excludes direct recruits that auto-enroll / backfill synced to the Network', async () => {
+    // Regression: these carry metadata.network.creatorId too, and the
+    // aggregate used to key on it — billing the Network fee on partners
+    // the brand recruited itself.
+    const synced = await seedPartner({ origin: 'direct', synced: true });
+    await seedPayout({ partnerId: synced, amount: 800, status: 'paid' });
+
+    const total = await aggregateNetworkOriginatedPayouts(db, null, new Date());
+    expect(total).toBe(0);
+  });
+
+  it('includes Network-originated partners even without the sync stamp (auto-enroll off)', async () => {
+    const unsynced = await seedPartner({ origin: 'network', synced: false });
+    await seedPayout({ partnerId: unsynced, amount: 120, status: 'paid' });
+
+    const total = await aggregateNetworkOriginatedPayouts(db, null, new Date());
+    expect(total).toBe(120);
+  });
+
   it('respects since (exclusive) + until (inclusive) bounds', async () => {
-    const p = await seedPartner({ networkCreatorId: 'crt_x' });
+    const p = await seedPartner({ origin: 'network', networkCreatorId: 'crt_x' });
     const earlier = new Date(Date.now() - 60_000);
     const later = new Date();
     await seedPayout({ partnerId: p, amount: 50, status: 'paid', completedAt: earlier });
@@ -203,7 +241,7 @@ describe.skipIf(skipIntegration)('reportNetworkPayoutsToNetwork', () => {
 
   it('reports the right total + sets bearer + advances high-water mark on success', async () => {
     await configureNetwork({ enabled: true });
-    const p = await seedPartner({ networkCreatorId: 'crt_z' });
+    const p = await seedPartner({ origin: 'network', networkCreatorId: 'crt_z' });
     await seedPayout({ partnerId: p, amount: 1000, status: 'paid' });
     await seedPayout({ partnerId: p, amount: 234.56, status: 'paid' });
 
@@ -221,7 +259,7 @@ describe.skipIf(skipIntegration)('reportNetworkPayoutsToNetwork', () => {
 
   it('on Network 5xx: does NOT advance high-water mark (so next tick re-reports)', async () => {
     await configureNetwork({ enabled: true });
-    const p = await seedPartner({ networkCreatorId: 'crt_q' });
+    const p = await seedPartner({ origin: 'network', networkCreatorId: 'crt_q' });
     await seedPayout({ partnerId: p, amount: 100, status: 'paid' });
 
     mockResponse = { status: 503, body: { error: 'unavailable' } };
@@ -234,7 +272,7 @@ describe.skipIf(skipIntegration)('reportNetworkPayoutsToNetwork', () => {
 
   it('second consecutive successful run only includes payouts after the first run', async () => {
     await configureNetwork({ enabled: true });
-    const p = await seedPartner({ networkCreatorId: 'crt_r' });
+    const p = await seedPartner({ origin: 'network', networkCreatorId: 'crt_r' });
     await seedPayout({ partnerId: p, amount: 50, status: 'paid' });
 
     const r1 = await reportNetworkPayoutsToNetwork(db, DEFAULT_TENANT_ID);

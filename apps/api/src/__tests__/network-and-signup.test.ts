@@ -41,6 +41,7 @@ const { db } = await import('../db.js');
 const { createApp } = await import('../app.js');
 const { drainOutbox } = await import('../network-client.js');
 const { encryptSecret } = await import('../crypto.js');
+const { aggregateNetworkOriginatedPayouts } = await import('../usage-billing.js');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
@@ -362,5 +363,77 @@ describe.skipIf(skipIntegration)('partner-signup + network push', () => {
     expect(res.body).not.toHaveProperty('vendorTokenCiphertext');
     expect(res.body.hasVendorToken).toBe(true);
     expect(res.body.networkUrl).toBe(receiverUrl);
+  });
+});
+
+describe.skipIf(skipIntegration)('Network-access fee scope', () => {
+  it('bills only the Network-provisioned partner, not direct recruits that auto-enroll + backfill synced', async () => {
+    // On the roster before the brand joined the Network.
+    const legacyId = ulid();
+    await db(TABLES.Partner).insert({
+      id: legacyId,
+      tenantId: DEFAULT_TENANT_ID,
+      email: 'legacy@example.test',
+      name: 'Legacy',
+      activatedAt: new Date(),
+    });
+
+    await configureNetwork({ enabled: true, autoEnroll: true });
+
+    // Direct recruits after joining — both auto-enrolled to the Network.
+    const signup = await request(app)
+      .post('/partner-signup')
+      .send({ email: 'self@example.test', name: 'Self Signup' });
+    expect(signup.status).toBe(201);
+    const invite = await request(app)
+      .post('/partners')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ email: 'invited@example.test', name: 'Invited' });
+    expect(invite.status).toBe(201);
+    // Roster backfill pushes everyone, the pre-Network partner included.
+    const backfill = await request(app)
+      .post('/config/network/backfill')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({});
+    expect(backfill.status).toBe(200);
+
+    // The body openpartner-network's partnership-approve federation sends.
+    const federated = await request(app)
+      .post('/partners')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({
+        email: 'creator@example.test',
+        name: 'Network Creator',
+        metadata: { source: 'openpartner_network', networkCreatorId: 'crt_from_network' },
+        sendInvite: false,
+        campaignGrantSource: 'offering',
+      });
+    expect(federated.status).toBe(201);
+
+    const partners = (await db(TABLES.Partner).select('id', 'email', 'metadata')) as Array<{
+      id: string;
+      email: string;
+      metadata: { network?: { creatorId?: string } };
+    }>;
+    expect(partners).toHaveLength(4);
+    // Precondition for the regression: every partner carries the sync
+    // stamp the aggregate used to bill on.
+    for (const p of partners) expect(p.metadata.network?.creatorId).toBeTruthy();
+
+    for (const p of partners) {
+      await db(TABLES.Payout).insert({
+        id: ulid(),
+        tenantId: DEFAULT_TENANT_ID,
+        partnerId: p.id,
+        amount: p.email === 'creator@example.test' ? '40.00' : '1000.00',
+        currency: 'USD',
+        method: 'manual',
+        status: 'paid',
+        metadata: {} as unknown as never,
+        completedAt: new Date(),
+      });
+    }
+
+    expect(await aggregateNetworkOriginatedPayouts(db, null, new Date())).toBe(40);
   });
 });

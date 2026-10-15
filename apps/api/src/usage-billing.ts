@@ -63,10 +63,26 @@ export interface UsageReportResult {
 }
 
 /**
+ * Partner.metadata.source value the Network's partnership-approve
+ * federation sets when it provisions a Partner on the brand (POST
+ * /partners). It has been sent since the Network's first release, so it
+ * marks every Network-originated partner, old or new.
+ */
+export const NETWORK_ORIGIN_SOURCE = 'openpartner_network';
+
+/**
  * Sum payout amounts (in dollars) for payouts whose Partner came from
- * the OpenPartner Network — i.e., Partner.metadata.network.creatorId
- * is set, which is stamped by network-client.ts when a partner is
- * upserted to the Network.
+ * the OpenPartner Network — i.e., Partner.metadata.source is
+ * NETWORK_ORIGIN_SOURCE, set when the Network's approve flow created
+ * the Partner.
+ *
+ * NOT Partner.metadata.network.creatorId: that is a sync stamp written
+ * whenever a partner is pushed TO the Network (auto-enroll on
+ * self-signup / admin invite, and the roster backfill), so it is also
+ * set on partners the brand recruited itself. Billing on it charged the
+ * Network fee on direct recruits. PartnerProgram.source='offering' isn't
+ * usable either: grants that predate it were backfilled as 'admin', and
+ * the brand can revoke them.
  *
  * This is what the Network bills the vendor on (3% metered). Only
  * 'paid' payouts count — pending / failed don't generate Network fee
@@ -83,7 +99,7 @@ export async function aggregateNetworkOriginatedPayouts(
     .join(TABLES.Partner, `${TABLES.Partner}.id`, `${TABLES.Payout}.partnerId`)
     .where(`${TABLES.Payout}.status`, 'paid')
     .andWhere(`${TABLES.Payout}.completedAt`, '<=', until)
-    .andWhereRaw(`"${TABLES.Partner}"."metadata"->'network'->>'creatorId' is not null`);
+    .andWhereRaw(`"${TABLES.Partner}"."metadata"->>'source' = ?`, [NETWORK_ORIGIN_SOURCE]);
   if (since) q.andWhere(`${TABLES.Payout}.completedAt`, '>', since);
   const rows = (await q.sum({ total: `${TABLES.Payout}.amount` })) as Array<{ total: string | null }>;
   return Number(rows[0]?.total ?? 0);
