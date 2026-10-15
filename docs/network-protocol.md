@@ -175,6 +175,15 @@ These already exist in this repo, gated by `grantScope(...)`:
 | Show a creator their accrued earnings | `GET /partners/:id/commissions` | `commissions:read` |
 | Verify the scoped key still works | `GET /auth/introspect` | (any) |
 
+`POST /partners` scopes the new Partner's grants with `programIds`
+(`[offering.vendorProgramId]` on approve). **Omitting it grants every
+program the brand has**, and unknown body keys are stripped, not
+rejected. That's why the field name is load-bearing. `campaignIds` is
+accepted as a deprecated alias (`programIds` wins when both are sent).
+The Network sends both so brand instances on either side of the
+Campaign → Program rename scope correctly; keep sending both until no
+pre-alias brand instance is left.
+
 The Network uses the scoped key registered in `/vendors/register` for
 all of these. On hosted multi-tenant the URL is
 `{instanceUrl}/partners` where `instanceUrl` already includes the
