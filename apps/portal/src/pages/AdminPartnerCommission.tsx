@@ -5,7 +5,9 @@ import { ArrowLeft } from 'lucide-react';
 import { api } from '../api.js';
 import { theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
-import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../ui.js';
+import { Button, Card, ErrorBanner, Input, Label, Page } from '../ui.js';
+import { CompoundRuleEditor, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
+import { renderCommissionSummary } from '../lib/commission-summary.js';
 
 interface Partner {
   id: string;
@@ -17,13 +19,35 @@ type CommissionSource = 'approval' | 'backfill' | 'amendment';
 
 interface Snapshot {
   partnerId: string;
+  /** Legacy single-rule summary. The engine ignores these whenever
+   *  commissionRules is set. */
   commissionType: 'percent' | 'fixed';
   commissionValue: string; // decimal as string
   recurring: boolean;
+  /** The terms the engine actually pays on. Null on snapshots that
+   *  predate compound rules. */
+  commissionRules: CommissionSubRule[] | null;
   holdbackDays: number | null;
   source: CommissionSource;
   snapshottedAt: string;
 }
+
+/** The rule array the engine resolves for this snapshot, with the same
+ *  precedence as the API's resolveCommissionRule: the stored array when
+ *  present, else the legacy columns as one every-event rule. */
+function snapshotRules(snapshot: Snapshot): CommissionSubRule[] {
+  if (snapshot.commissionRules && snapshot.commissionRules.length > 0) return snapshot.commissionRules;
+  return [
+    {
+      trigger: 'every',
+      type: snapshot.commissionType,
+      value: Number(snapshot.commissionValue),
+      recurring: snapshot.recurring,
+    },
+  ];
+}
+
+const DEFAULT_RULES: CommissionSubRule[] = [{ trigger: 'every', type: 'percent', value: 20, recurring: true }];
 
 const SOURCE_LABEL: Record<CommissionSource, string> = {
   approval: 'Stamped at PartnershipRequest approval',
@@ -97,16 +121,10 @@ function CurrentSnapshotCard({ snapshot }: { snapshot: Snapshot | null }) {
   return (
     <Card>
       <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 8 }}>Current snapshot</div>
+      <div style={{ marginBottom: 14 }}>
+        <Stat label="Terms" value={renderCommissionSummary(snapshotRules(snapshot))} />
+      </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 14 }}>
-        <Stat
-          label="Rate"
-          value={
-            snapshot.commissionType === 'percent'
-              ? `${Number(snapshot.commissionValue)}%`
-              : `$${Number(snapshot.commissionValue).toFixed(2)} fixed`
-          }
-        />
-        <Stat label="Recurring" value={snapshot.recurring ? 'Yes' : 'No'} />
         <Stat label="Holdback" value={snapshot.holdbackDays != null ? `${snapshot.holdbackDays} days` : '—'} />
         <Stat label="Source" value={SOURCE_LABEL[snapshot.source]} muted />
       </div>
@@ -139,9 +157,12 @@ function EditCard({
   current: Snapshot | null;
   onSaved: () => void;
 }) {
-  const [type, setType] = useState<'percent' | 'fixed'>(current?.commissionType ?? 'percent');
-  const [value, setValue] = useState(current ? String(Number(current.commissionValue)) : '20');
-  const [recurring, setRecurring] = useState(current?.recurring ?? true);
+  // Edits the snapshot's full rule array. This form used to show only
+  // the legacy single-rule columns and PUT without commissionRules, which
+  // the API reads as "replace with a single rule" and clears the stored
+  // array, so saving any edit silently dropped a partner's compound
+  // terms (first-sale bonus, event filters, recurring caps).
+  const [rules, setRules] = useState<CommissionSubRule[]>(current ? snapshotRules(current) : DEFAULT_RULES);
   const [holdback, setHoldback] = useState(
     current?.holdbackDays != null ? String(current.holdbackDays) : '',
   );
@@ -150,23 +171,31 @@ function EditCard({
   // the user just saved). Without this the form would keep showing
   // the pre-save values until a hard refresh.
   useEffect(() => {
-    setType(current?.commissionType ?? 'percent');
-    setValue(current ? String(Number(current.commissionValue)) : '20');
-    setRecurring(current?.recurring ?? true);
+    setRules(current ? snapshotRules(current) : DEFAULT_RULES);
     setHoldback(current?.holdbackDays != null ? String(current.holdbackDays) : '');
   }, [current]);
 
+  const rulesInvalid =
+    rules.length === 0 || rules.some((r) => !Number.isFinite(r.value) || r.value < 0 || r.eventType === '');
+
   const save = useMutation({
-    mutationFn: () =>
-      api(`/partners/${partnerId}/commission-snapshot`, {
+    mutationFn: () => {
+      // The legacy columns are still NOT NULL. Fill them with the same
+      // best-effort summary the approval-time snapshot uses (first
+      // every-event rule, else the first rule); the engine reads
+      // commissionRules.
+      const summary = rules.find((r) => r.trigger === 'every') ?? rules[0]!;
+      return api(`/partners/${partnerId}/commission-snapshot`, {
         method: 'PUT',
         body: {
-          commissionType: type,
-          commissionValue: Number(value),
-          recurring,
+          commissionType: summary.type,
+          commissionValue: summary.value,
+          recurring: summary.recurring ?? false,
+          commissionRules: rules,
           holdbackDays: holdback === '' ? null : Number(holdback),
         },
-      }),
+      });
+    },
     onSuccess: onSaved,
   });
 
@@ -184,27 +213,11 @@ function EditCard({
       <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 14px', lineHeight: 1.5 }}>
         Stamps a <code>PartnerCommission</code> row with{' '}
         <code>source = &lsquo;amendment&rsquo;</code>. From the next conversion onward, this
-        partner&rsquo;s commissions accrue at the rate below regardless of the campaign rule.
+        partner&rsquo;s commissions accrue on the terms below regardless of the campaign rule.
         Past commissions aren&rsquo;t recomputed — only future events.
       </p>
       <ErrorBanner error={save.error ?? clear.error} />
-      <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '140px 1fr auto', gap: 12, marginBottom: 14, alignItems: 'end' }}>
-        <div>
-          <Label>Rate type</Label>
-          <Select value={type} onChange={(e) => setType(e.target.value as 'percent' | 'fixed')}>
-            <option value="percent">Percent</option>
-            <option value="fixed">Fixed</option>
-          </Select>
-        </div>
-        <div>
-          <Label>Value</Label>
-          <Input type="number" value={value} onChange={(e) => setValue(e.target.value)} />
-        </div>
-        <label style={{ fontSize: 13, display: 'flex', gap: 8, alignItems: 'center', paddingBottom: 10, color: theme.textMuted }}>
-          <input type="checkbox" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} />
-          Recurring
-        </label>
-      </div>
+      <CompoundRuleEditor rules={rules} onChange={setRules} />
       <div style={{ marginBottom: 14, maxWidth: 220 }}>
         <Label>Holdback (days, blank = none)</Label>
         <Input
@@ -215,7 +228,7 @@ function EditCard({
         />
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={() => save.mutate()} disabled={save.isPending || !value}>
+        <Button onClick={() => save.mutate()} disabled={save.isPending || rulesInvalid}>
           {save.isPending ? 'Saving…' : current ? 'Update override' : 'Set override'}
         </Button>
         {current && (
