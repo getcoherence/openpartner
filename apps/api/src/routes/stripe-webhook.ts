@@ -233,11 +233,11 @@ stripeWebhookRouter.post(
       // The next attributeEvent() call then finds the click and credits
       // the partner — same code path as a clicked share-link conversion.
       const redeemed = await maybeRedeemStripeCoupons(trx, stripe!, event!, tenantId);
-      if (redeemed.length > 0) {
-        console.log('[stripe-webhook] auto-redeemed coupons', { eventId: event!.id, redeemed });
+      if (redeemed) {
+        console.log('[stripe-webhook] auto-redeemed coupons', { eventId: event!.id, redeemed: redeemed.codes });
       }
 
-      const mapped = await mapStripeEvent(trx, stripe!, event!, tenantId);
+      const mapped = await mapStripeEvent(trx, stripe!, event!, tenantId, redeemed);
       if (!mapped) return { skipped: event!.type };
 
       // Idempotency: a Stripe retry (5xx, timeout) re-delivers the same
@@ -311,9 +311,11 @@ async function runInTenant<T>(tenantId: string, fn: (trx: Knex.Transaction) => P
  *   2. For events whose payload doesn't carry our metadata (older Connect
  *      accounts, transfers identified only by payoutId), fall back to DB
  *      lookup via the privileged `db` (cross-tenant scan).
- *   3. On a single-tenant self-host, a customer event neither step resolves
- *      belongs to the one tenant there is. mapStripeEvent then decides
- *      whether it's attributable.
+ *   3. On a single-tenant self-host, a customer event or a Checkout
+ *      Session neither step resolves belongs to the one tenant there is
+ *      (unless a connected account sent it). A partner coupon may be the
+ *      only thing tying it to a partner (maybeRedeemStripeCoupons).
+ *      mapStripeEvent then decides whether it's attributable.
  *   4. If nothing yields a tenant, return null and the caller skips the
  *      event with 2xx so Stripe stops retrying.
  */
@@ -372,7 +374,13 @@ async function resolveTenantForEvent(event: Stripe.Event, family: SecretFamily):
           .first(['tenantId']);
         if (row) return row.tenantId;
       }
-      return null;
+      // A customer who typed a partner's code without clicking a partner
+      // link has no cref. On a single-tenant self-host the session is the
+      // one tenant's either way; mapStripeEvent skips it unless a partner
+      // coupon was redeemed. Not a connected account's session (see the
+      // customer events below).
+      if (event.account) return null;
+      return receivesBrandStripeEvents() ? DEFAULT_TENANT_ID : null;
     }
     case 'customer.created':
     case 'customer.subscription.created':
@@ -519,6 +527,12 @@ async function handleConnectEvent(
       return 'account_updated';
     }
     case 'checkout.session.completed': {
+      // On a single-tenant self-host every Checkout Session here is one of
+      // the brand's end-customers' (billing.ts refuses OpenPartner billing
+      // in selfhost), and one without a cref still resolves to the tenant.
+      // Persisting it would overwrite Tenant.stripeCustomerId /
+      // stripeSubscriptionId with that customer's ids.
+      if (receivesBrandStripeEvents()) return null;
       const session = event.data.object as Stripe.Checkout.Session;
       // Disambiguator: a Rewardful-style merchant→customer checkout carries
       // client_reference_id (the cref). Our merchant→OpenPartner subscription
@@ -863,6 +877,7 @@ async function mapStripeEvent(
   stripe: Stripe,
   event: Stripe.Event,
   tenantId: string,
+  redeemed: RedeemedCoupons | null,
 ): Promise<MappedEvent | null> {
   switch (event.type) {
     case 'checkout.session.completed': {
@@ -873,7 +888,11 @@ async function mapStripeEvent(
       const session = event.data.object as Stripe.Checkout.Session;
       const cref = session.client_reference_id;
       const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
-      if (!cref || !customerId) return null;
+
+      // No partner link behind this session: no cref, or (below) one that
+      // names no click. A partner code redeemed on it still makes it a
+      // referred signup.
+      if (!cref || !customerId) return couponSignup(trx, tenantId, redeemed);
 
       // A merchant using both linking methods has already set their own
       // openpartner_user_id on the Customer. That id is the user: keying
@@ -893,7 +912,7 @@ async function mapStripeEvent(
         // committed the Event our backlog pass below picks up.
         await lockMerchantUser(trx, tenantId, metadataUserId);
         const stitch = await stitchCheckoutCustomer(trx, cref, metadataUserId);
-        if (!stitch) return null;
+        if (!stitch) return couponSignup(trx, tenantId, redeemed);
         // Events that beat this stitch (customer.created's signup, an
         // early invoice) were recorded under the merchant's id with no
         // click to credit.
@@ -905,7 +924,7 @@ async function mapStripeEvent(
       }
 
       const stitch = await stitchCheckoutCustomer(trx, cref, customerId);
-      if (!stitch) return null;
+      if (!stitch) return couponSignup(trx, tenantId, redeemed);
 
       // Backfill metadata so the cheaper resolve path (metadata lookup)
       // works for downstream invoice.paid / subscription events. Best-
@@ -1216,6 +1235,41 @@ async function resolveUserIdFromCustomer(
   return identity ? customerId : null;
 }
 
+/** Coupons maybeRedeemStripeCoupons matched, and the userId their
+ *  Identity rows are keyed on. */
+interface RedeemedCoupons {
+  userId: string;
+  /** userId is the Customer's own openpartner_user_id (not its cus_ id, or
+   *  a guest's email), so it gets one signup (signupRecorded). */
+  merchantSet: boolean;
+  codes: string[];
+}
+
+/**
+ * The signup for a Checkout Session no partner link is behind, when a
+ * partner code was redeemed on it (maybeRedeemStripeCoupons), keyed like
+ * the coupon's Identity. A merchant-set userId gets one signup, as at a
+ * cref checkout.
+ */
+async function couponSignup(
+  trx: Knex.Transaction,
+  tenantId: string,
+  redeemed: RedeemedCoupons | null,
+): Promise<MappedEvent | null> {
+  if (!redeemed) return null;
+  if (redeemed.merchantSet) {
+    // maybeRedeemStripeCoupons took this lock before stitching; it's
+    // re-entrant within the transaction.
+    await lockMerchantUser(trx, tenantId, redeemed.userId);
+    if (await signupRecorded(trx, tenantId, redeemed.userId)) return null;
+  }
+  return {
+    userId: redeemed.userId,
+    type: 'signup',
+    metadata: { source: 'coupon', code: redeemed.codes.join(',') },
+  };
+}
+
 /**
  * Stitch the Click named by a Checkout Session's client_reference_id (the
  * cref) to a user: the session's cus_ id, or the merchant's own userId when
@@ -1351,15 +1405,15 @@ async function stitchFromCompletedCheckouts(
  * Auto-redeem any OpenPartner Coupons referenced by discount codes on
  * the event. Runs BEFORE the standard event mapping — synthesizes the
  * Click + Identity for the customer so the next attribution pass
- * credits the partner. Returns the matched codes (for logging only).
+ * credits the partner. Returns what matched, or null.
  *
- * Stripe events that can carry discount codes:
- *   - checkout.session.completed (session.discounts +
- *                                  session.total_details.breakdown.discounts)
- *   - invoice.paid (invoice.discounts)
- *   - customer.subscription.created (subscription.discounts) — invoice
- *     also fires for subs so this is partly redundant; covered for
- *     consistency.
+ * Stripe events that carry discount codes:
+ *   - checkout.session.completed (session.discounts; total_details.breakdown
+ *     when we read the session back)
+ *   - invoice.paid (invoice.discounts + total_discount_amounts, which
+ *     arrive as bare ids, so we read the invoice back)
+ * Only a single-tenant self-host sees the brand's own checkouts and
+ * invoices, so that's the only deployment where this ever matches.
  *
  * The customer-facing code lives at promotion_code.code (when set).
  * If the discount has only a Coupon (no PromotionCode), we fall back
@@ -1371,58 +1425,126 @@ async function maybeRedeemStripeCoupons(
   stripe: Stripe,
   event: Stripe.Event,
   tenantId: string,
-): Promise<string[]> {
+): Promise<RedeemedCoupons | null> {
   const obj = event.data.object as unknown as Record<string, unknown>;
   const ts = new Date(event.created * 1000);
 
-  // Customer ID — same shape across the event types we handle.
-  const customerRaw =
-    (obj.customer as string | { id: string } | null | undefined) ??
-    (obj.customer_email as string | undefined);
-  const userId = typeof customerRaw === 'string' ? customerRaw : customerRaw?.id;
-  if (!userId) return [];
+  // Customer ID — same shape across the event types we handle. A guest
+  // Checkout (payment mode, no Customer) falls back to the prefilled email.
+  const customerId = extractCustomerId(obj as { customer?: unknown; id?: string; object?: string });
+  const guestEmail = typeof obj.customer_email === 'string' ? obj.customer_email : null;
+  if (!customerId && !guestEmail) return null;
 
-  // Collect candidate codes from wherever Stripe might surface them.
-  const candidateCodes: string[] = [];
-  for (const d of extractDiscounts(event)) {
+  let userId: string | null = null;
+  let merchantSet = false;
+  let firstStitch = false;
+  const codes: string[] = [];
+  for (const d of await collectDiscounts(stripe, event)) {
     const code = await resolveDiscountCode(stripe, d);
-    if (code) candidateCodes.push(code);
-  }
-  if (candidateCodes.length === 0) return [];
-
-  const matched: string[] = [];
-  for (const code of candidateCodes) {
+    if (!code) continue;
     const coupon = await findCouponByCode(trx, code);
-    if (!coupon) continue;
-    await ensureCouponClickAndIdentity(trx, tenantId, coupon, userId, ts);
-    matched.push(coupon.code);
+    if (!coupon || codes.includes(coupon.code)) continue;
+    if (!userId) {
+      userId = customerId ? await couponUserId(stripe, customerId) : guestEmail!;
+      merchantSet = customerId != null && userId !== customerId;
+      // As at a cref checkout: lock a merchant-set userId before the
+      // stitch, so a concurrent delivery for this user sees our Identity
+      // or has committed the Event the backlog pass below picks up.
+      if (merchantSet) await lockMerchantUser(trx, tenantId, userId);
+    }
+    const { reused } = await ensureCouponClickAndIdentity(trx, tenantId, coupon, userId, ts);
+    if (!reused) firstStitch = true;
+    codes.push(coupon.code);
   }
-  return matched;
+  if (!userId) return null;
+  // Events that beat this stitch (customer.created's signup) were recorded
+  // under the merchant's id with no click to credit.
+  if (merchantSet && firstStitch) await attributeUnattributedEvents(trx, tenantId, userId);
+  return { userId, merchantSet, codes };
+}
+
+/**
+ * The userId to key a coupon's Identity on: the one this customer's
+ * revenue events resolve to (resolveUserIdFromCustomer), so they credit
+ * the coupon's partner. That's the customer's openpartner_user_id metadata
+ * when set, else the cus_ id. A cref checkout stitches its click to the
+ * same id (mapStripeEvent).
+ */
+async function couponUserId(stripe: Stripe, customerId: string): Promise<string> {
+  const customer = await stripeReadOrNull('customers.retrieve', customerId, () =>
+    stripe.customers.retrieve(customerId),
+  );
+  return (customer && !customer.deleted && customer.metadata?.openpartner_user_id) || customerId;
 }
 
 interface DiscountRef {
+  id?: string;
   coupon?: string | { id: string } | null;
   promotion_code?: string | { id: string; code?: string } | null;
+  // Discount objects name their coupon here (API 2025-03-31 onward).
+  source?: { coupon?: string | { id: string } | null } | null;
 }
 
-function extractDiscounts(event: Stripe.Event): DiscountRef[] {
-  const obj = event.data.object as unknown as Record<string, unknown>;
-  const out: DiscountRef[] = [];
+/**
+ * The event's discounts, read back from Stripe when the payload doesn't
+ * carry them. Webhook payloads expand nothing: an Invoice's discounts are
+ * bare di_ ids (and a Discount can't be fetched by id), and a Checkout
+ * Session's total_details.breakdown is only returned on request. Only an
+ * object that actually discounted something is read back.
+ */
+async function collectDiscounts(stripe: Stripe, event: Stripe.Event): Promise<DiscountRef[]> {
+  const inPayload = extractDiscounts(event.data.object);
+  if (inPayload.length > 0) return inPayload;
 
-  // checkout.session.completed: session.discounts + total_details.breakdown.discounts
-  if (Array.isArray(obj.discounts)) {
-    for (const d of obj.discounts as Array<DiscountRef | string>) {
-      if (typeof d === 'object' && d !== null) out.push(d);
-    }
+  if (event.type === 'invoice.paid') {
+    const invoice = event.data.object as Stripe.Invoice;
+    if (!invoice.id || !invoiceCarriesDiscount(invoice)) return [];
+    // A Stripe error propagates as a 500, so Stripe redelivers the event.
+    const full = await stripe.invoices.retrieve(invoice.id, {
+      expand: ['discounts', 'total_discount_amounts.discount'],
+    });
+    return extractDiscounts(full);
   }
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object as Stripe.Checkout.Session;
+    if (!((session.total_details?.amount_discount ?? 0) > 0)) return [];
+    const full = await stripe.checkout.sessions.retrieve(session.id, { expand: ['total_details.breakdown'] });
+    return extractDiscounts(full);
+  }
+  return [];
+}
+
+/** Does the invoice list any discount, even as a bare id? Invoice-level
+ *  discounts are in `discounts`; total_discount_amounts also covers
+ *  line-item ones. */
+function invoiceCarriesDiscount(invoice: Stripe.Invoice): boolean {
+  return (invoice.discounts?.length ?? 0) > 0 || (invoice.total_discount_amounts?.length ?? 0) > 0;
+}
+
+/** Discount objects on a Checkout Session or Invoice. Bare ids are skipped
+ *  (collectDiscounts reads those back), and a discount listed twice is
+ *  returned once. */
+function extractDiscounts(object: unknown): DiscountRef[] {
+  const obj = object as Record<string, unknown>;
+  const out: DiscountRef[] = [];
+  const add = (d: unknown) => {
+    if (typeof d !== 'object' || d === null) return;
+    const ref = d as DiscountRef;
+    if (ref.id && out.some((o) => o.id === ref.id)) return;
+    out.push(ref);
+  };
+
+  // Checkout Session and Invoice: discounts. Invoice: total_discount_amounts.
+  if (Array.isArray(obj.discounts)) obj.discounts.forEach(add);
+  if (Array.isArray(obj.total_discount_amounts)) {
+    for (const item of obj.total_discount_amounts as Array<{ discount?: unknown }>) add(item.discount);
+  }
+  // Checkout Session: total_details.breakdown.discounts.
   const totalDetails = obj.total_details as
-    | { breakdown?: { discounts?: Array<{ discount?: DiscountRef }> } }
+    | { breakdown?: { discounts?: Array<{ discount?: unknown }> } | null }
+    | null
     | undefined;
-  if (totalDetails?.breakdown?.discounts) {
-    for (const item of totalDetails.breakdown.discounts) {
-      if (item.discount) out.push(item.discount);
-    }
-  }
+  for (const item of totalDetails?.breakdown?.discounts ?? []) add(item.discount);
   return out;
 }
 
@@ -1442,8 +1564,9 @@ async function resolveDiscountCode(stripe: Stripe, d: DiscountRef): Promise<stri
   }
   // Fallback: use the Coupon's Stripe ID directly. Brands who set their
   // Stripe Coupon IDs to match OpenPartner codes don't need the API call.
-  if (d.coupon) {
-    return typeof d.coupon === 'string' ? d.coupon : d.coupon.id;
+  const coupon = d.coupon ?? d.source?.coupon;
+  if (coupon) {
+    return typeof coupon === 'string' ? coupon : coupon.id;
   }
   return null;
 }
