@@ -26,6 +26,12 @@ export {
 } from './categories.js';
 export type { ProgramCategory } from './categories.js';
 export { parseVideoUrl, isTrustedEmbedUrl } from './program-video.js';
+export {
+  CLICK_ID_MACRO,
+  clickDestination,
+  clickDestinationProblem,
+  hasClickIdMacro,
+} from './click-destination.js';
 export type { ProgramVideo, VideoProvider } from './program-video.js';
 export {
   AUDIENCE_SIZES,
@@ -101,6 +107,7 @@ export const TABLES = {
   Commission: 'Commission',
   Payout: 'Payout',
   ApiKey: 'ApiKey',
+  ConversionPostbackToken: 'ConversionPostbackToken',
   Config: 'Config',
   Admin: 'Admin',
   MagicLinkToken: 'MagicLinkToken',

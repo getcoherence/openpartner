@@ -2,7 +2,7 @@ import { serve } from '@hono/node-server';
 import { Hono, type Context } from 'hono';
 import { ulid } from 'ulid';
 import { createHash } from 'node:crypto';
-import { createDb, TABLES, type LinkRow } from '@openpartner/db';
+import { clickDestination, createDb, TABLES, type LinkRow } from '@openpartner/db';
 import { checkIpCap, checkVelocity } from './velocity.js';
 import './env.js';
 
@@ -103,9 +103,10 @@ async function resolveLink(c: Context, link: LinkRow | undefined) {
   // an override when the Program explicitly allows deep-linking.
   const destinationUrl = link.destinationUrl || program.destinationUrl;
 
+  // The click id goes wherever the destination's {click_id} macro says
+  // (e.g. a Stripe Payment Link's client_reference_id), else as ?cref=.
   const clickId = ulid();
-  const destination = new URL(destinationUrl);
-  destination.searchParams.set('cref', clickId);
+  const destination = clickDestination(destinationUrl, clickId);
 
   // Prefer proxy headers when they're present (we run behind Caddy /
   // DO's edge), but fall back to the node socket so an attacker who
@@ -135,7 +136,7 @@ async function resolveLink(c: Context, link: LinkRow | undefined) {
   const fraudFlag = partnerRevoked ? 'revoked' : velocityFlagged ? 'velocity' : null;
 
   // UTM extraction off the inbound URL (NOT the destination — the
-  // destination has cref appended by us and otherwise inherits from the
+  // destination carries our click id and otherwise inherits from the
   // campaign, so partners can't put UTMs there). Read-only, all 5
   // standard params for export fidelity even though we only break down
   // on source/medium/campaign in the analytics UI today.
@@ -155,7 +156,7 @@ async function resolveLink(c: Context, link: LinkRow | undefined) {
     linkId: link.id,
     partnerId: link.partnerId,
     programId: link.programId,
-    landingUrl: destination.toString(),
+    landingUrl: destination,
     ipHash,
     userAgent: c.req.header('user-agent') ?? null,
     referer: c.req.header('referer') ?? null,
@@ -173,7 +174,7 @@ async function resolveLink(c: Context, link: LinkRow | undefined) {
     `_cref=${clickId}; Domain=${COOKIE_DOMAIN}; Path=/; Max-Age=${COOKIE_MAX_AGE_SECONDS}; SameSite=Lax`,
   );
 
-  return c.redirect(destination.toString(), 302);
+  return c.redirect(destination, 302);
 }
 
 function hashIp(ip: string): string | null {

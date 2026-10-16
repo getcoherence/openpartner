@@ -7,7 +7,7 @@ import { useBrand } from '../lib/useBrand.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
 import { CompoundRuleEditor, ruleEventTypeMissing, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
-import { PROGRAM_CATEGORIES, categoryLabel, parseVideoUrl } from '@openpartner/db';
+import { PROGRAM_CATEGORIES, categoryLabel, clickDestinationProblem, parseVideoUrl } from '@openpartner/db';
 
 interface CustomerReward {
   type: 'percent_off' | 'amount_off' | 'free_months';
@@ -492,6 +492,9 @@ function CreateProgram({
         ) : (
           <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
             Where partner share-links for this campaign land. Partners can&rsquo;t change this unless you allow deep links below.
+            The click id is added as <code>?cref=</code>; to send it in your own parameter, put{' '}
+            <code>{'{click_id}'}</code> where it goes, e.g. a Stripe Payment Link&rsquo;s{' '}
+            <code>{'?client_reference_id={click_id}'}</code>.
           </div>
         )}
       </div>
@@ -1106,8 +1109,9 @@ function CustomerRewardEditor({
  *  native `title` attribute so we don't need a tooltip library — the
  *  browser handles positioning, multi-line via \n. Help text should be
  *  plain prose; no HTML. */
-/** Mirror of the API's z.string().url() so the form explains the rule
- *  instead of bouncing a 400. Null = fine (empty is gated separately). */
+/** Mirror of the API's destination check (z.string().url() plus the
+ *  {click_id} macro rules) so the form explains the rule instead of
+ *  bouncing a 400. Null = fine (empty is gated separately). */
 function destinationUrlProblem(value: string): string | null {
   const v = value.trim();
   if (!v) return null;
@@ -1116,7 +1120,7 @@ function destinationUrlProblem(value: string): string | null {
     if (url.protocol !== 'https:' && url.protocol !== 'http:') {
       return 'Must be an http(s) address.';
     }
-    return null;
+    return clickDestinationProblem(v);
   } catch {
     return 'Must be a full URL starting with https:// — e.g. https://yourbrand.com/landing.';
   }

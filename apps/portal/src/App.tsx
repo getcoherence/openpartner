@@ -469,7 +469,7 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
             <NavItem to="/admin/export" icon={<Download size={16} />}>Export / import</NavItem>
             <NavItem to="/admin/fraud-review" icon={<ShieldCheck size={16} />}>Fraud review</NavItem>
             <NavItem to="/admin/webhooks" icon={<Webhook size={16} />}>Webhooks</NavItem>
-            <NavItem to="/admin/integrations" icon={<Link2 size={16} />}>CRM integration</NavItem>
+            <NavItem to="/admin/integrations" icon={<Link2 size={16} />}>Integrations</NavItem>
             <NavItem to="/admin/admins" icon={<UserCog size={16} />}>Admins</NavItem>
             <NavItem to="/admin/settings" icon={<Settings size={16} />}>Settings</NavItem>
             <NavItem to="/admin/billing" icon={<CreditCard size={16} />}>Billing</NavItem>

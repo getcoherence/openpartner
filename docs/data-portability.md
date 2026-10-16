@@ -178,7 +178,7 @@ doesn't keep is worse than a documented gap.
 
 **Never exported** (credentials, platform-operational state, or delivery
 logs — not customer data):
-`Session`, `MagicLinkToken`, `ApiKey`, `Admin`, `PlatformSession`,
+`Session`, `MagicLinkToken`, `ApiKey`, `ConversionPostbackToken`, `Admin`, `PlatformSession`,
 `PlatformSessionBundle`, `PlatformAdmin`, `PlatformAdminSession`,
 `PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
 `StripeWebhookInbox`.

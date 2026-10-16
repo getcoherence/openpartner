@@ -4,7 +4,7 @@ import { ExternalLink } from 'lucide-react';
 import { api, currentTenantSlug } from '../../api.js';
 import { alpha, theme } from '../../theme.js';
 import { useBrand } from '../../lib/useBrand.js';
-import { Button, Card, ErrorBanner, Input, Label, Page } from '../../ui.js';
+import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
 
 /**
  * Integration API key surface. Mints scoped keys covering the union
@@ -82,17 +82,40 @@ export function AdminIntegrations() {
   const { programName } = useBrand();
   return (
     <Page
-      title="CRM integration"
-      subtitle={`Pipe your CRM's conversion events into ${programName} so partners get attributed for full-funnel deals, not just self-serve signups.`}
+      title="Integrations"
+      subtitle={`Pipe conversions from your CRM, lender systems or affiliate networks into ${programName} so partners get attributed for full-funnel deals, not just self-serve signups.`}
     >
       <WhyCard />
       <div style={{ height: 18 }} />
       <KeysPanel />
       <div style={{ height: 18 }} />
       <PayloadGuide />
+      <div style={{ height: 18 }} />
+      <ClickIdGuide />
+      <div style={{ height: 18 }} />
+      <PostbackPanel />
     </Page>
   );
 }
+
+/** Full base URL an external system should call. On multi-tenant installs
+ *  the path includes the tenant slug; see PayloadGuide. */
+function useApiBase(): { apiBase: string; slug: string | null } {
+  const origin = typeof window === 'undefined' ? 'https://your-instance' : window.location.origin;
+  const slug = currentTenantSlug();
+  return { apiBase: slug ? `${origin}/t/${slug}` : origin, slug };
+}
+
+const codeInline = { background: theme.surface2, padding: '2px 6px', borderRadius: 4, fontSize: 12 } as const;
+const preBlock = {
+  padding: 14,
+  background: theme.surface2,
+  border: `1px solid ${theme.borderSubtle}`,
+  borderRadius: 6,
+  fontSize: 12,
+  overflow: 'auto',
+  margin: 0,
+} as const;
 
 function WhyCard() {
   const { programName } = useBrand();
@@ -419,10 +442,8 @@ function PayloadGuide() {
   // the tenant slug — leaving it out 500s with a generic error and
   // is the single most common configuration mistake. Render the real
   // URL so admins copy-paste it correctly without thinking.
-  const origin = typeof window === 'undefined' ? 'https://your-instance' : window.location.origin;
-  const slug = currentTenantSlug();
+  const { apiBase, slug } = useApiBase();
   const { programName } = useBrand();
-  const apiBase = slug ? `${origin}/t/${slug}` : origin;
   return (
     <Card>
       <h3 style={{ marginTop: 0, marginBottom: 4, fontSize: 15, fontWeight: 500 }}>
@@ -496,6 +517,265 @@ function PayloadGuide() {
         </a>{' '}
         for HubSpot, Salesforce, Pipedrive, and Zapier walkthroughs.
       </p>
+    </Card>
+  );
+}
+
+/** The click id path: no identify(), no userId. The id leaves on the
+ *  partner link's destination and comes back with the conversion. */
+function ClickIdGuide() {
+  const { apiBase } = useApiBase();
+  const { programName } = useBrand();
+  return (
+    <Card>
+      <h3 style={{ marginTop: 0, marginBottom: 4, fontSize: 15, fontWeight: 500 }}>
+        Report a conversion with the click id
+      </h3>
+      <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.55 }}>
+        Every partner-link click gets a click id. By default it reaches your destination as{' '}
+        <code style={codeInline}>?cref=&lt;click id&gt;</code>. To pass it in the parameter your
+        destination reads instead, put <code style={codeInline}>{'{click_id}'}</code> in the
+        campaign&rsquo;s destination URL (or a partner&rsquo;s deep link). For a Stripe Payment Link:
+      </p>
+      <pre style={{ ...preBlock, marginBottom: 10 }}>{'https://buy.stripe.com/abc123?client_reference_id={click_id}'}</pre>
+      <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.55 }}>
+        On a self-hosted install whose Stripe webhook points at {programName}, that purchase is
+        then recorded automatically: a signup, plus its amount as <code>invoice_paid</code>.
+        Anywhere else, whatever holds the click id (your lender system, your CRM) reports the
+        conversion in one call. No <code>identify()</code> or <code>userId</code> needed. It needs
+        a key with <code>events:write</code>:
+      </p>
+      <pre style={preBlock}>{`curl -X POST ${apiBase}/api/attribution/conversions \\
+  -H "Authorization: Bearer <your-key>" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "clickId": "01K7ZQ3M5X8V2N4P6R8T0W2Y4A",
+    "type": "loan_funded",
+    "value": 5000.00,
+    "currency": "USD",
+    "externalEventId": "loan-881:funded"
+  }'`}</pre>
+      <p style={{ fontSize: 12, color: theme.textMuted, margin: '12px 0 0', lineHeight: 1.55 }}>
+        <code>externalEventId</code> is required: a retry returns the original result with{' '}
+        <code>&quot;replayed&quot;: true</code>. Add <code>userId</code> if you also identify this
+        user elsewhere. Unknown clicks return <code>404</code>, and clicks flagged as fraud
+        return <code>422</code>.
+      </p>
+    </Card>
+  );
+}
+
+interface PostbackToken {
+  prefix: string;
+  ipAllowlist: string[];
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+/**
+ * The inbound postback URL, for affiliate networks and lenders that can
+ * only fire a URL. Its token can record conversions and nothing else, so a
+ * URL sitting in a network's dashboard is a contained risk; still, it's
+ * shown in full only once, at mint/rotate time.
+ */
+function PostbackPanel() {
+  const qc = useQueryClient();
+  const { apiBase } = useApiBase();
+  const current = useQuery({
+    queryKey: ['conversion-postback'],
+    queryFn: () => api<{ token: PostbackToken | null }>('/conversion-postback'),
+  });
+  const [minted, setMinted] = useState<string | null>(null);
+  const [allowlistDraft, setAllowlistDraft] = useState<string | null>(null);
+
+  const token = current.data?.token ?? null;
+  const refresh = () => qc.invalidateQueries({ queryKey: ['conversion-postback'] });
+
+  const mint = useMutation({
+    mutationFn: () =>
+      api<{ plaintext: string; token: PostbackToken }>('/conversion-postback/token', { method: 'POST', body: {} }),
+    onSuccess: (res) => {
+      setMinted(res.plaintext);
+      refresh();
+    },
+  });
+  const turnOff = useMutation({
+    mutationFn: () => api('/conversion-postback/token', { method: 'DELETE' }),
+    onSuccess: () => {
+      setMinted(null);
+      refresh();
+    },
+  });
+  const saveAllowlist = useMutation({
+    mutationFn: (ipAllowlist: string[]) =>
+      api<{ token: PostbackToken }>('/conversion-postback', { method: 'PATCH', body: { ipAllowlist } }),
+    onSuccess: () => {
+      setAllowlistDraft(null);
+      refresh();
+    },
+  });
+
+  const urlFor = (tokenText: string) =>
+    `${apiBase}/api/postback?click_id=CLICK_ID&type=sale&amount=AMOUNT&currency=USD&txn_id=TRANSACTION_ID&token=${tokenText}`;
+  const allowlistText = allowlistDraft ?? (token?.ipAllowlist ?? []).join('\n');
+  const mutedButton = {
+    background: 'transparent',
+    border: `1px solid ${theme.borderSubtle}`,
+    borderRadius: 6,
+    padding: '5px 10px',
+    fontSize: 12,
+    color: theme.textMuted,
+    cursor: 'pointer',
+  } as const;
+
+  return (
+    <Card>
+      <h3 style={{ marginTop: 0, marginBottom: 4, fontSize: 15, fontWeight: 500 }}>Postback URL</h3>
+      <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 12px', lineHeight: 1.55 }}>
+        For affiliate networks and lenders that can only fire a URL when a conversion happens.
+        The URL carries its own token, which can record conversions and nothing else. It
+        isn&rsquo;t an API key and doesn&rsquo;t work as one. It answers <code>ok</code> (or a 1×1
+        GIF with <code>&amp;pixel=1</code>).
+      </p>
+      <ErrorBanner error={current.error ?? mint.error ?? turnOff.error ?? saveAllowlist.error} />
+
+      {minted && (
+        <div
+          style={{
+            background: alpha(theme.success, 0.063),
+            border: `1px solid ${alpha(theme.success, 0.333)}`,
+            borderRadius: theme.radiusSm,
+            padding: 12,
+            marginBottom: 14,
+          }}
+        >
+          <div style={{ fontSize: 13, fontWeight: 500, color: theme.success, marginBottom: 6 }}>
+            Your postback URL — copy it now
+          </div>
+          <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 8px' }}>
+            The token is shown only this once. Replace <code>CLICK_ID</code>, <code>AMOUNT</code> and{' '}
+            <code>TRANSACTION_ID</code> with your network&rsquo;s macros, and <code>type</code> with your
+            conversion name.
+          </p>
+          <code
+            style={{
+              display: 'block',
+              padding: '10px 12px',
+              background: theme.surface2,
+              border: `1px solid ${theme.borderSubtle}`,
+              borderRadius: 6,
+              fontSize: 12,
+              wordBreak: 'break-all',
+              userSelect: 'all',
+            }}
+          >
+            {urlFor(minted)}
+          </code>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              navigator.clipboard.writeText(urlFor(minted)).catch(() => {});
+            }}
+            style={{ marginTop: 10 }}
+          >
+            Copy URL
+          </Button>
+        </div>
+      )}
+
+      {current.isLoading ? (
+        <p style={{ fontSize: 13, color: theme.textMuted, margin: 0 }}>Loading…</p>
+      ) : !token ? (
+        <Button onClick={() => mint.mutate()} disabled={mint.isPending}>
+          {mint.isPending ? 'Generating…' : 'Generate postback URL'}
+        </Button>
+      ) : (
+        <>
+          <div
+            style={{
+              display: 'flex',
+              gap: 12,
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              padding: '10px 12px',
+              background: theme.surface2,
+              border: `1px solid ${theme.borderSubtle}`,
+              borderRadius: theme.radiusSm,
+              marginBottom: 14,
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 200, fontSize: 12, color: theme.textMuted }}>
+              Token <code>{token.prefix}…</code> · created {new Date(token.createdAt).toLocaleDateString()}
+              {' · '}
+              {token.lastUsedAt ? `last used ${new Date(token.lastUsedAt).toLocaleString()}` : 'not used yet'}
+            </div>
+            <button
+              type="button"
+              style={mutedButton}
+              disabled={mint.isPending}
+              onClick={() => {
+                if (confirm('Rotate the postback token? The current URL stops working immediately — update it at every network that fires it.')) {
+                  mint.mutate();
+                }
+              }}
+            >
+              Rotate token
+            </button>
+            <button
+              type="button"
+              style={{ ...mutedButton, border: `1px solid ${alpha(theme.danger, 0.333)}`, color: theme.danger }}
+              disabled={turnOff.isPending}
+              onClick={() => {
+                if (confirm('Turn off postbacks? The current URL stops working immediately.')) turnOff.mutate();
+              }}
+            >
+              Turn off
+            </button>
+          </div>
+
+          <Label>Allowed source IPs (optional)</Label>
+          <Textarea
+            value={allowlistText}
+            onChange={(e) => setAllowlistDraft(e.target.value)}
+            rows={3}
+            placeholder={'203.0.113.0/24\n2001:db8::1'}
+            style={{ fontFamily: theme.fontMono, fontSize: 12, boxSizing: 'border-box' }}
+          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+            <Button
+              variant="secondary"
+              disabled={allowlistDraft === null || saveAllowlist.isPending}
+              onClick={() =>
+                saveAllowlist.mutate(
+                  allowlistText
+                    .split(/[\s,]+/)
+                    .map((s) => s.trim())
+                    .filter(Boolean),
+                )
+              }
+            >
+              {saveAllowlist.isPending ? 'Saving…' : 'Save allowlist'}
+            </Button>
+            <span style={{ fontSize: 12, color: theme.textDim, flex: '1 1 240px', lineHeight: 1.5 }}>
+              One IP or CIDR range per line. Empty accepts postbacks from anywhere. Ask your network
+              for its postback IPs. The check uses the address the API sees, so on a self-hosted
+              install point networks at your API host directly, not through another proxy.
+            </span>
+          </div>
+        </>
+      )}
+
+      <div style={{ marginTop: 16, fontSize: 12, color: theme.textMuted, lineHeight: 1.7 }}>
+        <div style={{ fontSize: 11, color: theme.textDim, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
+          Parameters
+        </div>
+        <div><code>click_id</code> (required) — the click id (<code>cref</code> also works)</div>
+        <div><code>type</code> (required) — the conversion, e.g. <code>sale</code>, <code>loan_funded</code></div>
+        <div><code>txn_id</code> (required) — the network&rsquo;s transaction id. A repeat records nothing new (<code>transaction_id</code> also works)</div>
+        <div><code>amount</code>, <code>currency</code> — the conversion value, for percent commissions (<code>value</code> also works)</div>
+        <div><code>user_id</code> — optional, your id for the user</div>
+        <div><code>token</code> (required) — never written to the API&rsquo;s request log</div>
+      </div>
     </Card>
   );
 }

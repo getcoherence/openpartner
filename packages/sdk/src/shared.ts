@@ -51,6 +51,12 @@ export interface EventResponse {
   replayed?: boolean;
 }
 
+export interface ConversionResponse extends EventResponse {
+  /** The user the conversion was recorded under: the userId you passed, or
+   *  the click's own `click:<clickId>` user. */
+  userId: string;
+}
+
 /**
  * Small fetch helper used by both entries. Normalizes non-2xx responses
  * into OpenPartnerError so callers can try/catch with a stable shape
