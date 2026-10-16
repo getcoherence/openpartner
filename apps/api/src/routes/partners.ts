@@ -25,6 +25,12 @@ const createSchema = z.object({
    *  pre-PartnerCampaign behavior). Empty array = grant nothing
    *  (rare; admin can add later). */
   programIds: z.array(z.string()).optional(),
+  /** @deprecated Pre-rename spelling of `programIds` (Campaign → Program,
+   *  May 2026). Network deployments still send it on approve; without
+   *  this alias zod strips it and the handler falls through to the
+   *  grant-ALL-programs default, over-granting every federated creator.
+   *  `programIds` wins when both are sent. */
+  campaignIds: z.array(z.string()).optional(),
   /** Where the grants come from. 'offering' is what the Network
    *  federation sends so we can tell admin assignments apart from
    *  Network-driven ones in the audit log + UI. */
@@ -90,6 +96,32 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
   const existing = await db<PartnerRow>(TABLES.Partner).where({ email }).first();
   if (existing) return res.status(409).json({ error: 'email_taken' });
 
+  // Resolve program (campaign) grants before inserting the Partner so a
+  // rejected list doesn't leave an orphan row behind — a Network retry
+  // would then 409 on email_taken forever. Default = all current
+  // campaigns when caller didn't specify, matching the
+  // pre-PartnerCampaign behavior so existing flows don't change shape.
+  const requestedProgramIds = body.data.programIds ?? body.data.campaignIds;
+  let programIds: string[];
+  if (requestedProgramIds) {
+    // Explicit list — validate that each ID exists in this tenant.
+    // Without this, a stale ID (e.g. Network Offering still references
+    // a Campaign deleted on the vendor side) hits the FK constraint
+    // and surfaces to the caller as an opaque 500. Federation flows
+    // need a clean error message back instead.
+    const known = (await db(TABLES.Program)
+      .whereIn('id', requestedProgramIds)
+      .select('id')) as Array<{ id: string }>;
+    const knownIds = new Set(known.map((c) => c.id));
+    const missing = requestedProgramIds.filter((cid) => !knownIds.has(cid));
+    if (missing.length > 0) {
+      return res.status(400).json({ error: 'unknown_campaign_ids', missing });
+    }
+    programIds = requestedProgramIds;
+  } else {
+    programIds = ((await db(TABLES.Program).select('id')) as Array<{ id: string }>).map((c) => c.id);
+  }
+
   let partner;
   try {
     [partner] = await db<PartnerRow>(TABLES.Partner)
@@ -114,28 +146,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
     throw err;
   }
 
-  // Grant program (campaign) access. Default = all current campaigns
-  // when caller didn't specify, matching the pre-PartnerCampaign
-  // behavior so existing flows don't change shape.
-  let programIds: string[];
-  if (body.data.programIds) {
-    // Explicit list — validate that each ID exists in this tenant.
-    // Without this, a stale ID (e.g. Network Offering still references
-    // a Campaign deleted on the vendor side) hits the FK constraint
-    // and surfaces to the caller as an opaque 500. Federation flows
-    // need a clean error message back instead.
-    const existing = (await db(TABLES.Program)
-      .whereIn('id', body.data.programIds)
-      .select('id')) as Array<{ id: string }>;
-    const existingIds = new Set(existing.map((c) => c.id));
-    const missing = body.data.programIds.filter((cid) => !existingIds.has(cid));
-    if (missing.length > 0) {
-      return res.status(400).json({ error: 'unknown_campaign_ids', missing });
-    }
-    programIds = body.data.programIds;
-  } else {
-    programIds = ((await db(TABLES.Program).select('id')) as Array<{ id: string }>).map((c) => c.id);
-  }
+  // Grant program (campaign) access resolved above.
   if (programIds.length > 0) {
     const grantSource = body.data.campaignGrantSource ?? 'admin';
     await db(TABLES.PartnerProgram)

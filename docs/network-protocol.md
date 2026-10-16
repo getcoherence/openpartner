@@ -175,6 +175,25 @@ These already exist in this repo, gated by `grantScope(...)`:
 | Show a creator their accrued earnings | `GET /partners/:id/commissions` | `commissions:read` |
 | Verify the scoped key still works | `GET /auth/introspect` | (any) |
 
+`POST /partners` scopes the new Partner's grants with `programIds`
+(`[offering.vendorProgramId]` on approve). **Omitting it grants every
+program the brand has**, and unknown body keys are stripped, not
+rejected. That's why the field name is load-bearing. `campaignIds` is
+accepted as a deprecated alias (`programIds` wins when both are sent).
+The Network sends both. `programIds` is what scopes brand instances
+built between the Campaign → Program rename and this alias, since they
+strip `campaignIds`.
+
+Sending `campaignIds` does **not** make approve work against a
+pre-rename brand instance. That brand reads `campaignIds`, so the
+Partner is scoped correctly. But its `POST /partners/:id/links` requires
+`campaignId`, and the Network sends `programId`, so approve fails at the
+link step after the Partner row exists. That leaves an orphan, and every
+re-approve 409s on `email_taken`. The legacy key only keeps that orphan
+scoped to one program instead of every program. A pre-rename brand has
+to upgrade to be approvable. `campaignIds` can be dropped once no
+pre-rename brand is federated.
+
 The Network uses the scoped key registered in `/vendors/register` for
 all of these. On hosted multi-tenant the URL is
 `{instanceUrl}/partners` where `instanceUrl` already includes the
