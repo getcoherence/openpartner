@@ -55,11 +55,11 @@ services:
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
       OPENPARTNER_MODE: ${OPENPARTNER_MODE:-selfhost}
       # In-process scheduler: payouts (incl. real Stripe Connect transfers),
-      # transfer retries, commission auto-approve, usage reporting, sweeps.
-      # OFF unless .env sets OPENPARTNER_ENABLE_SCHEDULER=1. Read
-      # docs/deploy.md#scheduled-jobs before turning it on, and turn it on
-      # for exactly ONE api process — don't `--scale api=N` with it on.
-      OPENPARTNER_ENABLE_SCHEDULER: ${OPENPARTNER_ENABLE_SCHEDULER:-0}
+      # transfer retries, commission auto-approve, usage reporting, Network
+      # sync, sweeps. ON unless .env sets OPENPARTNER_ENABLE_SCHEDULER=0.
+      # See docs/deploy.md#scheduled-jobs. Exactly ONE api process may run
+      # it — don't `--scale api=N` with it on.
+      OPENPARTNER_ENABLE_SCHEDULER: ${OPENPARTNER_ENABLE_SCHEDULER:-1}
       PORTAL_URL: https://${PORTAL_HOST:-portal.${OPENPARTNER_DOMAIN}}
       POSTMARK_SERVER_TOKEN: ${POSTMARK_SERVER_TOKEN:-}
       MAIL_FROM: ${MAIL_FROM:-}

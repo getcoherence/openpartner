@@ -79,9 +79,11 @@ docker compose -f docker-compose.prod.yml up -d
 
 Scheduled payouts, Connect transfer retries, commission auto-approval, usage reporting, and the reminder and cleanup sweeps run on the API's in-process scheduler. It starts only when `OPENPARTNER_ENABLE_SCHEDULER=1`. Any other value, or none, leaves it off. Nothing then runs on a timer: you approve commissions and run payouts by hand (the **Payouts** page, or `POST /payouts/run`).
 
-**The scheduler is off by default in `docker-compose.prod.yml`.** The compose file passes `OPENPARTNER_ENABLE_SCHEDULER` through from `.env` and defaults it to `0`, so upgrading a compose deploy doesn't turn it on. `.do/app.yaml` sets it to `1` for App Platform.
+**`docker-compose.prod.yml` turns the scheduler on by default.** It passes `OPENPARTNER_ENABLE_SCHEDULER` through from `.env` and defaults it to `1`. Set it to `0` in `.env` to keep the scheduler off. `.do/app.yaml` sets it to `1` for App Platform.
 
-To turn it on, set `OPENPARTNER_ENABLE_SCHEDULER=1` in `.env` and run `docker compose -f docker-compose.prod.yml up -d`. From then on the API does all of the following unattended, so check each against your setup first:
+**Upgrading a compose deploy from an earlier release turns the scheduler on**, because earlier compose files didn't pass the variable at all, so it was always off. Before you upgrade, check the list below against your setup, or set `OPENPARTNER_ENABLE_SCHEDULER=0` in `.env` first.
+
+With the scheduler on, the API does all of the following unattended:
 
 - **Pays partners, Mondays 09:00 UTC.** Each tenant runs on its **Settings → Payouts → Payout cadence**: weekly unless you changed it, never if it's **Manual**. Each run batches every approved, unpaid commission per partner and currency, above the **Minimum payout**.
   - **Stripe Connect rail:** partners with a connected, payouts-enabled Stripe account get a **real Stripe transfer** from the Stripe account behind `STRIPE_SECRET_KEY`. In `selfhost` mode that's your own balance, and no funding check stands in front of it. A job every 15 minutes retries transfers that didn't complete. **Payout rail** decides who is on this rail: `Auto`, the default, uses Connect for every partner who has a connected account. In `flat` and `revshare` modes, Connect payouts that hosted funding doesn't cover are refused and their commissions stay approved.

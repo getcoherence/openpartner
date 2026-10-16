@@ -110,14 +110,14 @@ curl -s -X POST http://localhost:4601/payouts/run \
   -H "Authorization: Bearer $ADMIN"
 ```
 
-> **Scheduled jobs are off by default, including in `docker-compose.prod.yml`.** They run only when `OPENPARTNER_ENABLE_SCHEDULER=1`. Until then nothing runs on a timer, and you trigger everything by hand, as above. Turning it on starts:
+> **`docker-compose.prod.yml` runs scheduled jobs by default.** It defaults `OPENPARTNER_ENABLE_SCHEDULER` to `1`; set it to `0` in `.env` to turn them off and trigger everything by hand, as above. Anywhere else, including `pnpm dev`, they run only when it's `1`. With them on, the API runs:
 >
 > - Scheduled payouts on the tenant's **Payout cadence** (weekly unless changed), including **real Stripe Connect transfers** to partners on the Connect rail. In `selfhost` mode they come out of your own Stripe balance.
 > - Auto-approval of accrued commissions once a holdback above 0 days has elapsed. The next payout run then pays them.
 > - In `flat` and `revshare`, a daily usage report to Stripe. A tenant's first report covers all attributed GMV to date.
 > - Reminder and cleanup sweeps.
 >
-> Set it on **exactly one** API process. Read [deploy.md](./deploy.md#scheduled-jobs) before you turn it on.
+> To keep paying partners by hand while the other jobs run, set **Payout cadence** to **Manual**. Run the scheduler on **exactly one** API process. See [deploy.md](./deploy.md#scheduled-jobs), including what upgrading an existing compose deploy turns on.
 
 ## 6. Export / import
 
