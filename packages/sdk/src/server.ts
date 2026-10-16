@@ -30,9 +30,9 @@ export interface OpenPartnerServerConfig {
   /** Base URL of the OpenPartner API. */
   apiUrl: string;
   /**
-   * Admin or scoped API key. For event ingest you need admin or a key
-   * with the right scope (the core API currently uses admin-only for
-   * /attribution/events). Never expose this to the browser.
+   * Admin or scoped API key. Event ingest (/attribution/events) accepts
+   * an admin key or a scoped key with `events:write`. Never expose this
+   * to the browser.
    */
   apiKey: string;
   /** Optional fetch override for tests or custom transports. */

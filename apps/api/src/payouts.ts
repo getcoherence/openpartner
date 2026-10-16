@@ -26,10 +26,11 @@
  *
  * Mode semantics:
  *   - selfhost / flat   → no platform fee; transfer the full amount.
- *   - revshare          → we retain 3% as our platform fee. The transfer still
- *                         sends the full commission amount to the partner;
- *                         the 3% is reconciled against merchant billing (tracked
- *                         on Payout.metadata.platformFee for the ledger).
+ *   - revshare          → also transfers the full commission amount; nothing
+ *                         is withheld. Our 3% is billed to the merchant on
+ *                         attributed GMV through the Stripe usage meter
+ *                         (usage-billing.ts). Payout.metadata.platformFee
+ *                         records 3% of the payout as a ledger note only.
  *
  * Multi-tenant: takes (db, tenantId). Pass req.db from a route handler, or
  * the privileged db with app.tenant_id pinned in the calling transaction

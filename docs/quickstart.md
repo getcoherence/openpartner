@@ -47,18 +47,20 @@ PARTNER=$(curl -s -X POST http://localhost:4601/partners \
 # ^ Also emails Ada an invite with a magic link. She clicks it, sets
 #   up her own partner dashboard session — admin never sees her creds.
 
-# Create a campaign (20% recurring percent rule).
-CAMPAIGN=$(curl -s -X POST http://localhost:4601/campaigns \
+# Create a program (20% recurring percent rule). destinationUrl is
+# where partner links land.
+PROGRAM=$(curl -s -X POST http://localhost:4601/programs \
   -H "Authorization: Bearer $ADMIN" \
   -H "content-type: application/json" \
-  -d '{"name":"Default","commissionRule":{"type":"percent","value":20,"recurring":true}}' | jq -r .id)
+  -d '{"name":"Default","destinationUrl":"https://example.com/signup","commissionRule":{"type":"percent","value":20,"recurring":true}}' | jq -r .id)
 
 # Partners create their own Links — but admin can seed one for
 # testing. In the real UX the partner does this from their dashboard.
+# The link inherits the program's destinationUrl.
 curl -s -X POST http://localhost:4601/partners/$PARTNER/links \
   -H "Authorization: Bearer $ADMIN" \
   -H "content-type: application/json" \
-  -d "{\"linkKey\":\"ada\",\"campaignId\":\"$CAMPAIGN\",\"destinationUrl\":\"https://example.com/signup\"}"
+  -d "{\"linkKey\":\"ada\",\"programId\":\"$PROGRAM\"}"
 ```
 
 ## 4. Simulate the funnel
@@ -108,6 +110,15 @@ curl -s -X POST http://localhost:4601/payouts/run \
   -H "Authorization: Bearer $ADMIN"
 ```
 
+> **`docker-compose.prod.yml` runs scheduled jobs by default.** It defaults `OPENPARTNER_ENABLE_SCHEDULER` to `1`; set it to `0` in `.env` to turn them off and trigger everything by hand, as above. Anywhere else, including `pnpm dev`, they run only when it's `1`. With them on, the API runs:
+>
+> - Scheduled payouts on the tenant's **Payout cadence** (weekly unless changed), including **real Stripe Connect transfers** to partners on the Connect rail. In `selfhost` mode they come out of your own Stripe balance.
+> - Auto-approval of accrued commissions once a holdback above 0 days has elapsed. The next payout run then pays them.
+> - In `flat` and `revshare`, a daily usage report to Stripe. A tenant's first report covers all attributed GMV to date.
+> - Reminder and cleanup sweeps.
+>
+> To keep paying partners by hand while the other jobs run, set **Payout cadence** to **Manual**. Run the scheduler on **exactly one** API process. See [deploy.md](./deploy.md#scheduled-jobs), including what upgrading an existing compose deploy turns on.
+
 ## 6. Export / import
 
 ```bash
@@ -132,9 +143,9 @@ Set `OPENPARTNER_MODE` in `.env`:
 
 | Mode | Billing | Partner payouts |
 | --- | --- | --- |
-| `selfhost` | none | operator handles out-of-band |
-| `flat` | merchant subscription (Stripe Checkout via `POST /billing/checkout`; set `STRIPE_FLAT_PRICE_ID`) | Stripe Connect Standard |
-| `revshare` | 3% of each payout retained as platform fee (tracked in `Payout.metadata.platformFee`) | Stripe Connect Standard |
+| `selfhost` | none | manual (operator pays out-of-band), or Stripe Connect Standard from the operator's own Stripe account |
+| `flat` | Flex subscription via Stripe Checkout (`POST /billing/checkout`): a monthly base price (`STRIPE_FLAT_PRICE_ID`), plus 1.5% of attributed GMV on the attributed-GMV usage meter when `STRIPE_FLAT_USAGE_PRICE_ID` is set. Without it, Checkout bills only the base. `apps/api/scripts/setup-stripe.mjs` creates both ($49/mo + 1.5%). | Stripe Connect Standard |
+| `revshare` | 3% of attributed GMV, billed to the merchant through a Stripe usage meter (`STRIPE_REVSHARE_USAGE_PRICE_ID`; usage is reported daily by the scheduler when it's enabled, or on demand via `POST /billing/report-usage`). Partners receive their full commission — `Payout.metadata.platformFee` is a ledger note, not a deduction. | Stripe Connect Standard |
 
 See `/billing/status` for the current state, and `/billing/portal` in `flat` mode for the merchant's Stripe customer portal.
 

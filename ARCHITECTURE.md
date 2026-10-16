@@ -80,9 +80,9 @@ One codebase, three behaviors, flipped by `OPENPARTNER_MODE`:
 
 | Mode | Merchant billing | Partner payouts |
 | --- | --- | --- |
-| `selfhost` | — | Operator manages out-of-band. |
-| `flat` | Stripe Checkout subscription (`STRIPE_FLAT_PRICE_ID`). | Stripe Connect Standard. |
-| `revshare` | 3% of each payout retained as platform fee, recorded on `Payout.metadata.platformFee`. | Stripe Connect Standard. |
+| `selfhost` | — | Manual (operator pays out-of-band), or Stripe Connect Standard transfers from the operator's own Stripe account. |
+| `flat` | Flex: Stripe Checkout subscription with a monthly base price (`STRIPE_FLAT_PRICE_ID`), plus 1.5% of attributed GMV on the usage meter when `STRIPE_FLAT_USAGE_PRICE_ID` is set. | Stripe Connect Standard. |
+| `revshare` | 3% of attributed GMV, billed to the merchant through a Stripe usage meter (`STRIPE_REVSHARE_USAGE_PRICE_ID`). Partners receive their full commission; `Payout.metadata.platformFee` is a ledger note, not a deduction. | Stripe Connect Standard. |
 
 The core product — attribution, events, commissions — is identical across modes. Only the billing + payout layer changes.
 
