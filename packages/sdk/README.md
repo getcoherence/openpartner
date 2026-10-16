@@ -96,8 +96,12 @@ On a single-tenant self-host whose `STRIPE_SECRET_KEY` and webhook signing secre
 
 OpenPartner has to know which Stripe customer is which referred user. Link them in one of two ways:
 
-- **Checkout `client_reference_id`.** When you create the Checkout Session, pass the referral the browser captured: `client_reference_id: ref ?? undefined`, where `ref` is `op.getReferral()` sent up from the browser. OpenPartner stitches the session's customer to the partner click, and its events are keyed to the Stripe customer id (`cus_…`). Stripe doesn't deliver events in order. If `invoice.paid` or `customer.subscription.created` arrives before `checkout.session.completed`, OpenPartner looks up the customer's completed Checkout Sessions in Stripe and stitches then.
+- **Checkout `client_reference_id`.** When you create the Checkout Session, pass the referral the browser captured: `client_reference_id: ref ?? undefined`, where `ref` is `op.getReferral()` sent up from the browser. OpenPartner stitches the session's customer to the partner click, and its events are keyed to the Stripe customer id (`cus_…`). Stripe doesn't deliver events in order. If the first `invoice.paid` or `customer.subscription.created` arrives before `checkout.session.completed`, OpenPartner looks up the customer's completed Checkout Sessions in Stripe and stitches then.
 - **Customer metadata `openpartner_user_id`.** Set it on the Stripe Customer to the user id you pass to `identify()`. Set it before the customer pays, for example by creating the Customer with the metadata and passing `customer` when you create the Checkout Session. An invoice that arrives before the metadata is set is skipped, and Stripe won't redeliver it.
+
+You can use both. If the Customer already carries your `openpartner_user_id` when the checkout completes, OpenPartner stitches the click to that id instead of the `cus_…` id and leaves your metadata as you set it. The user gets one signup, although `customer.created` and `checkout.session.completed` both report it.
+
+If `STRIPE_SECRET_KEY` is a restricted key, give it read access to Customers and Checkout Sessions. When the key isn't allowed to read one of them, OpenPartner skips that lookup instead of failing the webhook, and the event can go unattributed.
 
 Call `trackEvent` from your backend when:
 
