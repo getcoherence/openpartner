@@ -19,6 +19,10 @@
  * sent to the Network as `creatorProfile` to fill blanks in the creator's
  * Network profile.
  *
+ * GET /partner-signup/status ({ open, reviewRequired }) lets the join page
+ * show "closed" before anyone fills in the form; POST checks closed first
+ * too, so a closed program answers signup_disabled whatever the body.
+ *
  * The endpoint is mounted INSIDE tenantMiddleware — in multi-tenant
  * mode the URL is /t/<slug>/partner-signup; in single-tenant mode
  * (self-host) it's /partner-signup. Tenant context comes from req.db
@@ -62,6 +66,9 @@ import { getNetworkMembership, pushPartnerUpsert } from '../network-client.js';
 export const partnerSignupRouter = Router();
 
 const signupLimit = ipRateLimit({ name: 'partner-signup', max: 10, windowMs: 60_000 });
+// Same limit, own bucket: loading the join page shouldn't eat into the
+// applicant's submit budget.
+const statusLimit = ipRateLimit({ name: 'partner-signup-status', max: 10, windowMs: 60_000 });
 
 const L = PARTNER_APPLICATION_LIMITS;
 const httpUrl = (message: string) => z.string().trim().max(L.urlMax, message).refine(isHttpUrl, message);
@@ -167,15 +174,29 @@ async function readSignupSettings(
   };
 }
 
+/**
+ * Public, unauthenticated: lets the join page say "closed" (or "reviewed")
+ * before an applicant fills in the form. Exposes the two policy bits and
+ * nothing else.
+ */
+partnerSignupRouter.get('/partner-signup/status', statusLimit, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const settings = await readSignupSettings(db, tenantId);
+  res.json({ open: !settings.disabled, reviewRequired: settings.policy === 'require_review' });
+});
+
 partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
-  const body = schema.safeParse(req.body);
-  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
-
+  // Closed is checked first: a closed program answers signup_disabled
+  // whatever the body, so nobody is asked to fix answers that can't be
+  // accepted anyway.
   const settings = await readSignupSettings(db, tenantId);
   if (settings.disabled) {
     return res.status(403).json({ error: 'signup_disabled' });
   }
+
+  const body = schema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
   const email = body.data.email.toLowerCase();
   const profile = body.data.profile

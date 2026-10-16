@@ -77,8 +77,10 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-function renderJoin() {
+function renderJoin(status: { open: boolean; reviewRequired: boolean } | null = { open: true, reviewRequired: false }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  // GET /partner-signup/status; null = let the page fetch it.
+  if (status) qc.setQueryData(['partner-signup-status', null], status);
   qc.setQueryData(['public-branding', null], {
     tenantSlug: 'acme',
     programName: 'Acme',
@@ -173,5 +175,27 @@ describe('PartnerJoinPage', () => {
     fireEvent.change(page.getByLabelText('How would you promote Acme?'), { target: { value: PITCH } });
     fireEvent.click(page.getByRole('button', { name: 'Apply to join' }));
     await waitFor(() => expect(page.getByRole('alert').textContent).toBe('Please check your answers: Pick your audience size.'));
+  });
+});
+
+describe('PartnerJoinPage signup status', () => {
+  it('shows "Signups are closed" on load when the program is closed, before any form', async () => {
+    respond = () => json(200, { open: false, reviewRequired: false });
+    const page = renderJoin(null);
+    await waitFor(() => expect(page.getByText('Signups are closed')).toBeTruthy());
+    expect(page.queryByLabelText('Website or main channel')).toBeNull();
+    expect(sent.map((c) => c.url)).toEqual(['/api/partner-signup/status']);
+  });
+
+  it('says up front that applications are reviewed', () => {
+    const page = renderJoin({ open: true, reviewRequired: true });
+    expect(page.getByText(/Acme reviews each application before you can sign in./)).toBeTruthy();
+    expect(page.getByLabelText('Website or main channel')).toBeTruthy();
+  });
+
+  it('still shows the form when the status check fails', async () => {
+    respond = () => json(404, { error: 'not_found' });
+    const page = renderJoin(null);
+    await waitFor(() => expect(page.getByLabelText('Website or main channel')).toBeTruthy());
   });
 });

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Mail, Plus, User, X } from 'lucide-react';
 import {
   AUDIENCE_SIZES,
@@ -8,7 +9,7 @@ import {
   isHttpUrl,
   type AudienceSize,
 } from '@openpartner/db';
-import { ApiError, api } from '../api.js';
+import { ApiError, api, currentTenantSlug } from '../api.js';
 import { theme } from '../theme.js';
 import { AuthFrame } from './auth/Shared.js';
 import { usePublicBrand } from '../lib/useBrand.js';
@@ -130,6 +131,15 @@ export function PartnerJoinPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: 'form' });
+  // Closed (or reviewed) is known before anyone fills in the form. If the
+  // check fails (an older API without it), the form still works and a
+  // closed program answers the submit with signup_disabled.
+  const status = useQuery({
+    queryKey: ['partner-signup-status', currentTenantSlug()],
+    queryFn: () => api<{ open: boolean; reviewRequired: boolean }>('/partner-signup/status'),
+    retry: false,
+    staleTime: 60_000,
+  });
 
   const { errors, application } = validateJoinForm(values);
   const set = <K extends JoinField>(key: K, value: JoinFormValues[K]) => setValues((v) => ({ ...v, [key]: value }));
@@ -168,7 +178,7 @@ export function PartnerJoinPage() {
 
   const program = brand.isLoading ? '' : brand.programName;
 
-  if (phase.kind === 'closed') {
+  if (phase.kind === 'closed' || status.data?.open === false) {
     return (
       <AuthFrame title="Signups are closed" subtitle={`${program} isn't accepting new partner applications right now.`}>
         <div style={{ fontSize: 13, color: theme.textMuted, lineHeight: 1.6 }}>
@@ -203,14 +213,28 @@ export function PartnerJoinPage() {
     );
   }
 
+  const title = `Become a ${program ? `${program} ` : ''}partner`;
+  if (status.isLoading) {
+    // Don't show a form that might be closed.
+    return (
+      <AuthFrame title={title}>
+        <div style={{ fontSize: 13, color: theme.textMuted }}>Loading…</div>
+      </AuthFrame>
+    );
+  }
+
   const pitchLength = values.pitch.trim().length;
   const socialRows = values.socialUrls;
   const disabled = busy || !application;
 
   return (
     <AuthFrame
-      title={`Become a ${program ? `${program} ` : ''}partner`}
-      subtitle="Tell us about you and your audience. Every field is required."
+      title={title}
+      subtitle={
+        status.data?.reviewRequired
+          ? `Tell us about you and your audience. Every field is required. ${program || 'The team'} reviews each application before you can sign in.`
+          : 'Tell us about you and your audience. Every field is required.'
+      }
     >
       <form onSubmit={submit} noValidate>
         <div style={{ position: 'relative' }}>

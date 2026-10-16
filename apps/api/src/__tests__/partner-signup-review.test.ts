@@ -299,3 +299,40 @@ describe.skipIf(skipIntegration)('the join-page application is required', () => 
     expect(notice?.html).not.toContain('<b>bold</b>');
   });
 });
+
+describe.skipIf(skipIntegration)('signup status is public and checked first', () => {
+  async function setSettings(value: Record<string, unknown>): Promise<void> {
+    await db(TABLES.Config)
+      .insert({ tenantId: DEFAULT_TENANT_ID, key: 'partner_signup', value: value as unknown as never, updatedAt: new Date() })
+      .onConflict(['tenantId', 'key'])
+      .merge({ value: value as unknown as never, updatedAt: new Date() });
+  }
+
+  it('GET /partner-signup/status reports open + review policy without auth, and nothing else', async () => {
+    const fresh = await request(app).get('/partner-signup/status');
+    expect(fresh.status).toBe(200);
+    expect(fresh.body).toEqual({ open: true, reviewRequired: false });
+
+    await setSettings({ policy: 'require_review' });
+    expect((await request(app).get('/partner-signup/status')).body).toEqual({ open: true, reviewRequired: true });
+
+    await setSettings({ policy: 'require_review', disabled: true });
+    expect((await request(app).get('/partner-signup/status')).body).toEqual({ open: false, reviewRequired: true });
+  });
+
+  it('a closed program answers 403 signup_disabled whatever the body', async () => {
+    await setSettings({ policy: 'auto_approve', disabled: true });
+    for (const body of [{}, { email: 'not-an-email' }, { email: 'creator@x.test', name: 'Creator', application: APPLICATION }]) {
+      const res = await request(app).post('/partner-signup').send(body);
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('signup_disabled');
+    }
+    expect(await db(TABLES.Partner).where({ email: 'creator@x.test' })).toHaveLength(0);
+  });
+
+  it('an open program still validates the body', async () => {
+    const res = await request(app).post('/partner-signup').send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_body');
+  });
+});
