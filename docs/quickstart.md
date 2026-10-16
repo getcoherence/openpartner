@@ -110,7 +110,14 @@ curl -s -X POST http://localhost:4601/payouts/run \
   -H "Authorization: Bearer $ADMIN"
 ```
 
-> **Scheduled jobs are off unless `OPENPARTNER_ENABLE_SCHEDULER=1`.** Without it, nothing runs on a timer: no scheduled payouts (or Stripe transfers for them), no auto-approval after a program's holdback, no usage reporting, reminders or other sweeps. You trigger everything by hand, as above. Set it on **exactly one** API process. Every process with it set runs every job. `docker-compose.prod.yml` sets it for its single `api` service. See [deploy.md](./deploy.md#scheduled-jobs).
+> **Scheduled jobs are off by default, including in `docker-compose.prod.yml`.** They run only when `OPENPARTNER_ENABLE_SCHEDULER=1`. Until then nothing runs on a timer, and you trigger everything by hand, as above. Turning it on starts:
+>
+> - Scheduled payouts on the tenant's **Payout cadence** (weekly unless changed), including **real Stripe Connect transfers** to partners on the Connect rail. In `selfhost` mode they come out of your own Stripe balance.
+> - Auto-approval of accrued commissions once a holdback above 0 days has elapsed. The next payout run then pays them.
+> - In `flat` and `revshare`, a daily usage report to Stripe. A tenant's first report covers all attributed GMV to date.
+> - Reminder and cleanup sweeps.
+>
+> Set it on **exactly one** API process. Read [deploy.md](./deploy.md#scheduled-jobs) before you turn it on.
 
 ## 6. Export / import
 
@@ -136,9 +143,9 @@ Set `OPENPARTNER_MODE` in `.env`:
 
 | Mode | Billing | Partner payouts |
 | --- | --- | --- |
-| `selfhost` | none | operator handles out-of-band |
+| `selfhost` | none | manual (operator pays out-of-band), or Stripe Connect Standard from the operator's own Stripe account |
 | `flat` | Flex subscription via Stripe Checkout (`POST /billing/checkout`): a monthly base price (`STRIPE_FLAT_PRICE_ID`), plus 1.5% of attributed GMV on the attributed-GMV usage meter when `STRIPE_FLAT_USAGE_PRICE_ID` is set. Without it, Checkout bills only the base. `apps/api/scripts/setup-stripe.mjs` creates both ($49/mo + 1.5%). | Stripe Connect Standard |
-| `revshare` | 3% of attributed GMV, billed to the merchant through a Stripe usage meter (`STRIPE_REVSHARE_USAGE_PRICE_ID`; usage is reported daily by the scheduler, or on demand via `POST /billing/report-usage`). Partners receive their full commission — `Payout.metadata.platformFee` is a ledger note, not a deduction. | Stripe Connect Standard |
+| `revshare` | 3% of attributed GMV, billed to the merchant through a Stripe usage meter (`STRIPE_REVSHARE_USAGE_PRICE_ID`; usage is reported daily by the scheduler when it's enabled, or on demand via `POST /billing/report-usage`). Partners receive their full commission — `Payout.metadata.platformFee` is a ledger note, not a deduction. | Stripe Connect Standard |
 
 See `/billing/status` for the current state, and `/billing/portal` in `flat` mode for the merchant's Stripe customer portal.
 

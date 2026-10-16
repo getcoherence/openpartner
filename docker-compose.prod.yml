@@ -54,18 +54,24 @@ services:
       ADMIN_API_KEY: ${ADMIN_API_KEY}
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
       OPENPARTNER_MODE: ${OPENPARTNER_MODE:-selfhost}
-      # In-process scheduler: payouts, transfer retries, auto-approve,
-      # usage reporting, sweeps. Must run on exactly ONE api process —
-      # don't `--scale api=N` with this on. See docs/deploy.md.
-      OPENPARTNER_ENABLE_SCHEDULER: ${OPENPARTNER_ENABLE_SCHEDULER:-1}
+      # In-process scheduler: payouts (incl. real Stripe Connect transfers),
+      # transfer retries, commission auto-approve, usage reporting, sweeps.
+      # OFF unless .env sets OPENPARTNER_ENABLE_SCHEDULER=1. Read
+      # docs/deploy.md#scheduled-jobs before turning it on, and turn it on
+      # for exactly ONE api process — don't `--scale api=N` with it on.
+      OPENPARTNER_ENABLE_SCHEDULER: ${OPENPARTNER_ENABLE_SCHEDULER:-0}
       PORTAL_URL: https://${PORTAL_HOST:-portal.${OPENPARTNER_DOMAIN}}
       POSTMARK_SERVER_TOKEN: ${POSTMARK_SERVER_TOKEN:-}
       MAIL_FROM: ${MAIL_FROM:-}
       POSTMARK_MESSAGE_STREAM: ${POSTMARK_MESSAGE_STREAM:-outbound}
       METRICS_TOKEN: ${METRICS_TOKEN:-}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET_PLATFORM: ${STRIPE_WEBHOOK_SECRET_PLATFORM:-}
+      STRIPE_WEBHOOK_SECRET_CONNECT: ${STRIPE_WEBHOOK_SECRET_CONNECT:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       STRIPE_FLAT_PRICE_ID: ${STRIPE_FLAT_PRICE_ID:-}
+      STRIPE_FLAT_USAGE_PRICE_ID: ${STRIPE_FLAT_USAGE_PRICE_ID:-}
+      STRIPE_REVSHARE_USAGE_PRICE_ID: ${STRIPE_REVSHARE_USAGE_PRICE_ID:-}
     expose:
       - '4601'
 

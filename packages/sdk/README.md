@@ -131,6 +131,7 @@ Call `trackEvent` from your backend when:
 
 - You're on hosted OpenPartner.
 - You don't use Stripe, or the customer is linked neither by a Checkout `client_reference_id` nor by `openpartner_user_id` metadata.
+- The revenue isn't invoiced, such as one-time payments. A Checkout in `mode: 'payment'` without `invoice_creation` sends no `invoice.paid`, so OpenPartner records at most a value-less `signup` and never the payment. `payment_intent.*` and `charge.succeeded` aren't ingested as revenue.
 - You want to track custom event types (`trial_started`, `feature_activated`, etc.).
 - You want to override the event timestamp (`ts: '2026-04-20T12:00:00Z'`).
 
