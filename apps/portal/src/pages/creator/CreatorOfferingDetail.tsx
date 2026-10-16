@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
-import { theme } from '../../theme.js';
+import { alpha, theme } from '../../theme.js';
 import { creatorApi, ApiError } from './creator-api.js';
 import { categoryLabel } from '@openpartner/db';
 import { ListingBanner, ListingVideo, type OfferingVideo } from './ListingBanner.js';
@@ -204,7 +204,7 @@ export function CreatorOfferingDetailPage() {
       {isLoading && <Card>Loading…</Card>}
       {invitation && invitation.status === 'pending' && (
         <Card style={{ marginBottom: 14, background: `${theme.accentA10}`, borderColor: `${theme.accentA55}` }}>
-          <div style={{ fontSize: 14, fontWeight: 500, color: theme.accent, marginBottom: 4 }}>
+          <div style={{ fontSize: 14, fontWeight: 500, color: theme.accentText, marginBottom: 4 }}>
             ✓ {invitation.vendorDisplayName ?? 'A brand'} invited you to apply
           </div>
           {invitation.message && (
@@ -218,7 +218,7 @@ export function CreatorOfferingDetailPage() {
         </Card>
       )}
       {invitation && invitation.status === 'expired' && (
-        <Card style={{ marginBottom: 14, background: `${theme.danger}10`, borderColor: `${theme.danger}55` }}>
+        <Card style={{ marginBottom: 14, background: alpha(theme.danger, 0.063), borderColor: alpha(theme.danger, 0.333) }}>
           <div style={{ fontSize: 13, color: theme.danger }}>
             This invitation expired. You can still apply normally below.
           </div>
@@ -353,7 +353,7 @@ function OfferingDetailBody({
               href={offering.productUrl}
               target="_blank"
               rel="noopener noreferrer"
-              style={{ fontSize: 14, color: theme.accent, textDecoration: 'none' }}
+              style={{ fontSize: 14, color: theme.accentText, textDecoration: 'none' }}
             >
               {hostnameOf(offering.productUrl)} ↗
             </a>
@@ -712,7 +712,7 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
       <>
         {!embedded && <h3 style={{ marginTop: 0 }}>Apply to promote</h3>}
         <p style={{ color: theme.textMuted, margin: 0 }}>
-          <Link to="/creator/signup" style={{ color: theme.accent }}>Sign up</Link> or <Link to="/creator/login" style={{ color: theme.accent }}>sign in</Link> to apply.
+          <Link to="/creator/signup" style={{ color: theme.accentText }}>Sign up</Link> or <Link to="/creator/login" style={{ color: theme.accentText }}>sign in</Link> to apply.
         </p>
       </>
     );
@@ -730,7 +730,7 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
         <p style={{ color: theme.textMuted, fontSize: 13, margin: 0 }}>
           {embedded && <strong style={{ color: theme.text }}>Application pending. </strong>}
           You&rsquo;ve applied to {offering.vendorName}. They&rsquo;ll review and you&rsquo;ll get an email when they decide.
-          Track it on <Link to="/creator/requests" style={{ color: theme.accent }}>My applications</Link>.
+          Track it on <Link to="/creator/requests" style={{ color: theme.accentText }}>My applications</Link>.
         </p>
       </>
     );
@@ -752,7 +752,7 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
       {missing && (
         <ProfileIncompleteNotice
           missing={missing}
-          link={<Link to="/creator/profile" style={{ color: theme.accent, fontWeight: 500 }}>Go to your profile →</Link>}
+          link={<Link to="/creator/profile" style={{ color: theme.accentText, fontWeight: 500 }}>Go to your profile →</Link>}
         />
       )}
       {!refusedMissing && <ErrorBanner error={apply.error} />}
@@ -858,7 +858,7 @@ function ApprovedCard({ offering, embedded }: { offering: Offering; embedded?: b
         <p style={{ color: theme.textDim, fontSize: 13, marginTop: 12 }}>Loading share link…</p>
       )}
       <p style={{ marginTop: 12, fontSize: 12 }}>
-        <Link to="/creator/links" style={{ color: theme.accent }}>Edit slug or copy from My share links →</Link>
+        <Link to="/creator/links" style={{ color: theme.accentText }}>Edit slug or copy from My share links →</Link>
       </p>
     </Wrap>
   );

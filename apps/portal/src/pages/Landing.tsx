@@ -71,7 +71,7 @@ export function LandingPage() {
 
       <main style={{ flex: 1, padding: '64px 24px 32px' }}>
         <div style={{ maxWidth: 880, margin: '0 auto', textAlign: 'center' }}>
-          <div style={{ fontSize: 12, color: theme.accent, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 16 }}>
+          <div style={{ fontSize: 12, color: theme.accentText, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 16 }}>
             Partner program software with a built-in network
           </div>
           <h1 style={{ fontSize: 48, lineHeight: 1.1, margin: 0, letterSpacing: '-0.02em', fontWeight: 700 }}>
@@ -111,7 +111,7 @@ export function LandingPage() {
         </div>
 
         <div style={{ marginTop: 48, textAlign: 'center', color: theme.textDim, fontSize: 13 }}>
-          Already have an account? <Link to="/signin" style={{ color: theme.accent }}>Sign in</Link>
+          Already have an account? <Link to="/signin" style={{ color: theme.accentText }}>Sign in</Link>
         </div>
       </main>
 
@@ -145,17 +145,17 @@ function AudienceCard({ eyebrow, title, bullets, ctaLabel, to }: { eyebrow: stri
         e.currentTarget.style.transform = 'translateY(0)';
       }}
     >
-      <div style={{ fontSize: 11, color: theme.accent, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>{eyebrow}</div>
+      <div style={{ fontSize: 11, color: theme.accentText, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>{eyebrow}</div>
       <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.3, marginBottom: 16, letterSpacing: '-0.01em' }}>{title}</div>
       <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 24px' }}>
         {bullets.map((b) => (
           <li key={b} style={{ color: theme.textMuted, fontSize: 14, padding: '6px 0 6px 20px', position: 'relative', lineHeight: 1.55 }}>
-            <span style={{ position: 'absolute', left: 0, color: theme.accent, fontWeight: 700 }}>›</span>
+            <span style={{ position: 'absolute', left: 0, color: theme.accentText, fontWeight: 700 }}>›</span>
             {b}
           </li>
         ))}
       </ul>
-      <span style={{ color: theme.accent, fontWeight: 600, fontSize: 14 }}>{ctaLabel} →</span>
+      <span style={{ color: theme.accentText, fontWeight: 600, fontSize: 14 }}>{ctaLabel} →</span>
     </Link>
   );
 }

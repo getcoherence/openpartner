@@ -25,7 +25,7 @@ function useShareUrlBase(): string | null {
 
 function CopyableShareLink({ linkKey, base }: { linkKey: string; base: string | null }) {
   const [copied, setCopied] = useState(false);
-  if (!base) return <code style={{ color: theme.accent }}>/r/{linkKey}</code>;
+  if (!base) return <code style={{ color: theme.accentText }}>/r/{linkKey}</code>;
   const url = `${base}/${linkKey}`;
   return (
     <button
@@ -47,7 +47,7 @@ function CopyableShareLink({ linkKey, base }: { linkKey: string; base: string | 
         cursor: 'pointer',
         fontFamily: theme.fontMono,
         fontSize: 13,
-        color: theme.accent,
+        color: theme.accentText,
         whiteSpace: 'nowrap',
       }}
     >
@@ -120,7 +120,7 @@ function AdminLinksHub() {
                   <div style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</div>
                   <div style={{ fontSize: 12, color: theme.textMuted }}>{p.email}</div>
                 </div>
-                <ArrowRight size={14} color={theme.textDim} />
+                <ArrowRight size={14} style={{ color: theme.textDim }} />
               </div>
             </TenantLink>
           ))}
@@ -197,7 +197,7 @@ function PartnerLinks({ partnerId, readOnly }: { partnerId: string; readOnly: bo
               <span style={{ color: theme.textMuted, fontSize: 13 }}>
                 {dest}
                 {l.destinationUrl && (
-                  <span style={{ color: theme.accent, fontSize: 11, marginLeft: 8 }}>(deep link)</span>
+                  <span style={{ color: theme.accentText, fontSize: 11, marginLeft: 8 }}>(deep link)</span>
                 )}
               </span>,
               <span>{campaign?.name ?? <code style={{ color: theme.textDim, fontSize: 12 }}>{l.programId.slice(0, 8)}…</code>}</span>,

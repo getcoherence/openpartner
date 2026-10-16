@@ -7,6 +7,7 @@ import { useIsMobile } from '../../lib/useMediaQuery.js';
 import { ProfileCompletionBanner } from '../../lib/ProfileCompletionBanner.js';
 import type { ProfileCompleteness } from '../../lib/profile-incomplete.js';
 import { Logo } from '../auth/Shared.js';
+import { ThemeToggle } from '../../lib/ThemeToggle.js';
 import { creatorApi } from './creator-api.js';
 import { CreatorDiscoverPage } from './CreatorDiscover.js';
 import { CreatorOfferingDetailPage } from './CreatorOfferingDetail.js';
@@ -147,7 +148,7 @@ function CreatorMobileDrawer({ open, onClose, children }: { open: boolean; onClo
         style={{
           position: 'fixed',
           inset: 0,
-          background: 'rgba(0,0,0,0.5)',
+          background: theme.overlay,
           opacity: open ? 1 : 0,
           pointerEvents: open ? 'auto' : 'none',
           transition: 'opacity 180ms ease',
@@ -166,7 +167,7 @@ function CreatorMobileDrawer({ open, onClose, children }: { open: boolean; onClo
           width: 'min(280px, 84vw)',
           transform: open ? 'translateX(0)' : 'translateX(-100%)',
           transition: 'transform 200ms ease',
-          boxShadow: open ? '0 0 40px rgba(0,0,0,0.5)' : 'none',
+          boxShadow: open ? theme.shadowDrawer : 'none',
           display: 'flex',
           zIndex: 50,
         }}
@@ -216,6 +217,8 @@ function CreatorSidebar({ creator, variant = 'sidebar' }: { creator: NonNullable
         </NavSection>
       </div>
 
+      <ThemeToggle labels style={{ marginTop: 14 }} />
+
       <button
         onClick={async () => {
           try {
@@ -230,7 +233,7 @@ function CreatorSidebar({ creator, variant = 'sidebar' }: { creator: NonNullable
           alignItems: 'center',
           justifyContent: 'center',
           gap: 8,
-          marginTop: 14,
+          marginTop: 8,
           background: 'transparent',
           color: theme.textMuted,
           border: `1px solid ${theme.borderSubtle}`,

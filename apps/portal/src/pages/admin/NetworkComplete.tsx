@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../api.js';
 import { Card, ErrorBanner, Page } from '../../ui.js';
+import { theme } from '../../theme.js';
 
 /**
  * Callback page for the Network self-serve onboarding magic link.
@@ -51,7 +52,7 @@ export function AdminNetworkComplete() {
       <Card>
         {state === 'pending' && <p>Finishing connection…</p>}
         {state === 'ok' && (
-          <p style={{ color: '#1a6b1a' }}>
+          <p style={{ color: theme.success }}>
             Connected. Redirecting back to Network settings…
           </p>
         )}

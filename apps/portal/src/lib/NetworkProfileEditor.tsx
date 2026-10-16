@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient, type QueryKey } from '@tanstack/
 import { CheckCircle2, Circle, Plus, X } from 'lucide-react';
 import { AUDIENCE_SIZES, AUDIENCE_SIZE_LABELS, type AudienceSize } from '@openpartner/db';
 import { Button, Card, ErrorBanner, Input, Label, Select, Textarea } from '../ui.js';
-import { theme } from '../theme.js';
+import { alpha, theme } from '../theme.js';
 
 /**
  * The Network profile editor: completeness checklist, basics, audience,
@@ -269,7 +269,7 @@ export function NetworkProfileEditor({
               href={publicProfileHref}
               target="_blank"
               rel="noopener noreferrer"
-              style={{ color: theme.accent, fontSize: 13, marginLeft: 4 }}
+              style={{ color: theme.accentText, fontSize: 13, marginLeft: 4 }}
             >
               View public profile →
             </a>
@@ -341,7 +341,7 @@ function AvatarUploader({
         {value ? (
           <img src={value} alt={name || 'Avatar'} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
         ) : (
-          <span style={{ fontSize: 24, fontWeight: 600, color: theme.accent }}>
+          <span style={{ fontSize: 24, fontWeight: 600, color: theme.accentText }}>
             {name?.charAt(0).toUpperCase() || '?'}
           </span>
         )}
@@ -404,7 +404,7 @@ function CategoryChips({ selected, onChange }: { selected: string[]; onChange: (
               borderRadius: 14,
               border: `1px solid ${on ? theme.accent : theme.borderSubtle}`,
               background: on ? `${theme.accentA22}` : theme.surface2,
-              color: on ? theme.accent : theme.textMuted,
+              color: on ? theme.accentText : theme.textMuted,
               fontSize: 12,
               cursor: 'pointer',
               fontWeight: on ? 500 : 400,
@@ -492,7 +492,7 @@ function ProfileChecklistCard({ profile }: { profile: NetworkProfile }) {
     return (
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <CheckCircle2 size={18} color={theme.success} />
+          <CheckCircle2 size={18} style={{ color: theme.success }} />
           <div>
             <div style={{ fontSize: 14, fontWeight: 600 }}>Your profile is live</div>
             <div style={{ fontSize: 13, color: theme.textMuted }}>
@@ -506,7 +506,7 @@ function ProfileChecklistCard({ profile }: { profile: NetworkProfile }) {
 
   const left = items.filter((i) => !i.done).length;
   return (
-    <Card style={{ border: `1px solid ${theme.warn}55`, background: theme.warnSoft }}>
+    <Card style={{ border: `1px solid ${alpha(theme.warn, 0.333)}`, background: theme.warnSoft }}>
       <div style={{ fontSize: 15, fontWeight: 600, color: theme.text }}>
         Your profile is hidden from brands
       </div>
@@ -518,7 +518,7 @@ function ProfileChecklistCard({ profile }: { profile: NetworkProfile }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {items.map((i) => (
           <div key={i.field} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13.5 }}>
-            {i.done ? <CheckCircle2 size={16} color={theme.success} /> : <Circle size={16} color={theme.warn} />}
+            {i.done ? <CheckCircle2 size={16} style={{ color: theme.success }} /> : <Circle size={16} style={{ color: theme.warn }} />}
             <span
               style={{
                 color: i.done ? theme.textMuted : theme.text,

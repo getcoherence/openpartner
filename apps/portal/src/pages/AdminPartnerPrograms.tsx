@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { api } from '../api.js';
-import { theme } from '../theme.js';
+import { alpha, theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
 import { Card, ErrorBanner, Page } from '../ui.js';
 import { useBrand } from '../lib/useBrand.js';
@@ -83,8 +83,8 @@ export function AdminPartnerPrograms() {
                     alignItems: 'center',
                     gap: 12,
                     padding: '10px 12px',
-                    background: c.granted ? `${theme.success}10` : theme.surface2,
-                    border: `1px solid ${c.granted ? `${theme.success}44` : theme.borderSubtle}`,
+                    background: c.granted ? alpha(theme.success, 0.063) : theme.surface2,
+                    border: `1px solid ${c.granted ? alpha(theme.success, 0.267) : theme.borderSubtle}`,
                     borderRadius: theme.radiusSm,
                     cursor: busy ? 'wait' : 'pointer',
                     opacity: busy ? 0.6 : 1,
@@ -101,7 +101,7 @@ export function AdminPartnerPrograms() {
                     <div style={{ fontSize: 12, color: theme.textMuted, fontFamily: theme.fontMono }}>{c.destinationUrl}</div>
                   </div>
                   {c.grantSource === 'offering' && !whiteLabel && (
-                    <span style={{ fontSize: 11, color: theme.accent, padding: '3px 8px', background: `${theme.accentA15}`, borderRadius: 12 }}>
+                    <span style={{ fontSize: 11, color: theme.accentText, padding: '3px 8px', background: `${theme.accentA15}`, borderRadius: 12 }}>
                       via Network
                     </span>
                   )}

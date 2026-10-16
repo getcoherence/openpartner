@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { theme } from '../../theme.js';
 import { usePublicBrand } from '../../lib/useBrand.js';
+import { ThemeToggle } from '../../lib/ThemeToggle.js';
 
 export function AuthFrame({
   title,
@@ -24,6 +25,7 @@ export function AuthFrame({
     <div
       style={{
         display: 'flex',
+        flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
         minHeight: '100vh',
@@ -38,7 +40,10 @@ export function AuthFrame({
           padding: 32,
           borderRadius: theme.radiusLg,
           width: 420,
-          boxShadow: '0 30px 80px -30px rgba(0,0,0,0.6)',
+          // Column flex doesn't shrink widths the way the old row layout
+          // did, so cap it explicitly for phones.
+          maxWidth: '100%',
+          boxShadow: theme.shadowRaised,
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
@@ -54,6 +59,9 @@ export function AuthFrame({
         {subtitle && <div style={{ color: theme.textMuted, fontSize: 13, marginBottom: 20 }}>{subtitle}</div>}
         {children}
       </div>
+      {/* Footer-style, below the card: reachable on every public page
+          without competing with the form. */}
+      <ThemeToggle style={{ marginTop: 16 }} />
     </div>
   );
 }

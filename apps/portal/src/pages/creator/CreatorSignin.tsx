@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { theme } from '../../theme.js';
+import { alpha, theme } from '../../theme.js';
 import { AuthFrame } from '../auth/Shared.js';
 import { creatorApi, ApiError } from './creator-api.js';
 
@@ -30,7 +30,7 @@ export function CreatorSigninPage() {
   if (sent) {
     return (
       <AuthFrame title="Check your inbox" subtitle={`If an account exists for ${email}, we just sent a sign-in link.`}>
-        <div style={{ background: theme.successSoft, border: `1px solid ${theme.success}55`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
+        <div style={{ background: theme.successSoft, border: `1px solid ${alpha(theme.success, 0.333)}`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
           The link is good for 15 minutes.
         </div>
       </AuthFrame>
@@ -49,7 +49,7 @@ export function CreatorSigninPage() {
           {busy ? 'Sending…' : 'Email me a sign-in link'}
         </button>
         <div style={{ marginTop: 12, fontSize: 12, color: theme.textDim, textAlign: 'center' }}>
-          New here? <Link to="/creator/signup" style={{ color: theme.accent }}>Create an account</Link> · <Link to="/" style={{ color: theme.accent }}>Home</Link>
+          New here? <Link to="/creator/signup" style={{ color: theme.accentText }}>Create an account</Link> · <Link to="/" style={{ color: theme.accentText }}>Home</Link>
         </div>
       </form>
     </AuthFrame>

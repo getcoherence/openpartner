@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp } from 'lucide-react';
-import { theme } from '../../theme.js';
+import { alpha, theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Page, SectionHeading, formatDate } from '../../ui.js';
 import {
   papi,
@@ -64,7 +64,7 @@ export function MarketplacePage({ operator }: { operator: PlatformOperator }) {
         <div
           style={{
             background: theme.infoSoft,
-            border: `1px solid ${theme.info}44`,
+            border: `1px solid ${alpha(theme.info, 0.267)}`,
             color: theme.info,
             padding: '10px 14px',
             borderRadius: theme.radiusSm,
@@ -273,6 +273,7 @@ function Logo({ url, name }: { url: string | null; name: string }) {
       <img
         src={url}
         alt=""
+        // Fixed white backdrop: brand logos are drawn for light backgrounds.
         style={{ width: 32, height: 32, borderRadius: 7, objectFit: 'contain', background: '#fff', flexShrink: 0 }}
       />
     );

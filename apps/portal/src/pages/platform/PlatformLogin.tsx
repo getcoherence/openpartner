@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { theme } from '../../theme.js';
+import { alpha, theme } from '../../theme.js';
 import { Button, Input, Label } from '../../ui.js';
 import { PlatformFrame } from './components.js';
 import { papi, friendlyPlatformError } from './lib.js';
@@ -39,7 +39,7 @@ export function PlatformLoginPage() {
         <div
           style={{
             background: theme.successSoft,
-            border: `1px solid ${theme.success}55`,
+            border: `1px solid ${alpha(theme.success, 0.333)}`,
             padding: 14,
             borderRadius: theme.radiusSm,
             fontSize: 13,

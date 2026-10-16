@@ -16,7 +16,7 @@ import {
 import { api, type Principal } from '../api.js';
 import { useTenantBase } from '../tenant-base.js';
 import { TenantLink } from '../tenant-link.js';
-import { theme } from '../theme.js';
+import { alpha, theme } from '../theme.js';
 import { useBrand } from '../lib/useBrand.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, SectionHeading, Stat, StatusPill, money } from '../ui.js';
 
@@ -194,7 +194,7 @@ function ChecklistRow({
         gap: 12,
         padding: '12px 14px',
         background: done ? theme.successSoft : theme.surface2,
-        border: `1px solid ${done ? `${theme.success}44` : theme.borderSubtle}`,
+        border: `1px solid ${done ? alpha(theme.success, 0.267) : theme.borderSubtle}`,
         borderRadius: theme.radiusSm,
       }}
     >
@@ -260,7 +260,7 @@ function FunnelChart({ funnel }: { funnel: Funnel }) {
             return (
               <div key={s.key} className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '120px 1fr 140px', gap: 12, alignItems: 'center' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: theme.textMuted }}>
-                  <span style={{ color: theme.accent, display: 'inline-flex' }}>{s.icon}</span>
+                  <span style={{ color: theme.accentText, display: 'inline-flex' }}>{s.icon}</span>
                   {s.label}
                 </div>
                 <div style={{ background: theme.bg, border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm, height: 28, position: 'relative', overflow: 'hidden' }}>
@@ -269,10 +269,12 @@ function FunnelChart({ funnel }: { funnel: Funnel }) {
                       width,
                       height: '100%',
                       background: `linear-gradient(90deg, ${theme.accent}, ${theme.accentHover})`,
-                      opacity: 0.85,
+                      // Saturated bar on dark, a pale tint on light so the
+                      // count (dark ink in both) reads on bar and track.
+                      opacity: 'var(--op-funnel-opacity, 0.85)',
                     }}
                   />
-                  <div style={{ position: 'absolute', left: 12, top: 0, bottom: 0, display: 'flex', alignItems: 'center', fontSize: 13, fontWeight: 600, color: theme.accentInk, mixBlendMode: 'multiply' }}>
+                  <div style={{ position: 'absolute', left: 12, top: 0, bottom: 0, display: 'flex', alignItems: 'center', fontSize: 13, fontWeight: 600, color: `var(--op-funnel-ink, ${theme.accentInk})`, mixBlendMode: 'multiply' }}>
                     {s.value.toLocaleString()}
                   </div>
                 </div>
@@ -290,7 +292,7 @@ function FunnelChart({ funnel }: { funnel: Funnel }) {
         </div>
         <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${theme.borderSubtle}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ fontSize: 13, color: theme.textMuted }}>Click → paid</span>
-          <span style={{ fontSize: 14, fontWeight: 600, color: theme.accent, fontVariantNumeric: 'tabular-nums' }}>
+          <span style={{ fontSize: 14, fontWeight: 600, color: theme.accentText, fontVariantNumeric: 'tabular-nums' }}>
             {pct(funnel.rates.overall)}
           </span>
         </div>
@@ -446,8 +448,8 @@ function PendingApprovalsBanner() {
   const expired = data.trialDaysRemaining != null && data.trialDaysRemaining <= 0;
   const tone = expired ? 'danger' : 'warning';
   const palette = tone === 'danger'
-    ? { bg: theme.dangerSoft, border: `${theme.danger}55`, fg: theme.danger }
-    : { bg: theme.warnSoft, border: `${theme.warn}55`, fg: theme.warn };
+    ? { bg: theme.dangerSoft, border: alpha(theme.danger, 0.333), fg: theme.danger }
+    : { bg: theme.warnSoft, border: alpha(theme.warn, 0.333), fg: theme.warn };
   const count = data.pendingPartnershipRequests;
   const noun = count === 1 ? 'partner is' : 'partners are';
   const headline = expired
@@ -469,7 +471,7 @@ function PendingApprovalsBanner() {
         gap: 14,
       }}
     >
-      <AlertCircle size={20} color={palette.fg} style={{ flexShrink: 0 }} />
+      <AlertCircle size={20} style={{ color: palette.fg, flexShrink: 0 }} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: palette.fg, marginBottom: 2 }}>
           {headline}
@@ -640,7 +642,7 @@ function BrandStep({ done, label, hint, href, tone = 'default' }: OnboardingStep
         </div>
         {hint && !done && <div style={{ fontSize: 12, color: palette.hint, marginTop: 2 }}>{hint}</div>}
       </div>
-      {!done && href && <ArrowRight size={14} color={theme.textDim} />}
+      {!done && href && <ArrowRight size={14} style={{ color: theme.textDim }} />}
     </div>
   );
   if (done || !href) return inner;
@@ -649,13 +651,13 @@ function BrandStep({ done, label, hint, href, tone = 'default' }: OnboardingStep
 
 function stepPalette(done: boolean, tone: StepTone) {
   if (done) {
-    return { bg: theme.successSoft, border: `${theme.success}44`, icon: theme.success, hint: theme.textDim };
+    return { bg: theme.successSoft, border: alpha(theme.success, 0.267), icon: theme.success, hint: theme.textDim };
   }
   if (tone === 'danger') {
-    return { bg: theme.dangerSoft, border: `${theme.danger}66`, icon: theme.danger, hint: theme.danger };
+    return { bg: theme.dangerSoft, border: alpha(theme.danger, 0.4), icon: theme.danger, hint: theme.danger };
   }
   if (tone === 'warning') {
-    return { bg: theme.warnSoft, border: `${theme.warn}66`, icon: theme.warn, hint: theme.warn };
+    return { bg: theme.warnSoft, border: alpha(theme.warn, 0.4), icon: theme.warn, hint: theme.warn };
   }
   return { bg: theme.surface2, border: theme.borderSubtle, icon: theme.textDim, hint: theme.textDim };
 }

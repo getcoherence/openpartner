@@ -36,7 +36,7 @@ export function CreatorMagicLandingPage() {
         <div style={{ color: theme.danger, fontSize: 14 }}>
           {detail ?? 'Could not verify.'}
           <div style={{ color: theme.textDim, fontSize: 13, marginTop: 10 }}>
-            Ask for a new link from <a href="/creator/login" style={{ color: theme.accent }}>the sign-in page</a>.
+            Ask for a new link from <a href="/creator/login" style={{ color: theme.accentText }}>the sign-in page</a>.
           </div>
         </div>
       )}

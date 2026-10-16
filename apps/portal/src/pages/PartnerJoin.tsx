@@ -10,7 +10,7 @@ import {
   type AudienceSize,
 } from '@openpartner/db';
 import { ApiError, api, currentTenantSlug } from '../api.js';
-import { theme } from '../theme.js';
+import { alpha, theme } from '../theme.js';
 import { AuthFrame } from './auth/Shared.js';
 import { usePublicBrand } from '../lib/useBrand.js';
 
@@ -185,7 +185,7 @@ export function PartnerJoinPage() {
           If you were invited directly, use the link from your invitation email
           {brand.supportEmail ? (
             <>
-              {' '}or contact <a href={`mailto:${brand.supportEmail}`} style={{ color: theme.accent }}>{brand.supportEmail}</a>
+              {' '}or contact <a href={`mailto:${brand.supportEmail}`} style={{ color: theme.accentText }}>{brand.supportEmail}</a>
             </>
           ) : null}
           .
@@ -204,7 +204,7 @@ export function PartnerJoinPage() {
             : `If this email isn't already registered, we sent a sign-in link to ${values.email}. It's good for 15 minutes.`
         }
       >
-        <div style={{ background: theme.successSoft, border: `1px solid ${theme.success}55`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
+        <div style={{ background: theme.successSoft, border: `1px solid ${alpha(theme.success, 0.333)}`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
           {phase.review
             ? "We've emailed you a confirmation. Your sign-in link comes with the approval."
             : 'Click the link to set up your partner dashboard.'}
@@ -438,7 +438,7 @@ const addButtonStyle: React.CSSProperties = {
   padding: 0,
   background: 'none',
   border: 'none',
-  color: theme.accent,
+  color: theme.accentText,
   fontSize: 13,
   cursor: 'pointer',
 };

@@ -70,7 +70,7 @@ export function ConnectPage({ principal }: { principal: Principal }) {
       ) : (
         <Card>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-            <CreditCard size={18} color={theme.accent} />
+            <CreditCard size={18} style={{ color: theme.accentText }} />
             <div>
               <div style={{ fontSize: 14, fontWeight: 500 }}>Connected</div>
               <code style={{ fontSize: 12, color: theme.textMuted }}>{s.accountId}</code>
@@ -108,7 +108,7 @@ function ChecklistItem({ label, ok }: { label: string; ok: boolean }) {
         fontSize: 13,
       }}
     >
-      {ok ? <CheckCircle2 size={14} color={theme.success} /> : <XCircle size={14} color={theme.textDim} />}
+      {ok ? <CheckCircle2 size={14} style={{ color: theme.success }} /> : <XCircle size={14} style={{ color: theme.textDim }} />}
       <span style={{ color: ok ? theme.text : theme.textMuted }}>{label}</span>
     </div>
   );

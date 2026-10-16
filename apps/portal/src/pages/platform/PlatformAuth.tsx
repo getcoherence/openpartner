@@ -45,7 +45,7 @@ export function PlatformAuthPage() {
           {detail ?? 'Could not verify.'}
           <div style={{ color: theme.textDim, fontSize: 13, marginTop: 10 }}>
             Request a new link from{' '}
-            <Link to="/platform/login" style={{ color: theme.accent }}>
+            <Link to="/platform/login" style={{ color: theme.accentText }}>
               the operator sign-in page
             </Link>
             .

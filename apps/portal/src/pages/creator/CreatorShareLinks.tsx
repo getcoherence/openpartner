@@ -152,7 +152,7 @@ function PartnershipRow({ partnership }: { partnership: Partnership }) {
           to={`/creator/programs/${partnership.id}`}
           style={{
             fontSize: 12,
-            color: theme.accent,
+            color: theme.accentText,
             textDecoration: 'none',
             whiteSpace: 'nowrap',
           }}
@@ -234,7 +234,7 @@ function PartnershipRow({ partnership }: { partnership: Partnership }) {
           </span>
           <button
             onClick={() => setEditing(true)}
-            style={{ background: 'transparent', border: 'none', color: theme.accent, cursor: 'pointer', fontSize: 12, padding: 0 }}
+            style={{ background: 'transparent', border: 'none', color: theme.accentText, cursor: 'pointer', fontSize: 12, padding: 0 }}
           >
             Edit
           </button>
@@ -339,7 +339,7 @@ function CouponSection({ partnership }: { partnership: Partnership }) {
             style={{
               background: 'transparent',
               border: 'none',
-              color: theme.accent,
+              color: theme.accentText,
               cursor: 'pointer',
               fontSize: 11,
               padding: 0,

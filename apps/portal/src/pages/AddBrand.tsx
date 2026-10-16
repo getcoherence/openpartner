@@ -146,7 +146,7 @@ export function AddBrandPage() {
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
                     <span style={{ fontWeight: 600, fontSize: 14 }}>{p.name}</span>
-                    <span style={{ color: active ? theme.accent : theme.textMuted, fontSize: 13 }}>{p.tagline}</span>
+                    <span style={{ color: active ? theme.accentText : theme.textMuted, fontSize: 13 }}>{p.tagline}</span>
                   </div>
                   <div style={{ color: theme.textMuted, fontSize: 12, marginTop: 4, lineHeight: 1.5 }}>{p.detail}</div>
                 </button>

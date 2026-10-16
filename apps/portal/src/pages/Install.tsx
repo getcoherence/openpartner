@@ -219,7 +219,7 @@ function Stepper({ steps, current }: { steps: string[]; current: number }) {
       {steps.map((label, i) => {
         const done = i < current;
         const active = i === current;
-        const c = done ? theme.accent : active ? theme.text : theme.textDim;
+        const c = done ? theme.accentText : active ? theme.text : theme.textDim;
         const bg = done ? theme.accent : active ? theme.surface2 : 'transparent';
         const border = done ? theme.accent : active ? theme.accent : theme.border;
         return (
@@ -253,7 +253,7 @@ function Stepper({ steps, current }: { steps: string[]; current: number }) {
 
 function WelcomeLine({ children }: { children: ReactNode }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, color: theme.accent }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, color: theme.accentText }}>
       <Rocket size={16} />
       <div style={{ fontSize: 13 }}>{children}</div>
     </div>

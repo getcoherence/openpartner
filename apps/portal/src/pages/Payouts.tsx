@@ -61,7 +61,7 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
 
       {runPayouts.data && (
         <Card style={{ marginBottom: 14, borderColor: `${theme.accentA55}` }}>
-          <div style={{ fontSize: 13, color: theme.accent, fontWeight: 500, marginBottom: 8 }}>
+          <div style={{ fontSize: 13, color: theme.accentText, fontWeight: 500, marginBottom: 8 }}>
             Run #{shortId(runPayouts.data.runId)} — {runPayouts.data.payouts.length} payout
             {runPayouts.data.payouts.length === 1 ? '' : 's'}
             {runPayouts.data.skippedBelowThreshold?.length > 0 && (

@@ -140,7 +140,7 @@ function AdminActions({ admin }: { admin: Admin }) {
           <button
             onClick={() => resend.mutate()}
             disabled={resend.isPending}
-            style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accent, cursor: 'pointer' }}
+            style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accentText, cursor: 'pointer' }}
           >
             {sent ? 'Sent' : resend.isPending ? 'Sending…' : 'Resend invite'}
           </button>
@@ -151,7 +151,7 @@ function AdminActions({ admin }: { admin: Admin }) {
         <button
           onClick={() => reinstate.mutate()}
           disabled={reinstate.isPending}
-          style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accent, cursor: 'pointer' }}
+          style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accentText, cursor: 'pointer' }}
         >
           {reinstate.isPending ? '…' : 'Reinstate'}
         </button>

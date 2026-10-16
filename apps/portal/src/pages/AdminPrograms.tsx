@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { HelpCircle, Plus, Tag } from 'lucide-react';
 import { api } from '../api.js';
-import { theme } from '../theme.js';
+import { alpha, theme } from '../theme.js';
 import { useBrand } from '../lib/useBrand.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
@@ -143,7 +143,7 @@ export function AdminPrograms() {
               <span style={{ color: theme.textMuted, fontSize: 12, fontFamily: theme.fontMono }}>
                 {c.destinationUrl ? new URL(c.destinationUrl).hostname + new URL(c.destinationUrl).pathname.replace(/\/$/, '') : '—'}
                 {c.deepLinkAllowedDomains && (
-                  <span style={{ color: theme.accent, fontSize: 11, marginLeft: 8 }}>+ deep links</span>
+                  <span style={{ color: theme.accentText, fontSize: 11, marginLeft: 8 }}>+ deep links</span>
                 )}
               </span>,
               <span style={{ fontSize: 13 }}>{summarizeRules(c.commissionRule, c.customerReward)}</span>,
@@ -151,7 +151,7 @@ export function AdminPrograms() {
               <span style={{ color: c.holdbackDays ? theme.text : theme.textDim }}>
                 {c.holdbackDays ? `${c.holdbackDays}d` : '—'}
               </span>,
-              <code style={{ color: theme.accent, fontSize: 12 }}>{c.attributionModel}</code>,
+              <code style={{ color: theme.accentText, fontSize: 12 }}>{c.attributionModel}</code>,
               <span style={{ color: theme.textMuted }}>{formatDate(c.createdAt, { relative: true })}</span>,
               <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                 <button
@@ -482,7 +482,7 @@ function CreateProgram({
                 <button
                   type="button"
                   onClick={() => setDestinationUrl(schemeFix)}
-                  style={{ background: 'none', border: 'none', color: theme.accent, cursor: 'pointer', padding: 0, fontSize: 12, textDecoration: 'underline' }}
+                  style={{ background: 'none', border: 'none', color: theme.accentText, cursor: 'pointer', padding: 0, fontSize: 12, textDecoration: 'underline' }}
                 >
                   Use {schemeFix}
                 </button>
@@ -745,7 +745,7 @@ function MarketplaceFields({
               fontSize: 13,
               background: theme.surface,
               color: theme.text,
-              border: `1px solid ${description.trim() ? theme.borderSubtle : `${theme.danger}66`}`,
+              border: `1px solid ${description.trim() ? theme.borderSubtle : alpha(theme.danger, 0.4)}`,
               borderRadius: 6,
               fontFamily: 'inherit',
               resize: 'vertical',
@@ -772,7 +772,7 @@ function MarketplaceFields({
                     cursor: disabled ? 'not-allowed' : 'pointer',
                     opacity: disabled ? 0.4 : 1,
                     background: selected ? `${theme.accentA25}` : 'transparent',
-                    color: selected ? theme.accent : theme.textMuted,
+                    color: selected ? theme.accentText : theme.textMuted,
                     border: `1px solid ${selected ? theme.accent : theme.borderSubtle}`,
                   }}
                 >
@@ -903,7 +903,7 @@ function ProgramVideoField({ value, onChange }: { value: string; onChange: (v: s
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="https://www.youtube.com/watch?v=…"
-        style={invalid ? { borderColor: `${theme.danger}88` } : undefined}
+        style={invalid ? { borderColor: alpha(theme.danger, 0.533) } : undefined}
       />
       <div style={{ fontSize: 12, color: invalid ? theme.danger : theme.textDim, marginTop: 4 }}>
         {invalid
@@ -919,7 +919,7 @@ function ProgramVideoField({ value, onChange }: { value: string; onChange: (v: s
             borderRadius: 8,
             overflow: 'hidden',
             border: `1px solid ${theme.borderSubtle}`,
-            background: '#000',
+            background: '#000', // video letterbox — black in both themes, like the player itself
           }}
         >
           <iframe

@@ -83,7 +83,7 @@ export function CompoundRuleEditor({
           border: `1px dashed ${theme.accentA88}`,
           borderRadius: 6,
           padding: '6px 12px',
-          color: theme.accent,
+          color: theme.accentText,
           fontSize: 12,
           cursor: 'pointer',
         }}

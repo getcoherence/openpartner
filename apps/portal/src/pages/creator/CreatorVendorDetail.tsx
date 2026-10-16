@@ -101,7 +101,7 @@ export function CreatorVendorDetailPage() {
                     </p>
                   )}
                   <div style={{ marginTop: 12 }}>
-                    <Link to={`/creator/offerings/${o.id}`} style={{ fontSize: 13, color: theme.accent }}>
+                    <Link to={`/creator/offerings/${o.id}`} style={{ fontSize: 13, color: theme.accentText }}>
                       View &amp; apply →
                     </Link>
                   </div>

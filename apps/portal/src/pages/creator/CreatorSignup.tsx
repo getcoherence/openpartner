@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { theme } from '../../theme.js';
+import { alpha, softText, theme } from '../../theme.js';
 import { AuthFrame, SignupTabs } from '../auth/Shared.js';
 import { creatorApi, ApiError } from './creator-api.js';
 
@@ -63,9 +63,9 @@ export function CreatorSignupPage() {
   if (sent) {
     return (
       <AuthFrame title="Check your inbox" subtitle={`We just emailed ${email} a sign-in link.`}>
-        <div style={{ background: theme.successSoft, border: `1px solid ${theme.success}55`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
+        <div style={{ background: theme.successSoft, border: `1px solid ${alpha(theme.success, 0.333)}`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
           <div style={{ fontWeight: 500, marginBottom: 6 }}>Account created.</div>
-          <div style={{ color: `${theme.success}cc` }}>
+          <div style={{ color: softText(theme.success) }}>
             Click the link in the email to finish signing in. It&rsquo;s good for 15 minutes.
           </div>
         </div>
@@ -116,7 +116,7 @@ export function CreatorSignupPage() {
           {busy ? 'Creating creator…' : 'Become a creator'}
         </button>
         <div style={{ marginTop: 12, fontSize: 12, color: theme.textDim, textAlign: 'center' }}>
-          Already have an account? <Link to="/creator/login" style={{ color: theme.accent }}>Sign in</Link>
+          Already have an account? <Link to="/creator/login" style={{ color: theme.accentText }}>Sign in</Link>
         </div>
       </form>
     </AuthFrame>

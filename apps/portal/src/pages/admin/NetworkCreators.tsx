@@ -13,7 +13,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { Users } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
-import { theme } from '../../theme.js';
+import { alpha, theme } from '../../theme.js';
 
 interface PlatformRow {
   id: string;
@@ -318,7 +318,7 @@ function InviteDialog({ creator, onClose }: { creator: DirectoryRow; onClose: ()
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(0,0,0,0.5)',
+        background: theme.overlay,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -344,7 +344,7 @@ function InviteDialog({ creator, onClose }: { creator: DirectoryRow; onClose: ()
         </p>
         {sent ? (
           <>
-            <div style={{ background: theme.successSoft, border: `1px solid ${theme.success}55`, borderRadius: theme.radiusSm, padding: 12, fontSize: 13, color: theme.success, marginBottom: 14 }}>
+            <div style={{ background: theme.successSoft, border: `1px solid ${alpha(theme.success, 0.333)}`, borderRadius: theme.radiusSm, padding: 12, fontSize: 13, color: theme.success, marginBottom: 14 }}>
               Invitation sent. They&rsquo;ll see your message + a deeplink in their inbox.
             </div>
             {deeplink && (
@@ -398,7 +398,7 @@ function InviteDialog({ creator, onClose }: { creator: DirectoryRow; onClose: ()
                 <p style={{ fontSize: 13, color: theme.textMuted, margin: '6px 0 0' }}>Loading…</p>
               ) : published.length === 0 ? (
                 <p style={{ fontSize: 13, color: theme.textMuted, margin: '6px 0 0' }}>
-                  No published offerings yet. <a href="/admin/network/offerings" style={{ color: theme.accent }}>Create one</a>.
+                  No published offerings yet. <a href="/admin/network/offerings" style={{ color: theme.accentText }}>Create one</a>.
                 </p>
               ) : (
                 <Select value={offeringId} onChange={(e) => setOfferingId(e.target.value)}>
@@ -469,7 +469,7 @@ function ChipMultiSelect({
               borderRadius: 14,
               border: `1px solid ${on ? theme.accent : theme.borderSubtle}`,
               background: on ? `${theme.accentA22}` : theme.surface2,
-              color: on ? theme.accent : theme.textMuted,
+              color: on ? theme.accentText : theme.textMuted,
               fontSize: 12,
               cursor: 'pointer',
               fontWeight: on ? 500 : 400,

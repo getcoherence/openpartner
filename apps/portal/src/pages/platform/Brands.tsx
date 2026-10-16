@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { theme } from '../../theme.js';
+import { alpha, theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Label, Page, Select, Textarea, formatDate } from '../../ui.js';
 import { ApprovalBadge, StatusBadge } from './components.js';
 import {
@@ -104,7 +104,7 @@ export function BrandsPage({ operator }: { operator: PlatformOperator }) {
         <div
           style={{
             background: theme.infoSoft,
-            border: `1px solid ${theme.info}44`,
+            border: `1px solid ${alpha(theme.info, 0.267)}`,
             color: theme.info,
             padding: '10px 14px',
             borderRadius: theme.radiusSm,
@@ -406,7 +406,7 @@ function ProgramsSection({ brandId, canWrite }: { brandId: string; canWrite: boo
             key={p.id}
             style={{
               background: theme.surface2,
-              border: `1px solid ${blocked ? `${theme.danger}55` : theme.borderSubtle}`,
+              border: `1px solid ${blocked ? alpha(theme.danger, 0.333) : theme.borderSubtle}`,
               borderRadius: theme.radiusSm,
               padding: '10px 12px',
             }}
@@ -423,7 +423,7 @@ function ProgramsSection({ brandId, canWrite }: { brandId: string; canWrite: boo
                         textTransform: 'uppercase',
                         letterSpacing: '0.04em',
                         color: theme.danger,
-                        background: `${theme.danger}1a`,
+                        background: alpha(theme.danger, 0.102),
                         borderRadius: 4,
                         padding: '2px 6px',
                       }}
@@ -477,7 +477,7 @@ function ProgramsSection({ brandId, canWrite }: { brandId: string; canWrite: boo
                         href={p.marketplaceVideoUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        style={{ fontSize: 12, color: theme.accent, wordBreak: 'break-all' }}
+                        style={{ fontSize: 12, color: theme.accentText, wordBreak: 'break-all' }}
                       >
                         Video: {p.marketplaceVideoUrl}
                       </a>
