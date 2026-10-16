@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { TABLES, type PayoutRow } from '@openpartner/db';
 import { requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { db as privilegedDb } from '../db.js';
-import { runPayouts } from '../payouts.js';
+import { dispatchPayoutNotifications, runPayouts } from '../payouts.js';
 import { executePayoutTransfers } from '../payout-transfers.js';
 import { tenantOf, withTenantTransaction } from '../tenancy.js';
 
@@ -20,7 +20,12 @@ export const payoutsRouter = Router();
  */
 payoutsRouter.post('/payouts/run', requireAuth, requireAdmin, async (req, res) => {
   const { tenantId } = tenantOf(req);
-  const result = await withTenantTransaction(tenantId, (trx) => runPayouts(trx, tenantId));
+  const { pendingNotifications, ...result } = await withTenantTransaction(tenantId, (trx) =>
+    runPayouts(trx, tenantId),
+  );
+  // The plan has committed, so its manual-rail payouts are real: announce
+  // them now. A run that threw never gets here and announces nothing.
+  dispatchPayoutNotifications(tenantId, pendingNotifications);
   // Intents are committed now. Post their transfers on the privileged
   // pool (no transaction can span a Stripe call), scoped to this tenant
   // so an admin's click can't advance another tenant's payouts.

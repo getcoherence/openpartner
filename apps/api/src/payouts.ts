@@ -8,8 +8,15 @@
  * is moved later by `executePayoutTransfers` (payout-transfers.ts), which
  * runs OUTSIDE any transaction.
  *
+ * Manual-rail payouts are announced (payout.created + commission.paid) by
+ * the CALLER, after its transaction commits: this function returns them
+ * as `pendingNotifications` and the caller passes them to
+ * `dispatchPayoutNotifications`. Dispatching from in here sent the brand
+ * webhook and the partner postback for a payout that a later throw in the
+ * same run (e.g. a lost commission claim) then rolled back.
+ *
  * Why the split (audit #10): this function runs inside the caller's tenant
- * transaction (scheduler tick / request middleware). Calling Stripe from
+ * transaction (scheduler tick / admin route). Calling Stripe from
  * in here meant a transfer could succeed and the surrounding commit then
  * fail — the Payout row rolled back, the money gone, and the next run
  * minted a NEW payoutId, hence a NEW idempotency key, hence a DUPLICATE
@@ -32,9 +39,13 @@
  *                         (usage-billing.ts). Payout.metadata.platformFee
  *                         records 3% of the payout as a ledger note only.
  *
- * Multi-tenant: takes (db, tenantId). Pass req.db from a route handler, or
- * the privileged db with app.tenant_id pinned in the calling transaction
- * from the scheduler.
+ * Multi-tenant: takes (db, tenantId), where `db` is a transaction with
+ * app.tenant_id pinned. Open it with `withTenantTransaction` (the
+ * scheduler's forEachActiveTenant does) and dispatch the result's
+ * `pendingNotifications` once that call has returned. Don't pass req.db
+ * from a route: the request transaction commits only after the response
+ * is sent, so the handler has no point at which the run is known to be
+ * committed — POST /payouts/run plans in its own withTenantTransaction.
  */
 
 import type { Knex } from 'knex';
@@ -86,14 +97,54 @@ export interface PayoutRunResult {
     platformFee?: number;
     error?: string;
   }>;
+  /** Manual-rail announcements this run owes. NOT dispatched yet — the
+   *  run's writes are uncommitted when it returns. The caller fires them
+   *  with `dispatchPayoutNotifications` once its transaction commits and
+   *  drops them if it rolls back. Keep them out of responses and job logs
+   *  (one entry per commission). */
+  pendingNotifications: PendingPayoutNotification[];
+}
+
+/** A manual-rail payout's webhooks: payout.created, plus commission.paid
+ *  for each commission it paid. */
+export interface PendingPayoutNotification {
+  /** The payout.created payload, exactly as dispatched. */
+  payout: {
+    payoutId: string;
+    partnerId: string;
+    amount: string;
+    currency: string;
+    method: PayoutMethod;
+    commissionIds: string[];
+    platformFee?: number;
+  };
+  commissions: Array<Pick<CommissionRow, 'id' | 'partnerId' | 'attributionId' | 'amount' | 'currency'>>;
+}
+
+/**
+ * Fire the webhooks (and partner postbacks) for manual-rail payouts a
+ * `runPayouts` call created. Call ONLY after the transaction that ran it
+ * has committed (webhook-dispatcher.ts contract): a subscriber may
+ * re-fetch the payout, and a rolled-back run must announce nothing.
+ * commission.paid goes through `dispatchCommissionEvents`, so it carries
+ * the commission's click/event origin like every other lifecycle path.
+ */
+export function dispatchPayoutNotifications(
+  tenantId: string,
+  pending: readonly PendingPayoutNotification[],
+): void {
+  for (const { payout, commissions } of pending) {
+    dispatchEvent(tenantId, 'payout.created', payout);
+    void dispatchCommissionEvents(tenantId, 'commission.paid', commissions, { payoutId: payout.payoutId });
+  }
 }
 
 export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunResult> {
   // Serialize every payout actor for this tenant — the weekly scheduler
   // tick, the admin run-payouts endpoint, and funding reservation — on one
   // advisory xact lock (audit: concurrent runs could double-transfer).
-  // Callers always run inside a transaction (scheduler + tenantMiddleware),
-  // so the xact-scoped lock self-releases.
+  // Callers always run inside a transaction (scheduler + the admin route's
+  // withTenantTransaction), so the xact-scoped lock self-releases.
   if (db.isTransaction && !(await tryTenantPayoutLock(db as Knex.Transaction, tenantId))) {
     return {
       runId: 'locked',
@@ -101,6 +152,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
       payouts: [],
       skippedBelowThreshold: [],
       skippedUnfunded: [],
+      pendingNotifications: [],
     };
   }
 
@@ -132,6 +184,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
   const results: PayoutRunResult['payouts'] = [];
   const skipped: PayoutRunResult['skippedBelowThreshold'] = [];
   const skippedUnfunded: PayoutRunResult['skippedUnfunded'] = [];
+  const pendingNotifications: PendingPayoutNotification[] = [];
   const fundingCandidates: Array<{ currency: string; candidate: ReservationCandidate }> = [];
 
   for (const group of groups) {
@@ -321,18 +374,28 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
         platformFee: platformFee || undefined,
       });
     } else {
-      // Manual path: commissions are already marked paid in the tx above.
-      // Fire webhooks now — the operator owns the out-of-band transfer.
-      dispatchEvent(tenantId, 'payout.created', {
-        payoutId,
-        partnerId: partner.id,
-        amount: amount.toFixed(2),
-        currency: group.currency,
-        method,
-        commissionIds: commissions.map((c) => c.id),
-        platformFee: platformFee || undefined,
+      // Manual path: commissions are already marked paid in the tx above
+      // (the operator owns the out-of-band transfer). Queue the webhooks
+      // for the caller to fire after commit — a later group can still
+      // throw and roll this payout back.
+      pendingNotifications.push({
+        payout: {
+          payoutId,
+          partnerId: partner.id,
+          amount: amount.toFixed(2),
+          currency: group.currency,
+          method,
+          commissionIds: commissions.map((c) => c.id),
+          platformFee: platformFee || undefined,
+        },
+        commissions: commissions.map((c) => ({
+          id: c.id,
+          partnerId: c.partnerId,
+          attributionId: c.attributionId,
+          amount: c.amount,
+          currency: c.currency,
+        })),
       });
-      void dispatchCommissionEvents(tenantId, 'commission.paid', commissions, { payoutId });
       results.push({
         payoutId,
         partnerId: partner.id,
@@ -400,5 +463,12 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     }
   }
 
-  return { runId, mode, payouts: results, skippedBelowThreshold: skipped, skippedUnfunded };
+  return {
+    runId,
+    mode,
+    payouts: results,
+    skippedBelowThreshold: skipped,
+    skippedUnfunded,
+    pendingNotifications,
+  };
 }

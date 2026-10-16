@@ -36,7 +36,7 @@ const { createApp } = await import('../app.js');
 const { dispatchEvent } = await import('../webhook-dispatcher.js');
 const { dispatchCommissionEvents } = await import('../commission-events.js');
 const { runCommissionAutoApproveJob } = await import('../scheduler.js');
-const { runPayouts } = await import('../payouts.js');
+const { dispatchPayoutNotifications, runPayouts } = await import('../payouts.js');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
@@ -273,6 +273,12 @@ describe.skipIf(skipIntegration)('commission lifecycle webhooks', () => {
       const payout = run.payouts.find((p) => p.partnerId === s.partnerId);
       expect(payout?.method).toBe('manual');
       expect(await statusOf(s.commissionId)).toBe('paid');
+
+      // runPayouts announces nothing itself; the caller fires the run's
+      // notifications once its transaction has committed.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(dispatched('commission.paid')).toHaveLength(0);
+      dispatchPayoutNotifications(DEFAULT_TENANT_ID, run.pendingNotifications);
 
       await vi.waitFor(() => expect(dispatched('commission.paid')).toHaveLength(1));
       expect(dispatched('commission.paid')[0]).toEqual([
