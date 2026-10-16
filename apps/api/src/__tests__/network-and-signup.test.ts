@@ -46,6 +46,14 @@ const { aggregateNetworkOriginatedPayouts } = await import('../usage-billing.js'
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
 
+// The join-page application every public signup must carry.
+const APPLICATION = {
+  websiteUrl: 'https://creator.example',
+  socialUrls: ['https://youtube.com/@creator', 'https://www.tiktok.com/@creator'],
+  audienceSize: '10k_50k',
+  pitch: 'Weekly tutorials for indie founders; I would demo the product in a launch video.',
+};
+
 // In-process Network receiver. Each test configures `mockResponse` to
 // either succeed or fail; `received` captures every call.
 interface ReceivedCall {
@@ -178,7 +186,7 @@ describe.skipIf(skipIntegration)('partner-signup + network push', () => {
   it('signup without Network: creates Partner + magic link, no Network call', async () => {
     const res = await request(app)
       .post('/partner-signup')
-      .send({ email: 'creator1@example.test', name: 'Creator One' });
+      .send({ email: 'creator1@example.test', name: 'Creator One', application: APPLICATION });
     expect(res.status).toBe(201);
     expect(res.body.status).toBe('active');
 
@@ -202,20 +210,51 @@ describe.skipIf(skipIntegration)('partner-signup + network push', () => {
 
     const res = await request(app)
       .post('/partner-signup')
-      .send({ email: 'creator2@example.test', name: 'Creator Two' });
+      .send({ email: 'creator2@example.test', name: 'Creator Two', application: APPLICATION });
     expect(res.status).toBe(201);
 
     expect(received).toHaveLength(1);
     expect(received[0]!.path).toBe('/partners/upsert');
     expect(received[0]!.authorization).toBe('Bearer vntok_test');
-    const sent = received[0]!.body as { email: string; metadata?: { source: string } };
+    const sent = received[0]!.body as { email: string; metadata?: { source: string }; creatorProfile?: unknown };
     expect(sent.email).toBe('creator2@example.test');
     expect(sent.metadata?.source).toBe('self_signup');
+    // The application's profile answers fill blanks on the Network; the
+    // pitch was written for this brand and stays here.
+    expect(sent.creatorProfile).toEqual({
+      websiteUrl: APPLICATION.websiteUrl,
+      socialUrls: APPLICATION.socialUrls,
+      audienceSize: APPLICATION.audienceSize,
+    });
 
     const partner = await db(TABLES.Partner).where({ email: 'creator2@example.test' }).first();
     const meta = partner!.metadata as { network?: { creatorId: string; preExisting: boolean } };
     expect(meta.network?.creatorId).toBe(expectedCreatorId);
     expect(meta.network?.preExisting).toBe(false);
+  });
+
+  it('a queued signup push keeps creatorProfile for the retry', async () => {
+    await configureNetwork({ enabled: true });
+    mockResponse = { status: 503, body: { error: 'unavailable' } };
+
+    const res = await request(app)
+      .post('/partner-signup')
+      .send({ email: 'queued@example.test', name: 'Queued', application: APPLICATION });
+    expect(res.status).toBe(201);
+
+    const [row] = await db(TABLES.NetworkOutbox).where({ tenantId: DEFAULT_TENANT_ID });
+    expect((row!.payload as { creatorProfile?: { audienceSize?: string } }).creatorProfile?.audienceSize).toBe('10k_50k');
+  });
+
+  it('an admin invite never sends creatorProfile', async () => {
+    await configureNetwork({ enabled: true });
+    const res = await request(app)
+      .post('/partners')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ email: 'invited-np@example.test', name: 'Invited' });
+    expect(res.status).toBe(201);
+    expect(received).toHaveLength(1);
+    expect(received[0]!.body).not.toHaveProperty('creatorProfile');
   });
 
   it('signup with Network down: Partner row created, NetworkOutbox enqueued', async () => {
@@ -224,7 +263,7 @@ describe.skipIf(skipIntegration)('partner-signup + network push', () => {
 
     const res = await request(app)
       .post('/partner-signup')
-      .send({ email: 'creator3@example.test', name: 'Creator Three' });
+      .send({ email: 'creator3@example.test', name: 'Creator Three', application: APPLICATION });
     expect(res.status).toBe(201);
 
     const partner = await db(TABLES.Partner).where({ email: 'creator3@example.test' }).first();
@@ -243,7 +282,7 @@ describe.skipIf(skipIntegration)('partner-signup + network push', () => {
     mockResponse = { status: 503, body: {} };
     await request(app)
       .post('/partner-signup')
-      .send({ email: 'creator4@example.test', name: 'Creator Four' });
+      .send({ email: 'creator4@example.test', name: 'Creator Four', application: APPLICATION });
     expect((await db(TABLES.NetworkOutbox)).length).toBe(1);
 
     // Make outbox row eligible NOW (otherwise nextAttemptAt is in the future).
@@ -277,7 +316,7 @@ describe.skipIf(skipIntegration)('partner-signup + network push', () => {
 
     const res = await request(app)
       .post('/partner-signup')
-      .send({ email: 'pending@example.test', name: 'Pending Creator' });
+      .send({ email: 'pending@example.test', name: 'Pending Creator', application: APPLICATION });
     expect(res.status).toBe(201);
     expect(res.body.status).toBe('pending_review');
 
@@ -383,7 +422,7 @@ describe.skipIf(skipIntegration)('Network-access fee scope', () => {
     // Direct recruits after joining — both auto-enrolled to the Network.
     const signup = await request(app)
       .post('/partner-signup')
-      .send({ email: 'self@example.test', name: 'Self Signup' });
+      .send({ email: 'self@example.test', name: 'Self Signup', application: APPLICATION });
     expect(signup.status).toBe(201);
     const invite = await request(app)
       .post('/partners')
@@ -439,22 +478,28 @@ describe.skipIf(skipIntegration)('Network-access fee scope', () => {
 });
 
 describe.skipIf(skipIntegration)('public signup cannot set server-owned metadata', () => {
-  it('drops source / network / stripe from the profile, keeps the rest', async () => {
+  it('drops source / network / stripe / application from the profile, keeps the rest', async () => {
     const res = await request(app)
       .post('/partner-signup')
       .send({
         email: 'forged@example.test',
         name: 'Forged',
+        application: APPLICATION,
         profile: {
           bio: 'creator',
           source: 'openpartner_network',
           network: { creatorId: 'crt_forged' },
           stripe: { payoutsEnabled: true },
+          application: { websiteUrl: 'https://forged.example', pitch: 'forged', audienceSize: 'over_1m' },
         },
       });
     expect(res.status).toBe(201);
 
     const partner = await db(TABLES.Partner).where({ email: 'forged@example.test' }).first();
-    expect(partner!.metadata).toEqual({ bio: 'creator' });
+    // Only the validated application survives — the profile's copy is gone.
+    expect(partner!.metadata).toEqual({
+      bio: 'creator',
+      application: { ...APPLICATION, submittedAt: expect.any(String) },
+    });
   });
 });

@@ -12,6 +12,17 @@
  *     gets an acknowledgement, the brand's admins get a review request, and
  *     an admin approves via /partners/:id/invite, which sends the link.
  *
+ * Under both policies the body must carry an `application` (website or
+ * main channel, 1–5 social profile URLs, an audience-size bucket and a
+ * pitch). It's stored on Partner.metadata.application for the admin's
+ * review, included in the admin notice, and its first three answers are
+ * sent to the Network as `creatorProfile` to fill blanks in the creator's
+ * Network profile.
+ *
+ * GET /partner-signup/status ({ open, reviewRequired }) lets the join page
+ * show "closed" before anyone fills in the form; POST checks closed first
+ * too, so a closed program answers signup_disabled whatever the body.
+ *
  * The endpoint is mounted INSIDE tenantMiddleware — in multi-tenant
  * mode the URL is /t/<slug>/partner-signup; in single-tenant mode
  * (self-host) it's /partner-signup. Tenant context comes from req.db
@@ -27,7 +38,17 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
-import { TABLES, type AdminRow, type ConfigRow, type PartnerRow } from '@openpartner/db';
+import {
+  AUDIENCE_SIZES,
+  AUDIENCE_SIZE_LABELS,
+  PARTNER_APPLICATION_LIMITS,
+  TABLES,
+  isHttpUrl,
+  type AdminRow,
+  type ConfigRow,
+  type PartnerApplication,
+  type PartnerRow,
+} from '@openpartner/db';
 import { issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
 import {
@@ -45,19 +66,48 @@ import { getNetworkMembership, pushPartnerUpsert } from '../network-client.js';
 export const partnerSignupRouter = Router();
 
 const signupLimit = ipRateLimit({ name: 'partner-signup', max: 10, windowMs: 60_000 });
+// Same limit, own bucket: loading the join page shouldn't eat into the
+// applicant's submit budget.
+const statusLimit = ipRateLimit({ name: 'partner-signup-status', max: 10, windowMs: 60_000 });
+
+const L = PARTNER_APPLICATION_LIMITS;
+const httpUrl = (message: string) => z.string().trim().max(L.urlMax, message).refine(isHttpUrl, message);
+
+// The join-page application. Required under BOTH signup policies: a
+// creator can't join without a complete profile. Messages are written for
+// the applicant; the portal shows them on a 400.
+const applicationSchema = z.object(
+  {
+    websiteUrl: httpUrl('Enter your website or main channel as a full link, starting with https://'),
+    socialUrls: z
+      .array(httpUrl('Each social profile must be a full link, starting with https://'))
+      .min(L.socialMin, 'Add at least one social profile')
+      .max(L.socialMax, `Add at most ${L.socialMax} social profiles`)
+      .transform((urls) => [...new Set(urls)]),
+    audienceSize: z.enum(AUDIENCE_SIZES, { errorMap: () => ({ message: 'Pick your audience size' }) }),
+    pitch: z
+      .string()
+      .trim()
+      .min(L.pitchMin, `Tell the brand how you'd promote it, in at least ${L.pitchMin} characters`)
+      .max(L.pitchMax, `Keep your pitch under ${L.pitchMax} characters`),
+  },
+  { required_error: 'Complete the application: website, social profiles, audience size and pitch' },
+);
 
 const schema = z.object({
   email: z.string().trim().email().max(254),
   name: z.string().trim().min(1).max(120),
   profile: z.record(z.unknown()).optional(),
+  application: applicationSchema,
 });
 
 // Partner.metadata keys the server owns. This endpoint is public, so a
 // signup's profile must not set them: `source` decides the Network-access
 // fee (usage-billing.ts), `network` is the Network sync stamp, `stripe`
-// mirrors Connect payout state, and `review` gates sign-in for applicants
-// held for review (partner-review.ts).
-const RESERVED_METADATA_KEYS = new Set(['source', 'network', 'stripe', 'review']);
+// mirrors Connect payout state, `review` gates sign-in for applicants
+// held for review (partner-review.ts), and `application` is the validated
+// join-page answers admins review.
+const RESERVED_METADATA_KEYS = new Set(['source', 'network', 'stripe', 'review', 'application']);
 
 /**
  * Email every active admin of the tenant that an application is waiting.
@@ -69,13 +119,19 @@ async function notifyAdminsOfApplication(
   partner: PartnerRow,
   brandName: string | null,
   reviewUrl: string,
+  application: PartnerApplication,
 ): Promise<void> {
   const admins = (await db<AdminRow>(TABLES.Admin)
     .where({ tenantId })
     .whereNotNull('activatedAt')
     .whereNull('revokedAt')
     .select('id', 'email')) as Array<Pick<AdminRow, 'id' | 'email'>>;
-  const tmpl = partnerApplicationAdminEmail(partner.name, partner.email, brandName, reviewUrl);
+  const tmpl = partnerApplicationAdminEmail(partner.name, partner.email, brandName, reviewUrl, {
+    websiteUrl: application.websiteUrl,
+    socialUrls: application.socialUrls,
+    audienceSize: AUDIENCE_SIZE_LABELS[application.audienceSize],
+    pitch: application.pitch,
+  });
   for (const admin of admins) {
     try {
       await getMailer().send({ db, tenantId }, {
@@ -118,15 +174,29 @@ async function readSignupSettings(
   };
 }
 
+/**
+ * Public, unauthenticated: lets the join page say "closed" (or "reviewed")
+ * before an applicant fills in the form. Exposes the two policy bits and
+ * nothing else.
+ */
+partnerSignupRouter.get('/partner-signup/status', statusLimit, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const settings = await readSignupSettings(db, tenantId);
+  res.json({ open: !settings.disabled, reviewRequired: settings.policy === 'require_review' });
+});
+
 partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
-  const body = schema.safeParse(req.body);
-  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
-
+  // Closed is checked first: a closed program answers signup_disabled
+  // whatever the body, so nobody is asked to fix answers that can't be
+  // accepted anyway.
   const settings = await readSignupSettings(db, tenantId);
   if (settings.disabled) {
     return res.status(403).json({ error: 'signup_disabled' });
   }
+
+  const body = schema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
   const email = body.data.email.toLowerCase();
   const profile = body.data.profile
@@ -145,6 +215,7 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
   const id = ulid();
   const now = new Date();
   const activatedAt = settings.policy === 'auto_approve' ? now : null;
+  const application: PartnerApplication = { ...body.data.application, submittedAt: now.toISOString() };
   let partner: PartnerRow;
   try {
     const inserted = (await db<PartnerRow>(TABLES.Partner)
@@ -155,6 +226,7 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
         name: body.data.name,
         metadata: {
           ...(profile ?? {}),
+          application,
           ...(activatedAt ? {} : { review: { status: 'pending', appliedAt: now.toISOString() } satisfies PartnerReview }),
         },
         activatedAt,
@@ -187,6 +259,13 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
       joinedVendorAt: partner.createdAt.toISOString(),
       status: activatedAt ? 'active' : 'pending',
       metadata: { source: 'self_signup' },
+      // Fills blanks in the creator's Network profile. The pitch stays
+      // with this brand: it was written for this program.
+      creatorProfile: {
+        websiteUrl: application.websiteUrl,
+        socialUrls: application.socialUrls,
+        audienceSize: application.audienceSize,
+      },
     });
     if (result) {
       // Stamp the canonical Network identity onto the Partner so the
@@ -231,7 +310,7 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
     tmpl = partnerInviteEmail(partner.name, buildMagicLinkUrl(issued.plaintext, linkTenantOf(req)), brandName);
   } else {
     tmpl = partnerApplicationReceivedEmail(partner.name, brandName);
-    await notifyAdminsOfApplication(db, tenantId, partner, brandName, `${getPortalBaseUrl(linkTenantOf(req))}/admin/partners`);
+    await notifyAdminsOfApplication(db, tenantId, partner, brandName, `${getPortalBaseUrl(linkTenantOf(req))}/admin/partners`, application);
   }
   try {
     await getMailer().send({ db, tenantId }, {

@@ -6,6 +6,13 @@ import { theme } from '../../theme.js';
 import { creatorApi, ApiError } from './creator-api.js';
 import { categoryLabel } from '@openpartner/db';
 import { ListingBanner, ListingVideo, type OfferingVideo } from './ListingBanner.js';
+import {
+  ProfileIncompleteNotice,
+  missingFromProfile,
+  profileIncompleteFrom,
+  type MissingProfileField,
+  type ProfileCompleteness,
+} from '../../lib/profile-incomplete.js';
 
 interface InvitationContext {
   id: string;
@@ -139,6 +146,16 @@ export function CreatorOfferingDetailPage() {
     retry: false,
   });
 
+  // The Network refuses applications from incomplete profiles; its
+  // checklist lets us say so before the creator writes a pitch. Same cache
+  // entry as the profile page.
+  const { data: myProfile } = useQuery({
+    queryKey: ['creator-my-profile'],
+    queryFn: () => creatorApi<ProfileCompleteness>('/creators/me'),
+    enabled: !!whoami?.creator,
+    retry: false,
+  });
+
   // Resolve the invitation token if present in the URL — gives us the
   // brand's pitch + offering context so we can show a banner +
   // pre-fill the apply form.
@@ -216,6 +233,7 @@ export function CreatorOfferingDetailPage() {
           preferredSlug={preferredSlug}
           setPreferredSlug={setPreferredSlug}
           apply={apply}
+          profileMissing={missingFromProfile(myProfile)}
         />
       )}
     </Page>
@@ -241,6 +259,7 @@ function OfferingDetailBody({
   preferredSlug,
   setPreferredSlug,
   apply,
+  profileMissing,
 }: ApplyOrStatusProps) {
   const cats = offering.terms.categories ?? [];
   return (
@@ -375,6 +394,7 @@ function OfferingDetailBody({
               preferredSlug={preferredSlug}
               setPreferredSlug={setPreferredSlug}
               apply={apply}
+              profileMissing={profileMissing}
               embedded
             />
           </Card>
@@ -623,6 +643,9 @@ interface ApplyOrStatusProps {
   preferredSlug: string;
   setPreferredSlug: (v: string) => void;
   apply: ReturnType<typeof useMutation<unknown, Error, void>>;
+  /** From the creator's profile checklist: non-null = the Network will
+   *  refuse the application, so Apply is disabled up front. */
+  profileMissing: MissingProfileField[] | null;
 }
 
 /** Brand mark used in the offering header. Sizable so the same component
@@ -677,7 +700,7 @@ function formatOfferingDuration(endsAt: string | null | undefined): string | nul
   })}`;
 }
 
-function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlug, setPreferredSlug, apply, embedded }: ApplyOrStatusProps & { embedded?: boolean }) {
+function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlug, setPreferredSlug, apply, profileMissing, embedded }: ApplyOrStatusProps & { embedded?: boolean }) {
   // `embedded` skips the outer <Card> wrapper — the caller has already
   // wrapped this in their own Card so we just render bare contents.
   // We branch in render rather than synthesizing a wrapper component
@@ -714,6 +737,10 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
     return embedded ? inner : <Card>{inner}</Card>;
   }
 
+  // The Network's refusal wins over the cached checklist (it's the truth
+  // at submit time); the checklist lets us block before they write a pitch.
+  const refusedMissing = profileIncompleteFrom(apply.error);
+  const missing = refusedMissing ?? profileMissing;
   const inner = (
     <>
       {!embedded && <h3 style={{ marginTop: 0 }}>{offering.myStatus === 'rejected' ? 'Re-apply' : 'Apply to promote'}</h3>}
@@ -722,7 +749,13 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
           Your previous application was declined. You can try again with a different pitch.
         </p>
       )}
-      <ErrorBanner error={apply.error} />
+      {missing && (
+        <ProfileIncompleteNotice
+          missing={missing}
+          link={<Link to="/creator/profile" style={{ color: theme.accent, fontWeight: 500 }}>Go to your profile →</Link>}
+        />
+      )}
+      {!refusedMissing && <ErrorBanner error={apply.error} />}
       {apply.error instanceof ApiError && apply.error.message === 'request_already_exists' && (
         <p style={{ color: theme.textMuted, fontSize: 13 }}>You already have a pending or active request for this program.</p>
       )}
@@ -744,7 +777,9 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
         />
       </div>
       <div style={{ marginTop: 12 }}>
-        <Button onClick={() => apply.mutate()} disabled={apply.isPending}>
+        {/* Only the checklist disables: after a refusal the creator can
+            fix their profile in another tab and retry from here. */}
+        <Button onClick={() => apply.mutate()} disabled={apply.isPending || !!profileMissing}>
           {apply.isPending ? 'Applying…' : 'Submit application'}
         </Button>
       </div>

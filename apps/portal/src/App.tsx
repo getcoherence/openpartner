@@ -64,6 +64,7 @@ import { VendorDetailPage } from './pages/partner/VendorDetail.js';
 import { MyAffiliationsPage } from './pages/partner/MyAffiliations.js';
 import { MyRequestsPage } from './pages/partner/MyRequests.js';
 import { MyProfilePage } from './pages/partner/MyProfile.js';
+import { NetworkProfileBanner } from './pages/partner/NetworkProfileBanner.js';
 import { PartnerPostbacksPage } from './pages/partner/Postbacks.js';
 import { InstallPage } from './pages/Install.js';
 import { LandingPage } from './pages/Landing.js';
@@ -226,6 +227,15 @@ function Shell() {
   if (!auth.principal) return <Navigate to={`${tenantBase}/login`} state={{ from: location }} replace />;
 
   const showNetwork = !whiteLabel && (auth.principal.role === 'admin' || partnerNetworkVisible);
+  // A partner browsing the Network acts as a Network creator, so the same
+  // incomplete-profile gate applies; nudge them on those pages (not on the
+  // profile page itself).
+  const shellPath = location.pathname.slice(tenantBase.length);
+  const showNetworkProfileBanner =
+    auth.principal.role === 'partner' &&
+    showNetwork &&
+    shellPath.startsWith('/network/') &&
+    !shellPath.startsWith('/network/profile');
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: theme.bg }}>
@@ -241,6 +251,7 @@ function Shell() {
         {auth.principal.role === 'admin' && approvalStatus === 'pending' && !reviewBannerDismissed && (
           <PendingReviewBanner isMobile={isMobile} onDismiss={() => setReviewBannerDismissed(true)} />
         )}
+        {showNetworkProfileBanner && <NetworkProfileBanner isMobile={isMobile} />}
         <Routes>
           <Route index element={<Dashboard principal={auth.principal} />} />
 

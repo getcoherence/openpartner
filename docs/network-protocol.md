@@ -90,7 +90,12 @@ Body
     "profile":         { ... },                   // optional, surfaced to other vendors searching
     "joinedVendorAt":  "2026-04-26T...Z",
     "status":          "pending" | "active" | "revoked",
-    "metadata":        { "source": "self_signup" | "admin_invite" | "backfill" }
+    "metadata":        { "source": "self_signup" | "admin_invite" | "backfill" },
+    "creatorProfile": {                           // optional; public signup only
+      "websiteUrl":   "https://ada.example",
+      "socialUrls":   ["https://youtube.com/@ada"],  // max 5
+      "audienceSize": "under_1k" | "1k_10k" | "10k_50k" | "50k_250k" | "250k_1m" | "over_1m"
+    }
   }
 Response 200
   {
@@ -107,6 +112,12 @@ The `affiliations` array tells the vendor *what other programs the
 creator is in*. Vendor stores `networkCreatorId` and (optionally)
 surfaces affiliations in its admin UI ("This creator also works with
 Beta Co.").
+
+`creatorProfile` carries the answers from the brand's join-page
+application. The Network only fills BLANKS in the creator's profile from
+it (platform rows from the URLs, `audienceSize`), never overwriting what
+the creator set. A Network that predates the field strips it, so vendors
+always send it on public signup.
 
 Idempotency: `(vendorId, vendorPartnerId)` is unique on the Network
 side. Re-posting the same `vendorPartnerId` updates status and bumps

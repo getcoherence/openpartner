@@ -10,6 +10,7 @@ import { ExternalLink, Globe } from 'lucide-react';
 import { Card, ErrorBanner, EmptyState } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi, ApiError } from './creator-api.js';
+import { audienceSizeLabel } from '@openpartner/db';
 
 interface PlatformRow {
   id: string;
@@ -29,6 +30,8 @@ interface PublicProfile {
   categories: string[];
   audienceLocations: string[];
   audienceAgeRange: string | null;
+  /** Bucket slug (see AUDIENCE_SIZES); absent on an older Network. */
+  audienceSize?: string | null;
   portfolioLinks: string[];
   pastBrands: string[];
   platforms: PlatformRow[];
@@ -70,6 +73,7 @@ export function CreatorPublicProfilePage() {
   }
 
   const totalReach = data.platforms.reduce((sum, p) => sum + (p.followerCount ?? 0), 0);
+  const audienceSize = audienceSizeLabel(data.audienceSize);
 
   return (
     <Shell>
@@ -151,12 +155,13 @@ export function CreatorPublicProfilePage() {
         </>
       )}
 
-      {(data.audienceLocations.length > 0 || data.audienceAgeRange) && (
+      {(data.audienceLocations.length > 0 || data.audienceAgeRange || audienceSize) && (
         <>
           <div style={{ height: 14 }} />
           <Card>
             <h3 style={{ marginTop: 0, marginBottom: 12, fontSize: 15, fontWeight: 500 }}>Audience</h3>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24 }}>
+              {audienceSize && <Stat label="Audience size" value={audienceSize} />}
               {data.audienceLocations.length > 0 && (
                 <Stat label="Top countries" value={data.audienceLocations.join(' · ')} />
               )}

@@ -22,7 +22,7 @@
 
 import { ulid } from 'ulid';
 import type { Knex } from 'knex';
-import { TABLES, type NetworkOutboxRow } from '@openpartner/db';
+import { TABLES, type AudienceSize, type NetworkOutboxRow } from '@openpartner/db';
 import { decryptSecret, encryptSecret } from './crypto.js';
 import { getWhiteLabelState } from './white-label.js';
 
@@ -138,6 +138,17 @@ export interface PartnerUpsertPayload {
   joinedVendorAt: string;
   status: 'pending' | 'active' | 'revoked';
   metadata?: { source: 'self_signup' | 'admin_invite' | 'backfill' };
+  /** Join-page application answers the Network uses to fill BLANKS in the
+   *  creator's Network profile (platform rows + audienceSize). Only public
+   *  signup sends it; an older Network strips the unknown key. */
+  creatorProfile?: PartnerUpsertCreatorProfile;
+}
+
+export interface PartnerUpsertCreatorProfile {
+  websiteUrl?: string;
+  /** At most 5. */
+  socialUrls?: string[];
+  audienceSize?: AudienceSize;
 }
 
 export interface PartnerUpsertResponse {
@@ -434,10 +445,12 @@ export async function completeNetworkConnect(networkUrl: string, ntoken: string)
 async function callNetwork<T>(
   db: Knex,
   tenantId: string,
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   path: string,
   body?: unknown,
-  opts?: { actingVendorPartnerId?: string },
+  /** `rawContentType`: send a Buffer body as-is with this content-type
+   *  (image uploads) instead of JSON. */
+  opts?: { actingVendorPartnerId?: string; rawContentType?: string },
 ): Promise<T> {
   const m = await getNetworkMembership(db, tenantId);
   if (!m || !m.enabled || !m.vendorTokenCiphertext) {
@@ -459,8 +472,9 @@ async function callNetwork<T>(
     throw new NetworkProxyError(500, `vendor_token_undecryptable: ${err instanceof Error ? err.message : String(err)}`);
   }
   const url = `${networkUrl.replace(/\/$/, '')}${path}`;
+  const raw = opts?.rawContentType !== undefined && Buffer.isBuffer(body);
   const headers: Record<string, string> = {
-    'content-type': 'application/json',
+    'content-type': raw ? opts!.rawContentType! : 'application/json',
     authorization: `Bearer ${token}`,
     'user-agent': 'OpenPartner-Vendor/1',
   };
@@ -475,7 +489,7 @@ async function callNetwork<T>(
     res = await fetch(url, {
       method,
       headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: raw ? new Uint8Array(body as Buffer) : body !== undefined ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
     });
   } catch (err) {
@@ -907,6 +921,25 @@ export const partnerProxy = {
   updateMyProfile: (db: Knex, tenantId: string, vendorPartnerId: string, body: unknown) =>
     callNetwork<unknown>(db, tenantId, 'PATCH', '/creators/me', body, {
       actingVendorPartnerId: vendorPartnerId,
+    }),
+  // Platforms + avatar: the rest of what the Network's completeness bar
+  // asks for, so a partner can finish their profile from the brand portal.
+  listMyPlatforms: (db: Knex, tenantId: string, vendorPartnerId: string) =>
+    callNetwork<{ platforms: unknown[] }>(db, tenantId, 'GET', '/creators/me/platforms', undefined, {
+      actingVendorPartnerId: vendorPartnerId,
+    }),
+  upsertMyPlatform: (db: Knex, tenantId: string, vendorPartnerId: string, platform: string, body: unknown) =>
+    callNetwork<unknown>(db, tenantId, 'PUT', `/creators/me/platforms/${encodeURIComponent(platform)}`, body, {
+      actingVendorPartnerId: vendorPartnerId,
+    }),
+  deleteMyPlatform: (db: Knex, tenantId: string, vendorPartnerId: string, platform: string) =>
+    callNetwork<{ ok: boolean }>(db, tenantId, 'DELETE', `/creators/me/platforms/${encodeURIComponent(platform)}`, undefined, {
+      actingVendorPartnerId: vendorPartnerId,
+    }),
+  uploadMyAvatar: (db: Knex, tenantId: string, vendorPartnerId: string, image: Buffer, contentType: string) =>
+    callNetwork<{ avatarUrl: string }>(db, tenantId, 'POST', '/creators/me/uploads/avatar', image, {
+      actingVendorPartnerId: vendorPartnerId,
+      rawContentType: contentType,
     }),
 };
 

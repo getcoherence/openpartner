@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Users } from 'lucide-react';
+import { audienceSizeLabel, isHttpUrl } from '@openpartner/db';
 import { api } from '../api.js';
 import { theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
@@ -14,7 +15,17 @@ interface Partner {
   createdAt: string;
   activatedAt: string | null;
   revokedAt: string | null;
-  metadata?: { review?: { status?: string } } | null;
+  metadata?: { review?: { status?: string }; application?: unknown } | null;
+}
+
+/** Join-page answers (Partner.metadata.application, written by
+ *  POST /partner-signup). */
+interface PartnerApplicationView {
+  websiteUrl: string;
+  socialUrls: string[];
+  audienceSize: string;
+  pitch: string;
+  submittedAt: string | null;
 }
 
 /** Applied through the public join page and waiting for an admin (see
@@ -23,10 +34,28 @@ function isPendingReview(p: Partner): boolean {
   return !p.activatedAt && !p.revokedAt && p.metadata?.review?.status === 'pending';
 }
 
+/** The partner's application, or null when there's none on file (invited
+ *  partners, and applicants from before the join page asked for one).
+ *  Metadata is admin-editable JSON, so read it defensively. */
+function applicationOf(p: Partner): PartnerApplicationView | null {
+  const a = p.metadata?.application;
+  if (!a || typeof a !== 'object') return null;
+  const r = a as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === 'string' ? v : '');
+  return {
+    websiteUrl: str(r.websiteUrl),
+    socialUrls: Array.isArray(r.socialUrls) ? r.socialUrls.filter((u): u is string => typeof u === 'string') : [],
+    audienceSize: str(r.audienceSize),
+    pitch: str(r.pitch),
+    submittedAt: typeof r.submittedAt === 'string' ? r.submittedAt : null,
+  };
+}
+
 export function AdminPartners() {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [revoking, setRevoking] = useState<Partner | null>(null);
+  const [viewing, setViewing] = useState<Partner | null>(null);
 
   const partners = useQuery({ queryKey: ['partners'], queryFn: () => api<{ partners: Partner[] }>('/partners') });
 
@@ -61,6 +90,7 @@ export function AdminPartners() {
           }}
         />
       )}
+      {viewing && <ApplicationPanel partner={viewing} onClose={() => setViewing(null)} />}
 
       {partners.isLoading ? (
         <Card>Loading…</Card>
@@ -96,6 +126,22 @@ export function AdminPartners() {
               <TenantLink to={`/admin/partners/${p.id}/commission`} style={{ color: theme.accent, fontSize: 13 }}>Commission</TenantLink>
               <span style={{ color: theme.border }}>·</span>
               <TenantLink to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Payouts</TenantLink>
+              {applicationOf(p) ? (
+                <>
+                  <span style={{ color: theme.border }}>·</span>
+                  <button
+                    onClick={() => setViewing(p)}
+                    style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accent, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                  >
+                    View application
+                  </button>
+                </>
+              ) : isPendingReview(p) ? (
+                <>
+                  <span style={{ color: theme.border }}>·</span>
+                  <span style={{ fontSize: 13, color: theme.textDim, whiteSpace: 'nowrap' }}>No application on file</span>
+                </>
+              ) : null}
               {!p.activatedAt && !p.revokedAt && (
                 <>
                   <span style={{ color: theme.border }}>·</span>
@@ -290,6 +336,79 @@ function RevokeDialog({
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
       </div>
     </Card>
+  );
+}
+
+/** Read-only view of a partner's join-page answers. Approve / Revoke stay
+ *  on the row. */
+function ApplicationPanel({ partner, onClose }: { partner: Partner; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  // The row's link is often far below the panel; bring it into view.
+  useEffect(() => {
+    ref.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  }, [partner.id]);
+  const application = applicationOf(partner);
+
+  return (
+    <div ref={ref}>
+      <Card style={{ marginBottom: 14 }}>
+        <div role="region" aria-label={`${partner.name}'s application`}>
+          <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>{partner.name}&rsquo;s application</div>
+          {!application ? (
+            <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>No application on file.</div>
+          ) : (
+            <>
+              <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
+                {application.submittedAt
+                  ? `Applied ${formatDate(application.submittedAt)} (${formatDate(application.submittedAt, { relative: true })})`
+                  : 'Application date unknown'}
+                {' · '}
+                <a href={`mailto:${partner.email}`} style={{ color: theme.textMuted }}>{partner.email}</a>
+              </div>
+              <div
+                className="op-grid-collapse"
+                style={{ display: 'grid', gridTemplateColumns: '180px 1fr', columnGap: 16, rowGap: 12, fontSize: 13, marginBottom: 16 }}
+              >
+                <AnswerLabel>Website or main channel</AnswerLabel>
+                <div style={{ minWidth: 0 }}><ExternalUrl url={application.websiteUrl} /></div>
+
+                <AnswerLabel>Social profiles</AnswerLabel>
+                <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {application.socialUrls.length === 0
+                    ? <span style={{ color: theme.textDim }}>—</span>
+                    : application.socialUrls.map((u) => <ExternalUrl key={u} url={u} />)}
+                </div>
+
+                <AnswerLabel>Audience size</AnswerLabel>
+                <div>{audienceSizeLabel(application.audienceSize) ?? <span style={{ color: theme.textDim }}>—</span>}</div>
+
+                <AnswerLabel>How they&rsquo;d promote you</AnswerLabel>
+                <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 1.55, color: theme.text }}>
+                  {application.pitch || <span style={{ color: theme.textDim }}>—</span>}
+                </div>
+              </div>
+            </>
+          )}
+          <Button variant="secondary" onClick={onClose}>Close</Button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function AnswerLabel({ children }: { children: React.ReactNode }) {
+  return <div style={{ color: theme.textMuted, fontWeight: 500 }}>{children}</div>;
+}
+
+/** Applicant-supplied link. Only http(s) becomes an anchor (metadata is
+ *  editable JSON, so never trust it into an href); opens in a new tab. */
+function ExternalUrl({ url }: { url: string }) {
+  if (!url) return <span style={{ color: theme.textDim }}>—</span>;
+  if (!isHttpUrl(url)) return <span style={{ overflowWrap: 'anywhere' }}>{url}</span>;
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: theme.accent, overflowWrap: 'anywhere' }}>
+      {url}
+    </a>
   );
 }
 

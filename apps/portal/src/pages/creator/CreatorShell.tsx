@@ -4,6 +4,8 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-r
 import { Globe, Inbox, Link2, LogOut, Megaphone, Menu, Network, UserCog } from 'lucide-react';
 import { theme } from '../../theme.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
+import { ProfileCompletionBanner } from '../../lib/ProfileCompletionBanner.js';
+import type { ProfileCompleteness } from '../../lib/profile-incomplete.js';
 import { Logo } from '../auth/Shared.js';
 import { creatorApi } from './creator-api.js';
 import { CreatorDiscoverPage } from './CreatorDiscover.js';
@@ -75,50 +77,26 @@ export function CreatorShell() {
 }
 
 /**
- * Site-wide nudge while the creator's profile is below the discovery bar.
- * Shares the ['creator-my-profile'] cache with the profile page, so it
- * disappears as soon as they finish. Hidden on the profile page itself,
- * which carries the full checklist.
+ * Site-wide nudge while the creator's profile is incomplete: brands can't
+ * find them and the Network refuses their applications. Shares the
+ * ['creator-my-profile'] cache with the profile page (whose save
+ * invalidates it), so it disappears as soon as they finish. Hidden on the
+ * profile page itself, which carries the full checklist.
  */
 function ProfileIncompleteBanner({ isMobile }: { isMobile: boolean }) {
   const { data } = useQuery({
     queryKey: ['creator-my-profile'],
-    queryFn: () =>
-      creatorApi<{ profileComplete?: boolean; profileMissing?: Array<{ field: string; label: string }> }>('/creators/me'),
+    queryFn: () => creatorApi<ProfileCompleteness>('/creators/me'),
     retry: false,
     staleTime: 60_000,
   });
-  if (!data || data.profileComplete !== false) return null;
-  const left = data.profileMissing?.length ?? 0;
   return (
-    <div style={{ padding: isMobile ? '16px 16px 0' : '24px 40px 0', maxWidth: 1280, margin: '0 auto' }}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          flexWrap: 'wrap',
-          background: theme.warnSoft,
-          border: `1px solid ${theme.warn}55`,
-          borderRadius: theme.radiusMd,
-          padding: '12px 14px',
-          fontSize: 13,
-          lineHeight: 1.5,
-        }}
-      >
-        <div style={{ flex: 1, minWidth: 200 }}>
-          <strong style={{ color: theme.warn }}>Brands can&rsquo;t find you yet.</strong>{' '}
-          Your profile is hidden from Network discovery until it&rsquo;s complete
-          {left > 0 ? ` (${left} step${left === 1 ? '' : 's'} left)` : ''}.
-        </div>
-        <Link
-          to="/creator/profile"
-          style={{ color: theme.accent, fontWeight: 600, textDecoration: 'none', whiteSpace: 'nowrap' }}
-        >
-          Finish my profile &rarr;
-        </Link>
-      </div>
-    </div>
+    <ProfileCompletionBanner
+      profile={data}
+      isMobile={isMobile}
+      dismissKey="op:creator-profile-banner-dismissed"
+      renderLink={(style, children) => <Link to="/creator/profile" style={style}>{children}</Link>}
+    />
   );
 }
 

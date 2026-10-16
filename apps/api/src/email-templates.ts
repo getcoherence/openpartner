@@ -56,6 +56,15 @@ export function partnerApplicationReceivedEmail(name: string, brandName: string 
   return { subject, text, html: plainHtml(text) };
 }
 
+/** The join-page answers shown in {@link partnerApplicationAdminEmail}. */
+export interface PartnerApplicationSummary {
+  websiteUrl: string;
+  socialUrls: string[];
+  /** Human label, e.g. "10K–50K". */
+  audienceSize: string;
+  pitch: string;
+}
+
 /** Brand admin: someone applied through the public join page and is
  *  waiting for review. */
 export function partnerApplicationAdminEmail(
@@ -63,12 +72,29 @@ export function partnerApplicationAdminEmail(
   applicantEmail: string,
   brandName: string | null,
   reviewUrl: string,
+  application?: PartnerApplicationSummary,
 ): EmailTemplate {
   const subject = `New partner application: ${applicantName}`;
+  // Every applicant-supplied line carries a prefix: wrap() turns any line
+  // that STARTS with "http" into the review-button link, so a bare URL from
+  // the applicant must never begin a line.
+  const answers = application
+    ? [
+        `Website or main channel: ${application.websiteUrl}`,
+        `Social profiles:`,
+        ...application.socialUrls.map((u) => `  - ${u}`),
+        `Audience size: ${application.audienceSize}`,
+        `How they'd promote you:`,
+        ...application.pitch.split(/\r?\n/).map((l) => `> ${l}`),
+        ``,
+      ]
+    : [];
   const text = [
     `Hi${brandName ? ` from ${brandName}` : ''},`,
     ``,
     `${applicantName} (${applicantEmail}) applied to your partner program and is waiting for review.`,
+    ``,
+    ...answers,
     `They can't sign in until you approve them. Approve or decline on the Partners page:`,
     ``,
     reviewUrl,

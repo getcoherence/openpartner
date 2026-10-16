@@ -5,6 +5,12 @@ import { api, ApiError, type Principal } from '../../api.js';
 import { TenantLink } from '../../tenant-link.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
 import { theme } from '../../theme.js';
+import {
+  ProfileIncompleteNotice,
+  missingFromProfile,
+  profileIncompleteFrom,
+  type ProfileCompleteness,
+} from '../../lib/profile-incomplete.js';
 
 interface Offering {
   id: string;
@@ -50,6 +56,19 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
 
   const canApply = principal.role === 'partner';
 
+  // The partner's Network profile (GET /creators/me via the brand proxy;
+  // same cache entry as the Network profile page). An incomplete one can't
+  // apply, so say so before they write a pitch.
+  const { data: myProfile } = useQuery({
+    queryKey: ['network-my-profile'],
+    queryFn: () => api<ProfileCompleteness & { notFederated?: boolean }>(`/network/me/profile`),
+    enabled: canApply,
+    retry: false,
+  });
+  const profileMissing = myProfile?.notFederated ? null : missingFromProfile(myProfile);
+  const refusedMissing = profileIncompleteFrom(apply.error);
+  const missing = refusedMissing ?? profileMissing;
+
   return (
     <Page title={offering?.title ?? 'Program'} subtitle={offering?.vendorName}>
       <ErrorBanner error={error} />
@@ -86,7 +105,13 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
               </p>
             ) : (
               <>
-                <ErrorBanner error={apply.error} />
+                {missing && (
+                  <ProfileIncompleteNotice
+                    missing={missing}
+                    link={<TenantLink to="/network/profile" style={{ color: theme.accent, fontWeight: 500 }}>Go to your profile →</TenantLink>}
+                  />
+                )}
+                {!refusedMissing && <ErrorBanner error={apply.error} />}
                 {apply.error instanceof ApiError && apply.error.detail && typeof apply.error.detail === 'object' &&
                   'detail' in (apply.error.detail as { detail?: { detail?: string } }) &&
                   (apply.error.detail as { detail?: string }).detail === 'request_already_exists' && (
@@ -112,7 +137,7 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
                   />
                 </div>
                 <div style={{ marginTop: 12 }}>
-                  <Button onClick={() => apply.mutate()} disabled={apply.isPending}>
+                  <Button onClick={() => apply.mutate()} disabled={apply.isPending || !!profileMissing}>
                     {apply.isPending ? 'Applying…' : 'Submit application'}
                   </Button>
                 </div>

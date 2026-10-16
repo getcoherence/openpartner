@@ -27,6 +27,15 @@ export {
 export type { ProgramCategory } from './categories.js';
 export { parseVideoUrl, isTrustedEmbedUrl } from './program-video.js';
 export type { ProgramVideo, VideoProvider } from './program-video.js';
+export {
+  AUDIENCE_SIZES,
+  AUDIENCE_SIZE_LABELS,
+  PARTNER_APPLICATION_LIMITS,
+  audienceSizeLabel,
+  isAudienceSize,
+  isHttpUrl,
+} from './partner-application.js';
+export type { AudienceSize, PartnerApplication } from './partner-application.js';
 
 export interface DbConfig {
   connectionString: string;
