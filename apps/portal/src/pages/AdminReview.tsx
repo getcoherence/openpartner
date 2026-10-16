@@ -24,7 +24,7 @@ export function AdminReview() {
   const qc = useQueryClient();
   const pending = useQuery({
     queryKey: ['review', 'accrued'],
-    queryFn: () => api<{ commissions: Commission[] }>('/commissions?status=accrued&limit=500'),
+    queryFn: () => api<{ commissions: Commission[]; nextCursor: string | null }>('/commissions?status=accrued&limit=500'),
   });
 
   const approve = useMutation({
@@ -43,11 +43,14 @@ export function AdminReview() {
   });
 
   const rows = pending.data?.commissions ?? [];
+  // The queue shows the newest 500; deciding on them surfaces the next.
+  // Say "500+" rather than claim the page is the whole backlog.
+  const more = pending.data?.nextCursor ? '+' : '';
 
   return (
     <Page
       title="Review queue"
-      subtitle={`${rows.length} commission${rows.length === 1 ? '' : 's'} awaiting your decision.`}
+      subtitle={`${rows.length}${more} commission${rows.length === 1 && !more ? '' : 's'} awaiting your decision.`}
     >
       <ErrorBanner error={pending.error ?? approve.error ?? reverse.error} />
       {pending.isLoading ? (
