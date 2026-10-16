@@ -55,10 +55,13 @@ import {
   adminRemindCreator,
   adminRunCreatorReminders,
   adminSetFeaturedVendors,
+  adminSetVendorReview,
   adminUnblockCreator,
+  adminVendorReviewQueue,
   NetworkAdminError,
   platformNetworkUrl,
 } from '../network-client.js';
+import { linkVendorsToTenants } from '../network-review-reconcile.js';
 import { brandSetupFor } from '../brand-setup.js';
 import { brandReminderHistory, remindBrandNow, runBrandSetupReminders } from '../brand-setup-reminders.js';
 import { getNotificationSettings, setNotificationSettings } from '../platform-settings.js';
@@ -644,6 +647,95 @@ platformAdminRouter.put(
       detail: { vendors },
     });
     res.json({ ok: true });
+  },
+);
+
+// --------------------------------------------------------------------------
+// Network vendor review queue
+// --------------------------------------------------------------------------
+//
+// Self-hosted openpartner instances federate with the Network by email
+// verify, and land in the Network's review queue: nothing they publish is
+// discoverable until an operator approves them here. Vendors that are our
+// own hosted brands are listed too, but read-only — their review mirrors
+// brand approval (Brands tab), and the network-review-reconcile job would
+// overwrite any decision made here within 15 minutes.
+
+platformAdminRouter.get('/platform-admin/network-vendors', requirePlatformAdmin, async (_req, res) => {
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  let vendors;
+  try {
+    vendors = await adminVendorReviewQueue(networkUrl);
+  } catch (err) {
+    return res.status(502).json(networkErrorBody(err));
+  }
+  const { links } = await linkVendorsToTenants(networkUrl, vendors);
+  res.json({
+    vendors: vendors.map((v) => {
+      const link = links.get(v.id);
+      return {
+        ...v,
+        managedBy: link ? { tenantId: link.tenantId, slug: link.slug, displayName: link.displayName } : null,
+      };
+    }),
+  });
+});
+
+const vendorReviewSchema = z.object({
+  status: z.enum(['approved', 'rejected']),
+  /** Stored on the Network; included in the vendor's email when notified. */
+  reason: z.string().trim().max(500).optional(),
+  notifyVendor: z.boolean().optional(),
+});
+
+platformAdminRouter.post(
+  '/platform-admin/network-vendors/:id/review',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = vendorReviewSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    const vendorId = req.params.id!;
+
+    let vendor;
+    let link;
+    try {
+      const vendors = await adminListVendors(networkUrl);
+      vendor = vendors.find((v) => v.id === vendorId);
+      if (vendor) link = (await linkVendorsToTenants(networkUrl, vendors)).links.get(vendorId);
+    } catch (err) {
+      return res.status(502).json(networkErrorBody(err));
+    }
+    if (!vendor) return res.status(404).json({ error: 'vendor_not_found' });
+    if (link) return res.status(409).json({ error: 'managed_by_brand_review', slug: link.slug });
+
+    let result;
+    try {
+      result = await adminSetVendorReview(networkUrl, vendorId, body.data.status, body.data.reason ?? null, {
+        notifyVendor: body.data.notifyVendor,
+      });
+    } catch (err) {
+      if (err instanceof NetworkAdminError && err.code && err.status < 500) {
+        return res.status(err.status).json({ error: err.code });
+      }
+      return res.status(502).json(networkErrorBody(err));
+    }
+    await writeAudit(db, {
+      actor: req.platformAdminActor!,
+      action: body.data.status === 'approved' ? 'network_vendor.approve' : 'network_vendor.reject',
+      targetType: 'network_vendor',
+      targetId: vendorId,
+      detail: {
+        displayName: vendor.displayName ?? null,
+        instanceUrl: vendor.instanceUrl,
+        reason: body.data.reason ?? null,
+        notified: !!result.notified,
+      },
+    });
+    res.json({ ok: true, reviewStatus: body.data.status, notified: !!result.notified });
   },
 );
 

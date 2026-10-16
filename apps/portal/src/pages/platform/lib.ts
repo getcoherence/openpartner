@@ -111,6 +111,39 @@ export interface FeaturedEntry {
   until: string | null;
 }
 
+/** A vendor in the Network review queue. `managedBy` is set for our own
+ *  hosted brands — their review follows brand approval (Brands tab). */
+export interface NetworkVendorReview {
+  id: string;
+  displayName: string;
+  logoUrl: string | null;
+  instanceUrl: string;
+  tier: 'hosted' | 'self_hosted';
+  /** Credential liveness: 'pending' = onboarding email not verified yet. */
+  status: string;
+  contactEmail: string;
+  contactName: string | null;
+  partnerCount: number;
+  lastHeartbeatAt: string | null;
+  suspensionReason: string | null;
+  reviewStatus: ApprovalStatus;
+  reviewedAt: string | null;
+  reviewReason: string | null;
+  createdAt: string;
+  offeringCount: number;
+  publishedOfferingCount: number;
+  /** Text only — never render productUrl as a live link. */
+  offerings: Array<{
+    id: string;
+    title: string;
+    description: string | null;
+    productUrl: string;
+    published: boolean;
+    createdAt: string;
+  }>;
+  managedBy: { tenantId: string; slug: string; displayName: string } | null;
+}
+
 export interface NotificationSettings {
   brandSetupReminders: boolean;
   creatorProfileReminders: boolean;
@@ -233,6 +266,8 @@ export function friendlyPlatformError(err: unknown): string {
       return 'The email couldn’t be sent — check the platform mail settings and try again.';
     case 'vendor_not_found':
       return 'That brand is no longer on the Network — refresh and try again.';
+    case 'managed_by_brand_review':
+      return 'That vendor is one of our hosted brands — approve or reject it on the Brands tab.';
     case 'network_not_configured':
       return 'NETWORK_URL / NETWORK_ADMIN_API_KEY aren’t set, so creator reminders can’t reach the Network.';
     default:

@@ -132,7 +132,9 @@ let netServer: Server;
 let netUrl = '';
 let netCalls: NetCall[] = [];
 /** What the fake Network returns for GET /admin/vendors (reconcile job). */
-let netVendors: Array<{ id: string; instanceUrl: string; status: string; reviewStatus?: string }> = [];
+let netVendors: Array<{ id: string; instanceUrl: string; status: string; reviewStatus?: string; displayName?: string }> = [];
+/** What the fake Network returns for GET /admin/vendor-review (review queue). */
+let netQueue: Array<Record<string, unknown>> = [];
 
 beforeAll(async () => {
   if (skipIntegration) return;
@@ -151,6 +153,9 @@ beforeAll(async () => {
         res.writeHead(200, { 'content-type': 'application/json' });
         if (req.method === 'GET' && req.url === '/admin/vendors') {
           return res.end(JSON.stringify({ vendors: netVendors }));
+        }
+        if (req.method === 'GET' && req.url?.startsWith('/admin/vendor-review')) {
+          return res.end(JSON.stringify({ vendors: netQueue }));
         }
         res.end(JSON.stringify({ ok: true }));
       });
@@ -184,6 +189,7 @@ afterEach(async () => {
   if (skipIntegration) return;
   netCalls = [];
   netVendors = [];
+  netQueue = [];
   delete process.env.NETWORK_URL;
   for (const slug of createdSlugs.splice(0)) await purgeSlug(slug);
   if (createdBlocklistValues.length) {
@@ -551,6 +557,127 @@ describe.skipIf(skipIntegration)('marketplace featured placement (Network-proxie
       .send({ vendors: [] });
     expect(res.status).toBe(403);
     expect(netCalls.filter((c) => c.method === 'PUT')).toHaveLength(0);
+  });
+});
+
+describe.skipIf(skipIntegration)('Network vendor review queue', () => {
+  const NET_KEY = 'netadm_test_key_0123456789abcdef';
+  const queueEntry = (id: string, name: string, instanceUrl: string) => ({
+    id,
+    displayName: name,
+    logoUrl: null,
+    instanceUrl,
+    tier: 'self_hosted',
+    status: 'active',
+    contactEmail: `owner@${id}.test`,
+    contactName: null,
+    partnerCount: 0,
+    lastHeartbeatAt: null,
+    suspensionReason: null,
+    reviewStatus: 'pending',
+    reviewedAt: null,
+    reviewReason: null,
+    createdAt: new Date().toISOString(),
+    offeringCount: 1,
+    publishedOfferingCount: 1,
+    offerings: [{ id: `off_${id}`, title: 'Program', description: null, productUrl: 'https://x.test', published: true, createdAt: new Date().toISOString() }],
+  });
+
+  /** A hosted brand federated as vnd_hosted, plus a self-serve vnd_self. */
+  async function setup(): Promise<{ slug: string }> {
+    process.env.NETWORK_URL = netUrl;
+    process.env.NETWORK_ADMIN_API_KEY = NET_KEY;
+    const { slug } = await signup();
+    const t = (await tenantBySlug(slug))!;
+    await federate(t.id, 'vnd_hosted');
+    netVendors = [
+      { id: 'vnd_hosted', instanceUrl: 'https://app.test/api/t/x', status: 'active', reviewStatus: 'pending', displayName: 'Hosted' },
+      { id: 'vnd_self', instanceUrl: 'https://selfhost.example.test', status: 'active', reviewStatus: 'pending', displayName: 'Selfhost Co' },
+    ];
+    netQueue = [
+      queueEntry('vnd_hosted', 'Hosted', 'https://app.test/api/t/x'),
+      queueEntry('vnd_self', 'Selfhost Co', 'https://selfhost.example.test'),
+    ];
+    return { slug };
+  }
+
+  it('lists the queue, marking our hosted brands as managed by brand review', async () => {
+    const { slug } = await setup();
+    const cookie = await makeOperator('support'); // read-only can view
+    const res = await request(app).get('/platform-admin/network-vendors').set('Cookie', cookie);
+    expect(res.status).toBe(200);
+    const byId = new Map((res.body.vendors as Array<{ id: string; managedBy: { slug: string } | null }>).map((v) => [v.id, v]));
+    expect(byId.get('vnd_hosted')?.managedBy?.slug).toBe(slug);
+    expect(byId.get('vnd_self')?.managedBy).toBeNull();
+  });
+
+  it('approves a self-serve vendor on the Network (optionally emailing it) and audits it', async () => {
+    await setup();
+    const cookie = await makeOperator('admin');
+    netCalls = [];
+    const res = await request(app)
+      .post('/platform-admin/network-vendors/vnd_self/review')
+      .set('Cookie', cookie)
+      .send({ status: 'approved', notifyVendor: true });
+    expect(res.status).toBe(200);
+    const call = netCalls.find((c) => c.method === 'POST' && c.path === '/admin/vendors/vnd_self/review');
+    expect(call?.authorization).toBe(`Bearer ${NET_KEY}`);
+    expect(call?.body).toEqual({ status: 'approved', notifyVendor: true });
+
+    const audit = await db(TABLES.PlatformAuditLog).where({ action: 'network_vendor.approve', targetId: 'vnd_self' }).first();
+    expect(audit?.detail).toMatchObject({ displayName: 'Selfhost Co', instanceUrl: 'https://selfhost.example.test' });
+    await db(TABLES.PlatformAuditLog).where({ targetId: 'vnd_self' }).del();
+  });
+
+  it('refuses hosted brands (brand approval owns them), unknown vendors, and read-only operators', async () => {
+    await setup();
+    const admin = await makeOperator('admin');
+    netCalls = [];
+    const hosted = await request(app)
+      .post('/platform-admin/network-vendors/vnd_hosted/review')
+      .set('Cookie', admin)
+      .send({ status: 'approved' });
+    expect(hosted.status).toBe(409);
+    expect(hosted.body.error).toBe('managed_by_brand_review');
+
+    const unknown = await request(app)
+      .post('/platform-admin/network-vendors/vnd_nope/review')
+      .set('Cookie', admin)
+      .send({ status: 'rejected' });
+    expect(unknown.status).toBe(404);
+
+    const support = await makeOperator('support');
+    const ro = await request(app)
+      .post('/platform-admin/network-vendors/vnd_self/review')
+      .set('Cookie', support)
+      .send({ status: 'approved' });
+    expect(ro.status).toBe(403);
+    expect(netCalls.filter((c) => c.method === 'POST')).toHaveLength(0);
+  });
+
+  it('the reconcile job alerts the ops inbox once per newly pending self-serve vendor', async () => {
+    await setup();
+    const { __setMailerForTests } = await import('../mailer.js');
+    const sent: Array<{ to: string; subject: string; text: string }> = [];
+    __setMailerForTests({ send: async (_ctx, msg) => void sent.push(msg) });
+    process.env.PLATFORM_OPS_EMAIL = 'ops-inbox@openpartner.test';
+    try {
+      const { reconcileNetworkReview } = await import('../network-review-reconcile.js');
+      const first = await reconcileNetworkReview();
+      expect(first.alerted).toBe(1); // vnd_self only — vnd_hosted is a brand
+      const alert = sent.find((m) => m.to === 'ops-inbox@openpartner.test');
+      expect(alert?.subject).toContain('Selfhost Co');
+      expect(alert?.text).toContain('/platform/vendors');
+
+      sent.length = 0;
+      const second = await reconcileNetworkReview();
+      expect(second.alerted).toBe(0);
+      expect(sent.filter((m) => m.to === 'ops-inbox@openpartner.test')).toHaveLength(0);
+    } finally {
+      __setMailerForTests(null);
+      delete process.env.PLATFORM_OPS_EMAIL;
+      await db(TABLES.PlatformSetting).where({ key: 'network_vendor_review_alerted' }).del();
+    }
   });
 });
 

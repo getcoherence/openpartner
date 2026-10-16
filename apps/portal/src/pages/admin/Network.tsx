@@ -17,6 +17,9 @@ interface NetworkSelf {
   displayName: string;
   status: string;
   partnerCount: number;
+  /** OpenPartner's review of this vendor. Only 'approved' vendors are
+   *  discoverable on the marketplace. Absent on an older Network. */
+  reviewStatus?: 'pending' | 'approved' | 'rejected';
 }
 
 interface BackfillResult {
@@ -169,6 +172,18 @@ function ConnectedPanel({ membership }: { membership: NetworkMembership }) {
       {!isLoading && self && (
         <p style={{ fontSize: 13, color: theme.textMuted, margin: 0 }}>
           Listed as <strong style={{ color: theme.text }}>{self.displayName}</strong> · status: {self.status} · {self.partnerCount} active partners
+        </p>
+      )}
+      {!isLoading && self?.reviewStatus === 'pending' && (
+        <p style={{ fontSize: 13, color: theme.warn, margin: '8px 0 0' }}>
+          Waiting for OpenPartner review. Your published programs appear on the marketplace once your brand is
+          approved, and you&rsquo;ll get an email when that happens.
+        </p>
+      )}
+      {!isLoading && self?.reviewStatus === 'rejected' && (
+        <p style={{ fontSize: 13, color: theme.danger, margin: '8px 0 0' }}>
+          Your brand isn&rsquo;t approved for the OpenPartner marketplace, so your programs aren&rsquo;t listed. Reply to the
+          review email if you think this is a mistake.
         </p>
       )}
       {!isLoading && error && (
