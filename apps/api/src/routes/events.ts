@@ -18,8 +18,20 @@ const schema = z.object({
    *  (order id, invoice id, CRM deal-stage change id). A retry with the
    *  same key replays the original result instead of inserting a second
    *  Event and commissioning it again. One per-tenant namespace shared
-   *  with /coupons/redeem and Stripe webhook event ids. */
-  externalEventId: z.string().min(1).max(120).optional(),
+   *  with /coupons/redeem and Stripe webhook event ids.
+   *
+   *  The field was silently ignored before it existed, so inputs no-code
+   *  tools commonly send must not start failing: an unmapped Zapier/Make
+   *  field ("" or null) means no key, and a numeric order id is its string. */
+  externalEventId: z.preprocess(
+    (v) =>
+      v === null || (typeof v === 'string' && v.trim() === '')
+        ? undefined
+        : typeof v === 'number' && Number.isFinite(v)
+          ? String(v)
+          : v,
+    z.string().min(1).max(120).optional(),
+  ),
 });
 
 export const eventsRouter = Router();

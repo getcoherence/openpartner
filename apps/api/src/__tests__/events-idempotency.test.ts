@@ -192,6 +192,23 @@ describe.skipIf(skipIntegration)('POST /attribution/events — externalEventId i
     expect(rows.every((r) => r.externalEventId === null)).toBe(true);
   });
 
+  it('an unmapped no-code field ("" or null) means no key, and a numeric id is its string', async () => {
+    const userId = `u-${ulid()}`;
+    const blank = await postEvent({ userId, type: 'signup', externalEventId: '' });
+    const nulled = await postEvent({ userId, type: 'signup', externalEventId: null });
+    expect(blank.status).toBe(200);
+    expect(nulled.status).toBe(200);
+    expect(nulled.body.eventId).not.toBe(blank.body.eventId);
+
+    const numeric = await postEvent({ userId, type: 'trial_started', externalEventId: 1001 });
+    const asString = await postEvent({ userId, type: 'trial_started', externalEventId: '1001' });
+    expect(numeric.status).toBe(200);
+    expect(asString.body).toMatchObject({ replayed: true, eventId: numeric.body.eventId });
+
+    const rows = await db(TABLES.Event).where({ userId }).orderBy('id');
+    expect(rows.map((r) => r.externalEventId)).toEqual([null, null, '1001']);
+  });
+
   it('the same key in another tenant neither replays nor blocks this tenant', async () => {
     await db(TABLES.Tenant)
       .insert({ id: OTHER_TENANT_ID, slug: 'events-idem-other', displayName: 'Other brand', status: 'active' })
