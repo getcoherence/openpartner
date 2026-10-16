@@ -18,9 +18,16 @@
  */
 
 import type { Knex } from 'knex';
-import { TABLES, type CommissionSubRule, type CommissionTiers, type EventRow } from '@openpartner/db';
+import { TABLES, type CommissionRule, type CommissionSubRule, type CommissionTiers, type EventRow } from '@openpartner/db';
+import { approvalSnapshotSlabRuleSchema } from './commission-rule-schema.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Marginal arithmetic scales rates to integers: exact for any rate with up
+ *  to six decimals (rates are percents, so that's a millionth of a percent). */
+const RATE_SCALE = 1_000_000;
+/** cents × scaled rate → cents: ÷ 100 (percent) ÷ RATE_SCALE. */
+const CENTS_DIVISOR = BigInt(100 * RATE_SCALE);
 
 /** What `Commission.metadata.slab` records. Level 0 is the rule's base
  *  value; level n is the rule's levels[n - 1]. */
@@ -100,8 +107,11 @@ export async function accrueSlabRule(
   const tiers = subRule.tiers!;
   const counted = tiers.eventType ?? subRule.eventType;
   const windowStart = tierWindowStart(tiers, new Date(event.ts));
+  // Rounded before the comparison as well as in the trace: shares are
+  // normalised ratios (see tierMetric), and the comparison must not turn on
+  // the 20th decimal of one.
   const metricValue = counted
-    ? await tierMetric(db, tiers.metric, counted, windowStart, event, ctx, currency)
+    ? roundMetric(await tierMetric(db, tiers.metric, counted, windowStart, event, ctx, currency))
     : 0;
   const levels = steps(tiers.levels, 'atLeast');
   let level = 0;
@@ -123,7 +133,7 @@ export async function accrueSlabRule(
       ...(tiers.window === 'rolling_days' ? { windowDays: tiers.windowDays } : {}),
       windowStart: windowStart ? windowStart.toISOString() : null,
       ...(counted ? { countedEventType: counted } : {}),
-      metricValue: roundMetric(metricValue),
+      metricValue,
     },
   };
 }
@@ -144,19 +154,24 @@ export function bandAccrual(
   const levels = steps(bands.levels, 'above');
   const base = { kind: 'band' as const, type: subRule.type, mode: bands.mode, currency, basis: eventValue };
 
-  if (bands.mode === 'marginal' && subRule.type === 'percent' && eventValue > 0) {
-    // Integer cents so a slice boundary can't lose a cent to float drift
-    // (60,000.10 − 50,000 is 10,000.0999… in binary). Rounded once, at
-    // the end, to the nearest cent — the same rounding as a flat percent.
-    const valueCents = Math.round(eventValue * 100);
+  const valueCents = Math.round(eventValue * 100);
+  if (bands.mode === 'marginal' && subRule.type === 'percent' && valueCents > 0) {
+    // Exact, then rounded once, half-up, to the cent. Slice bounds are
+    // integer cents and rates are scaled to integers, so every product is
+    // an exact BigInt: in floats 20,500 cents × 8.7% is 178,349.99999999997
+    // and a half-cent rounds the wrong way. The flat-percent formula
+    // (computeSubRuleAmount, and whole-mode bands, which match it on
+    // purpose) still multiplies floats, so on an exact half-cent a marginal
+    // rule below its first threshold can pay one cent more than the same
+    // flat rate: 12.5% of 1.16 is 0.15 here and 0.14 there.
     const bounds = [0, ...levels.map((l) => Math.round(l.threshold * 100))];
     const rates = [subRule.value, ...levels.map((l) => l.value)];
     const slices: NonNullable<CommissionSlabTrace['slices']> = [];
-    let centsTimesRate = 0;
+    let scaled = BigInt(0);
     for (let i = 0; i < bounds.length && valueCents > bounds[i]!; i += 1) {
       const top = i + 1 < bounds.length ? bounds[i + 1]! : Infinity;
       const portionCents = Math.min(valueCents, top) - bounds[i]!;
-      centsTimesRate += portionCents * rates[i]!;
+      scaled += BigInt(portionCents) * BigInt(Math.round(rates[i]! * RATE_SCALE));
       slices.push({
         level: i,
         from: bounds[i]! / 100,
@@ -167,7 +182,7 @@ export function bandAccrual(
     }
     const level = slices.length - 1;
     return {
-      amount: Math.round(centsTimesRate / 100) / 100,
+      amount: Number((scaled + CENTS_DIVISOR / BigInt(2)) / CENTS_DIVISOR) / 100,
       slab: {
         ...base,
         level,
@@ -205,9 +220,16 @@ export function tierWindowStart(tiers: Pick<CommissionTiers, 'window' | 'windowD
  * The partner's metric in this program before `event`: attributed events of
  * `eventType` with ts in [windowStart, event.ts), plus same-instant events
  * with a lower id so two events stamped the same millisecond still order
- * deterministically. Weighted by the touch's attribution weight, like the
- * commission itself. Clicks flagged as fraud don't count — a partner can't
+ * deterministically. Clicks flagged as fraud don't count — a partner can't
  * climb a tier on traffic the program has rejected.
+ *
+ * Each touch counts as its SHARE of its event: its weight over the sum of
+ * that event's weights under the same model. Attribution.weight is stored
+ * to 4 decimals, so a conversion a partner owns outright through three
+ * linear touches is stored as 3 × 0.3333 = 0.9999 — ten of them never reach
+ * "at least 10" — and six touches as 1.0002, which tips a partner over a
+ * threshold early. The ratio restores the share the commission itself was
+ * paid on (attributeEvent multiplies by the unrounded weight).
  */
 async function tierMetric(
   db: Knex,
@@ -234,11 +256,12 @@ async function tierMetric(
     // Revenue in other currencies can't be added to this one without FX.
     q.andWhereRaw(`upper(coalesce("e"."currency", 'USD')) = ?`, [currency]);
   }
+  const share = `"a"."weight" / nullif((select sum("w"."weight") from "${TABLES.Attribution}" as "w" where "w"."eventId" = "a"."eventId" and "w"."model" = "a"."model"), 0)`;
   const row = (await q.first(
     db.raw(
       metric === 'revenue'
-        ? 'coalesce(sum(coalesce("e"."value", 0) * "a"."weight"), 0) as total'
-        : 'coalesce(sum("a"."weight"), 0) as total',
+        ? `coalesce(sum(coalesce("e"."value", 0) * ${share}), 0) as total`
+        : `coalesce(sum(${share}), 0) as total`,
     ),
   )) as { total: string | number } | undefined;
   return Number(row?.total ?? 0);
@@ -262,7 +285,7 @@ function steps(levels: unknown, key: 'above' | 'atLeast'): Array<{ threshold: nu
     .sort((a, b) => a.threshold - b.threshold);
 }
 
-/** Weighted sums carry the weight column's 4 decimals into money. */
+/** Metric precision: four decimals of a conversion or a currency unit. */
 function roundMetric(n: number): number {
   return Math.round(n * 10000) / 10000;
 }
@@ -280,11 +303,85 @@ export function rulesHaveSlabs(rules: unknown): boolean {
   );
 }
 
-/** True when any of these programs pays on a slab rule. */
-export async function programsUseSlabs(db: Knex, programIds: string[]): Promise<boolean> {
-  if (programIds.length === 0) return false;
-  const programs = (await db(TABLES.Program).whereIn('id', programIds).select('commissionRule')) as Array<{
+export type ApprovalSnapshotVerdict =
+  | { store: true; commissionRules?: CommissionRule }
+  | { store: false; reason: string };
+
+/**
+ * Whether POST /partners may store a Network approval snapshot. A snapshot
+ * outranks the live program rule for good, so it is refused — the partner
+ * then accrues on the live rule — in two cases:
+ *
+ *  1. It carries a slab table that fails the checks a program's own rule
+ *     must pass (a 500% step, bands and tiers together, a tier with nothing
+ *     to count, …). Refusing the whole approval instead would fail it over
+ *     terms the brand never typed.
+ *  2. It is exactly a granted program's live rule with the slabs stripped —
+ *     what a Network that predates slabs sends back. Only an exact match
+ *     counts: a snapshot that differs in any other way (say the offering
+ *     still shows an older flat 20% because a sync failed) is the terms the
+ *     partner applied to, and is kept.
+ *
+ * A stored slab rule comes back parsed (bands.mode defaulted).
+ */
+export async function vetApprovalSnapshot(
+  db: Knex,
+  snapshot: { commissionRules?: unknown[]; commissionType?: string; commissionValue?: number; recurring?: boolean },
+  programIds: string[],
+): Promise<ApprovalSnapshotVerdict> {
+  const rules = snapshot.commissionRules;
+  if (rules && rulesHaveSlabs(rules)) {
+    const vetted: unknown[] = [];
+    for (const [i, rule] of rules.entries()) {
+      if (!rulesHaveSlabs([rule])) {
+        vetted.push(rule);
+        continue;
+      }
+      const parsed = approvalSnapshotSlabRuleSchema.safeParse(rule);
+      if (!parsed.success) {
+        return { store: false, reason: `rule ${i}: ${parsed.error.issues[0]?.message ?? 'invalid slab table'}` };
+      }
+      vetted.push(parsed.data);
+    }
+    return { store: true, commissionRules: vetted as CommissionRule };
+  }
+  if (programIds.length === 0) return { store: true };
+  const programs = (await db(TABLES.Program).whereIn('id', programIds).select('id', 'commissionRule')) as Array<{
+    id: string;
     commissionRule: unknown;
   }>;
-  return programs.some((p) => rulesHaveSlabs(p.commissionRule));
+  for (const program of programs) {
+    if (!rulesHaveSlabs(program.commissionRule)) continue;
+    if (isSlablessCopy(snapshot, program.commissionRule as Array<Record<string, unknown>>)) {
+      return { store: false, reason: `it is program ${program.id}'s rule with its slabs stripped` };
+    }
+  }
+  return { store: true };
+}
+
+/** The sub-rule fields the Network's offering schema keeps. */
+const NETWORK_RULE_KEYS = ['trigger', 'eventType', 'type', 'value', 'currency', 'recurring', 'recurringMonths'] as const;
+
+function networkView(rule: Record<string, unknown>): string {
+  // `recurring: false` and an absent `recurring` mean the same thing.
+  return JSON.stringify(NETWORK_RULE_KEYS.map((k) => (k === 'recurring' ? rule[k] === true : (rule[k] ?? null))));
+}
+
+function isSlablessCopy(
+  snapshot: { commissionRules?: unknown[]; commissionType?: string; commissionValue?: number; recurring?: boolean },
+  live: Array<Record<string, unknown>>,
+): boolean {
+  const rules = snapshot.commissionRules as Array<Record<string, unknown>> | undefined;
+  if (rules && rules.length > 0) {
+    return rules.length === live.length && rules.every((r, i) => networkView(r) === networkView(live[i]!));
+  }
+  // A legacy single-rule snapshot (an older Network) carries only the
+  // mirror buildTermsPayload sends: the first every-event rule's base.
+  const mirror = live.find((r) => r.trigger === 'every') ?? live[0];
+  return (
+    mirror != null &&
+    snapshot.commissionType === mirror.type &&
+    Number(snapshot.commissionValue) === Number(mirror.value) &&
+    (snapshot.recurring === true) === (mirror.recurring === true)
+  );
 }

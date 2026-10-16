@@ -46,7 +46,8 @@ The sub-rule's `value` is always the base rate. A consumer that ignores `bands` 
 
 - **A threshold is the top of the band below it.** With `above: 50000`, an event of exactly 50,000 pays the base rate, and 50,000.01 pays 15%. This matches how slabs are usually written: "≤ 50,000 → 10%, > 50,000 → 15%".
 - **`whole` (default):** the whole event pays the rate of the band its value falls in. A 60,000 invoice pays 15% × 60,000 = 9,000. This mode works for both percent and fixed rules. A fixed rule pays the band's amount.
-- **`marginal`:** works like tax brackets, and is for percent rules only. Each slice of the value pays its own band's rate, so a 60,000 invoice pays 50,000 × 10% + 10,000 × 15% = 6,500. The arithmetic runs in integer cents and rounds once at the end, to the nearest cent.
+- **`marginal`:** works like tax brackets, and is for percent rules only. Each slice of the value pays its own band's rate, so a 60,000 invoice pays 50,000 × 10% + 10,000 × 15% = 6,500. The arithmetic is exact: slices are integer cents, rates are scaled to integers (exact for up to six decimals), and the sum rounds once, half-up, to the cent. A 305.00 invoice at 5% up to 100 and 8.7% above pays 22.84, where floating-point arithmetic would give 22.83.
+- **Flat percent and whole-mode bands still use the long-standing formula**, which multiplies floats. That formula can land a cent low on an exact half-cent: 12.5% of 1.16 pays 0.14, not 0.15. Whole-mode bands match it on purpose, so a band rule paying its base rate equals the flat rule it replaced. As a result, a marginal rule below its first threshold can pay one cent more than the same flat rate on those values. Fixing the flat formula would move existing payouts by a cent, so it is a separate decision.
 - **Events with no value, zero or a negative value** sit in the base band.
 - **Multi-touch:** the band is chosen from the event's full value, and the result is then multiplied by the touch's attribution weight, like every other rule. A 60,000 invoice split 50/50 pays each partner 15% × 60,000 × 0.5.
 
@@ -60,12 +61,14 @@ The tier for an event is a pure function of raw history. The engine reads it at 
 - inside the window. `lifetime` has no start. `calendar_month` covers the event's UTC month. `rolling_days` covers the `windowDays` before the event.
 - clicks not flagged as fraud. A partner can't climb a tier on traffic the program has rejected.
 
-The metric is weighted, like the commission itself:
+The metric counts each touch as its **share** of its event, like the commission itself:
 
 | metric | value |
 |---|---|
-| `revenue` | Σ `Event.value × Attribution.weight`, over events in the threshold currency only |
-| `conversions` | Σ `Attribution.weight`. A 50/50 split counts as half a conversion. |
+| `revenue` | Σ `Event.value × share`, over events in the threshold currency only |
+| `conversions` | Σ `share`. A 50/50 split counts as half a conversion. |
+
+A touch's share is its `Attribution.weight` divided by the sum of that event's weights under the same model. Weights are stored to 4 decimals, so summing them raw drifts. A conversion a partner owns outright through three linear touches is stored as 3 × 0.3333 = 0.9999, so ten of them never reach "at least 10". Six touches store as 1.0002, which tips a partner over a threshold early. Dividing by the event's total restores exactly 1, the share the commission was paid on. The metric is rounded to 4 decimals before it is compared.
 
 The tier applied is the highest level whose `atLeast` is less than or equal to the metric.
 
@@ -75,9 +78,14 @@ The event that pushes a partner over a threshold pays the **old** rate, and the 
 
 ### Re-derivation
 
-Nothing about tiers is cached or stored on a partner row, so re-running attribution over the same raw tables picks the same tier. The one caveat is data that arrives late. If an earlier event is attributed after a later one has already accrued, the later commission was computed without it. A backlog replay is the usual cause, for example a user identifying weeks after converting. The Commission row records the metric value it used (below), so the difference stays visible instead of silent.
+Nothing about tiers is cached or stored on a partner row, so re-running attribution over the same raw tables picks the same tier. The tier reflects the history that had been **committed** when the event accrued. That leaves two known gaps, and in both the later commission was computed without the earlier event:
 
-Gross, not net: tiers count the counted event type's attributed value. Refunds and disputes are separate event types and don't reduce it. A refund claws back the commission it refunds, through the existing reversal path.
+- **Late data.** An earlier event is attributed after a later one has already accrued. A backlog replay is the usual cause, for example a user identifying weeks after converting.
+- **Concurrency.** Two events for the same partner accrue in overlapping transactions. Neither can see the other's uncommitted Attribution row, so the later one may pay the lower tier. A per-partner lock would close this, but a multi-touch event takes several partners' locks in click order, which risks deadlocks and serialises a busy partner's webhooks. It is deliberately not done.
+
+The Commission row records the metric value it used (below), so either difference stays visible rather than silent.
+
+Gross, not net: tiers count the counted event type's attributed value. Refunds and disputes are separate event types and don't reduce it. A refund claws back the commission it refunds, through the existing reversal path. A commission reversed by hand still counts toward the tier unless its click is flagged as fraud.
 
 ## Currency
 
@@ -116,14 +124,22 @@ The commissions API returns `metadata` with each row, so a headless integration 
 - `marginal` needs a percent rule.
 - `rolling_days` needs `windowDays`, and other windows reject it.
 - Tiers need a counted event type, from `tiers.eventType` or the rule's `eventType`.
+- `currency` must be three letters. Anything else could never match an event's currency, so it would silently pin a slab rule to its base rate.
 
-The legacy single-object rule and the legacy override columns are still accepted unchanged.
+The legacy single-object rule and the legacy override columns are still accepted. The single-object form can't carry slabs: `{type, value, bands}` is rejected with a pointer to the array form, rather than being saved flat.
 
 ## The Network
 
 `buildTermsPayload` sends the program's rules verbatim, slabs included, and mirrors the **base** rate into the legacy `commissionType`/`commissionValue`. The derived `commissionDescription` shows a slab rule as the range it pays, such as "10–15% on every invoice (slabs by invoice value)". It never shows the top rate alone, and it is trimmed to the Network's 200-character limit.
 
-A Network that predates slabs strips `bands`/`tiers` from offering terms. Its approval snapshot of a tiered program would then be the base rate alone, and a snapshot outranks the live program rule permanently. So `POST /partners` refuses to store a slab-less snapshot when any granted program uses slabs, and the partner accrues on the live, tiered rule instead. A snapshot that carries its slabs is stored as usual.
+A snapshot outranks the live program rule permanently, so `POST /partners` (`vetApprovalSnapshot`) doesn't store one that would mis-price the partner. In both cases below, the partner accrues on the live rule instead:
+
+- **Stripped by the Network.** A Network that predates slabs strips `bands`/`tiers` from offering terms, so its approval snapshot of a tiered program is the base rate alone. Such a snapshot is detected only when it **exactly** matches a granted program's live rule with the slabs removed, comparing the fields the Network keeps (or the legacy single-rule mirror). A snapshot that differs in any other way is what the partner applied to, and is kept. For example, the offering may still show an older flat 20% because a sync failed.
+- **A bad slab table.** It fails the same checks a program's own rule must pass: a 500% step, bands and tiers together, a tier with nothing to count. Refusing the whole approval would fail it over terms the brand never typed.
+
+A snapshot whose slabs pass is stored with them.
+
+One known gap remains, and it is not specific to slabs. A snapshot is per partner, not per program, so a partner whose snapshot came from a flat program is paid that rate on any program granted to them later, tiered or not. Per-(partner, program) overrides are the fix for that.
 
 ## Portability
 

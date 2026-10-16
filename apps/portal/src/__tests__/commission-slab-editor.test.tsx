@@ -120,6 +120,39 @@ describe('slab editor', () => {
     fireEvent.click(page.getByText('Update override'));
     await waitFor(() => expect(putRules()[0]).not.toHaveProperty('tiers'));
   });
+
+  // Review finding: a half-typed "Thresholds in" currency survived the
+  // switch back to flat, Save stayed enabled, and the API answered 400.
+  it('switching to flat drops a half-typed threshold currency', async () => {
+    const page = show([{ trigger: 'every', eventType: 'invoice_paid', type: 'percent', value: 10 }]);
+    fireEvent.change(page.getByLabelText('Rate varies'), { target: { value: 'bands' } });
+    fireEvent.change(page.getByLabelText('Threshold currency'), { target: { value: 'in' } });
+    expect(page.getByText('Currency is a 3-letter code, e.g. INR.')).toBeTruthy();
+
+    fireEvent.change(page.getByLabelText('Rate varies'), { target: { value: 'flat' } });
+    const save = page.getByText('Update override').closest('button')!;
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() => expect(putRules()[0]).not.toHaveProperty('currency'));
+  });
+
+  it('a flat rule stored with a bad currency says so and offers a way out', () => {
+    const page = show([{ trigger: 'every', type: 'fixed', value: 50, currency: '$$$' }]);
+    const save = () => page.getByText('Update override').closest('button')!;
+    expect(page.getByText('Currency is a 3-letter code, e.g. INR.')).toBeTruthy();
+    expect(save().disabled).toBe(true);
+    fireEvent.click(page.getByText('Clear currency'));
+    expect(save().disabled).toBe(false);
+  });
+
+  it('a conversions tier still shows a currency that is set, so a bad one can be fixed', () => {
+    const page = show([
+      { ...TIERED, currency: 'XY', tiers: { metric: 'conversions', window: 'lifetime', levels: [{ atLeast: 5, value: 15 }] } },
+    ]);
+    expect((page.getByLabelText('Threshold currency') as HTMLInputElement).value).toBe('XY');
+    fireEvent.change(page.getByLabelText('Threshold currency'), { target: { value: '' } });
+    expect(page.getByText('Update override').closest('button')!.disabled).toBe(false);
+  });
 });
 
 describe('ruleSlabProblem (gates Save on the override and both program forms)', () => {

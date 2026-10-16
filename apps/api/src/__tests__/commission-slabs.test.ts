@@ -82,6 +82,27 @@ describe('value bands — marginal', () => {
     expect(bandAccrual(marginal, 60000.1, 'INR').amount).toBe(6500.02);
   });
 
+  // Review finding: the slice bounds were integer cents but the rate
+  // multiply was still a float, so a rate that isn't a binary fraction lost
+  // a cent on exact half-cents.
+  it('is exact for rates that are not binary fractions', () => {
+    const rule = {
+      type: 'percent' as const,
+      value: 5,
+      bands: { mode: 'marginal' as const, levels: [{ above: 100, value: 8.7 }] },
+    };
+    // 100 × 5% + 205 × 8.7% = 5 + 17.835 = 22.835 → 22.84 (float: 22.83)
+    expect(bandAccrual(rule, 305, 'USD').amount).toBe(22.84);
+    // Below the first threshold: 12.5% of 1.16 = 0.145 → 0.15
+    const eighth = { ...rule, value: 12.5 };
+    expect(bandAccrual(eighth, 1.16, 'USD').amount).toBe(0.15);
+  });
+
+  it('a value too small to hold a whole cent pays the base rate instead of throwing', () => {
+    expect(() => bandAccrual(marginal, 0.004, 'USD')).not.toThrow();
+    expect(bandAccrual(marginal, 0.004, 'USD').slab).toMatchObject({ level: 0 });
+  });
+
   it('three slices', () => {
     const rule = {
       type: 'percent' as const,
@@ -228,5 +249,14 @@ describe('marketplace terms payload', () => {
     const terms = buildTermsPayload(program([{ trigger: 'every', type: 'percent', value: 10 }]), long);
     expect(terms.commissionDescription!.length).toBe(NETWORK_DESCRIPTION_MAX);
     expect(terms.commissionDescription!.endsWith('…')).toBe(true);
+  });
+
+  it('never cuts an emoji in half — a lone surrogate would fail the Network’s jsonb write', () => {
+    // '🚀' is two UTF-16 units; put its first half at the last kept index.
+    const long = `${'x'.repeat(NETWORK_DESCRIPTION_MAX - 2)}🚀${'y'.repeat(20)}`;
+    const out = buildTermsPayload(program([{ trigger: 'every', type: 'percent', value: 10 }]), long).commissionDescription!;
+    expect(out.endsWith('…')).toBe(true);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(out)).toBe(false);
+    expect(() => JSON.parse(JSON.stringify(out))).not.toThrow();
   });
 });

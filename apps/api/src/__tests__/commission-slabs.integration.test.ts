@@ -359,6 +359,41 @@ describe.skipIf(skipIntegration)('performance tiers', () => {
     expect(byEvent[lo!.id]).toBe('10.00');
     expect(byEvent[hi!.id]).toBe('20.00');
   });
+
+  // Review finding: weights are stored to 4 decimals, so three linear
+  // touches of one partner summed to 0.9999 per conversion and the partner
+  // never reached "at least 2" after two whole conversions.
+  it('a conversion owned through several touches counts as exactly one', async () => {
+    const program = await createProgram(
+      [
+        {
+          trigger: 'every',
+          eventType: 'invoice_paid',
+          type: 'fixed',
+          value: 10,
+          tiers: { metric: 'conversions', window: 'lifetime', levels: [{ atLeast: 2, value: 30 }] },
+        },
+      ],
+      { attributionModel: 'linear' },
+    );
+    const partner = await createPartner();
+    const userId = `u-${ulid()}`;
+    for (let i = 0; i < 3; i += 1) await click(partner.id, program.id, userId, new Date(CLICK_TS.getTime() + i * 1000));
+
+    await accrue(userId, 'invoice_paid', '100.00', '2026-01-01');
+    await accrue(userId, 'invoice_paid', '100.00', '2026-01-02');
+    const third = await accrue(userId, 'invoice_paid', '100.00', '2026-01-03');
+
+    const rows = (await db(TABLES.Commission)
+      .join(TABLES.Attribution, `${TABLES.Attribution}.id`, `${TABLES.Commission}.attributionId`)
+      .where(`${TABLES.Attribution}.eventId`, third.id)
+      .select(`${TABLES.Commission}.amount`, `${TABLES.Commission}.metadata`)) as CommissionWithMeta[];
+    expect(rows).toHaveLength(3); // one per touch
+    for (const r of rows) {
+      expect(r.metadata.slab).toMatchObject({ level: 1, metricValue: 2 }); // not 1.9998
+      expect(r.amount).toBe('10.00'); // 30 × ⅓
+    }
+  });
 });
 
 describe.skipIf(skipIntegration)('ledger metadata + overrides', () => {
@@ -439,6 +474,64 @@ describe.skipIf(skipIntegration)('Network approval snapshots', () => {
     const row = await db(TABLES.PartnerCommission).where({ partnerId: res.body.id }).first();
     expect(row.commissionRules).toEqual([{ trigger: 'every', type: 'percent', value: 20 }]);
   });
+
+  // Review finding: the guard dropped ANY slab-less snapshot when a granted
+  // program had slabs — including terms the partner really applied to.
+  it('keeps a snapshot that differs from the stripped program rule (a stale offering, say)', async () => {
+    const program = await createProgram([tiered]);
+    // The offering still shows an older flat 20%: a sync failed after the
+    // brand moved to a tiered 10% base. 20% is what the creator applied to.
+    const stale = [{ trigger: 'every', eventType: 'invoice_paid', type: 'percent', value: 20 }];
+    const res = await federatedPartner(program.id, stale);
+    expect(res.status).toBe(201);
+    const row = await db(TABLES.PartnerCommission).where({ partnerId: res.body.id }).first();
+    expect(row.commissionRules).toEqual(stale);
+  });
+
+  it('a legacy single-rule snapshot equal to the base rate is dropped; any other is kept', async () => {
+    const program = await createProgram([tiered]);
+    const base = await federate({ commissionType: 'percent', commissionValue: 10 }, [program.id]);
+    expect(base.status).toBe(201);
+    expect(await db(TABLES.PartnerCommission).where({ partnerId: base.body.id }).first()).toBeUndefined();
+
+    const other = await federate({ commissionType: 'percent', commissionValue: 20 }, [program.id]);
+    expect(other.status).toBe(201);
+    const row = await db(TABLES.PartnerCommission).where({ partnerId: other.body.id }).first();
+    expect(Number(row.commissionValue)).toBe(20);
+  });
+
+  it('the grant-all default keeps a flat snapshot that matches no tiered program', async () => {
+    await createProgram([tiered]);
+    await createProgram([{ trigger: 'every', type: 'percent', value: 20 }]);
+    const res = await federate({ commissionType: 'percent', commissionValue: 20, commissionRules: [{ trigger: 'every', type: 'percent', value: 20 }] });
+    expect(res.status).toBe(201);
+    expect(await db(TABLES.PartnerCommission).where({ partnerId: res.body.id }).first()).toBeDefined();
+  });
+
+  // Review finding: this route had no slab checks, so any of these would
+  // have been stored — and outranked the program rule for good.
+  it.each([
+    ['a 500% step', { ...tiered, tiers: undefined, bands: { levels: [{ above: 100, value: 500 }] } }],
+    ['bands and tiers together', { ...tiered, bands: { levels: [{ above: 100, value: 15 }] } }],
+    ['marginal on a fixed rule', { trigger: 'every', eventType: 'invoice_paid', type: 'fixed', value: 5, bands: { mode: 'marginal', levels: [{ above: 100, value: 10 }] } }],
+    ['a tier with nothing to count', { trigger: 'every', type: 'percent', value: 10, tiers: { metric: 'conversions', window: 'lifetime', levels: [{ atLeast: 1, value: 15 }] } }],
+    ['rolling_days without windowDays', { ...tiered, tiers: { ...tiered.tiers, window: 'rolling_days' } }],
+    ['descending thresholds', { ...tiered, tiers: { ...tiered.tiers, levels: [{ atLeast: 5, value: 15 }, { atLeast: 1, value: 20 }] } }],
+  ])('a snapshot with %s is not stored, and the approval still succeeds', async (_name, rule) => {
+    const program = await createProgram([tiered]);
+    const res = await federatedPartner(program.id, [rule]);
+    expect(res.status).toBe(201);
+    expect(await db(TABLES.PartnerCommission).where({ partnerId: res.body.id }).first()).toBeUndefined();
+  });
+
+  it('a stored slab snapshot is parsed like a program rule (bands.mode defaulted)', async () => {
+    const banded = { trigger: 'every', eventType: 'invoice_paid', type: 'percent', value: 10, bands: { levels: [{ above: 100, value: 15 }] } };
+    const program = await createProgram([banded]);
+    const res = await federatedPartner(program.id, [banded]);
+    expect(res.status).toBe(201);
+    const row = await db(TABLES.PartnerCommission).where({ partnerId: res.body.id }).first();
+    expect(row.commissionRules).toEqual([{ ...banded, bands: { mode: 'whole', levels: [{ above: 100, value: 15 }] } }]);
+  });
 });
 
 describe.skipIf(skipIntegration)('program rule validation', () => {
@@ -488,10 +581,26 @@ describe.skipIf(skipIntegration)('program rule validation', () => {
     ['rolling_days without windowDays', { ...base, tiers: { metric: 'revenue', window: 'rolling_days', levels: [{ atLeast: 1, value: 15 }] } }, 'require windowDays'],
     ['windowDays on another window', { ...base, tiers: { metric: 'revenue', window: 'lifetime', windowDays: 30, levels: [{ atLeast: 1, value: 15 }] } }, 'only applies to rolling_days'],
     ['tiers with nothing to count', { trigger: 'every', type: 'percent', value: 10, tiers: { metric: 'conversions', window: 'lifetime', levels: [{ atLeast: 1, value: 15 }] } }, 'tiers need an eventType'],
+    ['a currency that is not three letters', { ...base, currency: '$$$', bands: { levels: [{ above: 1, value: 15 }] } }, 'currency must be a 3-letter code'],
   ])('rejects %s', async (_name, rule, message) => {
     const res = await postProgram([rule]);
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body.detail)).toContain(message);
+  });
+
+  // Review finding: the legacy object schema stripped unknown keys, so
+  // slabs sent that way saved as a flat rule.
+  it('rejects slabs on the legacy single-object shape instead of saving it flat', async () => {
+    const res = await postProgram({ type: 'percent', value: 10, bands: { levels: [{ above: 100, value: 15 }] } });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body.detail)).toContain('bands and tiers need the array form');
+  });
+
+  it('the override route refuses a currency that is not three letters too', async () => {
+    const partner = await createPartner();
+    const res = await putOverride(partner.id, [{ ...base, currency: '$$$', bands: { levels: [{ above: 1, value: 15 }] } }]);
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body.detail)).toContain('currency must be a 3-letter code');
   });
 });
 
@@ -527,6 +636,12 @@ async function createPartner() {
 }
 
 async function federatedPartner(programId: string, commissionRules: unknown[]) {
+  return federate({ commissionType: 'percent', commissionValue: 10, commissionRules }, [programId]);
+}
+
+/** POST /partners with a commission snapshot. No programIds = the
+ *  grant-every-program default. */
+async function federate(commissionSnapshot: Record<string, unknown>, programIds?: string[]) {
   return request(app)
     .post('/partners')
     .set('Authorization', `Bearer ${ADMIN_KEY}`)
@@ -534,9 +649,9 @@ async function federatedPartner(programId: string, commissionRules: unknown[]) {
       email: `p+${ulid()}@example.com`,
       name: 'Network creator',
       sendInvite: false,
-      programIds: [programId],
+      ...(programIds ? { programIds } : {}),
       campaignGrantSource: 'offering',
-      commissionSnapshot: { commissionType: 'percent', commissionValue: 10, commissionRules },
+      commissionSnapshot,
     });
 }
 

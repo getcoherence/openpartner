@@ -190,7 +190,12 @@ export const NETWORK_DESCRIPTION_MAX = 200;
 
 function clampDescription(summary: string): string {
   if (summary.length <= NETWORK_DESCRIPTION_MAX) return summary;
-  return `${summary.slice(0, NETWORK_DESCRIPTION_MAX - 1).trimEnd()}…`;
+  // Cut on a whole character: slicing UTF-16 units can leave half of an
+  // emoji (a lone surrogate), which the Network's jsonb terms column
+  // rejects — failing the very write this trim exists to save.
+  let cut = summary.slice(0, NETWORK_DESCRIPTION_MAX - 1);
+  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
+  return `${cut.trimEnd()}…`;
 }
 
 /**

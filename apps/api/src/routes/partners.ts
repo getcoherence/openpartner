@@ -12,8 +12,8 @@ import { tenantOf } from '../tenancy.js';
 import { getNetworkMembership, pushPartnerRevoke, pushPartnerUpsert } from '../network-client.js';
 import { autoMintCouponsForGrants } from './coupons.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
-import { commissionSlabFields, refineCommissionSubRule } from '../commission-rule-schema.js';
-import { programsUseSlabs, rulesHaveSlabs } from '../commission-slabs.js';
+import { commissionSlabFields, currencyCodeSchema, refineCommissionSubRule } from '../commission-rule-schema.js';
+import { vetApprovalSnapshot } from '../commission-slabs.js';
 import { isPendingReview } from '../partner-review.js';
 
 const createSchema = z.object({
@@ -68,8 +68,11 @@ const createSchema = z.object({
             recurring: z.boolean().optional(),
             recurringMonths: z.number().int().positive().max(600).optional(),
             // Kept, not stripped: a tiered offering's snapshot must pay
-            // its tiers, not its base rate.
-            ...commissionSlabFields,
+            // its tiers, not its base rate. Accepted as-is here and vetted
+            // by vetApprovalSnapshot below, so a bad slab table drops the
+            // snapshot instead of failing the whole approval.
+            bands: z.unknown().optional(),
+            tiers: z.unknown().optional(),
           }),
         )
         .min(1)
@@ -189,16 +192,19 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
   // Without enough info to write either shape we fall back to the live
   // Campaign rule rather than silently mis-pricing.
   let snap = body.data.commissionSnapshot;
-  // Same fallback when the snapshot lost a program's slabs: a Network that
-  // predates bands/tiers strips them from the offering, so its approval
-  // snapshot of a tiered program is the base rate alone — and a snapshot
-  // outranks the live rule for good. Don't grandfather terms the Network
-  // couldn't carry; the partner accrues on the live (tiered) rule.
-  if (snap && !rulesHaveSlabs(snap.commissionRules) && (await programsUseSlabs(db, programIds))) {
-    console.warn(
-      `[partners] approval snapshot for ${id} carries no commission slabs but a granted program has them; accruing on the live program rule`,
-    );
-    snap = undefined;
+  // Same fallback for a snapshot that can't price the partner the way the
+  // program does — a granted program's rule with its slabs stripped by a
+  // Network that predates them, or a slab table that fails a program's own
+  // checks. A snapshot outranks the live rule for good, so it isn't stored;
+  // the partner accrues on the live rule. See vetApprovalSnapshot.
+  if (snap) {
+    const verdict = await vetApprovalSnapshot(db, snap, programIds);
+    if (!verdict.store) {
+      console.warn(`[partners] approval snapshot for ${id} not stored: ${verdict.reason}; accruing on the live program rule`);
+      snap = undefined;
+    } else if (verdict.commissionRules) {
+      snap = { ...snap, commissionRules: verdict.commissionRules as NonNullable<typeof snap.commissionRules> };
+    }
   }
   if (snap?.commissionRules && snap.commissionRules.length > 0) {
     const legacy = snap.commissionRules.find((r) => r.trigger === 'every') ?? snap.commissionRules[0]!;
@@ -581,7 +587,7 @@ const overrideSchema = z.object({
           eventType: z.string().min(1).max(80).optional(),
           type: z.enum(['percent', 'fixed']),
           value: z.number().nonnegative(),
-          currency: z.string().length(3).optional(),
+          currency: currencyCodeSchema.optional(),
           recurring: z.boolean().optional(),
           recurringMonths: z.number().int().positive().max(600).optional(),
           ...commissionSlabFields,

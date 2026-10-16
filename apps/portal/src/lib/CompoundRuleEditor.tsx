@@ -49,6 +49,9 @@ export const MAX_SLAB_LEVELS = 10;
  * renders this editor gates Save on it.
  */
 export function ruleSlabProblem(rule: CommissionSubRule): string | null {
+  // Checked for every rule, flat ones included: the API refuses a bad code
+  // wherever it sits, so a flat rule mustn't look savable with one.
+  if (rule.currency != null && !/^[A-Za-z]{3}$/.test(rule.currency)) return 'Currency is a 3-letter code, e.g. INR.';
   if (rule.bands && rule.tiers) return 'Use slabs or tiers on a rule, not both.';
   const table = rule.bands ?? rule.tiers;
   if (!table) return null;
@@ -73,7 +76,6 @@ export function ruleSlabProblem(rule: CommissionSubRule): string | null {
     }
     if (!rule.tiers.eventType && !rule.eventType) return 'Pick the event the tier counts.';
   }
-  if (rule.currency != null && !/^[A-Za-z]{3}$/.test(rule.currency)) return 'Currency is a 3-letter code, e.g. INR.';
   return null;
 }
 
@@ -317,6 +319,21 @@ function SubRuleRow({
         </div>
       )}
       {(rule.bands || rule.tiers) && <SlabPanel rule={rule} onChange={onChange} />}
+      {/* A flat rule's only possible slab problem is a currency the API
+          refuses (stored via the API before the 3-letter check). The slab
+          panel isn't there to show it, so say it here with a way out. */}
+      {!rule.bands && !rule.tiers && ruleSlabProblem(rule) && (
+        <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 10, alignItems: 'center', fontSize: 12, color: theme.danger }}>
+          {ruleSlabProblem(rule)}
+          <button
+            type="button"
+            onClick={() => onChange({ currency: undefined })}
+            style={{ background: 'transparent', border: 'none', color: theme.accentText, fontSize: 12, cursor: 'pointer', padding: 0 }}
+          >
+            Clear currency
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -329,7 +346,9 @@ function rateKindOf(rule: CommissionSubRule): RateKind {
 
 /** Switch how a rule's rate varies. A new table opens with one step above
  *  the current rate, so there's something to edit rather than an empty,
- *  unsavable table; switching back to flat drops the table. */
+ *  unsavable table; switching back to flat drops the table, and with it
+ *  the "Thresholds in" currency when nothing else uses it (a percent rule)
+ *  or it isn't a valid code — a flat rule has no field left to fix it in. */
 function switchRateKind(rule: CommissionSubRule, kind: RateKind): Partial<CommissionSubRule> {
   const step = nextStepValue(rule, rule.value);
   if (kind === 'bands') {
@@ -348,7 +367,8 @@ function switchRateKind(rule: CommissionSubRule, kind: RateKind): Partial<Commis
       },
     };
   }
-  return { bands: undefined, tiers: undefined };
+  const keepCurrency = rule.type === 'fixed' && rule.currency != null && /^[A-Za-z]{3}$/.test(rule.currency);
+  return { bands: undefined, tiers: undefined, ...(keepCurrency ? {} : { currency: undefined }) };
 }
 
 function nextStepValue(rule: CommissionSubRule, from: number): number {
@@ -486,9 +506,12 @@ function SlabPanel({
           )}
         </div>
       )}
-      {moneyThresholds && (
+      {/* Also shown when a currency is set but no threshold is money (a
+          conversions tier): otherwise a bad leftover code would block Save
+          with no field to fix it in. */}
+      {(moneyThresholds || rule.currency != null) && (
         <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: 'auto 160px 1fr', gap: 8, alignItems: 'center' }}>
-          <span style={hintStyle}>Thresholds in</span>
+          <span style={hintStyle}>{moneyThresholds ? 'Thresholds in' : 'Currency'}</span>
           <Input
             aria-label="Threshold currency"
             placeholder="event’s currency"
@@ -496,7 +519,9 @@ function SlabPanel({
             value={rule.currency ?? ''}
             onChange={(e) => onChange({ currency: e.target.value.trim().toUpperCase() || undefined })}
           />
-          <span style={{ fontSize: 12, color: theme.textDim }}>Blank = compare in each event’s own currency.</span>
+          <span style={{ fontSize: 12, color: theme.textDim }}>
+            {moneyThresholds ? 'Blank = compare in each event’s own currency.' : 'Blank = the event’s own currency.'}
+          </span>
         </div>
       )}
       <div style={{ fontSize: 12, color: theme.textDim }}>
