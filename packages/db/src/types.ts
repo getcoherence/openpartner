@@ -272,10 +272,21 @@ export type PartnerCommissionSource = 'approval' | 'backfill' | 'amendment';
  * Campaign rule — preserves the rate the partner was approved under
  * even after the brand edits the Campaign. Absence falls back to the
  * Campaign rule (legacy partners + non-Network partners).
+ *
+ * Scope: `programId` null = partner-wide (every program without its own
+ * row); set = that one program. Resolution order is program-specific →
+ * partner-wide → Program rule, for the rule and for holdbackDays alike.
+ * At most one row of each scope per (partner, program), enforced by
+ * partial unique indexes.
  */
 export interface PartnerCommissionRow {
+  /** 'pcm_' + ULID. Rows that predate program scoping carry
+   *  'pcm_' + partnerId. */
+  id: string;
   partnerId: string;
   tenantId: string;
+  /** Null = partner-wide default. */
+  programId: string | null;
   /** Legacy single-rule columns. Still populated for backwards compat — the
    *  resolver prefers `commissionRules` (the array form) when present and
    *  only falls back to these for snapshots predating compound rules. */

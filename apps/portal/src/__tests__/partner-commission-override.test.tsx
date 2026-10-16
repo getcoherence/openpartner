@@ -31,12 +31,13 @@ const COMPOUND_RULES = [
   { trigger: 'every', eventType: 'invoice_paid', type: 'percent', value: 20, recurring: true, recurringMonths: 12 },
 ];
 
-function show(snapshot: Record<string, unknown>) {
+function show(snapshot: Record<string, unknown> | null, programs?: Array<Record<string, unknown>>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(['partner', 'p1'], { id: 'p1', name: 'Ada', email: 'ada@example.com' });
   client.setQueryData(['partner-commission-snapshot', 'p1'], {
-    snapshot: { partnerId: 'p1', source: 'approval', snapshottedAt: '2026-10-01T00:00:00Z', ...snapshot },
+    snapshot: snapshot && { partnerId: 'p1', source: 'approval', snapshottedAt: '2026-10-01T00:00:00Z', ...snapshot },
   });
+  if (programs) client.setQueryData(['partner-campaigns', 'p1'], { programs });
   return render(
     <MemoryRouter initialEntries={['/admin/partners/p1/commission']}>
       <QueryClientProvider client={client}>
@@ -144,6 +145,87 @@ describe('partner commission override', () => {
     });
     expect(page.getByText('Name the event this rule pays on.')).toBeTruthy();
     expect(page.getByText('Update override').closest('button')!.disabled).toBe(true);
+  });
+});
+
+describe('per-program terms', () => {
+  const rule = (value: number) => [{ trigger: 'every', type: 'percent', value }];
+  const scoped = (programId: string, value: number, holdbackDays: number | null) => ({
+    id: `pcm_${programId}`,
+    partnerId: 'p1',
+    programId,
+    commissionType: 'percent',
+    commissionValue: `${value}.0000`,
+    recurring: false,
+    commissionRules: rule(value),
+    holdbackDays,
+    source: 'amendment',
+    snapshottedAt: '2026-10-01T00:00:00Z',
+  });
+  const PARTNER_WIDE = { commissionType: 'percent', commissionValue: '30.0000', recurring: false, commissionRules: rule(30), holdbackDays: 10 };
+  /** The text of one program's row (name line + effective-terms line). */
+  const rowText = (page: ReturnType<typeof show>, name: string) =>
+    page.getByText(name).closest('div')!.parentElement!.textContent!;
+
+  it('shows what each program pays: its own terms, else the partner-wide default, else its rule', () => {
+    const page = show(PARTNER_WIDE, [
+      { id: 'a', name: 'Alpha', granted: true, commissionRule: rule(10), holdbackDays: 30, commission: scoped('a', 50, null) },
+      { id: 'b', name: 'Beta', granted: true, commissionRule: rule(15), holdbackDays: 30, commission: null },
+      { id: 'c', name: 'Gamma', granted: false, commissionRule: rule(5), holdbackDays: null, commission: null },
+      { id: 'd', name: 'Delta', granted: false, commissionRule: rule(5), holdbackDays: null, commission: scoped('d', 40, 7) },
+    ]);
+
+    // Holdback falls through tiers on its own: Alpha's terms leave it
+    // unset, so the partner-wide 10 days applies.
+    expect(rowText(page, 'Alpha')).toContain(`Program-specific terms: ${renderCommissionSummary(rule(50) as never)} · 10-day holdback`);
+    expect(rowText(page, 'Beta')).toContain(`Partner-wide default: ${renderCommissionSummary(rule(30) as never)} · 10-day holdback`);
+    // Not granted and no terms → not listed. Not granted WITH terms → listed.
+    expect(page.queryByText('Gamma')).toBeNull();
+    expect(rowText(page, 'Delta')).toContain('not granted');
+    expect(rowText(page, 'Delta')).toContain('7-day holdback');
+  });
+
+  it('falls back to the program rule when there is no partner-wide default', () => {
+    const page = show(null, [
+      { id: 'b', name: 'Beta', granted: true, commissionRule: rule(15), holdbackDays: null, commission: null },
+    ]);
+    expect(rowText(page, 'Beta')).toContain(`Program rule: ${renderCommissionSummary(rule(15) as never)} · no holdback`);
+  });
+
+  it("sets a program's terms on its own endpoint, starting from what it pays now", async () => {
+    const page = show(PARTNER_WIDE, [
+      { id: 'b', name: 'Beta', granted: true, commissionRule: rule(15), holdbackDays: null, commission: null },
+    ]);
+    fireEvent.click(page.getByText('Set terms'));
+    // The partner-wide editor plus this one.
+    expect(page.getAllByPlaceholderText('0')).toHaveLength(2);
+    fireEvent.change(page.getAllByPlaceholderText('0')[1]!, { target: { value: '21' } });
+    fireEvent.click(page.getByText('Save program terms'));
+
+    const isPut = (c: unknown[]) => (c[1] as { method?: string } | undefined)?.method === 'PUT';
+    await waitFor(() => expect(vi.mocked(api).mock.calls.some(isPut)).toBe(true));
+    const call = vi.mocked(api).mock.calls.find(isPut)!;
+    expect(call[0]).toBe('/partners/p1/programs/b/commission');
+    expect((call[1] as { body: unknown }).body).toEqual({
+      commissionType: 'percent',
+      commissionValue: 30,
+      recurring: false,
+      commissionRules: rule(30), // seeded from the partner-wide default it was paying
+      holdbackDays: 21,
+    });
+  });
+
+  it('clears only the program terms', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const page = show(PARTNER_WIDE, [
+      { id: 'a', name: 'Alpha', granted: true, commissionRule: rule(10), holdbackDays: null, commission: scoped('a', 50, null) },
+    ]);
+    fireEvent.click(page.getByText('Edit terms'));
+    fireEvent.click(page.getByText('Clear program terms'));
+    await waitFor(() =>
+      expect(vi.mocked(api)).toHaveBeenCalledWith('/partners/p1/programs/a/commission', { method: 'DELETE' }),
+    );
+    expect(vi.mocked(api)).not.toHaveBeenCalledWith('/partners/p1/commission-snapshot', { method: 'DELETE' });
   });
 });
 
