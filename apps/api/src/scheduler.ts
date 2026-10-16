@@ -329,17 +329,18 @@ const JOBS: ScheduledJob[] = [
 
 /**
  * The holdback sweep, then commission.approved (webhook + partner
- * postback) for every row it approved. Dispatch waits for
- * forEachActiveTenant to return, by which point each tenant's
- * transaction has committed, so a subscriber that re-fetches sees the
- * commission approved and a rolled-back tenant announces nothing.
- * Returns counts only; the approved rows would flood the job log.
+ * postback) for every row it approved. Each tenant's rows are announced
+ * as soon as that tenant's transaction commits, so a subscriber that
+ * re-fetches sees the commission approved, a rolled-back tenant announces
+ * nothing, and a process that dies mid-loop has already announced every
+ * tenant it committed. Returns counts only; the approved rows would flood
+ * the job log.
  */
 export async function runCommissionAutoApproveJob() {
-  const swept = await forEachActiveTenant((trx, tenantId) => autoApproveMatureCommissions(trx, tenantId));
-  for (const t of swept) {
-    if (t.result) void dispatchCommissionEvents(t.tenantId, 'commission.approved', t.result.approved);
-  }
+  const swept = await forEachActiveTenant(
+    (trx, tenantId) => autoApproveMatureCommissions(trx, tenantId),
+    (tenantId, result) => void dispatchCommissionEvents(tenantId, 'commission.approved', result.approved),
+  );
   return swept.map(({ result, ...t }) => (result ? { ...t, approvedCount: result.approvedCount } : t));
 }
 
