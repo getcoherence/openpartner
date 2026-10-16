@@ -58,7 +58,7 @@ export function AdminPartnerPrograms() {
   return (
     <Page
       title={`Programs · ${partnerName}`}
-      subtitle="Toggle which programs this partner can create share-links for. Revoking a program doesn't remove existing links — those keep working until the partner deletes them."
+      subtitle="Toggle which programs this partner can create share-links for. Revoking a program retires the partner's coupon code for it, but doesn't remove existing links — those keep working until the partner deletes them."
     >
       <div style={{ marginBottom: 14 }}>
         <TenantLink to="/admin/partners" style={{ color: theme.textMuted, fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>

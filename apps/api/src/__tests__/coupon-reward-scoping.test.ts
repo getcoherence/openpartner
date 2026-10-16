@@ -418,3 +418,67 @@ describe.skipIf(skipIntegration)('coupon reward scoping', () => {
     });
   });
 });
+
+describe.skipIf(skipIntegration)('revoking a program grant', () => {
+  const auth = { Authorization: `Bearer ${ADMIN_KEY}` };
+
+  it("retires the partner's code on that program, Stripe promotion code included; re-granting mints a fresh one", async () => {
+    const { partnerId, programId } = await seed();
+    const otherProgramId = ulid();
+    await db(TABLES.Program).insert({
+      id: otherProgramId,
+      tenantId: DEFAULT_TENANT_ID,
+      name: 'Other',
+      commissionRule: JSON.stringify({ type: 'percent', value: 10 }),
+      destinationUrl: 'https://x.test/other',
+      attributionWindowDays: 60,
+      attributionModel: 'last_click',
+      customerReward: JSON.stringify(FREE_YEAR),
+      partnersMayCustomizeCode: true,
+    });
+    await db(TABLES.PartnerProgram).insert([
+      { id: `pc_${ulid()}`, tenantId: DEFAULT_TENANT_ID, partnerId, programId, source: 'offering' },
+      { id: `pc_${ulid()}`, tenantId: DEFAULT_TENANT_ID, partnerId, programId: otherProgramId, source: 'admin' },
+    ]);
+    const partner = (await db(TABLES.Partner).where({ id: partnerId }).first()) as { email: string };
+    await autoMintCouponsForGrants(db, DEFAULT_TENANT_ID, { id: partnerId, email: partner.email }, [
+      programId,
+      otherProgramId,
+    ]);
+    const revoked = (await couponsFor(partnerId)).find((c) => c.programId === programId)!;
+    expect(revoked.stripePromotionCodeId).toBeTruthy();
+
+    const res = await request(app).delete(`/partners/${partnerId}/programs/${programId}`).set(auth);
+    expect(res.status).toBe(200);
+    expect(res.body.retiredCoupons).toEqual([revoked.code]);
+    expect(fake.client.promotionCodes.update).toHaveBeenCalledWith(revoked.stripePromotionCodeId, { active: false });
+    expect(await findCouponByCode(db, revoked.code)).toBeNull();
+    // The code on the program that's still granted keeps working.
+    const kept = (await couponsFor(partnerId)).find((c) => c.programId === otherProgramId)!;
+    expect(kept.deactivatedAt).toBeNull();
+
+    const regrant = await request(app)
+      .post(`/partners/${partnerId}/programs`)
+      .set(auth)
+      .send({ programIds: [programId] });
+    expect(regrant.status).toBe(201);
+    const active = (await couponsFor(partnerId)).filter((c) => c.programId === programId && !c.deactivatedAt);
+    expect(active).toHaveLength(1);
+    expect(active[0]!.code).not.toBe(revoked.code);
+  });
+
+  it('revoking a grant whose partner has no code on it still succeeds', async () => {
+    const { partnerId, programId } = await seed({ customerReward: null });
+    await db(TABLES.PartnerProgram).insert({
+      id: `pc_${ulid()}`,
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId,
+      programId,
+      source: 'admin',
+    });
+    const res = await request(app).delete(`/partners/${partnerId}/programs/${programId}`).set(auth);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, retiredCoupons: [] });
+    expect(fake.client.promotionCodes.update).not.toHaveBeenCalled();
+  });
+});
