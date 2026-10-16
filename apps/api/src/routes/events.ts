@@ -81,11 +81,12 @@ eventsRouter.post('/attribution/events', requireAuth, grantScope('events:write')
  * one is a caller bug, and replaying would silently drop the new event, so it
  * 409s instead. metadata and ts aren't compared: a retry that omits ts gets a
  * fresh server timestamp. Currency null ≡ USD, as the attribution engine
- * treats it (coupon redemptions store null).
+ * treats it (coupon redemptions store null). Shared with /coupons/redeem —
+ * the key namespace is per tenant across both routes.
  */
-function sameConversion(
+export function sameConversion(
   existing: EventRow,
-  incoming: { userId: string; type: string; value: string | null; currency: string },
+  incoming: { userId: string; type: string; value: string | null; currency: string | null },
 ): boolean {
   const sameValue =
     existing.value === null || incoming.value === null
@@ -95,7 +96,7 @@ function sameConversion(
     existing.userId === incoming.userId &&
     existing.type === incoming.type &&
     sameValue &&
-    (existing.currency ?? 'USD') === incoming.currency
+    (existing.currency ?? 'USD') === (incoming.currency ?? 'USD')
   );
 }
 

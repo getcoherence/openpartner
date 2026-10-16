@@ -47,6 +47,7 @@ import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '..
 import { getTenancyMode, tenantOf } from '../tenancy.js';
 import { getMode } from '../stripe.js';
 import { attributeEvent } from '../attribution.js';
+import { sameConversion } from './events.js';
 import { codeExistsInStripe, deactivateCustomerReward, provisionCustomerReward } from '../customer-rewards.js';
 
 export const couponsRouter = Router();
@@ -385,7 +386,9 @@ couponsRouter.delete('/partners/:id/coupons/:couponId', requireAuth, async (req,
 // is identifiable in the Click table for analytics + audit.
 //
 // Idempotent on Event.externalEventId — re-sending the same redemption
-// (e.g. from a webhook retry) doesn't double-attribute.
+// (e.g. from a webhook retry) replays instead of double-attributing, and
+// reusing the key for a different redemption 409s. The key namespace is
+// per tenant, shared with /attribution/events and Stripe event ids.
 
 const redeemSchema = z.object({
   code: z.string().trim().min(3).max(40),
@@ -419,45 +422,64 @@ couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), r
   const coupon = await findCouponByCode(db, body.data.code);
   if (!coupon) return res.status(404).json({ error: 'coupon_not_found' });
 
-  // Idempotency: same externalEventId already processed → 200 + replayed flag.
-  const existingEvent = await db<EventRow>(TABLES.Event)
-    .where({ externalEventId: body.data.externalEventId, type: body.data.eventType })
-    .first();
-  if (existingEvent) {
-    return res.status(200).json({ ok: true, replayed: true, eventId: existingEvent.id });
+  const { userId, eventType, value, currency, externalEventId } = body.data;
+  const ts = body.data.ts ? new Date(body.data.ts) : new Date();
+  const row = {
+    id: ulid(),
+    tenantId,
+    userId,
+    type: eventType,
+    value: value != null ? value.toFixed(2) : null,
+    currency: currency ?? null,
+    externalEventId,
+    metadata: { source: 'coupon', code: coupon.code },
+    ts,
+  };
+
+  // The Event goes in FIRST, with the (tenantId, externalEventId) unique
+  // constraint as the idempotency arbiter (same as /attribution/events). A
+  // replay or a conflict then returns before anything else is written — the
+  // request transaction commits on 4xx, so a synthetic Click + Identity made
+  // ahead of the insert would outlive a 409. A concurrent duplicate's INSERT
+  // blocks on the first request's uncommitted row and no-ops once it commits.
+  const [event] = (await db<EventRow>(TABLES.Event)
+    .insert(row)
+    .onConflict(['tenantId', 'externalEventId'])
+    .ignore()
+    .returning('*')) as EventRow[];
+
+  if (!event) {
+    const existing = await db<EventRow>(TABLES.Event).where({ tenantId, externalEventId }).first();
+    if (!existing) throw new Error(`externalEventId conflict with no visible Event row (${externalEventId})`);
+    if (!sameConversion(existing, row) || !isRedemptionOf(existing, coupon)) {
+      return res.status(409).json({
+        error: 'external_event_id_conflict',
+        eventId: existing.id,
+        detail:
+          'externalEventId was already used for a different event: another userId, eventType, value, currency or coupon code, or a non-coupon event',
+      });
+    }
+    return res.status(200).json({ ok: true, replayed: true, eventId: existing.id });
   }
 
-  const ts = body.data.ts ? new Date(body.data.ts) : new Date();
+  // Same transaction as the Event, so attributeEvent sees the touchpoint; any
+  // failure from here 500s and rolls back the Event with it.
+  await ensureCouponClickAndIdentity(db, tenantId, coupon, userId, ts);
+  await attributeEvent(db, event);
 
-  // Synthesize Click + Identity + Event in one trx so the attribution
-  // engine sees a consistent picture.
-  const result = await db.transaction(async (trx) => {
-    await ensureCouponClickAndIdentity(trx, tenantId, coupon, body.data.userId, ts);
-
-    const eventId = ulid();
-    const [eventRow] = (await trx<EventRow>(TABLES.Event)
-      .insert({
-        id: eventId,
-        tenantId,
-        userId: body.data.userId,
-        type: body.data.eventType,
-        value: body.data.value != null ? String(body.data.value) : null,
-        currency: body.data.currency ?? null,
-        externalEventId: body.data.externalEventId,
-        metadata: { source: 'coupon', code: coupon.code },
-        ts,
-      })
-      .returning('*')) as EventRow[];
-    return eventRow!;
-  });
-
-  // Attribution + commission run outside the trx — same pattern as the
-  // /events route. If they fail, the event still exists and a backlog
-  // run can catch it.
-  await attributeEvent(db, result);
-
-  res.status(201).json({ ok: true, eventId: result.id, partnerId: coupon.partnerId });
+  res.status(201).json({ ok: true, eventId: event.id, partnerId: coupon.partnerId });
 });
+
+/**
+ * A coupon replay must also be a redemption of the same code. A key first
+ * used by /attribution/events or a Stripe event, or by another code's
+ * redemption, would otherwise replay and silently drop this request's coupon
+ * touchpoint — so it 409s like any other mismatched reuse.
+ */
+function isRedemptionOf(event: EventRow, coupon: CouponRow): boolean {
+  const meta = (event.metadata ?? {}) as { source?: unknown; code?: unknown };
+  return meta.source === 'coupon' && typeof meta.code === 'string' && meta.code.toLowerCase() === coupon.code.toLowerCase();
+}
 
 /**
  * Lookup an ACTIVE Coupon by code within the current tenant. Case-
