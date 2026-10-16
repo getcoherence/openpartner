@@ -234,10 +234,37 @@ export async function attributeEvent(
   return { status: 'attributed', touches: results, model };
 }
 
+/**
+ * Replay attribution over a user's events after something new made them
+ * attributable — a fresh Identity stitch (identify) or an unflagged click
+ * (fraud review).
+ *
+ * Only events with NO Attribution row (under any model) are replayed. An
+ * attributed event is decided: the unique key is (eventId, model, clickId),
+ * so re-running attributeEvent with a different click-set — e.g. a
+ * cross-device click stitched after the conversion but timestamped before
+ * it — inserted a second last_click row at weight 1 beside the first, and a
+ * second full commission. Re-deciding an event means removing its old rows
+ * first, which only the caller can judge (fraud-review drops accrued rows;
+ * approved/paid ledger rows are never rewritten).
+ *
+ * The Event row lock serialises concurrent replays for the same user (two
+ * devices logging in at once): each would otherwise see the event
+ * unattributed and insert its own winner. The re-check after the lock reads
+ * a fresh snapshot, so the second replay sees the first one's rows.
+ */
 export async function attributeBacklogForUser(db: Knex, userId: string): Promise<number> {
-  const events = await db<EventRow>(TABLES.Event).where({ userId }).orderBy('ts', 'asc');
+  const events = await db<EventRow>(TABLES.Event)
+    .where({ userId })
+    .whereNotExists(
+      db(TABLES.Attribution).select(db.raw('1')).whereRaw('?? = ??', [`${TABLES.Attribution}.eventId`, `${TABLES.Event}.id`]),
+    )
+    .orderBy('ts', 'asc');
   let attributed = 0;
   for (const event of events) {
+    await db(TABLES.Event).where({ id: event.id }).forUpdate().first('id');
+    const already = await db(TABLES.Attribution).where({ eventId: event.id }).first('id');
+    if (already) continue;
     const result = await attributeEvent(db, event);
     if (result.status === 'attributed') attributed += 1;
   }
