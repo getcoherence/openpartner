@@ -14,7 +14,8 @@ import { usePublicBrand } from '../lib/useBrand.js';
  * portals deliberately don't have).
  *
  * Post-submit states mirror the API: auto-approve sends a sign-in link
- * right away; require-review acknowledges the application; the endpoint
+ * right away; require-review only acknowledges the application (the
+ * sign-in link comes with the admin's approval); the endpoint
  * is deliberately non-enumerating (already-registered looks like success).
  */
 
@@ -40,7 +41,7 @@ export function PartnerJoinPage() {
         method: 'POST',
         body: { name: name.trim(), email: email.trim().toLowerCase() },
       });
-      setPhase({ kind: 'sent', review: r.status === 'pending_review' });
+      setPhase({ kind: 'sent', review: r.status.startsWith('pending_review') });
     } catch (e) {
       const code = e instanceof ApiError ? String(e.message) : '';
       if (code.includes('signup_disabled') || code.includes('plan_required')) {
@@ -85,7 +86,7 @@ export function PartnerJoinPage() {
       >
         <div style={{ background: theme.successSoft, border: `1px solid ${theme.success}55`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
           {phase.review
-            ? 'We also emailed you a link to confirm your address — clicking it speeds up review.'
+            ? "We've emailed you a confirmation. Your sign-in link comes with the approval."
             : 'Click the link to set up your partner dashboard.'}
         </div>
       </AuthFrame>

@@ -47,8 +47,12 @@ export function MagicLandingPage() {
       })
       .catch((err) => {
         setState('failed');
+        const message =
+          err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : '';
         setDetail(
-          err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : 'Link is invalid or expired.',
+          message.includes('pending_review')
+            ? "Your application is still being reviewed. You'll get an email with a sign-in link once you're approved."
+            : message || 'Link is invalid or expired.',
         );
       });
   }, [nav, params, qc, location.pathname]);
@@ -60,9 +64,11 @@ export function MagicLandingPage() {
       {state === 'failed' && (
         <div style={{ color: theme.danger, fontSize: 14 }}>
           {detail ?? 'Could not verify.'}
-          <div style={{ color: theme.textDim, fontSize: 13, marginTop: 10 }}>
-            Ask for a new link from the sign-in page.
-          </div>
+          {!detail?.startsWith('Your application') && (
+            <div style={{ color: theme.textDim, fontSize: 13, marginTop: 10 }}>
+              Ask for a new link from the sign-in page.
+            </div>
+          )}
         </div>
       )}
     </AuthFrame>

@@ -12,6 +12,7 @@ import { getNetworkMembership, pushPartnerRevoke, pushPartnerUpsert } from '../n
 import { autoMintCouponsForGrants } from './coupons.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
 import { refineCommissionSubRule } from '../commission-rule-schema.js';
+import { isPendingReview } from '../partner-review.js';
 
 const createSchema = z.object({
   email: z.string().email(),
@@ -297,12 +298,29 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
  * Re-send an invite for a partner who hasn't accepted yet. Admin only.
  * Idempotent: multiple sends are fine; the partner can click any one
  * (they all expire in 15 minutes).
+ *
+ * For an applicant held for review (partner-review.ts) this is also the
+ * approval: it's recorded before the link is issued, so the link can
+ * activate them. The approval stands even if the email then fails (422
+ * commits), and a later call just re-sends.
  */
 partnersRouter.post('/partners/:id/invite', requireAuth, grantScope('partners:write'), requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });
   if (partner.activatedAt) return res.status(409).json({ error: 'already_activated' });
+
+  const approved = isPendingReview(partner);
+  if (approved) {
+    await db<PartnerRow>(TABLES.Partner)
+      .where({ id: partner.id })
+      .update({
+        metadata: db.raw(`jsonb_set("metadata", '{review}', ("metadata"->'review') || ?::jsonb, true)`, [
+          JSON.stringify({ status: 'approved', approvedAt: new Date().toISOString() }),
+        ]),
+        updatedAt: new Date(),
+      });
+  }
 
   const issued = await issueMagicLink(db, {
     tenantId,
@@ -331,9 +349,9 @@ partnersRouter.post('/partners/:id/invite', requireAuth, grantScope('partners:wr
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     console.error('[partners/invite] mail send failed', { partnerId: partner.id, detail });
-    return res.status(422).json({ error: 'mail_send_failed', detail });
+    return res.status(422).json({ error: 'mail_send_failed', detail, approved });
   }
-  res.json({ ok: true });
+  res.json({ ok: true, approved });
 });
 
 const revokeSchema = z.object({

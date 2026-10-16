@@ -253,7 +253,10 @@ function CreateLink({
       <div style={{ marginBottom: 14 }}>
         <Label>Program</Label>
         {campaigns.length === 0 ? (
-          <Input value={programId} onChange={(e) => setProgramId(e.target.value)} placeholder="campaign id (ULID)" />
+          <div style={{ fontSize: 13, color: theme.textMuted }}>
+            You don&rsquo;t have access to any programs yet. The brand chooses which programs you can promote, so ask
+            them to add you to one.
+          </div>
         ) : (
           <Select value={programId} onChange={(e) => setProgramId(e.target.value)}>
             {campaigns.map((c) => (
