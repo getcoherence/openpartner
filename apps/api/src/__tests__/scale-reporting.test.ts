@@ -7,6 +7,9 @@
  *     and the per-partner rows page by a ranked cursor.
  *   - GET /partners + GET /commissions: keyset cursors survive rows that
  *     share one microsecond timestamp (a CSV import, a batch accrual).
+ *   - GET /partners?q=: server-side name/email search, so admin pickers
+ *     find a partner without loading the whole roster; it pages with the
+ *     same cursor and ordering.
  *   - Scoped integration keys can read per-partner links, payouts and the
  *     partner record; partner keys stay confined to their own data.
  */
@@ -276,6 +279,36 @@ describe.skipIf(skipIntegration)('keyset cursors survive shared timestamps', () 
     expect(res.body.partners.map((p: { id: string }) => p.id)).toEqual([b]);
   });
 
+  it('GET /partners?q= pages a search across shared-timestamp batches in createdAt DESC, id DESC order', async () => {
+    // Non-matching rows on both sides of, and between, the matching
+    // batches: the cursor has to step over them, not stop at them.
+    await insertPartnerBatch(40, 'hay-old');
+    const older = await insertPartnerBatch(150, 'needle-a');
+    await insertPartnerBatch(40, 'hay-mid');
+    const newer = await insertPartnerBatch(100, 'needle-b');
+    await insertPartnerBatch(40, 'hay-new');
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const qs = new URLSearchParams({ q: 'NEEDLE', limit: '100' });
+      if (cursor) qs.set('cursor', cursor);
+      const res = await admin(`/partners?${qs}`);
+      expect(res.status).toBe(200);
+      seen.push(...res.body.partners.map((p: { id: string }) => p.id));
+      cursor = res.body.nextCursor;
+      pages++;
+      expect(pages).toBeLessThan(10);
+    } while (cursor);
+
+    expect(pages).toBe(3);
+    // Each batch shares one createdAt, so the newer batch comes first and
+    // each batch runs in id order, descending.
+    const desc = (ids: string[]) => [...ids].sort().reverse();
+    expect(seen).toEqual([...desc(newer), ...desc(older)]);
+  });
+
   async function seedCommissionBatch(partnerIds: string[], perPartner: number) {
     const programId = await createProgram();
     const rows: Array<Record<string, unknown>> = [];
@@ -359,6 +392,62 @@ describe.skipIf(skipIntegration)('keyset cursors survive shared timestamps', () 
     const res = await admin('/commissions?cursor=garbage');
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('invalid_cursor');
+  });
+});
+
+describe.skipIf(skipIntegration)('GET /partners?q= search', () => {
+  async function insertPartner(name: string, email: string, createdAt = new Date()): Promise<string> {
+    const id = ulid();
+    await db(TABLES.Partner).insert({ id, tenantId: DEFAULT_TENANT_ID, name, email, createdAt });
+    return id;
+  }
+
+  async function search(qs: string): Promise<string[]> {
+    const res = await admin(`/partners?${qs}`);
+    expect(res.status).toBe(200);
+    return res.body.partners.map((p: { id: string }) => p.id);
+  }
+
+  it('matches any part of the name or email, case-insensitively, newest first', async () => {
+    const t = Date.now();
+    const ada = await insertPartner('Ada Lovelace', 'ada@example.com', new Date(t - 3 * DAY));
+    const grace = await insertPartner('Grace Hopper', 'grace@navy.example', new Date(t - 2 * DAY));
+    const alan = await insertPartner('Alan Turing', 'lovelace-fan@example.org', new Date(t - DAY));
+    await insertPartner('Someone Else', 'nobody@example.net', new Date(t));
+
+    // Ada matches on name, Alan on email.
+    expect(await search('q=LOVELACE')).toEqual([alan, ada]);
+    expect(await search('q=hopp')).toEqual([grace]);
+    expect(await search('q=NAVY.example')).toEqual([grace]);
+    expect(await search('q=zzz')).toEqual([]);
+    // Surrounding whitespace is trimmed.
+    expect(await search(`q=${encodeURIComponent('  grace  ')}`)).toEqual([grace]);
+    // Combines with the exact email lookup (both must hold).
+    expect(await search('q=lovelace&email=ada@example.com')).toEqual([ada]);
+    expect(await search('q=hopper&email=ada@example.com')).toEqual([]);
+  });
+
+  it('treats LIKE wildcards in the term literally', async () => {
+    const pct = await insertPartner('Promo 50% Club', 'pct@example.com');
+    await insertPartner('Promo 500 Club', 'p500@example.com');
+    const under = await insertPartner('snake_case', 'under@example.com');
+    await insertPartner('snakeXcase', 'x@example.com');
+    const slash = await insertPartner('back\\slash', 'slash@example.com');
+    await insertPartner('backslash', 'noslash@example.com');
+
+    expect(await search(`q=${encodeURIComponent('50%')}`)).toEqual([pct]);
+    expect(await search(`q=${encodeURIComponent('e_c')}`)).toEqual([under]);
+    expect(await search(`q=${encodeURIComponent('\\')}`)).toEqual([slash]);
+  });
+
+  it('a blank q is no filter; an overlong one is rejected', async () => {
+    const ids = await insertPartnerBatch(3, 'blank');
+    expect(new Set(await search(`q=${encodeURIComponent('   ')}`))).toEqual(new Set(ids));
+    expect(new Set(await search('q='))).toEqual(new Set(ids));
+
+    const res = await admin(`/partners?q=${'x'.repeat(201)}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_query');
   });
 });
 

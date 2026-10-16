@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Users } from 'lucide-react';
+import { Plus, Search, Users } from 'lucide-react';
 import { audienceSizeLabel, isHttpUrl } from '@openpartner/db';
 import { api } from '../api.js';
 import { alpha, theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
+import { useDebouncedSearch, usePartnerSearch } from '../lib/usePartnerSearch.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, StatusPill, Table, formatDate } from '../ui.js';
 
 interface Partner {
@@ -51,13 +52,20 @@ function applicationOf(p: Partner): PartnerApplicationView | null {
   };
 }
 
+export const PARTNERS_PAGE_SIZE = 100;
+
 export function AdminPartners() {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [revoking, setRevoking] = useState<Partner | null>(null);
   const [viewing, setViewing] = useState<Partner | null>(null);
+  const [search, setSearch] = useState('');
+  const q = useDebouncedSearch(search);
 
-  const partners = useQuery({ queryKey: ['partners'], queryFn: () => api<{ partners: Partner[] }>('/partners') });
+  // Paged and searched server-side: programs run to tens of thousands of
+  // partners, and a search over only the loaded pages would miss most.
+  const list = usePartnerSearch<Partner>(q, PARTNERS_PAGE_SIZE);
+  const partners = list.data?.pages.flatMap((p) => p.partners) ?? [];
 
   return (
     <Page
@@ -69,7 +77,7 @@ export function AdminPartners() {
         </Button>
       }
     >
-      <ErrorBanner error={partners.error} />
+      <ErrorBanner error={list.error} />
       {showCreate && (
         <CreatePartner
           onClose={() => setShowCreate(false)}
@@ -92,69 +100,118 @@ export function AdminPartners() {
       )}
       {viewing && <ApplicationPanel partner={viewing} onClose={() => setViewing(null)} />}
 
-      {partners.isLoading ? (
+      {list.isLoading ? (
         <Card>Loading…</Card>
-      ) : (partners.data?.partners ?? []).length === 0 ? (
+      ) : partners.length === 0 && !search && !q ? (
         <EmptyState title="No partners yet" hint="Invite one to start tracking attributed revenue." icon={<Users size={28} strokeWidth={1.25} />} />
       ) : (
-        <Table
-          columns={['Partner', 'Email', 'Status', 'Stripe', 'Created', 'Actions']}
-          rows={(partners.data?.partners ?? []).map((p) => [
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <Avatar name={p.name} size={28} />
-              <span style={{ fontWeight: 500 }}>{p.name}</span>
-            </div>,
-            <a href={`mailto:${p.email}`} style={{ color: theme.textMuted, textDecoration: 'none' }}>
-              {p.email}
-            </a>,
-            p.revokedAt
-              ? <StatusPill status="revoked" />
-              : p.activatedAt
-                ? <StatusPill status="active" />
-                : isPendingReview(p)
-                  ? <StatusPill status="pending review" />
-                  : <StatusPill status="invited" />,
-            p.stripeConnectAccountId ? <StatusPill status="connected" /> : <span style={{ color: theme.textDim }}>—</span>,
-            <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
-            <div style={{ display: 'flex', gap: 6 }}>
-              <TenantLink to={`/links?partnerId=${p.id}`} style={{ color: theme.accentText, fontSize: 13 }}>Links</TenantLink>
-              <span style={{ color: theme.border }}>·</span>
-              <TenantLink to={`/admin/partners/${p.id}/programs`} style={{ color: theme.accentText, fontSize: 13 }}>Programs</TenantLink>
-              <span style={{ color: theme.border }}>·</span>
-              <TenantLink to={`/admin/partners/${p.id}/coupons`} style={{ color: theme.accentText, fontSize: 13 }}>Coupons</TenantLink>
-              <span style={{ color: theme.border }}>·</span>
-              <TenantLink to={`/admin/partners/${p.id}/commission`} style={{ color: theme.accentText, fontSize: 13 }}>Commission</TenantLink>
-              <span style={{ color: theme.border }}>·</span>
-              <TenantLink to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accentText, fontSize: 13 }}>Payouts</TenantLink>
-              {applicationOf(p) ? (
-                <>
-                  <span style={{ color: theme.border }}>·</span>
-                  <button
-                    onClick={() => setViewing(p)}
-                    style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accentText, cursor: 'pointer', whiteSpace: 'nowrap' }}
-                  >
-                    View application
-                  </button>
-                </>
-              ) : isPendingReview(p) ? (
-                <>
-                  <span style={{ color: theme.border }}>·</span>
-                  <span style={{ fontSize: 13, color: theme.textDim, whiteSpace: 'nowrap' }}>No application on file</span>
-                </>
-              ) : null}
-              {!p.activatedAt && !p.revokedAt && (
-                <>
-                  <span style={{ color: theme.border }}>·</span>
-                  {isPendingReview(p) ? <ApproveApplication partner={p} /> : <ResendInvite partnerId={p.id} />}
-                </>
+        <>
+          <div style={{ marginBottom: 14, maxWidth: 420 }}>
+            <Input
+              type="search"
+              aria-label="Search partners"
+              placeholder="Search by name or email"
+              maxLength={200}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          {partners.length === 0 ? (
+            <EmptyState
+              title={`No partners match “${q}”`}
+              hint="Search matches any part of a partner's name or email."
+              icon={<Search size={28} strokeWidth={1.25} />}
+            />
+          ) : (
+            <div style={{ opacity: list.isPlaceholderData ? 0.6 : 1, transition: 'opacity 120ms ease' }}>
+              <PartnerTable partners={partners} onView={setViewing} onRevoke={setRevoking} />
+            </div>
+          )}
+          {partners.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, marginTop: 16, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, color: theme.textMuted, fontVariantNumeric: 'tabular-nums' }}>
+                Showing {partners.length.toLocaleString()} {partners.length === 1 ? 'partner' : 'partners'}
+                {q ? ` matching “${q}”` : ''}
+              </span>
+              {list.hasNextPage && (
+                <Button variant="secondary" size="sm" onClick={() => void list.fetchNextPage()} disabled={list.isFetchingNextPage}>
+                  {list.isFetchingNextPage ? 'Loading…' : 'Load more'}
+                </Button>
               )}
-              <span style={{ color: theme.border }}>·</span>
-              <RevokeAction partner={p} openDialog={() => setRevoking(p)} />
-            </div>,
-          ])}
-        />
+            </div>
+          )}
+        </>
       )}
     </Page>
+  );
+}
+
+function PartnerTable({
+  partners,
+  onView,
+  onRevoke,
+}: {
+  partners: Partner[];
+  onView: (p: Partner) => void;
+  onRevoke: (p: Partner) => void;
+}) {
+  return (
+    <Table
+      columns={['Partner', 'Email', 'Status', 'Stripe', 'Created', 'Actions']}
+      rows={partners.map((p) => [
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Avatar name={p.name} size={28} />
+          <span style={{ fontWeight: 500 }}>{p.name}</span>
+        </div>,
+        <a href={`mailto:${p.email}`} style={{ color: theme.textMuted, textDecoration: 'none' }}>
+          {p.email}
+        </a>,
+        p.revokedAt
+          ? <StatusPill status="revoked" />
+          : p.activatedAt
+            ? <StatusPill status="active" />
+            : isPendingReview(p)
+              ? <StatusPill status="pending review" />
+              : <StatusPill status="invited" />,
+        p.stripeConnectAccountId ? <StatusPill status="connected" /> : <span style={{ color: theme.textDim }}>—</span>,
+        <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
+        <div style={{ display: 'flex', gap: 6 }}>
+          <TenantLink to={`/links?partnerId=${p.id}`} style={{ color: theme.accentText, fontSize: 13 }}>Links</TenantLink>
+          <span style={{ color: theme.border }}>·</span>
+          <TenantLink to={`/admin/partners/${p.id}/programs`} style={{ color: theme.accentText, fontSize: 13 }}>Programs</TenantLink>
+          <span style={{ color: theme.border }}>·</span>
+          <TenantLink to={`/admin/partners/${p.id}/coupons`} style={{ color: theme.accentText, fontSize: 13 }}>Coupons</TenantLink>
+          <span style={{ color: theme.border }}>·</span>
+          <TenantLink to={`/admin/partners/${p.id}/commission`} style={{ color: theme.accentText, fontSize: 13 }}>Commission</TenantLink>
+          <span style={{ color: theme.border }}>·</span>
+          <TenantLink to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accentText, fontSize: 13 }}>Payouts</TenantLink>
+          {applicationOf(p) ? (
+            <>
+              <span style={{ color: theme.border }}>·</span>
+              <button
+                onClick={() => onView(p)}
+                style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accentText, cursor: 'pointer', whiteSpace: 'nowrap' }}
+              >
+                View application
+              </button>
+            </>
+          ) : isPendingReview(p) ? (
+            <>
+              <span style={{ color: theme.border }}>·</span>
+              <span style={{ fontSize: 13, color: theme.textDim, whiteSpace: 'nowrap' }}>No application on file</span>
+            </>
+          ) : null}
+          {!p.activatedAt && !p.revokedAt && (
+            <>
+              <span style={{ color: theme.border }}>·</span>
+              {isPendingReview(p) ? <ApproveApplication partner={p} /> : <ResendInvite partnerId={p.id} />}
+            </>
+          )}
+          <span style={{ color: theme.border }}>·</span>
+          <RevokeAction partner={p} openDialog={() => onRevoke(p)} />
+        </div>,
+      ])}
+    />
   );
 }
 
