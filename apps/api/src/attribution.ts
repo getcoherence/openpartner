@@ -35,6 +35,7 @@ import {
   type IdentityRow,
 } from '@openpartner/db';
 import { dispatchEvent } from './webhook-dispatcher.js';
+import type { WebhookPayload } from './openapi/webhook-events.js';
 
 // Average month length used by the recurringMonths cap. We use 30.4375 days
 // (365.25 / 12) so a "12 months" cap doesn't drift by an extra day every
@@ -202,7 +203,7 @@ export async function attributeEvent(
         currency: event.currency ?? 'USD',
         eventType: event.type,
         eventValue: event.value,
-      });
+      } satisfies WebhookPayload<'commission.accrued'>);
     }
 
     // attribution.created fires once per Attribution regardless of how many
@@ -223,7 +224,7 @@ export async function attributeEvent(
       eventValue: event.value,
       commissionId: firstCommissionId,
       commissionCurrency: event.currency ?? 'USD',
-    });
+    } satisfies WebhookPayload<'attribution.created'>);
   }
 
   if (allDup) return { status: 'already_attributed', model };

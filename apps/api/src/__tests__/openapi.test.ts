@@ -26,9 +26,13 @@ import { expectShape } from './openapi-strict.js';
 process.env.OPENPARTNER_TENANCY = 'single';
 
 const { createApp } = await import('../app.js');
-const { getDocumentedOperations, getOpenApiDocument, SCOPED_ROUTES_OUTSIDE_SPEC, UNDOCUMENTED_ROUTES } = await import(
-  '../openapi/index.js'
-);
+const {
+  getDocumentedOperations,
+  getOpenApiDocument,
+  HANDLER_GUARDED_ROUTES_OUTSIDE_SPEC,
+  SCOPED_ROUTES_OUTSIDE_SPEC,
+  UNDOCUMENTED_ROUTES,
+} = await import('../openapi/index.js');
 const { WEBHOOK_PAYLOADS, envelopeSchema } = await import('../openapi/webhook-events.js');
 const { payloadFor } = await import('../webhook-dispatcher.js');
 const { KNOWN_EVENTS } = await import('../routes/webhooks.js');
@@ -139,7 +143,7 @@ describe('OpenAPI spec ↔ routes', () => {
     expect(mismatches).toEqual([]);
   });
 
-  it('documents every route a scoped key can reach (or names it)', () => {
+  it('documents every route that grants a scope (or names it)', () => {
     const scopedOutside = [...appRoutes.values()]
       .filter((r) => r.handlers.some((h) => h.grantsScope) && !documented.has(r.key))
       .map((r) => r.key)
@@ -147,6 +151,43 @@ describe('OpenAPI spec ↔ routes', () => {
     expect(scopedOutside, 'document these, or list them in SCOPED_ROUTES_OUTSIDE_SPEC').toEqual(
       Object.keys(SCOPED_ROUTES_OUTSIDE_SPEC).sort(),
     );
+  });
+
+  // A route with requireAuth and no admin / partner / scope guard lets ANY
+  // authenticated caller — every scoped key included — reach its handler.
+  // Outside the spec, each one must be named, so a new one gets a look.
+  it('names every undocumented route whose handler decides access', () => {
+    const handlerGuarded = [...appRoutes.values()]
+      .filter(
+        (r) =>
+          r.handlers.some((h) => h.guard === 'requireAuth') &&
+          !r.handlers.some((h) => h.guard === 'requireAdmin' || h.partnerParam !== undefined || h.grantsScope) &&
+          !documented.has(r.key),
+      )
+      .map((r) => r.key)
+      .sort();
+    expect(handlerGuarded, 'document these, guard them, or list them in HANDLER_GUARDED_ROUTES_OUTSIDE_SPEC').toEqual(
+      Object.keys(HANDLER_GUARDED_ROUTES_OUTSIDE_SPEC).sort(),
+    );
+  });
+
+  // Presence isn't enough: `requireAdmin, grantScope(x)` would reject the
+  // scoped key before the scope could grant it. Every route in the app,
+  // documented or not, must order its guards requireAuth → grantScope →
+  // requireAdmin / requirePartnerOrAdmin → handler.
+  it('orders guards correctly on every route', () => {
+    const rank = (h: Handler): number | null =>
+      h.guard === 'requireAuth' ? 0 : h.grantsScope ? 1 : h.guard === 'requireAdmin' || h.partnerParam !== undefined ? 2 : null;
+    const misordered: string[] = [];
+    for (const r of appRoutes.values()) {
+      const ranks = r.handlers.map(rank);
+      const guards = ranks.filter((x): x is number => x !== null);
+      const sorted = [...guards].sort((a, b) => a - b);
+      const lastIsGuard = ranks[ranks.length - 1] !== null;
+      const needsAuth = guards.some((g) => g > 0) && !guards.includes(0);
+      if (JSON.stringify(guards) !== JSON.stringify(sorted) || lastIsGuard || needsAuth) misordered.push(r.key);
+    }
+    expect(misordered).toEqual([]);
   });
 
   it('has unique operationIds', () => {

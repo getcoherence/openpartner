@@ -27,7 +27,7 @@ export function buildDescription(operations: DocumentedOperation[]): string {
   return `
 The OpenPartner tenant API: partners, programs, links, attribution, commissions, payouts, reporting, webhooks and export. Use it to run a referral or affiliate program from your own backend, for example an in-app "Refer & earn" page with no separate OpenPartner login. Walkthrough: [Build an in-app referral page](https://github.com/getcoherence/openpartner/blob/main/docs/headless-referral.md).
 
-This document is generated from the API's own request validators. It is served at \`/openapi.json\`, and the rendered reference at \`/docs\`, on every deployment.
+This document is generated from the API's own request validators. It is served at \`/openapi.json\`, and the rendered reference at \`/docs\`, on every deployment. White-label custom domains don't serve them; use the platform host, e.g. \`https://app.openpartner.dev/api/docs\`.
 
 ## Base URL and tenancy
 
@@ -62,9 +62,10 @@ ${scopeTable(operations)}
 
 ## Requests and responses
 
-- JSON bodies (\`content-type: application/json\`), up to 1 MB (\`POST /import\`: 256 MB).
+- JSON bodies (\`content-type: application/json\`), up to 1 MB. \`POST /import\` takes up to 256 MB on single-tenant installs.
 - Errors are \`{ "error": "<code>", "detail": … }\`. Branch on \`error\`; \`detail\` is for humans.
-- Timestamps are ISO-8601 UTC. Money stored on a row (\`Commission.amount\`, \`Payout.amount\`, \`Event.value\`) is a decimal **string** such as \`"12.50"\`, in major units. Computed report totals are JSON numbers.
+- **Timestamps are ISO-8601 in UTC and must end in \`Z\`**: \`2026-10-16T10:00:00Z\`. An offset such as \`+00:00\` (Python's \`isoformat()\` default) is rejected with \`400 invalid_body\` / \`invalid_query\`.
+- Money in major units. Commission and payout amounts, and \`eventValue\` in webhook payloads, are decimal **strings** such as \`"12.50"\`. Report endpoints (dashboard, timeseries, a partner's events list) return JSON numbers.
 - Fields may be added to any response at any time. Ignore fields you don't know.
 - Send \`X-Request-Id\` to correlate a call; every response echoes one back (generated if you didn't send it). Quote it in support requests.
 
@@ -78,7 +79,9 @@ ${scopeTable(operations)}
 
 ## Rate limits
 
-All routes share one limit of **600 requests per 5 minutes per client IP**. A busy backend calls from one IP, so this is your whole integration's budget: cache partner stats (a few minutes is fine) rather than calling the reporting endpoints on every page view. Over the limit you get \`429 rate_limited\`; the IETF \`RateLimit\` and \`RateLimit-Policy\` headers report what is left. \`POST /attribution/identify\` has its own limit of 120 per minute per IP, which applies to your visitors' IPs.
+The API shares one limit of **600 requests per 5 minutes per client IP** across its routes (a few infrastructure paths are exempt). A backend calls from one IP, so that is your whole integration's budget, event ingest included: at four calls per page view, about 150 uncached page views per 5 minutes. Cache partner stats for a few minutes, don't let users force a refresh, and report events from a queue that backs off on \`429\`. Over the limit you get \`429 rate_limited\` with the IETF \`RateLimit\` and \`RateLimit-Policy\` headers.
+
+\`POST /attribution/identify\` has its own limit of 120 per minute per IP, answered with \`429 rate_limited\` and \`Retry-After\`. When the browser SDK calls it, that is each visitor's IP; when your backend calls it, every stitch counts against your backend's IP, so prefer the browser for identify at volume.
 
 ## Webhooks
 
@@ -100,8 +103,9 @@ function verify(rawBody, headers, secret) {
   const ts = headers['x-openpartner-timestamp'];
   const sig = headers['x-openpartner-signature'] ?? '';
   if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
-  const expected = createHmac('sha256', secret).update(\`\${ts}.\${rawBody}\`).digest('hex');
-  return sig.length === expected.length && timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+  const expected = Buffer.from(createHmac('sha256', secret).update(\`\${ts}.\${rawBody}\`).digest('hex'));
+  const given = Buffer.from(sig);
+  return given.length === expected.length && timingSafeEqual(given, expected);
 }
 \`\`\`
 

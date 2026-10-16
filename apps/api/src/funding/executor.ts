@@ -28,6 +28,7 @@ import {
 } from '@openpartner/db';
 import { requireStripe } from '../stripe.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
+import type { WebhookPayload } from '../openapi/webhook-events.js';
 import { dispatchCommissionEvents } from '../commission-events.js';
 import { casBatch, minorToMajorString, TRANSFER_DEADLINE_DAYS } from './state.js';
 
@@ -428,7 +429,7 @@ async function finalizeTransfer(
     currency: intent.currency.toUpperCase(),
     method: 'stripe_connect',
     commissionIds,
-  });
+  } satisfies WebhookPayload<'payout.created'>);
   void dispatchCommissionEvents(batch.tenantId, 'commission.paid', commissions, { payoutId });
 }
 

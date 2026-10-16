@@ -118,7 +118,9 @@ export const Program = z
     attributionModel: z.enum(ATTRIBUTION_MODELS),
     destinationUrl: z.string().url(),
     deepLinkAllowedDomains: z.string().nullable(),
-    holdbackDays: z.number().int().nullable(),
+    holdbackDays: z.number().int().nullable().openapi({
+      description: 'Above 0: commissions auto-approve this many days after accruing. 0 or null: they wait for a manual approve.',
+    }),
     startsAt: tsNullable,
     endsAt: tsNullable,
     endNotificationSentAt: tsNullable,
@@ -277,7 +279,10 @@ const CommissionRowShape = z.object({
   partnerId: id,
   amount: Decimal,
   currency: z.string(),
-  status: z.enum(COMMISSION_STATUSES),
+  status: z.enum(COMMISSION_STATUSES).openapi({
+    description:
+      "`paid` means the commission is in a payout. On the manual rail that happens when the payout is planned, before the money is sent: check the payout's own `status`.",
+  }),
   accruedAt: ts,
   paidAt: tsNullable,
   payoutId: z.string().nullable(),
@@ -305,7 +310,9 @@ export const Payout = z
     currency: z.string(),
     method: z.enum(PAYOUT_METHODS),
     stripeTransferId: z.string().nullable(),
-    status: z.enum(PAYOUT_STATUSES),
+    status: z.enum(PAYOUT_STATUSES).openapi({
+      description: 'A `manual` payout stays `pending` until you send the money and confirm it; only `paid` means it went out.',
+    }),
     metadata: z.record(z.unknown()),
     createdAt: ts,
     completedAt: tsNullable,
@@ -354,7 +361,8 @@ export const PartnerDashboard = z
     attributedEvents: z.number().int(),
     attributedRevenue: z.number(),
     commissionByStatus: z.record(z.enum(COMMISSION_STATUSES), z.number()).openapi({
-      description: 'Sum of commission amounts accrued since `since`, keyed by status. Statuses with nothing are absent.',
+      description:
+        'Sum of commission amounts accrued since `since`, keyed by status, across all currencies (no conversion). Statuses with nothing are absent. `paid` includes manual payouts not yet sent: read payouts for money that went out.',
     }),
     links: z
       .array(z.object({ linkKey: z.string(), clicks: z.number().int(), attributedEvents: z.number().int(), attributedRevenue: z.number() }))
@@ -504,6 +512,7 @@ export const NetworkMembership = z
     networkUrl: z.string(),
     hasVendorToken: z.boolean(),
     scopedKeyId: z.string().nullable(),
+    // TODO(#124): partner opt-in changes what autoEnroll means.
     autoEnroll: z.boolean().openapi({
       description: 'When `enabled && autoEnroll`, every partner created by POST /partners or self-signup is pushed to the OpenPartner Network (name, email, metadata).',
     }),

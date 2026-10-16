@@ -13,7 +13,7 @@ import { registerPaths } from './paths.js';
 import { OperationRegistry, type DocumentedOperation } from './registry.js';
 import { registerWebhooks } from './webhook-events.js';
 
-export { SCOPED_ROUTES_OUTSIDE_SPEC, UNDOCUMENTED_ROUTES } from './paths.js';
+export { HANDLER_GUARDED_ROUTES_OUTSIDE_SPEC, SCOPED_ROUTES_OUTSIDE_SPEC, UNDOCUMENTED_ROUTES } from './paths.js';
 
 type OpenApiDocument = ReturnType<OpenApiGeneratorV31['generateDocument']>;
 
@@ -57,6 +57,57 @@ function dedupeAnyOf(node: unknown): void {
   Object.values(obj).forEach(dedupeAnyOf);
 }
 
+/** Walk every schema-ish object in the document. */
+function visit(node: unknown, fn: (obj: Record<string, unknown>) => void): void {
+  if (Array.isArray(node)) {
+    node.forEach((n) => visit(n, fn));
+    return;
+  }
+  if (!node || typeof node !== 'object') return;
+  fn(node as Record<string, unknown>);
+  Object.values(node as Record<string, unknown>).forEach((n) => visit(n, fn));
+}
+
+/**
+ * Corrections where the generator's JSON Schema would disagree with zod:
+ *
+ *   - `z.enum([...]).nullable()` comes out as `type: [string, null]` with an
+ *     `enum` that lacks null, so a null value fails the published schema
+ *     while the route (or response) allows it. Add null to the enum.
+ *   - `z.string().datetime()` comes out as `format: date-time`, which allows
+ *     any RFC 3339 offset; zod 3 accepts only UTC with a `Z`
+ *     (`2026-10-16T10:00:00+00:00` is a 400). Say so with a pattern.
+ */
+function alignWithZod(document: OpenApiDocument): void {
+  visit(document, (obj) => {
+    if (Array.isArray(obj.type) && obj.type.includes('null') && Array.isArray(obj.enum) && !obj.enum.includes(null)) {
+      obj.enum = [...obj.enum, null];
+    }
+    if (obj.format === 'date-time' && obj.pattern === undefined) obj.pattern = 'Z$';
+  });
+}
+
+/**
+ * Request fields whose zod schema can't be rendered faithfully, described
+ * by hand. Each entry throws if its target disappears, so a renamed field
+ * fails the build instead of silently keeping a stale override.
+ */
+function applyOverrides(document: OpenApiDocument): void {
+  const schemas = document.components?.schemas as Record<string, { properties?: Record<string, unknown> }> | undefined;
+  const set = (schema: string, property: string, value: unknown) => {
+    const props = schemas?.[schema]?.properties;
+    if (!props || !(property in props)) throw new Error(`openapi override target missing: ${schema}.${property}`);
+    props[property] = value;
+  };
+  // routes/events.ts runs externalEventId through z.preprocess: null and ""
+  // (an unmapped Zapier/Make field) mean "no key", and a number is its string.
+  set('RecordEventRequest', 'externalEventId', {
+    anyOf: [{ type: 'string', maxLength: 120 }, { type: 'number' }, { type: 'null' }],
+    description:
+      'Idempotency key: your stable id for this one event, up to 120 characters. A number is used as its string. `null`, `""` or a blank string mean no key.',
+  });
+}
+
 function build() {
   const r = new OperationRegistry();
   registerPaths(r);
@@ -89,6 +140,8 @@ function build() {
     tags: TAGS,
   });
   dedupeAnyOf(document);
+  alignWithZod(document);
+  applyOverrides(document);
   return { document, operations: r.operations };
 }
 

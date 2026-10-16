@@ -45,6 +45,8 @@
     "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.11.10",
     "@types/supertest": "^7.2.0",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
     "supertest": "^7.0.0",
     "tsx": "^4.19.0",
     "typescript": "6.0.3",

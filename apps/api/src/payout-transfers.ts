@@ -42,6 +42,7 @@ import type { Knex } from 'knex';
 import { TABLES, type CommissionRow, type PartnerRow, type PayoutRow } from '@openpartner/db';
 import { requireStripe } from './stripe.js';
 import { dispatchEvent } from './webhook-dispatcher.js';
+import type { WebhookPayload } from './openapi/webhook-events.js';
 import { dispatchCommissionEvents } from './commission-events.js';
 
 /** Stripe replays a key for ~24h; past that a re-POST is a NEW charge, so
@@ -606,7 +607,7 @@ async function finalizeTransfer(
     method: payout.method,
     commissionIds: commissions.map((c) => c.id),
     platformFee: platformFee || undefined,
-  });
+  } satisfies WebhookPayload<'payout.created'>);
   void dispatchCommissionEvents(payout.tenantId, 'commission.paid', commissions, { payoutId: payout.id });
   result.confirmed.push({ payoutId: payout.id, stripeTransferId: transfer.id });
 }

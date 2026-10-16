@@ -37,6 +37,30 @@ export const SCOPED_ROUTES_OUTSIDE_SPEC: Record<string, string> = {
   'GET /brand-resources': 'partners:read: brand logo, colours and shareable assets, read by Network creator dashboards.',
 };
 
+/** Authenticated routes outside the spec that carry no admin, partner or
+ *  scope guard: the handler decides who may call them, so a scoped key
+ *  reaches the handler. The drift test fails on any route of that shape
+ *  that isn't listed here, so a new one shows up in review. */
+const NETWORK_PROXY = 'Partner-facing OpenPartner Network proxy for the portal; the handler checks the caller.';
+export const HANDLER_GUARDED_ROUTES_OUTSIDE_SPEC: Record<string, string> = {
+  'GET /auth/whoami': 'Who the current session or key is; any authenticated caller.',
+  'GET /config/program': 'Program branding the portal renders; any authenticated caller.',
+  'GET /network/discover': NETWORK_PROXY,
+  'GET /network/offerings/:id': NETWORK_PROXY,
+  'POST /network/offerings/:id/apply': NETWORK_PROXY,
+  'GET /network/vendors/:id': NETWORK_PROXY,
+  'GET /network/me/profile': NETWORK_PROXY,
+  'PATCH /network/me/profile': NETWORK_PROXY,
+  'GET /network/me/platforms': NETWORK_PROXY,
+  'PUT /network/me/platforms/:platform': NETWORK_PROXY,
+  'DELETE /network/me/platforms/:platform': NETWORK_PROXY,
+  'GET /network/me/requests': NETWORK_PROXY,
+  'POST /network/me/requests/:id/cancel': NETWORK_PROXY,
+  'GET /network/me/affiliations': NETWORK_PROXY,
+  'GET /network/me/affiliations/:id/earnings': NETWORK_PROXY,
+  'POST /network/me/uploads/avatar': NETWORK_PROXY,
+};
+
 /** Routes on documented routers that are deliberately left out of the spec. */
 export const UNDOCUMENTED_ROUTES: Record<string, string> = {
   'POST /partners/backfill-commission-snapshots': 'One-shot maintenance job for pre-snapshot partners, not an integration surface.',
@@ -63,6 +87,8 @@ Creates a partner and grants it programs.
 - \`programIds\` omitted grants **every current program**. Pass an explicit list (even \`[]\`) to control access.
 - A coupon is auto-minted per granted program.
 - Fires \`partner.created\`.
+
+**Email and portal access.** A \`sendInvite: false\` partner is active, so anyone who knows its email can request a sign-in link on the hosted partner portal (\`POST /auth/signin\`): OpenPartner then emails that address, and the partner can use the portal. There is no setting to turn that off per partner yet. If that matters, give headless partners an address that can't receive mail.
 
 **OpenPartner Network:** while the tenant's Network membership has \`autoEnroll\` on (\`GET /config/network\`), this call pushes the partner's name, email and \`metadata\` to the OpenPartner Network, with or without an invite. Turn \`autoEnroll\` off before creating customer-referral partners: \`POST /config/network {"autoEnroll": false}\`.
 
@@ -250,7 +276,7 @@ Rows whose email already exists are reported as \`skipped_email_taken\` with the
     operationId: 'createProgram',
     summary: 'Create a program',
     description:
-      "A program is one set of terms: commission rule, attribution window and model, destination URL.\n\n`shareOnNetwork` defaults to **true** when the tenant is on the OpenPartner Network, which lists the program on the public marketplace and makes `marketplaceDescription` required. Pass `shareOnNetwork: false` for a private program such as customer referral.",
+      "A program is one set of terms: commission rule, attribution window and model, destination URL.\n\n`shareOnNetwork` defaults to **true** when the tenant is on the OpenPartner Network, which lists the program on the public marketplace and makes `marketplaceDescription` required. Pass `shareOnNetwork: false` for a private program such as customer referral.\n\n`holdbackDays` above 0 means commissions are **approved automatically** that many days after they accrue (by the scheduled jobs), and then paid by the next payout run. 0 or omitted means every commission waits for `POST /commissions/{id}/approve`.",
     access: { kind: 'admin' },
     body: programs.createSchema.openapi('CreateProgramRequest'),
     responses: { 201: { description: 'Created.', schema: S.Program } },
@@ -371,7 +397,9 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
 
 \`value\` is in major units (\`49.99\`), defaulting to no value; \`currency\` defaults to USD.
 
-**Idempotency.** Always send \`externalEventId\`: your system's stable id for this one event (invoice id, order id, deal id + stage). A retry with the same key returns \`200\` with \`replayed: true\` and the original result, writing nothing. Reusing a key for a different userId, type, value or currency returns \`409 external_event_id_conflict\`. Keys are per tenant, up to 120 characters, and shared with \`POST /coupons/redeem\`.`,
+**Idempotency.** Always send \`externalEventId\`: your system's stable id for this one event (invoice id, order id, deal id + stage). A retry with the same key returns \`200\` with \`replayed: true\` and the original result, writing nothing. Reusing a key for a different userId, type, value or currency returns \`409 external_event_id_conflict\`. Keys are per tenant, up to 120 characters, and shared with \`POST /coupons/redeem\`.
+
+**Don't report a payment twice.** If your Stripe account also sends webhooks to this deployment (\`/webhooks/stripe\`, self-host), those payments are already recorded, keyed by the Stripe event id. Reporting the same payment here under your own invoice id records it a second time.`,
     access: { kind: 'admin', scope: 'events:write' },
     body: events.schema.openapi('RecordEventRequest'),
     responses: { 200: { description: 'Recorded (or replayed).', schema: S.EventResult } },
@@ -502,7 +530,8 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
     tag: 'Commissions',
     operationId: 'approveCommission',
     summary: 'Approve an accrued commission',
-    description: 'Refused while the holdback is running. Fires `commission.approved`.',
+    description:
+      "Refused while the holdback is running. Fires `commission.approved`. With a holdback above 0 the scheduled jobs approve matured commissions on their own; with none, this is the only way they're approved.",
     access: { kind: 'admin' },
     responses: { 200: { description: 'Approved.', schema: z.object({ commission: S.Commission }) } },
     errors: { 404: ['not_found'], 409: ['holdback_active', 'not_approvable'] },
@@ -528,7 +557,7 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
     operationId: 'runPayouts',
     summary: 'Run a payout batch now',
     description:
-      'Groups approved commissions per partner and currency. Stripe Connect partners are transferred; everyone else gets a `manual` payout you send yourself and then confirm. Totals under the payout threshold carry over.',
+      "Groups approved commissions per partner and currency. Stripe Connect partners are transferred. Everyone else (every headless partner) gets a `manual` payout: the Payout is `pending` and its commissions are marked `paid` right away, before any money moves. You send the money yourself, then `POST /payouts/{id}/confirm`. Totals under the payout threshold carry over. The scheduled jobs run this on the tenant's payout cadence (weekly by default; set it to Manual to run it only yourself).",
     access: { kind: 'admin' },
     responses: { 200: { description: 'What happened to each payout.', schema: S.PayoutRunResult } },
   });
@@ -576,7 +605,8 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
     tag: 'Partner reporting',
     operationId: 'getPartnerTimeseries',
     summary: 'Daily or weekly series for charts',
-    description: 'Dense buckets (zero-filled). Defaults to the last 30 days, bucketed by day, or by week past 90 days.',
+    description:
+      "Dense buckets (zero-filled). Defaults to the last 30 days, bucketed by day, or by week past 90 days. Event counts are per attribution: an event credited through two of this partner's clicks (a multi-touch model) counts twice. `leads` counts `signup` and `trial_started`; `sales` counts any event with a value above 0.",
     access: { kind: 'partnerOrAdmin', scope: 'partners:read' },
     query: dashboard.timeseriesQuerySchema,
     responses: { 200: { description: 'Series.', schema: S.PartnerTimeseries } },
@@ -697,7 +727,8 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
     tag: 'Webhooks',
     operationId: 'listWebhookDeliveries',
     summary: "List an endpoint's recent deliveries",
-    description: 'The 100 most recent, newest first. Failed deliveries are not retried automatically; use this to find them.',
+    description:
+      'The 100 most recent, newest first. Failed deliveries are not retried automatically; use this to find them. Needs an admin key (`webhooks:write` only covers subscribing and unsubscribing).',
     access: { kind: 'admin' },
     responses: { 200: { description: 'Deliveries.', schema: z.object({ deliveries: z.array(S.WebhookDelivery) }) } },
   });
@@ -792,6 +823,26 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
   });
 
   r.operation({
+    method: 'get',
+    path: '/auth/introspect',
+    tag: 'API keys',
+    operationId: 'introspectKey',
+    summary: 'Describe the calling key',
+    description: 'What the credential you sent can do: its scopes, the partner it is bound to, or unrestricted admin access. Useful when a call answers `403 forbidden_scope`.',
+    access: { kind: 'handler', rule: 'any key or session.', partner: true },
+    responses: {
+      200: {
+        description: 'The caller.',
+        schema: z.union([
+          z.object({ role: z.literal('scoped'), scopes: z.array(z.string()) }),
+          z.object({ role: z.literal('admin'), unrestricted: z.literal(true) }),
+          z.object({ role: z.literal('partner'), restrictedTo: z.object({ partnerId: z.string() }) }),
+        ]),
+      },
+    },
+  });
+
+  r.operation({
     method: 'delete',
     path: '/api-keys/:keyId',
     tag: 'API keys',
@@ -860,7 +911,7 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
     tag: 'Export',
     operationId: 'importBundle',
     summary: 'Import an export bundle (self-host only)',
-    description: 'Idempotent: rows whose primary key exists are skipped. Accepts bundles up to 256 MB.',
+    description: 'Idempotent: rows whose primary key exists are skipped. Accepts bundles up to 256 MB on single-tenant installs (1 MB under a `/t/<slug>` path).',
     access: { kind: 'admin' },
     body: exportRoutes.importSchema.openapi('ImportRequest'),
     responses: { 200: { description: 'Rows inserted and skipped per table.', schema: S.ImportResult } },
@@ -886,7 +937,8 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
     operationId: 'updateNetworkMembership',
     summary: 'Update Network membership (e.g. turn off auto-enroll)',
     description:
-      'Send `{"autoEnroll": false}` to stop pushing new partners to the Network. Partners already pushed stay on it. Reconnecting the Network later (Admin → Network → Connect) turns `autoEnroll` back on, so re-check after any reconnect.',
+      // TODO(#124): rewrite when partner opt-in for the Network merges.
+      'Send `{"autoEnroll": false}` to stop pushing new partners to the Network. Partners already pushed stay on it, and pushes that failed earlier and are queued for retry are still delivered. Reconnecting the Network later (Admin → Network → Connect) turns `autoEnroll` back on, so re-check after any reconnect.',
     access: { kind: 'admin' },
     body: settings.networkMembershipSchema.openapi('UpdateNetworkMembershipRequest'),
     responses: { 200: { description: 'The saved membership.', schema: S.NetworkMembership } },

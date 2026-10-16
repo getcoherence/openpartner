@@ -1,19 +1,24 @@
 /**
  * Contract test for the documented API: runs the headless in-app referral
  * flow (docs/headless-referral.md) and the rest of the documented surface
- * against a real database, and checks every response against what
- * docs/openapi.json says about that operation:
+ * against a real database, and checks every exchange against the spec:
  *
  *   - the status code is one the operation documents;
- *   - a success body parses against the documented schema, with unknown
+ *   - a success body parses against the zod response schema with unknown
  *     keys rejected at every depth (openapi-strict.ts), so a field the API
  *     started or stopped sending fails here;
  *   - an error body is the documented envelope, with an `error` code the
- *     operation lists for that status.
+ *     operation lists for that status;
+ *   - and the same exchange validates against the PUBLISHED JSON Schema
+ *     (docs/openapi.json, via ajv): the response body, the JSON request
+ *     body (a body the route accepted must be valid per the spec, one it
+ *     rejected as invalid_body must not be) and the query parameters. That
+ *     catches places where the generated schema and zod disagree.
  *
- * It also receives the webhooks the flow fires on a local endpoint,
- * verifies each signature exactly as the docs tell integrators to, and
- * parses every payload against the webhook catalogue.
+ * It also proves every documented access rule by calling each operation
+ * with each kind of credential, receives the webhooks the flow fires on a
+ * local endpoint, verifies each signature exactly as the docs tell
+ * integrators to, and parses every payload against the webhook catalogue.
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
@@ -22,6 +27,8 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { ulid } from 'ulid';
+import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020.js';
+import addFormats from 'ajv-formats';
 import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 import { expectShape } from './openapi-strict.js';
 
@@ -37,9 +44,10 @@ process.env.STRIPE_SECRET_KEY = '';
 
 const { db } = await import('../db.js');
 const { createApp } = await import('../app.js');
-const { getDocumentedOperations } = await import('../openapi/index.js');
-const { ErrorResponse } = await import('../openapi/registry.js');
+const { getDocumentedOperations, getOpenApiDocument } = await import('../openapi/index.js');
+const { ErrorResponse, accessExtension } = await import('../openapi/registry.js');
 const { WEBHOOK_PAYLOADS, envelopeSchema } = await import('../openapi/webhook-events.js');
+const { issueMagicLink } = await import('../auth-sessions.js');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
@@ -66,11 +74,88 @@ const TABLES_TO_CLEAN = [
   TABLES.Partner,
 ];
 
+// ---------- the published spec, as a JSON Schema validator ----------
+
+interface SpecOperation {
+  operationId: string;
+  parameters?: Array<{ name: string; in: string; schema: unknown }>;
+  requestBody?: { content: Record<string, { schema: unknown }> };
+  responses: Record<string, { content?: Record<string, { schema: unknown }> }>;
+}
+const spec = getOpenApiDocument() as unknown as {
+  components: Record<string, unknown>;
+  paths: Record<string, Record<string, SpecOperation>>;
+};
+const specOps = new Map<string, SpecOperation>();
+for (const item of Object.values(spec.paths)) for (const op of Object.values(item)) specOps.set(op.operationId, op);
+
+function makeAjv(coerceTypes: boolean) {
+  const ajv = new Ajv2020({ strict: false, allErrors: true, coerceTypes });
+  addFormats(ajv);
+  ajv.addSchema({ $id: 'openapi', components: structuredClone(spec.components) });
+  return ajv;
+}
+const ajvJson = makeAjv(false);
+const ajvQuery = makeAjv(true); // query values arrive as strings
+const validators = new Map<string, ValidateFunction>();
+function validatorFor(key: string, schema: unknown, ajv = ajvJson): ValidateFunction {
+  let v = validators.get(key);
+  if (!v) {
+    // Point the document-relative refs at the components registered above.
+    v = ajv.compile(JSON.parse(JSON.stringify(schema).replaceAll('"#/components/', '"openapi#/components/')));
+    validators.set(key, v);
+  }
+  return v;
+}
+
+type Exchange = request.Response & { sentBody?: unknown };
+
+/** Check one exchange against the published JSON Schema. */
+function checkAgainstSpec(operationId: string, res: Exchange): void {
+  const op = specOps.get(operationId)!;
+  const status = String(res.status);
+  const fail = (what: string, v: ValidateFunction, value: unknown) => {
+    throw new Error(`${operationId} → ${status}: ${what}\n${ajvJson.errorsText(v.errors)}\nvalue: ${JSON.stringify(value)}`);
+  };
+
+  const resSchema = op.responses[status]?.content?.['application/json']?.schema;
+  if (resSchema && res.type === 'application/json') {
+    const v = validatorFor(`${operationId} response ${status}`, resSchema);
+    if (!v(res.body)) fail('response body fails the published schema', v, res.body);
+  }
+
+  const reqSchema = op.requestBody?.content?.['application/json']?.schema;
+  if (reqSchema && res.sentBody !== undefined) {
+    const v = validatorFor(`${operationId} request`, reqSchema);
+    const valid = v(res.sentBody);
+    if (res.status < 300 && !valid) fail('the published schema rejects a body the route accepted', v, res.sentBody);
+    if (res.status === 400 && res.body?.error === 'invalid_body' && valid) {
+      throw new Error(`${operationId}: the published schema accepts a body the route rejected: ${JSON.stringify(res.sentBody)}`);
+    }
+  }
+
+  const url = new URL((res as unknown as { request: { url: string } }).request.url);
+  const params = (op.parameters ?? []).filter((p) => p.in === 'query' && url.searchParams.has(p.name));
+  if (params.length > 0) {
+    const results = params.map((p) => {
+      const v = validatorFor(`${operationId} query ${p.name}`, { type: 'object', properties: { v: p.schema } }, ajvQuery);
+      return v({ v: url.searchParams.get(p.name) });
+    });
+    if (res.status < 300 && results.includes(false)) {
+      throw new Error(`${operationId}: the published schema rejects a query the route accepted: ${url.search}`);
+    }
+    if (res.status === 400 && res.body?.error === 'invalid_query' && !results.includes(false)) {
+      throw new Error(`${operationId}: the published schema accepts a query the route rejected: ${url.search}`);
+    }
+  }
+}
+
 /** Assert `res` is something `operationId` documents, and return its body. */
-function check<T = Record<string, unknown>>(operationId: string, res: request.Response): T {
+function check<T = Record<string, unknown>>(operationId: string, res: Exchange): T {
   const op = operations.get(operationId);
   if (!op) throw new Error(`no documented operation ${operationId}`);
   exercised.add(operationId);
+  checkAgainstSpec(operationId, res);
   if (String(res.status) in op.responses) {
     const schema = op.responses[res.status];
     if (schema) expectShape(schema, res.body, `${operationId} → ${res.status}`);
@@ -85,34 +170,45 @@ function check<T = Record<string, unknown>>(operationId: string, res: request.Re
   return res.body as T;
 }
 
-const as = (key: string) => ({
-  get: (path: string) => request(app).get(path).set('Authorization', `Bearer ${key}`),
-  post: (path: string, body?: object) =>
-    request(app).post(path).set('Authorization', `Bearer ${key}`).send(body ?? {}),
-  put: (path: string, body: object) => request(app).put(path).set('Authorization', `Bearer ${key}`).send(body),
-  patch: (path: string, body: object) => request(app).patch(path).set('Authorization', `Bearer ${key}`).send(body),
-  delete: (path: string) => request(app).delete(path).set('Authorization', `Bearer ${key}`),
-});
+/** Requests as one credential (null = none). JSON writes remember the body
+ *  they sent, so check() can validate it against the spec. */
+function as(key: string | null, target = app) {
+  const auth = (t: request.Test) => (key ? t.set('Authorization', `Bearer ${key}`) : t);
+  const withBody = (t: request.Test, body: object): Promise<Exchange> =>
+    t.send(body).then((res) => Object.assign(res, { sentBody: body }));
+  return {
+    get: (path: string) => auth(request(target).get(path)),
+    post: (path: string, body: object = {}) => withBody(auth(request(target).post(path)), body),
+    put: (path: string, body: object) => withBody(auth(request(target).put(path)), body),
+    patch: (path: string, body: object) => withBody(auth(request(target).patch(path)), body),
+    delete: (path: string) => auth(request(target).delete(path)),
+  };
+}
 const admin = as(ADMIN_KEY);
+const anon = as(null);
 
 // ---------- webhook receiver ----------
 
 interface Received {
+  path: string;
   headers: IncomingHttpHeaders;
   raw: string;
 }
 const received: Received[] = [];
+/** Signing secret per receiver path, one per subscribed endpoint. */
+const secrets: Record<string, string> = {};
 let receiver: Server;
-let receiverUrl = '';
+let receiverBase = '';
 
-/** The verification the docs publish, verbatim in spirit: HMAC over
- *  `<timestamp>.<raw body>`, constant-time compare, 5-minute window. */
+/** The verification the docs publish: HMAC over `<timestamp>.<raw body>`,
+ *  constant-time compare of equal-length buffers, 5-minute window. */
 function verify(raw: string, headers: IncomingHttpHeaders, secret: string): boolean {
   const ts = String(headers['x-openpartner-timestamp'] ?? '');
   const sig = String(headers['x-openpartner-signature'] ?? '');
   if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
-  const expected = createHmac('sha256', secret).update(`${ts}.${raw}`).digest('hex');
-  return sig.length === expected.length && timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+  const expected = Buffer.from(createHmac('sha256', secret).update(`${ts}.${raw}`).digest('hex'));
+  const given = Buffer.from(sig);
+  return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
 async function waitForEvents(types: string[], timeoutMs = 8000): Promise<void> {
@@ -125,34 +221,44 @@ async function waitForEvents(types: string[], timeoutMs = 8000): Promise<void> {
   }
 }
 
-let savedThreshold: unknown;
+let savedTenant: { payoutThresholdCents: unknown; couponIntegrationVerifiedAt: unknown } | undefined;
 
 beforeAll(async () => {
   if (skipIntegration) return;
   await db.raw('select 1');
   for (const t of TABLES_TO_CLEAN) await db(t).del();
   await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID, key: 'network_membership' }).del();
-  const tenant = await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first('payoutThresholdCents');
-  savedThreshold = tenant?.payoutThresholdCents;
-  await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ payoutThresholdCents: 0 });
+  savedTenant = await db(TABLES.Tenant)
+    .where({ id: DEFAULT_TENANT_ID })
+    .first('payoutThresholdCents', 'couponIntegrationVerifiedAt');
+  // Payouts of any size, and partner-minted coupons not held behind the
+  // brand's "wire up redemption first" gate.
+  await db(TABLES.Tenant)
+    .where({ id: DEFAULT_TENANT_ID })
+    .update({ payoutThresholdCents: 0, couponIntegrationVerifiedAt: new Date() });
 
   receiver = createServer((req, res) => {
     let raw = '';
     req.on('data', (c: Buffer) => (raw += c.toString('utf8')));
     req.on('end', () => {
-      received.push({ headers: req.headers, raw });
+      received.push({ path: req.url ?? '', headers: req.headers, raw });
       res.writeHead(200).end('ok');
     });
   });
   await new Promise<void>((resolve) => receiver.listen(0, '127.0.0.1', resolve));
-  receiverUrl = `http://127.0.0.1:${(receiver.address() as AddressInfo).port}/hook`;
+  receiverBase = `http://127.0.0.1:${(receiver.address() as AddressInfo).port}`;
 });
 
 afterAll(async () => {
   if (!skipIntegration) {
     for (const t of TABLES_TO_CLEAN) await db(t).del();
     await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID, key: 'network_membership' }).del();
-    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ payoutThresholdCents: savedThreshold ?? null });
+    await db(TABLES.Tenant)
+      .where({ id: DEFAULT_TENANT_ID })
+      .update({
+        payoutThresholdCents: savedTenant?.payoutThresholdCents ?? null,
+        couponIntegrationVerifiedAt: savedTenant?.couponIntegrationVerifiedAt ?? null,
+      });
     await new Promise<void>((resolve) => receiver.close(() => resolve()));
   }
   await db.destroy();
@@ -163,8 +269,9 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     // --- Setup: a webhook endpoint, a private program, a scoped key.
     const hook = check<{ endpoint: { id: string }; secret: string }>(
       'createWebhookEndpoint',
-      await admin.post('/webhooks', { url: receiverUrl, events: ['*'], label: 'contract' }),
+      await admin.post('/webhooks', { url: `${receiverBase}/hook/main`, events: ['*'], label: 'contract' }),
     );
+    secrets['/hook/main'] = hook.secret;
 
     check('getNetworkMembership', await admin.get('/config/network'));
     const membership = check<{ autoEnroll: boolean }>('updateNetworkMembership', await admin.post('/config/network', { autoEnroll: false }));
@@ -229,18 +336,16 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       landingUrl: `https://app.example.com/signup?cref=${clickId}`,
       referer: 'https://news.example.com/',
       userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
+      fraudFlag: null,
       ts: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
     };
     check('ingestClick', await admin.post('/clicks', click));
     check('ingestClick', await admin.post('/clicks', click));
 
     // --- The friend signs up: the browser SDK's identify, then server-side events.
-    const stitched = check<{ firstStitch: boolean }>(
-      'identify',
-      await request(app).post('/attribution/identify').send({ cref: clickId, userId: 'friend_1' }),
-    );
+    const stitched = check<{ firstStitch: boolean }>('identify', await anon.post('/attribution/identify', { cref: clickId, userId: 'friend_1' }));
     expect(stitched.firstStitch).toBe(true);
-    check('identify', await request(app).post('/attribution/identify').send({ cref: 'missing', userId: 'friend_1' }));
+    check('identify', await anon.post('/attribution/identify', { cref: 'missing', userId: 'friend_1' }));
 
     check('recordEvent', await integration.post('/attribution/events', { userId: 'friend_1', type: 'signup', externalEventId: 'signup:friend_1' }));
     const paid = { userId: 'friend_1', type: 'invoice_paid', value: 300, currency: 'USD', externalEventId: 'inv_1' };
@@ -250,6 +355,12 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     expect(replay.replayed).toBe(true);
     check('recordEvent', await integration.post('/attribution/events', { ...paid, value: 1 }));
     check('recordEvent', await integration.post('/attribution/events', { userId: 'friend_1', type: 'invoice_paid', value: 120, externalEventId: 'inv_2' }));
+    // Inputs the route treats specially, which the published schema must describe the same way:
+    // a numeric idempotency key is accepted; a timestamp with an offset is not.
+    check('recordEvent', await integration.post('/attribution/events', { userId: 'friend_1', type: 'demo_booked', externalEventId: 98765 }));
+    const offset = await integration.post('/attribution/events', { userId: 'friend_1', type: 'demo_booked', ts: '2026-10-16T10:00:00+00:00' });
+    expect(offset.status).toBe(400);
+    check('recordEvent', offset);
 
     // --- The referral page renders stats + earnings.
     const dash = check<{ clicks: number; attributedEvents: number }>(
@@ -258,6 +369,9 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     );
     expect(dash.clicks).toBe(1);
     check('getPartnerTimeseries', await integration.get(`/partners/${partner.id}/timeseries`));
+    const offsetQuery = await integration.get(`/partners/${partner.id}/timeseries?since=2026-01-01T00:00:00%2B00:00`);
+    expect(offsetQuery.status).toBe(400);
+    check('getPartnerTimeseries', offsetQuery);
     check('listPartnerEvents', await integration.get(`/partners/${partner.id}/events?limit=10`));
     check('listPartnerCustomers', await integration.get(`/partners/${partner.id}/customers`));
     check('getPartnerBreakdown', await integration.get(`/partners/${partner.id}/breakdowns?dimension=referer`));
@@ -287,11 +401,15 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     const run = check<{ payouts: Array<{ payoutId: string; method: string }> }>('runPayouts', await admin.post('/payouts/run'));
     expect(run.payouts).toHaveLength(1);
     expect(run.payouts[0]!.method).toBe('manual');
-    check('listPartnerPayouts', await integration.get(`/partners/${partner.id}/payouts`));
+    // The manual rail: the commission is `paid` while its payout is still `pending` (docs, step 5).
+    const planned = check<{ payouts: Array<{ id: string; status: string }> }>('listPartnerPayouts', await integration.get(`/partners/${partner.id}/payouts`));
+    expect(planned.payouts[0]!.status).toBe('pending');
+    const afterRun = check<{ commissions: Array<{ id: string; status: string }> }>('listPartnerCommissions', await integration.get(`/partners/${partner.id}/commissions`));
+    expect(afterRun.commissions.find((c) => c.id === toApprove!.id)?.status).toBe('paid');
     check('confirmManualPayout', await admin.post(`/payouts/${run.payouts[0]!.payoutId}/confirm`));
     check('confirmManualPayout', await admin.post(`/payouts/${run.payouts[0]!.payoutId}/confirm`));
 
-    // --- Webhooks the flow fired: delivered, signed as documented, shaped as catalogued.
+    // --- A Network approval, for partnership.approved.
     await admin.post('/partners', {
       email: 'creator@example.com',
       name: 'Network Creator',
@@ -309,13 +427,6 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       'payout.created',
       'commission.paid',
     ]);
-    for (const r of received) {
-      expect(verify(r.raw, r.headers, hook.secret), 'signature verifies').toBe(true);
-      const envelope = JSON.parse(r.raw) as { id: string; event: keyof typeof WEBHOOK_PAYLOADS };
-      expect(r.headers['x-openpartner-event']).toBe(envelope.event);
-      expect(r.headers['x-openpartner-delivery']).toBe(envelope.id);
-      expectShape(envelopeSchema(envelope.event, WEBHOOK_PAYLOADS[envelope.event]), envelope, `${envelope.event} webhook`);
-    }
   });
 
   it('serves the rest of the documented surface as documented', async () => {
@@ -347,8 +458,9 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     expect(rerun.summary.skipped).toBe(1);
     check('importPartnersCsv', await request(app).post('/import/partners-csv').set('Authorization', `Bearer ${ADMIN_KEY}`).set('content-type', 'text/csv').send('email,name\n'));
 
-    // Program grants.
-    check('listPartnerPrograms', await admin.get(`/partners/${other.id}/programs`));
+    // Program grants. Ungranted programs carry grantSource: null.
+    const grants = check<{ programs: Array<{ grantSource: string | null }> }>('listPartnerPrograms', await admin.get(`/partners/${other.id}/programs`));
+    expect(grants.programs.some((p) => p.grantSource === null)).toBe(true);
     check('grantPartnerPrograms', await admin.post(`/partners/${other.id}/programs`, { programIds: [program.id] }));
     check('revokePartnerProgram', await admin.delete(`/partners/${other.id}/programs/${program.id}`));
     check('revokePartnerProgram', await admin.delete(`/partners/${other.id}/programs/${program.id}`));
@@ -376,7 +488,7 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     const denied = check<{ required?: string }>('createPartner', await as(narrow.plaintext).post('/partners', { email: 'x@example.com', name: 'X' }));
     expect(denied.required).toBe('partners:write');
     check('listPrograms', await as(narrow.plaintext).get('/programs'));
-    check('getPartner', await request(app).get(`/partners/${other.id}`));
+    check('getPartner', await anon.get(`/partners/${other.id}`));
 
     // Coupons.
     const coupon = check<{ id: string; code: string }>('createPartnerCoupon', await admin.post(`/partners/${other.id}/coupons`, { programId: program.id, code: 'OTHER10' }));
@@ -421,6 +533,167 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     check('exportAllSql', await admin.get('/export.sql'));
     check('importBundle', await admin.post('/import', bundle));
     check('importBundle', await admin.post('/import', { ...bundle, schemaVersion: 999 }));
+  });
+
+  it("enforces every operation's documented access, credential by credential", async () => {
+    // Its own app instance: this sweep makes a few hundred calls and must
+    // not spend the per-IP budget of the app the other tests use.
+    const target = createApp({ enableLogger: false });
+    const adm = as(ADMIN_KEY, target);
+    const program = (await adm.post('/programs', {
+      name: 'Matrix',
+      destinationUrl: 'https://app.example.com/',
+      commissionRule: [{ trigger: 'every', type: 'percent', value: 10 }],
+      shareOnNetwork: false,
+      partnersMayCustomizeCode: true,
+    })).body as { id: string };
+    const own = (await adm.post('/partners', { email: 'matrix-own@example.com', name: 'Own', sendInvite: false, programIds: [program.id] })).body as { id: string };
+    const other = (await adm.post('/partners', { email: 'matrix-other@example.com', name: 'Other', sendInvite: false, programIds: [] })).body as { id: string };
+    const ownKey = (await adm.post(`/partners/${own.id}/api-keys`)).body.plaintext as string;
+    const allScopes = [...new Set([...operations.values()].flatMap((op) => accessExtension(op.access).scopes))];
+    const scopeKey: Record<string, string> = {};
+    for (const s of allScopes) scopeKey[s] = (await adm.post('/api-keys/scoped', { scopes: [s] })).body.plaintext;
+    const noneKey = (await adm.post('/api-keys/scoped', { scopes: ['none:none'] })).body.plaintext as string;
+
+    const failures: string[] = [];
+    type Outcome = { status: number; error?: string };
+    const call = async (op: { method: string; path: string }, key: string | null, partnerId: string): Promise<Outcome> => {
+      // Unknown ids keep the allowed calls harmless: they stop at a 400 or 404.
+      const path = op.path.replace(/:([A-Za-z0-9_]+)/g, (_, name: string) =>
+        name === 'id' ? partnerId : name === 'table' ? 'Partner' : name === 'format' ? 'json' : 'missing',
+      );
+      let t = (request(target) as unknown as Record<string, (p: string) => request.Test>)[op.method]!(path);
+      if (key) t = t.set('Authorization', `Bearer ${key}`);
+      const res = op.method === 'get' || op.method === 'delete' ? await t : await t.send({});
+      return { status: res.status, error: res.body?.error };
+    };
+    const isDenied = (r: Outcome) => r.status === 401 || (r.status === 403 && (r.error === 'forbidden' || r.error === 'forbidden_scope'));
+    const want = (label: string, ok: boolean, r: Outcome) => {
+      if (!ok) failures.push(`${label}: got ${r.status} ${r.error ?? ''}`);
+    };
+
+    for (const op of operations.values()) {
+      if (op.access.kind === 'handler') continue; // per-operation cases below
+      const name = `${op.method.toUpperCase()} ${op.path}`;
+      const ext = accessExtension(op.access);
+      const anonymous = await call(op, null, 'missing');
+      if (op.access.kind === 'public') {
+        want(`${name} without a key`, !isDenied(anonymous), anonymous);
+        continue;
+      }
+      want(`${name} without a key`, anonymous.status === 401, anonymous);
+      const noScope = await call(op, noneKey, 'missing');
+      want(`${name} with a scoped key lacking its scope`, noScope.status === 403 && noScope.error === (ext.scopes.length ? 'forbidden_scope' : 'forbidden'), noScope);
+      for (const s of ext.scopes) {
+        const r = await call(op, scopeKey[s]!, 'missing');
+        want(`${name} with a ${s} key`, !isDenied(r), r);
+      }
+      const asOwn = await call(op, ownKey, own.id);
+      if (op.access.kind === 'partnerOrAdmin') {
+        want(`${name} with the partner's own key`, !isDenied(asOwn), asOwn);
+        const asOther = await call(op, ownKey, other.id);
+        want(`${name} with a partner key on another partner`, asOther.status === 403 && asOther.error === 'forbidden', asOther);
+      } else {
+        want(`${name} with a partner key`, asOwn.status === 403 && asOwn.error === 'forbidden', asOwn);
+      }
+    }
+    expect(failures).toEqual([]);
+
+    // Operations whose handler decides, with every credential they document.
+    const writer = as(scopeKey['partners:write']!, target);
+    const ownPartner = as(ownKey, target);
+    const scopedOnly = as(noneKey, target);
+    const status = (opId: string, res: Exchange, expected: number) => {
+      check(opId, res);
+      expect(res.status, `${opId}`).toBe(expected);
+      return res.body;
+    };
+    status('listMyPrograms', await ownPartner.get('/me/programs'), 200);
+    status('listMyPrograms', await scopedOnly.get('/me/programs'), 403);
+    status('listMyPrograms', await as(null, target).get('/me/programs'), 401);
+
+    expect(status('introspectKey', await writer.get('/auth/introspect'), 200)).toEqual({ role: 'scoped', scopes: ['partners:write'] });
+    expect(status('introspectKey', await ownPartner.get('/auth/introspect'), 200)).toEqual({ role: 'partner', restrictedTo: { partnerId: own.id } });
+    expect(status('introspectKey', await adm.get('/auth/introspect'), 200)).toEqual({ role: 'admin', unrestricted: true });
+    status('introspectKey', await as(null, target).get('/auth/introspect'), 401);
+
+    // The program lets partners pick codes, so a partners:write key and the partner itself may mint and retire them.
+    const viaScope = status('createPartnerCoupon', await writer.post(`/partners/${own.id}/coupons`, { programId: program.id }), 201) as { id: string };
+    const viaPartner = status('createPartnerCoupon', await ownPartner.post(`/partners/${own.id}/coupons`, { programId: program.id }), 201) as { id: string };
+    status('createPartnerCoupon', await scopedOnly.post(`/partners/${own.id}/coupons`, { programId: program.id }), 403);
+    status('createPartnerCoupon', await ownPartner.post(`/partners/${other.id}/coupons`, { programId: program.id }), 403);
+    status('deactivatePartnerCoupon', await writer.delete(`/partners/${own.id}/coupons/${viaScope.id}`), 200);
+    status('deactivatePartnerCoupon', await ownPartner.delete(`/partners/${own.id}/coupons/${viaPartner.id}`), 200);
+    status('deactivatePartnerCoupon', await scopedOnly.delete(`/partners/${own.id}/coupons/${viaPartner.id}`), 403);
+
+    const othersKey = (await adm.post(`/partners/${other.id}/api-keys`)).body as { id: string };
+    const ownSpare = (await adm.post(`/partners/${own.id}/api-keys`)).body as { id: string };
+    status('revokeKey', await ownPartner.delete(`/api-keys/${othersKey.id}`), 403);
+    status('revokeKey', await scopedOnly.delete(`/api-keys/${ownSpare.id}`), 403);
+    status('revokeKey', await ownPartner.delete(`/api-keys/${ownSpare.id}`), 200);
+  }, 60_000);
+
+  it('delivers every documented webhook, signed and shaped as documented', async () => {
+    // A fresh endpoint (the first was unsubscribed above), then an invited
+    // partner accepting their magic link, for partner.activated.
+    const hook = check<{ secret: string }>(
+      'createWebhookEndpoint',
+      await admin.post('/webhooks', { url: `${receiverBase}/hook/second`, events: ['partner.activated'] }),
+    );
+    secrets['/hook/second'] = hook.secret;
+    const id = ulid();
+    await db(TABLES.Partner).insert({ id, tenantId: DEFAULT_TENANT_ID, email: 'invitee@example.com', name: 'Invitee', metadata: {}, activatedAt: null });
+    const link = await issueMagicLink(db, {
+      tenantId: DEFAULT_TENANT_ID,
+      email: 'invitee@example.com',
+      purpose: 'partner_invite',
+      principalKind: 'partner',
+      principalId: id,
+    });
+    expect((await request(app).post('/auth/magic/verify').send({ token: link.plaintext })).status).toBe(200);
+
+    await waitForEvents(Object.keys(WEBHOOK_PAYLOADS));
+    for (const r of received) {
+      const secret = secrets[r.path];
+      expect(secret, `delivery to ${r.path}`).toBeDefined();
+      expect(verify(r.raw, r.headers, secret!), `${r.path} signature`).toBe(true);
+      const envelope = JSON.parse(r.raw) as { id: string; event: keyof typeof WEBHOOK_PAYLOADS; data: Record<string, unknown> };
+      expect(r.headers['x-openpartner-event']).toBe(envelope.event);
+      expect(r.headers['x-openpartner-delivery']).toBe(envelope.id);
+      // Test fires add two markers to the real shape; strip them.
+      const { _synthetic, _endpointId, ...data } = envelope.data;
+      expectShape(envelopeSchema(envelope.event, WEBHOOK_PAYLOADS[envelope.event]), { ...envelope, data }, `${envelope.event} webhook`);
+    }
+  }, 30_000);
+
+  it('serves the reference and tenant routing as documented', async () => {
+    // /docs/ (trailing slash) would resolve the relative spec URL wrongly.
+    const slash = await request(app).get('/docs/');
+    expect(slash.status).toBe(301);
+    expect(slash.headers.location).toBe('../docs');
+    const docs = await request(app).get('/docs');
+    expect(docs.headers['content-security-policy']).toContain('sandbox allow-scripts');
+    expect(docs.headers['content-security-policy']).toContain('script-src https://cdn.jsdelivr.net/npm/redoc@');
+    const json = await request(app).get('/openapi.json');
+    expect(json.headers['access-control-allow-origin']).toBe('*');
+
+    const tenant = { id: 'openapi-contract-tenant', slug: 'openapi-contract', customDomain: 'partners.openapi-contract.test' };
+    await db(TABLES.Tenant).insert({ ...tenant, displayName: 'Contract', status: 'active' }).onConflict('id').merge();
+    process.env.OPENPARTNER_TENANCY = 'multi';
+    try {
+      expect((await request(app).get(`/t/${tenant.slug}/docs`)).status).toBe(200);
+      expect((await request(app).get(`/api/t/${tenant.slug}/openapi.json`)).status).toBe(200);
+      // White-label domains don't show the OpenPartner-branded reference.
+      expect((await request(app).get('/docs').set('Host', tenant.customDomain)).status).toBe(404);
+      expect((await request(app).get('/openapi.json').set('Host', tenant.customDomain)).status).toBe(404);
+      // No /t/<slug>: a 400 that says where the slug goes, even on the unauthenticated identify.
+      const slugless = check<{ error: string; detail: string }>('identify', await anon.post('/attribution/identify', { cref: 'x', userId: 'u' }));
+      expect(slugless.error).toBe('tenant_slug_missing');
+      expect(slugless.detail).toContain('/api/t/<your-slug>/');
+    } finally {
+      process.env.OPENPARTNER_TENANCY = 'single';
+      await db(TABLES.Tenant).where({ id: tenant.id }).del();
+    }
   });
 
   it('exercised every documented operation', () => {

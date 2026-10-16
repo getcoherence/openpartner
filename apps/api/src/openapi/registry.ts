@@ -175,8 +175,10 @@ export class OperationRegistry {
         ? z.object(Object.fromEntries(names.map((n) => [n, spec.params?.[n] ?? z.string().openapi({ description: `The ${n}.` })])))
         : undefined;
 
-    const errors: Record<number, string[]> = {};
-    if (spec.body || spec.query) errors[400] = [spec.body ? 'invalid_body' : 'invalid_query'];
+    // Every operation is tenant-scoped: on a multi-tenant install a URL
+    // without /t/<slug> answers 400 tenant_slug_missing.
+    const errors: Record<number, string[]> = { 400: ['tenant_slug_missing'] };
+    if (spec.body || spec.query) errors[400]!.unshift(spec.body ? 'invalid_body' : 'invalid_query');
     if (spec.access.kind !== 'public') Object.assign(errors, structuredClone(AUTH_ERRORS));
     for (const [status, codes] of Object.entries(spec.errors ?? {})) {
       const s = Number(status);

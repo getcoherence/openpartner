@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ulid } from 'ulid';
 import { TABLES, type ClickRow, type IdentityRow } from '@openpartner/db';
 import { attributeBacklogForUser } from '../attribution.js';
+import { sendTenantSlugMissing } from '../auth.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { tenantOf } from '../tenancy.js';
 
@@ -27,6 +28,9 @@ identifyRouter.post(
   '/attribution/identify',
   ipRateLimit({ name: 'identify', max: 120, windowMs: 60_000 }),
   async (req, res) => {
+    // No requireAuth here to turn a missing tenant into a 400, so do it
+    // ourselves — tenantOf would throw and surface as a 500.
+    if (!req.db) return sendTenantSlugMissing(res);
     const { db, tenantId } = tenantOf(req);
     const body = schema.safeParse(req.body);
     if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });

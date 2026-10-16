@@ -12,6 +12,7 @@ import { tenantOf } from '../tenancy.js';
 import { getNetworkMembership, pushPartnerRevoke, pushPartnerUpsert } from '../network-client.js';
 import { autoMintCouponsForGrants } from './coupons.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
+import type { WebhookPayload } from '../openapi/webhook-events.js';
 import { refineCommissionSubRule } from '../commission-rule-schema.js';
 import { isPendingReview } from '../partner-review.js';
 
@@ -281,7 +282,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
     activatedAt: partnerRow.activatedAt ? partnerRow.activatedAt.toISOString() : null,
     invited: sendInvite,
     programIds,
-  });
+  } satisfies WebhookPayload<'partner.created'>);
   if ((body.data.metadata as Record<string, unknown> | undefined)?.source === 'openpartner_network') {
     dispatchEvent(tenantId, 'partnership.approved', {
       partnerId: id,
@@ -289,7 +290,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
       name: body.data.name,
       networkCreatorId: (body.data.metadata as Record<string, unknown>).networkCreatorId,
       programIds,
-    });
+    } satisfies WebhookPayload<'partnership.approved'>);
   }
 
   res.status(201).json({ ...partner, invited: sendInvite });

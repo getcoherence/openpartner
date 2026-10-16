@@ -104,16 +104,24 @@ export const WEBHOOK_PAYLOADS = {
 
 export type WebhookEventName = keyof typeof WEBHOOK_PAYLOADS;
 
+/** The payload a dispatch site must send for `E`. Dispatch sites annotate
+ *  their literals with `satisfies WebhookPayload<'...'>`, so a field added,
+ *  dropped or retyped at the source fails typecheck until this catalogue
+ *  (and the published spec) agrees. Type-only: importing it loads nothing. */
+export type WebhookPayload<E extends WebhookEventName> = z.input<(typeof WEBHOOK_PAYLOADS)[E]>;
+
 const WEBHOOK_DESCRIPTIONS: Record<WebhookEventName, string> = {
   'attribution.created': 'A conversion event was credited to a partner. Fires once per credited partner (multi-touch models credit several).',
   'commission.accrued': 'A commission was written. One per commission rule that matched, so an event can accrue several.',
   'commission.approved': 'A commission was approved, by an admin or by the holdback auto-approve job.',
-  'commission.paid': 'A commission was included in a payout.',
+  'commission.paid':
+    'A commission was included in a payout. For a `manual` payout this fires when the payout is planned, before you have sent the money; `POST /payouts/{id}/confirm` records that you did.',
   'commission.reversed': 'A commission was reversed: by an admin, or by a Stripe refund or dispute.',
   'partner.created': 'A partner was created through `POST /partners` (admin, integration or Network approval).',
   'partner.activated': 'A partner accepted their invite and signed in for the first time.',
   'partnership.approved': 'A partner was created from an approved OpenPartner Network application.',
-  'payout.created': 'A payout was recorded: a Stripe Connect transfer that went out, or a manual-rail payout the operator will send.',
+  'payout.created':
+    'A payout was recorded: a Stripe Connect transfer that went out, or a `manual` payout you still have to send (it stays `pending` until confirmed).',
 };
 
 export function envelopeSchema(event: string, data: z.ZodTypeAny) {

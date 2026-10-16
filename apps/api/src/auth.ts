@@ -55,6 +55,22 @@ export function hashKey(plaintext: string): string {
   return createHash('sha256').update(plaintext).digest('hex');
 }
 
+/**
+ * 400 for a tenant-scoped route reached without a resolved tenant — on a
+ * multi-tenant install, a URL missing (or misplacing) /t/<slug>. Shared by
+ * requireAuth and the unauthenticated tenant routes (identify).
+ *
+ * The slug goes right after /api: the hosted ingress routes /api/* to this
+ * service, so /t/<slug>/api/* lands on the static portal and never gets here.
+ */
+export function sendTenantSlugMissing(res: Response): void {
+  res.status(400).json({
+    error: 'tenant_slug_missing',
+    detail:
+      'This API request did not pass through tenant resolution. On multi-tenant installs, include the tenant slug right after /api: /api/t/<your-slug>/... (or /t/<your-slug>/... when calling the API service directly).',
+  });
+}
+
 export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   // Multi-tenant requests need to come in under /t/<slug>/ so the
   // tenant middleware fires and sets req.db. Without that, every
@@ -64,11 +80,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   // callers — Zapier, CRM webhooks, raw curl — get an actionable
   // hint about the missing prefix.
   if (!req.db) {
-    res.status(400).json({
-      error: 'tenant_slug_missing',
-      detail:
-        'This API request did not pass through tenant resolution. On multi-tenant installs, include the tenant slug in the URL: /t/<your-slug>/api/...',
-    });
+    sendTenantSlugMissing(res);
     return;
   }
   const principal = await resolvePrincipal(req);

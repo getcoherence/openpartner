@@ -84,7 +84,7 @@ curl -s -X POST $OP/config/network -H "Authorization: Bearer $ADMIN" \
 
 Or use **Admin → Network** in the portal and switch off auto-enroll. The setting is per tenant.
 
-- Partners already pushed stay on the Network. Turning the setting off only stops new pushes.
+- Partners already pushed stay on the Network. Turning the setting off only stops new pushes. A push that failed earlier and is queued for retry is still delivered.
 - **Reconnecting to the Network** (the Connect or one-click enroll buttons on Admin → Network) sets `autoEnroll` back to `true`. Check `GET /config/network` after any reconnect.
 - Don't run **Admin → Network → Backfill** (`POST /config/network/backfill`). It pushes every existing partner.
 - Scoped keys can't read or change this setting. Use the admin key.
@@ -111,7 +111,7 @@ curl -s -X POST $OP/programs -H "Authorization: Bearer $ADMIN" -H 'content-type:
 
 - **`shareOnNetwork: false`** keeps the program off the public marketplace. When the tenant is on the Network it defaults to `true`, and then a `marketplaceDescription` is required.
 - **`destinationUrl`** is where share links land. The router appends `?cref=<click id>`.
-- **`holdbackDays`** delays approval of a commission. Set it to your refund window.
+- **`holdbackDays`** above 0 means a commission is **approved automatically** once it's that many days old, and paid by the next payout run. Set it to your refund window so refunds land before approval. With `0` or no holdback, nothing is approved until you call `POST /commissions/{id}/approve`. Use that if you want to review every commission.
 - **Rules** are an array of sub-rules, each with `trigger` (`every` / `first` / `subsequent`), an optional `eventType`, and a `percent` or `fixed` amount. Scope each rule to an event type: a `fixed` rule with no `eventType` pays on every event, signups included.
 
 > **TODO (in progress, not merged):** revenue-based commission slabs and tiers. Today a program's rule is flat. You can override one partner's terms with `PUT /partners/{id}/commission-snapshot` (admin key); that override applies to all of the partner's programs. Scoping it to one program is [#123](https://github.com/getcoherence/openpartner/pull/123), also open.
@@ -134,18 +134,19 @@ curl -s -X POST $OP/partners -H "Authorization: Bearer $KEY" -H 'content-type: a
 - **`sendInvite: false`** makes the partner active immediately, and OpenPartner sends no email.
 - **Always pass `programIds`.** If you omit it, the partner is granted every program in the tenant. A coupon code is auto-minted for each granted program.
 - **Store the returned `id` on your user record.** On later page views, use it directly.
-- **`email` is unique per tenant.** A second create answers `409 email_taken`. Handle it by looking the partner up with `GET /partners?email=ada@example.com`, which also covers two first visits racing each other.
+- **`email` is unique per tenant.** A second create answers `409 email_taken`. Look the partner up with `GET /partners?email=ada@example.com` and **check its `metadata.appUserId` is this user before linking it**. If it isn't, the address belongs to someone else (another user, or a partner in another program), so don't link it. Only use email addresses your app has verified. The same lookup covers two first visits racing each other.
 - `metadata` is free-form JSON, returned on reads. Put your own ids there: your user id, your CRM record id.
 - On OpenPartner Cloud, creating partners needs an active plan (`402 plan_required`) and an approved brand (`403 brand_pending_review`).
 
 **Existing customers in bulk.** To give every current customer a referral account up front, use `POST /import/partners-csv` instead of one call per customer: `text/csv` with `email,name,metadata` columns, `?dryRun=true` first. It sends no email, never pushes to the Network, and skips emails that already exist, so re-running it is safe. Unlike `POST /partners` it grants **every** program in the tenant and mints no coupons, so run it while the referral program is your only program. Send large rosters in batches of a few thousand rows. You can also skip the import and create partners lazily on first visit, as above.
 
-**Email.** OpenPartner emails a headless partner only when you trigger it:
+**Email and portal sign-in.** OpenPartner emails a headless partner in these cases:
 - `POST /partners/{id}/invite`, which sends a sign-in link.
 - `POST /partners/{id}/revoke`, which notifies by default. Pass `"notify": false`.
 - A program with an `endsAt`: seven days before the end, partners with a link on it get an "ending soon" email. Leave `endsAt` unset for an evergreen referral program.
+- **Anyone asks for a sign-in link.** A `sendInvite: false` partner is active, and the hosted portal's sign-in form (`POST /auth/signin`) emails a magic link to any active partner's address. Anyone who knows a customer's email can trigger that email, and the customer can then sign in to the hosted partner portal. There is no per-partner setting to turn this off yet. If it matters, use the non-deliverable addresses described under Privacy.
 
-**Privacy.** OpenPartner stores the name and email you send, and nothing else about the customer. If you'd rather not share real addresses, any unique address works for a headless partner, for example `user_123@referrals.yourapp.invalid`. The trade-off is that such a partner can never sign in to the hosted partner portal.
+**Privacy.** OpenPartner stores the name and email you send, and nothing else about the customer. If you'd rather not share real addresses, any unique address works for a headless partner, for example `user_123@referrals.yourapp.invalid`. Such a partner can never receive OpenPartner email or sign in to the hosted partner portal. Then the `metadata.appUserId` check above is how you match records; the email no longer does it.
 
 ## 4. Create their share link
 
@@ -171,15 +172,25 @@ All of these work with the scoped key:
 | `GET /partners/{id}/commissions?limit=&cursor=&status=` | The commission ledger, newest first, cursor-paginated. Each row has `amount`, `status` and `matureAt` (when the holdback ends). |
 | `GET /partners/{id}/payouts` | Up to the 200 most recent payouts. |
 
-A typical page shows *pending* as `accrued + approved` and *paid* as `paid` from `commissionByStatus`, and lists the latest commissions and payouts.
+What to show:
 
-- Money on a row (`amount`, `value`) is a decimal string such as `"9.80"`. Report totals are numbers.
+- **Pending earnings:** commissions with status `accrued` or `approved`.
+- **Processing:** commissions with status `paid` whose payout is still `pending`. On the manual rail (below), commissions become `paid` as soon as the payout is planned, before any money moves.
+- **Paid out:** payouts with status `paid`. Only these are money that actually went out.
+
+Sum by currency: `commissionByStatus` adds amounts across currencies, and it only covers commissions accrued since `since` (default 30 days), so it isn't a lifetime total. For lifetime figures, page through `/commissions`.
+
+- Commission and payout amounts are decimal strings such as `"9.80"`. Report endpoints (dashboard, timeseries, the events list) return numbers.
 - `GET /partners/{id}/funnel` (click → identity → signup → paid) does **not** accept scoped keys yet. Call it with an admin key from your server, or build the same counts from `/timeseries`. *TODO: a scoped read for `/funnel` and `/coupons` isn't built yet.*
-- **Cache these responses.** All API calls from one IP share a limit of **600 requests per 5 minutes**. Your backend calls from one IP, so this is the budget for your whole integration. A referral page that makes four calls per view and caches each user's stats for a minute or two stays far below it. A `429 rate_limited` response carries `RateLimit` headers.
+- **Cache these responses.** All API calls from one IP share a limit of **600 requests per 5 minutes**, and your backend calls from one IP, so this is the budget for your whole integration, event ingest included. At four calls per page view, that's about 150 uncached views per 5 minutes. Cache each user's stats for several minutes. Don't give users a button that bypasses the cache. On a `429 rate_limited` response, serve the cached copy. The response carries `RateLimit` headers.
+
+### How headless partners get paid
+
+A headless partner has no Stripe Connect account, so its payouts use the **manual rail**. The scheduled payout run (weekly by default), or `POST /payouts/run`, groups approved commissions into a `manual` Payout. The Payout is `pending`, its commissions are marked `paid`, and `payout.created` and `commission.paid` fire. **No money has moved yet.** You pay the customer yourself, as account credit, a bank transfer or a gift card, then call `POST /payouts/{id}/confirm`, and the Payout becomes `paid`. Set the tenant's payout cadence to **Manual** (Admin → Settings) if you'd rather run payouts only yourself.
 
 ## 6. Capture the click in the browser
 
-When someone follows a share link, the router records the click and redirects to your `destinationUrl` with `?cref=<click id>` appended. On your landing and signup pages, load the browser SDK. It stores the `cref` in `localStorage`, so the referral survives Safari's cookie limits and visits days apart:
+When someone follows a share link, the router records the click and redirects to your `destinationUrl` with `?cref=<click id>` appended. On your landing and signup pages, load the browser SDK. It stores the `cref` in `localStorage`, so the referral survives across page loads and later visits:
 
 ```ts
 import { OpenPartner } from '@openpartner/sdk';
@@ -194,9 +205,14 @@ await op.identify(user.id);
 
 Calling it after login as well as signup stitches a customer who clicked on one device and signed up on another.
 
-> **TODO (fix not merged as of 2026-10-16):** today, stitching a *second* click to a user whose events are already attributed can credit those events again, a duplicate commission. Until that fix ships, call `identify()` at signup only, and keep a holdback so the review queue catches anything doubled. Update this section when the fix merges.
+Where capture can lose a referral:
+- **`localStorage` is per origin.** If the link lands on `www.example.com` and signup happens on `app.example.com`, the signup page can't see the stored `cref`. Point `destinationUrl` at the origin where signup happens, or pass the `cref` along yourself.
+- **The router's `_cref` cookie isn't yours.** On OpenPartner Cloud it's set on the router's domain, so your site can't read it. The `?cref=` parameter on the landing URL is what counts.
+- **Safari may clear storage** that scripts wrote, after about seven days without a visit. For long gaps between click and signup, also save the `cref` on your side when you first see it, in a first-party cookie your server sets or on an anonymous visitor record.
 
-If you'd rather keep all OpenPartner calls on your server, read `op.getReferral()` in the browser, send it with your signup form, and call identify from your backend instead:
+> **TODO (fix not merged as of 2026-10-16):** today, stitching a *second* click to a user whose events are already attributed can credit those events again, a duplicate commission. Until that fix ships, call `identify()` at signup only. Remember that a holdback **auto-approves** (step 2). To catch a doubled commission before it's paid, either review the accrued queue (`GET /commissions?status=accrued`) within the holdback, or set `holdbackDays: 0` and approve by hand. Update this section when the fix merges.
+
+If you'd rather keep all OpenPartner calls on your server, read `op.getReferral()` in the browser, send it with your signup form, and call identify from your backend instead. Two cautions. From your server, every stitch counts against your backend IP's identify limit (120 per minute). And a failed stitch must never fail the signup: log it and move on.
 
 ```bash
 curl -s -X POST $OP/attribution/identify -H 'content-type: application/json' \
@@ -220,7 +236,7 @@ curl -s -X POST $OP/attribution/events -H "Authorization: Bearer $KEY" -H 'conte
 
 Or use the server SDK, `@openpartner/sdk/server`: `await op.trackEvent({ userId, type: 'invoice_paid', value: 49, currency: 'USD', externalEventId: invoice.id })`.
 
-**Report payments as `invoice_paid`.** It's the only "paid" stage in the funnel, and on OpenPartner Cloud it counts toward billable GMV, as does `subscription_created`. Report each payment once: sending both `subscription_created` and `invoice_paid` with a value for the same charge counts it twice.
+**Report payments as `invoice_paid`.** It's the only "paid" stage in the funnel, and on OpenPartner Cloud it counts toward billable GMV, as does `subscription_created`. Report each payment once: sending both `subscription_created` and `invoice_paid` with a value for the same charge counts it twice. Likewise, on a self-host whose Stripe account already sends webhooks to `/webhooks/stripe`, those payments are recorded automatically, keyed by the Stripe event id. Reporting them here too, under your invoice id, pays twice.
 
 | Type | Meaning in OpenPartner |
 | --- | --- |
@@ -234,12 +250,14 @@ For example, if you track clicks, signups, leads, demos and paid customers: clic
 
 - **Always send `externalEventId`.** Use your own stable id for that one event: invoice id, order id, or deal id plus stage. A retry with the same key returns `200` with `"replayed": true` and records nothing, even for duplicates that arrive at the same moment. Reusing a key for a different event returns `409 external_event_id_conflict`. Keys are per tenant and up to 120 characters.
 - `value` is in major units (`49.00`, not `4900`). `currency` defaults to USD.
+- A `ts` you send must be UTC and end in `Z` (`2026-10-16T10:00:00Z`). An offset like `+00:00`, the default from Python's `isoformat()`, gets `400 invalid_body`. Omit `ts` to use the time OpenPartner receives the event.
+- Send events from a job queue, not inline in your request handler. On `429`, or on a network error, retry later with the same `externalEventId`.
 - An event for a user with no stitched click returns `"status": "no_identity"` and is kept. If the user is stitched later, earlier events are attributed then (`backfilledAttributions` on the identify response).
 - **Refunds.** This endpoint doesn't take negative values. Reverse the commission with `POST /commissions/{id}/reverse` (admin key). A holdback as long as your refund window means most refunds land before anything is approved.
 
 ## 8. Get webhooks in your backend
 
-Subscribe an endpoint (admin key, or a scoped key with `webhooks:write`):
+Subscribe an endpoint (admin key, or a scoped key with `webhooks:write`, which can only subscribe and unsubscribe; listing, testing and redelivering need the admin key):
 
 ```bash
 curl -s -X POST $OP/webhooks -H "Authorization: Bearer $ADMIN" -H 'content-type: application/json' \
@@ -259,8 +277,9 @@ function verifyOpenPartner(rawBody, headers, secret) {
   const ts = headers['x-openpartner-timestamp'];
   const sig = headers['x-openpartner-signature'] ?? '';
   if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
-  const expected = createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex');
-  return sig.length === expected.length && timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+  const expected = Buffer.from(createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex'));
+  const given = Buffer.from(sig);
+  return given.length === expected.length && timingSafeEqual(given, expected);
 }
 ```
 
@@ -345,9 +364,12 @@ Writing totals rather than adding each webhook's amount means a duplicate, misse
 - [ ] OpenPartner API keys live only on your server: never in the browser, a mobile app, or front-end env vars. Partner keys (`POST /partners/{id}/api-keys`) are credentials too.
 - [ ] The runtime key is scoped, and the admin key isn't deployed.
 - [ ] Your backend takes the partner id from its own session, never from a request parameter. A scoped key can read every partner.
+- [ ] A partner found by email is linked to a user only when its `metadata.appUserId` matches (step 3), and only verified emails are used.
 - [ ] Network auto-enroll is off (step 1), and you re-check it after any Network reconnect.
 - [ ] Webhook signatures are verified on the raw body, with the 5-minute timestamp window, and deliveries are deduped on `id`.
 - [ ] `userId` is an opaque internal id, not an email address.
+- [ ] "Paid out" in your UI comes from payouts with status `paid`, not from commissions marked `paid` (step 5).
+- [ ] Users can't force cache refreshes that spend your rate limit, and event reporting retries on `429`.
 - [ ] To rotate a key, mint a new one, deploy it, then `DELETE /api-keys/{id}` the old one.
 
 ## Drive OpenPartner from your own admin
@@ -374,4 +396,5 @@ These are tracked as follow-ups. None of them is available today:
 - **Revenue-based commission slabs and tiers** (in progress; see step 2).
 - **Scoped reads** for `/partners/{id}/funnel`, `/coupons` and `/commission-snapshot`.
 - **Per-key rate limits.** Today the limit is per client IP (step 5).
+- **Turning off portal sign-in for headless partners.** Today any active partner can request a sign-in link (step 3).
 - **Read helpers in the server SDK** (dashboard, commissions, payouts). Today the SDK covers `trackEvent` and `identify`; use plain HTTP for reads, as the sample does.
