@@ -21,7 +21,7 @@ const createSchema = z.object({
 
 export const linksRouter = Router();
 
-linksRouter.get('/partners/:id/links', requireAuth, requirePartnerOrAdmin('id'), async (req, res) => {
+linksRouter.get('/partners/:id/links', requireAuth, grantScope('links:read'), requirePartnerOrAdmin('id'), async (req, res) => {
   const { db } = tenantOf(req);
   const links = await db<LinkRow>(TABLES.Link)
     .where({ partnerId: req.params.id })

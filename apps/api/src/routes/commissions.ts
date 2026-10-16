@@ -11,16 +11,29 @@
  */
 
 import { Router } from 'express';
+import type { Knex } from 'knex';
 import { z } from 'zod';
 import { TABLES, type CommissionRow } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { dispatchCommissionEvents } from '../commission-events.js';
+import { cursorTimestamp, decodeCursor, takePage, whereAfterCursor } from '../pagination.js';
 import { tenantOf } from '../tenancy.js';
 import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
 
+/**
+ * List query for both commission lists:
+ *   - ?status=…  — filter to one lifecycle state
+ *   - ?limit=N   — page size (1-500, default 100)
+ *   - ?cursor=…  — opaque cursor returned by the previous page
+ *
+ * Returns { commissions, nextCursor }; nextCursor is null on the last
+ * page. Ordered accruedAt DESC, id DESC — same keyset scheme as
+ * GET /partners (see pagination.ts).
+ */
 const listQuerySchema = z.object({
   status: z.enum(['accrued', 'approved', 'paid', 'reversed']).optional(),
-  limit: z.coerce.number().int().min(1).max(500).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional().default(100),
+  cursor: z.string().optional(),
 });
 
 export const commissionsRouter = Router();
@@ -35,10 +48,9 @@ commissionsRouter.get(
     const q = listQuerySchema.safeParse(req.query);
     if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
 
-    const query = listQueryBase(db).where('c.partnerId', req.params.id).limit(q.data.limit ?? 100);
-    if (q.data.status) query.andWhere('c.status', q.data.status);
-    const commissions = await query;
-    res.json({ commissions: commissions.map(decorateMaturity) });
+    const result = await listPage(db, q.data, req.params.id);
+    if (!result) return res.status(400).json({ error: 'invalid_cursor' });
+    res.json(result);
   },
 );
 
@@ -47,11 +59,26 @@ commissionsRouter.get('/commissions', requireAuth, grantScope('commissions:read'
   const q = listQuerySchema.safeParse(req.query);
   if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
 
-  const query = listQueryBase(db).limit(q.data.limit ?? 100);
-  if (q.data.status) query.andWhere('c.status', q.data.status);
-  const commissions = await query;
-  res.json({ commissions: commissions.map(decorateMaturity) });
+  const result = await listPage(db, q.data);
+  if (!result) return res.status(400).json({ error: 'invalid_cursor' });
+  res.json(result);
 });
+
+/** One page of commissions, optionally for a single partner. Null when
+ *  the cursor doesn't decode. */
+async function listPage(db: Knex, q: z.infer<typeof listQuerySchema>, partnerId?: string) {
+  const query = listQueryBase(db).select(cursorTimestamp(db, 'c.accruedAt')).limit(q.limit + 1);
+  if (partnerId) query.where('c.partnerId', partnerId);
+  if (q.status) query.andWhere('c.status', q.status);
+  if (q.cursor) {
+    const cursor = decodeCursor(q.cursor);
+    if (!cursor) return null;
+    whereAfterCursor(query, 'c.accruedAt', 'c.id', cursor);
+  }
+  const rows = (await query) as Array<Parameters<typeof decorateMaturity>[0] & { _cursorTs: string }>;
+  const { page, nextCursor } = takePage(rows, q.limit);
+  return { commissions: page.map(decorateMaturity), nextCursor };
+}
 
 /** Shared base query — joins Commission → Attribution → Campaign and
  *  picks the effective holdback. Effective = the partner's snapshotted
@@ -59,7 +86,7 @@ commissionsRouter.get('/commissions', requireAuth, grantScope('commissions:read'
  *  campaign's value for legacy / non-Network partners. The UI uses
  *  this to show "Matures in N days" badges and to disable the approve
  *  button while holdback is active. */
-function listQueryBase(db: import('knex').Knex) {
+function listQueryBase(db: Knex) {
   return db(`${TABLES.Commission} as c`)
     .leftJoin(`${TABLES.Attribution} as a`, 'a.id', 'c.attributionId')
     .leftJoin(`${TABLES.Program} as cp`, 'cp.id', 'a.programId')
@@ -68,7 +95,10 @@ function listQueryBase(db: import('knex').Knex) {
     .select(db.raw('coalesce("pc"."holdbackDays", "cp"."holdbackDays") as "_holdbackDays"'))
     .select('cp.id as _campaignId')
     .select('cp.name as _campaignName')
-    .orderBy('c.accruedAt', 'desc');
+    .orderBy([
+      { column: 'c.accruedAt', order: 'desc' },
+      { column: 'c.id', order: 'desc' },
+    ]);
 }
 
 interface DecoratedCommission extends CommissionRow {

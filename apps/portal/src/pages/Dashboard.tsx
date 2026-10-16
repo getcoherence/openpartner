@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
   MousePointerClick,
@@ -18,7 +19,7 @@ import { useTenantBase } from '../tenant-base.js';
 import { TenantLink } from '../tenant-link.js';
 import { alpha, theme } from '../theme.js';
 import { useBrand } from '../lib/useBrand.js';
-import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, SectionHeading, Stat, StatusPill, money } from '../ui.js';
+import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, SectionHeading, Select, Stat, StatusPill, money } from '../ui.js';
 
 // ---------- Partner ----------
 
@@ -303,8 +304,18 @@ function FunnelChart({ funnel }: { funnel: Funnel }) {
 
 // ---------- Admin ----------
 
+type OverviewSort = 'revenue' | 'commission' | 'clicks';
+
+const OVERVIEW_SORTS: Array<{ value: OverviewSort; label: string }> = [
+  { value: 'revenue', label: 'Top by revenue' },
+  { value: 'commission', label: 'Top by commission' },
+  { value: 'clicks', label: 'Top by clicks' },
+];
+
 interface AdminOverview {
   since: string;
+  sort: OverviewSort;
+  nextCursor: string | null;
   totals: {
     partners: number;
     clicks: number;
@@ -327,45 +338,97 @@ interface AdminOverview {
 }
 
 function AdminDashboard() {
-  const { data, error, isLoading } = useQuery({
-    queryKey: ['admin-overview'],
-    queryFn: () => api<AdminOverview>('/admin/overview'),
+  const [sort, setSort] = useState<OverviewSort>('revenue');
+  // Totals come from the first page (every page carries the same
+  // whole-tenant aggregates); partner cards accumulate page by page so a
+  // program with tens of thousands of partners never loads them all.
+  const { data, error, isLoading, isFetching, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
+    queryKey: ['admin-overview', sort],
+    queryFn: ({ pageParam }) => {
+      const qs = new URLSearchParams({ sort });
+      if (pageParam) qs.set('cursor', pageParam);
+      return api<AdminOverview>(`/admin/overview?${qs}`);
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor,
+    placeholderData: keepPreviousData,
   });
+  const totals = data?.pages[0]?.totals;
+  const partners = data?.pages.flatMap((p) => p.partners) ?? [];
 
   return (
     <Page title="Partner Program" subtitle="Overview of every partner driving attributed revenue.">
       <ErrorBanner error={error} />
       <PendingApprovalsBanner />
       <BrandOnboarding />
-      {isLoading || !data ? (
+      {isLoading || !totals ? (
         <Card>Loading…</Card>
       ) : (
         <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
-            <Stat label="Partners" value={data.totals.partners} icon={<Users size={16} />} />
-            <Stat label="Clicks (30d)" value={data.totals.clicks} icon={<MousePointerClick size={16} />} />
-            <Stat label="Attributed revenue" value={money(data.totals.attributedRevenue)} icon={<Wallet size={16} />} />
+            <Stat label="Partners" value={totals.partners.toLocaleString()} icon={<Users size={16} />} />
+            <Stat label="Clicks (30d)" value={totals.clicks.toLocaleString()} icon={<MousePointerClick size={16} />} />
+            <Stat label="Attributed revenue" value={money(totals.attributedRevenue)} icon={<Wallet size={16} />} />
             <Stat
               label="Awaiting approval"
-              value={money(data.totals.commissionAccrued)}
-              hint={`${money(data.totals.commissionApproved)} approved, ${money(data.totals.commissionPaid)} paid`}
+              value={money(totals.commissionAccrued)}
+              hint={`${money(totals.commissionApproved)} approved, ${money(totals.commissionPaid)} paid`}
               icon={<Receipt size={16} />}
             />
           </div>
 
-          <SectionHeading>Partners</SectionHeading>
-          {data.partners.length === 0 ? (
+          <SectionHeading
+            actions={
+              totals.partners > 0 && (
+                <Select
+                  aria-label="Rank partners by"
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value as OverviewSort)}
+                  style={{ width: 'auto', padding: '6px 10px', fontSize: 13 }}
+                >
+                  {OVERVIEW_SORTS.map((s) => (
+                    <option key={s.value} value={s.value}>
+                      {s.label}
+                    </option>
+                  ))}
+                </Select>
+              )
+            }
+          >
+            Partners
+          </SectionHeading>
+          {partners.length === 0 ? (
             <EmptyState
               title="No partners yet"
               hint="Create one from Admin → Partners to get started."
               icon={<Users size={28} strokeWidth={1.25} />}
             />
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
-              {data.partners.map((p) => (
-                <PartnerCard key={p.id} partner={p} />
-              ))}
-            </div>
+            <>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                  gap: 14,
+                  opacity: isFetching && !isFetchingNextPage ? 0.6 : 1,
+                  transition: 'opacity 120ms ease',
+                }}
+              >
+                {partners.map((p) => (
+                  <PartnerCard key={p.id} partner={p} />
+                ))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, marginTop: 16, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, color: theme.textMuted, fontVariantNumeric: 'tabular-nums' }}>
+                  Showing {partners.length.toLocaleString()} of {totals.partners.toLocaleString()} partners
+                </span>
+                {hasNextPage && (
+                  <Button variant="secondary" size="sm" onClick={() => void fetchNextPage()} disabled={isFetchingNextPage}>
+                    {isFetchingNextPage ? 'Loading…' : 'Load more'}
+                  </Button>
+                )}
+              </div>
+            </>
           )}
         </>
       )}

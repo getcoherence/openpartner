@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { TABLES, type PayoutRow } from '@openpartner/db';
-import { requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
+import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { db as privilegedDb } from '../db.js';
 import { dispatchPayoutNotifications, runPayouts } from '../payouts.js';
 import { executePayoutTransfers } from '../payout-transfers.js';
@@ -79,9 +79,13 @@ payoutsRouter.post('/payouts/:id/confirm', requireAuth, requireAdmin, async (req
   res.json({ payout: updated[0]! });
 });
 
+// payouts:read lets a scoped integration key (headless in-app earnings
+// UI) read any partner's payout history. Read-only: running or
+// confirming payouts stays admin-only with no scope grant.
 payoutsRouter.get(
   '/partners/:id/payouts',
   requireAuth,
+  grantScope('payouts:read'),
   requirePartnerOrAdmin('id'),
   async (req, res) => {
     const { db } = tenantOf(req);

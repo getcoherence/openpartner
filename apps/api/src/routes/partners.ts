@@ -6,6 +6,7 @@ import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '..
 import { issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
 import { buildMagicLinkUrl, partnerInviteEmail, partnerRevokedEmail } from '../email-templates.js';
+import { cursorTimestamp, decodeCursor, takePage, whereAfterCursor } from '../pagination.js';
 import { linkTenantOf } from '../portal-url.js';
 import { tenantOf } from '../tenancy.js';
 import { getNetworkMembership, pushPartnerRevoke, pushPartnerUpsert } from '../network-client.js';
@@ -457,8 +458,8 @@ partnersRouter.post('/partners/:id/reinstate', requireAuth, requireAdmin, async 
  *   - ?cursor=...         — opaque cursor returned by the previous page
  *
  * Returns { partners, nextCursor }. nextCursor is null when no more
- * pages. Cursor is base64(`createdAt|id`) — encoded so callers don't
- * try to construct it themselves and we keep ordering invariants.
+ * pages. Cursor is opaque base64url(`createdAt|id`) at microsecond
+ * precision — see pagination.ts for why millisecond cursors skipped rows.
  *
  * Stable ordering: createdAt DESC, id DESC as tiebreaker (id is
  * lexicographically increasing for ULIDs but not for legacy partners,
@@ -473,48 +474,29 @@ partnersRouter.get('/partners', requireAuth, grantScope('partners:read'), requir
   const q = listQuerySchema.safeParse(req.query);
   if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
   const { db } = tenantOf(req);
-  const query = db<PartnerRow>(TABLES.Partner).orderBy([
-    { column: 'createdAt', order: 'desc' },
-    { column: 'id', order: 'desc' },
-  ]);
+  const query = db<PartnerRow>(TABLES.Partner)
+    .select('*', cursorTimestamp(db, 'createdAt'))
+    .orderBy([
+      { column: 'createdAt', order: 'desc' },
+      { column: 'id', order: 'desc' },
+    ]);
   if (q.data.email) query.where('email', q.data.email.toLowerCase());
   if (q.data.cursor) {
     const decoded = decodeCursor(q.data.cursor);
     if (!decoded) return res.status(400).json({ error: 'invalid_cursor' });
     // Strict inequality on the composite key — the row at the cursor
     // itself was already returned in the previous page.
-    query.andWhere((qb) =>
-      qb
-        .where('createdAt', '<', decoded.createdAt)
-        .orWhere((qq) => qq.where('createdAt', decoded.createdAt).andWhere('id', '<', decoded.id)),
-    );
+    whereAfterCursor(query, 'createdAt', 'id', decoded);
   }
-  const partners = await query.limit(q.data.limit + 1);
-  const hasMore = partners.length > q.data.limit;
-  const page = hasMore ? partners.slice(0, q.data.limit) : partners;
-  const last = page[page.length - 1];
-  const nextCursor = hasMore && last ? encodeCursor(last.createdAt, last.id) : null;
+  const { page, nextCursor } = takePage(await query.limit(q.data.limit + 1), q.data.limit);
   res.json({ partners: page, nextCursor });
 });
 
-function encodeCursor(createdAt: Date, id: string): string {
-  return Buffer.from(`${createdAt.toISOString()}|${id}`).toString('base64url');
-}
-
-function decodeCursor(cursor: string): { createdAt: Date; id: string } | null {
-  try {
-    const raw = Buffer.from(cursor, 'base64url').toString('utf8');
-    const [iso, id] = raw.split('|');
-    if (!iso || !id) return null;
-    const createdAt = new Date(iso);
-    if (Number.isNaN(createdAt.getTime())) return null;
-    return { createdAt, id };
-  } catch {
-    return null;
-  }
-}
-
-partnersRouter.get('/partners/:id', requireAuth, requirePartnerOrAdmin('id'), async (req, res) => {
+// partners:read also covers the single-record read: GET /partners already
+// returns these same rows to that scope, so this exposes nothing new to a
+// scoped integration key — it just saves a headless integration paging
+// the list to look one partner up.
+partnersRouter.get('/partners/:id', requireAuth, grantScope('partners:read'), requirePartnerOrAdmin('id'), async (req, res) => {
   const { db } = tenantOf(req);
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });

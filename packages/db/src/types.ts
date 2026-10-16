@@ -661,6 +661,7 @@ export type ApiScope =
   | 'links:read'
   | 'links:write'
   | 'commissions:read'
+  | 'payouts:read'
   | (string & {}); // permit future additions without a migration
 
 export interface ApiKeyRow {
