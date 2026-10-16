@@ -710,11 +710,59 @@ export async function adminSetVendorReview(
   vendorId: string,
   status: VendorReviewStatus,
   reason?: string | null,
-): Promise<void> {
-  await callNetworkAdmin(networkUrl, 'POST', `/admin/vendors/${encodeURIComponent(vendorId)}/review`, {
-    status,
-    ...(reason ? { reason: reason.slice(0, 500) } : {}),
-  });
+  opts: {
+    /** Have the Network email the vendor the decision (operator decisions on
+     *  self-serve vendors; brand approval sends its own email instead). */
+    notifyVendor?: boolean;
+  } = {},
+): Promise<{ changed?: boolean; notified?: boolean }> {
+  const res = await callNetworkAdmin<{ changed?: boolean; notified?: boolean } | undefined>(
+    networkUrl,
+    'POST',
+    `/admin/vendors/${encodeURIComponent(vendorId)}/review`,
+    {
+      status,
+      ...(reason ? { reason: reason.slice(0, 500) } : {}),
+      ...(opts.notifyVendor ? { notifyVendor: true } : {}),
+    },
+  );
+  return res ?? {};
+}
+
+/** One vendor in the Network's review queue (GET /admin/vendor-review). */
+export interface NetworkVendorReviewEntry {
+  id: string;
+  displayName: string;
+  logoUrl: string | null;
+  instanceUrl: string;
+  tier: 'hosted' | 'self_hosted';
+  /** Credential liveness: 'pending' = onboarding email not verified yet. */
+  status: string;
+  contactEmail: string;
+  contactName: string | null;
+  partnerCount: number;
+  lastHeartbeatAt: string | null;
+  suspensionReason: string | null;
+  reviewStatus: VendorReviewStatus;
+  reviewedAt: string | null;
+  reviewReason: string | null;
+  createdAt: string;
+  offeringCount: number;
+  publishedOfferingCount: number;
+  /** Most recent first, capped. Text only — never render productUrl as a link. */
+  offerings: Array<{
+    id: string;
+    title: string;
+    description: string | null;
+    productUrl: string;
+    published: boolean;
+    createdAt: string;
+  }>;
+}
+
+export async function adminVendorReviewQueue(networkUrl: string): Promise<NetworkVendorReviewEntry[]> {
+  const res = await callNetworkAdmin<{ vendors: NetworkVendorReviewEntry[] }>(networkUrl, 'GET', '/admin/vendor-review');
+  return res.vendors ?? [];
 }
 
 export interface NetworkVendorSummary {

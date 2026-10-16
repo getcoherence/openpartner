@@ -292,6 +292,30 @@ export function opsBrandNeedsReviewEmail(
   return { subject, text, html: wrap(text, reviewUrl, 'Review brand') };
 }
 
+/** Platform ops: self-hosted vendors registered on the Network and are
+ *  waiting in the vendor review queue (nothing they publish lists until an
+ *  operator approves them). */
+export function opsNetworkVendorsPendingEmail(
+  vendors: Array<{ name: string; instanceUrl: string }>,
+  reviewUrl: string,
+): EmailTemplate {
+  const n = vendors.length;
+  const subject =
+    n === 1 ? `[Review] Network vendor ${vendors[0]!.name} is waiting` : `[Review] ${n} Network vendors are waiting`;
+  const text = [
+    `${n === 1 ? 'A self-hosted vendor has' : `${n} self-hosted vendors have`} joined the OpenPartner Network and ${n === 1 ? 'is' : 'are'} waiting for review.`,
+    `Nothing they publish appears on the marketplace until approved.`,
+    ``,
+    // Indented so the HTML wrapper renders instance URLs as text, never links.
+    ...vendors.map((v) => `  ${v.name} (${v.instanceUrl})`),
+    ``,
+    `Approve or reject in the ops console:`,
+    ``,
+    reviewUrl,
+  ].join('\n');
+  return { subject, text, html: wrap(text, reviewUrl, 'Review vendors') };
+}
+
 /** Platform ops: a decision was recorded (audit copy to the ops inbox). */
 export function opsBrandDecisionEmail(
   brandName: string,

@@ -9,6 +9,7 @@ import { papi, type PlatformOperator } from './lib.js';
 import { BrandsPage } from './Brands.js';
 import { CreatorsPage } from './Creators.js';
 import { MarketplacePage } from './Marketplace.js';
+import { VendorsPage } from './Vendors.js';
 import { BlocklistPage } from './Blocklist.js';
 import { AuditPage } from './Audit.js';
 import { NotificationsPage } from './Notifications.js';
@@ -16,6 +17,7 @@ import { NotificationsPage } from './Notifications.js';
 const TABS = [
   { to: '/platform/brands', label: 'Brands' },
   { to: '/platform/creators', label: 'Creators' },
+  { to: '/platform/vendors', label: 'Vendors' },
   { to: '/platform/marketplace', label: 'Marketplace' },
   { to: '/platform/notifications', label: 'Notifications' },
   { to: '/platform/blocklist', label: 'Blocklist' },
@@ -72,6 +74,7 @@ export function PlatformConsole() {
         <Route index element={<Navigate to="/platform/brands" replace />} />
         <Route path="brands" element={<BrandsPage operator={operator} />} />
         <Route path="creators" element={<CreatorsPage operator={operator} />} />
+        <Route path="vendors" element={<VendorsPage operator={operator} />} />
         <Route path="marketplace" element={<MarketplacePage operator={operator} />} />
         <Route path="notifications" element={<NotificationsPage operator={operator} />} />
         <Route path="blocklist" element={<BlocklistPage operator={operator} />} />
