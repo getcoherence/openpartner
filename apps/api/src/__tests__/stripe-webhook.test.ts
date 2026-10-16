@@ -376,10 +376,17 @@ describe.skipIf(skipIntegration)('stripe webhook — coupon auto-redemption (sin
   // a partner link: no client_reference_id, so nothing but the code ties
   // them to the partner.
 
-  async function seedCoupon(): Promise<{ partnerId: string; code: string }> {
+  async function seedCoupon(stripePromotionCodeId: string | null = null): Promise<{ partnerId: string; code: string }> {
     const { partnerId, programId } = await seedClick();
     const code = `CREATOR${ulid().slice(-6)}`;
-    await db(TABLES.Coupon).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, partnerId, programId, code });
+    await db(TABLES.Coupon).insert({
+      id: ulid(),
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId,
+      programId,
+      code,
+      stripePromotionCodeId,
+    });
     return { partnerId, code };
   }
 
@@ -546,10 +553,11 @@ describe.skipIf(skipIntegration)('stripe webhook — coupon auto-redemption (sin
     const promoId = `promo_${ulid()}`;
     const payload = discountedInvoicePaid(customerId, discountId);
     const invoiceId = (payload.data.object as { id: string }).id;
+    // As the read-back returns it: each discount's PromotionCode expanded.
     const discount = {
       id: discountId,
       object: 'discount',
-      promotion_code: promoId,
+      promotion_code: { id: promoId, object: 'promotion_code', code },
       source: { coupon: `co_${ulid()}`, type: 'coupon' },
     };
     stripeApi.invoicesRetrieve.mockResolvedValue({
@@ -557,16 +565,17 @@ describe.skipIf(skipIntegration)('stripe webhook — coupon auto-redemption (sin
       discounts: [discount],
       total_discount_amounts: [{ amount: 1000, discount }],
     });
-    stripeApi.promotionCodesRetrieve.mockResolvedValue({ id: promoId, object: 'promotion_code', code });
 
     const res = await postWebhook(payload);
 
     expect(res.status).toBe(200);
     expect(stripeApi.invoicesRetrieve).toHaveBeenCalledWith(invoiceId, {
-      expand: ['discounts', 'total_discount_amounts.discount'],
+      expand: ['discounts.promotion_code', 'total_discount_amounts.discount.promotion_code'],
     });
-    // The same discount listed twice (invoice + amounts) is read once.
-    expect(stripeApi.promotionCodesRetrieve).toHaveBeenCalledTimes(1);
+    // The expanded PromotionCode needs no further read.
+    expect(stripeApi.promotionCodesRetrieve).not.toHaveBeenCalled();
+    // The same discount listed twice (invoice + amounts) redeems once.
+    expect(await db(TABLES.Click).where({ partnerId, landingUrl: `coupon://${code}` })).toHaveLength(1);
     const event = await db(TABLES.Event).where({ userId: customerId, type: 'invoice_paid' }).first();
     expect(event).toBeTruthy();
     expect(Number(event!.value)).toBe(49);
@@ -658,6 +667,25 @@ describe.skipIf(skipIntegration)('stripe webhook — coupon auto-redemption (sin
       await expectOneCreditedSignup(s);
     });
 
+    it("a later undiscounted invoice still resolves and credits the coupon's partner", async () => {
+      // The coupon Identity holds the merchant's userId, not the cus_ id, so
+      // the Identity join in resolveTenantForEvent can't find this customer:
+      // the single-tenant fallback resolves it, and the metadata bridge
+      // finds the user.
+      const s = await seedMerchantCouponCustomer();
+      expect((await postWebhook(s.checkout)).status).toBe(200);
+
+      const renewal = invoicePaid(s.customerId, { billing_reason: 'subscription_cycle', discounts: [] });
+      const res = await postWebhook(renewal);
+
+      expect(res.status).toBe(200);
+      expect(stripeApi.invoicesRetrieve).not.toHaveBeenCalled();
+      const invoice = await db(TABLES.Event).where({ type: 'invoice_paid' }).first();
+      expect(invoice?.userId).toBe(s.merchantUserId);
+      const attribution = await db(TABLES.Attribution).where({ eventId: invoice!.id }).first();
+      expect(attribution?.partnerId).toBe(s.partnerId);
+    });
+
     it('a cref checkout that also redeems a code keys both clicks to the merchant userId', async () => {
       const s = await seedMerchantCouponCustomer();
       const { clickId } = await seedClick();
@@ -674,6 +702,144 @@ describe.skipIf(skipIntegration)('stripe webhook — coupon auto-redemption (sin
       expect(await db(TABLES.Identity).where({ userId: s.customerId })).toHaveLength(0);
       expect(await db(TABLES.Event).where({ type: 'signup', userId: s.merchantUserId })).toHaveLength(1);
     });
+  });
+
+  it('matches a promotion_code id to the coupon it was minted with, without reading Stripe', async () => {
+    const promoId = `promo_${ulid()}`;
+    const { partnerId } = await seedCoupon(promoId);
+    const customerId = `cus_${ulid()}`;
+    // Partner coupons' Stripe Coupon ids are auto-generated, so only the
+    // PromotionCode id can match here. promotionCodes.retrieve rejects by
+    // default: a read would fail the delivery.
+    const res = await postWebhook(couponCheckout(customerId, { discounts: [{ coupon: `co_${ulid()}`, promotion_code: promoId }] }));
+
+    expect(res.status).toBe(200);
+    expect(stripeApi.promotionCodesRetrieve).not.toHaveBeenCalled();
+    const event = await db(TABLES.Event).where({ userId: customerId, type: 'signup' }).first();
+    const attribution = await db(TABLES.Attribution).where({ eventId: event!.id }).first();
+    expect(attribution?.partnerId).toBe(partnerId);
+  });
+
+  it('a transient promotion code read failure is a 500, so Stripe redelivers', async () => {
+    const { partnerId, code } = await seedCoupon();
+    const customerId = `cus_${ulid()}`;
+    const promoId = `promo_${ulid()}`;
+    stripeApi.promotionCodesRetrieve.mockRejectedValue(stripeError('StripeConnectionError'));
+    const payload = couponCheckout(customerId, { discounts: [{ coupon: `co_${ulid()}`, promotion_code: promoId }] });
+
+    expect((await postWebhook(payload)).status).toBe(500);
+    expect(await db(TABLES.Click).where({ partnerId, landingUrl: `coupon://${code}` })).toHaveLength(0);
+    expect(await db(TABLES.Event)).toHaveLength(0);
+
+    // The redelivery redeems.
+    stripeApi.promotionCodesRetrieve.mockResolvedValue({ id: promoId, object: 'promotion_code', code });
+    expect((await postWebhook(payload)).status).toBe(200);
+    const event = await db(TABLES.Event).where({ userId: customerId, type: 'signup' }).first();
+    const attribution = await db(TABLES.Attribution).where({ eventId: event!.id }).first();
+    expect(attribution?.partnerId).toBe(partnerId);
+  });
+
+  it('a permanent promotion code read failure is acknowledged and redeems nothing', async () => {
+    await seedCoupon();
+    const customerId = `cus_${ulid()}`;
+    stripeApi.promotionCodesRetrieve.mockRejectedValue(stripeError('StripeInvalidRequestError', 'resource_missing'));
+
+    const res = await postWebhook(
+      couponCheckout(customerId, { discounts: [{ coupon: `co_${ulid()}`, promotion_code: `promo_${ulid()}` }] }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.skipped).toBe('checkout.session.completed');
+    expect(await db(TABLES.Identity)).toHaveLength(0);
+  });
+
+  it("a permanent invoice read-back failure still records a linked customer's revenue", async () => {
+    const { clickId, partnerId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId, userId: customerId });
+    stripeApi.invoicesRetrieve.mockRejectedValue(stripeError('StripePermissionError'));
+
+    const res = await postWebhook(discountedInvoicePaid(customerId, `di_${ulid()}`));
+
+    expect(res.status).toBe(200);
+    expect(stripeApi.invoicesRetrieve).toHaveBeenCalled();
+    const event = await db(TABLES.Event).where({ userId: customerId, type: 'invoice_paid' }).first();
+    const attribution = await db(TABLES.Attribution).where({ eventId: event!.id }).first();
+    expect(attribution?.partnerId).toBe(partnerId);
+  });
+
+  describe('anywhere but a single-tenant self-host', () => {
+    // There the Stripe account is OpenPartner's billing account (hosted) or
+    // shared by many brands (multi-tenant self-host): its checkouts and
+    // invoices aren't the brand's end-customers'.
+    const deployments = [
+      ['flat', 'multi'],
+      ['revshare', 'multi'],
+      ['flat', 'single'],
+      ['selfhost', 'multi'],
+    ] as const;
+
+    async function inDeployment(mode: string, tenancy: string, fn: () => Promise<void>) {
+      process.env.OPENPARTNER_MODE = mode;
+      process.env.OPENPARTNER_TENANCY = tenancy;
+      try {
+        await fn();
+      } finally {
+        process.env.OPENPARTNER_MODE = 'selfhost';
+        process.env.OPENPARTNER_TENANCY = 'single';
+        await db(TABLES.Tenant)
+          .where({ id: DEFAULT_TENANT_ID })
+          .update({ stripeCustomerId: null, stripeSubscriptionId: null });
+      }
+    }
+
+    it.each(deployments)(
+      "%s/%s: the brand's own plan invoice, paid with a partner's code, credits no partner",
+      (mode, tenancy) =>
+        inDeployment(mode, tenancy, async () => {
+          // A promotion code on the brand's OpenPartner plan Checkout that
+          // equals one of its partner coupon codes.
+          const promoId = `promo_${ulid()}`;
+          const { code } = await seedCoupon(promoId);
+          const billingCustomerId = `cus_${ulid()}`;
+          await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ stripeCustomerId: billingCustomerId });
+          const payload = discountedInvoicePaid(billingCustomerId, `di_${ulid()}`);
+          const discount = {
+            id: `di_${ulid()}`,
+            object: 'discount',
+            promotion_code: { id: promoId, object: 'promotion_code', code },
+          };
+          stripeApi.invoicesRetrieve.mockResolvedValue({ ...payload.data.object, discounts: [discount] });
+          stripeApi.promotionCodesRetrieve.mockResolvedValue({ id: promoId, object: 'promotion_code', code });
+
+          const res = await postWebhook(payload);
+
+          expect(res.status).toBe(200);
+          expect(stripeApi.invoicesRetrieve).not.toHaveBeenCalled();
+          expect(stripeApi.promotionCodesRetrieve).not.toHaveBeenCalled();
+          expect(await db(TABLES.Click).where({ landingUrl: `coupon://${code}` })).toHaveLength(0);
+          expect(await db(TABLES.Identity)).toHaveLength(0);
+          expect(await db(TABLES.Event)).toHaveLength(0);
+          const tenant = await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first();
+          expect(tenant!.couponIntegrationVerifiedAt).toBeNull();
+        }),
+    );
+
+    it.each(deployments)('%s/%s: a no-cref checkout with a partner code stays unresolved', (mode, tenancy) =>
+      inDeployment(mode, tenancy, async () => {
+        const { code } = await seedCoupon();
+        const res = await postWebhook(
+          couponCheckout(`cus_${ulid()}`, {
+            discounts: [{ coupon: null, promotion_code: { id: `promo_${ulid()}`, code } }],
+          }),
+        );
+
+        expect(res.status).toBe(200);
+        expect(res.body.reason).toBe('unresolved_tenant');
+        expect(await db(TABLES.Identity)).toHaveLength(0);
+        expect(await db(TABLES.Event)).toHaveLength(0);
+      }),
+    );
   });
 
   it("an undiscounted invoice for a customer nobody referred isn't read back from Stripe", async () => {

@@ -8,6 +8,7 @@ import {
   type AttributionRow,
   type ClickRow,
   type CommissionRow,
+  type CouponRow,
   type EventRow,
   type IdentityRow,
   type PartnerRow,
@@ -227,11 +228,12 @@ stripeWebhookRouter.post(
       const connectResult = await handleConnectEvent(trx, event!, tenantId);
       if (connectResult) return { connect: connectResult };
 
-      // Coupon auto-redemption: if the event carries a discount code that
-      // matches an OpenPartner Coupon in this tenant, ensure the synthetic
-      // Click + Identity exist BEFORE the standard attribution path runs.
-      // The next attributeEvent() call then finds the click and credits
-      // the partner — same code path as a clicked share-link conversion.
+      // Coupon auto-redemption (single-tenant self-host only): if the event
+      // carries a discount code that matches an OpenPartner Coupon in this
+      // tenant, ensure the synthetic Click + Identity exist BEFORE the
+      // standard attribution path runs. The next attributeEvent() call then
+      // finds the click and credits the partner — same code path as a
+      // clicked share-link conversion.
       const redeemed = await maybeRedeemStripeCoupons(trx, stripe!, event!, tenantId);
       if (redeemed) {
         console.log('[stripe-webhook] auto-redeemed coupons', { eventId: event!.id, redeemed: redeemed.codes });
@@ -1412,13 +1414,19 @@ async function stitchFromCompletedCheckouts(
  *     when we read the session back)
  *   - invoice.paid (invoice.discounts + total_discount_amounts, which
  *     arrive as bare ids, so we read the invoice back)
- * Only a single-tenant self-host sees the brand's own checkouts and
- * invoices, so that's the only deployment where this ever matches.
  *
- * The customer-facing code lives at promotion_code.code (when set).
- * If the discount has only a Coupon (no PromotionCode), we fall back
- * to coupon.id — brands setting their Stripe Coupon IDs to match
- * OpenPartner codes works without an extra Stripe API call.
+ * Single-tenant self-host only (receivesBrandStripeEvents): that's the one
+ * deployment where these are the brand's own checkouts and invoices.
+ * Anywhere else they're OpenPartner's billing account, where a brand
+ * paying for its own plan with a code that happens to equal one of its
+ * partner coupons would otherwise credit the brand's subscription to the
+ * partner, permanently. Nothing is read from Stripe there either.
+ *
+ * A discount matches a partner coupon by its PromotionCode id
+ * (Coupon.stripePromotionCodeId, no Stripe read), else by the
+ * customer-facing promotion_code.code, else by the Stripe Coupon id —
+ * brands setting their Stripe Coupon IDs to match OpenPartner codes works
+ * without an extra Stripe API call.
  */
 async function maybeRedeemStripeCoupons(
   trx: Knex.Transaction,
@@ -1426,6 +1434,7 @@ async function maybeRedeemStripeCoupons(
   event: Stripe.Event,
   tenantId: string,
 ): Promise<RedeemedCoupons | null> {
+  if (!receivesBrandStripeEvents()) return null;
   const obj = event.data.object as unknown as Record<string, unknown>;
   const ts = new Date(event.created * 1000);
 
@@ -1440,9 +1449,12 @@ async function maybeRedeemStripeCoupons(
   let firstStitch = false;
   const codes: string[] = [];
   for (const d of await collectDiscounts(stripe, event)) {
-    const code = await resolveDiscountCode(stripe, d);
-    if (!code) continue;
-    const coupon = await findCouponByCode(trx, code);
+    let coupon = await findCouponByPromotionCodeId(trx, d);
+    if (!coupon) {
+      const code = await resolveDiscountCode(stripe, d);
+      if (!code) continue;
+      coupon = await findCouponByCode(trx, code);
+    }
     if (!coupon || codes.includes(coupon.code)) continue;
     if (!userId) {
       userId = customerId ? await couponUserId(stripe, customerId) : guestEmail!;
@@ -1491,6 +1503,16 @@ interface DiscountRef {
  * bare di_ ids (and a Discount can't be fetched by id), and a Checkout
  * Session's total_details.breakdown is only returned on request. Only an
  * object that actually discounted something is read back.
+ *
+ * The invoice read expands each discount's PromotionCode too, so its code
+ * needs no further read. The session's breakdown can't: that path
+ * (total_details.breakdown.discounts.discount.promotion_code) is past
+ * Stripe's four-level expand limit, so those match on the PromotionCode id
+ * (findCouponByPromotionCodeId) or read it (resolveDiscountCode).
+ *
+ * A transient Stripe error propagates as a 500, so Stripe redelivers the
+ * event; a permanent one reads as no discounts (stripeReadOrNull) and the
+ * event is processed without a redemption.
  */
 async function collectDiscounts(stripe: Stripe, event: Stripe.Event): Promise<DiscountRef[]> {
   const inPayload = extractDiscounts(event.data.object);
@@ -1499,17 +1521,21 @@ async function collectDiscounts(stripe: Stripe, event: Stripe.Event): Promise<Di
   if (event.type === 'invoice.paid') {
     const invoice = event.data.object as Stripe.Invoice;
     if (!invoice.id || !invoiceCarriesDiscount(invoice)) return [];
-    // A Stripe error propagates as a 500, so Stripe redelivers the event.
-    const full = await stripe.invoices.retrieve(invoice.id, {
-      expand: ['discounts', 'total_discount_amounts.discount'],
-    });
-    return extractDiscounts(full);
+    const invoiceId = invoice.id;
+    const full = await stripeReadOrNull('invoices.retrieve', invoiceId, () =>
+      stripe.invoices.retrieve(invoiceId, {
+        expand: ['discounts.promotion_code', 'total_discount_amounts.discount.promotion_code'],
+      }),
+    );
+    return full ? extractDiscounts(full) : [];
   }
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object as Stripe.Checkout.Session;
     if (!((session.total_details?.amount_discount ?? 0) > 0)) return [];
-    const full = await stripe.checkout.sessions.retrieve(session.id, { expand: ['total_details.breakdown'] });
-    return extractDiscounts(full);
+    const full = await stripeReadOrNull('checkout.sessions.retrieve', session.id, () =>
+      stripe.checkout.sessions.retrieve(session.id, { expand: ['total_details.breakdown'] }),
+    );
+    return full ? extractDiscounts(full) : [];
   }
   return [];
 }
@@ -1548,6 +1574,20 @@ function extractDiscounts(object: unknown): DiscountRef[] {
   return out;
 }
 
+/**
+ * The partner coupon whose Stripe PromotionCode this discount applied,
+ * matched by id with no Stripe read. Coupons minted with a customer reward
+ * record it (provisionCustomerReward); their Stripe Coupon ids are
+ * auto-generated, so the coupon-id fallback in resolveDiscountCode never
+ * matches them.
+ */
+async function findCouponByPromotionCodeId(trx: Knex.Transaction, d: DiscountRef): Promise<CouponRow | null> {
+  const id = typeof d.promotion_code === 'string' ? d.promotion_code : d.promotion_code?.id;
+  if (!id) return null;
+  const row = await trx<CouponRow>(TABLES.Coupon).where({ stripePromotionCodeId: id }).whereNull('deactivatedAt').first();
+  return row ?? null;
+}
+
 async function resolveDiscountCode(stripe: Stripe, d: DiscountRef): Promise<string | null> {
   // Prefer the customer-facing PromotionCode string.
   if (d.promotion_code) {
@@ -1555,12 +1595,10 @@ async function resolveDiscountCode(stripe: Stripe, d: DiscountRef): Promise<stri
       return d.promotion_code.code;
     }
     const id = typeof d.promotion_code === 'string' ? d.promotion_code : d.promotion_code.id;
-    try {
-      const promo = await stripe.promotionCodes.retrieve(id);
-      if (promo.code) return promo.code;
-    } catch (err) {
-      console.error('[stripe-webhook] promotion_code retrieve failed', { id, err });
-    }
+    // A transient failure is a 500, so Stripe redelivers the event rather
+    // than dropping the redemption for good.
+    const promo = await stripeReadOrNull('promotionCodes.retrieve', id, () => stripe.promotionCodes.retrieve(id));
+    if (promo?.code) return promo.code;
   }
   // Fallback: use the Coupon's Stripe ID directly. Brands who set their
   // Stripe Coupon IDs to match OpenPartner codes don't need the API call.
