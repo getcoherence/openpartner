@@ -14,14 +14,20 @@
  *     created against that campaign. They keep working until the
  *     Link itself is deleted; new Links are blocked by the
  *     /partners/:id/links route's grant check.
+ *   - Revoking a grant retires the partner's active coupons on that
+ *     program. Redemption checks only Coupon.deactivatedAt, never the
+ *     grant, so the auto-minted code would otherwise keep attributing.
+ *     Re-granting mints a fresh code (autoMintCouponsForGrants skips
+ *     deactivated coupons).
  */
 
 import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
-import { TABLES, type ProgramRow, type PartnerProgramRow, type PartnerRow } from '@openpartner/db';
+import { TABLES, type CouponRow, type ProgramRow, type PartnerProgramRow, type PartnerRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
+import { deactivateCustomerReward } from '../customer-rewards.js';
 import { autoMintCouponsForGrants } from './coupons.js';
 
 export const partnerCampaignsRouter = Router();
@@ -100,5 +106,21 @@ partnerCampaignsRouter.delete('/partners/:id/programs/:programId', requireAuth, 
     .where({ partnerId: req.params.id, programId: req.params.programId })
     .del();
   if (deleted === 0) return res.status(404).json({ error: 'grant_not_found' });
-  res.json({ ok: true });
+
+  // Retire the partner's codes on this program, as the coupon DELETE
+  // does: Stripe PromotionCode first (best-effort, never throws), then
+  // our own flag, which is what redemption checks.
+  const coupons = await db<CouponRow>(TABLES.Coupon)
+    .where({ partnerId: req.params.id, programId: req.params.programId })
+    .whereNull('deactivatedAt')
+    .select('id', 'code', 'stripePromotionCodeId');
+  for (const c of coupons) {
+    if (c.stripePromotionCodeId) await deactivateCustomerReward(c.stripePromotionCodeId);
+  }
+  if (coupons.length > 0) {
+    await db<CouponRow>(TABLES.Coupon)
+      .whereIn('id', coupons.map((c) => c.id))
+      .update({ deactivatedAt: new Date() });
+  }
+  res.json({ ok: true, retiredCoupons: coupons.map((c) => c.code) });
 });
