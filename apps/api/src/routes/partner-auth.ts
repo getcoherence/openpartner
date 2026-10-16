@@ -29,6 +29,7 @@ import { ipRateLimit } from '../middleware/rate-limit.js';
 import { adminSigninEmail, buildMagicLinkUrl, partnerSigninEmail } from '../email-templates.js';
 import { linkTenantOf } from '../portal-url.js';
 import { tenantOf } from '../tenancy.js';
+import { isPendingReview } from '../partner-review.js';
 
 export const partnerAuthRouter = Router();
 
@@ -136,6 +137,9 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: token.principalId }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
   if (partner.revokedAt) return res.status(403).json({ error: 'partner_revoked' });
+  // An applicant held for review can't sign in, or activate themselves,
+  // until an admin approves (POST /partners/:id/invite records that).
+  if (isPendingReview(partner)) return res.status(403).json({ error: 'pending_review' });
 
   if (token.purpose === 'partner_invite' && !partner.activatedAt) {
     await db<PartnerRow>(TABLES.Partner)

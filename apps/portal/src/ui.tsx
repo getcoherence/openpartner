@@ -411,6 +411,7 @@ export function StatusPill({ status }: { status: string }) {
     failed: { bg: theme.dangerSoft, fg: theme.danger },
     connected: { bg: theme.successSoft, fg: theme.success },
     invited: { bg: theme.warnSoft, fg: theme.warn },
+    'pending review': { bg: theme.infoSoft, fg: theme.info },
     active: { bg: theme.successSoft, fg: theme.success },
     revoked: { bg: theme.dangerSoft, fg: theme.danger },
   };

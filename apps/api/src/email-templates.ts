@@ -41,6 +41,41 @@ export function partnerInviteEmail(name: string, link: string, brandName: string
   return { subject, text, html: wrap(text, link, 'Accept invite') };
 }
 
+/** Public signup on a program that holds applications for review. No
+ *  link: the sign-in link comes with the approval (POST
+ *  /partners/:id/invite), so nothing here can activate the account. */
+export function partnerApplicationReceivedEmail(name: string, brandName: string | null = null): EmailTemplate {
+  const brand = brandName || 'the partner program';
+  const subject = brandName ? `We received your application to ${brandName}` : `We received your partner application`;
+  const text = [
+    `Hi ${name},`,
+    ``,
+    `Thanks for applying to ${brand}. The team reviews each application by hand.`,
+    `Once you're approved, we'll email you a link to sign in and set up your dashboard.`,
+  ].join('\n');
+  return { subject, text, html: plainHtml(text) };
+}
+
+/** Brand admin: someone applied through the public join page and is
+ *  waiting for review. */
+export function partnerApplicationAdminEmail(
+  applicantName: string,
+  applicantEmail: string,
+  brandName: string | null,
+  reviewUrl: string,
+): EmailTemplate {
+  const subject = `New partner application: ${applicantName}`;
+  const text = [
+    `Hi${brandName ? ` from ${brandName}` : ''},`,
+    ``,
+    `${applicantName} (${applicantEmail}) applied to your partner program and is waiting for review.`,
+    `They can't sign in until you approve them. Approve or decline on the Partners page:`,
+    ``,
+    reviewUrl,
+  ].join('\n');
+  return { subject, text, html: wrap(text, reviewUrl, 'Review application') };
+}
+
 export function partnerSigninEmail(name: string, link: string, brandName: string | null = null): EmailTemplate {
   const subject = brandName ? `Sign in to ${brandName}` : `Your partner dashboard sign-in link`;
   const text = [

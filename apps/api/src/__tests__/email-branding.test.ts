@@ -17,6 +17,8 @@ const date = new Date('2026-10-18T00:00:00Z');
 const messages = [
   templates.partnerInviteEmail('Partner', url),
   templates.partnerSigninEmail('Partner', url),
+  templates.partnerApplicationReceivedEmail('Partner', 'Brand'),
+  templates.partnerApplicationAdminEmail('Partner', 'p@example.test', 'Brand', url),
   templates.adminInviteEmail('Admin', url, 'Brand'),
   templates.adminSigninEmail('Admin', url),
   templates.partnerRevokedEmail('Partner', 'Reason'),

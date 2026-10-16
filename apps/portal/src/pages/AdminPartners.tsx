@@ -14,6 +14,13 @@ interface Partner {
   createdAt: string;
   activatedAt: string | null;
   revokedAt: string | null;
+  metadata?: { review?: { status?: string } } | null;
+}
+
+/** Applied through the public join page and waiting for an admin (see
+ *  apps/api/src/partner-review.ts). Can't sign in until approved. */
+function isPendingReview(p: Partner): boolean {
+  return !p.activatedAt && !p.revokedAt && p.metadata?.review?.status === 'pending';
 }
 
 export function AdminPartners() {
@@ -74,7 +81,9 @@ export function AdminPartners() {
               ? <StatusPill status="revoked" />
               : p.activatedAt
                 ? <StatusPill status="active" />
-                : <StatusPill status="invited" />,
+                : isPendingReview(p)
+                  ? <StatusPill status="pending review" />
+                  : <StatusPill status="invited" />,
             p.stripeConnectAccountId ? <StatusPill status="connected" /> : <span style={{ color: theme.textDim }}>—</span>,
             <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
             <div style={{ display: 'flex', gap: 6 }}>
@@ -90,7 +99,7 @@ export function AdminPartners() {
               {!p.activatedAt && !p.revokedAt && (
                 <>
                   <span style={{ color: theme.border }}>·</span>
-                  <ResendInvite partnerId={p.id} />
+                  {isPendingReview(p) ? <ApproveApplication partner={p} /> : <ResendInvite partnerId={p.id} />}
                 </>
               )}
               <span style={{ color: theme.border }}>·</span>
@@ -281,6 +290,34 @@ function RevokeDialog({
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
       </div>
     </Card>
+  );
+}
+
+/** Approving = the invite endpoint: it records the approval and emails the
+ *  applicant their sign-in link. Declining is Revoke. */
+function ApproveApplication({ partner }: { partner: Partner }) {
+  const qc = useQueryClient();
+  const mut = useMutation({
+    mutationFn: () => api(`/partners/${partner.id}/invite`, { method: 'POST' }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['partners'] }),
+  });
+  return (
+    <button
+      onClick={() => {
+        if (
+          window.confirm(
+            `Approve ${partner.name}? We'll email them a link to sign in. Give them access to programs under Programs so they can create links.`,
+          )
+        ) {
+          mut.mutate();
+        }
+      }}
+      disabled={mut.isPending}
+      title={mut.error instanceof Error ? mut.error.message : undefined}
+      style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.success, cursor: 'pointer', fontWeight: 600 }}
+    >
+      {mut.isPending ? 'Approving…' : mut.isError ? 'Approve (retry)' : 'Approve'}
+    </button>
   );
 }
 

@@ -7,8 +7,10 @@
  *
  *   - `auto_approve` (default): activatedAt set immediately, magic-link
  *     issued, partner can sign in straight away.
- *   - `require_review`: activatedAt stays null until an admin approves
- *     via /partners/:id/invite (which also sends the magic-link).
+ *   - `require_review`: activatedAt stays null and Partner.metadata.review
+ *     is 'pending' (see partner-review.ts). No magic link: the applicant
+ *     gets an acknowledgement, the brand's admins get a review request, and
+ *     an admin approves via /partners/:id/invite, which sends the link.
  *
  * The endpoint is mounted INSIDE tenantMiddleware — in multi-tenant
  * mode the URL is /t/<slug>/partner-signup; in single-tenant mode
@@ -25,11 +27,17 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
-import { TABLES, type ConfigRow, type PartnerRow } from '@openpartner/db';
+import { TABLES, type AdminRow, type ConfigRow, type PartnerRow } from '@openpartner/db';
 import { issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
-import { buildMagicLinkUrl, partnerInviteEmail } from '../email-templates.js';
-import { linkTenantOf } from '../portal-url.js';
+import {
+  buildMagicLinkUrl,
+  partnerApplicationAdminEmail,
+  partnerApplicationReceivedEmail,
+  partnerInviteEmail,
+} from '../email-templates.js';
+import { getPortalBaseUrl, linkTenantOf } from '../portal-url.js';
+import type { PartnerReview } from '../partner-review.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { tenantOf } from '../tenancy.js';
 import { getNetworkMembership, pushPartnerUpsert } from '../network-client.js';
@@ -46,9 +54,47 @@ const schema = z.object({
 
 // Partner.metadata keys the server owns. This endpoint is public, so a
 // signup's profile must not set them: `source` decides the Network-access
-// fee (usage-billing.ts), `network` is the Network sync stamp, and `stripe`
-// mirrors Connect payout state.
-const RESERVED_METADATA_KEYS = new Set(['source', 'network', 'stripe']);
+// fee (usage-billing.ts), `network` is the Network sync stamp, `stripe`
+// mirrors Connect payout state, and `review` gates sign-in for applicants
+// held for review (partner-review.ts).
+const RESERVED_METADATA_KEYS = new Set(['source', 'network', 'stripe', 'review']);
+
+/**
+ * Email every active admin of the tenant that an application is waiting.
+ * Best-effort: a mail failure is logged and never fails the signup.
+ */
+async function notifyAdminsOfApplication(
+  db: import('knex').Knex,
+  tenantId: string,
+  partner: PartnerRow,
+  brandName: string | null,
+  reviewUrl: string,
+): Promise<void> {
+  const admins = (await db<AdminRow>(TABLES.Admin)
+    .where({ tenantId })
+    .whereNotNull('activatedAt')
+    .whereNull('revokedAt')
+    .select('id', 'email')) as Array<Pick<AdminRow, 'id' | 'email'>>;
+  const tmpl = partnerApplicationAdminEmail(partner.name, partner.email, brandName, reviewUrl);
+  for (const admin of admins) {
+    try {
+      await getMailer().send({ db, tenantId }, {
+        to: admin.email,
+        subject: tmpl.subject,
+        text: tmpl.text,
+        html: tmpl.html,
+        tag: 'partner_application',
+        metadata: { purpose: 'partner_application', partnerId: partner.id, adminId: admin.id },
+      });
+    } catch (err) {
+      console.error('[partner-signup] admin application notice failed', {
+        partnerId: partner.id,
+        adminId: admin.id,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
 
 export type PartnerSignupPolicy = 'auto_approve' | 'require_review';
 
@@ -107,7 +153,10 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
         tenantId,
         email,
         name: body.data.name,
-        metadata: profile ?? {},
+        metadata: {
+          ...(profile ?? {}),
+          ...(activatedAt ? {} : { review: { status: 'pending', appliedAt: now.toISOString() } satisfies PartnerReview }),
+        },
         activatedAt,
       })
       .returning('*')) as PartnerRow[];
@@ -161,27 +210,41 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
     }
   }
 
-  // Magic link goes out for both auto-approve and require-review paths.
-  // require-review's magic link confirms email ownership; admin still
-  // has to flip activatedAt before the partner can do anything.
-  const issued = await issueMagicLink(db, {
-    tenantId,
-    email,
-    purpose: 'partner_invite',
-    principalKind: 'partner',
-    principalId: partner.id,
-  });
   const { resolveBrandName } = await import('../brand-name.js');
   const brandName = await resolveBrandName(db, tenantId);
-  const tmpl = partnerInviteEmail(partner.name, buildMagicLinkUrl(issued.plaintext, linkTenantOf(req)), brandName);
+
+  // Auto-approve: the invite link signs the partner straight in. Review:
+  // NO link. The verify route activates a pending partner on any
+  // partner_invite link, so sending one here let applicants approve
+  // themselves. They get an acknowledgement, the brand's admins get a
+  // review request, and the sign-in link goes out with the approval
+  // (POST /partners/:id/invite).
+  let tmpl: { subject: string; text: string; html: string };
+  if (activatedAt) {
+    const issued = await issueMagicLink(db, {
+      tenantId,
+      email,
+      purpose: 'partner_invite',
+      principalKind: 'partner',
+      principalId: partner.id,
+    });
+    tmpl = partnerInviteEmail(partner.name, buildMagicLinkUrl(issued.plaintext, linkTenantOf(req)), brandName);
+  } else {
+    tmpl = partnerApplicationReceivedEmail(partner.name, brandName);
+    await notifyAdminsOfApplication(db, tenantId, partner, brandName, `${getPortalBaseUrl(linkTenantOf(req))}/admin/partners`);
+  }
   try {
     await getMailer().send({ db, tenantId }, {
       to: email,
       subject: tmpl.subject,
       text: tmpl.text,
       html: tmpl.html,
-      tag: 'partner_invite',
-      metadata: { purpose: 'partner_invite', partnerId: partner.id, source: 'self_signup' },
+      tag: activatedAt ? 'partner_invite' : 'partner_application_received',
+      metadata: {
+        purpose: activatedAt ? 'partner_invite' : 'partner_application_received',
+        partnerId: partner.id,
+        source: 'self_signup',
+      },
     });
   } catch (err) {
     // Mail failure on signup is recoverable — the row exists, the admin
