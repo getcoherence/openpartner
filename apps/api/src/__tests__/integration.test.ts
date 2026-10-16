@@ -877,6 +877,148 @@ describe.skipIf(skipIntegration)('backlog replay never double-attributes an even
   });
 });
 
+describe.skipIf(skipIntegration)('corrective events are never attributed', () => {
+  // Regression: the Stripe webhook records refunds / disputes / failed
+  // payments with a NEGATIVE value and deliberately never attributes them,
+  // so they have no Attribution row — which is exactly what the backlog
+  // replay selects. A later stitch (identify) or unflag then ran them
+  // through attributeEvent: a percent rule accrued a negative commission (a
+  // second clawback on top of the refund's reversal) and a fixed rule paid a
+  // full bounty on a refund.
+  const DAY = 24 * 60 * 60 * 1000;
+  const RULES = [
+    { label: 'percent', rule: { type: 'percent', value: 20 }, invoiceCommission: 20 },
+    { label: 'fixed', rule: { type: 'fixed', value: 50 }, invoiceCommission: 50 },
+  ] as const;
+
+  async function setup(commissionRule: (typeof RULES)[number]['rule'], clickBFlag: string | null = null) {
+    const mkPartner = async (name: string) =>
+      (await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email: `${name}-${ulid()}@x.com`, name })).body.id as string;
+    const partnerA = await mkPartner('Original');
+    const partnerB = await mkPartner('Later');
+    const programId = (
+      await request(app).post('/programs').set('Authorization', `Bearer ${ADMIN_KEY}`).send({
+        name: 'Corrective', commissionRule, destinationUrl: 'https://example.com/signup',
+      })
+    ).body.id as string;
+    const mkClick = async (partnerId: string, ts: Date, fraudFlag: string | null) => {
+      const linkId = (
+        await request(app).post(`/partners/${partnerId}/links`).set('Authorization', `Bearer ${ADMIN_KEY}`).send({ linkKey: `ce_${ulid()}`, programId })
+      ).body.id as string;
+      const id = ulid();
+      await db(TABLES.Click).insert({
+        id, tenantId: DEFAULT_TENANT_ID, linkId, partnerId, programId,
+        landingUrl: 'https://example.com/signup', ipHash: 'h', userAgent: 't', referer: null, fraudFlag, ts,
+      });
+      return id;
+    };
+    const clickA = await mkClick(partnerA, new Date(Date.now() - 4 * DAY), null);
+    const clickB = await mkClick(partnerB, new Date(Date.now() - 3 * DAY), clickBFlag);
+    return { partnerA, partnerB, clickA, clickB };
+  }
+
+  // Written the way the webhook writes it: a raw Event row, no attributeEvent.
+  async function insertEvent(userId: string, type: string, value: number, ts: Date) {
+    const id = ulid();
+    await db(TABLES.Event).insert({
+      id, tenantId: DEFAULT_TENANT_ID, userId, type, value: value.toFixed(2), currency: 'USD',
+      externalEventId: null, metadata: {}, ts,
+    });
+    return id;
+  }
+
+  it.each(RULES)('identify: a refund recorded before the stitch is not backfilled ($label rule)', async ({ rule, invoiceCommission }) => {
+    const { partnerA, clickA } = await setup(rule);
+    const userId = `refund_${ulid()}`;
+    const invoiceId = await insertEvent(userId, 'invoice_paid', 100, new Date(Date.now() - 2 * DAY));
+    const refundId = await insertEvent(userId, 'refund', -100, new Date(Date.now() - DAY));
+
+    const stitch = await request(app).post('/attribution/identify').send({ cref: clickA, userId });
+    expect(stitch.status).toBe(200);
+    expect(stitch.body.firstStitch).toBe(true);
+    // The real conversion still backfills — the guard only skips corrective types.
+    expect(stitch.body.backfilledAttributions).toBe(1);
+    expect(await db(TABLES.Attribution).where({ eventId: invoiceId })).toHaveLength(1);
+
+    expect(await db(TABLES.Attribution).where({ eventId: refundId })).toHaveLength(0);
+    const commissions = await db(TABLES.Commission).where({ partnerId: partnerA });
+    expect(commissions).toHaveLength(1);
+    expect(Number(commissions[0]!.amount)).toBe(invoiceCommission);
+  });
+
+  it.each(RULES)('identify: a new device stitched after a refund does not claw back or pay again ($label rule)', async ({ rule, invoiceCommission }) => {
+    const { partnerA, partnerB, clickA, clickB } = await setup(rule);
+    const userId = `xdev_refund_${ulid()}`;
+
+    // Desktop: stitch A, convert (attributed live), then a full refund
+    // reverses that commission and records the refund Event unattributed.
+    await request(app).post('/attribution/identify').send({ cref: clickA, userId });
+    const convert = await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId, type: 'invoice_paid', value: 100, currency: 'USD', ts: new Date(Date.now() - 2 * DAY).toISOString() });
+    expect(convert.body.attribution.status).toBe('attributed');
+    await db(TABLES.Commission).where({ partnerId: partnerA }).update({ status: 'reversed' });
+    const refundId = await insertEvent(userId, 'refund', -100, new Date(Date.now() - DAY));
+
+    // Phone login stitches B — the first stitch for that click replays the backlog.
+    const stitch = await request(app).post('/attribution/identify').send({ cref: clickB, userId });
+    expect(stitch.body.firstStitch).toBe(true);
+    expect(stitch.body.backfilledAttributions).toBe(0);
+
+    expect(await db(TABLES.Attribution).where({ eventId: refundId })).toHaveLength(0);
+    expect(await db(TABLES.Commission).where({ partnerId: partnerB })).toHaveLength(0);
+    const original = await db(TABLES.Commission).where({ partnerId: partnerA });
+    expect(original).toHaveLength(1);
+    expect(original[0]!.status).toBe('reversed');
+    expect(Number(original[0]!.amount)).toBe(invoiceCommission);
+  });
+
+  it('identify: disputes and failed payments are skipped as well', async () => {
+    const { clickA } = await setup(RULES[1].rule);
+    const userId = `corrective_${ulid()}`;
+    const ids = [
+      await insertEvent(userId, 'refund', -100, new Date(Date.now() - DAY)),
+      await insertEvent(userId, 'dispute_created', -100, new Date(Date.now() - DAY)),
+      await insertEvent(userId, 'invoice_payment_failed', -100, new Date(Date.now() - DAY)),
+    ];
+
+    const stitch = await request(app).post('/attribution/identify').send({ cref: clickA, userId });
+    expect(stitch.body.backfilledAttributions).toBe(0);
+    expect(await db(TABLES.Attribution).whereIn('eventId', ids)).toHaveLength(0);
+    expect(await db(TABLES.Commission)).toHaveLength(0);
+  });
+
+  it('unflag: replaying the backlog skips a refund', async () => {
+    const { partnerB, clickB } = await setup(RULES[0].rule, 'velocity');
+    const userId = `unflag_refund_${ulid()}`;
+    await request(app).post('/attribution/identify').send({ cref: clickB, userId });
+    const refundId = await insertEvent(userId, 'refund', -100, new Date(Date.now() - DAY));
+
+    const unflag = await request(app).post(`/clicks/${clickB}/unflag`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(unflag.status).toBe(200);
+    expect(unflag.body.reattributedEvents).toBe(0);
+    expect(await db(TABLES.Attribution).where({ eventId: refundId })).toHaveLength(0);
+    expect(await db(TABLES.Commission).where({ partnerId: partnerB })).toHaveLength(0);
+  });
+
+  it('POST /attribution/events records a merchant-sent refund without attributing it', async () => {
+    const { partnerA, clickA } = await setup(RULES[1].rule);
+    const userId = `api_refund_${ulid()}`;
+    await request(app).post('/attribution/identify').send({ cref: clickA, userId });
+
+    const res = await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId, type: 'refund', value: 100, currency: 'USD', ts: new Date(Date.now() - DAY).toISOString() });
+    expect(res.status).toBe(200);
+    expect(res.body.attribution.status).toBe('corrective');
+    expect(await db(TABLES.Event).where({ id: res.body.eventId })).toHaveLength(1);
+    expect(await db(TABLES.Attribution).where({ eventId: res.body.eventId })).toHaveLength(0);
+    expect(await db(TABLES.Commission).where({ partnerId: partnerA })).toHaveLength(0);
+  });
+});
+
 describe.skipIf(skipIntegration)('server-to-server ingest routes reject partner principals', () => {
   // Regression: /coupons/redeem and /clicks are admin-or-scoped-key ingest
   // routes (grantScope + requireAdmin, same as /attribution/events). A

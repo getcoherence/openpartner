@@ -50,8 +50,19 @@ const MONTH_MS = 30.4375 * 24 * 60 * 60 * 1000;
 // click and whoever stamped the event. See the age check in attributeEvent().
 const CLICK_AFTER_EVENT_GRACE_MS = 5 * 60 * 1000;
 
+/**
+ * Event types that correct an earlier conversion rather than being one.
+ * They're recorded for the audit trail (the Stripe webhook stores them with
+ * a NEGATIVE value and handles any clawback itself) and are never
+ * attributed: a percent rule would accrue a negative commission — a second
+ * clawback — and a fixed rule would pay a bounty on a refund. Every path
+ * into attributeEvent, including the backlog replay, goes through this one
+ * definition.
+ */
+export const CORRECTIVE_EVENT_TYPES: ReadonlySet<string> = new Set(['refund', 'dispute_created', 'invoice_payment_failed']);
+
 export interface AttributeResult {
-  status: 'attributed' | 'no_identity' | 'no_click' | 'outside_window' | 'already_attributed';
+  status: 'attributed' | 'no_identity' | 'no_click' | 'outside_window' | 'already_attributed' | 'corrective';
   touches?: Array<{ clickId: string; partnerId: string; weight: number; attributionId: string; commissionId?: string }>;
   model?: AttributionModel;
 }
@@ -65,6 +76,8 @@ export async function attributeEvent(
   event: EventRow,
   modelOverride?: AttributionModel,
 ): Promise<AttributeResult> {
+  if (CORRECTIVE_EVENT_TYPES.has(event.type)) return { status: 'corrective' };
+
   const identities = await db<IdentityRow>(TABLES.Identity).where({ userId: event.userId });
   if (identities.length === 0) return { status: 'no_identity' };
 
@@ -248,6 +261,10 @@ export async function attributeEvent(
  * first, which only the caller can judge (fraud-review drops accrued rows;
  * approved/paid ledger rows are never rewritten).
  *
+ * Corrective events (CORRECTIVE_EVENT_TYPES) never have an Attribution row
+ * by design, so the filter above would select every one of them; they're
+ * excluded here rather than locked and handed to attributeEvent.
+ *
  * The Event row lock serialises concurrent replays for the same user (two
  * devices logging in at once): each would otherwise see the event
  * unattributed and insert its own winner. The re-check after the lock reads
@@ -256,6 +273,7 @@ export async function attributeEvent(
 export async function attributeBacklogForUser(db: Knex, userId: string): Promise<number> {
   const events = await db<EventRow>(TABLES.Event)
     .where({ userId })
+    .whereNotIn('type', [...CORRECTIVE_EVENT_TYPES])
     .whereNotExists(
       db(TABLES.Attribution).select(db.raw('1')).whereRaw('?? = ??', [`${TABLES.Attribution}.eventId`, `${TABLES.Event}.id`]),
     )
