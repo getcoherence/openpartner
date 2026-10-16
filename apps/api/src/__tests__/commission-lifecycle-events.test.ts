@@ -228,6 +228,10 @@ describe.skipIf(skipIntegration)('commission lifecycle webhooks', () => {
       .set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(res.status).toBe(200);
     expect(res.body.commission.status).toBe('approved');
+    // The approval's webhook is fire-and-forget (it reads the origin
+    // first). Let it land here, or on a slow runner it arrives after the
+    // next test's mockClear and is counted there.
+    await vi.waitFor(() => expect(dispatched('commission.approved')).toHaveLength(1));
   });
 
   it('manual approve fires commission.approved with the click/event origin', async () => {
@@ -238,8 +242,9 @@ describe.skipIf(skipIntegration)('commission lifecycle webhooks', () => {
       .set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(res.status).toBe(200);
 
-    await vi.waitFor(() => expect(dispatched('commission.approved')).toHaveLength(1));
-    expect(dispatched('commission.approved')[0]).toEqual([DEFAULT_TENANT_ID, expectedPayload(s)]);
+    const mine = () => dispatched('commission.approved').filter(([, p]) => p.commissionId === s.commissionId);
+    await vi.waitFor(() => expect(mine()).toHaveLength(1));
+    expect(mine()[0]).toEqual([DEFAULT_TENANT_ID, expectedPayload(s)]);
   });
 
   it('manual reverse fires commission.reversed with the origin and reason=manual', async () => {
