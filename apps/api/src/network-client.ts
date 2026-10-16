@@ -22,7 +22,7 @@
 
 import { ulid } from 'ulid';
 import type { Knex } from 'knex';
-import { TABLES, type NetworkOutboxRow } from '@openpartner/db';
+import { TABLES, type AudienceSize, type NetworkOutboxRow } from '@openpartner/db';
 import { decryptSecret, encryptSecret } from './crypto.js';
 import { getWhiteLabelState } from './white-label.js';
 
@@ -138,6 +138,17 @@ export interface PartnerUpsertPayload {
   joinedVendorAt: string;
   status: 'pending' | 'active' | 'revoked';
   metadata?: { source: 'self_signup' | 'admin_invite' | 'backfill' };
+  /** Join-page application answers the Network uses to fill BLANKS in the
+   *  creator's Network profile (platform rows + audienceSize). Only public
+   *  signup sends it; an older Network strips the unknown key. */
+  creatorProfile?: PartnerUpsertCreatorProfile;
+}
+
+export interface PartnerUpsertCreatorProfile {
+  websiteUrl?: string;
+  /** At most 5. */
+  socialUrls?: string[];
+  audienceSize?: AudienceSize;
 }
 
 export interface PartnerUpsertResponse {

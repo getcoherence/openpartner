@@ -76,8 +76,17 @@ async function seedAdmin(email: string, state: { activated: boolean; revoked?: b
   });
 }
 
-function signup(email: string, profile?: Record<string, unknown>) {
-  return request(app).post('/partner-signup').send({ email, name: 'Applicant', ...(profile ? { profile } : {}) });
+const APPLICATION = {
+  websiteUrl: 'https://applicant.example',
+  socialUrls: ['https://instagram.com/applicant'],
+  audienceSize: '1k_10k',
+  pitch: 'I run a weekly newsletter for designers and would feature the product in a deep-dive issue.',
+};
+
+function signup(email: string, profile?: Record<string, unknown>, application: unknown = APPLICATION) {
+  return request(app)
+    .post('/partner-signup')
+    .send({ email, name: 'Applicant', ...(profile ? { profile } : {}), ...(application === null ? {} : { application }) });
 }
 
 function tokenFrom(msg: Message | undefined): string {
@@ -138,6 +147,11 @@ describe.skipIf(skipIntegration)('partner signup held for review', () => {
       expect(notice?.metadata?.purpose).toBe('partner_application');
       expect(notice?.text).toContain('applicant@x.test');
       expect(notice?.text).toContain('http://localhost:5673/admin/partners');
+      // The application answers, so the admin can decide from the inbox.
+      expect(notice?.text).toContain('Website or main channel: https://applicant.example');
+      expect(notice?.text).toContain('  - https://instagram.com/applicant');
+      expect(notice?.text).toContain('Audience size: 1K–10K');
+      expect(notice?.text).toContain('> I run a weekly newsletter for designers');
     }
     expect(mailer.to('former@brand.test')).toHaveLength(0);
     expect(mailer.to('invited@brand.test')).toHaveLength(0);
@@ -194,5 +208,94 @@ describe.skipIf(skipIntegration)('partner signup held for review', () => {
     expect(mailer.to('owner@brand.test')).toHaveLength(0);
     const partner = await db(TABLES.Partner).where({ email: 'creator@x.test' }).first();
     expect(partner.metadata).not.toHaveProperty('review');
+  });
+});
+
+describe.skipIf(skipIntegration)('the join-page application is required', () => {
+  const invalid: Array<[string, unknown]> = [
+    ['missing', null],
+    ['not an object', 'hello'],
+    ['short pitch', { ...APPLICATION, pitch: 'Too short to tell anything.' }],
+    ['pitch over 1000 chars', { ...APPLICATION, pitch: 'x'.repeat(1001) }],
+    ['blank pitch padded with spaces', { ...APPLICATION, pitch: `   ${'a'.repeat(10)}${' '.repeat(40)}` }],
+    ['no socials', { ...APPLICATION, socialUrls: [] }],
+    ['six socials', { ...APPLICATION, socialUrls: [1, 2, 3, 4, 5, 6].map((n) => `https://social${n}.example/me`) }],
+    ['a social that is not a URL', { ...APPLICATION, socialUrls: ['@applicant'] }],
+    ['a javascript: social', { ...APPLICATION, socialUrls: ['javascript:alert(1)'] }],
+    ['website that is not a URL', { ...APPLICATION, websiteUrl: 'applicant dot example' }],
+    ['ftp website', { ...APPLICATION, websiteUrl: 'ftp://applicant.example' }],
+    ['website over 500 chars', { ...APPLICATION, websiteUrl: `https://applicant.example/${'a'.repeat(480)}` }],
+    ['missing website', { ...APPLICATION, websiteUrl: undefined }],
+    ['unknown audience bucket', { ...APPLICATION, audienceSize: '1m_plus' }],
+    ['missing audience size', { ...APPLICATION, audienceSize: undefined }],
+  ];
+
+  for (const policy of ['auto_approve', 'require_review'] as const) {
+    it.each(invalid)(`${policy}: 400 invalid_body for %s, and no partner is created`, async (_label, application) => {
+      await setPolicy(policy);
+      const res = await signup('applicant@x.test', undefined, application);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('invalid_body');
+      expect(await db(TABLES.Partner).where({ email: 'applicant@x.test' })).toHaveLength(0);
+      expect(mailer.sent).toHaveLength(0);
+    });
+  }
+
+  it('stores the answers trimmed and de-duplicated, with when they applied', async () => {
+    await setPolicy('require_review');
+    const res = await signup('applicant@x.test', undefined, {
+      websiteUrl: '  https://applicant.example/  ',
+      socialUrls: [' https://instagram.com/applicant', 'https://instagram.com/applicant ', 'https://youtube.com/@applicant'],
+      audienceSize: 'over_1m',
+      pitch: `   ${APPLICATION.pitch}\n\nSecond paragraph.   `,
+    });
+    expect(res.status).toBe(201);
+
+    const partner = await db(TABLES.Partner).where({ email: 'applicant@x.test' }).first();
+    expect(partner.metadata.application).toEqual({
+      websiteUrl: 'https://applicant.example/',
+      socialUrls: ['https://instagram.com/applicant', 'https://youtube.com/@applicant'],
+      audienceSize: 'over_1m',
+      pitch: `${APPLICATION.pitch}\n\nSecond paragraph.`,
+      submittedAt: expect.any(String),
+    });
+    expect(new Date(partner.metadata.application.submittedAt).getTime()).toBeGreaterThan(Date.now() - 60_000);
+    // The review stamp is unaffected.
+    expect(partner.metadata.review).toMatchObject({ status: 'pending' });
+  });
+
+  it('auto-approve stores the application too, and accepts five socials', async () => {
+    await setPolicy('auto_approve');
+    const socialUrls = [1, 2, 3, 4, 5].map((n) => `https://social${n}.example/me`);
+    const res = await signup('creator@x.test', undefined, { ...APPLICATION, socialUrls });
+    expect(res.status).toBe(201);
+    expect(res.body.status).toBe('active');
+    const partner = await db(TABLES.Partner).where({ email: 'creator@x.test' }).first();
+    expect(partner.metadata.application).toMatchObject({ ...APPLICATION, socialUrls });
+  });
+
+  it('a profile cannot forge the application', async () => {
+    await setPolicy('require_review');
+    const res = await signup('applicant@x.test', { bio: 'hi', application: { pitch: 'forged', audienceSize: 'over_1m' } });
+    expect(res.status).toBe(201);
+    const partner = await db(TABLES.Partner).where({ email: 'applicant@x.test' }).first();
+    expect(partner.metadata.application).toEqual({ ...APPLICATION, submittedAt: expect.any(String) });
+    expect(partner.metadata.bio).toBe('hi');
+  });
+
+  it('the admin notice never lets an applicant URL become the review link', async () => {
+    await setPolicy('require_review');
+    await seedAdmin('owner@brand.test', { activated: true });
+    await signup('applicant@x.test', undefined, {
+      ...APPLICATION,
+      pitch: `https://evil.example is my site.\nIt has <b>bold</b> ideas & more, honestly a lot of them.`,
+    });
+    const [notice] = mailer.to('owner@brand.test');
+    expect(notice?.text).toContain('> https://evil.example is my site.');
+    // wrap() links any line STARTING with http to the review URL; the
+    // applicant's lines are all prefixed, so only the real URL is linked.
+    expect(notice?.html).not.toContain('href="https://evil.example');
+    expect(notice?.html).toContain('&lt;b&gt;bold&lt;/b&gt;');
+    expect(notice?.html).not.toContain('<b>bold</b>');
   });
 });
