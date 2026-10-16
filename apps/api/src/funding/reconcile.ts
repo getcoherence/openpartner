@@ -134,10 +134,18 @@ async function claimSweepRows<T>(
     .limit(limit)
     .forUpdate()
     .skipLocked();
+  // A MATERIALIZED CTE runs the pick exactly once. `where id in (sub)` let
+  // the planner — whenever stats said the table was near-empty — choose a
+  // nested-loop semi join with the subquery on the inner side, re-run per
+  // outer row. LockRows skips rows this same UPDATE already modified, so
+  // every rescan's LIMIT handed over the NEXT rows and the whole eligible
+  // set was claimed: the per-run cap did nothing.
   return (await db(table)
-    .whereIn('id', sub)
+    .withMaterialized('picked', sub)
+    .updateFrom('picked')
+    .whereRaw('?? = ??', [`${table}.id`, 'picked.id'])
     .update({ sweepLeaseAt: db.fn.now(), sweepLeaseToken: token })
-    .returning('*')) as T[];
+    .returning(`${table}.*`)) as T[];
 }
 
 /**

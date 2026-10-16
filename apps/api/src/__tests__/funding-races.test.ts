@@ -2195,3 +2195,84 @@ describe.skipIf(skipIntegration)('round-9: per-object sweep scheduling', () => {
     expect(createdFor).toEqual([batchA.id]);
   });
 });
+
+describe.skipIf(skipIntegration)('sweep claim honours its cap under any query plan', () => {
+  // The claim was `update … where id in (select … limit n for update skip
+  // locked)`. When a table's stats say it holds no live rows, Postgres
+  // plans that as a Nested Loop Semi Join with the subquery on the INNER
+  // side and re-runs it for every outer row. LockRows skips rows this same
+  // UPDATE already modified, so each rescan's LIMIT returned the NEXT rows
+  // and every eligible row was claimed — the per-run Stripe read cap was
+  // not enforced. It surfaced as intermittent full-suite failures of the
+  // cap tests above, depending on what autovacuum/analyze had last seen.
+  //
+  // This pins the plan-shaping stats instead of waiting for them: a heap
+  // with pages but zero live tuples (what DELETE + ANALYZE leaves) makes
+  // the row estimate 1. TRUNCATE + ANALYZE does NOT — zero pages falls
+  // back to a width-based estimate and a hash join, which hides the bug.
+  async function analyzeAsEmpty() {
+    // Children first — transfers carry an FK to their batch.
+    for (const table of [TABLES.HostedFundingTransfer, TABLES.HostedFundingBatch]) {
+      await db(table).del();
+      await db.raw('analyze ??', [table]);
+      const stats = (await db.raw('select relpages, reltuples from pg_class where relname = ?', [table]))
+        .rows[0] as { relpages: number; reltuples: number };
+      // Guard against a vacuous pass: without these stats the planner picks
+      // a join that runs the subquery once and the old claim looks correct.
+      expect(stats.relpages, `${table} relpages`).toBeGreaterThan(0);
+      expect(stats.reltuples, `${table} reltuples`).toBe(0);
+    }
+  }
+
+  it('claims exactly `limit` rows on each sweep when stats say the tables are empty', async () => {
+    const mkIntent = async (batchId: string, tag: string) => {
+      const id = ulid();
+      const { partnerId } = await seedCommission(); // (batchId, partnerId, currency) is unique
+      await db(TABLES.HostedFundingTransfer).insert({
+        id,
+        tenantId: TENANT,
+        batchId,
+        partnerId,
+        currency: 'usd',
+        amountMinor: 1000,
+        destinationAccountId: 'acct_x',
+        idempotencyKey: `fbt:${id}`,
+        state: 'confirmed',
+        stripeTransferId: `tr_${tag}`,
+        payoutId: null,
+      });
+      return id;
+    };
+    const mkCharge = async (tag: string) =>
+      (
+        await seedBatch({
+          status: 'settled',
+          stripeChargeId: `ch_${tag}`,
+          fundedAt: new Date(Date.now() - 86400000),
+          actualStripeFeeMinor: '25',
+        })
+      ).id;
+
+    // One throwaway row per table gives each heap a page to keep.
+    await mkIntent(await mkCharge('throwaway'), 'throwaway');
+    await analyzeAsEmpty();
+
+    const parent = await seedBatch({ status: 'settled' }); // no charge — not charge-sweep eligible
+    const charges: string[] = [];
+    const intents: string[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      charges.push(await mkCharge(`cap${i}`));
+      intents.push(await mkIntent(parent.id, `cap${i}`));
+    }
+
+    const { stripe, chargeRetrieve, transferRetrieve } = mockStripe();
+    const report = await runFundingReconciliation(db, { stripe, sweepLimit: 2 });
+
+    // Revert the claim to the IN-subquery and both of these read all 5.
+    expect(chargeRetrieve).toHaveBeenCalledTimes(2);
+    expect(transferRetrieve).toHaveBeenCalledTimes(2);
+    // …and the 3 + 3 left over are named, not silently swept.
+    expect(report.sweepSkipped).toHaveLength(6);
+    for (const id of report.sweepSkipped) expect([...charges, ...intents]).toContain(id);
+  });
+});
