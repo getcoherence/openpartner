@@ -4,9 +4,9 @@ import { TABLES, type ApiKeyRow } from '@openpartner/db';
 import { createApiKeyRow, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 
-const createSchema = z.object({ label: z.string().optional() });
+export const createSchema = z.object({ label: z.string().optional() });
 
-const scopedCreateSchema = z.object({
+export const scopedCreateSchema = z.object({
   scopes: z.array(z.string().min(3).max(64)).min(1),
   label: z.string().optional(),
 });
@@ -49,7 +49,7 @@ apiKeysRouter.post('/api-keys/scoped', requireAuth, requireAdmin, async (req, re
 // the CRM integration page so admins can see / revoke the keys they've
 // minted for HubSpot / Zapier / etc. Doesn't return plaintext (only
 // generated at create time and never stored).
-const listQuerySchema = z.object({ scope: z.string().optional() });
+export const listQuerySchema = z.object({ scope: z.string().optional() });
 apiKeysRouter.get('/api-keys', requireAuth, requireAdmin, async (req, res) => {
   const q = listQuerySchema.safeParse(req.query);
   if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });

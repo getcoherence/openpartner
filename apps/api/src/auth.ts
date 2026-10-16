@@ -88,14 +88,23 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
   next();
 }
 
+// Guard tags the OpenAPI drift test (__tests__/openapi.test.ts) reads off a
+// route's middleware chain. It can't compare functions by identity:
+// express-async-errors wraps every route handler (copying own properties).
+Object.assign(requireAuth, { guard: 'requireAuth' });
+Object.assign(requireAdmin, { guard: 'requireAdmin' });
+
 export function requirePartnerOrAdmin(paramName: string = 'id') {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  const guard = (req: Request, res: Response, next: NextFunction): void => {
     const p = req.principal;
     if (!p) return void res.status(401).json({ error: 'unauthorized' });
     if (p.role === 'admin') return next();
     if (p.role === 'partner' && p.partnerId === req.params[paramName]) return next();
     res.status(403).json({ error: 'forbidden' });
   };
+  // Read by the OpenAPI drift test (__tests__/openapi.test.ts) to check the
+  // documented access rule against the route's real middleware chain.
+  return Object.assign(guard, { partnerParam: paramName });
 }
 
 async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
@@ -187,7 +196,7 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
  * scopes — just add `grantScope('x:y')` to the routes federation reaches.
  */
 export function grantScope(scope: string) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  const grant = (req: Request, res: Response, next: NextFunction): void => {
     const p = req.principal;
     if (!p || p.role !== 'scoped') return next();
     if (!p.scopes.includes(scope)) {
@@ -197,6 +206,9 @@ export function grantScope(scope: string) {
     req.principal = { role: 'admin', source: 'db', apiKeyId: p.apiKeyId };
     next();
   };
+  // Read by the OpenAPI drift test, which checks every documented scope
+  // against the grantScope on the route it describes.
+  return Object.assign(grant, { grantsScope: scope });
 }
 
 function constantTimeEqual(a: string, b: string): boolean {

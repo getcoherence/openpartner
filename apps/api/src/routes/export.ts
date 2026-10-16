@@ -124,7 +124,7 @@ function literalTenant(query: unknown): { tenantId?: string } | null {
   return { tenantId: raw };
 }
 
-const importSchema = z.object({
+export const importSchema = z.object({
   schemaVersion: z.number().int(),
   tables: z.record(z.array(z.record(z.unknown()))),
 });

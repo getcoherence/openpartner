@@ -52,6 +52,7 @@ import { sessionHomeRouter } from './routes/session-home.js';
 import { platformAuthRouter } from './routes/platform-auth.js';
 import { platformAdminRouter } from './routes/platform-admin.js';
 import { emailPreferencesRouter } from './routes/email-preferences.js';
+import { openapiRouter } from './routes/openapi.js';
 import { tenantMiddleware } from './tenancy.js';
 import { trialGate } from './middleware/trial-gate.js';
 import { approvalGate } from './middleware/approval-gate.js';
@@ -221,6 +222,9 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   // Mount before tenantMiddleware so it's reachable from app.openpartner.dev/*
   // without a /t/<slug>/ prefix.
   app.use(creatorPortalRouter);
+  // API reference (GET /openapi.json, GET /docs). The document is the same
+  // for every tenant; mounted again below so /t/<slug>/docs resolves too.
+  app.use(openapiRouter);
 
   // ----- Tenant scope -----
   // Everything below runs inside a per-request transaction with
@@ -243,6 +247,8 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
 
   app.use(trialGate);
 
+  // Tenant-path form of the API reference (/t/<slug>/openapi.json).
+  app.use(openapiRouter);
   app.use(authRouter);
   app.use(partnerAuthRouter);
   app.use(portalDomainsRouter);

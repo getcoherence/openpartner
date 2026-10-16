@@ -6,7 +6,7 @@ import { attributeBacklogForUser } from '../attribution.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { tenantOf } from '../tenancy.js';
 
-const schema = z.object({
+export const schema = z.object({
   cref: z.string().min(1),
   userId: z.string().min(1),
   ts: z.number().optional(),

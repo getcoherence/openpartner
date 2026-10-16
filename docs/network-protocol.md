@@ -208,7 +208,8 @@ pre-rename brand is federated.
 The Network uses the scoped key registered in `/vendors/register` for
 all of these. On hosted multi-tenant the URL is
 `{instanceUrl}/partners` where `instanceUrl` already includes the
-tenant path (`https://app.openpartner.dev/t/<slug>/api`).
+tenant path (`https://app.openpartner.dev/api/t/<slug>`, the slug after
+`/api`; see `instanceUrl` in `apps/api/src/routes/signup.ts`).
 
 ## Failure semantics
 

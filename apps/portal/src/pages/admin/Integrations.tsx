@@ -416,13 +416,15 @@ function ScopeGroup({
 function PayloadGuide() {
   // Build the actual full URL the admin should paste into their CRM /
   // Zapier / Make / curl. On multi-tenant installs the path includes
-  // the tenant slug — leaving it out 500s with a generic error and
+  // the tenant slug — leaving it out 400s with tenant_slug_missing and
   // is the single most common configuration mistake. Render the real
-  // URL so admins copy-paste it correctly without thinking.
+  // URL so admins copy-paste it correctly without thinking. The slug
+  // goes AFTER /api: the ingress routes /api/* to the API, so
+  // /t/<slug>/api/* lands on the static portal and never reaches us.
   const origin = typeof window === 'undefined' ? 'https://your-instance' : window.location.origin;
   const slug = currentTenantSlug();
   const { programName } = useBrand();
-  const apiBase = slug ? `${origin}/t/${slug}` : origin;
+  const apiBase = slug ? `${origin}/api/t/${slug}` : `${origin}/api`;
   return (
     <Card>
       <h3 style={{ marginTop: 0, marginBottom: 4, fontSize: 15, fontWeight: 500 }}>
@@ -442,7 +444,7 @@ function PayloadGuide() {
           }}
         >
           <strong>Multi-tenant URL:</strong> the path includes your tenant slug{' '}
-          (<code>/t/{slug}</code>) before <code>/api/...</code>. Use the full base URL below
+          (<code>/t/{slug}</code>) right after <code>/api</code>. Use the full URL below
           as-is — leaving the slug out returns a <code>tenant_slug_missing</code> 400 error.
         </div>
       )}
@@ -469,7 +471,7 @@ function PayloadGuide() {
           overflow: 'auto',
           margin: 0,
         }}
-      >{`curl -X POST ${apiBase}/api/attribution/events \\
+      >{`curl -X POST ${apiBase}/attribution/events \\
   -H "Authorization: Bearer <your-key>" \\
   -H "Content-Type: application/json" \\
   -d '{

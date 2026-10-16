@@ -5,7 +5,7 @@ import { TABLES, type ProgramRow, type LinkRow } from '@openpartner/db';
 import { grantScope, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 
-const createSchema = z.object({
+export const createSchema = z.object({
   linkKey: z
     .string()
     .min(3)

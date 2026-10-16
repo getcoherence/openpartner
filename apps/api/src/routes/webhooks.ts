@@ -12,7 +12,7 @@ import { tenantOf } from '../tenancy.js';
 
 export const webhooksRouter = Router();
 
-const KNOWN_EVENTS = [
+export const KNOWN_EVENTS = [
   'attribution.created',
   'commission.accrued',
   'commission.approved',
@@ -25,13 +25,13 @@ const KNOWN_EVENTS = [
   '*',
 ] as const;
 
-const createSchema = z.object({
+export const createSchema = z.object({
   url: z.string().url(),
   events: z.array(z.enum(KNOWN_EVENTS)).min(1),
   label: z.string().max(80).optional(),
 });
 
-const updateSchema = z.object({
+export const updateSchema = z.object({
   url: z.string().url().optional(),
   events: z.array(z.enum(KNOWN_EVENTS)).min(1).optional(),
   label: z.string().max(80).nullable().optional(),
@@ -138,7 +138,7 @@ const FIREABLE_EVENTS = KNOWN_EVENTS.filter((e) => e !== '*') as readonly Exclud
   (typeof KNOWN_EVENTS)[number],
   '*'
 >[];
-const testQuerySchema = z.object({
+export const testQuerySchema = z.object({
   event: z.enum(FIREABLE_EVENTS as unknown as [string, ...string[]]).optional(),
 });
 webhooksRouter.post('/webhooks/:id/test', requireAuth, requireAdmin, async (req, res) => {

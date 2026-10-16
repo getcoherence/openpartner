@@ -112,7 +112,7 @@ couponsRouter.get('/partners/:id/coupons', requireAuth, requirePartnerOrAdmin('i
   });
 });
 
-const createSchema = z.object({
+export const createSchema = z.object({
   programId: z.string().min(1),
   code: z
     .string()
@@ -390,7 +390,7 @@ couponsRouter.delete('/partners/:id/coupons/:couponId', requireAuth, async (req,
 // reusing the key for a different redemption 409s. The key namespace is
 // per tenant, shared with /attribution/events and Stripe event ids.
 
-const redeemSchema = z.object({
+export const redeemSchema = z.object({
   code: z.string().trim().min(3).max(40),
   /** What kind of event the redemption represents. Same enum the
    *  existing /events route accepts — signup, trial_started,

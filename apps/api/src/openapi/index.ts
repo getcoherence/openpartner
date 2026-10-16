@@ -1,0 +1,104 @@
+/**
+ * The OpenAPI 3.1 document for the tenant API, served at GET /openapi.json
+ * and rendered at GET /docs (routes/openapi.ts). Built once, on first use.
+ *
+ * docs/openapi.json is a committed copy kept identical by
+ * __tests__/openapi.test.ts — regenerate it with
+ *   pnpm --filter @openpartner/api openapi:update
+ */
+
+import { OpenApiGeneratorV31 } from '@asteasolutions/zod-to-openapi';
+import { buildDescription } from './description.js';
+import { registerPaths } from './paths.js';
+import { OperationRegistry, type DocumentedOperation } from './registry.js';
+import { registerWebhooks } from './webhook-events.js';
+
+export { SCOPED_ROUTES_OUTSIDE_SPEC, UNDOCUMENTED_ROUTES } from './paths.js';
+
+type OpenApiDocument = ReturnType<OpenApiGeneratorV31['generateDocument']>;
+
+const TAGS: Array<{ name: string; description: string }> = [
+  { name: 'Partners', description: 'The people (or customers) who refer. Create them headless with `sendInvite: false`.' },
+  { name: 'Programs', description: 'Commission terms, attribution window and model, destination URL.' },
+  { name: 'Program assignments', description: 'Which programs a partner may create links for.' },
+  { name: 'Links', description: 'Share links. The click router records a click and appends `?cref=<click id>` to the destination.' },
+  { name: 'Attribution', description: 'Stitch clicks to users, then report conversions server-side.' },
+  { name: 'Coupons', description: 'Code-based attribution, for checkouts where a link can\'t be followed.' },
+  { name: 'Commissions', description: 'The commission ledger: accrued → approved → paid, or reversed.' },
+  { name: 'Payouts', description: 'Paying approved commissions, via Stripe Connect or a manual rail.' },
+  { name: 'Partner reporting', description: 'Per-partner stats for your own UI.' },
+  { name: 'Webhooks', description: 'Subscribe endpoints to the events under **Webhook events**.' },
+  { name: 'API keys', description: 'Admin, scoped and partner keys.' },
+  { name: 'Export', description: 'Your data, in formats a self-hosted instance re-imports.' },
+  { name: 'Network settings', description: "The tenant's OpenPartner Network membership, including partner auto-enroll." },
+  { name: 'Webhook events', description: 'What OpenPartner POSTs to your webhook endpoints.' },
+];
+
+let cached: { document: OpenApiDocument; operations: DocumentedOperation[] } | null = null;
+
+/** The 3.1 generator emits `z.union([Ref, z.null()])` as
+ *  `anyOf: [$ref, {type: null}, {type: null}]`. Drop repeated branches. */
+function dedupeAnyOf(node: unknown): void {
+  if (Array.isArray(node)) {
+    node.forEach(dedupeAnyOf);
+    return;
+  }
+  if (!node || typeof node !== 'object') return;
+  const obj = node as Record<string, unknown>;
+  if (Array.isArray(obj.anyOf)) {
+    const seen = new Set<string>();
+    obj.anyOf = obj.anyOf.filter((branch) => {
+      const key = JSON.stringify(branch);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+  Object.values(obj).forEach(dedupeAnyOf);
+}
+
+function build() {
+  const r = new OperationRegistry();
+  registerPaths(r);
+  registerWebhooks(r.registry);
+  const document = new OpenApiGeneratorV31(r.registry.definitions).generateDocument({
+    openapi: '3.1.0',
+    info: {
+      title: 'OpenPartner API',
+      version: '1.0.0',
+      description: buildDescription(r.operations),
+      license: { name: 'MIT', identifier: 'MIT' },
+    },
+    servers: [
+      {
+        url: 'https://app.openpartner.dev/api/t/{tenantSlug}',
+        description: 'OpenPartner Cloud',
+        variables: { tenantSlug: { default: 'your-tenant-slug', description: 'The `/t/<slug>/` segment of your admin portal address.' } },
+      },
+      {
+        url: 'https://{customDomain}/api',
+        description: 'OpenPartner Cloud on a white-label custom domain',
+        variables: { customDomain: { default: 'partners.example.com' } },
+      },
+      {
+        url: '{apiOrigin}',
+        description: 'Self-hosted, single tenant',
+        variables: { apiOrigin: { default: 'http://localhost:4601' } },
+      },
+    ],
+    tags: TAGS,
+  });
+  dedupeAnyOf(document);
+  return { document, operations: r.operations };
+}
+
+export function getOpenApiDocument(): OpenApiDocument {
+  cached ??= build();
+  return cached.document;
+}
+
+/** The operations behind the document, for the drift test. */
+export function getDocumentedOperations(): DocumentedOperation[] {
+  cached ??= build();
+  return cached.operations;
+}

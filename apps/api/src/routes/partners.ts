@@ -15,7 +15,7 @@ import { dispatchEvent } from '../webhook-dispatcher.js';
 import { refineCommissionSubRule } from '../commission-rule-schema.js';
 import { isPendingReview } from '../partner-review.js';
 
-const createSchema = z.object({
+export const createSchema = z.object({
   email: z.string().email(),
   name: z.string().min(1),
   metadata: z.record(z.unknown()).optional(),
@@ -355,7 +355,7 @@ partnersRouter.post('/partners/:id/invite', requireAuth, grantScope('partners:wr
   res.json({ ok: true, approved });
 });
 
-const revokeSchema = z.object({
+export const revokeSchema = z.object({
   reason: z.string().max(500).optional(),
   // Default true: industry-standard partner-program norm is to notify.
   // Admin unchecks for fraud cases where tipping the partner off is
@@ -468,7 +468,7 @@ partnersRouter.post('/partners/:id/reinstate', requireAuth, requireAdmin, async 
  * so we explicitly tie-break). Filters narrow the rows but never change
  * the order, so a search pages with the same cursor scheme.
  */
-const listQuerySchema = z.object({
+export const listQuerySchema = z.object({
   email: z.string().trim().email().optional(),
   q: z.string().trim().max(200).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional().default(100),
@@ -546,7 +546,7 @@ partnersRouter.get('/partners/:id/commission-snapshot', requireAuth, requirePart
 // with source='amendment' so it's distinguishable from the regular
 // approval-time + backfill snapshots in audit + reporting. PUT
 // semantics — replaces any existing row in full.
-const overrideSchema = z.object({
+export const overrideSchema = z.object({
   commissionType: z.enum(['percent', 'fixed']),
   commissionValue: z.number().nonnegative(),
   recurring: z.boolean().optional(),

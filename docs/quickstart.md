@@ -183,3 +183,7 @@ await op.trackEvent({
 ```
 
 See [`packages/sdk/README.md`](../packages/sdk/README.md) for full integration docs, including framework notes and error handling.
+
+## 10. API reference
+
+The tenant API (partners, programs, links, attribution, commissions, payouts, reporting, webhooks, keys, export), with request and response schemas, auth and scopes, is in the OpenAPI 3.1 spec: `http://localhost:4601/openapi.json`, rendered at `http://localhost:4601/docs` (on OpenPartner Cloud, `https://app.openpartner.dev/api/docs`). To run a referral program inside your own app with no OpenPartner login, see [headless-referral.md](./headless-referral.md).
