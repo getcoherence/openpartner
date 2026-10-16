@@ -55,7 +55,7 @@
   th { color: var(--muted); font-weight: 500; font-size: 13px; }
   td.num, th.num { text-align: right; }
   .pill { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; }
-  .s-accrued, .s-approved, .s-pending { color: var(--pending); }
+  .s-accrued, .s-approved, .s-pending, .s-processing { color: var(--pending); }
   .s-paid { color: var(--ok); }
   .s-reversed, .s-failed { color: var(--bad); }
   .empty { color: var(--muted); font-size: 14px; margin: 0; }
@@ -124,6 +124,14 @@
 
   const pill = (status) => el('span', { className: `pill s-${status}`, textContent: status });
 
+  // One line per currency; amounts in different currencies are never added.
+  const moneyByCurrency = (totals, key) => {
+    const parts = Object.entries(totals)
+      .filter(([, t]) => t[key] > 0)
+      .map(([currency, t]) => money(t[key], currency));
+    return parts.length ? parts.join(' + ') : money(0, Object.keys(totals)[0] || 'USD');
+  };
+
   function render(view) {
     $('who').textContent = `Signed in as ${view.user.name}`;
     $('share').value = view.shareUrl;
@@ -132,8 +140,10 @@
       ['Clicks', s.clicks.toLocaleString()],
       ['Sign-ups', s.signups.toLocaleString()],
       ['Payments', s.payments.toLocaleString()],
-      ['Pending earnings', money(s.pending, view.currency)],
-      ['Paid out', money(s.paid, view.currency)],
+      ['Pending earnings', moneyByCurrency(view.totals, 'pending')],
+      // In a payout that hasn't been sent yet.
+      ['Processing', moneyByCurrency(view.totals, 'processing')],
+      ['Paid out', moneyByCurrency(view.totals, 'paidOut')],
     ];
     $('stats').replaceChildren(
       ...tiles.map(([label, value]) => el('div', { className: 'stat' }, el('div', { className: 'label', textContent: label }), el('div', { className: 'value', textContent: value }))),
@@ -161,7 +171,7 @@
         'No payouts yet.',
       ),
     );
-    $('refreshed').textContent = `Updated ${new Date(view.refreshedAt).toLocaleTimeString()}`;
+    $('refreshed').textContent = `Updated ${new Date(view.refreshedAt).toLocaleTimeString()}${view.stale ? ' (couldn’t refresh just now)' : ''}`;
   }
 
   async function load(refresh = false) {

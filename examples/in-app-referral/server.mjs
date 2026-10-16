@@ -11,7 +11,7 @@
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 try {
   process.loadEnvFile();
@@ -24,7 +24,15 @@ const KEY = required('OPENPARTNER_API_KEY'); // scoped key from setup.mjs; never
 const PROGRAM_ID = required('OPENPARTNER_PROGRAM_ID');
 const SHARE_BASE = required('OPENPARTNER_SHARE_URL_BASE').replace(/\/$/, ''); // e.g. https://app.openpartner.dev/r/acme
 const PORT = Number(process.env.PORT ?? 3000);
-const STATS_TTL_MS = 60_000;
+// Loopback by default: the demo hooks below must not be reachable from the network.
+const HOST = process.env.HOST ?? '127.0.0.1';
+const DEMO_HOOKS = process.env.NODE_ENV !== 'production';
+
+// All of this server's API calls share one rate limit (600 requests per
+// 5 minutes per IP, event ingest included), so stats are cached, and a
+// user can't force a refresh more than once per REFRESH_MIN_MS.
+const STATS_TTL_MS = 5 * 60_000;
+const REFRESH_MIN_MS = 30_000;
 
 function required(name) {
   const v = process.env[name];
@@ -56,7 +64,14 @@ async function op(method, path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
-  const json = text ? JSON.parse(text) : null;
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    // An HTML page here almost always means a wrong base URL. On
+    // OpenPartner Cloud the tenant slug goes after /api: .../api/t/<slug>.
+    throw new ApiError(res.status, { error: 'non_json_response', detail: `Check OPENPARTNER_API_URL (${API}).` });
+  }
   if (!res.ok) throw new ApiError(res.status, json);
   return json;
 }
@@ -72,106 +87,157 @@ const DEMO_USERS = {
 
 function currentUser(req) {
   const cookie = /(?:^|;\s*)demo_user=([^;]+)/.exec(req.headers.cookie ?? '')?.[1];
-  return DEMO_USERS[decodeURIComponent(cookie ?? '')] ?? DEMO_USERS['ada@example.com'];
+  let email = '';
+  try {
+    email = decodeURIComponent(cookie ?? '');
+  } catch {
+    // Malformed cookie: fall back to the default demo user.
+  }
+  return DEMO_USERS[email] ?? DEMO_USERS['ada@example.com'];
 }
 
-// Stand-in for a column on your users table. Store the OpenPartner partner
-// id and link key when you create them, so later page views skip the lookups.
-const referralIds = new Map(); // user.id → { partnerId, linkKey }
+// Stand-in for columns on your users table. Store the OpenPartner partner
+// id, link key and creation date when you create them, so later page views
+// skip the lookups.
+const referralIds = new Map(); // user.id → { partnerId, linkKey, since }
+const pending = new Map(); // user.id → Promise, so concurrent first visits create once
 
 // ------------------------------------------------------- referral account
 
-/** The user's partner record, created on first visit. Idempotent: a race
- *  or a lost row id falls back to the email lookup. */
+/** The user's partner record, created on first visit. */
 async function ensurePartner(user) {
   try {
-    const partner = await op('POST', '/partners', {
-      email: user.email,
+    return await op('POST', '/partners', {
+      email: user.email, // use addresses your app has verified
       name: user.name,
       sendInvite: false, // active immediately, no OpenPartner email
       programIds: [PROGRAM_ID], // grant only the referral program
       metadata: { appUserId: user.id },
     });
-    return partner.id;
   } catch (err) {
     if (!(err instanceof ApiError && err.code === 'email_taken')) throw err;
     const { partners } = await op('GET', `/partners?email=${encodeURIComponent(user.email)}`);
-    if (!partners[0]) throw err;
-    return partners[0].id;
+    const partner = partners[0];
+    // Only adopt the existing partner if it's this user's. Otherwise the
+    // address belongs to someone else (another user, or a partner in
+    // another of your programs) and linking it would show them this page.
+    if (!partner || partner.metadata?.appUserId !== user.id) {
+      throw new ApiError(409, { error: 'email_belongs_to_another_partner' });
+    }
+    return partner;
   }
 }
 
-/** The user's share link on the referral program, created on first visit. */
+/** The user's share link on the referral program, created on first visit.
+ *  The first key tried is derived from the user id, so two app servers
+ *  racing on the same first visit try the same key and one of them reuses
+ *  the other's link instead of creating a second one. */
 async function ensureLink(partnerId, user) {
-  const { links } = await op('GET', `/partners/${partnerId}/links`);
-  const existing = links.find((l) => l.programId === PROGRAM_ID);
-  if (existing) return existing.linkKey;
+  const existing = async () =>
+    (await op('GET', `/partners/${partnerId}/links`)).links.find((l) => l.programId === PROGRAM_ID)?.linkKey;
+
+  const found = await existing();
+  if (found) return found;
 
   const base = user.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'ref';
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const linkKey = `${base}-${randomBytes(3).toString('hex')}`;
+  const stable = createHash('sha256').update(user.id).digest('hex').slice(0, 6);
+  const candidates = [`${base}-${stable}`, `${base}-${randomBytes(3).toString('hex')}`, `${base}-${randomBytes(3).toString('hex')}`];
+  for (const linkKey of candidates) {
     try {
-      const link = await op('POST', `/partners/${partnerId}/links`, { linkKey, programId: PROGRAM_ID });
-      return link.linkKey;
+      return (await op('POST', `/partners/${partnerId}/links`, { linkKey, programId: PROGRAM_ID })).linkKey;
     } catch (err) {
       if (!(err instanceof ApiError && err.code === 'linkKey_taken')) throw err;
+      const raced = await existing(); // a concurrent request may have just created ours
+      if (raced) return raced;
     }
   }
   throw new Error('could not allocate a link key');
 }
 
-async function referralAccount(user) {
-  let ids = referralIds.get(user.id);
-  if (!ids) {
-    const partnerId = await ensurePartner(user);
-    const linkKey = await ensureLink(partnerId, user);
-    ids = { partnerId, linkKey };
-    referralIds.set(user.id, ids);
+function referralAccount(user) {
+  const known = referralIds.get(user.id);
+  if (known) return Promise.resolve(known);
+  if (!pending.has(user.id)) {
+    pending.set(
+      user.id,
+      (async () => {
+        const partner = await ensurePartner(user);
+        const linkKey = await ensureLink(partner.id, user);
+        const ids = { partnerId: partner.id, linkKey, since: partner.createdAt };
+        referralIds.set(user.id, ids);
+        return ids;
+      })().finally(() => pending.delete(user.id)),
+    );
   }
-  return ids;
+  return pending.get(user.id);
 }
 
 // ------------------------------------------------------------- the page data
 
-// All API calls from this server share one rate limit (600 requests per 5
-// minutes per IP), so cache each user's stats briefly.
 const statsCache = new Map(); // partnerId → { at, view }
 
-async function referralView(user, { refresh = false } = {}) {
-  const { partnerId, linkKey } = await referralAccount(user);
-  const cached = statsCache.get(partnerId);
-  if (!refresh && cached && Date.now() - cached.at < STATS_TTL_MS) return cached.view;
+/** Major-unit decimal strings ("9.80") → integer cents, so sums don't drift. */
+const cents = (amount) => Math.round(Number(amount) * 100);
 
-  const since = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
-  const [dashboard, series, commissions, payouts] = await Promise.all([
-    op('GET', `/partners/${partnerId}/dashboard?since=${since}`),
-    op('GET', `/partners/${partnerId}/timeseries?since=${since}&programId=${PROGRAM_ID}`),
-    op('GET', `/partners/${partnerId}/commissions?limit=20`),
+/** Every commission on the referral program (lists are newest first). */
+async function allCommissions(partnerId) {
+  const out = [];
+  let cursor = null;
+  for (let page = 0; page < 20; page++) {
+    const q = `limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+    const res = await op('GET', `/partners/${partnerId}/commissions?${q}`);
+    out.push(...res.commissions);
+    cursor = res.nextCursor;
+    if (!cursor) break;
+  }
+  return out.filter((c) => c.programId === PROGRAM_ID);
+}
+
+async function buildView(user, { partnerId, linkKey, since }) {
+  const [series, commissions, { payouts }] = await Promise.all([
+    // Clicks, sign-ups and payments for the referral program, lifetime.
+    op('GET', `/partners/${partnerId}/timeseries?since=${encodeURIComponent(since)}&programId=${PROGRAM_ID}`),
+    allCommissions(partnerId),
+    // Payouts aren't per program; for a partner granted only the referral
+    // program they're all referral payouts.
     op('GET', `/partners/${partnerId}/payouts`),
   ]);
 
   const sum = (key) => series.buckets.reduce((n, b) => n + b[key], 0);
-  const byStatus = dashboard.commissionByStatus;
-  const view = {
+  const payoutStatus = new Map(payouts.map((p) => [p.id, p.status]));
+
+  // Per currency: never add amounts in different currencies together.
+  const totals = {};
+  const bucket = (currency) => (totals[currency] ??= { pending: 0, processing: 0, paidOut: 0 });
+  for (const c of commissions) {
+    if (c.status === 'accrued' || c.status === 'approved') bucket(c.currency).pending += cents(c.amount);
+    // `paid` on a commission means "in a payout". On the manual rail that
+    // happens before the money is sent, so it's processing until the
+    // payout itself is `paid`.
+    if (c.status === 'paid' && payoutStatus.get(c.payoutId) !== 'paid') bucket(c.currency).processing += cents(c.amount);
+  }
+  for (const p of payouts) if (p.status === 'paid') bucket(p.currency).paidOut += cents(p.amount);
+
+  return {
     user: { name: user.name, email: user.email },
     shareUrl: `${SHARE_BASE}/${linkKey}`,
     stats: {
-      clicks: dashboard.clicks,
+      clicks: sum('clicks'),
+      // Per attribution: signups and trials, and events with a value.
       signups: sum('leads'),
       payments: sum('sales'),
-      referredRevenue: dashboard.attributedRevenue,
-      pending: (byStatus.accrued ?? 0) + (byStatus.approved ?? 0),
-      paid: byStatus.paid ?? 0,
     },
-    currency: commissions.commissions[0]?.currency ?? 'USD',
-    commissions: commissions.commissions.map((c) => ({
+    totals: Object.fromEntries(
+      Object.entries(totals).map(([cur, t]) => [cur, { pending: t.pending / 100, processing: t.processing / 100, paidOut: t.paidOut / 100 }]),
+    ),
+    commissions: commissions.slice(0, 20).map((c) => ({
       amount: c.amount,
       currency: c.currency,
-      status: c.status,
+      status: c.status === 'paid' && payoutStatus.get(c.payoutId) !== 'paid' ? 'processing' : c.status,
       accruedAt: c.accruedAt,
       matureAt: c.matureAt,
     })),
-    payouts: payouts.payouts.map((p) => ({
+    payouts: payouts.map((p) => ({
       amount: p.amount,
       currency: p.currency,
       status: p.status,
@@ -180,33 +246,54 @@ async function referralView(user, { refresh = false } = {}) {
     })),
     refreshedAt: new Date().toISOString(),
   };
-  statsCache.set(partnerId, { at: Date.now(), view });
-  return view;
+}
+
+async function referralView(user, { refresh = false } = {}) {
+  const account = await referralAccount(user);
+  const cached = statsCache.get(account.partnerId);
+  const age = cached ? Date.now() - cached.at : Infinity;
+  if (cached && age < (refresh ? REFRESH_MIN_MS : STATS_TTL_MS)) return cached.view;
+  try {
+    const view = await buildView(user, account);
+    statsCache.set(account.partnerId, { at: Date.now(), view });
+    return view;
+  } catch (err) {
+    // Rate-limited or OpenPartner briefly unavailable: an older page beats an error.
+    if (cached && err instanceof ApiError && (err.status === 429 || err.status >= 500)) return { ...cached.view, stale: true };
+    throw err;
+  }
 }
 
 // -------------------------------------------- what your backend does on events
 //
 // Demo-only HTTP hooks so you can drive the loop with curl (see README).
 // In your app this code runs inside your own signup and billing handlers,
-// not as public endpoints.
+// not as public endpoints. They're off when NODE_ENV=production.
 
 /** Signup: stitch the visitor's click (the `cref` the browser SDK captured)
- *  to the new user, then record the signup. */
+ *  to the new user, then record the signup. A failed stitch never fails the
+ *  signup. Server-side identify counts against this server's IP limit
+ *  (120/min); at volume, let the browser SDK make the call instead. */
 async function onSignup({ userId, cref }) {
   if (cref) {
-    // Public endpoint; no key needed. The SDK can also do this from the browser.
-    const res = await fetch(`${API}/attribution/identify`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ cref, userId }),
-    });
-    // 404 click_not_found = a stale or forged cref: sign the user up anyway.
-    if (!res.ok && res.status !== 404) throw new ApiError(res.status, await res.json().catch(() => null));
+    try {
+      const res = await fetch(`${API}/attribution/identify`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cref, userId }),
+      });
+      // 404 click_not_found = a stale or forged cref.
+      if (!res.ok) console.warn('identify failed', res.status, await res.text());
+    } catch (err) {
+      console.warn('identify failed', err);
+    }
   }
   return op('POST', '/attribution/events', { userId, type: 'signup', externalEventId: `signup:${userId}` });
 }
 
-/** Payment: report it as invoice_paid, keyed by your invoice id. */
+/** Payment: report it as invoice_paid, keyed by your invoice id. In a real
+ *  app, send this from a job queue and retry on 429 / network errors with
+ *  the same externalEventId; a retry can never pay twice. */
 async function onInvoicePaid({ userId, invoiceId, amount, currency = 'USD' }) {
   return op('POST', '/attribution/events', {
     userId,
@@ -219,10 +306,19 @@ async function onInvoicePaid({ userId, invoiceId, amount, currency = 'USD' }) {
 
 // --------------------------------------------------------------------- HTTP
 
+class BadRequest extends Error {}
+
 async function readJson(req) {
   let raw = '';
-  for await (const chunk of req) raw += chunk;
-  return raw ? JSON.parse(raw) : {};
+  for await (const chunk of req) {
+    raw += chunk;
+    if (raw.length > 10_000) throw new BadRequest('body too large');
+  }
+  try {
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new BadRequest('invalid JSON');
+  }
 }
 
 function send(res, status, body, headers = {}) {
@@ -233,30 +329,36 @@ function send(res, status, body, headers = {}) {
 const indexHtml = await readFile(new URL('./public/index.html', import.meta.url), 'utf8');
 
 createServer(async (req, res) => {
-  const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
+  let pathname = '/';
   try {
-    if (req.method === 'GET' && url.pathname === '/') {
+    // A fixed base, never the client's Host header: a malformed Host would
+    // otherwise throw here.
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    pathname = url.pathname;
+    if (req.method === 'GET' && pathname === '/') {
       const as = url.searchParams.get('as');
       const headers = { 'content-type': 'text/html; charset=utf-8' };
+      // Only known demo users, so nothing from the query reaches the header.
       if (as && DEMO_USERS[as]) headers['set-cookie'] = `demo_user=${encodeURIComponent(as)}; Path=/; SameSite=Lax; HttpOnly`;
       res.writeHead(200, headers);
       return res.end(indexHtml);
     }
-    if (req.method === 'GET' && url.pathname === '/api/referral') {
+    if (req.method === 'GET' && pathname === '/api/referral') {
       return send(res, 200, await referralView(currentUser(req), { refresh: url.searchParams.has('refresh') }));
     }
-    if (req.method === 'POST' && url.pathname === '/api/demo/signup') {
+    if (DEMO_HOOKS && req.method === 'POST' && pathname === '/api/demo/signup') {
       return send(res, 200, await onSignup(await readJson(req)));
     }
-    if (req.method === 'POST' && url.pathname === '/api/demo/invoice-paid') {
+    if (DEMO_HOOKS && req.method === 'POST' && pathname === '/api/demo/invoice-paid') {
       return send(res, 200, await onInvoicePaid(await readJson(req)));
     }
     send(res, 404, { error: 'not_found' });
   } catch (err) {
+    if (err instanceof BadRequest) return send(res, 400, { error: 'bad_request' });
     // Log the detail here; give the browser nothing it could leak.
-    console.error(req.method, url.pathname, err instanceof ApiError ? { status: err.status, body: err.body } : err);
+    console.error(req.method, pathname, err instanceof ApiError ? { status: err.status, body: err.body } : err);
     send(res, 502, { error: 'referral_unavailable' });
   }
-}).listen(PORT, () => {
-  console.log(`In-app referral sample on http://localhost:${PORT} (OpenPartner API: ${API})`);
+}).listen(PORT, HOST, () => {
+  console.log(`In-app referral sample on http://${HOST}:${PORT} (OpenPartner API: ${API})`);
 });

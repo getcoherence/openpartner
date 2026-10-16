@@ -23,7 +23,11 @@ node setup.mjs        # writes .env with a scoped key; the admin key isn't saved
 node server.mjs       # http://localhost:3000
 ```
 
-For a local self-host, use `OPENPARTNER_API_URL=http://localhost:4601` and `OPENPARTNER_SHARE_URL_BASE=http://localhost:4701/r`. On a white-label domain, set `OPENPARTNER_SHARE_URL_BASE=https://<your-domain>/r`. See `.env.example`.
+On OpenPartner Cloud, setup works out the share-link base from the API URL. Anywhere else, set it yourself:
+- **Local self-host:** `OPENPARTNER_API_URL=http://localhost:4601` and `OPENPARTNER_SHARE_URL_BASE=http://localhost:4701/r`.
+- **White-label domain:** `OPENPARTNER_SHARE_URL_BASE=https://<your-domain>/r`.
+
+Re-running setup reuses the "Refer & earn" program and mints a fresh key. See `.env.example`.
 
 Open http://localhost:3000. The first visit creates the demo user's partner (`sendInvite: false`, so no email) and share link. Switch between the two demo users with the links in the header; the cookie stands in for your real login.
 
@@ -41,9 +45,9 @@ curl -s -X POST localhost:3000/api/demo/invoice-paid -H 'content-type: applicati
   -d '{"userId":"friend_1","invoiceId":"in_1001","amount":49}'
 ```
 
-Send the same invoice twice and the second call replays (`"replayed": true`) instead of paying twice. Press **Refresh** on the page: stats are cached for a minute, because all of your server's API calls share one rate limit.
+Send the same invoice twice and the second call replays (`"replayed": true`) instead of paying twice. Press **Refresh** on the page to see the new numbers. Stats are cached for five minutes, and Refresh re-fetches at most every 30 seconds, because all of your server's API calls share one rate limit. Earnings show as **Pending** until the holdback (30 days in setup) auto-approves them. A payout run then moves them to **Processing**. They become **Paid out** only when you confirm you've sent the money (`POST /payouts/{id}/confirm`), because headless partners are paid on the manual rail.
 
-The two `/api/demo/*` routes exist only so you can drive the loop with curl. In your app, that code (`onSignup`, `onInvoicePaid` in `server.mjs`) runs inside your own signup and billing handlers, not as public endpoints. In the browser, `@openpartner/sdk` captures the `cref` for you:
+The two `/api/demo/*` routes exist only so you can drive the loop with curl. They're unauthenticated, so the server listens on `127.0.0.1` only (set `HOST` to change it), and they're switched off when `NODE_ENV=production`. In your app, that code (`onSignup`, `onInvoicePaid` in `server.mjs`) runs inside your own signup and billing handlers, not as public endpoints. In the browser, `@openpartner/sdk` captures the `cref` for you:
 
 ```js
 import { OpenPartner } from '@openpartner/sdk';
@@ -54,7 +58,8 @@ await op.identify(user.id);
 
 ## What to change for production
 
-- Replace the demo session (`currentUser`) with your own auth, and store `partnerId` and `linkKey` on your users table instead of the in-memory map.
-- Decide which partner to show from the signed-in user only. The scoped key can read every partner.
+- Replace the demo session (`currentUser`) with your own auth, and store `partnerId`, `linkKey` and the partner's creation date on your users table instead of the in-memory map.
+- Decide which partner to show from the signed-in user only. The scoped key can read every partner. When an email is already taken, adopt the existing partner only if its `metadata.appUserId` is this user (`ensurePartner` does this). Use verified emails.
+- Report events from a job queue that retries on `429` with the same `externalEventId`.
 - Keep the key in your secret store. It is never sent to the browser.
 - Put the stats cache somewhere shared (Redis, your DB) if you run more than one server.

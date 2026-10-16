@@ -23,6 +23,19 @@ if (!API || !ADMIN) {
   process.exit(1);
 }
 
+// Share links are <router>/r[/<slug>]/<linkKey>. Only OpenPartner Cloud's
+// layout is known from the API URL; anywhere else the router lives where
+// you deployed it (a self-host's portal origin does NOT serve /r), so say so.
+const cloud = /^https:\/\/app\.openpartner\.dev\/api\/t\/([a-z0-9-]+)$/.exec(API);
+const SHARE_BASE = process.env.OPENPARTNER_SHARE_URL_BASE ?? (cloud ? `https://app.openpartner.dev/r/${cloud[1]}` : null);
+if (!SHARE_BASE) {
+  console.error(
+    'Set OPENPARTNER_SHARE_URL_BASE to where share links live, e.g. https://<your-domain>/r on a white-label domain,\n' +
+      'or your router origin + /r (single tenant) or + /r/<slug> (multi-tenant) on a self-host.',
+  );
+  process.exit(1);
+}
+
 async function op(method, path, body) {
   const res = await fetch(`${API}${path}`, {
     method,
@@ -44,15 +57,25 @@ if (network.autoEnroll) {
 }
 
 // 2. A private program: 20% of every payment for the first 12 months.
-const program = await op('POST', '/programs', {
-  name: 'Refer & earn',
-  destinationUrl: SIGNUP_URL,
-  commissionRule: [{ trigger: 'every', eventType: 'invoice_paid', type: 'percent', value: 20, recurring: true, recurringMonths: 12 }],
-  attributionWindowDays: 90,
-  holdbackDays: 30,
-  shareOnNetwork: false,
-});
-console.log(`✓ Program ${program.id} created`);
+// holdbackDays: commissions auto-approve 30 days after accruing (your refund
+// window), then the next payout run pays them. Use 0 to approve by hand.
+// Re-running setup reuses the program instead of creating a second one.
+const PROGRAM_NAME = 'Refer & earn';
+const { programs } = await op('GET', '/programs');
+let program = programs.find((p) => p.name === PROGRAM_NAME);
+if (program) {
+  console.log(`✓ Program ${program.id} already exists; reusing it`);
+} else {
+  program = await op('POST', '/programs', {
+    name: PROGRAM_NAME,
+    destinationUrl: SIGNUP_URL,
+    commissionRule: [{ trigger: 'every', eventType: 'invoice_paid', type: 'percent', value: 20, recurring: true, recurringMonths: 12 }],
+    attributionWindowDays: 90,
+    holdbackDays: 30,
+    shareOnNetwork: false,
+  });
+  console.log(`✓ Program ${program.id} created`);
+}
 
 // 3. A scoped key: create partners + links, read stats/earnings, report events.
 const key = await op('POST', '/api-keys/scoped', {
@@ -61,24 +84,17 @@ const key = await op('POST', '/api-keys/scoped', {
 });
 console.log(`✓ Scoped key ${key.id} minted`);
 
-// Share links: https://app.openpartner.dev/r/<slug>/<key> on Cloud; on a
-// custom domain or self-host, override OPENPARTNER_SHARE_URL_BASE.
-const slug = /\/api\/t\/([a-z0-9-]+)$/.exec(API)?.[1];
-const shareBase =
-  process.env.OPENPARTNER_SHARE_URL_BASE ??
-  (slug ? `${new URL(API).origin}/r/${slug}` : API.endsWith('/api') ? `${new URL(API).origin}/r` : 'http://localhost:4701/r');
-
 const env = [
   `OPENPARTNER_API_URL=${API}`,
   `OPENPARTNER_API_KEY=${key.plaintext}`,
   `OPENPARTNER_PROGRAM_ID=${program.id}`,
-  `OPENPARTNER_SHARE_URL_BASE=${shareBase}`,
+  `OPENPARTNER_SHARE_URL_BASE=${SHARE_BASE}`,
   'PORT=3000',
   '',
 ].join('\n');
 
 if (existsSync('.env')) {
-  console.log('\n.env exists; not overwriting. Use these values:\n');
+  console.log('\n.env exists; not overwriting. Use these values (the key is shown only this once):\n');
   console.log(env);
 } else {
   writeFileSync('.env', env, { mode: 0o600 });
