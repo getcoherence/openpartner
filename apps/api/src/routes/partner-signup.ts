@@ -44,6 +44,12 @@ const schema = z.object({
   profile: z.record(z.unknown()).optional(),
 });
 
+// Partner.metadata keys the server owns. This endpoint is public, so a
+// signup's profile must not set them: `source` decides the Network-access
+// fee (usage-billing.ts), `network` is the Network sync stamp, and `stripe`
+// mirrors Connect payout state.
+const RESERVED_METADATA_KEYS = new Set(['source', 'network', 'stripe']);
+
 export type PartnerSignupPolicy = 'auto_approve' | 'require_review';
 
 interface PartnerSignupSettings {
@@ -77,6 +83,9 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
   }
 
   const email = body.data.email.toLowerCase();
+  const profile = body.data.profile
+    ? Object.fromEntries(Object.entries(body.data.profile).filter(([k]) => !RESERVED_METADATA_KEYS.has(k)))
+    : undefined;
 
   // Existence check is intentionally generic — same response shape on
   // taken vs not. We don't want this endpoint to leak whether an email
@@ -98,7 +107,7 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
         tenantId,
         email,
         name: body.data.name,
-        metadata: body.data.profile ?? {},
+        metadata: profile ?? {},
         activatedAt,
       })
       .returning('*')) as PartnerRow[];
@@ -125,7 +134,7 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
       vendorPartnerId: partner.id,
       email: partner.email,
       name: partner.name,
-      profile: body.data.profile,
+      profile,
       joinedVendorAt: partner.createdAt.toISOString(),
       status: activatedAt ? 'active' : 'pending',
       metadata: { source: 'self_signup' },

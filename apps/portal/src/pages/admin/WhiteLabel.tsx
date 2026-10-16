@@ -19,6 +19,9 @@ interface WhiteLabelBilling {
   mode: string;
   subscribed: boolean;
   priceConfigured: boolean;
+  /** Self-host only: connected to the Network, whose access is billed
+   *  separately and isn't cancelled by enabling white-label. */
+  networkConnected?: boolean;
 }
 
 interface DnsInstructions {
@@ -43,16 +46,23 @@ export function AdminWhiteLabel() {
     queryKey: ['white-label-billing'],
     queryFn: () => api<WhiteLabelBilling>('/billing/white-label'),
   });
+  // Self-host serves the portal from whatever domain it's deployed on — the
+  // custom-domain edge here is hosted-only.
+  const showDomains = !!billing.data?.effective && billing.data.mode !== 'selfhost';
   const domains = useQuery({
     queryKey: ['white-label-domains'],
     queryFn: () => api<{ domains: DomainRow[] }>('/config/domain'),
-    enabled: !!billing.data?.effective,
+    enabled: showDomains,
   });
 
   return (
     <Page
       title="White label"
-      subtitle="Serve your partner portal from your own domain, with your brand only."
+      subtitle={
+        billing.data?.mode === 'selfhost'
+          ? 'Show your partners your brand only.'
+          : 'Serve your partner portal from your own domain, with your brand only.'
+      }
     >
       <ErrorBanner error={billing.error} />
       {billing.isLoading ? (
@@ -61,7 +71,7 @@ export function AdminWhiteLabel() {
         <>
           <AddOnCard billing={billing.data} />
           <div style={{ height: 16 }} />
-          {billing.data.effective && (
+          {showDomains && (
             <DomainsCard rows={domains.data?.domains ?? []} loading={domains.isLoading} />
           )}
         </>
@@ -125,21 +135,24 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
   });
 
   const selfhost = billing.mode === 'selfhost';
-  // Enterprise has no Checkout; direct-enable is correct there. Everyone
-  // else needs a live subscription for the add-on item to attach to.
-  const needsCheckout = !billing.subscribed && billing.plan !== 'enterprise';
+  // Self-host and enterprise have no Checkout; direct-enable is correct
+  // there. Everyone else needs a live subscription for the add-on item to
+  // attach to.
+  const needsCheckout = !selfhost && !billing.subscribed && billing.plan !== 'enterprise';
 
   return (
     <Card>
       <SectionHeading
         actions={
-          selfhost ? null : billing.provisioned ? (
+          billing.provisioned ? (
             <Button
               variant="ghost"
               onClick={() => {
                 if (
                   window.confirm(
-                    'Disable white-label? Your custom domain will stop resolving and platform branding returns. The add-on is removed from your subscription with a prorated credit.',
+                    selfhost
+                      ? 'Disable white-label? OpenPartner branding returns to your portal and emails, and the Network becomes available again.'
+                      : 'Disable white-label? Your custom domain will stop resolving and platform branding returns. The add-on is removed from your subscription with a prorated credit.',
                   )
                 ) {
                   disable.mutate();
@@ -147,7 +160,7 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
               }}
               disabled={disable.isPending}
             >
-              {disable.isPending ? 'Disabling…' : 'Disable add-on'}
+              {disable.isPending ? 'Disabling…' : selfhost ? 'Disable white-label' : 'Disable add-on'}
             </Button>
           ) : needsCheckout ? (
             <Button
@@ -157,8 +170,22 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
               {subscribeWithAddOn.isPending ? 'Opening checkout…' : 'Subscribe with white-label included'}
             </Button>
           ) : (
-            <Button onClick={() => enable.mutate()} disabled={enable.isPending || !billing.priceConfigured}>
-              {enable.isPending ? 'Enabling…' : 'Enable white-label add-on'}
+            <Button
+              onClick={() => {
+                if (
+                  selfhost &&
+                  billing.networkConnected &&
+                  !window.confirm(
+                    'Enable white-label? This install is connected to the OpenPartner Network. White-label hides all Network pages, including Network billing, but does not cancel your Network subscription. Cancel it under Network → Billing first if you no longer need it.',
+                  )
+                ) {
+                  return;
+                }
+                enable.mutate();
+              }}
+              disabled={enable.isPending || (!selfhost && !billing.priceConfigured)}
+            >
+              {enable.isPending ? 'Enabling…' : selfhost ? 'Enable white-label' : 'Enable white-label add-on'}
             </Button>
           )
         }
@@ -168,7 +195,30 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
       {error && <div style={{ color: theme.danger, fontSize: 13, marginBottom: 10 }}>{error}</div>}
       <div style={{ fontSize: 13, color: theme.textMuted, lineHeight: 1.6 }}>
         {selfhost ? (
-          <>Self-hosted installs are always white-label entitled — configure your brand under Settings and skip this page.</>
+          billing.provisioned ? (
+            <>
+              <StatusPill status="active" /> White-label is on. OpenPartner branding is removed from your portal and
+              emails, and Network surfaces are hidden. Configure your brand under Settings.
+              {billing.networkConnected && (
+                <>
+                  {' '}This install is still connected to the Network, and your Network subscription keeps billing.
+                  Turn white-label off to reach Network billing.
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              Removes OpenPartner branding from your partner portal and emails, and hides the shared Network. Free on
+              self-hosted installs. Leave it off if you want to list on the OpenPartner Network: white-label installs
+              are isolated from it, and turning it on withdraws any listings you already have.
+              {billing.networkConnected && (
+                <>
+                  {' '}This install is connected to the Network: white-label hides Network billing but doesn&rsquo;t
+                  cancel your Network subscription.
+                </>
+              )}
+            </>
+          )
         ) : billing.effective ? (
           <>
             <StatusPill status="active" /> Add-on active. Platform branding is removed, Network surfaces are
