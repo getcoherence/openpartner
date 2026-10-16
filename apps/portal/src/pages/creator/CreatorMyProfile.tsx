@@ -4,6 +4,7 @@ import { CheckCircle2, Circle, Plus, X } from 'lucide-react';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
+import { AUDIENCE_SIZES, AUDIENCE_SIZE_LABELS, type AudienceSize } from '@openpartner/db';
 
 type AgeRange = '13-17' | '18-24' | '25-34' | '35-44' | '45-54' | '55+';
 
@@ -18,6 +19,8 @@ interface Profile {
   categories: string[];
   audienceLocations: string[];
   audienceAgeRange: AgeRange | null;
+  /** Absent on a Network that predates the field. */
+  audienceSize?: AudienceSize | null;
   portfolioLinks: string[];
   pastBrands: string[];
   createdAt: string;
@@ -84,6 +87,7 @@ export function CreatorMyProfilePage() {
   // wipes itself.
   const [audienceLocationsRaw, setAudienceLocationsRaw] = useState('');
   const [audienceAgeRange, setAudienceAgeRange] = useState<AgeRange | ''>('');
+  const [audienceSize, setAudienceSize] = useState<AudienceSize | ''>('');
   const [portfolioLinks, setPortfolioLinks] = useState<string[]>([]);
   const [pastBrandsRaw, setPastBrandsRaw] = useState('');
 
@@ -96,6 +100,7 @@ export function CreatorMyProfilePage() {
       setCategories(data.categories ?? []);
       setAudienceLocationsRaw((data.audienceLocations ?? []).join(', '));
       setAudienceAgeRange((data.audienceAgeRange ?? '') as AgeRange | '');
+      setAudienceSize((data.audienceSize ?? '') as AudienceSize | '');
       setPortfolioLinks(data.portfolioLinks ?? []);
       setPastBrandsRaw((data.pastBrands ?? []).join(', '));
     }
@@ -122,6 +127,9 @@ export function CreatorMyProfilePage() {
           categories,
           audienceLocations,
           audienceAgeRange: audienceAgeRange || null,
+          // Only when the Network reports the field, so a save never
+          // depends on an older Network tolerating the unknown key.
+          ...(data && 'audienceSize' in data ? { audienceSize: audienceSize || null } : {}),
           portfolioLinks: portfolioLinks.filter((u) => u.trim()),
           pastBrands,
         },
@@ -195,6 +203,18 @@ export function CreatorMyProfilePage() {
                   {AGE_RANGES.map((r) => <option key={r} value={r}>{r}</option>)}
                 </Select>
               </Field>
+              {'audienceSize' in data && (
+                <Field label="Audience size" hint="Your total reach across platforms. Brands filter by this.">
+                  <Select
+                    aria-label="Audience size"
+                    value={audienceSize}
+                    onChange={(e) => setAudienceSize(e.target.value as AudienceSize | '')}
+                  >
+                    <option value="">Not set</option>
+                    {AUDIENCE_SIZES.map((s) => <option key={s} value={s}>{AUDIENCE_SIZE_LABELS[s]}</option>)}
+                  </Select>
+                </Field>
+              )}
             </div>
           </Card>
 
@@ -478,7 +498,7 @@ function ProfileChecklistCard({ profile }: { profile: Profile }) {
       <p style={{ fontSize: 13, color: theme.textMuted, margin: '4px 0 14px', lineHeight: 1.55 }}>
         Brands only see complete profiles when they search the Network for creators. Finish the{' '}
         {left === 1 ? 'last step' : `${left} steps`} below, save, and you&rsquo;ll show up right away.
-        You can still apply to programs in the meantime.
+        You&rsquo;ll need a complete profile to apply to programs, too.
       </p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {items.map((i) => (
