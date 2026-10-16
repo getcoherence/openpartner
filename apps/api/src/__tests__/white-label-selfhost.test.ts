@@ -68,6 +68,17 @@ describe.skipIf(skipIntegration)('self-host white-label toggle', () => {
     expect(connect.body.error).toBe('white_label_network_conflict');
   });
 
+  it('reports a Network connection so the wizard can warn that Network billing continues', async () => {
+    expect((await request(app).get('/billing/white-label').set(auth)).body.networkConnected).toBe(false);
+    await db(TABLES.Config).insert({
+      tenantId: DEFAULT_TENANT_ID,
+      key: 'network_membership',
+      value: { enabled: true, networkUrl: 'http://network.invalid', autoEnroll: false } as unknown as never,
+      updatedAt: new Date(),
+    });
+    expect((await request(app).get('/billing/white-label').set(auth)).body.networkConnected).toBe(true);
+  });
+
   it('disables again, restoring platform branding', async () => {
     expect((await request(app).post('/billing/white-label').set(auth)).status).toBe(200);
 

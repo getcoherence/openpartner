@@ -30,6 +30,7 @@ import { getTenantBillingState, priceIdsForPlan } from '../billing-plan.js';
 import { reportUsageToStripe } from '../usage-billing.js';
 import { tenantOf } from '../tenancy.js';
 import { getWhiteLabelState } from '../white-label.js';
+import { getNetworkMembership } from '../network-client.js';
 import { applyWhiteLabelFromSubscription, whiteLabelPriceId } from '../white-label-billing.js';
 
 export const billingRouter = Router();
@@ -147,6 +148,11 @@ billingRouter.get('/billing/white-label', requireAuth, requireAdmin, async (req,
   const { db, tenantId } = tenantOf(req);
   const state = await getTenantBillingState(db, tenantId);
   const wl = await getWhiteLabelState(db, tenantId);
+  // Self-host Network access is billed separately by the Network, and
+  // white-label hides its pages (billing included) without cancelling it —
+  // the wizard warns before enabling. Hosted bundles Network access.
+  const networkConnected =
+    state.mode === 'selfhost' ? !!(await getNetworkMembership(db, tenantId))?.enabled : false;
   res.json({
     provisioned: wl.provisioned,
     effective: wl.effective,
@@ -154,6 +160,7 @@ billingRouter.get('/billing/white-label', requireAuth, requireAdmin, async (req,
     mode: state.mode,
     subscribed: !!state.stripeSubscriptionId,
     priceConfigured: !!whiteLabelPriceId(),
+    networkConnected,
   });
 });
 

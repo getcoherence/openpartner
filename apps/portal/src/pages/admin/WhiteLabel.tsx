@@ -19,6 +19,9 @@ interface WhiteLabelBilling {
   mode: string;
   subscribed: boolean;
   priceConfigured: boolean;
+  /** Self-host only: connected to the Network, whose access is billed
+   *  separately and isn't cancelled by enabling white-label. */
+  networkConnected?: boolean;
 }
 
 interface DnsInstructions {
@@ -55,7 +58,11 @@ export function AdminWhiteLabel() {
   return (
     <Page
       title="White label"
-      subtitle="Serve your partner portal from your own domain, with your brand only."
+      subtitle={
+        billing.data?.mode === 'selfhost'
+          ? 'Show your partners your brand only.'
+          : 'Serve your partner portal from your own domain, with your brand only.'
+      }
     >
       <ErrorBanner error={billing.error} />
       {billing.isLoading ? (
@@ -164,7 +171,18 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
             </Button>
           ) : (
             <Button
-              onClick={() => enable.mutate()}
+              onClick={() => {
+                if (
+                  selfhost &&
+                  billing.networkConnected &&
+                  !window.confirm(
+                    'Enable white-label? This install is connected to the OpenPartner Network. White-label hides all Network pages, including Network billing, but does not cancel your Network subscription. Cancel it under Network → Billing first if you no longer need it.',
+                  )
+                ) {
+                  return;
+                }
+                enable.mutate();
+              }}
               disabled={enable.isPending || (!selfhost && !billing.priceConfigured)}
             >
               {enable.isPending ? 'Enabling…' : selfhost ? 'Enable white-label' : 'Enable white-label add-on'}
@@ -181,12 +199,24 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
             <>
               <StatusPill status="active" /> White-label is on. OpenPartner branding is removed from your portal and
               emails, and Network surfaces are hidden. Configure your brand under Settings.
+              {billing.networkConnected && (
+                <>
+                  {' '}This install is still connected to the Network, and your Network subscription keeps billing.
+                  Turn white-label off to reach Network billing.
+                </>
+              )}
             </>
           ) : (
             <>
               Removes OpenPartner branding from your partner portal and emails, and hides the shared Network. Free on
               self-hosted installs. Leave it off if you want to list on the OpenPartner Network: white-label installs
               are isolated from it, and turning it on withdraws any listings you already have.
+              {billing.networkConnected && (
+                <>
+                  {' '}This install is connected to the Network: white-label hides Network billing but doesn&rsquo;t
+                  cancel your Network subscription.
+                </>
+              )}
             </>
           )
         ) : billing.effective ? (

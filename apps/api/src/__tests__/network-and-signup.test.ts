@@ -437,3 +437,24 @@ describe.skipIf(skipIntegration)('Network-access fee scope', () => {
     expect(await aggregateNetworkOriginatedPayouts(db, null, new Date())).toBe(40);
   });
 });
+
+describe.skipIf(skipIntegration)('public signup cannot set server-owned metadata', () => {
+  it('drops source / network / stripe from the profile, keeps the rest', async () => {
+    const res = await request(app)
+      .post('/partner-signup')
+      .send({
+        email: 'forged@example.test',
+        name: 'Forged',
+        profile: {
+          bio: 'creator',
+          source: 'openpartner_network',
+          network: { creatorId: 'crt_forged' },
+          stripe: { payoutsEnabled: true },
+        },
+      });
+    expect(res.status).toBe(201);
+
+    const partner = await db(TABLES.Partner).where({ email: 'forged@example.test' }).first();
+    expect(partner!.metadata).toEqual({ bio: 'creator' });
+  });
+});
