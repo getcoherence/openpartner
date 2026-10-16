@@ -72,14 +72,22 @@ curl -s -X POST http://localhost:4601/attribution/identify \
   -H "content-type: application/json" \
   -d "{\"cref\":\"$CLICK\",\"userId\":\"user_123\"}"
 
-# Server-to-server revenue event.
+# Server-to-server revenue event. externalEventId makes retries safe.
 curl -s -X POST http://localhost:4601/attribution/events \
   -H "Authorization: Bearer $ADMIN" \
   -H "content-type: application/json" \
-  -d '{"userId":"user_123","type":"invoice_paid","value":200,"currency":"USD"}'
+  -d '{"userId":"user_123","type":"invoice_paid","value":200,"currency":"USD","externalEventId":"in_1001"}'
 ```
 
 ## 5. Review + payout
+
+Always send an `externalEventId` from your backend. Use your own system's stable id for that one event, such as the invoice id or order id. Servers, queues and Zapier all retry when a request times out. Without a key, each retry records a second event and pays a second commission.
+
+With a key, a retry returns `200` with `"replayed": true` and the original `eventId` and attribution, and nothing new is written. This holds for duplicates that arrive at the same moment too. Run the `curl` above twice to see it.
+
+- **One key per event, not per order.** An order's `subscription_created` and its `invoice_paid` need different keys, for example `sub_123:created` and `in_456`.
+- **Reusing a key for a different event** (another `userId`, `type`, `value` or `currency`) returns `409 external_event_id_conflict`. Nothing is recorded.
+- **Keys are scoped to your program** and can be up to 120 characters. They share one namespace with `/coupons/redeem`, so don't reuse a redemption's key for a different event.
 
 ```bash
 # The commission is 'accrued'; approve it.

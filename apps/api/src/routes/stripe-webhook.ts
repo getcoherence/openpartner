@@ -226,8 +226,8 @@ stripeWebhookRouter.post(
       if (!mapped) return { skipped: event!.type };
 
       // Idempotency: a Stripe retry (5xx, timeout) re-delivers the same
-      // event.id. Insert with ON CONFLICT DO NOTHING on the unique
-      // partial index over externalEventId, then handle the dedupe path.
+      // event.id. Insert with ON CONFLICT DO NOTHING on the per-tenant
+      // (tenantId, externalEventId) unique, then handle the dedupe path.
       const eventId = ulid();
       const inserted = await trx<EventRow>(TABLES.Event)
         .insert({
@@ -241,7 +241,7 @@ stripeWebhookRouter.post(
           metadata: { stripeEventId: event!.id, stripeType: event!.type, ...(mapped.metadata ?? {}) },
           ts: new Date(event!.created * 1000),
         })
-        .onConflict('externalEventId')
+        .onConflict(['tenantId', 'externalEventId'])
         .ignore()
         .returning('*');
 
