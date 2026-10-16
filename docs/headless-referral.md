@@ -89,7 +89,7 @@ Or use **Admin → Network** in the portal and switch off auto-enroll. The setti
 - Don't run **Admin → Network → Backfill** (`POST /config/network/backfill`). It pushes every existing partner.
 - Scoped keys can't read or change this setting. Use the admin key.
 
-> **TODO (in progress, not merged as of 2026-10-16):** Network membership is moving to partner opt-in. Each partner will choose whether to join, and `autoEnroll` will only mean "offer the Network to my partners". Once that ships, update this section. Until then, the behaviour above is what runs.
+> **TODO ([#124](https://github.com/getcoherence/openpartner/pull/124), open as of 2026-10-16):** Network membership is moving to partner opt-in. Each partner will choose whether to join, and `autoEnroll` will only mean "offer the Network to my partners". Once that ships, update this section. Until then, the behaviour above is what runs.
 
 ## 2. Create a private program
 
@@ -114,7 +114,7 @@ curl -s -X POST $OP/programs -H "Authorization: Bearer $ADMIN" -H 'content-type:
 - **`holdbackDays`** delays approval of a commission. Set it to your refund window.
 - **Rules** are an array of sub-rules, each with `trigger` (`every` / `first` / `subsequent`), an optional `eventType`, and a `percent` or `fixed` amount. Scope each rule to an event type: a `fixed` rule with no `eventType` pays on every event, signups included.
 
-> **TODO (in progress, not merged):** revenue-based commission slabs and tiers. Today a program's rule is flat. You can override one partner's terms with `PUT /partners/{id}/commission-snapshot` (admin key); that override applies to all of the partner's programs.
+> **TODO (in progress, not merged):** revenue-based commission slabs and tiers. Today a program's rule is flat. You can override one partner's terms with `PUT /partners/{id}/commission-snapshot` (admin key); that override applies to all of the partner's programs. Scoping it to one program is [#123](https://github.com/getcoherence/openpartner/pull/123), also open.
 
 ## 3. Create a partner for each customer
 
@@ -370,7 +370,7 @@ For an operator dashboard or storefront, the same API covers the admin side (adm
 These are tracked as follow-ups. None of them is available today:
 
 - **Embedding the hosted partner portal without a separate login** (a signed embed/SSO token from your backend). Today, either build your own page (this guide) or have partners sign in to the portal with a magic link.
-- **Partner opt-in for the OpenPartner Network** (in progress; see step 1).
+- **Partner opt-in for the OpenPartner Network** ([#124](https://github.com/getcoherence/openpartner/pull/124), open; see step 1).
 - **Revenue-based commission slabs and tiers** (in progress; see step 2).
 - **Scoped reads** for `/partners/{id}/funnel`, `/coupons` and `/commission-snapshot`.
 - **Per-key rate limits.** Today the limit is per client IP (step 5).
