@@ -22,6 +22,13 @@ interface NetworkSelf {
   reviewStatus?: 'pending' | 'approved' | 'rejected';
 }
 
+interface ConsentSummary {
+  partners: number;
+  granted: number;
+  withdrawn: number;
+  declined: number;
+}
+
 interface BackfillResult {
   total: number;
   pushed: number;
@@ -247,19 +254,39 @@ function ConnectedPanel({ membership }: { membership: NetworkMembership }) {
   );
 }
 
+/**
+ * The stored `autoEnroll` flag now means "offer the Network to my
+ * partners". Partners decide for themselves (join-page checkbox, a
+ * one-time portal prompt, a portal setting); nothing about a partner is
+ * shared until they opt in. Off = they're never asked.
+ */
 function AutoEnrollPanel({ membership, onChange }: { membership: NetworkMembership; onChange: () => void }) {
+  const qc = useQueryClient();
   const m = useMutation({
     mutationFn: (autoEnroll: boolean) =>
       api('/config/network', { method: 'POST', body: { autoEnroll } }),
-    onSuccess: onChange,
+    onSuccess: () => {
+      onChange();
+      qc.invalidateQueries({ queryKey: ['network-partner-consent'] });
+    },
+  });
+  const { data: counts } = useQuery({
+    queryKey: ['network-partner-consent'],
+    queryFn: () => api<ConsentSummary>('/config/network/partner-consent'),
   });
   return (
     <Card>
-      <h3 style={{ marginTop: 0, fontSize: 15, fontWeight: 500 }}>Auto-enroll new partners</h3>
+      <h3 style={{ marginTop: 0, fontSize: 15, fontWeight: 500 }}>Offer the Network to your partners</h3>
       <p style={{ fontSize: 13, color: theme.textMuted, marginTop: 0 }}>
-        When ON, every partner created on this instance is automatically pushed to the Network. The Network
-        dedups creators by email — the same person joining you and another vendor gets a single Network
-        identity.
+        Partners choose for themselves whether to join the OpenPartner Network. When this is on, they see an
+        optional checkbox on your join page, a one-time question when they first sign in, and a setting they can
+        change any time. Only partners who opt in have their name, email and partner profile shared with the
+        Network. The Network dedups creators by email, so the same person joining you and another brand gets a
+        single Network identity.
+      </p>
+      <p style={{ fontSize: 13, color: theme.textMuted }}>
+        Turn this off for programs whose partners are your customers (an in-app referral program, for example).
+        They&rsquo;re then never asked and never shared.
       </p>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text }}>
         <input
@@ -268,8 +295,15 @@ function AutoEnrollPanel({ membership, onChange }: { membership: NetworkMembersh
           disabled={m.isPending}
           onChange={(e) => m.mutate(e.target.checked)}
         />
-        <span>Auto-enroll on partner create + signup</span>
+        <span>Offer the Network to partners</span>
       </label>
+      {counts && (
+        <p style={{ marginTop: 12, marginBottom: 0, fontSize: 13, color: theme.textMuted }}>
+          <strong style={{ color: theme.text }}>{counts.granted}</strong> of {counts.partners} active partners have
+          opted in
+          {counts.declined + counts.withdrawn > 0 && <> · {counts.declined + counts.withdrawn} said no</>}.
+        </p>
+      )}
     </Card>
   );
 }
@@ -285,15 +319,15 @@ function BackfillPanel() {
   useEffect(() => { setResult(null); }, []);
   return (
     <Card>
-      <h3 style={{ marginTop: 0, fontSize: 15, fontWeight: 500 }}>Backfill existing partners</h3>
+      <h3 style={{ marginTop: 0, fontSize: 15, fontWeight: 500 }}>Re-sync opted-in partners</h3>
       <p style={{ fontSize: 13, color: theme.textMuted, marginTop: 0 }}>
-        If you turned the Network on after onboarding partners, run this once to push the existing roster
-        through email-keyed dedup. Pre-existing creators (already on the Network from another vendor) come
-        back with a flag so you can see their cross-vendor presence.
+        Sends the partners who opted in to the Network again — for example after a Network outage. Partners who
+        haven&rsquo;t opted in are never sent. Creators already on the Network from another brand come back with a
+        flag so you can see their cross-brand presence.
       </p>
       {error && <ErrorBanner error={error} />}
       <Button onClick={() => m.mutate()} disabled={m.isPending}>
-        {m.isPending ? 'Backfilling…' : 'Backfill now'}
+        {m.isPending ? 'Syncing…' : 'Re-sync now'}
       </Button>
       {result && (
         <p style={{ marginTop: 12, fontSize: 13, color: theme.textMuted }}>

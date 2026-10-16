@@ -14,7 +14,7 @@ that overstates itself is worse than one with a documented hole.
 ```json
 {
   "exportedAt": "2026-08-09T12:00:00.000Z",
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "tables": { "Partner": [ … ], "Program": [ … ], … }
 }
 ```
@@ -34,31 +34,41 @@ appears after everything it references.
 | 2 | `Program` | `id` | programs + their commission rules |
 | 3 | `PartnerProgram` | `id` | **which partners may promote which programs** |
 | 4 | `PartnerCommission` | `partnerId` | **snapshotted per-partner terms** |
-| 5 | `Coupon` | `id` | **code → (partner, program) attribution** |
-| 6 | `Link` | `id` | tracking links |
-| 7 | `Click` | `id` | raw click log |
-| 8 | `Identity` | `id` | click → user stitch |
-| 9 | `Event` | `id` | raw conversion events |
-| 10 | `Attribution` | `id` | derived attribution (re-derivable) |
-| 11 | `Commission` | `id` | derived commission ledger |
-| 12 | `Payout` | `id` | payout ledger |
-| 13 | `PortalCustomDomain` | `id` | white-label domain history (inert on self-host) |
-| 14 | `CommissionAdjustment` | `id` | clawbacks / corrections |
+| 5 | `PartnerNetworkConsent` | `partnerId` | **each partner's own OpenPartner Network opt-in** |
+| 6 | `Coupon` | `id` | **code → (partner, program) attribution** |
+| 7 | `Link` | `id` | tracking links |
+| 8 | `Click` | `id` | raw click log |
+| 9 | `Identity` | `id` | click → user stitch |
+| 10 | `Event` | `id` | raw conversion events |
+| 11 | `Attribution` | `id` | derived attribution (re-derivable) |
+| 12 | `Commission` | `id` | derived commission ledger |
+| 13 | `Payout` | `id` | payout ledger |
+| 14 | `PortalCustomDomain` | `id` | white-label domain history (inert on self-host) |
+| 15 | `CommissionAdjustment` | `id` | clawbacks / corrections |
 
-Rows 3–5 were added in schemaVersion 2 (Aug 2026). Without them a restored
-instance had the roster but no grants, no coupon attribution, and no record
-of what any partnership was actually agreed at.
+Rows 3, 4 and 6 were added in schemaVersion 2 (Aug 2026). Without them a
+restored instance had the roster but no grants, no coupon attribution, and
+no record of what any partnership was actually agreed at.
 
-Note `PartnerCommission` is keyed on **`partnerId`**, not `id` — one
-snapshot per partner. The importer looks the key up per table rather than
-assuming `id`.
+Row 5 was added in schemaVersion 3 (Oct 2026). It records whether each
+partner opted in to the OpenPartner Network, declined or withdrew, how
+(join page, portal prompt, portal setting, joined from a Network offering,
+or grandfathered from the old brand-level auto-enroll), and when. It is the
+partner's decision, not the brand's, so it travels with the roster. A v1
+or v2 bundle restores with no consent rows, so every restored partner
+starts undecided and nobody is sent to the Network until they opt in on
+the new instance.
+
+Note `PartnerCommission` and `PartnerNetworkConsent` are keyed on
+**`partnerId`**, not `id`: one row per partner. The importer looks the key
+up per table rather than assuming `id`.
 
 ### Versioning
 
 `SCHEMA_VERSION` is the current bundle version; `SUPPORTED_IMPORT_VERSIONS`
 is what `POST /import` accepts. **That list only ever grows.** A v1 bundle
-sitting on someone's disk keeps importing — it is simply a v2 bundle
-without the three tables added later.
+sitting on someone's disk keeps importing — it is simply a v3 bundle
+without the four tables added later.
 
 ## Restoring
 

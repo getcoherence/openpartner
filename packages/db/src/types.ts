@@ -291,6 +291,45 @@ export interface PartnerCommissionRow {
   snapshottedAt: Date;
 }
 
+/**
+ * A partner's own decision about joining the OpenPartner Network
+ * (PartnerNetworkConsent, one row per partner). No row = never asked.
+ *
+ *   granted   — opted in: `source` says how, `consentedAt` when.
+ *   withdrawn — opted in, then turned it off in the portal setting:
+ *               `source` + `consentedAt` still describe the consent that
+ *               was withdrawn, `withdrawnAt` is when.
+ *   declined  — said no to the first-login prompt (`declinedAt`). Never
+ *               consented, so `source` and `consentedAt` are null.
+ *
+ * Only `granted` partners are ever pushed to the Network.
+ */
+export type NetworkConsentStatus = 'granted' | 'withdrawn' | 'declined';
+
+/** How consent was given. `network_offering` = the partner joined this
+ *  program from a Network offering (already a Network member);
+ *  `grandfathered` = pushed under the old brand-level auto-enroll, before
+ *  partners were asked. */
+export const NETWORK_CONSENT_SOURCES = [
+  'join_page',
+  'portal_prompt',
+  'portal_setting',
+  'network_offering',
+  'grandfathered',
+] as const;
+export type NetworkConsentSource = (typeof NETWORK_CONSENT_SOURCES)[number];
+
+export interface PartnerNetworkConsentRow {
+  partnerId: string;
+  tenantId: string;
+  status: NetworkConsentStatus;
+  source: NetworkConsentSource | null;
+  consentedAt: Date | null;
+  withdrawnAt: Date | null;
+  declinedAt: Date | null;
+  updatedAt: Date;
+}
+
 export type MagicLinkPurpose =
   | 'partner_invite'
   | 'partner_signin'
@@ -762,7 +801,9 @@ export interface PartnerPostbackRow {
   failureCount: number;
 }
 
-export type NetworkOutboxOp = 'partner_upsert' | 'partner_revoke' | 'backfill_partner';
+/** `partner_unlink` removes one vendor↔partner affiliation when the partner
+ *  withdraws or declines Network consent (docs/network-protocol.md). */
+export type NetworkOutboxOp = 'partner_upsert' | 'partner_revoke' | 'backfill_partner' | 'partner_unlink';
 export type NetworkOutboxStatus = 'pending' | 'dead';
 
 export interface NetworkOutboxRow {

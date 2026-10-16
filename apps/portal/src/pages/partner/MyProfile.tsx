@@ -7,9 +7,12 @@ import {
   type NetworkProfileAdapter,
   type PlatformRow,
 } from '../../lib/NetworkProfileEditor.js';
+import { NetworkMembershipCard, useNetworkConsent } from './NetworkConsent.js';
 
 interface ProfileResponse extends Partial<NetworkProfile> {
   notFederated?: boolean;
+  /** The partner hasn't opted in to the Network (or has left it). */
+  consentRequired?: boolean;
 }
 
 /**
@@ -17,6 +20,9 @@ interface ProfileResponse extends Partial<NetworkProfile> {
  * through the brand's /network/me… proxies (which act as this partner on
  * the Network). Same editor as the creator portal, so a partner can finish
  * every item the Network's completeness bar checks and apply to programs.
+ *
+ * The membership setting sits on top: this is where a partner joins or
+ * leaves the Network. The editor only appears once they're on it.
  */
 const partnerProfileAdapter: NetworkProfileAdapter = {
   profileKey: ['network-my-profile'],
@@ -29,6 +35,7 @@ const partnerProfileAdapter: NetworkProfileAdapter = {
 };
 
 export function MyProfilePage() {
+  const consent = useNetworkConsent();
   const { data, isLoading, error } = useQuery({
     queryKey: ['network-my-profile'],
     queryFn: () => api<ProfileResponse>(`/network/me/profile`),
@@ -37,15 +44,19 @@ export function MyProfilePage() {
 
   return (
     <Page title="Network profile" subtitle="How vendors see you across the OpenPartner Network.">
-      <ErrorBanner error={error} />
+      <ErrorBanner error={error ?? consent.error} />
+      {consent.data && (
+        <div style={{ marginBottom: 18 }}>
+          <NetworkMembershipCard consent={consent.data} />
+        </div>
+      )}
       {isLoading ? (
         <Card>Loading…</Card>
-      ) : data?.notFederated ? (
+      ) : data?.consentRequired ? null : data?.notFederated ? (
         <Card>
           <div style={{ fontSize: 14 }}>
-            Your brand hasn&rsquo;t pushed you to the Network yet. Ask the brand admin to enable
-            <strong> auto-enroll</strong> on Settings → Network and run <strong>Backfill</strong>;
-            once that&rsquo;s done your Network profile will appear here.
+            Your Network profile is being set up. It usually appears within a few minutes of joining — check back
+            shortly.
           </div>
         </Card>
       ) : data ? (

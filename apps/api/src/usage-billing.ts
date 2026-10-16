@@ -77,12 +77,14 @@ export const NETWORK_ORIGIN_SOURCE = 'openpartner_network';
  * the Partner.
  *
  * NOT Partner.metadata.network.creatorId: that is a sync stamp written
- * whenever a partner is pushed TO the Network (auto-enroll on
- * self-signup / admin invite, and the roster backfill), so it is also
- * set on partners the brand recruited itself. Billing on it charged the
- * Network fee on direct recruits. PartnerProgram.source='offering' isn't
- * usable either: grants that predate it were backfilled as 'admin', and
- * the brand can revoke them.
+ * whenever a partner is pushed TO the Network — including a partner the
+ * brand recruited itself who then opted in to the Network
+ * (network-consent.ts), and everyone the old brand-level auto-enroll
+ * pushed. Billing on it charged the Network fee on direct recruits. Nor
+ * PartnerNetworkConsent: consent is the partner choosing to be listed,
+ * not the Network having found them. PartnerProgram.source='offering'
+ * isn't usable either: grants that predate it were backfilled as
+ * 'admin', and the brand can revoke them.
  *
  * This is what the Network bills the vendor on (3% metered). Only
  * 'paid' payouts count — pending / failed don't generate Network fee

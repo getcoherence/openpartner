@@ -15,6 +15,10 @@
  * Tenants without that row treat the Network as disabled and short-
  * circuit (the partner mutation path is a no-op for them).
  *
+ * Per-partner: a partner's data is only pushed once that partner opted in
+ * (PartnerNetworkConsent). The gating lives in network-consent.ts; callers
+ * outside it must not call pushPartnerUpsert / backfillPartners directly.
+ *
  * The wire contract is documented in docs/network-protocol.md. If you
  * change a payload shape here, update the doc — the Network repo
  * builds against it.
@@ -43,6 +47,10 @@ export interface NetworkMembership {
   networkUrl: string; // e.g. https://network.openpartner.dev
   vendorTokenCiphertext: string; // encrypted bearer for vendor → Network
   scopedKeyId: string | null; // ApiKey.id of the scoped key Network calls back with
+  /** "Offer the Network to my partners". The stored name predates partner
+   *  consent: it no longer enrolls anyone. On = partners see the join-page
+   *  checkbox, the portal prompt and the setting; off = they are never
+   *  asked and never pushed. See network-consent.ts. */
   autoEnroll: boolean;
   /** Network's id for our vendor row. Persisted at signup so account
    *  restore can call /vendors/admin-restore (which needs the id —
@@ -264,6 +272,8 @@ function endpointForOp(networkUrl: string, op: NetworkOutboxRow['op']): string {
     case 'partner_revoke':
     case 'backfill_partner':
       return `${base}/partners/upsert`;
+    case 'partner_unlink':
+      return `${base}/partners/unlink`;
     default:
       throw new Error(`unknown network op: ${op}`);
   }
@@ -279,16 +289,54 @@ export async function pushPartnerUpsert(
   return dispatch<PartnerUpsertResponse>(db, tenantId, 'partner_upsert', payload as unknown as Record<string, unknown>);
 }
 
+/**
+ * Mirror a brand-side revoke. Sent through /partners/upsert with
+ * status 'revoked', so it carries the full upsert body: the Network
+ * validates email, name and joinedVendorAt on every upsert, and the
+ * vendorPartnerId-only body this used to send was rejected (400) on every
+ * attempt until the outbox gave up. Callers only send it for a partner
+ * who consented to the Network, so the email is never new to it.
+ */
 export async function pushPartnerRevoke(
   db: Knex,
   tenantId: string,
-  vendorPartnerId: string,
+  partner: { id: string; email: string; name: string; createdAt: Date },
 ): Promise<void> {
   await dispatch(db, tenantId, 'partner_revoke', {
-    vendorPartnerId,
+    vendorPartnerId: partner.id,
+    email: partner.email,
+    name: partner.name,
+    joinedVendorAt: partner.createdAt.toISOString(),
     status: 'revoked',
     revokedAt: new Date().toISOString(),
   });
+}
+
+/**
+ * Remove this vendor's affiliation with one partner from the Network —
+ * the partner withdrew (or declined) Network consent. Only the
+ * vendorPartnerId goes over the wire, so it is safe to send for a partner
+ * the Network may never have heard of. Contract: POST /partners/unlink in
+ * docs/network-protocol.md. A Network that predates the endpoint answers
+ * 404; drainOutbox keeps those rows queued instead of giving up, so they
+ * deliver once the Network ships it.
+ */
+export async function pushPartnerUnlink(
+  db: Knex,
+  tenantId: string,
+  vendorPartnerId: string,
+  reason: 'consent_withdrawn' | 'consent_declined',
+): Promise<void> {
+  const payload = { vendorPartnerId, reason };
+  // dispatch() is a silent no-op while membership is switched off, which
+  // would lose a withdrawal. Queue it instead: drainOutbox delivers it if
+  // the brand turns membership back on with the same credentials.
+  const m = await getNetworkMembership(db, tenantId);
+  if (m && !m.enabled && m.vendorTokenCiphertext) {
+    await enqueue(db, tenantId, 'partner_unlink', payload, 'network membership disabled; held for delivery');
+    return;
+  }
+  await dispatch(db, tenantId, 'partner_unlink', payload);
 }
 
 // ---------- backfill (used by Settings → Network → "Backfill") ----------
@@ -1212,7 +1260,35 @@ export async function drainOutbox(db: Knex, tenantId: string): Promise<{ drained
   let succeeded = 0;
   let dead = 0;
 
+  // A queued push must not outlive the consent it was queued under: a
+  // partner who withdrew (or never consented) since gets nothing sent.
+  // Unlinks are what a withdrawal sends, so they always go.
+  const pushedPartnerIds = [
+    ...new Set(
+      due
+        .filter((row) => row.op !== 'partner_unlink')
+        .map((row) => (row.payload as { vendorPartnerId?: unknown }).vendorPartnerId)
+        .filter((id): id is string => typeof id === 'string'),
+    ),
+  ];
+  const consented = new Set<string>(
+    pushedPartnerIds.length === 0
+      ? []
+      : ((await db(TABLES.PartnerNetworkConsent)
+          .whereIn('partnerId', pushedPartnerIds)
+          .where({ status: 'granted' })
+          .pluck('partnerId')) as string[]),
+  );
+
   for (const row of due) {
+    if (row.op !== 'partner_unlink') {
+      const partnerId = (row.payload as { vendorPartnerId?: unknown }).vendorPartnerId;
+      if (typeof partnerId !== 'string' || !consented.has(partnerId)) {
+        await db(TABLES.NetworkOutbox).where({ id: row.id }).del();
+        continue;
+      }
+    }
+    let endpointMissing = false;
     try {
       const url = endpointForOp(m.networkUrl, row.op);
       const res = await fetch(url, {
@@ -1226,6 +1302,9 @@ export async function drainOutbox(db: Knex, tenantId: string): Promise<{ drained
         signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
       });
       if (!res.ok) {
+        // /partners/unlink answers 200 even when there is nothing to
+        // remove, so a 404 means a Network that predates the endpoint.
+        endpointMissing = row.op === 'partner_unlink' && res.status === 404;
         throw new Error(`network ${res.status}`);
       }
       await db(TABLES.NetworkOutbox).where({ id: row.id }).del();
@@ -1233,7 +1312,10 @@ export async function drainOutbox(db: Knex, tenantId: string): Promise<{ drained
     } catch (err) {
       const attempts = row.attempts + 1;
       const msg = err instanceof Error ? err.message : String(err);
-      if (attempts >= MAX_ATTEMPTS) {
+      // An unlink waiting for the Network to ship the endpoint never goes
+      // dead: dropping it would leave the partner on the Network after
+      // they withdrew. It retries at the longest backoff until delivered.
+      if (attempts >= MAX_ATTEMPTS && !endpointMissing) {
         await db(TABLES.NetworkOutbox).where({ id: row.id }).update({
           status: 'dead',
           attempts,

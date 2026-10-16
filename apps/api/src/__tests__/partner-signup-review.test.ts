@@ -308,16 +308,16 @@ describe.skipIf(skipIntegration)('signup status is public and checked first', ()
       .merge({ value: value as unknown as never, updatedAt: new Date() });
   }
 
-  it('GET /partner-signup/status reports open + review policy without auth, and nothing else', async () => {
+  it('GET /partner-signup/status reports open + review policy + Network offer without auth, and nothing else', async () => {
     const fresh = await request(app).get('/partner-signup/status');
     expect(fresh.status).toBe(200);
-    expect(fresh.body).toEqual({ open: true, reviewRequired: false });
+    expect(fresh.body).toEqual({ open: true, reviewRequired: false, networkOffered: false });
 
     await setSettings({ policy: 'require_review' });
-    expect((await request(app).get('/partner-signup/status')).body).toEqual({ open: true, reviewRequired: true });
+    expect((await request(app).get('/partner-signup/status')).body).toEqual({ open: true, reviewRequired: true, networkOffered: false });
 
     await setSettings({ policy: 'require_review', disabled: true });
-    expect((await request(app).get('/partner-signup/status')).body).toEqual({ open: false, reviewRequired: true });
+    expect((await request(app).get('/partner-signup/status')).body).toEqual({ open: false, reviewRequired: true, networkOffered: false });
   });
 
   it('a closed program answers 403 signup_disabled whatever the body', async () => {

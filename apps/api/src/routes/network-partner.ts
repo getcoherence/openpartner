@@ -13,15 +13,30 @@
  * with an active vendor bearer) and resolves the Creator via
  * VendorAffiliation(vendorId, vendorPartnerId), so the same handler code
  * serves both browser-creator and proxied-from-vendor cases.
+ *
+ * Acting as the partner needs the partner's Network consent
+ * (requireConsent); browsing public offerings doesn't. The partner's own
+ * consent — the portal prompt and setting — is read and changed here too
+ * (/network/me/consent).
  */
 
 import express, { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import type { Knex } from 'knex';
-import { AUDIENCE_SIZES } from '@openpartner/db';
+import { AUDIENCE_SIZES, TABLES, type PartnerRow } from '@openpartner/db';
 import { requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { partnerProxy, NetworkProxyError } from '../network-client.js';
+import {
+  declineNetworkConsent,
+  getNetworkConsent,
+  grantNetworkConsent,
+  hasNetworkConsent,
+  isNetworkOfferedToPartners,
+  removePartnerFromNetwork,
+  syncPartnerToNetwork,
+  withdrawNetworkConsent,
+} from '../network-consent.js';
 
 export const networkPartnerRouter = Router();
 
@@ -45,9 +60,8 @@ async function proxy(
   successStatus = 200,
   /** Shape returned when the partner has no Network identity yet
    *  (Network 403 invalid_acting_context). Lets the SPA show an empty
-   *  state instead of an error banner for the common case where the
-   *  brand exists on the Network but auto-enroll never pushed this
-   *  particular partner. */
+   *  state instead of an error banner when the partner consented but the
+   *  push hasn't landed yet (still queued in the outbox). */
   notFederatedFallback?: () => unknown,
 ): Promise<void> {
   const { db, tenantId } = tenantOf(req);
@@ -66,6 +80,84 @@ async function proxy(
     throw err;
   }
 }
+
+/**
+ * Acting as a creator on the Network is Network participation, so it
+ * needs the partner's consent (network-consent.ts) — a withdrawn partner
+ * whose unlink hasn't reached the Network yet mustn't keep using it.
+ * Reads that have an empty-state shape get it (with consentRequired, so
+ * the portal can offer the opt-in); everything else is 403
+ * network_consent_required.
+ */
+async function requireConsent(req: Request, res: Response, partnerId: string, emptyState?: () => object): Promise<boolean> {
+  const { db } = tenantOf(req);
+  if (await hasNetworkConsent(db, partnerId)) return true;
+  if (emptyState) res.json({ ...emptyState(), consentRequired: true });
+  else res.status(403).json({ error: 'network_consent_required' });
+  return false;
+}
+
+// ---------- The partner's Network consent ----------
+
+async function consentState(db: Knex, tenantId: string, partnerId: string) {
+  const [offered, consent] = await Promise.all([
+    isNetworkOfferedToPartners(db, tenantId),
+    getNetworkConsent(db, partnerId),
+  ]);
+  return {
+    /** The brand offers the Network to its partners. When false the
+     *  portal shows no prompt — and no setting, unless they're opted in
+     *  (they can always opt out). */
+    offered,
+    status: consent?.status ?? null,
+    source: consent?.source ?? null,
+    consentedAt: consent?.consentedAt ?? null,
+    withdrawnAt: consent?.withdrawnAt ?? null,
+    declinedAt: consent?.declinedAt ?? null,
+  };
+}
+
+networkPartnerRouter.get('/network/me/consent', requireAuth, async (req, res) => {
+  const partnerId = requirePartnerPrincipal(req, res);
+  if (!partnerId) return;
+  const { db, tenantId } = tenantOf(req);
+  res.json(await consentState(db, tenantId, partnerId));
+});
+
+const consentSchema = z.object({
+  decision: z.enum(['grant', 'decline', 'withdraw']),
+  /** Where the partner decided: the first-login prompt or the setting. */
+  via: z.enum(['prompt', 'setting']),
+});
+
+networkPartnerRouter.post('/network/me/consent', requireAuth, async (req, res) => {
+  const partnerId = requirePartnerPrincipal(req, res);
+  if (!partnerId) return;
+  // Only the partner, signed in to the portal. A partner API key can be
+  // held by the brand's own backend (headless programs), and the brand
+  // must not be able to consent on the partner's behalf.
+  if (req.principal?.source !== 'session') return res.status(403).json({ error: 'partner_session_required' });
+  const body = consentSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const { db, tenantId } = tenantOf(req);
+  const { decision, via } = body.data;
+
+  if (decision === 'grant') {
+    if (!(await isNetworkOfferedToPartners(db, tenantId))) return res.status(409).json({ error: 'network_not_offered' });
+    await grantNetworkConsent(db, tenantId, partnerId, via === 'prompt' ? 'portal_prompt' : 'portal_setting');
+    const partner = await db<PartnerRow>(TABLES.Partner).where({ id: partnerId }).first();
+    if (partner) await syncPartnerToNetwork(db, tenantId, partner);
+  } else if (decision === 'decline') {
+    // The prompt's "No thanks" — only while undecided.
+    if (via !== 'prompt') return res.status(400).json({ error: 'decline_is_prompt_only' });
+    if (!(await declineNetworkConsent(db, tenantId, partnerId))) return res.status(409).json({ error: 'already_decided' });
+    await removePartnerFromNetwork(db, tenantId, partnerId, 'consent_declined');
+  } else {
+    if (!(await withdrawNetworkConsent(db, partnerId))) return res.status(409).json({ error: 'not_opted_in' });
+    await removePartnerFromNetwork(db, tenantId, partnerId, 'consent_withdrawn');
+  }
+  res.json(await consentState(db, tenantId, partnerId));
+});
 
 // ---------- Public discovery (no acting partner needed) ----------
 //
@@ -104,6 +196,7 @@ const applySchema = z.object({
 networkPartnerRouter.post('/network/offerings/:id/apply', requireAuth, async (req, res) => {
   const partnerId = requirePartnerPrincipal(req, res);
   if (!partnerId) return;
+  if (!(await requireConsent(req, res, partnerId))) return;
   const body = applySchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
   return proxy(
@@ -117,6 +210,7 @@ networkPartnerRouter.post('/network/offerings/:id/apply', requireAuth, async (re
 networkPartnerRouter.get('/network/me/affiliations', requireAuth, async (req, res) => {
   const partnerId = requirePartnerPrincipal(req, res);
   if (!partnerId) return;
+  if (!(await requireConsent(req, res, partnerId, () => ({ affiliations: [] })))) return;
   return proxy(
     req,
     res,
@@ -129,6 +223,7 @@ networkPartnerRouter.get('/network/me/affiliations', requireAuth, async (req, re
 networkPartnerRouter.get('/network/me/affiliations/:id/earnings', requireAuth, async (req, res) => {
   const partnerId = requirePartnerPrincipal(req, res);
   if (!partnerId) return;
+  if (!(await requireConsent(req, res, partnerId))) return;
   return proxy(req, res, (db, tenantId) =>
     partnerProxy.getAffiliationEarnings(db, tenantId, partnerId, req.params.id!),
   );
@@ -137,6 +232,7 @@ networkPartnerRouter.get('/network/me/affiliations/:id/earnings', requireAuth, a
 networkPartnerRouter.get('/network/me/requests', requireAuth, async (req, res) => {
   const partnerId = requirePartnerPrincipal(req, res);
   if (!partnerId) return;
+  if (!(await requireConsent(req, res, partnerId, () => ({ requests: [] })))) return;
   return proxy(
     req,
     res,
@@ -149,12 +245,14 @@ networkPartnerRouter.get('/network/me/requests', requireAuth, async (req, res) =
 networkPartnerRouter.post('/network/me/requests/:id/cancel', requireAuth, async (req, res) => {
   const partnerId = requirePartnerPrincipal(req, res);
   if (!partnerId) return;
+  if (!(await requireConsent(req, res, partnerId))) return;
   return proxy(req, res, (db, tenantId) => partnerProxy.cancelRequest(db, tenantId, partnerId, req.params.id!));
 });
 
 networkPartnerRouter.get('/network/me/profile', requireAuth, async (req, res) => {
   const partnerId = requirePartnerPrincipal(req, res);
   if (!partnerId) return;
+  if (!(await requireConsent(req, res, partnerId, () => ({ notFederated: true })))) return;
   // Profile fallback returns null instead of an empty object so the
   // SPA can show a "not on the Network yet" message rather than a
   // half-rendered editable form.
@@ -195,6 +293,7 @@ const updateProfileSchema = z.object({
 networkPartnerRouter.patch('/network/me/profile', requireAuth, async (req, res) => {
   const partnerId = requirePartnerPrincipal(req, res);
   if (!partnerId) return;
+  if (!(await requireConsent(req, res, partnerId))) return;
   const body = updateProfileSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
   return proxy(req, res, (db, tenantId) => partnerProxy.updateMyProfile(db, tenantId, partnerId, body.data));
@@ -209,6 +308,7 @@ const platformParam = z.string().regex(/^[a-z]{2,20}$/);
 networkPartnerRouter.get('/network/me/platforms', requireAuth, async (req, res) => {
   const partnerId = requirePartnerPrincipal(req, res);
   if (!partnerId) return;
+  if (!(await requireConsent(req, res, partnerId, () => ({ platforms: [] })))) return;
   return proxy(
     req,
     res,
@@ -221,6 +321,7 @@ networkPartnerRouter.get('/network/me/platforms', requireAuth, async (req, res) 
 networkPartnerRouter.put('/network/me/platforms/:platform', requireAuth, async (req, res) => {
   const partnerId = requirePartnerPrincipal(req, res);
   if (!partnerId) return;
+  if (!(await requireConsent(req, res, partnerId))) return;
   const platform = platformParam.safeParse(req.params.platform);
   if (!platform.success) return res.status(400).json({ error: 'invalid_platform' });
   return proxy(req, res, (db, tenantId) =>
@@ -231,6 +332,7 @@ networkPartnerRouter.put('/network/me/platforms/:platform', requireAuth, async (
 networkPartnerRouter.delete('/network/me/platforms/:platform', requireAuth, async (req, res) => {
   const partnerId = requirePartnerPrincipal(req, res);
   if (!partnerId) return;
+  if (!(await requireConsent(req, res, partnerId))) return;
   const platform = platformParam.safeParse(req.params.platform);
   if (!platform.success) return res.status(400).json({ error: 'invalid_platform' });
   return proxy(req, res, (db, tenantId) => partnerProxy.deleteMyPlatform(db, tenantId, partnerId, platform.data));
@@ -247,6 +349,7 @@ networkPartnerRouter.post(
   async (req, res) => {
     const partnerId = requirePartnerPrincipal(req, res);
     if (!partnerId) return;
+    if (!(await requireConsent(req, res, partnerId))) return;
     const contentType = String(req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
     if (!AVATAR_TYPES.includes(contentType)) return res.status(400).json({ error: 'unsupported_type' });
     if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: 'empty_body' });

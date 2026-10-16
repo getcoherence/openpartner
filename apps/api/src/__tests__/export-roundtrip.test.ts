@@ -95,6 +95,15 @@ async function seedEverything(): Promise<Seeded> {
     holdbackDays: 30,
     source: 'approval',
   });
+  // A partner who opted in to the Network on the join page, then withdrew.
+  await db(TABLES.PartnerNetworkConsent).insert({
+    partnerId,
+    tenantId: TENANT,
+    status: 'withdrawn',
+    source: 'join_page',
+    consentedAt: new Date('2026-10-01T09:00:00.000Z'),
+    withdrawnAt: new Date('2026-10-12T17:30:00.000Z'),
+  });
   await db(TABLES.Coupon).insert({
     id: couponId,
     tenantId: TENANT,
@@ -261,10 +270,13 @@ describe.skipIf(skipIntegration)('export coverage', () => {
     expect(names).toContain(TABLES.PartnerProgram);
     expect(names).toContain(TABLES.Coupon);
     expect(names).toContain(TABLES.PartnerCommission);
+    // Who agreed to have their details shared with the Network.
+    expect(names).toContain(TABLES.PartnerNetworkConsent);
   });
 
   it('knows each table real primary key — not just `id`', () => {
     expect(primaryKeyOf(TABLES.PartnerCommission)).toBe('partnerId');
+    expect(primaryKeyOf(TABLES.PartnerNetworkConsent)).toBe('partnerId');
     expect(primaryKeyOf(TABLES.Commission)).toBe('id');
   });
 
@@ -273,6 +285,7 @@ describe.skipIf(skipIntegration)('export coverage', () => {
     expect(at(TABLES.Partner)).toBeLessThan(at(TABLES.PartnerProgram));
     expect(at(TABLES.Program)).toBeLessThan(at(TABLES.PartnerProgram));
     expect(at(TABLES.Partner)).toBeLessThan(at(TABLES.PartnerCommission));
+    expect(at(TABLES.Partner)).toBeLessThan(at(TABLES.PartnerNetworkConsent));
     expect(at(TABLES.Program)).toBeLessThan(at(TABLES.Coupon));
     expect(at(TABLES.Link)).toBeLessThan(at(TABLES.Click));
     expect(at(TABLES.Click)).toBeLessThan(at(TABLES.Identity));
@@ -310,6 +323,12 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(terms.holdbackDays).toBe(30);
     const coupon = await db(TABLES.Coupon).where({ id: seeded.couponId }).first();
     expect(coupon.code).toBe('CREATOR15');
+    // The Network consent record keeps how and when, not just the status.
+    const consent = await db(TABLES.PartnerNetworkConsent).where({ partnerId: seeded.partnerId }).first();
+    expect(consent.status).toBe('withdrawn');
+    expect(consent.source).toBe('join_page');
+    expect(new Date(consent.consentedAt).toISOString()).toBe('2026-10-01T09:00:00.000Z');
+    expect(new Date(consent.withdrawnAt).toISOString()).toBe('2026-10-12T17:30:00.000Z');
     // jsonb array + text[] both survive with their own shapes.
     const program = await db(TABLES.Program).where({ id: seeded.programId }).first();
     expect(program.commissionRule).toEqual([{ trigger: 'every', type: 'percent', value: 20 }]);
@@ -374,6 +393,27 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
       .send({ schemaVersion: 99, tables: v1 });
     expect(bogus.status).toBe(400);
     expect(bogus.body.error).toBe('unsupported_schema_version');
+  }, 30_000);
+
+  it('accepts a v2 bundle — one exported before Network consent existed', async () => {
+    await seedEverything();
+    const full = await exportAll(db, TENANT);
+    const v2: Record<string, unknown[]> = { ...full };
+    delete v2[TABLES.PartnerNetworkConsent];
+    await wipe();
+
+    const app = createApp();
+    const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+    const viaRoute = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: 2, tables: v2 });
+    expect(viaRoute.status).toBe(200);
+    const after = await counts();
+    expect(after[TABLES.Partner]).toBe(1);
+    // No consent rows: every restored partner starts undecided, so nobody
+    // is pushed to the Network until they opt in on the new instance.
+    expect(after[TABLES.PartnerNetworkConsent]).toBe(0);
   }, 30_000);
 });
 
