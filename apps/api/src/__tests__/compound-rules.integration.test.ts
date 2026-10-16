@@ -22,6 +22,7 @@ process.env.ADMIN_API_KEY = ADMIN_KEY;
 process.env.OPENPARTNER_TENANCY = 'single';
 
 const TABLES_TO_CLEAN = [
+  TABLES.PartnerCommission,
   TABLES.Commission,
   TABLES.Attribution,
   TABLES.Event,
@@ -293,7 +294,42 @@ describe.skipIf(skipIntegration)('compound commission rules', () => {
     expect(Number(commissions[0]!.amount) + Number(commissions[1]!.amount)).toBeCloseTo(14.9, 2);
   });
 
+  // The partner override stores the same array the engine reads, so it
+  // must reject what the program routes reject. evaluateSubRule only
+  // filters on eventType when it's set: a "$100 on first
+  // subscription_created" bonus saved without its eventType would pay on
+  // the first signup, trial_started, subscription_created AND invoice_paid.
+  it.each(['first', 'subsequent'] as const)(
+    'partner override PUT rejects a %s-trigger rule without an eventType',
+    async (trigger) => {
+      const partner = await createPartner();
+      const res = await putOverride(partner.id, [{ trigger, type: 'fixed', value: 100 }]);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('invalid_body');
+      expect(JSON.stringify(res.body.detail)).toContain(`${trigger}-trigger sub-rules require an eventType`);
+      expect(await db(TABLES.PartnerCommission).where({ partnerId: partner.id }).first()).toBeUndefined();
+    },
+  );
+
+  it('partner override PUT stores a first-trigger rule that names its eventType', async () => {
+    const partner = await createPartner();
+    const rules = [
+      { trigger: 'first', eventType: 'subscription_created', type: 'fixed', value: 100 },
+      { trigger: 'every', type: 'percent', value: 0 },
+    ];
+    const res = await putOverride(partner.id, rules);
+    expect(res.status).toBe(200);
+    expect(res.body.snapshot.commissionRules).toEqual(rules);
+  });
+
   // -------- helpers --------
+
+  async function putOverride(partnerId: string, commissionRules: unknown[]) {
+    return request(app)
+      .put(`/partners/${partnerId}/commission-snapshot`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ commissionType: 'fixed', commissionValue: 100, commissionRules });
+  }
 
   async function createPartner() {
     const res = await request(app)

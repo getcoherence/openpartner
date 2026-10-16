@@ -20,6 +20,19 @@ export interface CommissionSubRule {
 }
 
 /**
+ * True when a rule's event type can't be saved: an empty custom event
+ * name, or a `first` / `subsequent` rule with no event type at all
+ * ("first WHAT?"). The engine only filters on eventType when it's set,
+ * so a first-sale bonus saved without one would pay on the first event
+ * of every type. Mirrors the API's sub-rule validation; every form that
+ * renders this editor gates Save on it.
+ */
+export function ruleEventTypeMissing(rule: CommissionSubRule): boolean {
+  if (rule.eventType === '') return true;
+  return (rule.trigger === 'first' || rule.trigger === 'subsequent') && !rule.eventType;
+}
+
+/**
  * Editor for a commissionRule[] array. Each row is one sub-rule.
  *
  * Sub-rules combine: a `subscription_created` event might match both a
@@ -104,8 +117,14 @@ function SubRuleRow({
   onRemove?: () => void;
 }) {
   // 'custom' is a UI-only sentinel that flips the picker to a freeform
-  // input. The eventType payload itself is still a plain string.
-  const isCustomEvent = rule.eventType != null && !STANDARD_EVENT_VALUES.has(rule.eventType);
+  // input. The eventType payload itself is still a plain string. A
+  // first/subsequent rule with no event type (its custom name cleared, or
+  // stored that way) stays on the custom input: the picker has no "all
+  // events" option for those triggers, so it would otherwise show a
+  // standard event the rule doesn't actually filter on.
+  const eventTypeMissing = ruleEventTypeMissing(rule);
+  const isCustomEvent =
+    (rule.eventType != null && !STANDARD_EVENT_VALUES.has(rule.eventType)) || eventTypeMissing;
   // Default for the 'every'-trigger "all events" case (no eventType set)
   // is the empty-string sentinel — distinct from picking a known type so
   // the UI can render "All events with value" as the selected option.
@@ -211,6 +230,11 @@ function SubRuleRow({
             value={rule.eventType ?? ''}
             onChange={(e) => onChange({ eventType: e.target.value.trim() || undefined })}
           />
+          {eventTypeMissing && (
+            <span style={{ gridColumn: 2, fontSize: 12, color: theme.danger }}>
+              Name the event this rule pays on.
+            </span>
+          )}
         </div>
       )}
       {rule.recurring && (

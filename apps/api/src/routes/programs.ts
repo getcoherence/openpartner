@@ -23,6 +23,7 @@ import { campaignAcceptsNewActivity } from '../campaign-lifecycle.js';
 import { getWhiteLabelState } from '../white-label.js';
 import { customerRewardDelivery } from '../customer-rewards.js';
 import { getStorage } from '../storage.js';
+import { refineCommissionSubRule } from '../commission-rule-schema.js';
 
 /**
  * Commission rule schema. The wire format is an array of triggered sub-rules.
@@ -46,28 +47,7 @@ const subRuleSchema = z.intersection(
     z.object({ type: z.literal('percent'), value: z.number().positive() }),
     z.object({ type: z.literal('fixed'), value: z.number().positive(), currency: z.string().length(3).optional() }),
   ]),
-).superRefine((sub, ctx) => {
-  // `first` and `subsequent` triggers need an eventType — "first/subsequent
-  // sale of WHAT" is otherwise ambiguous. `every` without an eventType means
-  // "every event with a value" (the legacy single-rule behavior).
-  if ((sub.trigger === 'first' || sub.trigger === 'subsequent') && !sub.eventType) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `${sub.trigger}-trigger sub-rules require an eventType`,
-      path: ['eventType'],
-    });
-  }
-  // recurringMonths only makes sense on recurring rules. Permit it to be
-  // present on non-recurring rules but warn loudly via validation rather
-  // than silently ignore.
-  if (sub.recurringMonths != null && !sub.recurring) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'recurringMonths requires recurring: true',
-      path: ['recurringMonths'],
-    });
-  }
-});
+).superRefine(refineCommissionSubRule);
 
 const legacyRuleSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('percent'), value: z.number().positive(), recurring: z.boolean().optional() }),

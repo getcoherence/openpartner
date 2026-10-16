@@ -291,7 +291,7 @@ const JOBS: ScheduledJob[] = [
  * Returns counts only; the approved rows would flood the job log.
  */
 export async function runCommissionAutoApproveJob() {
-  const swept = await forEachActiveTenant((trx) => autoApproveMatureCommissions(trx));
+  const swept = await forEachActiveTenant((trx, tenantId) => autoApproveMatureCommissions(trx, tenantId));
   for (const t of swept) {
     if (t.result) void dispatchCommissionEvents(t.tenantId, 'commission.approved', t.result.approved);
   }

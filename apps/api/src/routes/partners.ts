@@ -11,6 +11,7 @@ import { tenantOf } from '../tenancy.js';
 import { getNetworkMembership, pushPartnerRevoke, pushPartnerUpsert } from '../network-client.js';
 import { autoMintCouponsForGrants } from './coupons.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
+import { refineCommissionSubRule } from '../commission-rule-schema.js';
 
 const createSchema = z.object({
   email: z.string().email(),
@@ -539,18 +540,23 @@ const overrideSchema = z.object({
   /** Optional compound-rule override. When omitted, the override is a
    *  pure single-rule amendment and any prior compound rules attached
    *  to this partner are cleared (set to NULL) so the engine doesn't
-   *  silently keep using stale sub-rules. */
+   *  silently keep using stale sub-rules. Each sub-rule passes the same
+   *  cross-field checks as a program's terms (first/subsequent need an
+   *  eventType, recurringMonths needs recurring); values stay
+   *  nonnegative here so a 0% override remains expressible. */
   commissionRules: z
     .array(
-      z.object({
-        trigger: z.enum(['every', 'first', 'subsequent']),
-        eventType: z.string().min(1).max(80).optional(),
-        type: z.enum(['percent', 'fixed']),
-        value: z.number().nonnegative(),
-        currency: z.string().length(3).optional(),
-        recurring: z.boolean().optional(),
-        recurringMonths: z.number().int().positive().max(600).optional(),
-      }),
+      z
+        .object({
+          trigger: z.enum(['every', 'first', 'subsequent']),
+          eventType: z.string().min(1).max(80).optional(),
+          type: z.enum(['percent', 'fixed']),
+          value: z.number().nonnegative(),
+          currency: z.string().length(3).optional(),
+          recurring: z.boolean().optional(),
+          recurringMonths: z.number().int().positive().max(600).optional(),
+        })
+        .superRefine(refineCommissionSubRule),
     )
     .min(1)
     .max(10)

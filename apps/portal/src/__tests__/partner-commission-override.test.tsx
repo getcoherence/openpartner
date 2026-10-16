@@ -12,6 +12,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { api } from '../api.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
+import { ruleEventTypeMissing } from '../lib/CompoundRuleEditor.js';
 import { AdminPartnerCommission } from '../pages/AdminPartnerCommission.js';
 
 vi.mock('../api.js', async (importOriginal) => ({
@@ -104,5 +105,56 @@ describe('partner commission override', () => {
       commissionRules: [{ trigger: 'every', type: 'fixed', value: 50, recurring: false }],
       holdbackDays: null,
     });
+  });
+
+  // A first/subsequent rule without an eventType isn't "first demo
+  // booked" any more: the engine skips the event filter, so the bonus
+  // fires on the first event of every type. Clearing the custom event
+  // name used to leave eventType undefined, which slipped past the
+  // empty-string check and saved.
+  it('blocks saving a first-trigger rule whose custom event name is cleared', async () => {
+    const page = show({
+      commissionType: 'fixed',
+      commissionValue: '100.0000',
+      recurring: false,
+      commissionRules: [{ trigger: 'first', eventType: 'demo_booked', type: 'fixed', value: 100 }],
+      holdbackDays: null,
+    });
+    const save = () => page.getByText('Update override').closest('button')!;
+    expect(save().disabled).toBe(false);
+
+    fireEvent.change(page.getByPlaceholderText('e.g. demo_booked'), { target: { value: '' } });
+
+    // The custom input stays up with a prompt rather than flipping the
+    // picker to a standard event the rule doesn't filter on.
+    expect((page.getByPlaceholderText('e.g. demo_booked') as HTMLInputElement).value).toBe('');
+    expect(page.getByText('Name the event this rule pays on.')).toBeTruthy();
+    expect(save().disabled).toBe(true);
+    fireEvent.click(save());
+    expect(vi.mocked(api).mock.calls.some((c) => (c[1] as { method?: string } | undefined)?.method === 'PUT')).toBe(false);
+  });
+
+  it('blocks saving a stored subsequent-trigger rule that has no eventType', async () => {
+    const page = show({
+      commissionType: 'percent',
+      commissionValue: '20.0000',
+      recurring: true,
+      commissionRules: [{ trigger: 'subsequent', type: 'percent', value: 20, recurring: true }],
+      holdbackDays: null,
+    });
+    expect(page.getByText('Name the event this rule pays on.')).toBeTruthy();
+    expect(page.getByText('Update override').closest('button')!.disabled).toBe(true);
+  });
+});
+
+describe('ruleEventTypeMissing (gates Save on the override and both program forms)', () => {
+  it('requires an eventType on first/subsequent rules and rejects an empty custom name', () => {
+    expect(ruleEventTypeMissing({ trigger: 'first', type: 'fixed', value: 100 })).toBe(true);
+    expect(ruleEventTypeMissing({ trigger: 'subsequent', type: 'percent', value: 20 })).toBe(true);
+    expect(ruleEventTypeMissing({ trigger: 'first', eventType: '', type: 'fixed', value: 100 })).toBe(true);
+    expect(ruleEventTypeMissing({ trigger: 'every', eventType: '', type: 'percent', value: 20 })).toBe(true);
+    expect(ruleEventTypeMissing({ trigger: 'first', eventType: 'subscription_created', type: 'fixed', value: 100 })).toBe(false);
+    // `every` with no eventType = every event with a value (legacy shape).
+    expect(ruleEventTypeMissing({ trigger: 'every', type: 'percent', value: 20 })).toBe(false);
   });
 });

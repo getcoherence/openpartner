@@ -6,7 +6,7 @@ import { theme } from '../theme.js';
 import { useBrand } from '../lib/useBrand.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
-import { CompoundRuleEditor, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
+import { CompoundRuleEditor, ruleEventTypeMissing, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
 import { PROGRAM_CATEGORIES, categoryLabel, parseVideoUrl } from '@openpartner/db';
 
 interface CustomerReward {
@@ -350,6 +350,7 @@ function EditProgramDates({
           disabled={
             save.isPending ||
             rules.length === 0 ||
+            rules.some(ruleEventTypeMissing) ||
             (shareOnNetwork && !marketplaceDescription.trim()) ||
             (shareOnNetwork && videoLinkInvalid(videoUrl))
           }
@@ -610,6 +611,7 @@ function CreateProgram({
             !name ||
             rules.length === 0 ||
             rules.some((r) => !r.value) ||
+            rules.some(ruleEventTypeMissing) ||
             !destinationUrl ||
             urlProblem != null ||
             (networkEnabled && shareOnNetwork && !marketplaceDescription.trim()) ||

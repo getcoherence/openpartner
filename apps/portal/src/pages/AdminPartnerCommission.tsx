@@ -6,7 +6,7 @@ import { api } from '../api.js';
 import { theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
 import { Button, Card, ErrorBanner, Input, Label, Page } from '../ui.js';
-import { CompoundRuleEditor, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
+import { CompoundRuleEditor, ruleEventTypeMissing, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
 
 interface Partner {
@@ -176,7 +176,7 @@ function EditCard({
   }, [current]);
 
   const rulesInvalid =
-    rules.length === 0 || rules.some((r) => !Number.isFinite(r.value) || r.value < 0 || r.eventType === '');
+    rules.length === 0 || rules.some((r) => !Number.isFinite(r.value) || r.value < 0 || ruleEventTypeMissing(r));
 
   const save = useMutation({
     mutationFn: () => {
