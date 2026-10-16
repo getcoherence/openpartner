@@ -3,6 +3,7 @@ import type { Knex } from 'knex';
 import Stripe from 'stripe';
 import { ulid } from 'ulid';
 import {
+  DEFAULT_TENANT_ID,
   TABLES,
   type AttributionRow,
   type ClickRow,
@@ -27,6 +28,8 @@ import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
 import { handleFundingEvent, InboxEventHeldError } from '../funding/webhook.js';
 import { mirrorHostedBillingState, type MirroredSubscriptionStatus } from '../billing-plan.js';
 import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
+import { getMode } from '../stripe.js';
+import { getTenancyMode } from '../tenancy.js';
 
 const stripeKey = process.env.STRIPE_SECRET_KEY;
 
@@ -141,13 +144,25 @@ function expectedFamilyForType(type: string): SecretFamily | null {
  *
  * Each Stripe event we care about becomes an immutable Event row, then goes
  * through the attribution engine. We map:
+ *   - checkout.session.completed  → 'signup' (client_reference_id flow)
  *   - customer.created            → 'signup'
  *   - customer.subscription.created → 'subscription_created'
  *   - invoice.paid                → 'invoice_paid' (carries revenue)
  *
- * We require `openpartner_user_id` to be present in customer metadata as
- * the bridge from Stripe's Customer to the merchant's userId, which is
- * what Identity stitches against.
+ * A Stripe Customer is tied to the user an Identity row names in one of
+ * two ways:
+ *   - Checkout `client_reference_id` (the cref): we stitch Identity.userId =
+ *     the cus_ id ourselves, at checkout.session.completed or, when revenue
+ *     arrives first, from the customer's completed Checkout Sessions.
+ *   - customer metadata `openpartner_user_id`: the merchant's own userId,
+ *     the one their app passed to identify().
+ * A merchant can use both. When the Customer already carries their
+ * openpartner_user_id at checkout, the cref is stitched to that id and the
+ * metadata is left alone, so the user isn't split across two ids, and
+ * each merchant userId gets one signup however many events report it.
+ * The brand's end-customers only post here on a single-tenant self-host,
+ * where STRIPE_SECRET_KEY is the brand's own account
+ * (receivesBrandStripeEvents).
  */
 stripeWebhookRouter.post(
   '/webhooks/stripe',
@@ -222,7 +237,7 @@ stripeWebhookRouter.post(
         console.log('[stripe-webhook] auto-redeemed coupons', { eventId: event!.id, redeemed });
       }
 
-      const mapped = await mapStripeEvent(trx, stripe!, event!);
+      const mapped = await mapStripeEvent(trx, stripe!, event!, tenantId);
       if (!mapped) return { skipped: event!.type };
 
       // Idempotency: a Stripe retry (5xx, timeout) re-delivers the same
@@ -296,7 +311,10 @@ async function runInTenant<T>(tenantId: string, fn: (trx: Knex.Transaction) => P
  *   2. For events whose payload doesn't carry our metadata (older Connect
  *      accounts, transfers identified only by payoutId), fall back to DB
  *      lookup via the privileged `db` (cross-tenant scan).
- *   3. If neither yields a tenant, return null and the caller skips the
+ *   3. On a single-tenant self-host, a customer event neither step resolves
+ *      belongs to the one tenant there is. mapStripeEvent then decides
+ *      whether it's attributable.
+ *   4. If nothing yields a tenant, return null and the caller skips the
  *      event with 2xx so Stripe stops retrying.
  */
 async function resolveTenantForEvent(event: Stripe.Event, family: SecretFamily): Promise<string | null> {
@@ -382,11 +400,32 @@ async function resolveTenantForEvent(event: Stripe.Event, family: SecretFamily):
         .join(TABLES.Click, `${TABLES.Click}.id`, `${TABLES.Identity}.clickId`)
         .where(`${TABLES.Identity}.userId`, customerId)
         .first<{ tenantId: string }>(`${TABLES.Click}.tenantId as tenantId`);
-      return identity?.tenantId ?? null;
+      if (identity) return identity.tenantId;
+      // The join above only finds customers already stitched by cus_ id. It
+      // misses customers bridged by metadata.openpartner_user_id (Identity
+      // holds the merchant's userId) and Checkout customers whose
+      // checkout.session.completed hasn't been processed yet. On a
+      // single-tenant self-host both belong to the one tenant; mapStripeEvent
+      // resolves the user, or skips the event when nothing links it. Not
+      // when event.account is set: that's a connected account's event
+      // (delivered on the legacy combined secret), and its customers aren't
+      // the brand's.
+      if (event.account) return null;
+      return receivesBrandStripeEvents() ? DEFAULT_TENANT_ID : null;
     }
     default:
       return null;
   }
+}
+
+/**
+ * Is STRIPE_SECRET_KEY the brand's own Stripe account, so its end-customers'
+ * events post here? Only on a single-tenant self-host. Hosted deployments
+ * run on OpenPartner's billing account, and a multi-tenant self-host has one
+ * key for many brands (same rule as rewardStripe in customer-rewards.ts).
+ */
+function receivesBrandStripeEvents(): boolean {
+  return getMode() === 'selfhost' && getTenancyMode() === 'single';
 }
 
 /**
@@ -816,10 +855,14 @@ interface MappedEvent {
   metadata?: Record<string, unknown>;
 }
 
+// invoice.billing_reason values for invoices after a subscription's first.
+const RENEWAL_BILLING_REASONS = new Set(['subscription_cycle', 'subscription_update', 'subscription_threshold']);
+
 async function mapStripeEvent(
   trx: Knex.Transaction,
   stripe: Stripe,
   event: Stripe.Event,
+  tenantId: string,
 ): Promise<MappedEvent | null> {
   switch (event.type) {
     case 'checkout.session.completed': {
@@ -832,16 +875,37 @@ async function mapStripeEvent(
       const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
       if (!cref || !customerId) return null;
 
-      // Validate the cref points at a real Click in this tenant — silently
-      // drop unknowns so a bad client_reference_id can't inflate a partner's
-      // numbers. RLS scopes the query to the resolved tenant.
-      const click = await trx<ClickRow>(TABLES.Click).where({ id: cref }).first();
-      if (!click) return null;
+      // A merchant using both linking methods has already set their own
+      // openpartner_user_id on the Customer. That id is the user: keying
+      // this checkout to the cus_ id split them in two (invoices before
+      // and after the metadata overwrite below landed under different
+      // userIds, so first-invoice bonuses fired twice) and recorded a
+      // second signup next to customer.created's. An openpartner_user_id
+      // equal to the cus_ id is our own backfill from an earlier checkout.
+      const fetched = await stripeReadOrNull('customers.retrieve', customerId, () =>
+        stripe.customers.retrieve(customerId),
+      );
+      const customer = fetched && !fetched.deleted ? fetched : null;
+      const metadataUserId = customer?.metadata?.openpartner_user_id;
+      if (metadataUserId && metadataUserId !== customerId) {
+        // Locked before the stitch so a concurrent customer.created or
+        // invoice.paid for this user either sees our Identity or has
+        // committed the Event our backlog pass below picks up.
+        await lockMerchantUser(trx, tenantId, metadataUserId);
+        const stitch = await stitchCheckoutCustomer(trx, cref, metadataUserId);
+        if (!stitch) return null;
+        // Events that beat this stitch (customer.created's signup, an
+        // early invoice) were recorded under the merchant's id with no
+        // click to credit.
+        if (stitch.firstStitch) await attributeUnattributedEvents(trx, tenantId, metadataUserId);
+        // The merchant's metadata stays as they set it. No tenant stamp
+        // either: no later event reads one off the Customer.
+        if (await signupRecorded(trx, tenantId, metadataUserId)) return null;
+        return { userId: metadataUserId, type: 'signup' };
+      }
 
-      await trx<IdentityRow>(TABLES.Identity)
-        .insert({ id: ulid(), tenantId: click.tenantId, clickId: cref, userId: customerId })
-        .onConflict(['clickId', 'userId'])
-        .ignore();
+      const stitch = await stitchCheckoutCustomer(trx, cref, customerId);
+      if (!stitch) return null;
 
       // Backfill metadata so the cheaper resolve path (metadata lookup)
       // works for downstream invoice.paid / subscription events. Best-
@@ -849,7 +913,7 @@ async function mapStripeEvent(
       // resolveUserIdFromCustomer will fall back to the Identity table.
       try {
         await stripe.customers.update(customerId, {
-          metadata: { openpartner_user_id: customerId, openpartner_tenant_id: click.tenantId },
+          metadata: { openpartner_user_id: customerId, openpartner_tenant_id: stitch.click.tenantId },
         });
       } catch {
         // Non-fatal.
@@ -861,18 +925,39 @@ async function mapStripeEvent(
       const customer = event.data.object as Stripe.Customer;
       const userId = customer.metadata?.openpartner_user_id;
       if (!userId) return null;
+      // checkout.session.completed records this user's signup too when the
+      // customer also checks out with a cref. One per merchant userId.
+      if (userId !== customer.id) {
+        await lockMerchantUser(trx, tenantId, userId);
+        if (await signupRecorded(trx, tenantId, userId)) return null;
+      }
       return { userId, type: 'signup' };
     }
     case 'customer.subscription.created': {
       const sub = event.data.object as Stripe.Subscription;
-      const userId = sub.metadata?.openpartner_user_id ?? (await resolveUserIdFromCustomer(trx, stripe, sub.customer));
+      const userId =
+        sub.metadata?.openpartner_user_id ??
+        (await resolveUserIdFromCustomer(trx, stripe, sub.customer)) ??
+        (await stitchFromCompletedCheckouts(trx, stripe, sub.customer));
       if (!userId) return null;
+      // Keyed to a merchant-set userId: wait out a concurrent checkout
+      // stitch for this user, so attribution below sees its Identity.
+      if (userId !== extractCustomerId(sub)) await lockMerchantUser(trx, tenantId, userId);
       return { userId, type: 'subscription_created' };
     }
     case 'invoice.paid': {
       const invoice = event.data.object as Stripe.Invoice;
-      const userId = await resolveUserIdFromCustomer(trx, stripe, invoice.customer);
+      // A renewal or plan change belongs to a subscription whose checkout
+      // was stitched long ago, so a customer still unlinked here was never
+      // referred. Skip the Checkout Sessions read that would otherwise run
+      // on every renewal of every such customer.
+      const fromCheckout = !RENEWAL_BILLING_REASONS.has(invoice.billing_reason ?? '');
+      const userId =
+        (await resolveUserIdFromCustomer(trx, stripe, invoice.customer)) ??
+        (fromCheckout ? await stitchFromCompletedCheckouts(trx, stripe, invoice.customer) : null);
       if (!userId) return null;
+      // As for customer.subscription.created.
+      if (userId !== extractCustomerId(invoice)) await lockMerchantUser(trx, tenantId, userId);
       // `charge` was moved off the Invoice type in recent SDK versions, but the
       // webhook payload still carries it on older API versions and is useful
       // for refund lookups. Read it tolerantly.
@@ -1113,8 +1198,8 @@ async function resolveUserIdFromCustomer(
 
   if (typeof customer === 'string') {
     customerId = customer;
-    const fetched = await stripe.customers.retrieve(customer);
-    if (!fetched.deleted) metadataUserId = fetched.metadata?.openpartner_user_id ?? null;
+    const fetched = await stripeReadOrNull('customers.retrieve', customer, () => stripe.customers.retrieve(customer));
+    if (fetched && !fetched.deleted) metadataUserId = fetched.metadata?.openpartner_user_id ?? null;
   } else {
     if ('deleted' in customer && customer.deleted) return null;
     customerId = (customer as Stripe.Customer).id;
@@ -1129,6 +1214,137 @@ async function resolveUserIdFromCustomer(
   // metadata-backfill on checkout.session.completed lands on Stripe's side.
   const identity = await trx<IdentityRow>(TABLES.Identity).where({ userId: customerId }).first();
   return identity ? customerId : null;
+}
+
+/**
+ * Stitch the Click named by a Checkout Session's client_reference_id (the
+ * cref) to a user: the session's cus_ id, or the merchant's own userId when
+ * the Customer carries one. Unknown crefs are silently dropped so a bad
+ * client_reference_id can't inflate a partner's numbers; RLS scopes the
+ * Click lookup to the resolved tenant. Returns the Click and whether this
+ * (click, user) pair is new, or null.
+ */
+async function stitchCheckoutCustomer(
+  trx: Knex.Transaction,
+  cref: string,
+  userId: string,
+): Promise<{ click: ClickRow; firstStitch: boolean } | null> {
+  const click = await trx<ClickRow>(TABLES.Click).where({ id: cref }).first();
+  if (!click) return null;
+  const inserted = await trx<IdentityRow>(TABLES.Identity)
+    .insert({ id: ulid(), tenantId: click.tenantId, clickId: cref, userId })
+    .onConflict(['clickId', 'userId'])
+    .ignore()
+    .returning('id');
+  return { click, firstStitch: inserted.length > 0 };
+}
+
+/**
+ * Serialize webhook work on one merchant-set userId (a Customer's own
+ * openpartner_user_id) until the request transaction ends. Stripe sends
+ * customer.created, checkout.session.completed and the first invoice.paid
+ * for a customer within moments of each other, and each one reads what
+ * another writes: the signup dedupe reads the signup, attribution reads
+ * the Identity the checkout stitches, the checkout's backlog pass reads
+ * the early events. Unserialized, each read misses the other's
+ * uncommitted write.
+ */
+async function lockMerchantUser(trx: Knex.Transaction, tenantId: string, userId: string): Promise<void> {
+  await trx.raw(`select pg_advisory_xact_lock(hashtext(?::text || ':' || ?::text))`, [tenantId, userId]);
+}
+
+/**
+ * Has this tenant recorded a signup for the user already? Checked under
+ * lockMerchantUser, for merchant-set userIds only: a cus_-keyed customer's
+ * second checkout records a second signup, as it always has.
+ */
+async function signupRecorded(trx: Knex.Transaction, tenantId: string, userId: string): Promise<boolean> {
+  const row = await trx<EventRow>(TABLES.Event).where({ tenantId, userId, type: 'signup' }).first('id');
+  return row != null;
+}
+
+/**
+ * Attribute the user's events that have no Attribution yet, now that a
+ * stitch gave the user a click. The same backlog pass identify() runs on a
+ * first stitch, minus events that are already attributed (re-running one
+ * against the new click could credit a second partner) and corrective
+ * events, which never attribute.
+ */
+async function attributeUnattributedEvents(trx: Knex.Transaction, tenantId: string, userId: string): Promise<void> {
+  const events = await trx<EventRow>(TABLES.Event)
+    .where({ tenantId, userId })
+    .whereNotIn('type', [...CORRECTIVE_EVENT_TYPES])
+    .whereNotExists(function () {
+      this.select(trx.raw('1'))
+        .from(TABLES.Attribution)
+        .whereRaw(`"${TABLES.Attribution}"."eventId" = "${TABLES.Event}"."id"`);
+    })
+    .orderBy('ts', 'asc');
+  for (const event of events) await attributeEvent(trx, event as EventRow);
+}
+
+/**
+ * Run a Stripe read whose permanent failure means "nothing to find": the
+ * object doesn't exist in this account (resource_missing), or a restricted
+ * key lacks that one permission. Those fail the same way on every
+ * redelivery, so a 500 would only have Stripe retry the event for three
+ * days. Log and return null; the caller carries on as if nothing matched
+ * and the event is acknowledged.
+ * Anything else (connection, Stripe 5xx, rate limit, unknown) propagates
+ * as a 500, so Stripe redelivers the event. That includes an invalid or
+ * revoked key: every Stripe call is failing then, and redelivery keeps the
+ * events until the operator fixes the key.
+ */
+async function stripeReadOrNull<T>(call: string, id: string, read: () => Promise<T>): Promise<T | null> {
+  try {
+    return await read();
+  } catch (err) {
+    if (!isPermanentStripeError(err)) throw err;
+    const { type, code, message } = err as { type?: string; code?: string; message?: string };
+    console.warn('[stripe-webhook] Stripe read failed permanently; treating as not found', { call, id, type, code, message });
+    return null;
+  }
+}
+
+function isPermanentStripeError(err: unknown): boolean {
+  const { type, code } = (err ?? {}) as { type?: string; code?: string };
+  if (type === 'StripePermissionError') return true;
+  return type === 'StripeInvalidRequestError' && code === 'resource_missing';
+}
+
+/**
+ * Out-of-order recovery for the client_reference_id flow. Stripe doesn't
+ * order events, so invoice.paid or customer.subscription.created can land
+ * before checkout.session.completed has stitched the customer. Read the
+ * customer's completed Checkout Sessions and stitch now, as that event
+ * will; its own stitch is then a no-op. Not for renewal invoices (see
+ * RENEWAL_BILLING_REASONS).
+ *
+ * Answering non-2xx to wait for a redelivery instead would fail most
+ * deliveries: on a self-host, every customer no partner referred lands
+ * here too, and never resolves. A transient Stripe error propagates as a
+ * 500, so Stripe redelivers the event; a permanent one reads as no
+ * sessions (stripeReadOrNull).
+ */
+async function stitchFromCompletedCheckouts(
+  trx: Knex.Transaction,
+  stripe: Stripe,
+  customer: string | Stripe.Customer | Stripe.DeletedCustomer | null,
+): Promise<string | null> {
+  if (!customer || !receivesBrandStripeEvents()) return null;
+  if (typeof customer !== 'string' && 'deleted' in customer && customer.deleted) return null;
+  const customerId = typeof customer === 'string' ? customer : customer.id;
+
+  const sessions = await stripeReadOrNull('checkout.sessions.list', customerId, () =>
+    stripe.checkout.sessions.list({ customer: customerId, status: 'complete', limit: 10 }),
+  );
+  if (!sessions) return null;
+  let stitched = false;
+  for (const session of sessions.data) {
+    if (!session.client_reference_id) continue;
+    if (await stitchCheckoutCustomer(trx, session.client_reference_id, customerId)) stitched = true;
+  }
+  return stitched ? customerId : null;
 }
 
 /**

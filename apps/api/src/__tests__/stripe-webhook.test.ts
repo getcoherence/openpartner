@@ -22,17 +22,37 @@ process.env.STRIPE_WEBHOOK_SECRET = WEBHOOK_SECRET;
 process.env.OPENPARTNER_MODE = 'selfhost';
 process.env.OPENPARTNER_TENANCY = 'single';
 
+// Shared spies so a test can say what Stripe returns for the customer and
+// their Checkout Sessions. Defaults (reset in beforeEach): a customer with
+// no metadata, and no Checkout Sessions.
+const stripeApi = vi.hoisted(() => ({
+  customersRetrieve: vi.fn(),
+  customersUpdate: vi.fn(),
+  checkoutSessionsList: vi.fn(),
+}));
+
+function resetStripeApi() {
+  stripeApi.customersRetrieve.mockReset().mockResolvedValue({ id: 'cus_test_mocked', metadata: {}, deleted: false });
+  stripeApi.customersUpdate.mockReset().mockResolvedValue({ id: 'cus_test_mocked' });
+  stripeApi.checkoutSessionsList.mockReset().mockResolvedValue({ object: 'list', data: [], has_more: false });
+}
+resetStripeApi();
+
 // Mock the Stripe constructor so customer ops are inert. We keep the real
 // webhooks helper (used inside the route for signature verification) by
-// wrapping a real Stripe instance and overriding only `customers`.
+// wrapping a real Stripe instance and overriding only `customers` and
+// `checkout`.
 vi.mock('stripe', async () => {
   const actual = await vi.importActual<typeof import('stripe')>('stripe');
   const Real = actual.default;
   function MockedStripe(this: unknown, key: string, opts?: Stripe.StripeConfig) {
     const instance = new Real(key, opts) as Stripe;
     (instance as unknown as { customers: unknown }).customers = {
-      update: vi.fn().mockResolvedValue({ id: 'cus_test_mocked' }),
-      retrieve: vi.fn().mockResolvedValue({ id: 'cus_test_mocked', metadata: {}, deleted: false }),
+      update: stripeApi.customersUpdate,
+      retrieve: stripeApi.customersRetrieve,
+    };
+    (instance as unknown as { checkout: unknown }).checkout = {
+      sessions: { list: stripeApi.checkoutSessionsList },
     };
     return instance;
   }
@@ -135,6 +155,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  resetStripeApi();
   if (skipIntegration) return;
   for (const t of TABLES_TO_CLEAN) await db(t).del();
 });
@@ -290,6 +311,425 @@ describe.skipIf(skipIntegration)('stripe webhook — merchant billing flow', () 
     expect(events).toHaveLength(0);
     const identities = await db(TABLES.Identity);
     expect(identities).toHaveLength(0);
+  });
+});
+
+/** A paid invoice as Stripe delivers it: `customer` is a bare id. */
+function invoicePaid(customerId: string, fields: Record<string, unknown> = {}) {
+  return {
+    id: `evt_${ulid()}`,
+    type: 'invoice.paid',
+    created: Math.floor(Date.now() / 1000),
+    data: {
+      object: { id: `in_${ulid()}`, object: 'invoice', customer: customerId, amount_paid: 4900, currency: 'usd', ...fields },
+    },
+  };
+}
+
+function completedCheckout(customerId: string, clientReferenceId: string | null) {
+  return {
+    id: `cs_${ulid()}`,
+    object: 'checkout.session',
+    mode: 'subscription',
+    status: 'complete',
+    client_reference_id: clientReferenceId,
+    customer: customerId,
+    subscription: `sub_${ulid()}`,
+  };
+}
+
+describe.skipIf(skipIntegration)('stripe webhook — out-of-order delivery (client_reference_id flow)', () => {
+  // Stripe doesn't order events. invoice.paid / customer.subscription.created
+  // for a Checkout customer can land before checkout.session.completed has
+  // stitched that customer to the click.
+
+  it('invoice.paid arriving BEFORE checkout.session.completed still records + attributes the revenue', async () => {
+    const { clickId, partnerId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    const session = completedCheckout(customerId, clickId);
+    stripeApi.checkoutSessionsList.mockResolvedValue({ object: 'list', data: [session], has_more: false });
+
+    const res = await postWebhook(invoicePaid(customerId));
+
+    expect(res.status).toBe(200);
+    expect(stripeApi.checkoutSessionsList).toHaveBeenCalledWith(
+      expect.objectContaining({ customer: customerId, status: 'complete' }),
+    );
+    const event = await db(TABLES.Event).where({ userId: customerId, type: 'invoice_paid' }).first();
+    expect(event).toBeTruthy();
+    expect(Number(event!.value)).toBe(49);
+    const attribution = await db(TABLES.Attribution).where({ eventId: event!.id }).first();
+    expect(attribution?.partnerId).toBe(partnerId);
+
+    // The late checkout.session.completed then lands cleanly: one Identity,
+    // and its signup event is recorded as usual.
+    const late = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: { object: session },
+    });
+    expect(late.status).toBe(200);
+    expect(await db(TABLES.Identity).where({ clickId, userId: customerId })).toHaveLength(1);
+    expect(await db(TABLES.Event).where({ userId: customerId, type: 'signup' })).toHaveLength(1);
+  });
+
+  it('customer.subscription.created arriving before checkout.session.completed is recorded', async () => {
+    const { clickId, partnerId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    stripeApi.checkoutSessionsList.mockResolvedValue({
+      object: 'list',
+      data: [completedCheckout(customerId, clickId)],
+      has_more: false,
+    });
+
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'customer.subscription.created',
+      created: Math.floor(Date.now() / 1000),
+      data: { object: { id: `sub_${ulid()}`, object: 'subscription', customer: customerId, metadata: {} } },
+    });
+
+    expect(res.status).toBe(200);
+    const event = await db(TABLES.Event).where({ userId: customerId, type: 'subscription_created' }).first();
+    expect(event).toBeTruthy();
+    const attribution = await db(TABLES.Attribution).where({ eventId: event!.id }).first();
+    expect(attribution?.partnerId).toBe(partnerId);
+  });
+
+  it('revenue from a customer no partner referred is acknowledged 2xx and records nothing', async () => {
+    // Most of a self-hosted brand's invoices are this case. A non-2xx here
+    // would make Stripe retry every one of them.
+    const customerId = `cus_${ulid()}`;
+    stripeApi.checkoutSessionsList.mockResolvedValue({
+      object: 'list',
+      data: [completedCheckout(customerId, null), completedCheckout(customerId, ulid())],
+      has_more: false,
+    });
+
+    const res = await postWebhook(invoicePaid(customerId));
+
+    expect(res.status).toBe(200);
+    expect(res.body.skipped).toBe('invoice.paid');
+    expect(await db(TABLES.Event)).toHaveLength(0);
+    expect(await db(TABLES.Identity)).toHaveLength(0);
+  });
+});
+
+describe.skipIf(skipIntegration)('stripe webhook — openpartner_user_id customer-metadata bridge', () => {
+  // The merchant calls identify(cref, theirUserId) from their app, and
+  // stamps the same id on the Stripe Customer as metadata.openpartner_user_id.
+  // Identity.userId is then the merchant's id, never the cus_ id.
+
+  it('invoice.paid resolves through customer metadata to an identify()-stitched user', async () => {
+    const { clickId, partnerId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    const merchantUserId = `user_${ulid()}`;
+    await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId, userId: merchantUserId });
+    stripeApi.customersRetrieve.mockResolvedValue({
+      id: customerId,
+      object: 'customer',
+      metadata: { openpartner_user_id: merchantUserId },
+    });
+
+    const res = await postWebhook(invoicePaid(customerId));
+
+    expect(res.status).toBe(200);
+    const event = await db(TABLES.Event).where({ userId: merchantUserId, type: 'invoice_paid' }).first();
+    expect(event).toBeTruthy();
+    expect(Number(event!.value)).toBe(49);
+    const attribution = await db(TABLES.Attribution).where({ eventId: event!.id }).first();
+    expect(attribution?.partnerId).toBe(partnerId);
+    // The metadata bridge answered; no Checkout lookup was needed.
+    expect(stripeApi.checkoutSessionsList).not.toHaveBeenCalled();
+  });
+
+  it('customer.created with openpartner_user_id records a signup for that user', async () => {
+    const { clickId } = await seedClick();
+    const merchantUserId = `user_${ulid()}`;
+    await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId, userId: merchantUserId });
+
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'customer.created',
+      created: Math.floor(Date.now() / 1000),
+      data: { object: { id: `cus_${ulid()}`, object: 'customer', metadata: { openpartner_user_id: merchantUserId } } },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await db(TABLES.Event).where({ userId: merchantUserId, type: 'signup' })).toHaveLength(1);
+  });
+
+  it.each([
+    ['flat', 'single'],
+    ['selfhost', 'multi'],
+  ])('stays unresolved on a %s/%s deployment, where the Stripe account is not the brand\'s', async (mode, tenancy) => {
+    const { clickId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    const merchantUserId = `user_${ulid()}`;
+    await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId, userId: merchantUserId });
+    stripeApi.customersRetrieve.mockResolvedValue({
+      id: customerId,
+      object: 'customer',
+      metadata: { openpartner_user_id: merchantUserId },
+    });
+
+    process.env.OPENPARTNER_MODE = mode;
+    process.env.OPENPARTNER_TENANCY = tenancy;
+    try {
+      const res = await postWebhook(invoicePaid(customerId));
+      expect(res.status).toBe(200);
+      expect(res.body.reason).toBe('unresolved_tenant');
+      expect(await db(TABLES.Event)).toHaveLength(0);
+    } finally {
+      process.env.OPENPARTNER_MODE = 'selfhost';
+      process.env.OPENPARTNER_TENANCY = 'single';
+    }
+  });
+});
+
+describe.skipIf(skipIntegration)('stripe webhook — both linking methods at once', () => {
+  // The merchant stamps openpartner_user_id on the Customer AND passes the
+  // cref as client_reference_id. customer.created and
+  // checkout.session.completed both report the signup. Checkout used to key
+  // the user to the cus_ id and overwrite the metadata with it, so the
+  // signup bounty paid twice and the user's invoices split across two ids.
+
+  async function seedBothMethods() {
+    const { clickId, partnerId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    const merchantUserId = `user_${ulid()}`;
+    stripeApi.customersRetrieve.mockResolvedValue({
+      id: customerId,
+      object: 'customer',
+      metadata: { openpartner_user_id: merchantUserId },
+    });
+    const customerCreated = {
+      id: `evt_${ulid()}`,
+      type: 'customer.created',
+      created: Math.floor(Date.now() / 1000),
+      data: { object: { id: customerId, object: 'customer', metadata: { openpartner_user_id: merchantUserId } } },
+    };
+    const checkout = {
+      id: `evt_${ulid()}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: { object: completedCheckout(customerId, clickId) },
+    };
+    return { clickId, partnerId, customerId, merchantUserId, customerCreated, checkout };
+  }
+
+  async function expectOneSignupFor(s: Awaited<ReturnType<typeof seedBothMethods>>) {
+    const signups = await db(TABLES.Event).where({ type: 'signup' });
+    expect(signups).toHaveLength(1);
+    expect(signups[0].userId).toBe(s.merchantUserId);
+    // Credited to the partner whichever event recorded it.
+    const attribution = await db(TABLES.Attribution).where({ eventId: signups[0].id }).first();
+    expect(attribution?.partnerId).toBe(s.partnerId);
+    expect(await db(TABLES.Identity).where({ clickId: s.clickId, userId: s.merchantUserId })).toHaveLength(1);
+    expect(await db(TABLES.Identity).where({ userId: s.customerId })).toHaveLength(0);
+    expect(stripeApi.customersUpdate).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ metadata: expect.objectContaining({ openpartner_user_id: expect.anything() }) }),
+    );
+  }
+
+  it.each([
+    ['customer.created', 'checkout.session.completed'],
+    ['checkout.session.completed', 'customer.created'],
+  ])('%s then %s records one signup under the merchant userId', async (first) => {
+    const s = await seedBothMethods();
+    const [a, b] = first === 'customer.created' ? [s.customerCreated, s.checkout] : [s.checkout, s.customerCreated];
+
+    expect((await postWebhook(a)).status).toBe(200);
+    const second = await postWebhook(b);
+    expect(second.status).toBe(200);
+    expect(second.body.skipped).toBe(b.type);
+    await expectOneSignupFor(s);
+
+    // Revenue lands under the same user, not under the cus_ id.
+    const res = await postWebhook(invoicePaid(s.customerId, { billing_reason: 'subscription_create' }));
+    expect(res.status).toBe(200);
+    const invoice = await db(TABLES.Event).where({ type: 'invoice_paid' }).first();
+    expect(invoice?.userId).toBe(s.merchantUserId);
+    const attribution = await db(TABLES.Attribution).where({ eventId: invoice!.id }).first();
+    expect(attribution?.partnerId).toBe(s.partnerId);
+    expect(await db(TABLES.Event).where({ userId: s.customerId })).toHaveLength(0);
+  });
+
+  it('records one signup when both deliveries arrive at once', async () => {
+    const s = await seedBothMethods();
+    const [r1, r2] = await Promise.all([postWebhook(s.customerCreated), postWebhook(s.checkout)]);
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+    await expectOneSignupFor(s);
+  });
+
+  it('an invoice that beat the checkout is credited once the checkout stitches', async () => {
+    const s = await seedBothMethods();
+    expect((await postWebhook(invoicePaid(s.customerId, { billing_reason: 'subscription_create' }))).status).toBe(200);
+    const invoice = await db(TABLES.Event).where({ type: 'invoice_paid' }).first();
+    expect(invoice?.userId).toBe(s.merchantUserId);
+    expect(await db(TABLES.Attribution).where({ eventId: invoice!.id })).toHaveLength(0);
+
+    expect((await postWebhook(s.checkout)).status).toBe(200);
+    const attribution = await db(TABLES.Attribution).where({ eventId: invoice!.id }).first();
+    expect(attribution?.partnerId).toBe(s.partnerId);
+    expect(await db(TABLES.Event).where({ type: 'signup', userId: s.merchantUserId })).toHaveLength(1);
+  });
+
+  it('a plain cref checkout (no merchant metadata) keys the user to the cus_ id, as before', async () => {
+    const { clickId, partnerId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    stripeApi.customersRetrieve.mockResolvedValue({ id: customerId, object: 'customer', metadata: {} });
+
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: { object: completedCheckout(customerId, clickId) },
+    });
+
+    expect(res.status).toBe(200);
+    const signup = await db(TABLES.Event).where({ userId: customerId, type: 'signup' }).first();
+    expect(signup).toBeTruthy();
+    const attribution = await db(TABLES.Attribution).where({ eventId: signup!.id }).first();
+    expect(attribution?.partnerId).toBe(partnerId);
+    expect(await db(TABLES.Identity).where({ clickId, userId: customerId })).toHaveLength(1);
+    expect(stripeApi.customersUpdate).toHaveBeenCalledWith(customerId, {
+      metadata: { openpartner_user_id: customerId, openpartner_tenant_id: DEFAULT_TENANT_ID },
+    });
+  });
+
+  it("a returning cus_ customer's second checkout still records its signup (no dedupe)", async () => {
+    // openpartner_user_id = the cus_ id is our own backfill, not the
+    // merchant's: the dedupe is for merchant-set ids only.
+    const { clickId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    stripeApi.customersRetrieve.mockResolvedValue({
+      id: customerId,
+      object: 'customer',
+      metadata: { openpartner_user_id: customerId },
+    });
+    for (let i = 0; i < 2; i += 1) {
+      const res = await postWebhook({
+        id: `evt_${ulid()}`,
+        type: 'checkout.session.completed',
+        created: Math.floor(Date.now() / 1000),
+        data: { object: completedCheckout(customerId, clickId) },
+      });
+      expect(res.status).toBe(200);
+    }
+    expect(await db(TABLES.Event).where({ userId: customerId, type: 'signup' })).toHaveLength(2);
+  });
+});
+
+/** An error shaped like the Stripe SDK's: `type` is the error class name. */
+function stripeError(type: string, code?: string) {
+  return Object.assign(new Error(`${type} (test)`), { type, ...(code ? { code } : {}) });
+}
+
+describe.skipIf(skipIntegration)('stripe webhook — Stripe read failures', () => {
+  it.each([
+    ['resource_missing', 'StripeInvalidRequestError', 'resource_missing'],
+    ['a restricted key', 'StripePermissionError', undefined],
+  ])('%s is permanent: the event is acknowledged 2xx and skipped', async (_label, type, code) => {
+    const customerId = `cus_${ulid()}`;
+    stripeApi.customersRetrieve.mockRejectedValue(stripeError(type, code));
+    stripeApi.checkoutSessionsList.mockRejectedValue(stripeError(type, code));
+
+    const res = await postWebhook(invoicePaid(customerId));
+
+    expect(res.status).toBe(200);
+    expect(res.body.skipped).toBe('invoice.paid');
+    expect(stripeApi.checkoutSessionsList).toHaveBeenCalled();
+    expect(await db(TABLES.Event)).toHaveLength(0);
+  });
+
+  it.each([
+    ['StripeConnectionError', undefined],
+    ['StripeAPIError', undefined],
+    ['StripeRateLimitError', undefined],
+    // A revoked key breaks every Stripe call; redelivery keeps the events
+    // until the operator fixes the key.
+    ['StripeAuthenticationError', undefined],
+    ['StripeInvalidRequestError', 'parameter_invalid_integer'],
+  ])('%s %s is not permanent: 500, so Stripe redelivers', async (type, code) => {
+    const customerId = `cus_${ulid()}`;
+    stripeApi.checkoutSessionsList.mockRejectedValue(stripeError(type, code));
+
+    const res = await postWebhook(invoicePaid(customerId));
+
+    expect(res.status).toBe(500);
+    expect(await db(TABLES.Event)).toHaveLength(0);
+  });
+
+  it('a checkout whose customer read fails permanently keys the user to the cus_ id', async () => {
+    const { clickId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    stripeApi.customersRetrieve.mockRejectedValue(stripeError('StripeInvalidRequestError', 'resource_missing'));
+
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: { object: completedCheckout(customerId, clickId) },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await db(TABLES.Event).where({ userId: customerId, type: 'signup' })).toHaveLength(1);
+  });
+
+  it("a connected account's customer event stays unresolved (no single-tenant fallback)", async () => {
+    // event.account set: a Connect event on the legacy combined secret.
+    // Its customers belong to that account, not the brand.
+    const { clickId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    const merchantUserId = `user_${ulid()}`;
+    await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId, userId: merchantUserId });
+    stripeApi.customersRetrieve.mockResolvedValue({
+      id: customerId,
+      object: 'customer',
+      metadata: { openpartner_user_id: merchantUserId },
+    });
+
+    const res = await postWebhook({ ...invoicePaid(customerId), account: 'acct_connected_test' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.reason).toBe('unresolved_tenant');
+    expect(await db(TABLES.Event)).toHaveLength(0);
+  });
+});
+
+describe.skipIf(skipIntegration)('stripe webhook — renewal invoices skip the Checkout lookup', () => {
+  it.each(['subscription_cycle', 'subscription_update', 'subscription_threshold'])(
+    'a %s invoice for an unlinked customer makes no checkout.sessions.list call',
+    async (billingReason) => {
+      const customerId = `cus_${ulid()}`;
+
+      const res = await postWebhook(invoicePaid(customerId, { billing_reason: billingReason }));
+
+      expect(res.status).toBe(200);
+      expect(res.body.skipped).toBe('invoice.paid');
+      expect(stripeApi.checkoutSessionsList).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a subscription_create invoice still recovers from the Checkout Sessions', async () => {
+    const { clickId, partnerId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    stripeApi.checkoutSessionsList.mockResolvedValue({
+      object: 'list',
+      data: [completedCheckout(customerId, clickId)],
+      has_more: false,
+    });
+
+    const res = await postWebhook(invoicePaid(customerId, { billing_reason: 'subscription_create' }));
+
+    expect(res.status).toBe(200);
+    const event = await db(TABLES.Event).where({ userId: customerId, type: 'invoice_paid' }).first();
+    const attribution = await db(TABLES.Attribution).where({ eventId: event!.id }).first();
+    expect(attribution?.partnerId).toBe(partnerId);
   });
 });
 
