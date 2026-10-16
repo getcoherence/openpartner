@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Webhook as WebhookIcon, Copy, Check, Trash2, Play } from 'lucide-react';
 import { api } from '../../api.js';
-import { theme } from '../../theme.js';
+import { alpha, theme } from '../../theme.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
 import {
   Button,
@@ -76,7 +76,7 @@ export function WebhooksPage() {
       <ErrorBanner error={endpoints.error} />
 
       {newSecret && (
-        <Card style={{ marginBottom: 14, borderColor: `${theme.warn}55` }}>
+        <Card style={{ marginBottom: 14, borderColor: alpha(theme.warn, 0.333) }}>
           <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>Signing secret</div>
           <div style={{ color: theme.textMuted, fontSize: 13, marginBottom: 10 }}>
             Save this now — it's the HMAC key you'll verify incoming deliveries with. It won't be shown again.
@@ -126,13 +126,13 @@ export function WebhooksPage() {
           Every POST carries three headers:
           <ul style={{ margin: '8px 0', paddingLeft: 20 }}>
             <li>
-              <code style={{ color: theme.accent }}>x-openpartner-event</code> — event type
+              <code style={{ color: theme.accentText }}>x-openpartner-event</code> — event type
             </li>
             <li>
-              <code style={{ color: theme.accent }}>x-openpartner-delivery</code> — unique delivery id
+              <code style={{ color: theme.accentText }}>x-openpartner-delivery</code> — unique delivery id
             </li>
             <li>
-              <code style={{ color: theme.accent }}>x-openpartner-timestamp</code> + <code style={{ color: theme.accent }}>x-openpartner-signature</code>
+              <code style={{ color: theme.accentText }}>x-openpartner-timestamp</code> + <code style={{ color: theme.accentText }}>x-openpartner-signature</code>
             </li>
           </ul>
           Verify:
@@ -216,7 +216,7 @@ function EndpointCard({
       >
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
-            <WebhookIcon size={14} color={endpoint.active ? theme.accent : theme.textDim} />
+            <WebhookIcon size={14} style={{ color: endpoint.active ? theme.accentText : theme.textDim }} />
             <code style={{ fontSize: 13, color: theme.text, fontWeight: 500, minWidth: 0, overflowWrap: 'anywhere', wordBreak: 'break-all' }}>{endpoint.url}</code>
             <StatusPill status={endpoint.active ? 'connected' : 'pending'} />
           </div>
@@ -361,7 +361,7 @@ function DeliveryList({ endpointId }: { endpointId: string }) {
         <Table
           columns={['Event', 'Status', { label: 'Attempts', align: 'right' }, 'HTTP', 'Created', 'Actions']}
           rows={rows.map((d) => [
-            <code style={{ fontSize: 12, color: theme.accent }}>{d.eventType}</code>,
+            <code style={{ fontSize: 12, color: theme.accentText }}>{d.eventType}</code>,
             <StatusPill status={d.status === 'pending' ? 'pending' : d.status === 'delivered' ? 'paid' : 'failed'} />,
             d.attempts,
             d.httpStatus != null ? (
@@ -444,7 +444,7 @@ function CreateEndpoint({
                   padding: '5px 12px',
                   background: on ? theme.accentSoft : theme.bg,
                   border: `1px solid ${on ? theme.accent : theme.borderSubtle}`,
-                  color: on ? theme.accent : theme.textMuted,
+                  color: on ? theme.accentText : theme.textMuted,
                   borderRadius: 999,
                   fontSize: 12,
                   fontFamily: theme.fontMono,
@@ -476,7 +476,7 @@ function SecretReveal({ plaintext }: { plaintext: string }) {
         alignItems: 'center',
         gap: 8,
         background: theme.warnSoft,
-        border: `1px solid ${theme.warn}55`,
+        border: `1px solid ${alpha(theme.warn, 0.333)}`,
         padding: '10px 12px',
         borderRadius: theme.radiusSm,
       }}

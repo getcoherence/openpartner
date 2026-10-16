@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { CheckCircle2, Circle, Globe, HelpCircle } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
-import { theme } from '../../theme.js';
+import { alpha, theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
 import {
   formatCustomerReward,
@@ -241,7 +241,7 @@ export function CreatorDiscoverPage() {
               background: showFilters ? `${theme.accentA15}` : 'transparent',
               border: `1px solid ${showFilters ? theme.accent : theme.border}`,
               borderRadius: theme.radiusSm,
-              color: showFilters ? theme.accent : theme.text,
+              color: showFilters ? theme.accentText : theme.text,
               cursor: 'pointer',
               padding: '9px 14px',
               fontSize: 13,
@@ -351,7 +351,7 @@ export function CreatorDiscoverPage() {
                 <button
                   type="button"
                   onClick={clearFilters}
-                  style={{ background: 'transparent', border: 'none', color: theme.accent, cursor: 'pointer', fontSize: 13, padding: 0 }}
+                  style={{ background: 'transparent', border: 'none', color: theme.accentText, cursor: 'pointer', fontSize: 13, padding: 0 }}
                 >
                   Clear all
                 </button>
@@ -466,7 +466,7 @@ function OfferingDiscoverCard({ offering: o }: { offering: OfferingListItem }) {
               fontWeight: 700,
               textTransform: 'uppercase',
               letterSpacing: '0.04em',
-              color: theme.accent,
+              color: theme.accentText,
               background: theme.accentA15,
               borderRadius: 4,
               padding: '2px 6px',
@@ -660,7 +660,7 @@ function OfferingChips({
               padding: isLead ? '4px 10px' : '3px 8px',
               borderRadius: 999,
               background: isLead || isAccent ? `${theme.accentA15}` : theme.surface2,
-              color: isLead || isAccent ? theme.accent : theme.textMuted,
+              color: isLead || isAccent ? theme.accentText : theme.textMuted,
               border: `1px solid ${isLead || isAccent ? `${theme.accentA55}` : theme.borderSubtle}`,
               whiteSpace: isLead ? 'normal' : 'nowrap',
               maxWidth: '100%',
@@ -726,7 +726,7 @@ function RecommendedStrip() {
               <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 2 }}>{r.terms.commissionDescription}</div>
             )}
             {r.reasons.length > 0 && (
-              <div style={{ fontSize: 11, color: theme.accent, marginTop: 6 }}>
+              <div style={{ fontSize: 11, color: theme.accentText, marginTop: 6 }}>
                 {r.reasons.slice(0, 2).join(' · ')}
               </div>
             )}
@@ -833,7 +833,7 @@ function CreatorStep({ done, label, hint, href }: { done: boolean; label: string
         gap: 12,
         padding: '10px 12px',
         background: done ? theme.successSoft : theme.surface2,
-        border: `1px solid ${done ? `${theme.success}44` : theme.borderSubtle}`,
+        border: `1px solid ${done ? alpha(theme.success, 0.267) : theme.borderSubtle}`,
         borderRadius: theme.radiusSm,
       }}
     >

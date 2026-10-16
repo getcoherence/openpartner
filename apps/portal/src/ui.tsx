@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react';
-import { theme } from './theme.js';
+import { alpha, theme } from './theme.js';
 import { useIsMobile } from './lib/useMediaQuery.js';
 
 // ---------------- Layout ----------------
@@ -278,9 +278,9 @@ export function Button({
 }) {
   const palettes = {
     primary: { bg: theme.accent, color: theme.accentInk, border: theme.accent, hoverBg: theme.accentHover },
-    secondary: { bg: theme.surface2, color: theme.text, border: theme.border, hoverBg: '#252a33' },
+    secondary: { bg: theme.surface2, color: theme.text, border: theme.border, hoverBg: theme.surface3 },
     ghost: { bg: 'transparent', color: theme.text, border: 'transparent', hoverBg: theme.surface2 },
-    danger: { bg: theme.dangerSoft, color: theme.danger, border: theme.dangerSoft, hoverBg: '#3d1818' },
+    danger: { bg: theme.dangerSoft, color: theme.danger, border: theme.dangerSoft, hoverBg: theme.dangerSoftHover },
   } as const;
   const p = palettes[variant];
   const padY = size === 'sm' ? 6 : 8;
@@ -445,14 +445,17 @@ export function Avatar({ name, size = 32 }: { name: string; size?: number }) {
     .slice(0, 2)
     .join('');
   const hue = hashHue(name);
+  // Saturation/lightness come from global.css (--op-avatar-*) so the disc
+  // is dark-with-bright-ink on dark and pale-with-deep-ink on light; the
+  // fallbacks are the dark values.
   return (
     <div
       style={{
         width: size,
         height: size,
         borderRadius: '50%',
-        background: `hsl(${hue}, 30%, 22%)`,
-        color: `hsl(${hue}, 70%, 70%)`,
+        background: `hsl(${hue}, var(--op-avatar-bg-s, 30%), var(--op-avatar-bg-l, 22%))`,
+        color: `hsl(${hue}, var(--op-avatar-fg-s, 70%), var(--op-avatar-fg-l, 70%))`,
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -487,7 +490,7 @@ export function ErrorBanner({ error }: { error: unknown }) {
         borderRadius: theme.radiusSm,
         marginBottom: 16,
         fontSize: 13,
-        border: `1px solid ${theme.danger}33`,
+        border: `1px solid ${alpha(theme.danger, 0.2)}`,
       }}
     >
       {msg}

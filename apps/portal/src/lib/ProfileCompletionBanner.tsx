@@ -66,7 +66,7 @@ export function ProfileCompletionBanner({
         }}
       >
         <div style={{ display: 'flex', gap: 10, flex: 1, minWidth: 0, paddingRight: isMobile ? 24 : 0 }}>
-          <AlertTriangle size={18} color={theme.warn} style={{ flexShrink: 0, marginTop: 1 }} />
+          <AlertTriangle size={18} style={{ color: theme.warn, flexShrink: 0, marginTop: 1 }} />
           <div style={{ minWidth: 0, color: theme.text }}>
             <strong style={{ color: theme.warn }}>{lead}</strong>{' '}
             Brands can&rsquo;t find you, and you can&rsquo;t apply to programs, until it&rsquo;s finished.

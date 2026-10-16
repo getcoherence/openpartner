@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { api, ApiError } from '../../api.js';
 import { TenantLink } from '../../tenant-link.js';
 import { Button, Card, ErrorBanner, Page } from '../../ui.js';
+import { theme } from '../../theme.js';
 
 interface NetworkBilling {
   billingRequired: boolean;
@@ -77,7 +78,7 @@ function BundledPanel() {
         — no separate Network billing. The 3% on Network-originated payouts is folded into your main-plan
         invoice.
       </p>
-      <p style={{ color: '#6b7280', fontSize: 13 }}>
+      <p style={{ color: theme.textMuted, fontSize: 13 }}>
         Switching to self-hosted later? Re-connect to the Network from your new instance and you'll get
         the standalone billing flow ($29/mo + 3% metered).
       </p>
@@ -88,10 +89,10 @@ function BundledPanel() {
 function StatusCard({ data }: { data: NetworkBilling }) {
   const status = data.subscriptionStatus ?? 'not_subscribed';
   const color =
-    status === 'active' || status === 'trialing' ? '#1a6b1a' :
-    status === 'past_due' || status === 'unpaid' ? '#8b6f00' :
-    status === 'canceled' ? '#8a1a1a' :
-    '#6b7280';
+    status === 'active' || status === 'trialing' ? theme.success :
+    status === 'past_due' || status === 'unpaid' ? theme.warn :
+    status === 'canceled' ? theme.danger :
+    theme.textMuted;
   return (
     <Card>
       <h3 style={{ marginTop: 0 }}>Subscription</h3>
@@ -102,11 +103,11 @@ function StatusCard({ data }: { data: NetworkBilling }) {
         )}
       </p>
       {data.currentPeriodEnd && (
-        <p style={{ color: '#6b7280', fontSize: 13 }}>
+        <p style={{ color: theme.textMuted, fontSize: 13 }}>
           Current period ends: {new Date(data.currentPeriodEnd).toLocaleDateString()}
         </p>
       )}
-      <p style={{ color: '#6b7280', fontSize: 13 }}>
+      <p style={{ color: theme.textMuted, fontSize: 13 }}>
         $29/mo flat + 3% metered on Network-originated payouts. The metered portion is reported daily by
         your instance — only payouts where the partner came from the marketplace count.
       </p>

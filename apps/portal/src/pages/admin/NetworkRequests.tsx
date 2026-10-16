@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../api.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
+import { theme } from '../../theme.js';
 
 interface PartnershipRequest {
   id: string;
@@ -73,7 +74,7 @@ function RequestList({ statusFilter }: { statusFilter: string }) {
   if (isLoading) return <Card><p>Loading…</p></Card>;
   const requests = data?.requests ?? [];
   if (requests.length === 0) {
-    return <Card><p style={{ color: '#6b7280' }}>No {statusFilter} requests.</p></Card>;
+    return <Card><p style={{ color: theme.textMuted }}>No {statusFilter} requests.</p></Card>;
   }
   return (
     <>
@@ -108,19 +109,19 @@ function RequestRow({
     <Card>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
         <h3 style={{ marginTop: 0, marginBottom: 4, flex: 1 }}>
-          {request.creatorName} {request.creatorHandle && <span style={{ color: '#6b7280', fontWeight: 400 }}>@{request.creatorHandle}</span>}
+          {request.creatorName} {request.creatorHandle && <span style={{ color: theme.textMuted, fontWeight: 400 }}>@{request.creatorHandle}</span>}
         </h3>
-        <span style={{ fontSize: 12, color: '#6b7280' }}>
+        <span style={{ fontSize: 12, color: theme.textMuted }}>
           {new Date(request.createdAt).toLocaleDateString()}
         </span>
       </div>
-      <p style={{ color: '#6b7280', fontSize: 13, margin: '0 0 8px' }}>
+      <p style={{ color: theme.textMuted, fontSize: 13, margin: '0 0 8px' }}>
         {request.creatorEmail} · applying to <strong>{request.offeringTitle}</strong>
         {request.preferredSlug && <> · prefers slug <code>/{request.preferredSlug}</code></>}
       </p>
       {request.creatorBio && <p style={{ fontSize: 14 }}>{request.creatorBio}</p>}
       {request.message && (
-        <blockquote style={{ borderLeft: '3px solid #d0d0c8', paddingLeft: 12, color: '#444', fontSize: 14 }}>
+        <blockquote style={{ borderLeft: `3px solid ${theme.border}`, paddingLeft: 12, color: theme.textMuted, fontSize: 14 }}>
           {request.message}
         </blockquote>
       )}

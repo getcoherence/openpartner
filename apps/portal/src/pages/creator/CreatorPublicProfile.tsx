@@ -9,6 +9,7 @@ import { Link, useParams } from 'react-router-dom';
 import { ExternalLink, Globe } from 'lucide-react';
 import { Card, ErrorBanner, EmptyState } from '../../ui.js';
 import { theme } from '../../theme.js';
+import { ThemeToggle } from '../../lib/ThemeToggle.js';
 import { creatorApi, ApiError } from './creator-api.js';
 import { audienceSizeLabel } from '@openpartner/db';
 
@@ -181,7 +182,7 @@ export function CreatorPublicProfilePage() {
             <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 6 }}>
               {data.portfolioLinks.map((u) => (
                 <li key={u} style={{ fontSize: 13, wordBreak: 'break-all' }}>
-                  <a href={u} target="_blank" rel="noopener noreferrer" style={{ color: theme.accent }}>{u}</a>
+                  <a href={u} target="_blank" rel="noopener noreferrer" style={{ color: theme.accentText }}>{u}</a>
                 </li>
               ))}
             </ul>
@@ -223,8 +224,9 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ minHeight: '100vh', background: theme.bg, padding: '40px 20px' }}>
       <div style={{ maxWidth: 720, margin: '0 auto' }}>
-        <div style={{ marginBottom: 24, fontSize: 13 }}>
+        <div style={{ marginBottom: 24, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <Link to="/" style={{ color: theme.textMuted, textDecoration: 'none' }}>← OpenPartner</Link>
+          <ThemeToggle />
         </div>
         {children}
       </div>

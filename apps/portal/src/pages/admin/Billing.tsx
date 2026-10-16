@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Banknote, CreditCard, ExternalLink } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
-import { theme } from '../../theme.js';
+import { alpha, theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Page } from '../../ui.js';
 
 type Plan = 'flex' | 'revshare' | 'enterprise';
@@ -209,8 +209,8 @@ function PlanCard({ status }: { status: BillingStatus }) {
             <>
               <div
                 style={{
-                  background: `${theme.danger}10`,
-                  border: `1px solid ${theme.danger}55`,
+                  background: alpha(theme.danger, 0.063),
+                  border: `1px solid ${alpha(theme.danger, 0.333)}`,
                   borderRadius: theme.radiusSm,
                   padding: 12,
                   marginBottom: 14,
@@ -291,8 +291,8 @@ function PlanCard({ status }: { status: BillingStatus }) {
           {status.status && status.status !== 'active' && status.status !== 'trialing' && (
             <div
               style={{
-                background: `${theme.danger}10`,
-                border: `1px solid ${theme.danger}55`,
+                background: alpha(theme.danger, 0.063),
+                border: `1px solid ${alpha(theme.danger, 0.333)}`,
                 borderRadius: theme.radiusSm,
                 padding: 12,
                 marginBottom: 14,
@@ -456,8 +456,8 @@ function FundingCard() {
         <>
           <div
             style={{
-              background: `${theme.success}10`,
-              border: `1px solid ${theme.success}55`,
+              background: alpha(theme.success, 0.063),
+              border: `1px solid ${alpha(theme.success, 0.333)}`,
               borderRadius: theme.radiusSm,
               padding: 12,
               marginBottom: 14,
@@ -509,7 +509,7 @@ function FundingCard() {
                 href="https://openpartner.dev/terms"
                 target="_blank"
                 rel="noopener noreferrer"
-                style={{ color: theme.accent }}
+                style={{ color: theme.accentText }}
               >
                 funding terms
               </a>
@@ -648,7 +648,7 @@ function InvoicesCard({ invoices }: { invoices: Invoice[] }) {
                 href={inv.hostedInvoiceUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                style={{ fontSize: 12, color: theme.accent }}
+                style={{ fontSize: 12, color: theme.accentText }}
               >
                 View
               </a>
@@ -663,7 +663,7 @@ function InvoicesCard({ invoices }: { invoices: Invoice[] }) {
 function SectionHeader({ icon, title }: { icon?: React.ReactNode; title: string }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-      {icon && <span style={{ color: theme.accent, display: 'flex' }}>{icon}</span>}
+      {icon && <span style={{ color: theme.accentText, display: 'flex' }}>{icon}</span>}
       <div style={{ fontSize: 15, fontWeight: 500 }}>{title}</div>
     </div>
   );

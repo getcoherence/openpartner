@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ShieldAlert, ShieldOff, Check } from 'lucide-react';
 import { api } from '../api.js';
-import { theme } from '../theme.js';
+import { alpha, theme } from '../theme.js';
 import { Button, Card, EmptyState, ErrorBanner, Page, StatusPill, Table, formatDate, shortId } from '../ui.js';
 
 interface FlaggedClick {
@@ -43,7 +43,7 @@ export function FraudReviewPage() {
     >
       <ErrorBanner error={error ?? unflag.error} />
       {unflag.data && (
-        <Card style={{ marginBottom: 14, borderColor: `${theme.success}55` }}>
+        <Card style={{ marginBottom: 14, borderColor: alpha(theme.success, 0.333) }}>
           <div style={{ color: theme.success, fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <Check size={14} />
             Un-flagged. Re-attributed {unflag.data.reattributedEvents} event
@@ -65,7 +65,7 @@ export function FraudReviewPage() {
           rows={rows.map((c) => [
             <code style={{ fontSize: 12, color: theme.textDim }}>{shortId(c.id)}</code>,
             <span>{c.partnerName ?? <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(c.partnerId)}</code>}</span>,
-            c.linkKey ? <code style={{ fontSize: 12, color: theme.accent }}>/r/{c.linkKey}</code> : <span style={{ color: theme.textDim }}>—</span>,
+            c.linkKey ? <code style={{ fontSize: 12, color: theme.accentText }}>/r/{c.linkKey}</code> : <span style={{ color: theme.textDim }}>—</span>,
             c.ipHash ? <code style={{ fontSize: 11, color: theme.textMuted }}>{c.ipHash.slice(0, 12)}…</code> : <span style={{ color: theme.textDim }}>—</span>,
             <StatusPill status={c.fraudFlag} />,
             <span style={{ color: theme.textMuted }}>{formatDate(c.ts, { relative: true })}</span>,

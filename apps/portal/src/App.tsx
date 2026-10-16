@@ -30,7 +30,7 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { clearApiKey, api, type Principal } from './api.js';
 import { useTenantBase } from './tenant-base.js';
-import { theme } from './theme.js';
+import { alpha, theme } from './theme.js';
 import { useIsMobile } from './lib/useMediaQuery.js';
 import { useBrand, usePublicBrand } from './lib/useBrand.js';
 import { Dashboard } from './pages/Dashboard.js';
@@ -74,6 +74,7 @@ import { WorkspacesPage } from './pages/Workspaces.js';
 import { AddBrandPage } from './pages/AddBrand.js';
 import { PartnerJoinPage } from './pages/PartnerJoin.js';
 import { BrandDocument } from './lib/BrandDocument.js';
+import { ThemeToggle } from './lib/ThemeToggle.js';
 import { PlatformMagicLandingPage } from './pages/auth/PlatformMagicLanding.js';
 import { PlatformLoginPage } from './pages/platform/PlatformLogin.js';
 import { PlatformAuthPage } from './pages/platform/PlatformAuth.js';
@@ -373,7 +374,7 @@ function MobileDrawer({ open, onClose, children }: { open: boolean; onClose: () 
         style={{
           position: 'fixed',
           inset: 0,
-          background: 'rgba(0,0,0,0.5)',
+          background: theme.overlay,
           opacity: open ? 1 : 0,
           pointerEvents: open ? 'auto' : 'none',
           transition: 'opacity 180ms ease',
@@ -392,7 +393,7 @@ function MobileDrawer({ open, onClose, children }: { open: boolean; onClose: () 
           width: 'min(280px, 84vw)',
           transform: open ? 'translateX(0)' : 'translateX(-100%)',
           transition: 'transform 200ms ease',
-          boxShadow: open ? '0 0 40px rgba(0,0,0,0.5)' : 'none',
+          boxShadow: open ? theme.shadowDrawer : 'none',
           display: 'flex',
           zIndex: 50,
         }}
@@ -479,6 +480,8 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
         {principal.role === 'admin' && !whiteLabel && <NetworkNav />}
       </div>
 
+      <ThemeToggle labels style={{ marginTop: 14 }} />
+
       <button
         onClick={async () => {
           clearApiKey();
@@ -508,7 +511,7 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
           alignItems: 'center',
           justifyContent: 'center',
           gap: 8,
-          marginTop: 14,
+          marginTop: 8,
           background: 'transparent',
           color: theme.textMuted,
           border: `1px solid ${theme.borderSubtle}`,
@@ -800,7 +803,7 @@ function IdentitySwitcher({ principal }: { principal: Principal }) {
             {activeIdentity?.email ?? workspaces.data?.email ?? (principal.role === 'admin' ? 'Admin' : '')}
           </div>
         </div>
-        <ChevronsUpDown size={14} color={theme.textMuted} />
+        <ChevronsUpDown size={14} style={{ color: theme.textMuted }} />
       </button>
 
       {open && (
@@ -823,7 +826,7 @@ function IdentitySwitcher({ principal }: { principal: Principal }) {
               background: theme.surface,
               border: `1px solid ${theme.borderSubtle}`,
               borderRadius: theme.radiusSm,
-              boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+              boxShadow: theme.shadowPopover,
               padding: 6,
               zIndex: 41,
               maxHeight: 360,
@@ -851,7 +854,7 @@ function IdentitySwitcher({ principal }: { principal: Principal }) {
                   onClick={() => enter(w.tenantSlug)}
                   title={w.tenantDisplayName}
                   subtitle={`/t/${w.tenantSlug}/`}
-                  right={busy ? <Spinner /> : active ? <Check size={14} color={theme.accent} /> : null}
+                  right={busy ? <Spinner /> : active ? <Check size={14} style={{ color: theme.accentText }} /> : null}
                 />
               );
             })}
@@ -1056,7 +1059,7 @@ function SwitcherRow({
 }
 
 function Spinner() {
-  return <span style={{ fontSize: 11, color: theme.accent }}>…</span>;
+  return <span style={{ fontSize: 11, color: theme.accentText }}>…</span>;
 }
 
 const switcherActionStyle: React.CSSProperties = {
@@ -1130,14 +1133,14 @@ function describePrincipal(p: Principal): { label: string; sublabel: string; ini
       label: name,
       sublabel: p.source === 'env' ? 'admin (env)' : 'admin',
       initial: name[0]?.toUpperCase() ?? 'A',
-      hue: { bg: theme.accentSoft, fg: theme.accent },
+      hue: { bg: theme.accentSoft, fg: theme.accentText },
     };
   }
   return {
     label: p.partner?.name ?? 'Partner',
     sublabel: 'partner',
     initial: p.partner?.name?.[0]?.toUpperCase() ?? 'P',
-    hue: { bg: '#1e2a3d', fg: theme.info },
+    hue: { bg: theme.infoChip, fg: theme.info },
   };
 }
 
@@ -1306,7 +1309,7 @@ function NavItem({
         }
       }}
     >
-      <span style={{ display: 'inline-flex', color: active ? theme.accent : 'inherit' }}>{icon}</span>
+      <span style={{ display: 'inline-flex', color: active ? theme.accentText : 'inherit' }}>{icon}</span>
       {children}
     </Link>
   );
@@ -1392,12 +1395,12 @@ function PendingReviewBanner({ isMobile, onDismiss }: { isMobile: boolean; onDis
           alignItems: 'flex-start',
           gap: 12,
           background: theme.warnSoft,
-          border: `1px solid ${theme.warn}55`,
+          border: `1px solid ${alpha(theme.warn, 0.333)}`,
           borderRadius: theme.radiusMd,
           padding: '12px 14px',
         }}
       >
-        <AlertTriangle size={18} color={theme.warn} style={{ flexShrink: 0, marginTop: 1 }} />
+        <AlertTriangle size={18} style={{ color: theme.warn, flexShrink: 0, marginTop: 1 }} />
         <div style={{ flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.5, color: theme.text }}>
           <strong style={{ color: theme.warn }}>Your brand is under review.</strong>{' '}
           You can set up your program now, but partner links won&rsquo;t redirect, your marketplace listing

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { theme } from '../../theme.js';
+import { alpha, theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Page, formatDate } from '../../ui.js';
 import {
   papi,
@@ -100,7 +100,7 @@ export function CreatorsPage({ operator }: { operator: PlatformOperator }) {
         <div
           style={{
             background: theme.infoSoft,
-            border: `1px solid ${theme.info}44`,
+            border: `1px solid ${alpha(theme.info, 0.267)}`,
             color: theme.info,
             padding: '10px 14px',
             borderRadius: theme.radiusSm,

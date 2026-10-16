@@ -70,7 +70,7 @@ export function ListingVideo({ video, title }: { video: OfferingVideo | null | u
         aspectRatio: '16 / 9',
         borderRadius: theme.radiusMd,
         overflow: 'hidden',
-        background: '#000',
+        background: '#000', // video letterbox — black in both themes, like the player itself
         border: `1px solid ${theme.borderSubtle}`,
       }}
     >

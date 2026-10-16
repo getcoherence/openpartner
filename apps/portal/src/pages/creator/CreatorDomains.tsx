@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Globe } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page } from '../../ui.js';
-import { theme } from '../../theme.js';
+import { alpha, softText, theme } from '../../theme.js';
 import { creatorApi, ApiError } from './creator-api.js';
 
 type DomainStatus = 'pending' | 'verified' | 'failed';
@@ -163,10 +163,10 @@ function VerifyErrorBox({ error }: { error: ApiError }) {
     if (typeof d === 'string') detail = d;
   }
   return (
-    <div style={{ background: `${theme.danger}10`, border: `1px solid ${theme.danger}55`, borderRadius: theme.radiusSm, padding: 12, marginTop: 12, fontSize: 13, color: theme.danger }}>
+    <div style={{ background: alpha(theme.danger, 0.063), border: `1px solid ${alpha(theme.danger, 0.333)}`, borderRadius: theme.radiusSm, padding: 12, marginTop: 12, fontSize: 13, color: theme.danger }}>
       {error.message}
       {detail && (
-        <div style={{ marginTop: 6, color: `${theme.danger}cc`, fontSize: 12 }}>{detail}</div>
+        <div style={{ marginTop: 6, color: softText(theme.danger), fontSize: 12 }}>{detail}</div>
       )}
     </div>
   );
@@ -176,7 +176,7 @@ function StatusChip({ status }: { status: DomainStatus }) {
   const palette: Record<DomainStatus, { bg: string; fg: string; label: string }> = {
     pending: { bg: `${theme.accentA15}`, fg: theme.accent, label: 'Pending verification' },
     verified: { bg: theme.successSoft, fg: theme.success, label: 'Verified' },
-    failed: { bg: `${theme.danger}15`, fg: theme.danger, label: 'Failed' },
+    failed: { bg: alpha(theme.danger, 0.082), fg: theme.danger, label: 'Failed' },
   };
   const p = palette[status];
   return (

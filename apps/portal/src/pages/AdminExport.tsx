@@ -46,7 +46,7 @@ export function AdminExport() {
     <Page title="Export / import" subtitle="Your data stays yours. Download your partners, programs, attribution and ledger any time.">
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <Archive size={22} color={theme.accent} />
+          <Archive size={22} style={{ color: theme.accentText }} />
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 15, fontWeight: 500 }}>Full bundle</div>
             <div style={{ color: theme.textMuted, fontSize: 13 }}>
@@ -185,7 +185,7 @@ function PartnersCsvImporter() {
         format below and upload. Re-runnable: existing emails are skipped, not duplicated.
       </p>
       <details style={{ marginBottom: 12 }}>
-        <summary style={{ fontSize: 13, color: theme.accent, cursor: 'pointer' }}>
+        <summary style={{ fontSize: 13, color: theme.accentText, cursor: 'pointer' }}>
           Canonical CSV format
         </summary>
         <pre style={{ background: theme.surface2, border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm, padding: 10, marginTop: 8, fontSize: 12, overflowX: 'auto' }}>

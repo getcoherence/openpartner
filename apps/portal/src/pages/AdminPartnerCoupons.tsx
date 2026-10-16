@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { api, ApiError } from '../api.js';
-import { theme } from '../theme.js';
+import { alpha, theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, money } from '../ui.js';
 
@@ -111,7 +111,7 @@ export function AdminPartnerCoupons({ ownPartnerId }: { ownPartnerId?: string } 
       </div>}
       <ErrorBanner error={partner.error ?? campaigns.error ?? coupons.error ?? deactivate.error ?? (gateError ? null : mint.error)} />
       {gateError && (
-        <div style={{ background: `${theme.danger}10`, border: `1px solid ${theme.danger}55`, borderRadius: theme.radiusSm, padding: 12, marginBottom: 12 }}>
+        <div style={{ background: alpha(theme.danger, 0.063), border: `1px solid ${alpha(theme.danger, 0.333)}`, borderRadius: theme.radiusSm, padding: 12, marginBottom: 12 }}>
           <div style={{ fontSize: 13, color: theme.danger, fontWeight: 500, marginBottom: 6 }}>
             Verify your coupon integration before minting more
           </div>

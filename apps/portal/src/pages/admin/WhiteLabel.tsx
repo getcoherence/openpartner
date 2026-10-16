@@ -403,7 +403,7 @@ function DnsRecord({ kind, name, value }: { kind: string; name: string; value: s
         overflowX: 'auto',
       }}
     >
-      <span style={{ color: theme.accent, minWidth: 46 }}>{kind}</span>
+      <span style={{ color: theme.accentText, minWidth: 46 }}>{kind}</span>
       <CopyChunk text={name} copied={copied === 'name'} onCopy={() => copy(name, 'name')} />
       <span style={{ color: theme.textDim }}>→</span>
       <CopyChunk text={value} copied={copied === 'value'} onCopy={() => copy(value, 'value')} />

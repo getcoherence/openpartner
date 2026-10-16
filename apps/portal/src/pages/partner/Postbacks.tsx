@@ -260,7 +260,7 @@ function CreateForm({
                 padding: '4px 8px',
                 borderRadius: 4,
                 background: events.includes(ev) ? theme.accentSoft : theme.surface2,
-                color: events.includes(ev) ? theme.accent : theme.textMuted,
+                color: events.includes(ev) ? theme.accentText : theme.textMuted,
                 cursor: 'pointer',
               }}
             >
@@ -325,7 +325,7 @@ function MacroReference() {
 function FragmentRow({ macro, desc }: { macro: string; desc: string }) {
   return (
     <>
-      <code style={{ color: theme.accent }}>{macro}</code>
+      <code style={{ color: theme.accentText }}>{macro}</code>
       <div style={{ color: theme.textMuted }}>{desc}</div>
     </>
   );

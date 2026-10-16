@@ -114,7 +114,7 @@ function ConnectForm({ membership }: { membership: NetworkMembership }) {
           </Button>
           <p style={{ marginTop: 10, fontSize: 12, color: theme.textDim }}>
             Self-host?{' '}
-            <button type="button" onClick={() => setShowManual(true)} style={{ background: 'transparent', border: 'none', color: theme.accent, cursor: 'pointer', padding: 0, font: 'inherit' }}>
+            <button type="button" onClick={() => setShowManual(true)} style={{ background: 'transparent', border: 'none', color: theme.accentText, cursor: 'pointer', padding: 0, font: 'inherit' }}>
               Use the email-verify flow instead
             </button>
           </p>
@@ -183,7 +183,7 @@ function ConnectedPanel({ membership }: { membership: NetworkMembership }) {
             style={{
               marginTop: 8,
               background: 'transparent',
-              color: theme.accent,
+              color: theme.accentText,
               border: `1px solid ${theme.accent}`,
               borderRadius: 6,
               padding: '6px 12px',
@@ -202,7 +202,7 @@ function ConnectedPanel({ membership }: { membership: NetworkMembership }) {
           disabled={heartbeat.isPending}
           style={{
             background: 'transparent',
-            color: theme.accent,
+            color: theme.accentText,
             border: `1px solid ${theme.accentA55}`,
             borderRadius: 6,
             padding: '6px 12px',

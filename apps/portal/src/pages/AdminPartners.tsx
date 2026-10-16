@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Users } from 'lucide-react';
 import { audienceSizeLabel, isHttpUrl } from '@openpartner/db';
 import { api } from '../api.js';
-import { theme } from '../theme.js';
+import { alpha, theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, StatusPill, Table, formatDate } from '../ui.js';
 
@@ -117,21 +117,21 @@ export function AdminPartners() {
             p.stripeConnectAccountId ? <StatusPill status="connected" /> : <span style={{ color: theme.textDim }}>—</span>,
             <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
             <div style={{ display: 'flex', gap: 6 }}>
-              <TenantLink to={`/links?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Links</TenantLink>
+              <TenantLink to={`/links?partnerId=${p.id}`} style={{ color: theme.accentText, fontSize: 13 }}>Links</TenantLink>
               <span style={{ color: theme.border }}>·</span>
-              <TenantLink to={`/admin/partners/${p.id}/programs`} style={{ color: theme.accent, fontSize: 13 }}>Programs</TenantLink>
+              <TenantLink to={`/admin/partners/${p.id}/programs`} style={{ color: theme.accentText, fontSize: 13 }}>Programs</TenantLink>
               <span style={{ color: theme.border }}>·</span>
-              <TenantLink to={`/admin/partners/${p.id}/coupons`} style={{ color: theme.accent, fontSize: 13 }}>Coupons</TenantLink>
+              <TenantLink to={`/admin/partners/${p.id}/coupons`} style={{ color: theme.accentText, fontSize: 13 }}>Coupons</TenantLink>
               <span style={{ color: theme.border }}>·</span>
-              <TenantLink to={`/admin/partners/${p.id}/commission`} style={{ color: theme.accent, fontSize: 13 }}>Commission</TenantLink>
+              <TenantLink to={`/admin/partners/${p.id}/commission`} style={{ color: theme.accentText, fontSize: 13 }}>Commission</TenantLink>
               <span style={{ color: theme.border }}>·</span>
-              <TenantLink to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accent, fontSize: 13 }}>Payouts</TenantLink>
+              <TenantLink to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accentText, fontSize: 13 }}>Payouts</TenantLink>
               {applicationOf(p) ? (
                 <>
                   <span style={{ color: theme.border }}>·</span>
                   <button
                     onClick={() => setViewing(p)}
-                    style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accent, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                    style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accentText, cursor: 'pointer', whiteSpace: 'nowrap' }}
                   >
                     View application
                   </button>
@@ -277,7 +277,7 @@ function RevokeAction({ partner, openDialog }: { partner: Partner; openDialog: (
         border: 'none',
         padding: 0,
         fontSize: 13,
-        color: isRevoked ? theme.accent : theme.danger,
+        color: isRevoked ? theme.accentText : theme.danger,
         cursor: 'pointer',
       }}
     >
@@ -307,7 +307,7 @@ function RevokeDialog({
   });
 
   return (
-    <Card style={{ marginBottom: 14, borderColor: `${theme.danger}44` }}>
+    <Card style={{ marginBottom: 14, borderColor: alpha(theme.danger, 0.267) }}>
       <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6, color: theme.danger }}>
         Revoke {partner.name}?
       </div>
@@ -406,7 +406,7 @@ function ExternalUrl({ url }: { url: string }) {
   if (!url) return <span style={{ color: theme.textDim }}>—</span>;
   if (!isHttpUrl(url)) return <span style={{ overflowWrap: 'anywhere' }}>{url}</span>;
   return (
-    <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: theme.accent, overflowWrap: 'anywhere' }}>
+    <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: theme.accentText, overflowWrap: 'anywhere' }}>
       {url}
     </a>
   );
@@ -453,7 +453,7 @@ function ResendInvite({ partnerId }: { partnerId: string }) {
     <button
       onClick={() => mut.mutate()}
       disabled={mut.isPending}
-      style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accent, cursor: 'pointer' }}
+      style={{ background: 'none', border: 'none', padding: 0, fontSize: 13, color: theme.accentText, cursor: 'pointer' }}
     >
       {sent ? 'Sent' : mut.isPending ? 'Sending…' : 'Resend invite'}
     </button>

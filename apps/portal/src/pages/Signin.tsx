@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { theme } from '../theme.js';
+import { alpha, theme } from '../theme.js';
 import { AuthFrame } from './auth/Shared.js';
 
 /**
@@ -50,11 +50,11 @@ export function SigninPage() {
   if (sent) {
     return (
       <AuthFrame title="Check your inbox" subtitle={`If we found accounts for ${email}, we just emailed sign-in links.`}>
-        <div style={{ background: theme.successSoft, border: `1px solid ${theme.success}55`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
+        <div style={{ background: theme.successSoft, border: `1px solid ${alpha(theme.success, 0.333)}`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
           The link is good for 15 minutes. If you have both a brand and a creator account, you&rsquo;ll get one email for each.
         </div>
         <div style={{ marginTop: 12, textAlign: 'center', fontSize: 12, color: theme.textDim }}>
-          <Link to="/" style={{ color: theme.accent }}>Back to home</Link>
+          <Link to="/" style={{ color: theme.accentText }}>Back to home</Link>
         </div>
       </AuthFrame>
     );
@@ -63,7 +63,7 @@ export function SigninPage() {
   return (
     <AuthFrame title={addMode ? 'Add another account' : 'Sign in'} subtitle={addMode ? 'Enter the email for the account you want to add to this browser.' : 'Enter your email — we’ll send you a sign-in link.'}>
       {addMode && (
-        <div style={{ background: theme.accent + '15', border: `1px solid ${theme.accentA55}`, padding: 12, borderRadius: theme.radiusSm, fontSize: 12, color: theme.textMuted, marginBottom: 14 }}>
+        <div style={{ background: theme.accentA15, border: `1px solid ${theme.accentA55}`, padding: 12, borderRadius: theme.radiusSm, fontSize: 12, color: theme.textMuted, marginBottom: 14 }}>
           You&rsquo;re adding a second account. Your current account stays signed in &mdash; you&rsquo;ll be able to switch between them from the sidebar.
         </div>
       )}
@@ -87,7 +87,7 @@ export function SigninPage() {
           {busy ? 'Sending…' : 'Email me a sign-in link'}
         </button>
         <div style={{ marginTop: 12, fontSize: 12, color: theme.textDim, textAlign: 'center' }}>
-          New here? <Link to="/signup" style={{ color: theme.accent }}>Sign up as a brand</Link> · <Link to="/creator/signup" style={{ color: theme.accent }}>Sign up as a creator</Link>
+          New here? <Link to="/signup" style={{ color: theme.accentText }}>Sign up as a brand</Link> · <Link to="/creator/signup" style={{ color: theme.accentText }}>Sign up as a creator</Link>
         </div>
       </form>
     </AuthFrame>

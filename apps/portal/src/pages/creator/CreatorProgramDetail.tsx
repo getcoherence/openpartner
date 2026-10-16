@@ -183,7 +183,7 @@ function ProgramShell() {
       <Page title="Program">
         <Card>
           <p style={{ color: theme.textMuted, fontSize: 13 }}>
-            Partnership not found, or you don&rsquo;t have access. <button onClick={() => nav('/creator/affiliations')} style={{ background: 'transparent', border: 'none', color: theme.accent, cursor: 'pointer', padding: 0, fontSize: 13 }}>Back to partnerships</button>
+            Partnership not found, or you don&rsquo;t have access. <button onClick={() => nav('/creator/affiliations')} style={{ background: 'transparent', border: 'none', color: theme.accentText, cursor: 'pointer', padding: 0, fontSize: 13 }}>Back to partnerships</button>
           </p>
         </Card>
       </Page>
@@ -240,7 +240,7 @@ function ProgramSupportFooter({
       {brand.supportEmail && (
         <a
           href={`mailto:${brand.supportEmail}`}
-          style={{ color: theme.accent, textDecoration: 'none' }}
+          style={{ color: theme.accentText, textDecoration: 'none' }}
         >
           {brand.supportEmail}
         </a>
@@ -250,7 +250,7 @@ function ProgramSupportFooter({
           href={brand.programTermsUrl}
           target="_blank"
           rel="noreferrer noopener"
-          style={{ color: theme.accent, textDecoration: 'none' }}
+          style={{ color: theme.accentText, textDecoration: 'none' }}
         >
           Program terms ↗
         </a>
@@ -300,7 +300,7 @@ function ProgramHeader({ partnership }: { partnership: Partnership }) {
             display: 'inline-flex',
             alignItems: 'center',
             gap: 6,
-            color: theme.accent,
+            color: theme.accentText,
             fontSize: 12,
             textDecoration: 'none',
           }}
@@ -788,7 +788,7 @@ function ResourcesTab() {
         <p style={{ color: theme.textMuted, fontSize: 13, margin: 0 }}>
           {partnership.vendorName} hasn&rsquo;t shared brand resources yet. Email them at{' '}
           {brand?.supportEmail ? (
-            <a href={`mailto:${brand.supportEmail}`} style={{ color: theme.accent }}>
+            <a href={`mailto:${brand.supportEmail}`} style={{ color: theme.accentText }}>
               {brand.supportEmail}
             </a>
           ) : (
@@ -872,7 +872,7 @@ function BrandKitCard({
               download
               target="_blank"
               rel="noreferrer noopener"
-              style={{ fontSize: 11, color: theme.accent, textAlign: 'center', textDecoration: 'none' }}
+              style={{ fontSize: 11, color: theme.accentText, textAlign: 'center', textDecoration: 'none' }}
             >
               Download
             </a>
@@ -959,7 +959,7 @@ function ImageAssetCard({ asset }: { asset: BrandAsset }) {
         download
         target="_blank"
         rel="noreferrer noopener"
-        style={{ fontSize: 11, color: theme.accent, textDecoration: 'none' }}
+        style={{ fontSize: 11, color: theme.accentText, textDecoration: 'none' }}
       >
         Download
       </a>
@@ -1150,11 +1150,13 @@ function ChartCard({
       </div>
       {values.some((v) => v > 0) ? (
         <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ width: '100%', height: tall ? 120 : 50, display: 'block' }}>
-          {areaPath && <path d={areaPath} fill={theme.accent} fillOpacity="0.12" />}
+          {/* Token colors go through style, not fill=/stroke= presentation
+              attributes, so the var() resolves in every browser. */}
+          {areaPath && <path d={areaPath} style={{ fill: theme.accent, fillOpacity: 0.12 }} />}
           <polyline
             points={polyline}
             fill="none"
-            stroke={theme.accent}
+            style={{ stroke: theme.accent }}
             strokeWidth={tall ? 2 : 1.5}
             strokeLinejoin="round"
             strokeLinecap="round"

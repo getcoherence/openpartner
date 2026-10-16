@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink } from 'lucide-react';
 import { api, currentTenantSlug } from '../../api.js';
-import { theme } from '../../theme.js';
+import { alpha, theme } from '../../theme.js';
 import { useBrand } from '../../lib/useBrand.js';
 import { Button, Card, ErrorBanner, Input, Label, Page } from '../../ui.js';
 
@@ -157,8 +157,8 @@ function KeysPanel() {
       {created && (
         <div
           style={{
-            background: `${theme.success}10`,
-            border: `1px solid ${theme.success}55`,
+            background: alpha(theme.success, 0.063),
+            border: `1px solid ${alpha(theme.success, 0.333)}`,
             borderRadius: theme.radiusSm,
             padding: 12,
             marginBottom: 14,
@@ -266,7 +266,7 @@ function KeysPanel() {
                 disabled={revoke.isPending}
                 style={{
                   background: 'transparent',
-                  border: `1px solid ${theme.danger}55`,
+                  border: `1px solid ${alpha(theme.danger, 0.333)}`,
                   borderRadius: 6,
                   padding: '5px 10px',
                   fontSize: 12,
@@ -333,7 +333,7 @@ function ScopesPanel() {
         <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
           {SCOPE_DESCRIPTIONS.map(({ scope, description }) => (
             <div key={scope} style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
-              <code style={{ color: theme.accent, fontSize: 12, minWidth: 130, fontWeight: 500 }}>{scope}</code>
+              <code style={{ color: theme.accentText, fontSize: 12, minWidth: 130, fontWeight: 500 }}>{scope}</code>
               <span style={{ color: theme.textMuted, fontSize: 12 }}>{description}</span>
             </div>
           ))}
@@ -424,7 +424,7 @@ function PayloadGuide() {
           href="https://openpartner.dev/docs/integrations/crm"
           target="_blank"
           rel="noopener noreferrer"
-          style={{ color: theme.accent, display: 'inline-flex', alignItems: 'center', gap: 3 }}
+          style={{ color: theme.accentText, display: 'inline-flex', alignItems: 'center', gap: 3 }}
         >
           CRM integration docs
           <ExternalLink size={12} />

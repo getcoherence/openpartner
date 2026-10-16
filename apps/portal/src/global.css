@@ -1,5 +1,146 @@
 @import url('https://rsms.me/inter/inter.css');
 
+/* ------------------------------------------------------------------------
+ * Theme palettes.
+ *
+ * theme.ts tokens are var(--op-*, <dark fallback>) expressions; these blocks
+ * supply the values. `:root` is the dark palette (the reference — identical
+ * to the pre-light-mode hexes) and `:root[data-theme="light"]` overrides it.
+ * data-theme is set on <html> by the inline bootstrap in index.html (before
+ * first paint) and kept current by src/lib/theme-preference.ts.
+ *
+ * Contrast (WCAG 2.x): text + textMuted >= 4.5:1 on bg, surface and surface2
+ * in both themes; every status foreground >= 4.5:1 on its *-soft background.
+ * Ratios are recorded in the light-mode commit message.
+ *
+ * Accent: --op-accent* (no "-default") are set inline on <html> by
+ * lib/BrandDocument.tsx from the tenant's brand color; the *-default values
+ * below are the per-theme teal used when there is no brand color.
+ * ---------------------------------------------------------------------- */
+:root {
+  color-scheme: dark;
+
+  --op-bg: #0b0d10;
+  --op-surface: #14171c;
+  --op-surface2: #1b1f26;
+  --op-surface3: #252a33;
+  --op-sidebar: #0e1116;
+  --op-border: #242932;
+  --op-border-subtle: #1d2029;
+  --op-scrollbar-hover: #2f3540;
+
+  --op-text: #e6e8eb;
+  --op-text-muted: #8b929c;
+  /* Hint/helper text meets AA: ≥4.66:1 on every dark surface (was #5a6370,
+     ~2.7–3.2:1), still dimmer than text-muted so the tiers stay distinct. */
+  --op-text-dim: #808994;
+  /* softText(): secondary status lines fade to 80% on dark. */
+  --op-text-fade: 80%;
+
+  --op-warn: #f59e0b;
+  --op-warn-soft: #2a1f0a;
+  --op-info: #60a5fa;
+  --op-info-soft: #0f1e34;
+  --op-info-chip: #1e2a3d;
+  --op-success: #34d399;
+  --op-success-soft: #0c2318;
+  --op-danger: #f87171;
+  --op-danger-soft: #2a1212;
+  --op-danger-soft-hover: #3d1818;
+
+  --op-overlay: rgba(0, 0, 0, 0.5);
+  --op-shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --op-shadow-drawer: 0 0 40px rgba(0, 0, 0, 0.5);
+  --op-shadow-raised: 0 30px 80px -30px rgba(0, 0, 0, 0.6);
+
+  /* Default (no brand color) accent. */
+  --op-accent-default: #2dd4bf;
+  --op-accent-hover-default: #14b8a6;
+  --op-accent-soft-default: #0d2c2a;
+  --op-accent-ink-default: #08141a;
+  --op-accent-text-default: #2dd4bf;
+  /* Alpha tints of whichever default accent is active (these reference
+   * --op-accent-default, so the light block only overrides the base). */
+  --op-accent-a10-default: color-mix(in srgb, var(--op-accent-default) 6.3%, transparent);
+  --op-accent-a15-default: color-mix(in srgb, var(--op-accent-default) 8.2%, transparent);
+  --op-accent-a22-default: color-mix(in srgb, var(--op-accent-default) 13.3%, transparent);
+  --op-accent-a25-default: color-mix(in srgb, var(--op-accent-default) 14.5%, transparent);
+  --op-accent-a55-default: color-mix(in srgb, var(--op-accent-default) 33.3%, transparent);
+  --op-accent-a88-default: color-mix(in srgb, var(--op-accent-default) 53.3%, transparent);
+  --op-accent-soft-a40-default: color-mix(in srgb, var(--op-accent-soft-default) 25.1%, transparent);
+  /* Accent as text: the brand color itself on dark. When BrandDocument has
+   * not set --op-accent this var() has no fallback, so --op-accent-text
+   * becomes invalid and theme.accentText falls through to
+   * --op-accent-text-default. */
+  --op-accent-text: var(--op-accent);
+
+  /* <Avatar> initials: muted-dark disc + bright ink on dark. */
+  --op-avatar-bg-s: 30%;
+  --op-avatar-bg-l: 22%;
+  --op-avatar-fg-s: 70%;
+  --op-avatar-fg-l: 70%;
+
+  /* Dashboard funnel bars: saturated bar + dark multiply-blended count. */
+  --op-funnel-opacity: 0.85;
+  --op-funnel-ink: var(--op-accent-ink, var(--op-accent-ink-default));
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --op-bg: #f6f7f9;
+  --op-surface: #ffffff;
+  --op-surface2: #f0f2f5;
+  --op-surface3: #e5e8ec;
+  --op-sidebar: #f3f4f6;
+  --op-border: #dfe3e8;
+  --op-border-subtle: #eaedf1;
+  --op-scrollbar-hover: #c9ced6;
+
+  --op-text: #0f1419;
+  --op-text-muted: #57606a;
+  /* Hint/helper text is informational, so it meets AA too: ≥4.7:1 on every
+     light surface (bg, surface, surface2, sidebar), still lighter than
+     text-muted so the tiers stay distinct. */
+  --op-text-dim: #646c77;
+  --op-text-fade: 100%;
+
+  --op-warn: #a84d08;
+  --op-warn-soft: #fef3c7;
+  --op-info: #1d4ed8;
+  --op-info-soft: #dbeafe;
+  --op-info-chip: #dbeafe;
+  --op-success: #047857;
+  --op-success-soft: #d1fae5;
+  --op-danger: #b91c1c;
+  --op-danger-soft: #fee2e2;
+  --op-danger-soft-hover: #fdd8d8;
+
+  --op-overlay: rgba(15, 20, 25, 0.35);
+  --op-shadow-popover: 0 8px 24px rgba(15, 20, 25, 0.12);
+  --op-shadow-drawer: 0 0 40px rgba(15, 20, 25, 0.18);
+  --op-shadow-raised: 0 1px 2px rgba(15, 20, 25, 0.04), 0 30px 80px -30px rgba(15, 20, 25, 0.18);
+
+  /* Teal-700: white button text clears 4.5:1 (the brighter teal-600 is
+   * only 3.7:1), and it reads as link text on white/bg/surface2. */
+  --op-accent-default: #0f766e;
+  --op-accent-hover-default: #115e59;
+  --op-accent-soft-default: #dcf2ef;
+  --op-accent-ink-default: #ffffff;
+  --op-accent-text-default: #0f766e;
+  /* Brand color as text on light: 60% brand + 40% black keeps typical
+   * brand hues (amber, green, cyan, pastel teal…) >= 4.5:1 on white. */
+  --op-accent-text: color-mix(in srgb, var(--op-accent) 60%, #000);
+
+  --op-avatar-bg-s: 50%;
+  --op-avatar-bg-l: 90%;
+  --op-avatar-fg-s: 45%;
+  --op-avatar-fg-l: 30%;
+
+  --op-funnel-opacity: 0.35;
+  --op-funnel-ink: var(--op-text);
+}
+
 *,
 *::before,
 *::after {
@@ -12,8 +153,8 @@ body,
   margin: 0;
   padding: 0;
   height: 100%;
-  background: #0b0d10;
-  color: #e6e8eb;
+  background: var(--op-bg);
+  color: var(--op-text);
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   font-feature-settings: 'cv11', 'ss01', 'ss03';
   -webkit-font-smoothing: antialiased;
@@ -40,7 +181,7 @@ code, pre {
   font-size: 0.9em;
 }
 
-/* Scrollbar — subtle, dark-mode-appropriate. */
+/* Scrollbar — subtle, follows the theme. */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -49,18 +190,18 @@ code, pre {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #242932;
+  background: var(--op-border);
   border-radius: 6px;
-  border: 2px solid #0b0d10;
+  border: 2px solid var(--op-bg);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #2f3540;
+  background: var(--op-scrollbar-hover);
 }
 
 /* Selection */
 ::selection {
-  background: #2dd4bf33;
-  color: #e6e8eb;
+  background: color-mix(in srgb, var(--op-accent, var(--op-accent-default)) 20%, transparent);
+  color: var(--op-text);
 }
 
 /* Responsive grid collapse.
@@ -88,6 +229,6 @@ button:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 a:focus-visible {
-  outline: 2px solid #2dd4bf;
+  outline: 2px solid var(--op-accent, var(--op-accent-default));
   outline-offset: 1px;
 }

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { KeyRound, Mail } from 'lucide-react';
 import { api, clearApiKey, setApiKey, ApiError, type Principal } from '../../api.js';
 import { useTenantBase } from '../../tenant-base.js';
-import { theme } from '../../theme.js';
+import { alpha, softText, theme } from '../../theme.js';
 import { Logo, AuthFrame } from './Shared.js';
 
 type Tab = 'email' | 'key';
@@ -74,9 +74,9 @@ function EmailTab() {
 
   if (sent) {
     return (
-      <div style={{ background: theme.successSoft, border: `1px solid ${theme.success}55`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
+      <div style={{ background: theme.successSoft, border: `1px solid ${alpha(theme.success, 0.333)}`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
         <div style={{ fontWeight: 500, marginBottom: 4 }}>Check your inbox</div>
-        <div style={{ color: `${theme.success}cc` }}>
+        <div style={{ color: softText(theme.success) }}>
           If an account exists for <strong>{email}</strong>, we sent a sign-in link. It's good for 15 minutes.
         </div>
       </div>

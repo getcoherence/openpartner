@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Settings as SettingsIcon, Mail, Wallet, Palette, Image as ImageIcon, Trash2, UserPlus } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
-import { theme } from '../../theme.js';
+import { alpha, theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
 
 type PayoutRail = 'auto' | 'stripe_connect' | 'manual';
@@ -111,13 +111,13 @@ function PartnerSignupSection() {
   return (
     <Card>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-        <UserPlus size={18} color={theme.accent} />
+        <UserPlus size={18} style={{ color: theme.accentText }} />
         <div style={{ fontSize: 15, fontWeight: 500 }}>Partner signups</div>
       </div>
       <ErrorBanner error={error ?? mut.error} />
       <div style={{ fontSize: 13, color: theme.textMuted, lineHeight: 1.6, marginBottom: 12 }}>
         Your public application page is{' '}
-        <a href={joinUrl} target="_blank" rel="noreferrer" style={{ color: theme.accent }}>
+        <a href={joinUrl} target="_blank" rel="noreferrer" style={{ color: theme.accentText }}>
           {joinUrl}
         </a>
         . Direct invites always work, whatever you choose here.
@@ -201,7 +201,7 @@ function ProgramSection() {
   return (
     <Card>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-        <SettingsIcon size={18} color={theme.accent} />
+        <SettingsIcon size={18} style={{ color: theme.accentText }} />
         <div style={{ fontSize: 15, fontWeight: 500 }}>Brand info</div>
       </div>
       <ErrorBanner error={error ?? mut.error} />
@@ -245,6 +245,8 @@ function ProgramSection() {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <input
               type="color"
+              // #16a34a: the color-picker's starting value (a brand color the
+              // admin is choosing), not a UI color — same in both themes.
               value={brandColor || '#16a34a'}
               onChange={(e) => setBrandColor(e.target.value)}
               style={{
@@ -330,7 +332,7 @@ function BrandResourcesSection() {
   return (
     <Card>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-        <Palette size={18} color={theme.accent} />
+        <Palette size={18} style={{ color: theme.accentText }} />
         <div style={{ fontSize: 15, fontWeight: 500 }}>Brand resources</div>
       </div>
       <ErrorBanner error={error} />
@@ -446,7 +448,7 @@ function AssetRow({ asset, onChange }: { asset: BrandAsset; onChange: () => void
           style={{
             background: 'transparent',
             border: 'none',
-            color: theme.accent,
+            color: theme.accentText,
             cursor: 'pointer',
             fontSize: 12,
             padding: 0,
@@ -700,7 +702,7 @@ function PayoutSection() {
   return (
     <Card>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-        <Wallet size={18} color={theme.accent} />
+        <Wallet size={18} style={{ color: theme.accentText }} />
         <div style={{ fontSize: 15, fontWeight: 500 }}>Payouts</div>
       </div>
       <ErrorBanner error={error ?? mut.error} />
@@ -853,14 +855,14 @@ function MailSection() {
   return (
     <Card>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-        <Mail size={18} color={theme.accent} />
+        <Mail size={18} style={{ color: theme.accentText }} />
         <div style={{ fontSize: 15, fontWeight: 500 }}>Email delivery</div>
       </div>
       <ErrorBanner error={error ?? mut.error} />
       <div
         style={{
           background: theme.successSoft,
-          border: `1px solid ${theme.success}55`,
+          border: `1px solid ${alpha(theme.success, 0.333)}`,
           borderRadius: theme.radiusSm,
           padding: 12,
           marginBottom: 14,
@@ -1045,7 +1047,7 @@ function BrandImageUploader({
         {currentUrl ? (
           <img src={currentUrl} alt={brandName ?? label} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
         ) : (
-          <span style={{ fontSize: Math.round(previewSize * 0.4), fontWeight: 600, color: theme.accent }}>
+          <span style={{ fontSize: Math.round(previewSize * 0.4), fontWeight: 600, color: theme.accentText }}>
             {brandName?.charAt(0).toUpperCase() ?? '?'}
           </span>
         )}
@@ -1132,7 +1134,7 @@ function DangerZone() {
 
       {pending ? (
         <>
-          <div style={{ background: `${theme.danger}15`, border: `1px solid ${theme.danger}55`, padding: 14, borderRadius: 6, marginBottom: 14 }}>
+          <div style={{ background: alpha(theme.danger, 0.082), border: `1px solid ${alpha(theme.danger, 0.333)}`, padding: 14, borderRadius: 6, marginBottom: 14 }}>
             <div style={{ fontSize: 14, fontWeight: 500, color: theme.danger }}>
               Account scheduled for deletion
             </div>

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { theme } from '../../theme.js';
 import { Logo } from '../auth/Shared.js';
+import { ThemeToggle } from '../../lib/ThemeToggle.js';
 import type { ApprovalStatus } from './lib.js';
 
 /**
@@ -21,6 +22,7 @@ export function PlatformFrame({
     <div
       style={{
         display: 'flex',
+        flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
         minHeight: '100vh',
@@ -36,7 +38,7 @@ export function PlatformFrame({
           borderRadius: theme.radiusLg,
           width: 420,
           maxWidth: '100%',
-          boxShadow: '0 30px 80px -30px rgba(0,0,0,0.6)',
+          boxShadow: theme.shadowRaised,
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
@@ -59,6 +61,7 @@ export function PlatformFrame({
           Platform operations console — OpenPartner staff only.
         </div>
       </div>
+      <ThemeToggle style={{ marginTop: 16 }} />
     </div>
   );
 }

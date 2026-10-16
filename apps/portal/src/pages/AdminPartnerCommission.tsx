@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { api } from '../api.js';
-import { theme } from '../theme.js';
+import { alpha, theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
 import { Button, Card, ErrorBanner, Input, Label, Page } from '../ui.js';
 import { CompoundRuleEditor, ruleEventTypeMissing, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
@@ -242,7 +242,7 @@ function EditCard({
             disabled={clear.isPending}
             style={{
               background: 'transparent',
-              border: `1px solid ${theme.danger}55`,
+              border: `1px solid ${alpha(theme.danger, 0.333)}`,
               borderRadius: 6,
               padding: '8px 14px',
               fontSize: 13,

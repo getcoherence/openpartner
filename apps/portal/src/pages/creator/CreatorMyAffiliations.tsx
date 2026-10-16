@@ -172,7 +172,7 @@ export function CreatorMyAffiliationsPage() {
                               display: 'inline-flex',
                               alignItems: 'center',
                               gap: 4,
-                              color: theme.accent,
+                              color: theme.accentText,
                               fontSize: 12,
                               textDecoration: 'none',
                             }}

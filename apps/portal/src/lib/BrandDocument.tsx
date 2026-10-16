@@ -19,7 +19,10 @@ import { usePublicBrand, DEFAULT_BRAND } from './useBrand.js';
  * Theming: when the tenant has a brandColor, the --op-accent* properties
  * are set on <html>; every accent token in theme.ts is a var() over them,
  * so buttons, links, and the active nav re-tint app-wide. No brandColor →
- * properties removed → teal fallbacks apply.
+ * properties removed → the per-theme --op-accent-*-default teal from
+ * global.css applies. These properties are theme-independent: light mode
+ * derives its readable link color (--op-accent-text) from --op-accent in
+ * CSS, so nothing here re-runs when the user switches theme.
  */
 export function BrandDocument() {
   // Subscribe to navigation so usePublicBrand re-reads the /t/<slug>/ URL
@@ -58,7 +61,7 @@ const ACCENT_ALPHAS = ['10', '15', '22', '25', '55', '88'] as const;
 /** Set (or clear) the --op-accent* custom properties from a brand color.
  *  Derivations happen here once, in JS, because inline styles can't
  *  color-math a var(): hover = darkened, ink = black/white by luminance,
- *  soft = low-alpha tint that reads on the dark surface. */
+ *  soft = low-alpha tint that reads on both light and dark surfaces. */
 function applyAccent(brandColor: string | null): void {
   const root = document.documentElement;
   const hex = normalizeHex(brandColor);
@@ -68,6 +71,8 @@ function applyAccent(brandColor: string | null): void {
   }
   root.style.setProperty('--op-accent', hex);
   root.style.setProperty('--op-accent-hover', shade(hex, 0.85));
+  // Ink sits ON the brand color, so it's picked by the brand's luminance,
+  // not the page theme: fixed near-black / white in both modes.
   root.style.setProperty('--op-accent-ink', luminance(hex) > 0.45 ? '#0b0d10' : '#ffffff');
   root.style.setProperty('--op-accent-soft', `${hex}26`);
   root.style.setProperty('--op-accent-soft-a40', `${hex}1a`);
@@ -125,6 +130,8 @@ export function luminance(hex: string): number {
  *  tab never shows the platform mark. */
 function monogramIcon(name: string, brandColor: string | null): string {
   const initial = (name.trim()[0] ?? '?').toUpperCase();
+  // Fixed colors on purpose: a favicon renders in the browser tab chrome,
+  // outside the page theme. Brand color (or neutral slate) + luminance ink.
   const bg = normalizeHex(brandColor) ?? '#1f2937';
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` +

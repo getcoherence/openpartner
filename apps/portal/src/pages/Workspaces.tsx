@@ -116,7 +116,7 @@ export function WorkspacesPage() {
                   /t/{w.tenantSlug}/{!w.activated && ' · activates on entry'}
                 </div>
               </div>
-              <span style={{ color: theme.accent, fontSize: 13 }}>
+              <span style={{ color: theme.accentText, fontSize: 13 }}>
                 {busySlug === w.tenantSlug ? 'Entering…' : 'Enter →'}
               </span>
             </button>
@@ -124,7 +124,7 @@ export function WorkspacesPage() {
         </div>
         {data?.workspaces.length === 0 && (
           <div style={{ color: theme.textMuted, fontSize: 14 }}>
-            You don&rsquo;t have any brand workspaces. <a href="/brands/new" style={{ color: theme.accent }}>Create one →</a>
+            You don&rsquo;t have any brand workspaces. <a href="/brands/new" style={{ color: theme.accentText }}>Create one →</a>
           </div>
         )}
       </div>

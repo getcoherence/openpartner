@@ -108,7 +108,7 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
                 {missing && (
                   <ProfileIncompleteNotice
                     missing={missing}
-                    link={<TenantLink to="/network/profile" style={{ color: theme.accent, fontWeight: 500 }}>Go to your profile →</TenantLink>}
+                    link={<TenantLink to="/network/profile" style={{ color: theme.accentText, fontWeight: 500 }}>Go to your profile →</TenantLink>}
                   />
                 )}
                 {!refusedMissing && <ErrorBanner error={apply.error} />}

@@ -46,7 +46,7 @@ export function AuditPage() {
                     fontFamily: theme.fontMono,
                     fontSize: 12.5,
                     fontWeight: 600,
-                    color: theme.accent,
+                    color: theme.accentText,
                   }}
                 >
                   {e.action}

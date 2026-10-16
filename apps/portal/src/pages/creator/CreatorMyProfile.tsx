@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Card, ErrorBanner, Input, Label, Page } from '../../ui.js';
-import { theme } from '../../theme.js';
+import { alpha, theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
 import {
   NetworkProfileEditor,
@@ -78,7 +78,7 @@ function CreatorDangerZone({ email, pendingDeletionAt }: { email: string; pendin
 
       {pending ? (
         <>
-          <div style={{ background: `${theme.danger}15`, border: `1px solid ${theme.danger}55`, padding: 14, borderRadius: 6, marginBottom: 14 }}>
+          <div style={{ background: alpha(theme.danger, 0.082), border: `1px solid ${alpha(theme.danger, 0.333)}`, padding: 14, borderRadius: 6, marginBottom: 14 }}>
             <div style={{ fontSize: 14, fontWeight: 500, color: theme.danger }}>
               Account scheduled for deletion
             </div>

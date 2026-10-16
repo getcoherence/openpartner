@@ -2,6 +2,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-r
 import { useQuery } from '@tanstack/react-query';
 import { LogOut } from 'lucide-react';
 import { theme } from '../../theme.js';
+import { ThemeToggle } from '../../lib/ThemeToggle.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
 import { Logo } from '../auth/Shared.js';
 import { papi, type PlatformOperator } from './lib.js';
@@ -146,6 +147,7 @@ function TopNav({ operator, onSignOut }: { operator: PlatformOperator; onSignOut
               {operator.role === 'admin' ? 'operator · admin' : 'operator · read-only'}
             </div>
           </div>
+          <ThemeToggle />
           <button
             onClick={onSignOut}
             style={{
