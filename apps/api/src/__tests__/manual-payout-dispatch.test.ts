@@ -298,4 +298,70 @@ describe.skipIf(skipIntegration)('manual-rail payout webhooks fire only after th
     expect(dispatched('commission.paid')).toHaveLength(0);
     await expectRolledBack(a);
   });
+
+  it('scheduler job: announces each tenant as soon as its own run commits, before the next tenant runs', async () => {
+    // Holding every tenant's announcements until the loop ended lost them
+    // all if the process died mid-tick: those tenants' commissions were
+    // already paid, so nothing re-announced them. Two tenants with a
+    // manual payout each; whichever runs second must find the first
+    // one's payout.created already dispatched. forEachActiveTenant has no
+    // ORDER BY, so the test doesn't assume which goes first.
+    const a = await seedManualPartner(1);
+    const OTHER_TENANT_ID = `t_dispatch_${ulid().toLowerCase()}`;
+    await db(TABLES.Tenant).insert({
+      id: OTHER_TENANT_ID, slug: OTHER_TENANT_ID, displayName: 'Other', status: 'active',
+    });
+    const announced = () =>
+      vi.mocked(dispatchEvent).mock.calls.filter((c) => c[1] === 'payout.created').map((c) => c[0]);
+    const emptyRun = (): PayoutRunResult => ({
+      runId: ulid(), mode: 'selfhost', payouts: [], skippedBelowThreshold: [], skippedUnfunded: [],
+      pendingNotifications: [],
+    });
+    const runs: Array<{ tenantId: string; announcedBefore: string[] }> = [];
+    vi.mocked(runPayouts).mockImplementation(async (trx, tenantId) => {
+      // Any other active tenant left in the DB runs nothing (RLS is
+      // bypassed on this connection, so a real run could take ours).
+      if (tenantId !== DEFAULT_TENANT_ID && tenantId !== OTHER_TENANT_ID) return emptyRun();
+      runs.push({ tenantId, announcedBefore: announced() });
+      if (tenantId === DEFAULT_TENANT_ID) return realRunPayouts(trx, tenantId);
+      // The other tenant's run is synthetic for the same reason.
+      return {
+        ...emptyRun(),
+        pendingNotifications: [
+          {
+            payout: {
+              payoutId: ulid(), partnerId: 'p_other', amount: '5.00', currency: 'USD',
+              method: 'manual', commissionIds: [],
+            },
+            commissions: [],
+          },
+        ],
+      };
+    });
+
+    try {
+      const out = await runPayoutsJob();
+      for (const tenantId of [DEFAULT_TENANT_ID, OTHER_TENANT_ID]) {
+        const t = out.planned.find((p) => p.tenantId === tenantId);
+        expect(t).toMatchObject({ ok: true });
+        expect(t?.result).not.toHaveProperty('pendingNotifications');
+      }
+
+      expect(runs.map((r) => r.tenantId).sort()).toEqual([DEFAULT_TENANT_ID, OTHER_TENANT_ID].sort());
+      const [first, second] = runs;
+      expect(first!.announcedBefore).toEqual([]);
+      // The heart of it: the first tenant was announced before the second
+      // tenant's run even started.
+      expect(second!.announcedBefore).toEqual([first!.tenantId]);
+      expect(announced()).toEqual([first!.tenantId, second!.tenantId]);
+
+      // The default tenant's announcement is its real committed payout.
+      const mine = vi
+        .mocked(dispatchEvent)
+        .mock.calls.find((c) => c[0] === DEFAULT_TENANT_ID && c[1] === 'payout.created');
+      expect(mine?.[2]).toMatchObject({ partnerId: a.partnerId, method: 'manual' });
+    } finally {
+      await db(TABLES.Tenant).where({ id: OTHER_TENANT_ID }).del();
+    }
+  });
 });

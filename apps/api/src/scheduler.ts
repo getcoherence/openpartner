@@ -12,9 +12,10 @@
  *                   Billing meters.
  *   - payouts:      every Monday at 09:00 UTC. Per active tenant, runs
  *                   runPayouts() to PLAN payouts (manual-rail rows +
- *                   committed Connect transfer intents), then, once every
- *                   planning transaction has committed, announces the
- *                   manual-rail payouts and posts the intents' transfers.
+ *                   committed Connect transfer intents), announcing each
+ *                   tenant's manual-rail payouts as soon as its own
+ *                   planning transaction commits, then posts the intents'
+ *                   transfers once every tenant has been planned.
  *   - payout-transfers: every 15 minutes. Retries/reconciles Connect
  *                   transfer intents left open by a crash, an ambiguous
  *                   Stripe response, or a partner who wasn't ready.
@@ -58,48 +59,76 @@ interface ScheduledJob {
  * (`withTenantTransaction` — appDb + `app.tenant_id`, so RLS applies).
  * Failures in one tenant don't stop the iteration — each tenant gets its own
  * try/catch and the aggregate result lists per-tenant outcomes.
+ *
+ * `afterCommit`, if given, runs with a tenant's result as soon as THAT
+ * tenant's transaction has committed, before the next tenant starts. It
+ * never runs for a tenant whose transaction threw. Use it for post-commit
+ * side effects (webhooks) rather than waiting for the loop to finish: a
+ * process that dies mid-loop must not lose the announcements of tenants
+ * that already committed. A throw from it is logged, and the tenant still
+ * reports ok (its writes are committed).
  */
 async function forEachActiveTenant<T>(
   fn: (db: Knex, tenantId: string) => Promise<T>,
+  afterCommit?: (tenantId: string, result: T) => void | Promise<void>,
 ): Promise<Array<{ tenantId: string; ok: boolean; result?: T; error?: string }>> {
   const tenants = await db<TenantRow>(TABLES.Tenant).where({ status: 'active' }).select('id');
   const out: Array<{ tenantId: string; ok: boolean; result?: T; error?: string }> = [];
   for (const t of tenants) {
+    let result: T;
     try {
-      const result = await withTenantTransaction(t.id, (trx) => fn(trx, t.id));
-      out.push({ tenantId: t.id, ok: true, result });
+      result = await withTenantTransaction(t.id, (trx) => fn(trx, t.id));
     } catch (err) {
       out.push({ tenantId: t.id, ok: false, error: err instanceof Error ? err.message : String(err) });
+      continue;
+    }
+    out.push({ tenantId: t.id, ok: true, result });
+    if (afterCommit) {
+      try {
+        await afterCommit(t.id, result);
+      } catch (err) {
+        console.error(
+          `[scheduler] after-commit step failed for tenant ${t.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
   return out;
 }
 
 /**
- * The weekly payouts tick: plan every active tenant (cadence-gated), then
- * announce the committed manual-rail payouts, then post the committed
- * Connect intents' transfers.
+ * The weekly payouts tick: plan each active tenant (cadence-gated) and
+ * announce its manual-rail payouts as soon as its own planning
+ * transaction commits, then post the committed Connect intents'
+ * transfers.
  */
 export async function runPayoutsJob() {
-  const planned = await forEachActiveTenant(async (trx, tenantId) => {
-    // Cron ticks every Monday; per-tenant cadence decides whether the
-    // tenant actually runs on this tick. Default (null) treated as
-    // 'weekly' for backwards compat — every tick runs every tenant.
-    const tenant = await trx<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first();
-    const cadence: PayoutCadence = tenant?.payoutCadence ?? 'weekly';
-    if (!shouldRunPayoutsThisTick(cadence, new Date())) {
-      return { skipped: 'cadence', cadence };
-    }
-    return runPayouts(trx, tenantId);
-  });
-  // Every planning transaction has committed or rolled back by now. A
-  // tenant whose run threw has no result, so only committed manual-rail
-  // payouts are announced. The notifications (one per commission) are
-  // stripped from the returned summary, which the scheduler logs.
+  const planned = await forEachActiveTenant(
+    async (trx, tenantId) => {
+      // Cron ticks every Monday; per-tenant cadence decides whether the
+      // tenant actually runs on this tick. Default (null) treated as
+      // 'weekly' for backwards compat — every tick runs every tenant.
+      const tenant = await trx<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first();
+      const cadence: PayoutCadence = tenant?.payoutCadence ?? 'weekly';
+      if (!shouldRunPayoutsThisTick(cadence, new Date())) {
+        return { skipped: 'cadence', cadence };
+      }
+      return runPayouts(trx, tenantId);
+    },
+    // This tenant's run has committed: announce its manual-rail payouts
+    // before the next tenant starts. Holding them until the loop ends
+    // lost them for every committed tenant if the process died mid-tick
+    // (their commissions are already paid, so nothing re-announces them).
+    // A tenant whose run threw never gets here and announces nothing.
+    (tenantId, result) => {
+      if ('pendingNotifications' in result) dispatchPayoutNotifications(tenantId, result.pendingNotifications);
+    },
+  );
+  // The notifications (one per commission) are stripped from the
+  // returned summary, which the scheduler logs.
   const summary = planned.map((t) => {
     if (!t.result || !('pendingNotifications' in t.result)) return t;
-    const { pendingNotifications, ...result } = t.result;
-    dispatchPayoutNotifications(t.tenantId, pendingNotifications);
+    const { pendingNotifications: _announced, ...result } = t.result;
     return { ...t, result };
   });
   // The intents are durable too, so their transfers can be posted (audit

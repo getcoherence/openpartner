@@ -16,7 +16,7 @@
  * same run (e.g. a lost commission claim) then rolled back.
  *
  * Why the split (audit #10): this function runs inside the caller's tenant
- * transaction (scheduler tick / request middleware). Calling Stripe from
+ * transaction (scheduler tick / admin route). Calling Stripe from
  * in here meant a transfer could succeed and the surrounding commit then
  * fail — the Payout row rolled back, the money gone, and the next run
  * minted a NEW payoutId, hence a NEW idempotency key, hence a DUPLICATE
@@ -39,9 +39,13 @@
  *                         (usage-billing.ts). Payout.metadata.platformFee
  *                         records 3% of the payout as a ledger note only.
  *
- * Multi-tenant: takes (db, tenantId). Pass req.db from a route handler, or
- * the privileged db with app.tenant_id pinned in the calling transaction
- * from the scheduler.
+ * Multi-tenant: takes (db, tenantId), where `db` is a transaction with
+ * app.tenant_id pinned. Open it with `withTenantTransaction` (the
+ * scheduler's forEachActiveTenant does) and dispatch the result's
+ * `pendingNotifications` once that call has returned. Don't pass req.db
+ * from a route: the request transaction commits only after the response
+ * is sent, so the handler has no point at which the run is known to be
+ * committed — POST /payouts/run plans in its own withTenantTransaction.
  */
 
 import type { Knex } from 'knex';
@@ -139,8 +143,8 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
   // Serialize every payout actor for this tenant — the weekly scheduler
   // tick, the admin run-payouts endpoint, and funding reservation — on one
   // advisory xact lock (audit: concurrent runs could double-transfer).
-  // Callers always run inside a transaction (scheduler + tenantMiddleware),
-  // so the xact-scoped lock self-releases.
+  // Callers always run inside a transaction (scheduler + the admin route's
+  // withTenantTransaction), so the xact-scoped lock self-releases.
   if (db.isTransaction && !(await tryTenantPayoutLock(db as Knex.Transaction, tenantId))) {
     return {
       runId: 'locked',
