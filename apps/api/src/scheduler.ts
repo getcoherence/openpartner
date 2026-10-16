@@ -12,9 +12,9 @@
  *                   Billing meters.
  *   - payouts:      every Monday at 09:00 UTC. Per active tenant, runs
  *                   runPayouts() to PLAN payouts (manual-rail rows +
- *                   committed Connect transfer intents), then posts those
- *                   intents' transfers once every planning transaction has
- *                   committed.
+ *                   committed Connect transfer intents), then, once every
+ *                   planning transaction has committed, announces the
+ *                   manual-rail payouts and posts the intents' transfers.
  *   - payout-transfers: every 15 minutes. Retries/reconciles Connect
  *                   transfer intents left open by a crash, an ambiguous
  *                   Stripe response, or a partner who wasn't ready.
@@ -38,7 +38,7 @@ import { TABLES, type PayoutCadence, type TenantRow } from '@openpartner/db';
 import { db } from './db.js';
 import { getTenancyMode, withTenantTransaction } from './tenancy.js';
 import { reportUsageToStripe } from './usage-billing.js';
-import { runPayouts } from './payouts.js';
+import { dispatchPayoutNotifications, runPayouts } from './payouts.js';
 import { drainOutbox, reportNetworkPayoutsToNetwork, sendHeartbeat } from './network-client.js';
 import { getMode } from './stripe.js';
 import { sweepCampaignEndNotifications } from './campaign-end-notifications.js';
@@ -75,6 +75,41 @@ async function forEachActiveTenant<T>(
   return out;
 }
 
+/**
+ * The weekly payouts tick: plan every active tenant (cadence-gated), then
+ * announce the committed manual-rail payouts, then post the committed
+ * Connect intents' transfers.
+ */
+export async function runPayoutsJob() {
+  const planned = await forEachActiveTenant(async (trx, tenantId) => {
+    // Cron ticks every Monday; per-tenant cadence decides whether the
+    // tenant actually runs on this tick. Default (null) treated as
+    // 'weekly' for backwards compat — every tick runs every tenant.
+    const tenant = await trx<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first();
+    const cadence: PayoutCadence = tenant?.payoutCadence ?? 'weekly';
+    if (!shouldRunPayoutsThisTick(cadence, new Date())) {
+      return { skipped: 'cadence', cadence };
+    }
+    return runPayouts(trx, tenantId);
+  });
+  // Every planning transaction has committed or rolled back by now. A
+  // tenant whose run threw has no result, so only committed manual-rail
+  // payouts are announced. The notifications (one per commission) are
+  // stripped from the returned summary, which the scheduler logs.
+  const summary = planned.map((t) => {
+    if (!t.result || !('pendingNotifications' in t.result)) return t;
+    const { pendingNotifications, ...result } = t.result;
+    dispatchPayoutNotifications(t.tenantId, pendingNotifications);
+    return { ...t, result };
+  });
+  // The intents are durable too, so their transfers can be posted (audit
+  // #10). Doing it here rather than waiting for the 15-minute executor
+  // tick keeps the weekly run a single visible operation.
+  const { executePayoutTransfers } = await import('./payout-transfers.js');
+  const transfers = await executePayoutTransfers(db);
+  return { planned: summary, transfers };
+}
+
 const JOBS: ScheduledJob[] = [
   {
     name: 'usage-report',
@@ -89,26 +124,7 @@ const JOBS: ScheduledJob[] = [
     name: 'payouts',
     cronExpr: '0 9 * * 1',
     description: 'Per tenant: plan payouts — write Connect transfer intents + manual-rail rows for approved commissions (Monday 09:00 UTC; cadence-gated per tenant)',
-    handler: async () => {
-      const planned = await forEachActiveTenant(async (trx, tenantId) => {
-        // Cron ticks every Monday; per-tenant cadence decides whether the
-        // tenant actually runs on this tick. Default (null) treated as
-        // 'weekly' for backwards compat — every tick runs every tenant.
-        const tenant = await trx<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first();
-        const cadence: PayoutCadence = tenant?.payoutCadence ?? 'weekly';
-        if (!shouldRunPayoutsThisTick(cadence, new Date())) {
-          return { skipped: 'cadence', cadence };
-        }
-        return runPayouts(trx, tenantId);
-      });
-      // Every planning transaction is committed by now, so the intents are
-      // durable and their transfers can be posted (audit #10). Doing it
-      // here rather than waiting for the 15-minute executor tick keeps the
-      // weekly run a single visible operation.
-      const { executePayoutTransfers } = await import('./payout-transfers.js');
-      const transfers = await executePayoutTransfers(db);
-      return { planned, transfers };
-    },
+    handler: runPayoutsJob,
   },
   {
     name: 'payout-transfers',
