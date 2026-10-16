@@ -31,7 +31,9 @@
 
   --op-text: #e6e8eb;
   --op-text-muted: #8b929c;
-  --op-text-dim: #5a6370;
+  /* Hint/helper text meets AA: ≥4.66:1 on every dark surface (was #5a6370,
+     ~2.7–3.2:1), still dimmer than text-muted so the tiers stay distinct. */
+  --op-text-dim: #808994;
   /* softText(): secondary status lines fade to 80% on dark. */
   --op-text-fade: 80%;
 

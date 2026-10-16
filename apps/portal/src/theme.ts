@@ -35,7 +35,7 @@ export const theme = {
   // Ink
   text: 'var(--op-text, #e6e8eb)',
   textMuted: 'var(--op-text-muted, #8b929c)',
-  textDim: 'var(--op-text-dim, #5a6370)',
+  textDim: 'var(--op-text-dim, #808994)',
 
   // Accent — soft teal by default. Distinct from Dub's pink and Stripe's
   // violet; reads as "attribution/trust" without being finance-default blue.
