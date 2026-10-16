@@ -97,7 +97,10 @@
 
   --op-text: #0f1419;
   --op-text-muted: #57606a;
-  --op-text-dim: #8b939c;
+  /* Hint/helper text is informational, so it meets AA too: ≥4.7:1 on every
+     light surface (bg, surface, surface2, sidebar), still lighter than
+     text-muted so the tiers stay distinct. */
+  --op-text-dim: #646c77;
   --op-text-fade: 100%;
 
   --op-warn: #a84d08;
