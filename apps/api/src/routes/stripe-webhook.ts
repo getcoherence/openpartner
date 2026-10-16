@@ -1285,13 +1285,15 @@ async function attributeUnattributedEvents(trx: Knex.Transaction, tenantId: stri
 
 /**
  * Run a Stripe read whose permanent failure means "nothing to find": the
- * object doesn't exist in this account (resource_missing), or the key may
- * not read it (a restricted key without that permission, a revoked key).
- * Those fail the same way on every redelivery, so a 500 would only have
- * Stripe retry the event for three days. Log and return null; the caller
- * carries on as if nothing matched and the event is acknowledged.
+ * object doesn't exist in this account (resource_missing), or a restricted
+ * key lacks that one permission. Those fail the same way on every
+ * redelivery, so a 500 would only have Stripe retry the event for three
+ * days. Log and return null; the caller carries on as if nothing matched
+ * and the event is acknowledged.
  * Anything else (connection, Stripe 5xx, rate limit, unknown) propagates
- * as a 500, so Stripe redelivers the event.
+ * as a 500, so Stripe redelivers the event. That includes an invalid or
+ * revoked key: every Stripe call is failing then, and redelivery keeps the
+ * events until the operator fixes the key.
  */
 async function stripeReadOrNull<T>(call: string, id: string, read: () => Promise<T>): Promise<T | null> {
   try {
@@ -1306,7 +1308,7 @@ async function stripeReadOrNull<T>(call: string, id: string, read: () => Promise
 
 function isPermanentStripeError(err: unknown): boolean {
   const { type, code } = (err ?? {}) as { type?: string; code?: string };
-  if (type === 'StripePermissionError' || type === 'StripeAuthenticationError') return true;
+  if (type === 'StripePermissionError') return true;
   return type === 'StripeInvalidRequestError' && code === 'resource_missing';
 }
 

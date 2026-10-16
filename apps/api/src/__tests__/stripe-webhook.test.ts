@@ -633,7 +633,6 @@ describe.skipIf(skipIntegration)('stripe webhook — Stripe read failures', () =
   it.each([
     ['resource_missing', 'StripeInvalidRequestError', 'resource_missing'],
     ['a restricted key', 'StripePermissionError', undefined],
-    ['a revoked key', 'StripeAuthenticationError', undefined],
   ])('%s is permanent: the event is acknowledged 2xx and skipped', async (_label, type, code) => {
     const customerId = `cus_${ulid()}`;
     stripeApi.customersRetrieve.mockRejectedValue(stripeError(type, code));
@@ -651,6 +650,9 @@ describe.skipIf(skipIntegration)('stripe webhook — Stripe read failures', () =
     ['StripeConnectionError', undefined],
     ['StripeAPIError', undefined],
     ['StripeRateLimitError', undefined],
+    // A revoked key breaks every Stripe call; redelivery keeps the events
+    // until the operator fixes the key.
+    ['StripeAuthenticationError', undefined],
     ['StripeInvalidRequestError', 'parameter_invalid_integer'],
   ])('%s %s is not permanent: 500, so Stripe redelivers', async (type, code) => {
     const customerId = `cus_${ulid()}`;
