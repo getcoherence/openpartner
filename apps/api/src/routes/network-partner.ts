@@ -15,9 +15,10 @@
  * serves both browser-creator and proxied-from-vendor cases.
  */
 
-import { Router, type Request, type Response } from 'express';
+import express, { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import type { Knex } from 'knex';
+import { AUDIENCE_SIZES } from '@openpartner/db';
 import { requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { partnerProxy, NetworkProxyError } from '../network-client.js';
@@ -166,6 +167,10 @@ networkPartnerRouter.get('/network/me/profile', requireAuth, async (req, res) =>
   );
 });
 
+// Mirrors the Network's PATCH /creators/me (src/routes/creators.ts
+// updateMeSchema) so a partner can edit every field the creator portal
+// can — including everything the Network's completeness bar checks.
+const isoCountry = z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/, 'expected ISO-3166 alpha-2');
 const updateProfileSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   handle: z
@@ -179,6 +184,12 @@ const updateProfileSchema = z.object({
   avatarUrl: z.string().url().nullable().optional(),
   bio: z.string().max(2000).nullable().optional(),
   profile: z.record(z.unknown()).optional(),
+  categories: z.array(z.string().trim().toLowerCase().min(1).max(40)).max(12).optional(),
+  audienceLocations: z.array(isoCountry).max(5).optional(),
+  audienceAgeRange: z.enum(['13-17', '18-24', '25-34', '35-44', '45-54', '55+']).nullable().optional(),
+  audienceSize: z.enum(AUDIENCE_SIZES).nullable().optional(),
+  portfolioLinks: z.array(z.string().url().max(500)).max(6).optional(),
+  pastBrands: z.array(z.string().trim().min(1).max(80)).max(20).optional(),
 });
 
 networkPartnerRouter.patch('/network/me/profile', requireAuth, async (req, res) => {
@@ -188,3 +199,58 @@ networkPartnerRouter.patch('/network/me/profile', requireAuth, async (req, res) 
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
   return proxy(req, res, (db, tenantId) => partnerProxy.updateMyProfile(db, tenantId, partnerId, body.data));
 });
+
+// ---------- Platforms + avatar (the rest of the completeness bar) ----------
+
+// The Network validates the platform slug and body; we only keep the path
+// segment to something that can't escape /creators/me/platforms/.
+const platformParam = z.string().regex(/^[a-z]{2,20}$/);
+
+networkPartnerRouter.get('/network/me/platforms', requireAuth, async (req, res) => {
+  const partnerId = requirePartnerPrincipal(req, res);
+  if (!partnerId) return;
+  return proxy(
+    req,
+    res,
+    (db, tenantId) => partnerProxy.listMyPlatforms(db, tenantId, partnerId),
+    200,
+    () => ({ platforms: [] }),
+  );
+});
+
+networkPartnerRouter.put('/network/me/platforms/:platform', requireAuth, async (req, res) => {
+  const partnerId = requirePartnerPrincipal(req, res);
+  if (!partnerId) return;
+  const platform = platformParam.safeParse(req.params.platform);
+  if (!platform.success) return res.status(400).json({ error: 'invalid_platform' });
+  return proxy(req, res, (db, tenantId) =>
+    partnerProxy.upsertMyPlatform(db, tenantId, partnerId, platform.data, req.body ?? {}),
+  );
+});
+
+networkPartnerRouter.delete('/network/me/platforms/:platform', requireAuth, async (req, res) => {
+  const partnerId = requirePartnerPrincipal(req, res);
+  if (!partnerId) return;
+  const platform = platformParam.safeParse(req.params.platform);
+  if (!platform.success) return res.status(400).json({ error: 'invalid_platform' });
+  return proxy(req, res, (db, tenantId) => partnerProxy.deleteMyPlatform(db, tenantId, partnerId, platform.data));
+});
+
+const AVATAR_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+
+networkPartnerRouter.post(
+  '/network/me/uploads/avatar',
+  // Same types + 2 MB cap as the Network's own endpoint (and the
+  // /api/creator-api proxy). express.json() ignores image bodies.
+  express.raw({ type: AVATAR_TYPES, limit: 2 * 1024 * 1024 }),
+  requireAuth,
+  async (req, res) => {
+    const partnerId = requirePartnerPrincipal(req, res);
+    if (!partnerId) return;
+    const contentType = String(req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
+    if (!AVATAR_TYPES.includes(contentType)) return res.status(400).json({ error: 'unsupported_type' });
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: 'empty_body' });
+    const image = req.body;
+    return proxy(req, res, (db, tenantId) => partnerProxy.uploadMyAvatar(db, tenantId, partnerId, image, contentType));
+  },
+);
