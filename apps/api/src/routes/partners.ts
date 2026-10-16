@@ -454,6 +454,8 @@ partnersRouter.post('/partners/:id/reinstate', requireAuth, requireAdmin, async 
 /**
  * List partners. Supports:
  *   - ?email=foo@bar.com  — exact-match filter (Zapier "find by email")
+ *   - ?q=ada              — case-insensitive substring match on name or
+ *                           email (the admin search box; blank = no filter)
  *   - ?limit=N            — page size (1-200, default 100)
  *   - ?cursor=...         — opaque cursor returned by the previous page
  *
@@ -463,13 +465,21 @@ partnersRouter.post('/partners/:id/reinstate', requireAuth, requireAdmin, async 
  *
  * Stable ordering: createdAt DESC, id DESC as tiebreaker (id is
  * lexicographically increasing for ULIDs but not for legacy partners,
- * so we explicitly tie-break).
+ * so we explicitly tie-break). Filters narrow the rows but never change
+ * the order, so a search pages with the same cursor scheme.
  */
 const listQuerySchema = z.object({
   email: z.string().trim().email().optional(),
+  q: z.string().trim().max(200).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional().default(100),
   cursor: z.string().optional(),
 });
+
+/** `%term%` for ILIKE, with the term's own LIKE metacharacters escaped so
+ *  a search for "50%" or "a_b" matches literally. */
+function containsPattern(term: string): string {
+  return `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+}
 partnersRouter.get('/partners', requireAuth, grantScope('partners:read'), requireAdmin, async (req, res) => {
   const q = listQuerySchema.safeParse(req.query);
   if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
@@ -481,6 +491,10 @@ partnersRouter.get('/partners', requireAuth, grantScope('partners:read'), requir
       { column: 'id', order: 'desc' },
     ]);
   if (q.data.email) query.where('email', q.data.email.toLowerCase());
+  if (q.data.q) {
+    const pattern = containsPattern(q.data.q);
+    query.where((w) => w.whereILike('name', pattern).orWhereILike('email', pattern));
+  }
   if (q.data.cursor) {
     const decoded = decodeCursor(q.data.cursor);
     if (!decoded) return res.status(400).json({ error: 'invalid_cursor' });

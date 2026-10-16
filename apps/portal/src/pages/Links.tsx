@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link2, Plus, ArrowRight, Check, Copy } from 'lucide-react';
+import { Link2, Plus, ArrowRight, Check, Copy, Search } from 'lucide-react';
 import { api, currentTenantSlug, type Principal } from '../api.js';
 import { theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
 import { useBrand, usePublicBrand } from '../lib/useBrand.js';
+import { useDebouncedSearch, usePartnerSearch } from '../lib/usePartnerSearch.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 
 /**
@@ -84,47 +85,86 @@ export function LinksPage({ principal }: { principal: Principal }) {
   return <PartnerLinks partnerId={partnerId!} readOnly={isAdmin} />;
 }
 
+/** Cards per page. The hub is a picker and search runs server-side, so
+ *  the first page is usually all an admin needs, even at 30k partners. */
+const LINKS_HUB_PAGE_SIZE = 30;
+
 function AdminLinksHub() {
-  const { data, error, isLoading } = useQuery({
-    queryKey: ['partners'],
-    queryFn: () => api<{ partners: Array<{ id: string; name: string; email: string }> }>('/partners'),
-  });
+  const [search, setSearch] = useState('');
+  const q = useDebouncedSearch(search);
+  const list = usePartnerSearch<{ id: string; name: string; email: string }>(q, LINKS_HUB_PAGE_SIZE);
+  const partners = list.data?.pages.flatMap((p) => p.partners) ?? [];
 
   return (
     <Page title="Links" subtitle="Pick a partner to see the links they've created.">
-      <ErrorBanner error={error} />
-      {isLoading ? (
+      <ErrorBanner error={list.error} />
+      {list.isLoading ? (
         <Card>Loading…</Card>
-      ) : data?.partners.length === 0 ? (
+      ) : partners.length === 0 && !search && !q ? (
         <EmptyState title="No partners yet" hint="Invite a partner — they create their own links." icon={<Link2 size={28} strokeWidth={1.25} />} />
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
-          {data?.partners.map((p) => (
-            <TenantLink
-              key={p.id}
-              to={`/links?partnerId=${p.id}`}
+        <>
+          <div style={{ marginBottom: 14, maxWidth: 420 }}>
+            <Input
+              type="search"
+              aria-label="Search partners"
+              placeholder="Search by name or email"
+              maxLength={200}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          {partners.length === 0 ? (
+            <EmptyState
+              title={`No partners match “${q}”`}
+              hint="Search matches any part of a partner's name or email."
+              icon={<Search size={28} strokeWidth={1.25} />}
+            />
+          ) : (
+            <div
               style={{
-                display: 'block',
-                background: theme.surface,
-                border: `1px solid ${theme.border}`,
-                borderRadius: theme.radiusMd,
-                padding: 16,
-                transition: 'all 120ms',
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                gap: 12,
+                opacity: list.isPlaceholderData ? 0.6 : 1,
+                transition: 'opacity 120ms ease',
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.borderColor = theme.accent)}
-              onMouseLeave={(e) => (e.currentTarget.style.borderColor = theme.border)}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <Avatar name={p.name} size={32} />
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</div>
-                  <div style={{ fontSize: 12, color: theme.textMuted }}>{p.email}</div>
-                </div>
-                <ArrowRight size={14} style={{ color: theme.textDim }} />
-              </div>
-            </TenantLink>
-          ))}
-        </div>
+              {partners.map((p) => (
+                <TenantLink
+                  key={p.id}
+                  to={`/links?partnerId=${p.id}`}
+                  style={{
+                    display: 'block',
+                    background: theme.surface,
+                    border: `1px solid ${theme.border}`,
+                    borderRadius: theme.radiusMd,
+                    padding: 16,
+                    transition: 'all 120ms',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.borderColor = theme.accent)}
+                  onMouseLeave={(e) => (e.currentTarget.style.borderColor = theme.border)}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <Avatar name={p.name} size={32} />
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</div>
+                      <div style={{ fontSize: 12, color: theme.textMuted, overflowWrap: 'anywhere' }}>{p.email}</div>
+                    </div>
+                    <ArrowRight size={14} style={{ color: theme.textDim }} />
+                  </div>
+                </TenantLink>
+              ))}
+            </div>
+          )}
+          {list.hasNextPage && (
+            <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16 }}>
+              <Button variant="secondary" size="sm" onClick={() => void list.fetchNextPage()} disabled={list.isFetchingNextPage}>
+                {list.isFetchingNextPage ? 'Loading…' : 'Load more'}
+              </Button>
+            </div>
+          )}
+        </>
       )}
     </Page>
   );
