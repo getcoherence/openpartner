@@ -18,6 +18,8 @@ const { db } = await import('../db.js');
 const { autoApproveMatureCommissions } = await import('../commission-auto-approve.js');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
+/** A second tenant for the cross-tenant scoping test. */
+const OTHER_TENANT_ID = 'auto-approve-test-tenant-b';
 
 const TABLES_TO_CLEAN = [
   TABLES.PartnerCommission,
@@ -35,7 +37,9 @@ async function seedAccruedCommission(opts: {
   programHoldbackDays: number | null;
   accruedDaysAgo: number;
   partnerHoldbackDays?: number | null;
+  tenantId?: string;
 }): Promise<string> {
+  const tenantId = opts.tenantId ?? DEFAULT_TENANT_ID;
   const partnerId = ulid();
   const programId = ulid();
   const linkId = ulid();
@@ -44,10 +48,10 @@ async function seedAccruedCommission(opts: {
   const attributionId = ulid();
   const commissionId = ulid();
 
-  await db(TABLES.Partner).insert({ id: partnerId, tenantId: DEFAULT_TENANT_ID, name: 'P', email: `p-${partnerId}@x.com` });
+  await db(TABLES.Partner).insert({ id: partnerId, tenantId, name: 'P', email: `p-${partnerId}@x.com` });
   await db(TABLES.Program).insert({
     id: programId,
-    tenantId: DEFAULT_TENANT_ID,
+    tenantId,
     name: 'Prog',
     attributionModel: 'last_click',
     attributionWindowDays: 60,
@@ -56,31 +60,31 @@ async function seedAccruedCommission(opts: {
     holdbackDays: opts.programHoldbackDays,
   });
   await db(TABLES.Link).insert({
-    id: linkId, tenantId: DEFAULT_TENANT_ID, partnerId, programId,
+    id: linkId, tenantId, partnerId, programId,
     linkKey: `lk-${linkId}`, destinationUrl: 'https://example.com',
   });
   await db(TABLES.Click).insert({
-    id: clickId, tenantId: DEFAULT_TENANT_ID, linkId, partnerId, programId,
+    id: clickId, tenantId, linkId, partnerId, programId,
     landingUrl: 'https://example.com/l', ipHash: 'h', ts: new Date(),
   });
   await db(TABLES.Event).insert({
-    id: eventId, tenantId: DEFAULT_TENANT_ID, userId: `u-${eventId}`,
+    id: eventId, tenantId, userId: `u-${eventId}`,
     type: 'invoice_paid', value: '100.00', currency: 'USD', ts: new Date(),
   });
   await db(TABLES.Attribution).insert({
-    id: attributionId, tenantId: DEFAULT_TENANT_ID, eventId, partnerId, programId,
+    id: attributionId, tenantId, eventId, partnerId, programId,
     clickId, model: 'last_click', weight: '1', computedAt: new Date(),
   });
   if (opts.partnerHoldbackDays !== undefined) {
     await db(TABLES.PartnerCommission).insert({
-      partnerId, tenantId: DEFAULT_TENANT_ID, commissionType: 'percent',
+      partnerId, tenantId, commissionType: 'percent',
       commissionValue: '20', recurring: false, holdbackDays: opts.partnerHoldbackDays,
       source: 'admin',
     });
   }
   const accruedAt = new Date(Date.now() - opts.accruedDaysAgo * 24 * 60 * 60 * 1000);
   await db(TABLES.Commission).insert({
-    id: commissionId, tenantId: DEFAULT_TENANT_ID, attributionId, partnerId,
+    id: commissionId, tenantId, attributionId, partnerId,
     amount: '20.00', currency: 'USD', status: 'accrued', accruedAt,
   });
   return commissionId;
@@ -94,11 +98,16 @@ async function statusOf(id: string): Promise<string | undefined> {
 beforeAll(async () => {
   if (skipIntegration) return;
   await db.raw('select 1');
+  await db(TABLES.Tenant)
+    .insert({ id: OTHER_TENANT_ID, slug: 'auto-approve-b', displayName: 'B', status: 'active' })
+    .onConflict('id')
+    .ignore();
 });
 
 afterAll(async () => {
   if (!skipIntegration) {
     for (const t of TABLES_TO_CLEAN) await db(t).del();
+    await db(TABLES.Tenant).where({ id: OTHER_TENANT_ID }).del();
   }
   await db.destroy();
 });
@@ -112,19 +121,22 @@ describe.skipIf(skipIntegration)('autoApproveMatureCommissions', () => {
   it('runs the UPDATE...FROM without a FROM-clause reference error', async () => {
     // The pre-fix query threw "invalid reference to FROM-clause entry for
     // table c". Just executing against Postgres is the core regression guard.
-    await expect(autoApproveMatureCommissions(db)).resolves.toBeTruthy();
+    await expect(autoApproveMatureCommissions(db, DEFAULT_TENANT_ID)).resolves.toBeTruthy();
   });
 
   it('approves an accrued commission whose program holdback has elapsed', async () => {
     const id = await seedAccruedCommission({ programHoldbackDays: 7, accruedDaysAgo: 10 });
-    const res = await autoApproveMatureCommissions(db);
+    const res = await autoApproveMatureCommissions(db, DEFAULT_TENANT_ID);
     expect(res.approvedCount).toBe(1);
+    // The approved rows come back for the post-commit commission.approved
+    // dispatch (scheduler.ts runCommissionAutoApproveJob).
+    expect(res.approved.map((c) => [c.id, c.status])).toEqual([[id, 'approved']]);
     expect(await statusOf(id)).toBe('approved');
   });
 
   it('leaves an accrued commission whose holdback has NOT elapsed', async () => {
     const id = await seedAccruedCommission({ programHoldbackDays: 30, accruedDaysAgo: 3 });
-    const res = await autoApproveMatureCommissions(db);
+    const res = await autoApproveMatureCommissions(db, DEFAULT_TENANT_ID);
     expect(res.approvedCount).toBe(0);
     expect(await statusOf(id)).toBe('accrued');
   });
@@ -136,15 +148,36 @@ describe.skipIf(skipIntegration)('autoApproveMatureCommissions', () => {
     const id = await seedAccruedCommission({
       programHoldbackDays: 30, partnerHoldbackDays: 7, accruedDaysAgo: 10,
     });
-    const res = await autoApproveMatureCommissions(db);
+    const res = await autoApproveMatureCommissions(db, DEFAULT_TENANT_ID);
     expect(res.approvedCount).toBe(1);
     expect(await statusOf(id)).toBe('approved');
   });
 
   it('does not approve when holdback is null/0 (manual-approval programs)', async () => {
     const id = await seedAccruedCommission({ programHoldbackDays: null, accruedDaysAgo: 100 });
-    const res = await autoApproveMatureCommissions(db);
+    const res = await autoApproveMatureCommissions(db, DEFAULT_TENANT_ID);
     expect(res.approvedCount).toBe(0);
     expect(await statusOf(id)).toBe('accrued');
+  });
+
+  it("approves only the given tenant's commissions, even with RLS bypassed", async () => {
+    // This connection is the migration role, which bypasses RLS: the same
+    // position as a multi-tenant install running without DATABASE_URL_APP.
+    // The scheduler announces whatever comes back to the iterating
+    // tenant's webhooks, so the tenant filter has to be in the statement.
+    const mine = await seedAccruedCommission({ programHoldbackDays: 7, accruedDaysAgo: 10 });
+    const theirs = await seedAccruedCommission({
+      programHoldbackDays: 7, accruedDaysAgo: 10, tenantId: OTHER_TENANT_ID,
+    });
+
+    const res = await autoApproveMatureCommissions(db, DEFAULT_TENANT_ID);
+    expect(res.approved.map((c) => [c.id, c.tenantId])).toEqual([[mine, DEFAULT_TENANT_ID]]);
+    expect(await statusOf(mine)).toBe('approved');
+    expect(await statusOf(theirs)).toBe('accrued');
+
+    // The other tenant's own pass picks up its row.
+    const other = await autoApproveMatureCommissions(db, OTHER_TENANT_ID);
+    expect(other.approved.map((c) => c.id)).toEqual([theirs]);
+    expect(await statusOf(theirs)).toBe('approved');
   });
 });

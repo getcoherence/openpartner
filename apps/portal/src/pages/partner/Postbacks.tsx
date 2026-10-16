@@ -292,7 +292,7 @@ function CreateForm({
 
 function MacroReference() {
   const macros: Array<[string, string]> = [
-    ['{click_id}', 'Originating click — only present on commission.accrued'],
+    ['{click_id}', 'Originating click — present on every commission event'],
     ['{partner_id}', 'Your partner ID'],
     ['{commission_id}', 'The Commission row id'],
     ['{commission_amount}', 'Decimal amount in major units (e.g. 12.50)'],

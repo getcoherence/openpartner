@@ -42,6 +42,7 @@ import type { Knex } from 'knex';
 import { TABLES, type CommissionRow, type PartnerRow, type PayoutRow } from '@openpartner/db';
 import { requireStripe } from './stripe.js';
 import { dispatchEvent } from './webhook-dispatcher.js';
+import { dispatchCommissionEvents } from './commission-events.js';
 
 /** Stripe replays a key for ~24h; past that a re-POST is a NEW charge, so
  *  ambiguity has to be resolved by listing instead. Matches
@@ -606,15 +607,7 @@ async function finalizeTransfer(
     commissionIds: commissions.map((c) => c.id),
     platformFee: platformFee || undefined,
   });
-  for (const c of commissions) {
-    dispatchEvent(payout.tenantId, 'commission.paid', {
-      commissionId: c.id,
-      partnerId: c.partnerId,
-      amount: c.amount,
-      currency: c.currency,
-      payoutId: payout.id,
-    });
-  }
+  void dispatchCommissionEvents(payout.tenantId, 'commission.paid', commissions, { payoutId: payout.id });
   result.confirmed.push({ payoutId: payout.id, stripeTransferId: transfer.id });
 }
 

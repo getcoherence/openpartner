@@ -12,9 +12,9 @@
 
 import { Router } from 'express';
 import { z } from 'zod';
-import { TABLES, type AttributionRow, type ProgramRow, type CommissionRow } from '@openpartner/db';
+import { TABLES, type CommissionRow } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
-import { dispatchEvent } from '../webhook-dispatcher.js';
+import { dispatchCommissionEvents } from '../commission-events.js';
 import { tenantOf } from '../tenancy.js';
 import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
 
@@ -102,28 +102,22 @@ function decorateMaturity(row: CommissionRow & {
 commissionsRouter.post('/commissions/:id/approve', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
 
-  // Holdback check: if the campaign tied to this commission has a
-  // holdbackDays > 0, refuse to approve before accruedAt + holdbackDays.
-  // Lookup is Commission → Attribution → Campaign (Attribution carries
-  // programId directly).
-  const c0 = await db<CommissionRow>(TABLES.Commission).where({ id: req.params.id }).first();
-  if (!c0) return res.status(404).json({ error: 'not_found' });
-  const attr = await db<AttributionRow>(TABLES.Attribution).where({ id: c0.attributionId }).first();
-  if (attr) {
-    const camp = await db<ProgramRow>(TABLES.Program).where({ id: attr.programId }).first();
-    const holdback = camp?.holdbackDays ?? 0;
-    if (holdback > 0) {
-      const matureAt = new Date(c0.accruedAt);
-      matureAt.setUTCDate(matureAt.getUTCDate() + holdback);
-      if (matureAt > new Date()) {
-        return res.status(409).json({
-          error: 'holdback_active',
-          detail: `Commission can't be approved until ${matureAt.toISOString()} (campaign holdback: ${holdback} days from accrual).`,
-          matureAt: matureAt.toISOString(),
-          holdbackDays: holdback,
-        });
-      }
-    }
+  // Holdback check: refuse to approve before accruedAt + the effective
+  // holdback. Read through listQueryBase so the guard uses exactly the
+  // holdback the review queue shows: the partner's snapshotted value
+  // first, then the program's, the same COALESCE the auto-approve job
+  // applies. Checking only the program's value let an admin approve a
+  // commission the partner's own (longer) holdback still covered.
+  const row = await listQueryBase(db).where('c.id', req.params.id).first();
+  if (!row) return res.status(404).json({ error: 'not_found' });
+  const { holdbackDays, matureAt } = decorateMaturity(row);
+  if (matureAt && new Date(matureAt) > new Date()) {
+    return res.status(409).json({
+      error: 'holdback_active',
+      detail: `Commission can't be approved until ${matureAt} (holdback: ${holdbackDays} days from accrual).`,
+      matureAt,
+      holdbackDays,
+    });
   }
 
   const updated = await db<CommissionRow>(TABLES.Commission)
@@ -134,13 +128,7 @@ commissionsRouter.post('/commissions/:id/approve', requireAuth, requireAdmin, as
     return res.status(409).json({ error: 'not_approvable', detail: 'must be in accrued state' });
   }
   const c = updated[0]!;
-  dispatchEvent(tenantId, 'commission.approved', {
-    commissionId: c.id,
-    partnerId: c.partnerId,
-    amount: c.amount,
-    currency: c.currency,
-    attributionId: c.attributionId,
-  });
+  void dispatchCommissionEvents(tenantId, 'commission.approved', [c]);
   res.json({ commission: c });
 });
 
@@ -183,11 +171,6 @@ commissionsRouter.post('/commissions/:id/reverse', requireAuth, requireAdmin, as
     return res.status(409).json({ error: 'not_reversible', detail: 'only accrued or approved commissions' });
   }
   const c = updated[0]!;
-  dispatchEvent(tenantId, 'commission.reversed', {
-    commissionId: c.id,
-    partnerId: c.partnerId,
-    amount: c.amount,
-    currency: c.currency,
-  });
+  void dispatchCommissionEvents(tenantId, 'commission.reversed', [c], { reason: 'manual' });
   res.json({ commission: c });
 });
