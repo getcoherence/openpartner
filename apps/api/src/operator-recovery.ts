@@ -657,8 +657,17 @@ async function recheckAppliedRequests(
     .limit(APPLY_CLAIM_LIMIT)
     .forUpdate()
     .skipLocked();
+  // A MATERIALIZED CTE runs the pick exactly once. `where id in (sub)` let
+  // the planner — whenever stats said the table was near-empty — choose a
+  // nested-loop semi join with the subquery on the inner side, re-run per
+  // outer row. LockRows skips rows this same UPDATE already modified, so
+  // every rescan's LIMIT handed over the NEXT rows and every due recheck
+  // was claimed: the per-pass cap did nothing and each claimed row spent a
+  // recheckAttempt (the funding sweep claim had the identical bug).
   const due = (await db(TABLES.OperatorRecoveryRequest)
-    .whereIn('id', sub)
+    .withMaterialized('picked', sub)
+    .updateFrom('picked')
+    .whereRaw('?? = ??', [`${TABLES.OperatorRecoveryRequest}.id`, 'picked.id'])
     .update({
       leaseAt: db.fn.now(),
       leaseToken: token,
@@ -668,7 +677,7 @@ async function recheckAppliedRequests(
       recheckAttempts: db.raw(`greatest(least("recheckAttempts", ${MAX_RECHECK_ATTEMPTS * 100}), 0) + 1`),
       updatedAt: db.fn.now(),
     })
-    .returning('*')) as OperatorRecoveryRequestRow[];
+    .returning(`${TABLES.OperatorRecoveryRequest}.*`)) as OperatorRecoveryRequestRow[];
 
   for (const request of due) {
     result.recheck.processed += 1;

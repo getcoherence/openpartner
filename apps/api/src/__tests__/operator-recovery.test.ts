@@ -925,6 +925,7 @@ describe.skipIf(skipIntegration)('post-apply group recheck (§0.2 backstop)', ()
   async function seedAppliedWithDueRecheck(
     payoutId: string,
     kind = 'dispose_intent',
+    recheckDueAt = hoursAgo(1),
   ): Promise<string> {
     const id = ulid();
     await db(TABLES.OperatorRecoveryRequest).insert({
@@ -938,7 +939,7 @@ describe.skipIf(skipIntegration)('post-apply group recheck (§0.2 backstop)', ()
       status: 'applied',
       outcome: 'disposed',
       appliedAt: hoursAgo(25),
-      recheckDueAt: hoursAgo(1),
+      recheckDueAt,
     });
     return id;
   }
@@ -1019,5 +1020,61 @@ describe.skipIf(skipIntegration)('post-apply group recheck (§0.2 backstop)', ()
     await applyRecoveryRequests(db, { rail: 'direct_connect', stripe });
     const request = await requestOf(requestId);
     expect(request.recheckOutcome).toBe('clear');
+  });
+
+  it('claims at most the per-pass limit when stats say the table is empty', async () => {
+    // The claim was `update … where id in (select … limit n for update skip
+    // locked)` — the same shape as the funding sweep claim, with the same
+    // failure: when the table's stats say it holds no live rows, Postgres
+    // plans the IN as a Nested Loop Semi Join with the subquery on the
+    // INNER side and re-runs it for every outer row. LockRows skips rows
+    // this same UPDATE already modified, so each rescan's LIMIT returned
+    // the NEXT rows and every due recheck was claimed — the per-pass cap
+    // was not enforced and every row's recheckAttempts was spent.
+    //
+    // Pin the plan-shaping stats rather than wait for them: a heap with
+    // pages but zero live tuples (what DELETE + ANALYZE leaves) makes the
+    // row estimate 1. TRUNCATE + ANALYZE does NOT — zero pages falls back
+    // to a width-based estimate and a hash join, which hides the bug.
+    const APPLY_CLAIM_LIMIT = 20; // mirrors operator-recovery.ts
+    const { payoutId } = await seedHeldIntent('canceled');
+    await seedAppliedWithDueRecheck(payoutId); // throwaway — gives the heap a page to keep
+    await db(TABLES.OperatorRecoveryRequest).del();
+    await db.raw('analyze ??', [TABLES.OperatorRecoveryRequest]);
+    const stats = (
+      await db.raw('select relpages, reltuples from pg_class where relname = ?', [
+        TABLES.OperatorRecoveryRequest,
+      ])
+    ).rows[0] as { relpages: number; reltuples: number };
+    // Guard against a vacuous pass: without these stats the planner picks
+    // a join that runs the subquery once and the old claim looks correct.
+    expect(stats.relpages).toBeGreaterThan(0);
+    expect(stats.reltuples).toBe(0);
+
+    // Oldest-due first, so the expected claim set is the first `limit`.
+    const total = APPLY_CLAIM_LIMIT + 5;
+    const ids: string[] = [];
+    for (let i = 0; i < total; i += 1) {
+      ids.push(await seedAppliedWithDueRecheck(payoutId, 'dispose_intent', hoursAgo(total - i)));
+    }
+    const { stripe, transfersList } = mockStripe();
+    const result = await applyRecoveryRequests(db, { rail: 'direct_connect', stripe });
+
+    // Revert the claim to the IN-subquery and all three of these read 25.
+    expect(result.recheck.processed).toBe(APPLY_CLAIM_LIMIT);
+    expect(transfersList).toHaveBeenCalledTimes(APPLY_CLAIM_LIMIT);
+    const rows = (await db(TABLES.OperatorRecoveryRequest)
+      .whereIn('id', ids)
+      .select('id', 'recheckAttempts', 'recheckDueAt', 'recheckOutcome')) as Array<
+      Pick<OperatorRecoveryRequestRow, 'id' | 'recheckAttempts' | 'recheckDueAt' | 'recheckOutcome'>
+    >;
+    const claimed = rows.filter((r) => r.recheckAttempts > 0).map((r) => r.id);
+    expect(claimed.sort()).toEqual(ids.slice(0, APPLY_CLAIM_LIMIT).sort());
+    // …and the five left over spent no attempt and are still due next pass.
+    for (const r of rows.filter((row) => !claimed.includes(row.id))) {
+      expect(r.recheckAttempts).toBe(0);
+      expect(r.recheckDueAt).not.toBeNull();
+      expect(r.recheckOutcome).toBeNull();
+    }
   });
 });
