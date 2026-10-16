@@ -23,7 +23,7 @@ import { campaignAcceptsNewActivity } from '../campaign-lifecycle.js';
 import { getWhiteLabelState } from '../white-label.js';
 import { customerRewardDelivery } from '../customer-rewards.js';
 import { getStorage } from '../storage.js';
-import { refineCommissionSubRule } from '../commission-rule-schema.js';
+import { commissionSlabFields, refineCommissionSubRule } from '../commission-rule-schema.js';
 
 /**
  * Commission rule schema. The wire format is an array of triggered sub-rules.
@@ -42,9 +42,14 @@ const subRuleSchema = z.intersection(
      *  attributed event of this type for the partner+user). Null/omitted
      *  = no cap. Capped at 600 (50 years) to keep the cap a sane integer. */
     recurringMonths: z.number().int().positive().max(600).optional(),
+    /** Optional slab table — rate by event value (bands) or by the
+     *  partner's attributed performance (tiers). `value` below stays the
+     *  base rate. See docs/commission-slabs.md. */
+    ...commissionSlabFields,
   }),
   z.discriminatedUnion('type', [
-    z.object({ type: z.literal('percent'), value: z.number().positive() }),
+    // A percent rule's currency is the currency of its slab thresholds.
+    z.object({ type: z.literal('percent'), value: z.number().positive(), currency: z.string().length(3).optional() }),
     z.object({ type: z.literal('fixed'), value: z.number().positive(), currency: z.string().length(3).optional() }),
   ]),
 ).superRefine(refineCommissionSubRule);

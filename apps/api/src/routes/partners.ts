@@ -12,7 +12,8 @@ import { tenantOf } from '../tenancy.js';
 import { getNetworkMembership, pushPartnerRevoke, pushPartnerUpsert } from '../network-client.js';
 import { autoMintCouponsForGrants } from './coupons.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
-import { refineCommissionSubRule } from '../commission-rule-schema.js';
+import { commissionSlabFields, refineCommissionSubRule } from '../commission-rule-schema.js';
+import { programsUseSlabs, rulesHaveSlabs } from '../commission-slabs.js';
 import { isPendingReview } from '../partner-review.js';
 
 const createSchema = z.object({
@@ -66,6 +67,9 @@ const createSchema = z.object({
             currency: z.string().length(3).optional(),
             recurring: z.boolean().optional(),
             recurringMonths: z.number().int().positive().max(600).optional(),
+            // Kept, not stripped: a tiered offering's snapshot must pay
+            // its tiers, not its base rate.
+            ...commissionSlabFields,
           }),
         )
         .min(1)
@@ -184,7 +188,18 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
   //
   // Without enough info to write either shape we fall back to the live
   // Campaign rule rather than silently mis-pricing.
-  const snap = body.data.commissionSnapshot;
+  let snap = body.data.commissionSnapshot;
+  // Same fallback when the snapshot lost a program's slabs: a Network that
+  // predates bands/tiers strips them from the offering, so its approval
+  // snapshot of a tiered program is the base rate alone — and a snapshot
+  // outranks the live rule for good. Don't grandfather terms the Network
+  // couldn't carry; the partner accrues on the live (tiered) rule.
+  if (snap && !rulesHaveSlabs(snap.commissionRules) && (await programsUseSlabs(db, programIds))) {
+    console.warn(
+      `[partners] approval snapshot for ${id} carries no commission slabs but a granted program has them; accruing on the live program rule`,
+    );
+    snap = undefined;
+  }
   if (snap?.commissionRules && snap.commissionRules.length > 0) {
     const legacy = snap.commissionRules.find((r) => r.trigger === 'every') ?? snap.commissionRules[0]!;
     await db(TABLES.PartnerCommission).insert({
@@ -569,6 +584,7 @@ const overrideSchema = z.object({
           currency: z.string().length(3).optional(),
           recurring: z.boolean().optional(),
           recurringMonths: z.number().int().positive().max(600).optional(),
+          ...commissionSlabFields,
         })
         .superRefine(refineCommissionSubRule),
     )

@@ -689,6 +689,93 @@ describe.skipIf(skipIntegration)('round-6: scalar and null JSON round-trip', () 
   }, 30_000);
 });
 
+describe.skipIf(skipIntegration)('commission slabs round-trip', () => {
+  // Slab tables live inside the rule JSON (Program + PartnerCommission) and
+  // the band/tier that applied lives in Commission.metadata. All three have
+  // to come back exactly, or an imported instance re-derives different
+  // commissions — or can't show why the ledger says what it says.
+  const slabRules = [
+    {
+      trigger: 'every',
+      eventType: 'invoice_paid',
+      type: 'percent',
+      value: 10,
+      currency: 'INR',
+      bands: { mode: 'marginal', levels: [{ above: 50000, value: 15 }, { above: 100000, value: 20 }] },
+    },
+    {
+      trigger: 'first',
+      eventType: 'subscription_created',
+      type: 'fixed',
+      value: 50,
+      tiers: { metric: 'conversions', window: 'rolling_days', windowDays: 90, levels: [{ atLeast: 10, value: 100 }] },
+    },
+  ];
+  const trace = {
+    slab: {
+      kind: 'band',
+      ruleIndex: 0,
+      type: 'percent',
+      mode: 'marginal',
+      level: 1,
+      threshold: 50000,
+      value: 15,
+      currency: 'INR',
+      basis: 60000.5,
+      slices: [
+        { level: 0, from: 0, to: 50000, portion: 50000, value: 10 },
+        { level: 1, from: 50000, to: null, portion: 10000.5, value: 15 },
+      ],
+    },
+  };
+
+  async function seedSlabs(): Promise<Seeded> {
+    const seeded = await seedEverything();
+    await db(TABLES.Program).where({ id: seeded.programId }).update({ commissionRule: JSON.stringify(slabRules) });
+    await db(TABLES.PartnerCommission)
+      .where({ partnerId: seeded.partnerId })
+      .update({ commissionRules: JSON.stringify(slabRules) });
+    await db(TABLES.Commission).where({ id: seeded.commissionId }).update({ metadata: trace });
+    return seeded;
+  }
+
+  async function expectSlabsRestored(seeded: Seeded): Promise<void> {
+    const program = await db(TABLES.Program).where({ id: seeded.programId }).first();
+    expect(program.commissionRule).toEqual(slabRules);
+    const terms = await db(TABLES.PartnerCommission).where({ partnerId: seeded.partnerId }).first();
+    expect(terms.commissionRules).toEqual(slabRules);
+    const commission = await db(TABLES.Commission).where({ id: seeded.commissionId }).first();
+    expect(commission.metadata).toEqual(trace);
+  }
+
+  it('survives the JSON export → import path', async () => {
+    const seeded = await seedSlabs();
+    const bundle = await exportAll(db, TENANT);
+    await wipe();
+    await importBundle(db, TENANT, bundle);
+    await expectSlabsRestored(seeded);
+  }, 30_000);
+
+  it('survives the SQL dump run as plain SQL', async () => {
+    const seeded = await seedSlabs();
+    const bundle = await exportAll(db, TENANT);
+    const dump = buildSqlDump(bundle, { tenantId: TENANT, columnTypes: await exportColumnTypes(db) });
+    await wipe();
+    await runSql(dump);
+    await expectSlabsRestored(seeded);
+  }, 30_000);
+
+  it('a bundle from before Commission.metadata existed imports with {}', async () => {
+    const seeded = await seedEverything();
+    const bundle = await exportAll(db, TENANT);
+    for (const row of bundle[TABLES.Commission] as Array<Record<string, unknown>>) delete row.metadata;
+    await wipe();
+    await importBundle(db, TENANT, bundle);
+    const commission = await db(TABLES.Commission).where({ id: seeded.commissionId }).first();
+    expect(commission.metadata).toEqual({});
+  }, 30_000);
+});
+
 describe.skipIf(skipIntegration)('round-6: export is scoped without relying on RLS', () => {
   it('exportTable filters by tenantId even on a privileged connection', async () => {
     // Exports were an unfiltered `select *`, leaning entirely on RLS. But

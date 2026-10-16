@@ -151,7 +151,8 @@ function mediaPayload(campaign: ProgramRow): { coverImageUrl: string | null; vid
   };
 }
 
-function buildTermsPayload(campaign: ProgramRow, derivedSummary: string): OfferingTerms {
+/** Exported for tests. */
+export function buildTermsPayload(campaign: ProgramRow, derivedSummary: string): OfferingTerms {
   let rules: CommissionRule;
   try {
     rules = parseCommissionRule(campaign.commissionRule);
@@ -159,21 +160,37 @@ function buildTermsPayload(campaign: ProgramRow, derivedSummary: string): Offeri
     rules = [];
   }
   // Best-effort legacy single-rule mirror so older Network consumers still
-  // render something. Same logic as backfill-commission-snapshots.ts.
+  // render something. Same logic as backfill-commission-snapshots.ts. A
+  // slab rule mirrors its base rate — the floor, never a rate only some
+  // partners reach.
   const legacy = rules.find((r) => r.trigger === 'every') ?? rules[0];
   return {
-    commissionDescription: derivedSummary,
+    commissionDescription: clampDescription(derivedSummary),
     payoutHoldbackDays: campaign.holdbackDays ?? undefined,
     attributionWindowDays: campaign.attributionWindowDays,
     attributionModel: campaign.attributionModel,
     commissionType: legacy?.type,
     commissionValue: legacy?.value,
     recurring: legacy?.recurring ?? false,
+    // Verbatim, bands/tiers included. A Network that predates slabs strips
+    // them (its approval snapshot is then refused in POST /partners, so the
+    // partner accrues on the live tiered rule); commissionDescription above
+    // is what still tells creators the rate is tiered.
     commissionRules: rules,
     customerReward: campaign.customerReward ?? null,
     categories: campaign.categories ?? [],
     campaignEndsAt: campaign.endsAt ? campaign.endsAt.toISOString() : null,
   };
+}
+
+/** The Network refuses a commissionDescription over 200 characters, and one
+ *  refused field fails the whole offering write. Slab phrases make long
+ *  multi-rule summaries more likely, so trim rather than not sync. */
+export const NETWORK_DESCRIPTION_MAX = 200;
+
+function clampDescription(summary: string): string {
+  if (summary.length <= NETWORK_DESCRIPTION_MAX) return summary;
+  return `${summary.slice(0, NETWORK_DESCRIPTION_MAX - 1).trimEnd()}…`;
 }
 
 /**

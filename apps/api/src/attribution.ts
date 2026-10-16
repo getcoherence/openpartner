@@ -35,6 +35,7 @@ import {
   type IdentityRow,
 } from '@openpartner/db';
 import { dispatchEvent } from './webhook-dispatcher.js';
+import { accrueSlabRule, commissionMetadata, type SubRuleAccrual } from './commission-slabs.js';
 
 // Average month length used by the recurringMonths cap. We use 30.4375 days
 // (365.25 / 12) so a "12 months" cap doesn't drift by an extra day every
@@ -170,10 +171,10 @@ export async function attributeEvent(
     // and a recurring rule). Each sub-rule's eligibility is evaluated
     // independently against the same Event + Attribution.
     let firstCommissionId: string | undefined;
-    for (const subRule of rules) {
-      const baseAmount = await evaluateSubRule(db, subRule, event, click.partnerId);
-      if (baseAmount === null) continue; // not eligible (filter / first / cap miss)
-      const amount = baseAmount * weight;
+    for (const [ruleIndex, subRule] of rules.entries()) {
+      const accrual = await evaluateSubRule(db, subRule, event, click.partnerId, click.programId);
+      if (accrual === null) continue; // not eligible (filter / first / cap miss)
+      const amount = accrual.amount * weight;
       if (amount === 0) continue;
 
       const commissionId = ulid();
@@ -185,6 +186,7 @@ export async function attributeEvent(
         amount: amount.toFixed(2),
         currency: event.currency ?? 'USD',
         status: 'accrued',
+        metadata: commissionMetadata(accrual, ruleIndex),
       });
       if (!firstCommissionId) firstCommissionId = commissionId;
 
@@ -335,9 +337,10 @@ async function resolveCommissionRule(
 
 /**
  * Decide whether `subRule` fires for `event` and, if so, return the
- * pre-weight commission base amount. Returns null when the rule doesn't
- * apply to this event (type mismatch, first-trigger already fired, or
- * recurringMonths cap reached).
+ * pre-weight commission base amount (plus, for a slab rule, the band or
+ * tier that set the rate — see commission-slabs.ts). Returns null when the
+ * rule doesn't apply to this event (type mismatch, first-trigger already
+ * fired, or recurringMonths cap reached).
  *
  * Trigger checks issue one query each against (Attribution × Event); the
  * indexes on Attribution(partnerId) + Event(userId) keep this O(log n).
@@ -348,7 +351,8 @@ async function evaluateSubRule(
   subRule: CommissionSubRule,
   event: EventRow,
   partnerId: string,
-): Promise<number | null> {
+  programId: string,
+): Promise<SubRuleAccrual | null> {
   if (subRule.eventType && subRule.eventType !== event.type) return null;
 
   if (subRule.trigger === 'first' || subRule.trigger === 'subsequent') {
@@ -384,7 +388,8 @@ async function evaluateSubRule(
     }
   }
 
-  return computeSubRuleAmount(subRule, event);
+  if (subRule.bands || subRule.tiers) return accrueSlabRule(db, subRule, event, { partnerId, programId });
+  return { amount: computeSubRuleAmount(subRule, event) };
 }
 
 /** Pure dollar amount for one sub-rule against one event. No trigger
