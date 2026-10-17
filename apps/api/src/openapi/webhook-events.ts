@@ -76,6 +76,7 @@ export const WEBHOOK_PAYLOADS = {
     name: z.string(),
     activatedAt: z.string().datetime().nullable(),
     invited: z.boolean().openapi({ description: 'An invite email was sent (`sendInvite` was not false).' }),
+    portalAccess: z.boolean().openapi({ description: 'The partner may sign in to the partner portal. See `portalAccess` on `POST /partners`.' }),
     programIds: z.array(id),
   }),
   'partner.activated': z.object({
@@ -83,6 +84,9 @@ export const WEBHOOK_PAYLOADS = {
     email: z.string().email(),
     name: z.string(),
     activatedAt: z.string().datetime(),
+    invited: z.boolean().openapi({
+      description: '`true`: the partner accepted an invite and signed in. `false`: `POST /partners` created them active (`sendInvite: false`); they have not signed in, and may have no portal access.',
+    }),
   }),
   'partnership.approved': z.object({
     partnerId: id,
@@ -118,7 +122,8 @@ const WEBHOOK_DESCRIPTIONS: Record<WebhookEventName, string> = {
     'A commission was included in a payout. For a `manual` payout this fires when the payout is planned, before you have sent the money; `POST /payouts/{id}/confirm` records that you did.',
   'commission.reversed': 'A commission was reversed: by an admin, or by a Stripe refund or dispute.',
   'partner.created': 'A partner was created through `POST /partners` (admin, integration or Network approval).',
-  'partner.activated': 'A partner accepted their invite and signed in for the first time.',
+  'partner.activated':
+    'A partner became active: they accepted their invite and signed in for the first time (`invited: true`), or `POST /partners` created them active with `sendInvite: false` (`invited: false`, sent right after `partner.created`). Fires once per partner. Not sent for partners imported with `POST /import/partners-csv`, or for join-page applicants approved automatically (they are active from the moment they apply); an applicant held for review fires it on their first sign-in after approval.',
   'partnership.approved': 'A partner was created from an approved OpenPartner Network application.',
   'payout.created':
     'A payout was recorded: a Stripe Connect transfer that went out, or a `manual` payout you still have to send (it stays `pending` until confirmed).',

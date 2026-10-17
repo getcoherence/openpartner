@@ -27,6 +27,8 @@
  *                  (matches the per-partner default behavior elsewhere)
  *   - Per-row email_taken collisions are reported as skipped, not errors —
  *     re-running the import is idempotent on already-imported emails.
+ *   - Partners get the tenant's default portal access for partners added
+ *     without an invite (GET /config/partner-access).
  */
 
 import { Router } from 'express';
@@ -34,6 +36,7 @@ import { ulid } from 'ulid';
 import { TABLES, type PartnerRow } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
+import { readPartnerAccessSettings } from '../partner-portal-access.js';
 
 export const importPartnersRouter = Router();
 
@@ -91,6 +94,9 @@ importPartnersRouter.post(
     // re-query per row.
     const allCampaigns = (await db(TABLES.Program).select('id')) as Array<{ id: string }>;
     const allCampaignIds = allCampaigns.map((c) => c.id);
+    // Imported partners are added without an invite, so they get the
+    // tenant's default portal access (partner-portal-access.ts).
+    const { uninvitedPortalAccess: portalAccess } = await readPartnerAccessSettings(db, tenantId);
 
     const report: RowReport[] = [];
 
@@ -141,6 +147,7 @@ importPartnersRouter.post(
           name,
           metadata,
           activatedAt,
+          portalAccess,
         });
         if (allCampaignIds.length > 0) {
           await db(TABLES.PartnerProgram)

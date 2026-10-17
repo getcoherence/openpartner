@@ -52,7 +52,9 @@ export function MagicLandingPage() {
         setDetail(
           message.includes('pending_review')
             ? "Your application is still being reviewed. You'll get an email with a sign-in link once you're approved."
-            : message || 'Link is invalid or expired.',
+            : message.includes('portal_access_disabled')
+              ? 'Your account doesn\'t have access to this portal. Contact the program if you think it should.'
+              : message || 'Link is invalid or expired.',
         );
       });
   }, [nav, params, qc, location.pathname]);
@@ -64,7 +66,8 @@ export function MagicLandingPage() {
       {state === 'failed' && (
         <div style={{ color: theme.danger, fontSize: 14 }}>
           {detail ?? 'Could not verify.'}
-          {!detail?.startsWith('Your application') && (
+          {/* A new link can't help someone held for review or without access. */}
+          {!detail?.startsWith('Your application') && !detail?.startsWith('Your account') && (
             <div style={{ color: theme.textDim, fontSize: 13, marginTop: 10 }}>
               Ask for a new link from the sign-in page.
             </div>
