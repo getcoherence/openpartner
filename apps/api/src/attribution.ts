@@ -163,8 +163,9 @@ export async function attributeEvent(
     // is what makes "brand edits campaign rule post-approval" safe —
     // existing partners keep what they were approved under. Absent
     // snapshot = pre-snapshot partner OR non-Network partner; falls
-    // back to the Campaign rule (status quo).
-    const rules = await resolveCommissionRule(db, click.partnerId, click.campaign.commissionRule);
+    // back to the Campaign rule (status quo). A snapshot scoped to this
+    // click's program beats the partner-wide one.
+    const rules = await resolveCommissionRule(db, click.partnerId, click.programId, click.campaign.commissionRule);
 
     // Walk every sub-rule. A single event may produce multiple Commission
     // rows (e.g., a `subscription_created` matches both a one-time bonus
@@ -300,7 +301,11 @@ export function parseCommissionRule(raw: unknown): CommissionRule {
  * snapshot exists — preserves status quo for non-Network partners
  * and partners onboarded before snapshots shipped.
  *
- * Snapshot lookup precedence:
+ * Which snapshot: the row scoped to `programId` if there is one, else the
+ * partner-wide row (programId null). Whole-row precedence — a program
+ * row's rules replace the partner-wide rules, they don't merge.
+ *
+ * Within that row:
  *   1. PartnerCommission.commissionRules (the array form, post-compound)
  *   2. PartnerCommission legacy columns (commissionType/commissionValue/
  *      recurring) — wrapped into a 1-element array for the engine
@@ -309,6 +314,7 @@ export function parseCommissionRule(raw: unknown): CommissionRule {
 async function resolveCommissionRule(
   db: Knex,
   partnerId: string,
+  programId: string,
   campaignRule: unknown,
 ): Promise<CommissionRule> {
   const snapshot = await db<{
@@ -318,6 +324,8 @@ async function resolveCommissionRule(
     commissionRules: CommissionRule | null;
   }>(TABLES.PartnerCommission)
     .where({ partnerId })
+    .andWhere((q) => q.where({ programId }).orWhereNull('programId'))
+    .orderByRaw('"programId" is null') // false (program-scoped) sorts first
     .first('commissionType', 'commissionValue', 'recurring', 'commissionRules');
 
   if (snapshot?.commissionRules) return snapshot.commissionRules;

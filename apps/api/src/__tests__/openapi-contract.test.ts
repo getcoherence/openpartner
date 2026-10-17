@@ -471,6 +471,11 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     check('setPartnerCommissionOverride', await admin.put(`/partners/${other.id}/commission-snapshot`, { commissionType: 'percent', commissionValue: 30 }));
     check('getPartnerCommissionOverride', await admin.get(`/partners/${other.id}/commission-snapshot`));
     check('clearPartnerCommissionOverride', await admin.delete(`/partners/${other.id}/commission-snapshot`));
+    check('getPartnerProgramCommission', await admin.get(`/partners/${other.id}/programs/${program.id}/commission`));
+    check('setPartnerProgramCommission', await admin.put(`/partners/${other.id}/programs/${program.id}/commission`, { commissionType: 'percent', commissionValue: 25 }));
+    check('setPartnerProgramCommission', await admin.put(`/partners/${other.id}/programs/nope/commission`, { commissionType: 'percent', commissionValue: 25 }));
+    check('getPartnerProgramCommission', await admin.get(`/partners/${other.id}/programs/${program.id}/commission`));
+    check('clearPartnerProgramCommission', await admin.delete(`/partners/${other.id}/programs/${program.id}/commission`));
 
     // Partner keys act as that partner only.
     const partnerKey = check<{ id: string; plaintext: string }>('createPartnerKey', await admin.post(`/partners/${other.id}/api-keys`, { label: 'p' }));

@@ -336,6 +336,97 @@
                 "maxItems": 10
               }
             }
+          },
+          "programCommissions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "commissionType": {
+                  "type": "string",
+                  "enum": [
+                    "percent",
+                    "fixed"
+                  ]
+                },
+                "commissionValue": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "recurring": {
+                  "type": "boolean"
+                },
+                "holdbackDays": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "commissionRules": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "trigger": {
+                        "type": "string",
+                        "enum": [
+                          "every",
+                          "first",
+                          "subsequent"
+                        ]
+                      },
+                      "eventType": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 80
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "percent",
+                          "fixed"
+                        ]
+                      },
+                      "value": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "currency": {
+                        "type": "string",
+                        "minLength": 3,
+                        "maxLength": 3
+                      },
+                      "recurring": {
+                        "type": "boolean"
+                      },
+                      "recurringMonths": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 600
+                      }
+                    },
+                    "required": [
+                      "trigger",
+                      "type",
+                      "value"
+                    ]
+                  },
+                  "minItems": 1,
+                  "maxItems": 10
+                },
+                "programId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "commissionType",
+                "commissionValue",
+                "programId"
+              ]
+            },
+            "maxItems": 100
           }
         },
         "required": [
@@ -401,8 +492,18 @@
       "CommissionSnapshot": {
         "type": "object",
         "properties": {
+          "id": {
+            "type": "string"
+          },
           "partnerId": {
             "type": "string"
+          },
+          "programId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Null for partner-wide terms; set for terms on that one program."
           },
           "commissionType": {
             "type": "string",
@@ -484,7 +585,9 @@
           }
         },
         "required": [
+          "id",
           "partnerId",
+          "programId",
           "commissionType",
           "commissionValue",
           "recurring",
@@ -493,7 +596,7 @@
           "source",
           "snapshottedAt"
         ],
-        "description": "A per-partner commission override. When present it replaces the program's rule for this partner's future commissions."
+        "description": "A per-partner commission override. When present it replaces the program's rule for this partner's future commissions: on every program (partner-wide, `programId` null) or on one program. On that program, program-scoped terms beat partner-wide ones."
       },
       "CommissionOverrideRequest": {
         "type": "object",
@@ -1519,6 +1622,15 @@
               "null"
             ]
           },
+          "commissionRule": {
+            "$ref": "#/components/schemas/CommissionRule"
+          },
+          "holdbackDays": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "granted": {
             "type": "boolean"
           },
@@ -1540,6 +1652,17 @@
             ],
             "format": "date-time",
             "pattern": "Z$"
+          },
+          "commission": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CommissionSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "This partner's terms on this program (setPartnerProgramCommission). Null: the partner-wide override, or the program's own rule, applies."
           }
         },
         "required": [
@@ -1547,9 +1670,12 @@
           "name",
           "destinationUrl",
           "deepLinkAllowedDomains",
+          "commissionRule",
+          "holdbackDays",
           "granted",
           "grantSource",
-          "grantedAt"
+          "grantedAt",
+          "commission"
         ]
       },
       "GrantProgramsRequest": {
@@ -4479,7 +4605,7 @@
           "Partners"
         ],
         "summary": "Set a partner's commission override",
-        "description": "Replaces the program's commission rule for this partner's future commissions (all of the partner's programs). Omitting `commissionRules` clears any compound rules.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "Replaces the program's commission rule for this partner's future commissions on every program that has no program-scoped terms for them (see `setPartnerProgramCommission`). Omitting `commissionRules` clears any compound rules.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -4578,7 +4704,7 @@
           "Partners"
         ],
         "summary": "Clear a partner's commission override",
-        "description": "**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "Clears the partner-wide terms only. Program-scoped terms stay.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -4597,6 +4723,304 @@
             },
             "required": true,
             "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cleared.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`partner_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/partners/{id}/programs/{programId}/commission": {
+      "get": {
+        "operationId": "getPartnerProgramCommission",
+        "tags": [
+          "Partners"
+        ],
+        "summary": "Get a partner's commission terms on one program",
+        "description": "**Access:** admin key, or the partner's own key (`:id` must be that partner). Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          },
+          {
+            "partnerKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "partnerOrAdmin",
+          "scopes": [],
+          "partner": true
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The programId."
+            },
+            "required": true,
+            "name": "programId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The program-scoped terms, or null.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "snapshot": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/CommissionSnapshot"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "snapshot"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "setPartnerProgramCommission",
+        "tags": [
+          "Partners"
+        ],
+        "summary": "Set a partner's commission terms on one program",
+        "description": "Same body as `setPartnerCommissionOverride`, for one program. On that program these terms beat the partner-wide override and set the holdback too (omitted = the program's own). The partner doesn't need a grant on the program: terms can be agreed before access, and outlive a revoked grant.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The programId."
+            },
+            "required": true,
+            "name": "programId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommissionOverrideRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "snapshot": {
+                      "$ref": "#/components/schemas/CommissionSnapshot"
+                    }
+                  },
+                  "required": [
+                    "snapshot"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`partner_not_found`, `program_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "clearPartnerProgramCommission",
+        "tags": [
+          "Partners"
+        ],
+        "summary": "Clear a partner's commission terms on one program",
+        "description": "Commissions on the program fall back to the partner-wide override, or the program's rule.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The programId."
+            },
+            "required": true,
+            "name": "programId",
             "in": "path"
           }
         ],

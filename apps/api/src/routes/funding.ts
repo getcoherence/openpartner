@@ -11,6 +11,13 @@
  *
  * Revocation stops NEW batches only — money already reserved or in flight
  * follows the state machine to its terminal state.
+ *
+ * None of it is offered until HOSTED_FUNDING_ENABLED is on. Authorizing
+ * early saved a real ACH mandate against funding terms that aren't
+ * published until launch, from a card that read as if funding were live.
+ * With the flag off, setup and completion refuse, and the Billing card
+ * stays hidden unless the tenant already has an authorization or batches
+ * to show, so revoke keeps working.
  */
 
 import { Router } from 'express';
@@ -26,6 +33,12 @@ import { getFundingAuthorization } from '../funding/reserve.js';
 import { ulid } from 'ulid';
 
 export const fundingRouter = Router();
+
+const FUNDING_NOT_ENABLED = {
+  error: 'funding_not_enabled',
+  detail:
+    'Commission funding isn’t available yet. Until it is, pay partners on the manual rail (Settings → Payout settings → Manual).',
+};
 
 /**
  * Map an internal `failureReason` onto a stable, brand-safe code. Unknown
@@ -56,9 +69,13 @@ fundingRouter.get('/billing/funding', requireAuth, requireAdmin, async (req, res
     .where({ tenantId })
     .orderBy('createdAt', 'desc')
     .limit(10)) as HostedFundingBatchRow[];
+  const enabled = fundingEnabled();
+  if (!enabled && !auth && batches.length === 0) {
+    return res.json({ available: false, reason: 'not_enabled' });
+  }
   res.json({
     available: true,
-    enabled: fundingEnabled(),
+    enabled,
     termsVersion: FUNDING_TERMS_VERSION,
     currency: 'usd',
     authorization: auth
@@ -104,6 +121,7 @@ fundingRouter.post('/billing/funding/setup', requireAuth, requireAdmin, async (r
   const { db, tenantId } = tenantOf(req);
   const state = await getTenantBillingState(db, tenantId);
   if (state.mode === 'selfhost') return res.status(400).json({ error: 'no_billing_in_selfhost' });
+  if (!fundingEnabled()) return res.status(409).json(FUNDING_NOT_ENABLED);
   if (!state.stripeCustomerId || !state.stripeSubscriptionId) {
     return res.status(409).json({
       error: 'subscription_required',
@@ -137,6 +155,8 @@ fundingRouter.post('/billing/funding/setup', requireAuth, requireAdmin, async (r
 
 fundingRouter.post('/billing/funding/complete', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
+  // A setup started before the flag was pulled records nothing.
+  if (!fundingEnabled()) return res.status(409).json(FUNDING_NOT_ENABLED);
   const body = z.object({ sessionId: z.string().min(1) }).safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 

@@ -3,9 +3,13 @@
  * security-sensitive one: the session id arrives via redirect query param,
  * so it must be verified against the live Stripe session (tenant match,
  * completed, SetupIntent succeeded) before an authorization row is written.
+ *
+ * And none of it is offered while HOSTED_FUNDING_ENABLED is off: no card,
+ * no setup, no completion, unless the tenant already has an authorization
+ * or batches, which stay visible and revocable.
  */
 
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { ulid } from 'ulid';
 import { TABLES, DEFAULT_TENANT_ID } from '@openpartner/db';
@@ -38,13 +42,21 @@ vi.mock('../stripe.js', async (importOriginal) => {
   };
 });
 
+const fundingFlagBefore = process.env.HOSTED_FUNDING_ENABLED;
+
 beforeEach(async () => {
+  process.env.HOSTED_FUNDING_ENABLED = '1';
   if (skipIntegration) return;
   sessionsRetrieve.mockReset();
   await db(TABLES.HostedFundingAuthorization).del();
   await db(TABLES.Tenant)
     .where({ id: TENANT })
     .update({ stripeCustomerId: 'cus_test', stripeSubscriptionId: 'sub_test', billingPlan: 'flex' });
+});
+
+afterEach(() => {
+  if (fundingFlagBefore === undefined) delete process.env.HOSTED_FUNDING_ENABLED;
+  else process.env.HOSTED_FUNDING_ENABLED = fundingFlagBefore;
 });
 
 afterAll(async () => {
@@ -167,5 +179,72 @@ describe.skipIf(skipIntegration)('funding authorization gate', () => {
       .get('/billing/funding')
       .set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(status.body.authorization).toBeNull();
+  });
+});
+
+describe.skipIf(skipIntegration)('funding authorization while HOSTED_FUNDING_ENABLED is off', () => {
+  beforeEach(async () => {
+    delete process.env.HOSTED_FUNDING_ENABLED;
+    // Other funding suites leave batches behind, and any history keeps the
+    // card visible. Same FK-safe order they clean in.
+    for (const t of [
+      TABLES.PayoutReversal,
+      TABLES.CommissionAdjustment,
+      TABLES.HostedFundingTransfer,
+      TABLES.HostedFundingAllocation,
+      TABLES.HostedFundingBatch,
+    ]) {
+      await db(t).del();
+    }
+  });
+
+  const admin = () => ({ Authorization: `Bearer ${ADMIN_KEY}` });
+
+  it('GET /billing/funding hides the card for a tenant with no funding history', async () => {
+    const res = await request(app).get('/billing/funding').set(admin());
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ available: false, reason: 'not_enabled' });
+  });
+
+  it('setup and completion refuse, and nothing reaches Stripe or the database', async () => {
+    const setup = await request(app)
+      .post('/billing/funding/setup')
+      .set(admin())
+      .send({ successUrl: 'https://x.test/ok', cancelUrl: 'https://x.test/no', termsVersion: FUNDING_TERMS_VERSION });
+    expect(setup.status).toBe(409);
+    expect(setup.body.error).toBe('funding_not_enabled');
+
+    // A setup started before the flag was pulled.
+    sessionsRetrieve.mockResolvedValueOnce({
+      status: 'complete',
+      metadata: { openpartner_tenant_id: TENANT, openpartner_funding_terms: FUNDING_TERMS_VERSION },
+      setup_intent: { status: 'succeeded', payment_method: 'pm_bank_123' },
+    });
+    const complete = await request(app).post('/billing/funding/complete').set(admin()).send({ sessionId: 'cs_late' });
+    expect(complete.status).toBe(409);
+    expect(complete.body.error).toBe('funding_not_enabled');
+    expect(sessionsRetrieve).not.toHaveBeenCalled();
+    expect(await db(TABLES.HostedFundingAuthorization).first()).toBeUndefined();
+  });
+
+  it('an existing authorization stays visible, flagged as not switched on, and can be revoked', async () => {
+    await db(TABLES.HostedFundingAuthorization).insert({
+      id: ulid(),
+      tenantId: TENANT,
+      adminId: null,
+      termsVersion: FUNDING_TERMS_VERSION,
+      stripePaymentMethodId: 'pm_x',
+      paymentMethodType: 'us_bank_account',
+      acceptedAt: new Date(),
+      revokedAt: null,
+    });
+    const status = await request(app).get('/billing/funding').set(admin());
+    expect(status.body).toMatchObject({ available: true, enabled: false });
+    expect(status.body.authorization).not.toBeNull();
+
+    const revoke = await request(app).post('/billing/funding/revoke').set(admin()).send({});
+    expect(revoke.status).toBe(200);
+    const after = await request(app).get('/billing/funding').set(admin());
+    expect(after.body).toEqual({ available: false, reason: 'not_enabled' });
   });
 });

@@ -13,17 +13,23 @@
  * attribution still runs, the dashboard still renders, the admin can still
  * subscribe — we only gate the specific write actions listed below.
  *
- * What's gated:
- *   - POST /campaigns                       (create new program)
+ * What's gated — plan required (402 plan_required):
  *   - POST /partners                        (invite new partner OR
  *                                            federated approval landing)
- *   - POST /partners/:id/coupons            (mint coupon)
- *   - POST /partners/:id/programs          (grant program to partner)
- *   - POST /import/partners-csv             (bulk roster import)
- *   - POST /admin/network/offerings         (publish on the Network)
+ *   - POST /partner-signup                  (public creator self-signup)
  *   - POST /admin/network/requests/:id/approve  (approve creator
  *                                            application coming through
  *                                            the Network)
+ *
+ * What's gated — lapsed trial (402 trial_expired):
+ *   - POST /programs                        (create new program)
+ *   - POST /partners/:id/coupons            (mint coupon)
+ *   - POST /partners/:id/programs           (grant program to partner)
+ *   - POST /import/partners-csv             (bulk roster import)
+ *   - POST /admin/network/offerings         (publish on the Network)
+ *
+ * Paths match on the same canonical form as the approval gate (lowercase,
+ * no trailing slash), because Express routes both variants to the handler.
  *
  * What stays open (deliberate):
  *   - GET *                           (read; show their data)
@@ -43,6 +49,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { tenantOf } from '../tenancy.js';
 import { getTenantBillingState, hasActivePlan, isTrialGateActive } from '../billing-plan.js';
+import { canonicalPath } from './approval-gate.js';
 
 // Methods+path patterns that get the 402. Keep narrow — every entry is
 // a pinch point on the user's program-expansion workflow, not a
@@ -72,21 +79,32 @@ const PLAN_REQUIRED: GatedRoute[] = [
 const TRIAL_GATED: GatedRoute[] = [
   { method: 'POST', test: (p) => p === '/programs' },
   { method: 'POST', test: (p) => /^\/partners\/[^/]+\/coupons$/.test(p) },
-  { method: 'POST', test: (p) => /^\/partners\/[^/]+\/campaigns$/.test(p) },
+  { method: 'POST', test: (p) => /^\/partners\/[^/]+\/programs$/.test(p) },
   { method: 'POST', test: (p) => p === '/import/partners-csv' },
   { method: 'POST', test: (p) => p === '/admin/network/offerings' },
 ];
 
+function matches(routes: GatedRoute[], method: string, path: string): boolean {
+  const p = canonicalPath(path);
+  const m = method.toUpperCase();
+  return routes.some((g) => g.method === m && g.test(p));
+}
+
 /** Exported for tests: is this (method, path) behind the plan-required gate? */
 export function isPlanRequiredRoute(method: string, path: string): boolean {
-  return PLAN_REQUIRED.some((g) => g.method === method && g.test(path));
+  return matches(PLAN_REQUIRED, method, path);
+}
+
+/** Exported for tests: is this (method, path) behind the lapsed-trial gate? */
+export function isTrialGatedRoute(method: string, path: string): boolean {
+  return matches(TRIAL_GATED, method, path);
 }
 
 export async function trialGate(req: Request, res: Response, next: NextFunction): Promise<void> {
   // Match before the more expensive billing-state lookup — most requests are
   // not gated, and we don't want to add a DB hop to every read.
   const planRequired = isPlanRequiredRoute(req.method, req.path);
-  const trialMatched = TRIAL_GATED.some((g) => g.method === req.method && g.test(req.path));
+  const trialMatched = isTrialGatedRoute(req.method, req.path);
   if (!planRequired && !trialMatched) return next();
 
   // Tenant scope is required for the lookup. If the request hasn't been

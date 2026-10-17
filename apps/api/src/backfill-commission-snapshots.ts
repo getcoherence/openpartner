@@ -1,37 +1,47 @@
 /**
- * Backfill PartnerCommission rows from current Campaign rules.
+ * Backfill PartnerCommission rows from current Program rules.
  *
- * For every Partner that has a single bound Campaign (via PartnerCampaign)
- * and no existing PartnerCommission row, write a snapshot using that
- * Campaign's current commissionRule + holdbackDays. Marked
- * `source = 'backfill'` so it's distinguishable from snapshots stamped
- * at approval time.
+ * For every active Partner, writes one PROGRAM-SCOPED snapshot per
+ * program grant (PartnerProgram) using that Program's current
+ * commissionRule + holdbackDays. Marked `source = 'backfill'` so it's
+ * distinguishable from snapshots stamped at approval time.
  *
- * Why we only backfill single-campaign partners: a partner granted
- * access to multiple campaigns has no obvious "the rate they were
- * approved under" — different campaigns may have different rules.
- * Snapshotting from one would silently apply that rule to commissions
- * accruing under another. Multi-campaign partners stay on the live-
- * Campaign-rule fallback (status quo) until an admin amendment flow
- * lets them snapshot per-grant.
+ * This used to backfill only single-program partners, with a
+ * partner-wide row: a partner-wide row applies to every program, so for a
+ * partner in several programs there was no one rule to write — any choice
+ * would price commissions on the others at the wrong program's rate.
+ * Program-scoped rows remove the ambiguity: each grant freezes its own
+ * program's terms. Single-program partners get a program-scoped row too,
+ * so a program granted later accrues at its own rule instead of
+ * inheriting the first program's.
  *
- * Idempotent: skips partners that already have a row. Safe to re-run.
+ * Skips, without writing anything:
+ *   - partners with a partner-wide row (programId null). That row already
+ *     prices every program they're in; a program-scoped row would shadow
+ *     it and change what they're paid.
+ *   - grants that already have a program-scoped row.
+ *
+ * Idempotent: safe to re-run.
  */
 
 import type { Knex } from 'knex';
-import { TABLES, type CommissionRule, type CommissionType } from '@openpartner/db';
+import { TABLES, type CommissionRule } from '@openpartner/db';
 import { parseCommissionRule } from './attribution.js';
+import { legacyRuleColumns, newPartnerCommissionId, partnerCommissionConflictTarget } from './partner-commission.js';
 
 export interface BackfillResult {
+  /** Active partners looked at. */
   scanned: number;
-  /** Single-campaign partners with no snapshot — backfilled. */
+  /** Program-scoped snapshot rows written (one per grant). */
   inserted: number;
-  /** Partners skipped because they're granted to multiple campaigns
-   *  (no unambiguous rule to snapshot). */
-  ambiguous: number;
-  /** Partners skipped because a snapshot already exists. */
+  /** Partners skipped because a partner-wide snapshot already covers
+   *  every program they're in. */
+  coveredByPartnerWide: number;
+  /** Grants skipped because a program-scoped snapshot already exists. */
   alreadyHadSnapshot: number;
-  /** Partners skipped because their Campaign has no parseable
+  /** Partners skipped because they have no program grants. */
+  noGrants: number;
+  /** Grants skipped because their Program has no parseable
    *  commissionRule (legacy or corrupted). */
   noCampaignRule: number;
 }
@@ -56,8 +66,9 @@ export async function backfillCommissionSnapshots(db: Knex, tenantId: string): P
   const result: BackfillResult = {
     scanned: 0,
     inserted: 0,
-    ambiguous: 0,
+    coveredByPartnerWide: 0,
     alreadyHadSnapshot: 0,
+    noGrants: 0,
     noCampaignRule: 0,
   };
 
@@ -73,101 +84,91 @@ export async function backfillCommissionSnapshots(db: Knex, tenantId: string): P
 
   const partnerIds = partners.map((p) => p.id);
 
-  // Existing snapshots — skip these.
   const existing = (await db(TABLES.PartnerCommission)
     .whereIn('partnerId', partnerIds)
-    .select('partnerId')) as Array<{ partnerId: string }>;
-  const haveSnapshot = new Set(existing.map((e) => e.partnerId));
+    .select('partnerId', 'programId')) as Array<{ partnerId: string; programId: string | null }>;
+  const partnerWide = new Set(existing.filter((e) => e.programId === null).map((e) => e.partnerId));
+  const scoped = new Set(existing.filter((e) => e.programId !== null).map((e) => `${e.partnerId}:${e.programId}`));
 
-  // Grants per partner.
   const grants = (await db(TABLES.PartnerProgram)
     .whereIn('partnerId', partnerIds)
     .select('partnerId', 'programId')) as GrantSlim[];
-
-  const campaignsByPartner = new Map<string, string[]>();
+  const programsByPartner = new Map<string, string[]>();
   for (const g of grants) {
-    const list = campaignsByPartner.get(g.partnerId) ?? [];
+    const list = programsByPartner.get(g.partnerId) ?? [];
     list.push(g.programId);
-    campaignsByPartner.set(g.partnerId, list);
+    programsByPartner.set(g.partnerId, list);
   }
 
-  // Bulk-load campaigns for everyone with exactly one grant — these
-  // are the only ones we'll backfill.
-  const singleCampaignIds = new Set<string>();
-  for (const [, ids] of campaignsByPartner) {
-    if (ids.length === 1) singleCampaignIds.add(ids[0]!);
-  }
+  const programIds = [...new Set(grants.map((g) => g.programId))];
   const campaigns =
-    singleCampaignIds.size === 0
+    programIds.length === 0
       ? []
       : ((await db(TABLES.Program)
-          .whereIn('id', [...singleCampaignIds])
+          .whereIn('id', programIds)
           .select('id', 'commissionRule', 'holdbackDays')) as CampaignSlim[]);
   const campaignById = new Map(campaigns.map((c) => [c.id, c]));
+  // Parse each program's rule once, not once per grant.
+  const rulesByProgram = new Map<string, CommissionRule | null>();
+  for (const c of campaigns) {
+    let rules: CommissionRule | null;
+    try {
+      rules = parseCommissionRule(c.commissionRule);
+    } catch {
+      rules = null;
+    }
+    rulesByProgram.set(c.id, rules && rules.length > 0 ? rules : null);
+  }
 
-  const inserts: Array<{
-    partnerId: string;
-    tenantId: string;
-    commissionType: CommissionType;
-    commissionValue: string;
-    recurring: boolean;
-    /** Stored as a JSON-stringified value so knex routes it through the
-     *  jsonb column without trying to spread the array as columns. */
-    commissionRules: string;
-    holdbackDays: number | null;
-    source: 'backfill';
-    snapshottedAt: Date;
-  }> = [];
+  const inserts: Array<Record<string, unknown>> = [];
   const now = new Date();
 
   for (const partner of partners) {
-    if (haveSnapshot.has(partner.id)) {
-      result.alreadyHadSnapshot += 1;
+    if (partnerWide.has(partner.id)) {
+      result.coveredByPartnerWide += 1;
       continue;
     }
-    const ids = campaignsByPartner.get(partner.id) ?? [];
-    if (ids.length !== 1) {
-      result.ambiguous += 1;
+    const ids = programsByPartner.get(partner.id) ?? [];
+    if (ids.length === 0) {
+      result.noGrants += 1;
       continue;
     }
-    const campaign = campaignById.get(ids[0]!);
-    if (!campaign) {
-      result.ambiguous += 1;
-      continue;
+    for (const programId of ids) {
+      if (scoped.has(`${partner.id}:${programId}`)) {
+        result.alreadyHadSnapshot += 1;
+        continue;
+      }
+      const campaign = campaignById.get(programId);
+      const rules = rulesByProgram.get(programId);
+      if (!campaign || !rules) {
+        result.noCampaignRule += 1;
+        continue;
+      }
+      inserts.push({
+        id: newPartnerCommissionId(),
+        partnerId: partner.id,
+        tenantId: partner.tenantId,
+        programId,
+        ...legacyRuleColumns(rules),
+        // Stored as a JSON-stringified value so knex routes it through the
+        // jsonb column without trying to spread the array as columns.
+        commissionRules: JSON.stringify(rules),
+        holdbackDays: campaign.holdbackDays,
+        source: 'backfill',
+        snapshottedAt: now,
+      });
     }
-    let rules: CommissionRule;
-    try {
-      rules = parseCommissionRule(campaign.commissionRule);
-    } catch {
-      result.noCampaignRule += 1;
-      continue;
-    }
-    if (rules.length === 0) {
-      result.noCampaignRule += 1;
-      continue;
-    }
-    // Pick a representative sub-rule for the legacy NOT NULL columns.
-    // Preference: the first 'every'-trigger rule (the recurring/main rate).
-    // The legacy columns are best-effort summaries — the canonical state is
-    // commissionRules — so this only affects deployments that read the
-    // legacy columns (none, post-migration).
-    const legacy = rules.find((r) => r.trigger === 'every') ?? rules[0]!;
-    inserts.push({
-      partnerId: partner.id,
-      tenantId: partner.tenantId,
-      commissionType: legacy.type,
-      commissionValue: legacy.value.toFixed(4),
-      recurring: legacy.recurring ?? false,
-      commissionRules: JSON.stringify(rules),
-      holdbackDays: campaign.holdbackDays,
-      source: 'backfill',
-      snapshottedAt: now,
-    });
   }
 
   if (inserts.length > 0) {
-    await db(TABLES.PartnerCommission).insert(inserts).onConflict('partnerId').ignore();
-    result.inserted = inserts.length;
+    // Ignore on the program-scope index: a row written between the read
+    // above and here (a concurrent PUT) wins.
+    const written = await db(TABLES.PartnerCommission)
+      .insert(inserts)
+      .onConflict(partnerCommissionConflictTarget(db, true))
+      .ignore()
+      .returning('id');
+    result.inserted = written.length;
   }
   return result;
 }

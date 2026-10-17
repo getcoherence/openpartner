@@ -73,7 +73,9 @@ const commissionSubRule = z.object({
 
 export const CommissionSnapshot = z
   .object({
+    id,
     partnerId: id,
+    programId: id.nullable().openapi({ description: 'Null for partner-wide terms; set for terms on that one program.' }),
     commissionType: z.enum(['percent', 'fixed']),
     commissionValue: Decimal,
     recurring: z.boolean(),
@@ -83,7 +85,8 @@ export const CommissionSnapshot = z
     snapshottedAt: ts,
   })
   .openapi('CommissionSnapshot', {
-    description: "A per-partner commission override. When present it replaces the program's rule for this partner's future commissions.",
+    description:
+      "A per-partner commission override. When present it replaces the program's rule for this partner's future commissions: on every program (partner-wide, `programId` null) or on one program. On that program, program-scoped terms beat partner-wide ones.",
   });
 
 // ---------- Programs ----------
@@ -168,9 +171,14 @@ export const ProgramGrant = z
     name: z.string(),
     destinationUrl: z.string().url(),
     deepLinkAllowedDomains: z.string().nullable(),
+    commissionRule: CommissionRule,
+    holdbackDays: z.number().int().nullable(),
     granted: z.boolean(),
     grantSource: z.enum(['admin', 'offering']).nullable(),
     grantedAt: tsNullable,
+    commission: orNull(CommissionSnapshot).openapi({
+      description: "This partner's terms on this program (setPartnerProgramCommission). Null: the partner-wide override, or the program's own rule, applies.",
+    }),
   })
   .openapi('ProgramGrant');
 

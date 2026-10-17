@@ -212,6 +212,9 @@ Rows whose email already exists are reported as \`skipped_email_taken\` with the
     errors: { 404: ['not_found'], 409: ['not_revoked'] },
   });
 
+  // One request body, two scopes: partner-wide and per-program.
+  const commissionOverrideRequest = partners.overrideSchema.openapi('CommissionOverrideRequest');
+
   r.operation({
     method: 'get',
     path: '/partners/:id/commission-snapshot',
@@ -229,9 +232,9 @@ Rows whose email already exists are reported as \`skipped_email_taken\` with the
     operationId: 'setPartnerCommissionOverride',
     summary: "Set a partner's commission override",
     description:
-      "Replaces the program's commission rule for this partner's future commissions (all of the partner's programs). Omitting `commissionRules` clears any compound rules.",
+      "Replaces the program's commission rule for this partner's future commissions on every program that has no program-scoped terms for them (see `setPartnerProgramCommission`). Omitting `commissionRules` clears any compound rules.",
     access: { kind: 'admin' },
-    body: partners.overrideSchema.openapi('CommissionOverrideRequest'),
+    body: commissionOverrideRequest,
     responses: { 200: { description: 'Saved.', schema: z.object({ snapshot: S.CommissionSnapshot }) } },
     errors: { 404: ['partner_not_found'] },
   });
@@ -242,6 +245,43 @@ Rows whose email already exists are reported as \`skipped_email_taken\` with the
     tag: 'Partners',
     operationId: 'clearPartnerCommissionOverride',
     summary: "Clear a partner's commission override",
+    description: 'Clears the partner-wide terms only. Program-scoped terms stay.',
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'Cleared.', schema: S.Ok } },
+    errors: { 404: ['partner_not_found'] },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/partners/:id/programs/:programId/commission',
+    tag: 'Partners',
+    operationId: 'getPartnerProgramCommission',
+    summary: "Get a partner's commission terms on one program",
+    access: { kind: 'partnerOrAdmin' },
+    responses: { 200: { description: 'The program-scoped terms, or null.', schema: z.object({ snapshot: S.orNull(S.CommissionSnapshot) }) } },
+  });
+
+  r.operation({
+    method: 'put',
+    path: '/partners/:id/programs/:programId/commission',
+    tag: 'Partners',
+    operationId: 'setPartnerProgramCommission',
+    summary: "Set a partner's commission terms on one program",
+    description:
+      "Same body as `setPartnerCommissionOverride`, for one program. On that program these terms beat the partner-wide override and set the holdback too (omitted = the program's own). The partner doesn't need a grant on the program: terms can be agreed before access, and outlive a revoked grant.",
+    access: { kind: 'admin' },
+    body: commissionOverrideRequest,
+    responses: { 200: { description: 'Saved.', schema: z.object({ snapshot: S.CommissionSnapshot }) } },
+    errors: { 404: ['partner_not_found', 'program_not_found'] },
+  });
+
+  r.operation({
+    method: 'delete',
+    path: '/partners/:id/programs/:programId/commission',
+    tag: 'Partners',
+    operationId: 'clearPartnerProgramCommission',
+    summary: "Clear a partner's commission terms on one program",
+    description: "Commissions on the program fall back to the partner-wide override, or the program's rule.",
     access: { kind: 'admin' },
     responses: { 200: { description: 'Cleared.', schema: S.Ok } },
     errors: { 404: ['partner_not_found'] },

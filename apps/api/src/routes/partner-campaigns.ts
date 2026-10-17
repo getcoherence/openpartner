@@ -19,6 +19,11 @@
  *     grant, so the auto-minted code would otherwise keep attributing.
  *     Re-granting mints a fresh code (autoMintCouponsForGrants skips
  *     deactivated coupons).
+ *   - Revoking a grant leaves the partner's program-scoped commission
+ *     terms (PartnerCommission with this programId) in place: links that
+ *     keep attributing after the revoke are still paid what was agreed,
+ *     and a re-grant picks the terms back up. Clear them explicitly via
+ *     DELETE /partners/:id/programs/:programId/commission.
  */
 
 import { Router } from 'express';
@@ -29,6 +34,7 @@ import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { deactivateCustomerReward } from '../customer-rewards.js';
 import { autoMintCouponsForGrants } from './coupons.js';
+import { PARTNER_COMMISSION_COLUMNS } from '../partner-commission.js';
 
 export const partnerCampaignsRouter = Router();
 
@@ -38,20 +44,30 @@ partnerCampaignsRouter.get('/partners/:id/programs', requireAuth, requireAdmin, 
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
 
   const campaigns = (await db<ProgramRow>(TABLES.Program)
-    .select('id', 'name', 'destinationUrl', 'deepLinkAllowedDomains')
-    .orderBy('createdAt', 'desc')) as Array<Pick<ProgramRow, 'id' | 'name' | 'destinationUrl' | 'deepLinkAllowedDomains'>>;
+    .select('id', 'name', 'destinationUrl', 'deepLinkAllowedDomains', 'commissionRule', 'holdbackDays')
+    .orderBy('createdAt', 'desc')) as Array<
+    Pick<ProgramRow, 'id' | 'name' | 'destinationUrl' | 'deepLinkAllowedDomains' | 'commissionRule' | 'holdbackDays'>
+  >;
   const grants = (await db<PartnerProgramRow>(TABLES.PartnerProgram)
     .where({ partnerId: req.params.id })
     .select('programId', 'source', 'createdAt')) as Array<Pick<PartnerProgramRow, 'programId' | 'source' | 'createdAt'>>;
   const grantByCampaign = new Map(grants.map((g) => [g.programId, g]));
+  const scoped = await db(TABLES.PartnerCommission)
+    .where({ partnerId: req.params.id })
+    .whereNotNull('programId')
+    .select(...PARTNER_COMMISSION_COLUMNS);
+  const commissionByProgram = new Map(scoped.map((pc) => [pc.programId as string, pc]));
 
   // Each campaign carries its grant state so the UI can render a single
-  // checklist instead of hand-merging.
+  // checklist instead of hand-merging. `commission` is the partner's
+  // program-scoped terms (null = partner-wide snapshot or program rule
+  // applies), shown next to the program's own rule.
   const result = campaigns.map((c) => ({
     ...c,
     granted: grantByCampaign.has(c.id),
     grantSource: grantByCampaign.get(c.id)?.source ?? null,
     grantedAt: grantByCampaign.get(c.id)?.createdAt ?? null,
+    commission: commissionByProgram.get(c.id) ?? null,
   }));
 
   res.json({ programs: result });
