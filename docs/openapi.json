@@ -744,10 +744,12 @@
                   "type": "string"
                 },
                 "recurring": {
-                  "type": "boolean"
+                  "type": "boolean",
+                  "description": "Keeps paying on renewals, including renewals past the attribution window that the program's `renewalsStayWithPartner` carries. A rule without it pays only while the click that earned the customer is inside the window."
                 },
                 "recurringMonths": {
-                  "type": "integer"
+                  "type": "integer",
+                  "description": "Stop paying this many months after the customer's first attributed event of the rule's type for this partner. Omitted: no cap."
                 },
                 "bands": {
                   "$ref": "#/components/schemas/CommissionBands"
@@ -1005,10 +1007,12 @@
                   "type": "string"
                 },
                 "recurring": {
-                  "type": "boolean"
+                  "type": "boolean",
+                  "description": "Keeps paying on renewals, including renewals past the attribution window that the program's `renewalsStayWithPartner` carries. A rule without it pays only while the click that earned the customer is inside the window."
                 },
                 "recurringMonths": {
-                  "type": "integer"
+                  "type": "integer",
+                  "description": "Stop paying this many months after the customer's first attributed event of the rule's type for this partner. Omitted: no cap."
                 },
                 "bands": {
                   "$ref": "#/components/schemas/CommissionBands"
@@ -1103,7 +1107,8 @@
             "$ref": "#/components/schemas/CommissionRule"
           },
           "attributionWindowDays": {
-            "type": "integer"
+            "type": "integer",
+            "description": "How old a click may be and still win a customer's first conversion of an event type. With `renewalsStayWithPartner`, it doesn't limit renewals."
           },
           "attributionModel": {
             "type": "string",
@@ -1113,6 +1118,10 @@
               "linear",
               "position"
             ]
+          },
+          "renewalsStayWithPartner": {
+            "type": "boolean",
+            "description": "True (default): a repeat event, meaning a type the customer already has an attributed conversion of (the 2nd, 13th, 40th `invoice_paid`), keeps that first conversion's partners, weights and model whatever the click's age, and a later click from another partner doesn't take it. Past the window only `recurring` sub-rules pay on it, up to `recurringMonths`. False: every event is attributed on its own against the clicks inside the window."
           },
           "destinationUrl": {
             "type": "string",
@@ -1234,6 +1243,7 @@
           "commissionRule",
           "attributionWindowDays",
           "attributionModel",
+          "renewalsStayWithPartner",
           "destinationUrl",
           "deepLinkAllowedDomains",
           "holdbackDays",
@@ -1367,6 +1377,9 @@
               "linear",
               "position"
             ]
+          },
+          "renewalsStayWithPartner": {
+            "type": "boolean"
           },
           "destinationUrl": {
             "type": "string",
@@ -1505,6 +1518,9 @@
               "linear",
               "position"
             ]
+          },
+          "renewalsStayWithPartner": {
+            "type": "boolean"
           },
           "destinationUrl": {
             "type": "string",
@@ -1840,7 +1856,7 @@
               "already_attributed",
               "not_attributed"
             ],
-            "description": "`not_attributed` appears only on a replay of an event that did not attribute the first time; which miss it was is not stored."
+            "description": "`outside_window`: no click is inside the window and the customer has no earlier attributed conversion to carry it (or the program has `renewalsStayWithPartner` off). A renewal of an attributed conversion attributes whatever the click's age. `not_attributed` appears only on a replay of an event that did not attribute the first time; which miss it was is not stored."
           },
           "model": {
             "type": "string",
@@ -5264,7 +5280,7 @@
           "Programs"
         ],
         "summary": "Create a program",
-        "description": "A program is one set of terms: commission rule, attribution window and model, destination URL.\n\n`shareOnNetwork` defaults to **true** when the tenant is on the OpenPartner Network, which lists the program on the public marketplace and makes `marketplaceDescription` required. Pass `shareOnNetwork: false` for a private program such as customer referral.\n\n`holdbackDays` above 0 means commissions are **approved automatically** that many days after they accrue (by the scheduled jobs), and then paid by the next payout run. 0 or omitted means every commission waits for `POST /commissions/{id}/approve`.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "A program is one set of terms: commission rule, attribution window and model, destination URL.\n\n`shareOnNetwork` defaults to **true** when the tenant is on the OpenPartner Network, which lists the program on the public marketplace and makes `marketplaceDescription` required. Pass `shareOnNetwork: false` for a private program such as customer referral.\n\n`holdbackDays` above 0 means commissions are **approved automatically** that many days after they accrue (by the scheduled jobs), and then paid by the next payout run. 0 or omitted means every commission waits for `POST /commissions/{id}/approve`.\n\n`attributionWindowDays` decides which click wins a customer's first conversion of each event type. With `renewalsStayWithPartner` (default true), repeats of that event type, such as monthly `invoice_paid` renewals, keep the same partners and weights for as long as the customer pays, even when another partner's link is clicked later. Past the window, only sub-rules with `recurring: true` pay on them, up to `recurringMonths`.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -5422,7 +5438,7 @@
           "Programs"
         ],
         "summary": "Update a program",
-        "description": "Changes apply to future commissions. Partners with a commission override keep it.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "Changes apply to future commissions. Partners with a commission override keep it. Changing `attributionWindowDays` or `renewalsStayWithPartner` decides events attributed from then on; renewals of customers already won keep their partner whatever the new window.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -6094,7 +6110,7 @@
           "Attribution"
         ],
         "summary": "Record a conversion event",
-        "description": "Server-to-server conversion ingest. The event is attributed to the partner whose click the user was stitched to (within the program's window and model) and commissions accrue.\n\n**Event types.** Any string is accepted. Two have built-in meaning:\n- `signup` is the funnel's *signups* stage (`signup` and `trial_started` are *leads* in the timeseries).\n- `invoice_paid` is the funnel's *paid* stage, and on OpenPartner Cloud it is billable GMV, as is `subscription_created`. Report payments as `invoice_paid`. Other types with a value still accrue commission but are not counted as GMV.\n\n`value` is in major units (`49.99`), defaulting to no value; `currency` defaults to USD.\n\n**Idempotency.** Always send `externalEventId`: your system's stable id for this one event (invoice id, order id, deal id + stage). A retry with the same key returns `200` with `replayed: true` and the original result, writing nothing. Reusing a key for a different userId, type, value or currency returns `409 external_event_id_conflict`. Keys are per tenant, up to 120 characters, and shared with `POST /coupons/redeem`.\n\n**Don't report a payment twice.** If your Stripe account also sends webhooks to this deployment (`/webhooks/stripe`, self-host), those payments are already recorded, keyed by the Stripe event id. Reporting the same payment here under your own invoice id records it a second time.\n\n**Access:** admin key, or a scoped key with `events:write`.",
+        "description": "Server-to-server conversion ingest. The event is attributed to the partner whose click the user was stitched to (within the program's window and model) and commissions accrue.\n\n**Renewals.** Send each renewal as its own event with the same `userId` and `type` (one `invoice_paid` per payment). Once the customer has an attributed event of that type, each later one keeps that event's partners and weights, however old the click, while the program has `renewalsStayWithPartner` on (the default).\n\n**Event types.** Any string is accepted. Two have built-in meaning:\n- `signup` is the funnel's *signups* stage (`signup` and `trial_started` are *leads* in the timeseries).\n- `invoice_paid` is the funnel's *paid* stage, and on OpenPartner Cloud it is billable GMV, as is `subscription_created`. Report payments as `invoice_paid`. Other types with a value still accrue commission but are not counted as GMV.\n\n`value` is in major units (`49.99`), defaulting to no value; `currency` defaults to USD.\n\n**Idempotency.** Always send `externalEventId`: your system's stable id for this one event (invoice id, order id, deal id + stage). A retry with the same key returns `200` with `replayed: true` and the original result, writing nothing. Reusing a key for a different userId, type, value or currency returns `409 external_event_id_conflict`. Keys are per tenant, up to 120 characters, and shared with `POST /coupons/redeem`.\n\n**Don't report a payment twice.** If your Stripe account also sends webhooks to this deployment (`/webhooks/stripe`, self-host), those payments are already recorded, keyed by the Stripe event id. Reporting the same payment here under your own invoice id records it a second time.\n\n**Access:** admin key, or a scoped key with `events:write`.",
         "security": [
           {
             "adminKey": []

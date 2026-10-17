@@ -68,8 +68,13 @@ const commissionSubRule = z.object({
   type: z.enum(['percent', 'fixed']),
   value: z.number(),
   currency: z.string().optional(),
-  recurring: z.boolean().optional(),
-  recurringMonths: z.number().int().optional(),
+  recurring: z.boolean().optional().openapi({
+    description:
+      "Keeps paying on renewals, including renewals past the attribution window that the program's `renewalsStayWithPartner` carries. A rule without it pays only while the click that earned the customer is inside the window.",
+  }),
+  recurringMonths: z.number().int().optional().openapi({
+    description: "Stop paying this many months after the customer's first attributed event of the rule's type for this partner. Omitted: no cap.",
+  }),
   bands: commissionBandsSchema.optional().openapi('CommissionBands', {
     description:
       "Value bands: the rate steps up with the event's value. The sub-rule's own `value` is the base band; `levels` lists the steps above it. `whole` pays the reached band's rate on the whole value, `marginal` pays each slice at its own band's rate.",
@@ -125,8 +130,15 @@ export const Program = z
     tenantId: id,
     name: z.string(),
     commissionRule: CommissionRule,
-    attributionWindowDays: z.number().int(),
+    attributionWindowDays: z.number().int().openapi({
+      description:
+        "How old a click may be and still win a customer's first conversion of an event type. With `renewalsStayWithPartner`, it doesn't limit renewals.",
+    }),
     attributionModel: z.enum(ATTRIBUTION_MODELS),
+    renewalsStayWithPartner: z.boolean().openapi({
+      description:
+        "True (default): a repeat event, meaning a type the customer already has an attributed conversion of (the 2nd, 13th, 40th `invoice_paid`), keeps that first conversion's partners, weights and model whatever the click's age, and a later click from another partner doesn't take it. Past the window only `recurring` sub-rules pay on it, up to `recurringMonths`. False: every event is attributed on its own against the clicks inside the window.",
+    }),
     destinationUrl: z.string().url(),
     deepLinkAllowedDomains: z.string().nullable(),
     holdbackDays: z.number().int().nullable().openapi({
@@ -224,7 +236,7 @@ export const Attribution = z
   .object({
     status: z.enum(['attributed', 'no_identity', 'no_click', 'outside_window', 'already_attributed', 'not_attributed']).openapi({
       description:
-        '`not_attributed` appears only on a replay of an event that did not attribute the first time; which miss it was is not stored.',
+        "`outside_window`: no click is inside the window and the customer has no earlier attributed conversion to carry it (or the program has `renewalsStayWithPartner` off). A renewal of an attributed conversion attributes whatever the click's age. `not_attributed` appears only on a replay of an event that did not attribute the first time; which miss it was is not stored.",
     }),
     model: z.enum(ATTRIBUTION_MODELS).optional(),
     touches: z

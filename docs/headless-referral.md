@@ -109,6 +109,7 @@ curl -s -X POST $OP/programs -H "Authorization: Bearer $ADMIN" -H 'content-type:
 
 - **`shareOnNetwork: false`** keeps the program off the public marketplace. When the tenant is on the Network it defaults to `true`, and then a `marketplaceDescription` is required.
 - **`destinationUrl`** is where share links land. The router appends `?cref=<click id>`.
+- **`attributionWindowDays`** decides which click wins a customer's first payment. Renewals then stay with that partner for as long as the customer pays (`renewalsStayWithPartner`, default `true`). Past the window only `recurring` rules pay, so this one pays 20% for 12 months from the first invoice. See [renewal-attribution.md](renewal-attribution.md).
 - **`holdbackDays`** above 0 means a commission is **approved automatically** once it's that many days old, and paid by the next payout run. Set it to your refund window so refunds land before approval. With `0` or no holdback, nothing is approved until you call `POST /commissions/{id}/approve`. Use that if you want to review every commission.
 - **Rules** are an array of sub-rules, each with `trigger` (`every` / `first` / `subsequent`), an optional `eventType`, and a `percent` or `fixed` amount. Scope each rule to an event type: a `fixed` rule with no `eventType` pays on every event, signups included.
 
