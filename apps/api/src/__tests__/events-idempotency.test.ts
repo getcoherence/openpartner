@@ -52,6 +52,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!skipIntegration) {
+    // Don't leave the last test's rows for later files.
+    for (const t of TABLES_TO_CLEAN) await db(t).del();
     await db(TABLES.Event).where({ tenantId: OTHER_TENANT_ID }).del();
     await db(TABLES.Tenant).where({ id: OTHER_TENANT_ID }).del();
   }

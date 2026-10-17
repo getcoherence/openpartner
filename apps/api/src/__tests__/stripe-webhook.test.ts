@@ -183,6 +183,9 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // The last test's Identity → Click → Link chain would otherwise block a
+  // later file's narrower Click / Partner wipe on its FKs.
+  if (!skipIntegration) for (const t of TABLES_TO_CLEAN) await db(t).del();
   await db.destroy();
 });
 

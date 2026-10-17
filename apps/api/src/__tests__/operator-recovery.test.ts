@@ -205,25 +205,27 @@ async function payoutOf(payoutId: string) {
   };
 }
 
+const TABLES_TO_CLEAN = [
+  TABLES.OperatorRecoveryRequest,
+  TABLES.HostedFundingAllocation,
+  TABLES.HostedFundingBatch,
+  TABLES.Commission,
+  TABLES.Attribution,
+  TABLES.Event,
+  TABLES.Identity,
+  TABLES.Click,
+  TABLES.Link,
+  TABLES.Coupon,
+  TABLES.PartnerProgram,
+  TABLES.PartnerCommission,
+  TABLES.Payout,
+  TABLES.Program,
+  TABLES.Partner,
+];
+
 beforeEach(async () => {
   if (skipIntegration) return;
-  for (const t of [
-    TABLES.OperatorRecoveryRequest,
-    TABLES.HostedFundingAllocation,
-    TABLES.HostedFundingBatch,
-    TABLES.Commission,
-    TABLES.Attribution,
-    TABLES.Event,
-    TABLES.Identity,
-    TABLES.Click,
-    TABLES.Link,
-    TABLES.Coupon,
-    TABLES.PartnerProgram,
-    TABLES.PartnerCommission,
-    TABLES.Payout,
-    TABLES.Program,
-    TABLES.Partner,
-  ]) {
+  for (const t of TABLES_TO_CLEAN) {
     await db(t).del();
   }
   await db<TenantRow>(TABLES.Tenant)
@@ -233,10 +235,11 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
+  // All of it: the last test's Partner, Program, Click, Event and
+  // Attribution would otherwise outlive this file.
   if (!skipIntegration) {
-    await db(TABLES.OperatorRecoveryRequest).del();
+    for (const t of TABLES_TO_CLEAN) await db(t).del();
     await db(TABLES.Tenant).where({ id: TENANT_B }).del();
-    for (const t of [TABLES.Commission, TABLES.Payout]) await db(t).del();
   }
   await db.destroy();
 });

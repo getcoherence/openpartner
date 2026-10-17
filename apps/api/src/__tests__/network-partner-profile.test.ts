@@ -76,6 +76,14 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (receiver) await new Promise<void>((r) => receiver.close(() => r()));
+  // Membership makes POST /programs default shareOnNetwork on (and then
+  // demand a marketplaceDescription) — don't leave it, or the last test's
+  // partner (its consent cascades), for later files.
+  if (!skipIntegration) {
+    await db(TABLES.Session).where({ tenantId: DEFAULT_TENANT_ID }).del();
+    await db(TABLES.Partner).where({ tenantId: DEFAULT_TENANT_ID }).del();
+    await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID, key: 'network_membership' }).del();
+  }
   await db.destroy();
 });
 

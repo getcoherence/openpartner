@@ -81,36 +81,39 @@ async function seedCommissions(n: number, amount = '40.00'): Promise<{ partnerId
   return { partnerId, ids };
 }
 
+// Child tables before parents — earlier test files leave rows behind.
+const TABLES_TO_CLEAN = [
+  TABLES.HostedFundingTransfer,
+  TABLES.HostedFundingAllocation,
+  TABLES.HostedFundingBatch,
+  TABLES.HostedFundingAuthorization,
+  TABLES.Commission,
+  TABLES.Attribution,
+  TABLES.Event,
+  TABLES.Identity,
+  TABLES.Click,
+  TABLES.Link,
+  TABLES.Coupon,
+  TABLES.PartnerProgram,
+  TABLES.PartnerCommission,
+  TABLES.Payout,
+  TABLES.Program,
+  TABLES.Partner,
+];
+
 beforeEach(async () => {
   if (skipIntegration) return;
-  // Child tables before parents — earlier test files leave rows behind.
-  for (const t of [
-    TABLES.HostedFundingTransfer,
-    TABLES.HostedFundingAllocation,
-    TABLES.HostedFundingBatch,
-    TABLES.HostedFundingAuthorization,
-    TABLES.Commission,
-    TABLES.Attribution,
-    TABLES.Event,
-    TABLES.Identity,
-    TABLES.Click,
-    TABLES.Link,
-    TABLES.Coupon,
-    TABLES.PartnerProgram,
-    TABLES.PartnerCommission,
-    TABLES.Payout,
-    TABLES.Program,
-    TABLES.Partner,
-  ]) {
+  for (const t of TABLES_TO_CLEAN) {
     await db(t).del();
   }
 });
 
 afterAll(async () => {
-  // Leave no funding rows behind: later test files wipe Commission and
-  // would trip the HostedFundingAllocation FK on anything we leaked.
+  // Leave nothing behind: later test files wipe Commission and would trip
+  // the HostedFundingAllocation FK on any funding row we leaked, and the
+  // last test's Partner / Program / Event rows would outlive this file.
   if (!skipIntegration) {
-    for (const t of [TABLES.HostedFundingTransfer, TABLES.HostedFundingAllocation, TABLES.HostedFundingBatch, TABLES.HostedFundingAuthorization, TABLES.Commission]) {
+    for (const t of TABLES_TO_CLEAN) {
       await db(t).del();
     }
   }

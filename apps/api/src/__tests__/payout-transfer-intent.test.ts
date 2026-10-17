@@ -213,29 +213,33 @@ async function payoutOf(payoutId: string) {
 
 const hoursAgo = (h: number) => new Date(Date.now() - h * 60 * 60 * 1000);
 
+const TABLES_TO_CLEAN = [
+  TABLES.Commission,
+  TABLES.Attribution,
+  TABLES.Event,
+  TABLES.Identity,
+  TABLES.Click,
+  TABLES.Link,
+  TABLES.Coupon,
+  TABLES.PartnerProgram,
+  TABLES.PartnerCommission,
+  TABLES.Payout,
+  TABLES.Program,
+  TABLES.Partner,
+];
+
 beforeEach(async () => {
   if (skipIntegration) return;
-  for (const t of [
-    TABLES.Commission,
-    TABLES.Attribution,
-    TABLES.Event,
-    TABLES.Identity,
-    TABLES.Click,
-    TABLES.Link,
-    TABLES.Coupon,
-    TABLES.PartnerProgram,
-    TABLES.PartnerCommission,
-    TABLES.Payout,
-    TABLES.Program,
-    TABLES.Partner,
-  ]) {
+  for (const t of TABLES_TO_CLEAN) {
     await db(t).del();
   }
 });
 
 afterAll(async () => {
+  // All of it: the last test's Partner, Program, Click, Event and
+  // Attribution would otherwise outlive this file.
   if (!skipIntegration) {
-    for (const t of [TABLES.Commission, TABLES.Payout]) await db(t).del();
+    for (const t of TABLES_TO_CLEAN) await db(t).del();
   }
   await db.destroy();
 });

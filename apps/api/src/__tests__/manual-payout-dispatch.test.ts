@@ -53,6 +53,8 @@ const TABLES_TO_CLEAN = [
   TABLES.Payout,
   TABLES.Attribution,
   TABLES.Event,
+  // Before Click (Identity.clickId) — other files can leave stitched clicks.
+  TABLES.Identity,
   TABLES.Click,
   TABLES.Link,
   TABLES.Program,
@@ -178,12 +180,14 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!skipIntegration) {
-    for (const t of TABLES_TO_CLEAN) await db(t).del();
+    // Restore the tenant first: if a wipe below throws, later payout files
+    // must not inherit the manual rail.
     await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({
       payoutRailPreference: tenantBefore?.payoutRailPreference ?? null,
       payoutThresholdCents: tenantBefore?.payoutThresholdCents ?? null,
       payoutCadence: tenantBefore?.payoutCadence ?? null,
     });
+    for (const t of TABLES_TO_CLEAN) await db(t).del();
   }
   await db.destroy();
 });

@@ -69,6 +69,14 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (receiver) await new Promise<void>((r) => receiver.close(() => r()));
+  // Includes Config (network_membership + network.lastPayoutsReportedAt):
+  // membership makes POST /programs default shareOnNetwork on (and then
+  // demand a marketplaceDescription) in later files.
+  if (!skipIntegration) {
+    for (const t of TABLES_TO_CLEAN) {
+      await db(t).whereIn('tenantId', [DEFAULT_TENANT_ID]).del();
+    }
+  }
   await db.destroy();
 });
 
