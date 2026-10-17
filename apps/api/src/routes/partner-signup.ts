@@ -35,6 +35,12 @@
  * returned networkCreatorId is stamped on Partner.metadata.network.
  * Everyone else is asked once in the portal. Network failures are queued
  * in NetworkOutbox and don't fail the signup.
+ *
+ * Webhooks: every signup fires `partner.created` with `source: 'join_page'`.
+ * An auto-approved applicant is active from the moment they apply, so
+ * `partner.activated` (`invited: false`) follows straight away; one held
+ * for review fires it from magic-link verify on their first sign-in after
+ * approval.
  */
 
 import { Router } from 'express';
@@ -64,6 +70,8 @@ import type { PartnerReview } from '../partner-review.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { tenantOf } from '../tenancy.js';
 import { grantNetworkConsent, isNetworkOfferedToPartners, syncPartnerToNetwork } from '../network-consent.js';
+import { dispatchEvent } from '../webhook-dispatcher.js';
+import type { WebhookPayload } from '../openapi/webhook-events.js';
 
 export const partnerSignupRouter = Router();
 
@@ -263,6 +271,34 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
   if (body.data.networkOptIn === true && (await isNetworkOfferedToPartners(db, tenantId))) {
     await grantNetworkConsent(db, tenantId, partner.id, 'join_page');
     await syncPartnerToNetwork(db, tenantId, partner, { profile });
+  }
+
+  // Webhooks, as POST /partners fires them, so a CRM or Zapier relay sees
+  // join-page partners too. Sent before the email: a mail failure still
+  // leaves a partner the subscriber should know about. `invited` is the
+  // sign-in link below, which only an auto-approved applicant gets; they
+  // are active now, so this is also their activation (verify only fires it
+  // for a partner who isn't active yet). Applicants start with no program
+  // grants: an admin grants them.
+  dispatchEvent(tenantId, 'partner.created', {
+    partnerId: partner.id,
+    email,
+    name: partner.name,
+    activatedAt: partner.activatedAt ? partner.activatedAt.toISOString() : null,
+    invited: activatedAt !== null,
+    portalAccess: partner.portalAccess,
+    programIds: [],
+    source: 'join_page',
+  } satisfies WebhookPayload<'partner.created'>);
+  if (partner.activatedAt) {
+    dispatchEvent(tenantId, 'partner.activated', {
+      partnerId: partner.id,
+      email,
+      name: partner.name,
+      activatedAt: partner.activatedAt.toISOString(),
+      invited: false,
+      source: 'join_page',
+    } satisfies WebhookPayload<'partner.activated'>);
   }
 
   const { resolveBrandName } = await import('../brand-name.js');
