@@ -25,7 +25,9 @@ import { TABLES, type ApiKeyRow } from '@openpartner/db';
 
 export type ApiKeyPrincipal =
   | { role: 'admin'; source: 'env' }
-  | { role: 'admin'; source: 'db'; apiKeyId: string }
+  // `scopes` is set when grantScope admitted a scoped key: the key's own
+  // scopes, for the few handlers that narrow what one scope may do.
+  | { role: 'admin'; source: 'db'; apiKeyId: string; scopes?: string[] }
   | { role: 'admin'; source: 'session'; sessionId: string; adminId: string }
   | { role: 'partner'; source: 'db'; apiKeyId: string; partnerId: string }
   | { role: 'partner'; source: 'session'; sessionId: string; partnerId: string }
@@ -206,21 +208,35 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
  *
  * This design means we didn't have to teach every existing endpoint about
  * scopes — just add `grantScope('x:y')` to the routes federation reaches.
+ *
+ * More than one scope = any of them unlocks the route (`partners:create`
+ * or `partners:write` for POST /partners). A miss reports the first as
+ * `required`. The rewritten principal keeps the key's scopes, so a handler
+ * can narrow what the lesser scope may do there.
  */
-export function grantScope(scope: string) {
+export function grantScope(scope: string, ...alsoAccepted: string[]) {
+  const accepted = [scope, ...alsoAccepted];
   const grant = (req: Request, res: Response, next: NextFunction): void => {
     const p = req.principal;
     if (!p || p.role !== 'scoped') return next();
-    if (!p.scopes.includes(scope)) {
+    if (!accepted.some((s) => p.scopes.includes(s))) {
       res.status(403).json({ error: 'forbidden_scope', required: scope });
       return;
     }
-    req.principal = { role: 'admin', source: 'db', apiKeyId: p.apiKeyId };
+    req.principal = { role: 'admin', source: 'db', apiKeyId: p.apiKeyId, scopes: p.scopes };
     next();
   };
   // Read by the OpenAPI drift test, which checks every documented scope
   // against the grantScope on the route it describes.
-  return Object.assign(grant, { grantsScope: scope });
+  return Object.assign(grant, { grantsScopes: accepted });
+}
+
+/** True when the caller is a scoped key admitted on some scope other than
+ *  `scope` — i.e. it doesn't hold `scope` itself. False for every unscoped
+ *  caller (admin keys, sessions, ADMIN_API_KEY). */
+export function scopedKeyLacks(req: Request, scope: string): boolean {
+  const p = req.principal;
+  return p?.role === 'admin' && p.source === 'db' && p.scopes !== undefined && !p.scopes.includes(scope);
 }
 
 function constantTimeEqual(a: string, b: string): boolean {

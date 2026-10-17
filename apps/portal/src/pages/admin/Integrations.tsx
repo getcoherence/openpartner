@@ -49,8 +49,10 @@ interface CreatedKey {
 //
 // IN_APP_SCOPES are opt-in: a headless in-app referral UI (the brand's
 // backend showing each user their link + earnings) needs per-partner
-// link and payout reads, and to mint a user's link on first visit.
-// Off by default so a CRM/Zapier key doesn't carry them.
+// link and payout reads, to mint a user's link on first visit, and to
+// create the user's partner (partners:create, which can't email anyone,
+// in place of partners:write). Off by default so a CRM/Zapier key
+// doesn't carry them.
 //
 // The scope lists are what the dev sees in the UI and what the create
 // mutation mints, so the displayed set never drifts from the key.
@@ -60,12 +62,13 @@ interface ScopeOption {
 }
 const CORE_SCOPES: ScopeOption[] = [
   { scope: 'events:write', description: 'Record conversion events (the CRM webhook path).' },
-  { scope: 'partners:write', description: 'Create + revoke partners (Zapier/ActivePieces actions).' },
+  { scope: 'partners:write', description: 'Create, invite and revoke partners (Zapier/ActivePieces actions). Revoking emails the partner unless told not to.' },
   { scope: 'partners:read', description: 'List partners, look one up by id or email, and read a partner’s dashboard stats.' },
   { scope: 'commissions:read', description: 'List commissions — tenant-wide or per partner, paged with a cursor.' },
   { scope: 'webhooks:write', description: 'Subscribe + unsubscribe webhook endpoints (Zapier/ActivePieces triggers register their callback URLs through these).' },
 ];
 const IN_APP_SCOPES: ScopeOption[] = [
+  { scope: 'partners:create', description: 'Create partners without an invite, and nothing else: no invites, revokes or commission terms. Use it instead of partners:write on an in-app key.' },
   { scope: 'links:read', description: 'Read a partner’s referral links (show each user their share link).' },
   { scope: 'links:write', description: 'Create a referral link for a partner (mint a user’s link on first visit).' },
   { scope: 'payouts:read', description: 'Read a partner’s payout history. Read-only — can’t run or confirm payouts.' },
@@ -158,10 +161,12 @@ function WhyCard() {
       </p>
       <p style={{ fontSize: 13, color: theme.textMuted, margin: 0, lineHeight: 1.55 }}>
         Building your own in-app referral page instead of sending users
-        to the partner portal? Add the in-app scopes (links:read,
-        links:write, payouts:read) so your backend can show each user
-        their link, earnings, and payouts. Keep that key on your server
-        &mdash; it can read every partner&rsquo;s data on your tenant.
+        to the partner portal? Add the in-app scopes (partners:create,
+        links:read, links:write, payouts:read) and untick partners:write,
+        so your backend can create each user&rsquo;s partner and show them
+        their link, earnings, and payouts without being able to invite or
+        revoke anyone. Keep that key on your server &mdash; it can read
+        every partner&rsquo;s data on your tenant.
       </p>
     </Card>
   );

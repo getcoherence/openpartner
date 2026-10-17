@@ -227,7 +227,7 @@ beforeAll(async () => {
   if (skipIntegration) return;
   await db.raw('select 1');
   for (const t of TABLES_TO_CLEAN) await db(t).del();
-  await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID, key: 'network_membership' }).del();
+  await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access']).del();
   savedTenant = await db(TABLES.Tenant)
     .where({ id: DEFAULT_TENANT_ID })
     .first('payoutThresholdCents', 'couponIntegrationVerifiedAt');
@@ -252,7 +252,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (!skipIntegration) {
     for (const t of TABLES_TO_CLEAN) await db(t).del();
-    await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID, key: 'network_membership' }).del();
+    await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access']).del();
     await db(TABLES.Tenant)
       .where({ id: DEFAULT_TENANT_ID })
       .update({
@@ -277,6 +277,15 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     const membership = check<{ autoEnroll: boolean }>('updateNetworkMembership', await admin.post('/config/network', { autoEnroll: false }));
     expect(membership.autoEnroll).toBe(false);
 
+    // Customers created without an invite can't sign in to the hosted portal.
+    check('getPartnerAccessSettings', await admin.get('/config/partner-access'));
+    const access = check<{ uninvitedPortalAccess: boolean }>(
+      'updatePartnerAccessSettings',
+      await admin.post('/config/partner-access', { uninvitedPortalAccess: false }),
+    );
+    expect(access.uninvitedPortalAccess).toBe(false);
+    check('updatePartnerAccessSettings', await admin.post('/config/partner-access', { uninvitedPortalAccess: 'no' }));
+
     const program = check<{ id: string }>(
       'createProgram',
       await admin.post('/programs', {
@@ -293,14 +302,14 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       'createScopedKey',
       await admin.post('/api-keys/scoped', {
         label: 'in-app referral',
-        scopes: ['partners:write', 'partners:read', 'links:write', 'links:read', 'events:write', 'commissions:read', 'payouts:read'],
+        scopes: ['partners:create', 'partners:read', 'links:write', 'links:read', 'events:write', 'commissions:read', 'payouts:read'],
       }),
     );
     const integration = as(scoped.plaintext);
     check('listScopedKeys', await admin.get('/api-keys'));
 
     // --- First visit to the referral page: create the partner + link.
-    const partner = check<{ id: string; activatedAt: string | null; invited: boolean }>(
+    const partner = check<{ id: string; activatedAt: string | null; invited: boolean; portalAccess: boolean }>(
       'createPartner',
       await integration.post('/partners', {
         email: 'customer@example.com',
@@ -312,7 +321,12 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     );
     expect(partner.activatedAt).not.toBeNull();
     expect(partner.invited).toBe(false);
+    expect(partner.portalAccess).toBe(false);
     check('createPartner', await integration.post('/partners', { email: 'customer@example.com', name: 'Again', sendInvite: false }));
+    // partners:create never sends an invite, even by default.
+    const invite = check<{ required?: string }>('createPartner', await integration.post('/partners', { email: 'friend@example.com', name: 'Friend' }));
+    expect(invite.required).toBe('partners:write');
+    check('createPartner', await admin.post('/partners', { email: 'friend@example.com', name: 'Friend', portalAccess: false }));
 
     const found = check<{ partners: Array<{ id: string }> }>('listPartners', await integration.get('/partners?email=customer@example.com'));
     expect(found.partners.map((p) => p.id)).toEqual([partner.id]);
@@ -320,6 +334,11 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     check('listPartners', await integration.get('/partners?cursor=not-a-cursor'));
     check('getPartner', await integration.get(`/partners/${partner.id}`));
     check('invitePartner', await admin.post(`/partners/${partner.id}/invite`));
+    check('updatePartner', await admin.patch(`/partners/${partner.id}`, { portalAccess: true }));
+    const locked = check<{ portalAccess: boolean }>('updatePartner', await admin.patch(`/partners/${partner.id}`, { portalAccess: false }));
+    expect(locked.portalAccess).toBe(false);
+    check('updatePartner', await admin.patch(`/partners/${partner.id}`, { name: 'Renamed' }));
+    check('updatePartner', await admin.patch('/partners/missing', { portalAccess: true }));
 
     const link = check<{ linkKey: string }>(
       'createPartnerLink',

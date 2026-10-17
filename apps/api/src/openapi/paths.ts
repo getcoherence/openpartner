@@ -94,19 +94,25 @@ export function registerPaths(r: OperationRegistry): void {
 Creates a partner and grants it programs.
 
 - \`sendInvite: false\` creates the partner **active immediately** and sends no email. Use this when your own app is the partner's UI (headless / in-app referral). The default sends a magic-link invite.
+- \`portalAccess: false\` keeps the partner out of the hosted partner portal: \`POST /auth/signin\` sends them nothing (it answers as it does for an unknown email), and no invite or portal email goes to them. It needs \`sendInvite: false\` (\`400 invite_requires_portal_access\` otherwise). Omitted, it is \`true\` for an invited partner and the tenant default (\`GET /config/partner-access\`) for one created without an invite. Change it later with \`PATCH /partners/{id}\`.
 - \`programIds\` omitted grants **every current program**. Pass an explicit list (even \`[]\`) to control access.
 - A coupon is auto-minted per granted program.
-- Fires \`partner.created\`.
+- Fires \`partner.created\`, then, for a \`sendInvite: false\` partner (active now), \`partner.activated\` with \`invited: false\`. An invited partner fires \`partner.activated\` when they accept.
 
-**Email and portal access.** A \`sendInvite: false\` partner is active, so anyone who knows its email can request a sign-in link on the hosted partner portal (\`POST /auth/signin\`): OpenPartner then emails that address, and the partner can use the portal. There is no setting to turn that off per partner yet. If that matters, give headless partners an address that can't receive mail.
+**\`partners:create\`** is the scope for an in-app integration's runtime key: it can only create partners, and only without an invite or commission terms. A request with \`sendInvite\` omitted or \`true\`, a \`commissionSnapshot\` or \`programCommissions\` answers \`403 forbidden_scope\` with \`required: "partners:write"\`.
 
 **OpenPartner Network:** this call shares nothing with the OpenPartner Network. A partner's name and email reach it only if the partner opts in themselves, while the tenant offers the Network (\`autoEnroll\` on, \`GET /config/network\`): they're asked on the join page, once on first portal sign-in, and in a portal setting. \`metadata\` is never sent. To keep customer-referral partners from being asked, turn offering off: \`POST /config/network {"autoEnroll": false}\`.
 
 On OpenPartner Cloud the brand needs an active plan (\`402 plan_required\`) and an approved account (\`403 brand_pending_review\`).`,
-    access: { kind: 'admin', scope: 'partners:write' },
+    access: { kind: 'admin', scope: ['partners:write', 'partners:create'] },
     body: partners.createSchema.openapi('CreatePartnerRequest'),
     responses: { 201: { description: 'Created.', schema: S.PartnerCreated } },
-    errors: { 400: ['unknown_campaign_ids'], 402: ['plan_required'], 403: ['brand_pending_review'], 409: ['email_taken'] },
+    errors: {
+      400: ['unknown_campaign_ids', 'invite_requires_portal_access'],
+      402: ['plan_required'],
+      403: ['brand_pending_review'],
+      409: ['email_taken'],
+    },
   });
 
   r.operation({
@@ -135,6 +141,24 @@ On OpenPartner Cloud the brand needs an active plan (\`402 plan_required\`) and 
   });
 
   r.operation({
+    method: 'patch',
+    path: '/partners/:id',
+    tag: 'Partners',
+    operationId: 'updatePartner',
+    summary: "Change a partner's portal access",
+    description: `
+\`portalAccess: false\` ends the partner's portal sessions and unused sign-in links at once. From then on \`POST /auth/signin\` sends them nothing, and no invite or portal email goes to them. Their partner API keys (\`POST /partners/{id}/api-keys\`) keep working; revoke those with \`DELETE /api-keys/{keyId}\`.
+
+\`portalAccess: true\` sends nothing. An active partner can then request a sign-in link on the portal; one who never accepted an invite needs \`POST /partners/{id}/invite\`.
+
+Fields this operation doesn't accept answer \`400 invalid_body\`.`,
+    access: { kind: 'admin', scope: 'partners:write' },
+    body: partners.updateSchema.openapi('UpdatePartnerRequest'),
+    responses: { 200: { description: 'The partner, as saved.', schema: S.Partner } },
+    errors: { 404: ['not_found'] },
+  });
+
+  r.operation({
     method: 'post',
     path: '/import/partners-csv',
     tag: 'Partners',
@@ -147,7 +171,8 @@ Send \`text/csv\` with a header row: \`email\` and \`name\` (required), \`activa
 
 Unlike \`POST /partners\`, an import:
 - grants every partner **every current program** (there is no \`programIds\`),
-- sends no email, mints no coupons, fires no \`partner.created\` webhooks,
+- sends no email, mints no coupons, fires no \`partner.created\` or \`partner.activated\` webhooks,
+- gives every partner the tenant's default portal access for partners added without an invite (\`GET /config/partner-access\`),
 - shares nothing with the OpenPartner Network: as with \`POST /partners\`, only a partner's own opt-in does.
 
 Rows whose email already exists are reported as \`skipped_email_taken\` with the existing \`partnerId\`, so re-running an import is safe. \`?dryRun=true\` validates and reports without writing. Rows are processed one by one in a single transaction; send large rosters in batches of a few thousand rows.`,
@@ -186,10 +211,11 @@ Rows whose email already exists are reported as \`skipped_email_taken\` with the
     tag: 'Partners',
     operationId: 'invitePartner',
     summary: 'Send or resend the invite email',
-    description: 'For a partner who has not activated yet. For an applicant held for review, this is also the approval.',
+    description:
+      'For a partner who has not activated yet. For an applicant held for review, this is also the approval. A partner without portal access gets `409 portal_access_disabled` (the invite is a sign-in link), and an applicant stays unapproved.',
     access: { kind: 'admin', scope: 'partners:write' },
     responses: { 200: { description: 'Sent.', schema: z.object({ ok: z.literal(true), approved: z.boolean() }) } },
-    errors: { 404: ['not_found'], 409: ['already_activated'], 422: ['mail_send_failed'] },
+    errors: { 404: ['not_found'], 409: ['already_activated', 'portal_access_disabled'], 422: ['mail_send_failed'] },
   });
 
   r.operation({
@@ -199,7 +225,7 @@ Rows whose email already exists are reported as \`skipped_email_taken\` with the
     operationId: 'revokePartner',
     summary: 'Suspend a partner',
     description:
-      "Ends the partner's sessions and partner keys and stops future attribution to them. Existing links keep redirecting (clicks are flagged `revoked`); past commissions are untouched.",
+      "Ends the partner's sessions and partner keys and stops future attribution to them. Existing links keep redirecting (clicks are flagged `revoked`); past commissions are untouched.\n\nEmails the partner a suspension notice unless `notify: false`. For a partner without portal access the default is the other way round: they are emailed only with `notify: true`.",
     access: { kind: 'admin', scope: 'partners:write' },
     body: partners.revokeSchema.openapi('RevokePartnerRequest'),
     responses: {
@@ -1013,5 +1039,29 @@ A click flagged by velocity limits or a revoked partner earns nothing: \`422 cli
     body: settings.networkMembershipSchema.openapi('UpdateNetworkMembershipRequest'),
     responses: { 200: { description: 'The saved membership.', schema: S.NetworkMembership } },
     errors: { 403: ['brand_pending_review'], 409: ['white_label_network_conflict'] },
+  });
+
+  // ------------------------------------------------ Partner portal access
+  r.operation({
+    method: 'get',
+    path: '/config/partner-access',
+    tag: 'Partners',
+    operationId: 'getPartnerAccessSettings',
+    summary: 'Get the portal-access default for partners added without an invite',
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'The setting.', schema: S.PartnerAccessSettings } },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/config/partner-access',
+    tag: 'Partners',
+    operationId: 'updatePartnerAccessSettings',
+    summary: 'Set the portal-access default for partners added without an invite',
+    description:
+      'Send `{"uninvitedPortalAccess": false}` before a headless program creates its partners, so a partner created with `sendInvite: false` (or imported) can\'t sign in to the hosted portal unless the request says `portalAccess: true`. Applies to partners created from then on; change existing ones with `PATCH /partners/{id}`. Omitted fields keep their value. Also on Admin → Settings.',
+    access: { kind: 'admin' },
+    body: settings.partnerAccessSchema.openapi('UpdatePartnerAccessSettingsRequest'),
+    responses: { 200: { description: 'The saved setting.', schema: S.PartnerAccessSettings } },
   });
 }

@@ -331,6 +331,10 @@ export interface PartnerRow {
   // Admin-supplied free-text reason surfaced in the revoke notification
   // email and shown if the partner later tries to sign in.
   revokeReason: string | null;
+  // false = the partner can't sign in to the partner portal: no magic
+  // links, no sessions. For headless programs, where the brand's own app
+  // is the partner's only view. Default true. See partner-portal-access.ts.
+  portalAccess: boolean;
 }
 
 export type CommissionType = 'percent' | 'fixed';

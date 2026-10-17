@@ -197,6 +197,7 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     name: 'Sample Partner',
     activatedAt: null,
     invited: true,
+    portalAccess: true,
     programIds: ['cmp_default'],
   }),
   'partner.activated': () => ({
@@ -204,6 +205,7 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     email: 'sample@example.com',
     name: 'Sample Partner',
     activatedAt: new Date().toISOString(),
+    invited: true,
   }),
   'partnership.approved': () => ({
     partnerId: `01J${'1'.repeat(23)}`,

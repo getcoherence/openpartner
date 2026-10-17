@@ -40,6 +40,7 @@ import {
   signupWithNetwork,
 } from '../network-client.js';
 import { isNetworkOfferedToPartners, resyncConsentedPartners, summarizeNetworkConsent } from '../network-consent.js';
+import { readPartnerAccessSettings, savePartnerAccessSettings } from '../partner-portal-access.js';
 import { createApiKeyRow } from '../auth.js';
 import { getTenancyMode, tenantOf } from '../tenancy.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
@@ -371,6 +372,26 @@ settingsRouter.post('/config/partner-signup', requireAuth, requireAdmin, async (
     .onConflict(['tenantId', 'key'])
     .merge({ value: next as unknown as never, updatedAt: now });
   res.json(next);
+});
+
+// ---------- Partner portal access ----------
+
+/** The tenant default for partners added without an invite
+ *  (partner-portal-access.ts). Omitted fields keep their value. */
+export const partnerAccessSchema = z.object({
+  uninvitedPortalAccess: z.boolean().optional(),
+});
+
+settingsRouter.get('/config/partner-access', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  res.json(await readPartnerAccessSettings(db, tenantId));
+});
+
+settingsRouter.post('/config/partner-access', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = partnerAccessSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  res.json(await savePartnerAccessSettings(db, tenantId, body.data));
 });
 
 // ---------- Payout settings ----------

@@ -14,7 +14,7 @@ that overstates itself is worse than one with a documented hole.
 ```json
 {
   "exportedAt": "2026-08-09T12:00:00.000Z",
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "tables": { "Partner": [ … ], "Program": [ … ], … }
 }
 ```
@@ -59,6 +59,15 @@ v2 or v3 bundle restores with no consent rows, so every restored partner
 starts undecided and nobody is sent to the Network until they opt in on
 the new instance.
 
+`Partner` rows carry `portalAccess` (schemaVersion 5, Oct 2026): whether
+the partner may sign in to the partner portal. A headless program turns it
+off so its customers can't, and a restored instance keeps them out too. A
+v1–v4 bundle has no such column, and its partners restore with the column
+default, `true`, which is what every partner had when it was exported. The
+tenant-wide default for new partners (`GET /config/partner-access`) lives
+in `Config`, which isn't exported yet (see below), so set it again on the
+new instance.
+
 `PartnerCommission` rows carry a nullable `programId`. Null means the
 partner's partner-wide terms; a value means their terms for that one
 program (schemaVersion 3, Oct 2026). The table's natural key is one
@@ -83,8 +92,8 @@ the unknown column; migrate first.
 
 `SCHEMA_VERSION` is the current bundle version; `SUPPORTED_IMPORT_VERSIONS`
 is what `POST /import` accepts. **That list only ever grows.** A v1 bundle
-sitting on someone's disk keeps importing — it is simply a v4 bundle
-without the four tables added later.
+sitting on someone's disk keeps importing — it is simply a v5 bundle
+without the four tables and one column added later.
 
 | Version | Change |
 |---|---|
@@ -92,6 +101,7 @@ without the four tables added later.
 | 2 (Aug 2026) | added `PartnerProgram`, `PartnerCommission`, `Coupon`; per-table primary keys |
 | 3 (Oct 2026) | `PartnerCommission` gains `id` (the new primary key; was `partnerId`) and `programId` |
 | 4 (Oct 2026) | added `PartnerNetworkConsent` |
+| 5 (Oct 2026) | `Partner` gains `portalAccess` (older bundles restore it as `true`) |
 
 **Importing a v1 or v2 bundle.** `POST /import` upgrades older rows before
 inserting them (`upgradeBundle` in `apps/api/src/export.ts`). A v2
@@ -245,7 +255,8 @@ is an FK to it) can't simply be added to the bundle.
 - `Tenant` — brand name, logo, colours, payout settings. The destination
   tenant row has to exist before an import can run, so restoring one needs
   a merge strategy rather than an insert.
-- `Config` — program name, support email and other UI-managed settings.
+- `Config` — program name, support email, the partner portal-access default
+  and other UI-managed settings.
 - `PartnerPostback`, `BrandAsset` — customer-configured integration and
   content.
 - `WebhookEndpoint` — the customer's own outbound webhook configuration

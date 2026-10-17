@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Settings as SettingsIcon, Mail, Wallet, Palette, Image as ImageIcon, Trash2, UserPlus } from 'lucide-react';
+import { Settings as SettingsIcon, Mail, Wallet, Palette, Image as ImageIcon, Trash2, UserPlus, KeyRound } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
 import { alpha, theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
@@ -59,6 +59,8 @@ export function AdminSettings() {
       <BrandResourcesSection />
       <div style={{ height: 18 }} />
       <PartnerSignupSection />
+      <div style={{ height: 18 }} />
+      <PartnerPortalAccessSection />
       <div style={{ height: 18 }} />
       <PayoutSection />
       <div style={{ height: 18 }} />
@@ -150,6 +152,74 @@ function PartnerSignupSection() {
             <option value="require_review">Hold for review — an admin approves each application</option>
           </Select>
         </div>
+        {saved && <div style={{ color: theme.success, fontSize: 13 }}>Saved.</div>}
+      </div>
+    </Card>
+  );
+}
+
+// ---------- partner portal access ----------
+
+interface PartnerAccessSettings {
+  uninvitedPortalAccess: boolean;
+}
+
+/**
+ * The default for partners added without an invite — by an integration
+ * (POST /partners with sendInvite:false), a CSV import, or "Add partner"
+ * with the invite unticked. A headless program turns it off so its
+ * customers can't request a portal sign-in link. Per-partner overrides
+ * live on the Partners page.
+ */
+export function PartnerPortalAccessSection() {
+  const qc = useQueryClient();
+  const { data, error, isLoading } = useQuery({
+    queryKey: ['partner-access-settings'],
+    queryFn: () => api<PartnerAccessSettings>('/config/partner-access'),
+  });
+  const [saved, setSaved] = useState(false);
+  const mut = useMutation({
+    mutationFn: (patch: Partial<PartnerAccessSettings>) =>
+      api<PartnerAccessSettings>('/config/partner-access', { method: 'POST', body: patch }),
+    onSuccess: (next) => {
+      qc.setQueryData(['partner-access-settings'], next);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    },
+  });
+
+  if (isLoading) return <Card>Loading…</Card>;
+  const settings = data ?? { uninvitedPortalAccess: true };
+
+  return (
+    <Card>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+        <KeyRound size={18} style={{ color: theme.accentText }} />
+        <div style={{ fontSize: 15, fontWeight: 500 }}>Partner portal access</div>
+      </div>
+      <ErrorBanner error={error ?? mut.error} />
+      <div style={{ fontSize: 13, color: theme.textMuted, lineHeight: 1.6, marginBottom: 12, maxWidth: 560 }}>
+        Invited partners always get the portal. This is for partners added without an invite: by your integration
+        (<code>sendInvite: false</code>), a CSV import, or Add partner with the invite unticked.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 560 }}>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 13, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={settings.uninvitedPortalAccess}
+            onChange={(e) => mut.mutate({ uninvitedPortalAccess: e.target.checked })}
+            disabled={mut.isPending}
+            style={{ marginTop: 2 }}
+          />
+          <span>
+            <strong>Partners added without an invite can sign in to the portal</strong>
+            <span style={{ color: theme.textMuted, display: 'block' }}>
+              Unchecked = they can&rsquo;t request a sign-in link and we never email them about the portal. Use this
+              when your own app shows customers their referrals. Applies to partners added from now on; change
+              existing partners on the Partners page.
+            </span>
+          </span>
+        </label>
         {saved && <div style={{ color: theme.success, fontSize: 13 }}>Saved.</div>}
       </div>
     </Card>
