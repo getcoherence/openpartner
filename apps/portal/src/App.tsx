@@ -65,6 +65,7 @@ import { MyAffiliationsPage } from './pages/partner/MyAffiliations.js';
 import { MyRequestsPage } from './pages/partner/MyRequests.js';
 import { MyProfilePage } from './pages/partner/MyProfile.js';
 import { NetworkProfileBanner } from './pages/partner/NetworkProfileBanner.js';
+import { NetworkConsentPrompt, usePartnerNetworkAccess } from './pages/partner/NetworkConsent.js';
 import { PartnerPostbacksPage } from './pages/partner/Postbacks.js';
 import { InstallPage } from './pages/Install.js';
 import { LandingPage } from './pages/Landing.js';
@@ -203,7 +204,7 @@ function Shell() {
   // White-label tenants are isolated from the shared Network — gate the
   // Network/Discover routes on this so direct navigation can't reach them
   // even though the nav links are also hidden.
-  const { whiteLabel, partnerNetworkVisible, isLoading: brandLoading } = useBrand();
+  const { whiteLabel, isLoading: brandLoading } = useBrand();
   // Brand approval gate: /branding carries the tenant's approvalStatus.
   // usePublicBrand hits it through api() so it's tenant-scoped under the
   // /t/<slug>/ prefix (a prefix-less fetch would resolve to the platform
@@ -224,10 +225,19 @@ function Shell() {
     setDrawerOpen(false);
   }, [location.pathname]);
 
-  if (auth.loading || brandLoading) return <CenteredMessage>Loading…</CenteredMessage>;
+  // Partners: the Network section applies when the brand offers it or the
+  // partner opted in (they can always reach the setting to leave). Waited
+  // on so a deep link to /network/... isn't routed away while it loads.
+  const partnerNetwork = usePartnerNetworkAccess(auth.principal?.role === 'partner');
+
+  if (auth.loading || brandLoading || partnerNetwork.loading) return <CenteredMessage>Loading…</CenteredMessage>;
   if (!auth.principal) return <Navigate to={`${tenantBase}/login`} state={{ from: location }} replace />;
 
-  const showNetwork = !whiteLabel && (auth.principal.role === 'admin' || partnerNetworkVisible);
+  const showNetwork = !whiteLabel && (auth.principal.role === 'admin' ? true : partnerNetwork.show);
+  // The one-time "join the Network?" prompt: partners the brand offers it
+  // to who haven't answered yet.
+  const showNetworkConsentPrompt =
+    auth.principal.role === 'partner' && !!partnerNetwork.consent?.offered && partnerNetwork.consent.status === null;
   // A partner browsing the Network acts as a Network creator, so the same
   // incomplete-profile gate applies; nudge them on those pages (not on the
   // profile page itself).
@@ -252,6 +262,7 @@ function Shell() {
         {auth.principal.role === 'admin' && approvalStatus === 'pending' && !reviewBannerDismissed && (
           <PendingReviewBanner isMobile={isMobile} onDismiss={() => setReviewBannerDismissed(true)} />
         )}
+        {showNetworkConsentPrompt && <NetworkConsentPrompt isMobile={isMobile} />}
         {showNetworkProfileBanner && <NetworkProfileBanner isMobile={isMobile} />}
         <Routes>
           <Route index element={<Dashboard principal={auth.principal} />} />
@@ -407,7 +418,8 @@ function MobileDrawer({ open, onClose, children }: { open: boolean; onClose: () 
 export function Sidebar({ principal, variant = 'sidebar' }: { principal: Principal; variant?: 'sidebar' | 'drawer' }) {
   const nav = useNavigate();
   const tenantBase = useTenantBase();
-  const { programName, supportEmail, logoUrl, whiteLabel, partnerNetworkVisible } = useBrand();
+  const { programName, supportEmail, logoUrl, whiteLabel } = useBrand();
+  const partnerNetwork = usePartnerNetworkAccess(principal.role === 'partner');
   const isDrawer = variant === 'drawer';
 
   return (
@@ -452,7 +464,7 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
           {principal.role === 'partner' && <NavItem to="/postbacks" icon={<Webhook size={16} />}>Postbacks</NavItem>}
         </div>
 
-        {principal.role === 'partner' && !whiteLabel && partnerNetworkVisible && (
+        {principal.role === 'partner' && partnerNetwork.show && (
           <NavSection title="Network" collapsible storageKey="partner-network">
             <NavItem to="/network/discover" icon={<Globe size={16} />}>Discover programs</NavItem>
             <NavItem to="/network/affiliations" icon={<Megaphone size={16} />}>My partnerships</NavItem>

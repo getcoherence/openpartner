@@ -110,6 +110,14 @@ beforeEach(async () => {
     name: 'Pat Partner',
     activatedAt: new Date(),
   });
+  // Acting as the partner on the Network needs their consent.
+  await db(TABLES.PartnerNetworkConsent).insert({
+    partnerId,
+    tenantId: DEFAULT_TENANT_ID,
+    status: 'granted',
+    source: 'portal_setting',
+    consentedAt: new Date(),
+  });
   const session = await createSession(db, { tenantId: DEFAULT_TENANT_ID, principalKind: 'partner', principalId: partnerId });
   cookie = `op_session=${session.plaintext}`;
 });
@@ -253,5 +261,50 @@ describe.skipIf(skipIntegration)('auth', () => {
       expect((await route().set('Authorization', `Bearer ${ADMIN_KEY}`)).status).toBe(403);
     }
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe.skipIf(skipIntegration)('acting as a partner needs their Network consent', () => {
+  beforeEach(async () => {
+    await db(TABLES.PartnerNetworkConsent).where({ partnerId }).del();
+  });
+
+  it('refuses writes with network_consent_required and never calls the Network', async () => {
+    const res = await request(app).patch('/network/me/profile').set('Cookie', cookie).send({ bio: 'hello' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('network_consent_required');
+    const apply = await request(app).post('/network/offerings/off_1/apply').set('Cookie', cookie).send({});
+    expect(apply.status).toBe(403);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('answers reads with the empty state, flagged consentRequired', async () => {
+    const platforms = await request(app).get('/network/me/platforms').set('Cookie', cookie);
+    expect(platforms.status).toBe(200);
+    expect(platforms.body).toEqual({ platforms: [], consentRequired: true });
+    const profile = await request(app).get('/network/me/profile').set('Cookie', cookie);
+    expect(profile.body).toEqual({ notFederated: true, consentRequired: true });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('a withdrawn partner is refused too, even before the unlink lands', async () => {
+    await db(TABLES.PartnerNetworkConsent).insert({
+      partnerId,
+      tenantId: DEFAULT_TENANT_ID,
+      status: 'withdrawn',
+      source: 'join_page',
+      consentedAt: new Date(Date.now() - 60_000),
+      withdrawnAt: new Date(),
+    });
+    const res = await request(app).get('/network/me/affiliations').set('Cookie', cookie);
+    expect(res.body).toEqual({ affiliations: [], consentRequired: true });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('browsing public offerings needs no consent', async () => {
+    nextResponse = { status: 200, body: { offerings: [] } };
+    const res = await request(app).get('/network/discover').set('Cookie', cookie);
+    expect(res.status).toBe(200);
+    expect(calls[0]?.path).toBe('/offerings');
   });
 });
