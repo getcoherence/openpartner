@@ -26,13 +26,15 @@ import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
  *  v1 → v2 (Aug 2026): added PartnerProgram, PartnerCommission, Coupon;
  *  every table now carries its real primary key instead of assuming `id`.
  *  v2 → v3 (Oct 2026): PartnerCommission rows carry `id` (the new primary
- *  key) and `programId` (null = partner-wide, set = one program). */
-export const SCHEMA_VERSION = 3;
+ *  key) and `programId` (null = partner-wide, set = one program).
+ *  v3 → v4 (Oct 2026): added PartnerNetworkConsent. */
+export const SCHEMA_VERSION = 4;
 /** Older bundles still import — a v1 bundle is a v2 bundle minus three
- *  tables, and a v2 bundle's PartnerCommission rows are partner-wide v3
- *  rows (see upgradeBundle). Dropping support for a version people hold on
+ *  tables, a v2 bundle's PartnerCommission rows are partner-wide v3 rows
+ *  (see upgradeBundle), and a v3 bundle is a v4 bundle minus
+ *  PartnerNetworkConsent. Dropping support for a version people hold on
  *  disk would break the portability promise, so this list only ever grows. */
-export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3] as const;
+export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4] as const;
 
 export interface ExportTableSpec {
   table: string;
@@ -66,6 +68,11 @@ export const EXPORT_TABLES = [
   // agreed on. One partner-wide row (programId null) and/or one row per
   // program, per partner.
   { table: TABLES.PartnerCommission, primaryKey: 'id', conflict: 'any' },
+  // Each partner's own OpenPartner Network opt-in: how and when they
+  // consented, withdrew or declined. Keyed on partnerId, one row per
+  // partner. Without it a restored instance would forget who agreed to
+  // have their details shared with the Network.
+  { table: TABLES.PartnerNetworkConsent, primaryKey: 'partnerId' },
   // Coupon-code attribution. A coupon-driven conversion can't be
   // re-derived without the code → (partner, program) mapping.
   { table: TABLES.Coupon, primaryKey: 'id' },

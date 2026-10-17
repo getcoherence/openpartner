@@ -237,6 +237,10 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
  * use what they signed up for. Visibility is controlled by whether they
  * publish offerings, not by membership.
  *
+ * This enrolls the BRAND, not its partners. `autoEnroll: true` only means
+ * the Network is offered to partners, who each opt in themselves
+ * (network-consent.ts); nobody's details are pushed without that.
+ *
  * If NETWORK_ADMIN_API_KEY is set we take the admin fast path — Network
  * skips its email verify and returns the vendorToken inline so membership is
  * `enabled: true` from t=0. Otherwise we fall back to the email-verify flow

@@ -61,10 +61,14 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
   // apply, so say so before they write a pitch.
   const { data: myProfile } = useQuery({
     queryKey: ['network-my-profile'],
-    queryFn: () => api<ProfileCompleteness & { notFederated?: boolean }>(`/network/me/profile`),
+    queryFn: () => api<ProfileCompleteness & { notFederated?: boolean; consentRequired?: boolean }>(`/network/me/profile`),
     enabled: canApply,
     retry: false,
   });
+  // Applying acts as the partner on the Network, which they have to have
+  // opted in to (the API answers 403 network_consent_required otherwise).
+  const needsConsent =
+    !!myProfile?.consentRequired || (apply.error instanceof ApiError && apply.error.message === 'network_consent_required');
   const profileMissing = myProfile?.notFederated ? null : missingFromProfile(myProfile);
   const refusedMissing = profileIncompleteFrom(apply.error);
   const missing = refusedMissing ?? profileMissing;
@@ -102,6 +106,13 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
             {!canApply ? (
               <p style={{ color: theme.textMuted }}>
                 Only partner accounts can apply. <TenantLink to="/login">Switch accounts</TenantLink>?
+              </p>
+            ) : needsConsent ? (
+              <p style={{ color: theme.textMuted, fontSize: 14 }}>
+                To apply to programs from other brands, join the OpenPartner Network first.{' '}
+                <TenantLink to="/network/profile" style={{ color: theme.accentText, fontWeight: 500 }}>
+                  See what&rsquo;s shared and join →
+                </TenantLink>
               </p>
             ) : (
               <>

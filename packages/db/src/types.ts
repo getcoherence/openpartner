@@ -180,17 +180,85 @@ export const DEFAULT_TENANT_ID = '01J0000000DEFAULTTENANT0000';
  * 20260520000000_compound_commission_rules migration backfilled pre-array rows
  * into 1-element arrays — `parseCommissionRule` in attribution.ts also tolerates
  * the legacy single-object shape so a half-applied migration can't break attribution.
+ *
+ * Slabs: a sub-rule may vary its rate with `bands` (the event's own value)
+ * or `tiers` (the partner's attributed performance over a window), never
+ * both. `value` stays the base rate either way, so a consumer that ignores
+ * slabs still reads a valid rule. Full semantics: docs/commission-slabs.md.
  */
 export type CommissionRuleTrigger = 'every' | 'first' | 'subsequent';
+
+/** One step of a value band. Pays `value` when the event's value is
+ *  strictly ABOVE `above` (and not above the next step's `above`). */
+export interface CommissionBandLevel {
+  above: number;
+  /** Percent (20 = 20%) or fixed amount, per the sub-rule's `type`. */
+  value: number;
+}
+
+/**
+ * Value bands: the rate depends on the event's own value.
+ *
+ *   whole    — the whole event pays the rate of the band its value falls in
+ *   marginal — tax-bracket style: each slice of the value pays its band's
+ *              rate. Percent rules only.
+ *
+ * The sub-rule's `value` is the base band, from zero up to and including
+ * levels[0].above. Thresholds are in the sub-rule's `currency` when set
+ * (see CommissionSubRule.currency), else in the event's own currency.
+ */
+export interface CommissionBands {
+  mode: 'whole' | 'marginal';
+  /** 1–10 steps, `above` strictly ascending. */
+  levels: CommissionBandLevel[];
+}
+
+/** One step of a performance tier. Applies once the partner's metric is
+ *  AT LEAST `atLeast` (and below the next step's). */
+export interface CommissionTierLevel {
+  atLeast: number;
+  value: number;
+}
+
+export type CommissionTierMetric = 'revenue' | 'conversions';
+export type CommissionTierWindow = 'lifetime' | 'calendar_month' | 'rolling_days';
+
+/**
+ * Performance tiers: the rate depends on the partner's attributed
+ * performance in this program over a window, measured from the raw
+ * Attribution × Event history strictly BEFORE the event being accrued.
+ * Not retroactive: the event that crosses a threshold pays the old rate;
+ * later events pay the new one.
+ *
+ *   revenue     — Σ Event.value × Attribution.weight, events in the
+ *                 threshold currency only
+ *   conversions — Σ Attribution.weight (a 50/50 split counts half)
+ *
+ * Counts events of `eventType`, defaulting to the sub-rule's own eventType;
+ * validation requires one of the two. calendar_month is the UTC month of
+ * the event; rolling_days is the `windowDays` before it.
+ */
+export interface CommissionTiers {
+  metric: CommissionTierMetric;
+  window: CommissionTierWindow;
+  /** Required for rolling_days. */
+  windowDays?: number;
+  eventType?: string;
+  /** 1–10 steps, `atLeast` strictly ascending. */
+  levels: CommissionTierLevel[];
+}
 
 export interface CommissionSubRule {
   trigger: CommissionRuleTrigger;
   /** Event-type filter. Required for `first`, optional for `every` (omit = all events). */
   eventType?: string;
   type: 'percent' | 'fixed';
-  /** Percent: 20 means 20%. Fixed: dollar amount. */
+  /** Percent: 20 means 20%. Fixed: dollar amount. With bands or tiers,
+   *  the base rate (below the first threshold). */
   value: number;
-  /** Only meaningful for fixed rules. */
+  /** Currency of the rule's money amounts: a fixed value, and the
+   *  thresholds of bands / revenue tiers. Unset = the event's currency.
+   *  (The accrued Commission is always in the event's currency.) */
   currency?: string;
   /** When true, the rule keeps firing on subsequent matching events
    *  (renewals). Combined with recurringMonths to cap duration. */
@@ -198,6 +266,8 @@ export interface CommissionSubRule {
   /** Cap (in months) after the first attributed event of this type for
    *  the (partner, user) pair. Null/omitted = no cap. */
   recurringMonths?: number;
+  bands?: CommissionBands;
+  tiers?: CommissionTiers;
 }
 
 export type CommissionRule = CommissionSubRule[];
@@ -301,6 +371,45 @@ export interface PartnerCommissionRow {
   holdbackDays: number | null;
   source: PartnerCommissionSource;
   snapshottedAt: Date;
+}
+
+/**
+ * A partner's own decision about joining the OpenPartner Network
+ * (PartnerNetworkConsent, one row per partner). No row = never asked.
+ *
+ *   granted   — opted in: `source` says how, `consentedAt` when.
+ *   withdrawn — opted in, then turned it off in the portal setting:
+ *               `source` + `consentedAt` still describe the consent that
+ *               was withdrawn, `withdrawnAt` is when.
+ *   declined  — said no to the first-login prompt (`declinedAt`). Never
+ *               consented, so `source` and `consentedAt` are null.
+ *
+ * Only `granted` partners are ever pushed to the Network.
+ */
+export type NetworkConsentStatus = 'granted' | 'withdrawn' | 'declined';
+
+/** How consent was given. `network_offering` = the partner joined this
+ *  program from a Network offering (already a Network member);
+ *  `grandfathered` = pushed under the old brand-level auto-enroll, before
+ *  partners were asked. */
+export const NETWORK_CONSENT_SOURCES = [
+  'join_page',
+  'portal_prompt',
+  'portal_setting',
+  'network_offering',
+  'grandfathered',
+] as const;
+export type NetworkConsentSource = (typeof NETWORK_CONSENT_SOURCES)[number];
+
+export interface PartnerNetworkConsentRow {
+  partnerId: string;
+  tenantId: string;
+  status: NetworkConsentStatus;
+  source: NetworkConsentSource | null;
+  consentedAt: Date | null;
+  withdrawnAt: Date | null;
+  declinedAt: Date | null;
+  updatedAt: Date;
 }
 
 export type MagicLinkPurpose =
@@ -658,6 +767,10 @@ export interface CommissionRow {
   accruedAt: Date;
   paidAt: Date | null;
   payoutId: string | null;
+  /** How the amount was computed, for audit. Holds `slab` (see
+   *  CommissionSlabTrace in apps/api/src/commission-slabs.ts) when a band
+   *  or tier set the rate; `{}` otherwise. */
+  metadata: Record<string, unknown>;
 }
 
 export interface ConfigRow {
@@ -774,7 +887,9 @@ export interface PartnerPostbackRow {
   failureCount: number;
 }
 
-export type NetworkOutboxOp = 'partner_upsert' | 'partner_revoke' | 'backfill_partner';
+/** `partner_unlink` removes one vendor↔partner affiliation when the partner
+ *  withdraws or declines Network consent (docs/network-protocol.md). */
+export type NetworkOutboxOp = 'partner_upsert' | 'partner_revoke' | 'backfill_partner' | 'partner_unlink';
 export type NetworkOutboxStatus = 'pending' | 'dead';
 
 export interface NetworkOutboxRow {

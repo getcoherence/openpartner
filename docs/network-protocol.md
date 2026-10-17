@@ -20,8 +20,25 @@ implementing them.
 | `vendorPartnerId` | Vendor DB | A creator's relationship with this vendor | The `Partner.id` (ULID) on the vendor side. |
 | `networkCreatorId` | Network DB | A creator's lifetime across vendors | Email-keyed canonical identity. Same email → same id, even across tenants/vendors. |
 
-Vendors stamp `Partner.metadata.networkCreatorId` so admin UIs can show
+Vendors stamp `Partner.metadata.network.creatorId` so admin UIs can show
 "this creator is on the Network" without an extra round-trip.
+
+## Partner consent (vendor side)
+
+A vendor sends a partner's details to the Network **only if that partner
+opted in**. Joining a brand's program is not joining the Network. Before
+Oct 2026 the brand-level `autoEnroll` flag pushed every partner. It now
+only means "offer the Network to my partners". Partners decide for
+themselves on the join page, in a one-time portal prompt, or in a portal
+setting. The decision is recorded in the vendor's `PartnerNetworkConsent`
+table. The vendor enforces this before every `/partners/upsert` call,
+revokes included, and its outbox re-checks it before each retry.
+
+Partners provisioned by the Network's own approve federation
+(`POST /partners` with `metadata.source = 'openpartner_network'`, on the
+scoped key from registration) are already Network members and count as
+consented. When a partner withdraws, or declines the prompt, the vendor
+calls `POST /partners/unlink` (below) and pushes nothing else for them.
 
 ## Auth
 
@@ -75,9 +92,9 @@ GET `/health` from its own infra and rejects on non-200 within 5s).
 
 ### `POST /partners/upsert`
 
-Called every time a vendor creates or revokes a partner (whether via
-admin invite, public `POST /partner-signup`, or federated onboarding).
-Email is the join key.
+Called for a partner who opted in (see Partner consent above): when they
+join or opt in, when the brand revokes them, and from the admin re-sync.
+A brand's other partners are never sent. Email is the join key.
 
 ```
 Headers
@@ -122,6 +139,66 @@ always send it on public signup.
 Idempotency: `(vendorId, vendorPartnerId)` is unique on the Network
 side. Re-posting the same `vendorPartnerId` updates status and bumps
 `updatedAt`.
+
+**Revoke** uses this same endpoint with `status: "revoked"` and the full
+body (`email`, `name` and `joinedVendorAt` included), because the Network
+validates every upsert against the schema above. Vendors before Oct 2026
+sent only `{ vendorPartnerId, status, revokedAt }`. The Network rejected
+that with a 400 on every attempt until the outbox gave up, so no revoke
+from those versions ever landed.
+
+### `POST /partners/unlink`
+
+Implemented in openpartner-network#11 (Oct 2026).
+
+Removes one vendor's affiliation with a partner, because the partner
+withdrew Network consent or declined it. The body carries **no personal
+data**, so a vendor may send it for a partner the Network never received.
+
+```
+Headers
+  Authorization: Bearer <vendorToken>
+Body
+  {
+    "vendorPartnerId": "01J...",                       // Partner.id on the vendor side
+    "reason": "consent_withdrawn" | "consent_declined"
+  }
+Response 200
+  {
+    "removed":        true | false,   // false = no affiliation for (vendorId, vendorPartnerId); still 200
+    "creatorDeleted": true | false
+  }
+```
+
+Required Network behaviour:
+
+1. Delete the `VendorAffiliation` for `(vendor.id, vendorPartnerId)`.
+   Don't mark it `revoked`: the partner asked for the brand's link to the
+   Network to be removed, and a revoked row still records it. After this
+   call, acting as that partner (`x-act-as-vendor-partner`) must fail with
+   `invalid_acting_context`.
+2. Then, if the creator has **no** remaining affiliations, Partnerships or
+   PartnershipRequests, has never signed in to the Network themselves (no
+   `lastSignInAt`, no consumed sign-in link), and is still `active`, delete
+   the `Creator`. Delete with it everything vendors filled in for them:
+   `CreatorPlatform` rows and `creatorProfile` fill-ins. Such a creator
+   only existed because vendors pushed them, so removing the last push
+   removes them. A creator who signed in, or who works with another brand,
+   keeps their account. So does a creator an operator blocked or
+   suspended, so the decision stays on record.
+3. Don't touch Partnerships the creator made on the Network. Those are the
+   creator's own marketplace relationships, which they manage on the
+   Network.
+4. Be idempotent: an unknown `vendorPartnerId` answers `200` with
+   `removed: false`, never `404`.
+5. Accept the call from a suspended vendor too. It only removes data, and
+   suspension mustn't trap a partner who wants out.
+
+**404 is reserved for "endpoint not implemented".** Against a Network
+that predates this endpoint, vendors keep unlink calls queued in
+`NetworkOutbox` and retry them every 12h. They never mark them dead, so every withdrawal
+made in the meantime is delivered once the endpoint exists. Any other
+failure follows the normal outbox limit (8 attempts, about 24h).
 
 ### `POST /vendors/backfill-partners`
 
@@ -280,7 +357,7 @@ Implementing this contract means building:
 1. Storage: `Vendor`, `Creator` (email-unique), `VendorAffiliation`
    (vendorId × creatorId), `EnrollmentToken` (one-time, for vendor
    registration).
-2. The four POST endpoints above.
+2. The POST endpoints above.
 3. Network → vendor client (already-known shape: scoped key + REST).
 4. A vendor-facing dashboard for admins to mint enrollment tokens, see
    live vendors, and prune abandoned ones.

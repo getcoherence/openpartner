@@ -31,7 +31,6 @@ import {
 } from '../mail-settings.js';
 import { getMailer } from '../mailer.js';
 import {
-  backfillPartners,
   completeNetworkConnect,
   getPublicNetworkMembership,
   NetworkProxyError,
@@ -40,6 +39,7 @@ import {
   sendHeartbeat,
   signupWithNetwork,
 } from '../network-client.js';
+import { isNetworkOfferedToPartners, resyncConsentedPartners, summarizeNetworkConsent } from '../network-consent.js';
 import { createApiKeyRow } from '../auth.js';
 import { getTenancyMode, tenantOf } from '../tenancy.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
@@ -481,32 +481,35 @@ settingsRouter.post('/config/network', requireAuth, requireAdmin, async (req, re
 });
 
 /**
- * Reconcile existing partners with the Network. Called when an admin
- * enables Network membership after already having a partner roster.
+ * Re-sync opted-in partners with the Network ("Backfill" in older UIs).
  *
- * Pushes every Partner row through /partners/upsert. The Network dedups
- * on email — so a creator who's already on the Network from another
- * vendor returns the existing networkCreatorId, and we stamp
- * Partner.metadata.network.preExisting=true so the admin sees who was
- * already known.
+ * Pushes every partner with Network consent through /partners/upsert —
+ * and nobody else: partners decide for themselves (network-consent.ts),
+ * so this no longer sends the whole roster. The Network dedups on email,
+ * so a creator already on the Network from another vendor returns the
+ * existing networkCreatorId and is stamped preExisting=true.
  *
- * Synchronous (returns counts when done). For very large rosters the
- * outbox + scheduler-drained retries handle Network-side timeouts so a
- * single backfill failure doesn't lose the work.
+ * 409 network_not_offered while the brand doesn't offer the Network to
+ * its partners: nothing would be allowed through.
+ *
+ * Synchronous (returns counts when done). Network-side failures land in
+ * the outbox for the scheduler to retry.
  */
 settingsRouter.post('/config/network/backfill', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
-  const partners = await db('Partner')
-    .select<Array<{ id: string; email: string; name: string; createdAt: Date; activatedAt: Date | null; revokedAt: Date | null }>>(
-      'id',
-      'email',
-      'name',
-      'createdAt',
-      'activatedAt',
-      'revokedAt',
-    );
-  const result = await backfillPartners(db, tenantId, partners);
-  res.json(result);
+  if (!(await isNetworkOfferedToPartners(db, tenantId))) {
+    return res.status(409).json({
+      error: 'network_not_offered',
+      detail: 'Turn on "Offer the Network to your partners" first. Only partners who opt in are synced.',
+    });
+  }
+  res.json(await resyncConsentedPartners(db, tenantId));
+});
+
+/** How many partners have opted in / out — for the admin Network page. */
+settingsRouter.get('/config/network/partner-consent', requireAuth, requireAdmin, async (req, res) => {
+  const { db } = tenantOf(req);
+  res.json(await summarizeNetworkConsent(db));
 });
 
 // ---------- Network connect (self-serve onboarding) ----------
@@ -578,7 +581,8 @@ settingsRouter.post('/config/network/start-connect', requireAuth, requireAdmin, 
   }
 
   // Stash the partial state — networkUrl + scopedKeyId + autoEnroll
-  // default true. The vendorToken comes back from completeConnect.
+  // default true (offer the Network to partners; each still opts in).
+  // The vendorToken comes back from completeConnect.
   await saveNetworkMembership(db, tenantId, {
     enabled: false, // not active until verify lands
     networkUrl,

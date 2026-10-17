@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Knex } from 'knex';
 import { z } from 'zod';
 import { ulid } from 'ulid';
-import { TABLES, type ApiKeyRow, type PartnerRow, type SessionRow } from '@openpartner/db';
+import { TABLES, type ApiKeyRow, type CommissionSubRule, type PartnerRow, type SessionRow } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
@@ -10,11 +10,17 @@ import { buildMagicLinkUrl, partnerInviteEmail, partnerRevokedEmail } from '../e
 import { cursorTimestamp, decodeCursor, takePage, whereAfterCursor } from '../pagination.js';
 import { linkTenantOf } from '../portal-url.js';
 import { tenantOf } from '../tenancy.js';
-import { getNetworkMembership, pushPartnerRevoke, pushPartnerUpsert } from '../network-client.js';
+import {
+  grantNetworkConsent,
+  isNetworkFederationCall,
+  syncPartnerRevokeToNetwork,
+  syncPartnerToNetwork,
+} from '../network-consent.js';
 import { autoMintCouponsForGrants } from './coupons.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
 import type { WebhookPayload } from '../openapi/webhook-events.js';
-import { refineCommissionSubRule } from '../commission-rule-schema.js';
+import { commissionSlabFields, currencyCodeSchema, refineCommissionSubRule } from '../commission-rule-schema.js';
+import { vetApprovalSnapshot } from '../commission-slabs.js';
 import { isPendingReview } from '../partner-review.js';
 import { findPartnerCommission, legacyRuleColumns, upsertPartnerCommission } from '../partner-commission.js';
 
@@ -43,9 +49,10 @@ export const overrideSchema = z.object({
           eventType: z.string().min(1).max(80).optional(),
           type: z.enum(['percent', 'fixed']),
           value: z.number().nonnegative(),
-          currency: z.string().length(3).optional(),
+          currency: currencyCodeSchema.optional(),
           recurring: z.boolean().optional(),
           recurringMonths: z.number().int().positive().max(600).optional(),
+          ...commissionSlabFields,
         })
         .superRefine(refineCommissionSubRule),
     )
@@ -113,6 +120,12 @@ export const createSchema = z.object({
             currency: z.string().length(3).optional(),
             recurring: z.boolean().optional(),
             recurringMonths: z.number().int().positive().max(600).optional(),
+            // Kept, not stripped: a tiered offering's snapshot must pay
+            // its tiers, not its base rate. Accepted as-is here and vetted
+            // by vetApprovalSnapshot below, so a bad slab table drops the
+            // snapshot instead of failing the whole approval.
+            bands: z.unknown().optional(),
+            tiers: z.unknown().optional(),
           }),
         )
         .min(1)
@@ -184,7 +197,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
   // program was named (see commissionSnapshot); programCommissions
   // entries must target granted programs, at most one entry each, and
   // not the program the snapshot already covers.
-  const snap = body.data.commissionSnapshot;
+  let snap = body.data.commissionSnapshot;
   const hasSnapshot =
     (snap?.commissionRules != null && snap.commissionRules.length > 0) ||
     (snap?.commissionType != null && snap.commissionValue != null);
@@ -262,12 +275,30 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
   //
   // Without enough info to write either shape we fall back to the live
   // Campaign rule rather than silently mis-pricing.
+  // Same fallback for a snapshot that can't price the partner the way the
+  // program does — a granted program's rule with its slabs stripped by a
+  // Network that predates them, or a slab table that fails a program's own
+  // checks. A snapshot outranks the live rule for good, so it isn't stored;
+  // the partner accrues on the live rule. See vetApprovalSnapshot. A
+  // program-scoped snapshot (one program named) is only compared with that
+  // program's rule — it never prices the partner anywhere else.
+  if (snap) {
+    const verdict = await vetApprovalSnapshot(db, snap, snapshotProgramId ? [snapshotProgramId] : programIds);
+    if (!verdict.store) {
+      console.warn(`[partners] approval snapshot for ${id} not stored: ${verdict.reason}; accruing on the live program rule`);
+      snap = undefined;
+    } else if (verdict.commissionRules) {
+      snap = { ...snap, commissionRules: verdict.commissionRules as NonNullable<typeof snap.commissionRules> };
+    }
+  }
   if (snap?.commissionRules && snap.commissionRules.length > 0) {
     await upsertPartnerCommission(db, {
       partnerId: id,
       tenantId,
       programId: snapshotProgramId,
-      ...legacyRuleColumns(snap.commissionRules),
+      // Vetted above: any slab table has been parsed (vetApprovalSnapshot),
+      // and the legacy columns only read type/value/recurring anyway.
+      ...legacyRuleColumns(snap.commissionRules as readonly CommissionSubRule[]),
       commissionRules: JSON.stringify(snap.commissionRules),
       holdbackDays: snap.holdbackDays ?? null,
       source: 'approval',
@@ -311,39 +342,16 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
     });
   }
 
-  // Push to Network if configured + autoEnroll. Same fire-and-forget
-  // semantics as /partner-signup: a Network outage doesn't fail this
-  // request; failures land in NetworkOutbox for the scheduler to retry.
-  const network = await getNetworkMembership(db, tenantId);
-  if (network?.enabled && network.autoEnroll) {
-    const partnerRow = partner as PartnerRow;
-    const result = await pushPartnerUpsert(db, tenantId, {
-      vendorPartnerId: id,
-      email,
-      name: body.data.name,
-      profile: body.data.metadata,
-      joinedVendorAt: partnerRow.createdAt.toISOString(),
-      status: partnerRow.activatedAt ? 'active' : 'pending',
-      metadata: { source: 'admin_invite' },
-    });
-    if (result) {
-      await db<PartnerRow>(TABLES.Partner)
-        .where({ id })
-        .update({
-          metadata: db.raw(
-            `jsonb_set(coalesce("metadata", '{}'::jsonb), '{network}', ?::jsonb, true)`,
-            [
-              JSON.stringify({
-                creatorId: result.networkCreatorId,
-                preExisting: result.alreadyExisted,
-                affiliations: result.affiliations.length,
-                syncedAt: new Date().toISOString(),
-              }),
-            ],
-          ),
-          updatedAt: new Date(),
-        });
-    }
+  // Network: a partner the brand recruited directly is NOT pushed — they
+  // decide for themselves in the portal (network-consent.ts), and a
+  // headless program's partners may never see it. Only a partner the
+  // Network itself provisioned (its approve federation, on the brand's
+  // registered federation key) is already a member, so it counts as
+  // consented and syncs back. Fire-and-forget: a Network outage queues
+  // the push in NetworkOutbox.
+  if (await isNetworkFederationCall(db, tenantId, req.principal, body.data.metadata)) {
+    await grantNetworkConsent(db, tenantId, id, 'network_offering');
+    await syncPartnerToNetwork(db, tenantId, partner as PartnerRow);
   }
 
   // Webhook fan-out. partner.created always; partnership.approved
@@ -504,15 +512,12 @@ partnersRouter.post('/partners/:id/revoke', requireAuth, grantScope('partners:wr
     }
   }
 
-  // Network gets the revoke too — but unconditionally if Network is
-  // enabled (not gated on autoEnroll). The reasoning: autoEnroll
-  // controls whether NEW partners flow into the Network; revokes need
-  // to mirror regardless so a creator the Network thinks is active
-  // doesn't keep getting matched after the vendor cuts them off.
-  const network = await getNetworkMembership(db, tenantId);
-  if (network?.enabled) {
-    await pushPartnerRevoke(db, tenantId, partner.id);
-  }
+  // The Network gets the revoke too, if it has this partner — i.e. they
+  // consented. Not gated on the brand offering the Network: a creator the
+  // Network thinks is active shouldn't keep getting matched after the
+  // vendor cuts them off. A partner who never opted in is never sent,
+  // revoke included.
+  await syncPartnerRevokeToNetwork(db, tenantId, partner);
 
   res.json({ ok: true, revokedAt: now, notified, notifyError });
 });

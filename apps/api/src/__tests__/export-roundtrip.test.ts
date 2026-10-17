@@ -97,6 +97,15 @@ async function seedEverything(): Promise<Seeded> {
     holdbackDays: 30,
     source: 'approval',
   });
+  // A partner who opted in to the Network on the join page, then withdrew.
+  await db(TABLES.PartnerNetworkConsent).insert({
+    partnerId,
+    tenantId: TENANT,
+    status: 'withdrawn',
+    source: 'join_page',
+    consentedAt: new Date('2026-10-01T09:00:00.000Z'),
+    withdrawnAt: new Date('2026-10-12T17:30:00.000Z'),
+  });
   await db(TABLES.Coupon).insert({
     id: couponId,
     tenantId: TENANT,
@@ -263,6 +272,8 @@ describe.skipIf(skipIntegration)('export coverage', () => {
     expect(names).toContain(TABLES.PartnerProgram);
     expect(names).toContain(TABLES.Coupon);
     expect(names).toContain(TABLES.PartnerCommission);
+    // Who agreed to have their details shared with the Network.
+    expect(names).toContain(TABLES.PartnerNetworkConsent);
   });
 
   it('knows each table real primary key — not just `id`', () => {
@@ -270,6 +281,7 @@ describe.skipIf(skipIntegration)('export coverage', () => {
     // natural key now lives in partial unique indexes.
     expect(primaryKeyOf(TABLES.PartnerCommission)).toBe('id');
     expect(EXPORT_TABLES.find((s) => s.table === TABLES.PartnerCommission)).toMatchObject({ conflict: 'any' });
+    expect(primaryKeyOf(TABLES.PartnerNetworkConsent)).toBe('partnerId');
     expect(primaryKeyOf(TABLES.Commission)).toBe('id');
   });
 
@@ -278,6 +290,7 @@ describe.skipIf(skipIntegration)('export coverage', () => {
     expect(at(TABLES.Partner)).toBeLessThan(at(TABLES.PartnerProgram));
     expect(at(TABLES.Program)).toBeLessThan(at(TABLES.PartnerProgram));
     expect(at(TABLES.Partner)).toBeLessThan(at(TABLES.PartnerCommission));
+    expect(at(TABLES.Partner)).toBeLessThan(at(TABLES.PartnerNetworkConsent));
     expect(at(TABLES.Program)).toBeLessThan(at(TABLES.Coupon));
     expect(at(TABLES.Link)).toBeLessThan(at(TABLES.Click));
     expect(at(TABLES.Click)).toBeLessThan(at(TABLES.Identity));
@@ -315,6 +328,12 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(terms.holdbackDays).toBe(30);
     const coupon = await db(TABLES.Coupon).where({ id: seeded.couponId }).first();
     expect(coupon.code).toBe('CREATOR15');
+    // The Network consent record keeps how and when, not just the status.
+    const consent = await db(TABLES.PartnerNetworkConsent).where({ partnerId: seeded.partnerId }).first();
+    expect(consent.status).toBe('withdrawn');
+    expect(consent.source).toBe('join_page');
+    expect(new Date(consent.consentedAt).toISOString()).toBe('2026-10-01T09:00:00.000Z');
+    expect(new Date(consent.withdrawnAt).toISOString()).toBe('2026-10-12T17:30:00.000Z');
     // jsonb array + text[] both survive with their own shapes.
     const program = await db(TABLES.Program).where({ id: seeded.programId }).first();
     expect(program.commissionRule).toEqual([{ trigger: 'every', type: 'percent', value: 20 }]);
@@ -380,6 +399,51 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(bogus.status).toBe(400);
     expect(bogus.body.error).toBe('unsupported_schema_version');
   }, 30_000);
+
+  it('accepts a v2 bundle — one exported before Network consent existed', async () => {
+    await seedEverything();
+    const full = await exportAll(db, TENANT);
+    const v2: Record<string, unknown[]> = { ...full };
+    delete v2[TABLES.PartnerNetworkConsent];
+    await wipe();
+
+    const app = createApp();
+    const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+    const viaRoute = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: 2, tables: v2 });
+    expect(viaRoute.status).toBe(200);
+    const after = await counts();
+    expect(after[TABLES.Partner]).toBe(1);
+    // No consent rows: every restored partner starts undecided, so nobody
+    // is pushed to the Network until they opt in on the new instance.
+    expect(after[TABLES.PartnerNetworkConsent]).toBe(0);
+  }, 30_000);
+
+  it('accepts a v3 bundle — program-scoped commission terms, but no Network consent yet', async () => {
+    await seedEverything();
+    const full = await exportAll(db, TENANT);
+    const v3: Record<string, unknown[]> = { ...full };
+    delete v3[TABLES.PartnerNetworkConsent];
+    await wipe();
+
+    const app = createApp();
+    const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+    const viaRoute = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: 3, tables: v3 });
+    expect(viaRoute.status).toBe(200);
+    const after = await counts();
+    expect(after[TABLES.Partner]).toBe(1);
+    expect(after[TABLES.PartnerCommission]).toBe((full[TABLES.PartnerCommission] ?? []).length);
+    expect(after[TABLES.PartnerNetworkConsent]).toBe(0);
+  }, 30_000);
+
+  it('exports at schemaVersion 4', () => {
+    expect(SCHEMA_VERSION).toBe(4);
+  });
 });
 
 describe.skipIf(skipIntegration)('PartnerCommission program scope (schemaVersion 3)', () => {
@@ -849,6 +913,93 @@ describe.skipIf(skipIntegration)('round-6: scalar and null JSON round-trip', () 
       metadata: unknown;
     };
     expect(restored.metadata).toBe(9007199254740992); // rounded, not 993
+  }, 30_000);
+});
+
+describe.skipIf(skipIntegration)('commission slabs round-trip', () => {
+  // Slab tables live inside the rule JSON (Program + PartnerCommission) and
+  // the band/tier that applied lives in Commission.metadata. All three have
+  // to come back exactly, or an imported instance re-derives different
+  // commissions — or can't show why the ledger says what it says.
+  const slabRules = [
+    {
+      trigger: 'every',
+      eventType: 'invoice_paid',
+      type: 'percent',
+      value: 10,
+      currency: 'INR',
+      bands: { mode: 'marginal', levels: [{ above: 50000, value: 15 }, { above: 100000, value: 20 }] },
+    },
+    {
+      trigger: 'first',
+      eventType: 'subscription_created',
+      type: 'fixed',
+      value: 50,
+      tiers: { metric: 'conversions', window: 'rolling_days', windowDays: 90, levels: [{ atLeast: 10, value: 100 }] },
+    },
+  ];
+  const trace = {
+    slab: {
+      kind: 'band',
+      ruleIndex: 0,
+      type: 'percent',
+      mode: 'marginal',
+      level: 1,
+      threshold: 50000,
+      value: 15,
+      currency: 'INR',
+      basis: 60000.5,
+      slices: [
+        { level: 0, from: 0, to: 50000, portion: 50000, value: 10 },
+        { level: 1, from: 50000, to: null, portion: 10000.5, value: 15 },
+      ],
+    },
+  };
+
+  async function seedSlabs(): Promise<Seeded> {
+    const seeded = await seedEverything();
+    await db(TABLES.Program).where({ id: seeded.programId }).update({ commissionRule: JSON.stringify(slabRules) });
+    await db(TABLES.PartnerCommission)
+      .where({ partnerId: seeded.partnerId })
+      .update({ commissionRules: JSON.stringify(slabRules) });
+    await db(TABLES.Commission).where({ id: seeded.commissionId }).update({ metadata: trace });
+    return seeded;
+  }
+
+  async function expectSlabsRestored(seeded: Seeded): Promise<void> {
+    const program = await db(TABLES.Program).where({ id: seeded.programId }).first();
+    expect(program.commissionRule).toEqual(slabRules);
+    const terms = await db(TABLES.PartnerCommission).where({ partnerId: seeded.partnerId }).first();
+    expect(terms.commissionRules).toEqual(slabRules);
+    const commission = await db(TABLES.Commission).where({ id: seeded.commissionId }).first();
+    expect(commission.metadata).toEqual(trace);
+  }
+
+  it('survives the JSON export → import path', async () => {
+    const seeded = await seedSlabs();
+    const bundle = await exportAll(db, TENANT);
+    await wipe();
+    await importBundle(db, TENANT, bundle);
+    await expectSlabsRestored(seeded);
+  }, 30_000);
+
+  it('survives the SQL dump run as plain SQL', async () => {
+    const seeded = await seedSlabs();
+    const bundle = await exportAll(db, TENANT);
+    const dump = buildSqlDump(bundle, { tenantId: TENANT, columnTypes: await exportColumnTypes(db) });
+    await wipe();
+    await runSql(dump);
+    await expectSlabsRestored(seeded);
+  }, 30_000);
+
+  it('a bundle from before Commission.metadata existed imports with {}', async () => {
+    const seeded = await seedEverything();
+    const bundle = await exportAll(db, TENANT);
+    for (const row of bundle[TABLES.Commission] as Array<Record<string, unknown>>) delete row.metadata;
+    await wipe();
+    await importBundle(db, TENANT, bundle);
+    const commission = await db(TABLES.Commission).where({ id: seeded.commissionId }).first();
+    expect(commission.metadata).toEqual({});
   }, 30_000);
 });
 

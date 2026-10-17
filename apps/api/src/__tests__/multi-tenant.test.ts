@@ -190,6 +190,39 @@ describe.skipIf(skipIntegration)('multi-tenant RLS isolation', () => {
     expect(Number(globex!.count)).toBe(1);
   });
 
+  it("a partner's Network consent is visible only under its own tenant", async () => {
+    if (!appRoleAvailable) return;
+    const partnerId = ulid();
+    await db(TABLES.Partner).insert({ id: partnerId, tenantId: TENANT_A, email: `consent-${ulid()}@acme.test`, name: 'Consents' });
+    await db(TABLES.PartnerNetworkConsent).insert({
+      partnerId,
+      tenantId: TENANT_A,
+      status: 'granted',
+      source: 'join_page',
+      consentedAt: new Date(),
+    });
+    const asAcme = await asAppRole({ tenantId: TENANT_A }, (trx) => trx(TABLES.PartnerNetworkConsent).where({ partnerId }));
+    const asGlobex = await asAppRole({ tenantId: TENANT_B }, (trx) => trx(TABLES.PartnerNetworkConsent).where({ partnerId }));
+    expect(asAcme).toHaveLength(1);
+    expect(asGlobex).toHaveLength(0);
+    // Globex can't write consent for an Acme partner either.
+    await expect(
+      asAppRole({ tenantId: TENANT_B }, (trx) =>
+        trx(TABLES.PartnerNetworkConsent).where({ partnerId }).update({ status: 'withdrawn', withdrawnAt: new Date() }),
+      ),
+    ).resolves.toBe(0);
+    await expect(
+      asAppRole({ tenantId: TENANT_A }, (trx) =>
+        trx(TABLES.PartnerNetworkConsent).insert({
+          partnerId: ulid(),
+          tenantId: TENANT_B, // mismatch on purpose
+          status: 'declined',
+          declinedAt: new Date(),
+        }),
+      ),
+    ).rejects.toThrow(/row-level security|new row violates/i);
+  });
+
   it('a Session stitched to Acme is invisible under Globex GUC', async () => {
     if (!appRoleAvailable) return;
     const sessionId = ulid();

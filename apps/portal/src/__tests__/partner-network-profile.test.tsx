@@ -112,7 +112,7 @@ describe('partner Network profile page', () => {
     expect(put.body).toEqual({ handle: 'pat', followerCount: null });
   });
 
-  it('a partner not on the Network yet gets the existing explanation, not an editor', () => {
+  it('an opted-in partner whose push is still queued sees it being set up, not an editor', () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     qc.setQueryData(['network-my-profile'], { notFederated: true });
     const page = render(
@@ -122,7 +122,7 @@ describe('partner Network profile page', () => {
         </QueryClientProvider>
       </MemoryRouter>,
     );
-    expect(page.getByText(/hasn.t pushed you to the Network yet/)).toBeTruthy();
+    expect(page.getByText(/Your Network profile is being set up/)).toBeTruthy();
     expect(page.queryByText('Platforms')).toBeNull();
   });
 });
