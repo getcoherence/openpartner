@@ -30,17 +30,21 @@ extendZodWithOpenApi(z);
  *                   or partner portal session)
  *   handler         any authenticated caller reaches the handler, which
  *                   decides; `rule` says how
+ *   postbackToken   no API key: the handler checks the conversion postback
+ *                   token in the `token` query parameter (GET /postback)
  */
 export type Access =
   | { kind: 'public' }
   | { kind: 'admin'; scope?: string }
   | { kind: 'partnerOrAdmin'; scope?: string }
-  | { kind: 'handler'; rule: string; scopes?: string[]; partner?: boolean };
+  | { kind: 'handler'; rule: string; scopes?: string[]; partner?: boolean }
+  | { kind: 'postbackToken' };
 
 export const SECURITY_SCHEMES = {
   adminKey: 'adminKey',
   scopedKey: 'scopedKey',
   partnerKey: 'partnerKey',
+  postbackToken: 'postbackToken',
 } as const;
 
 export const ErrorResponse = z
@@ -74,6 +78,10 @@ export interface OperationSpec {
   responses: Record<number, { description: string; schema?: z.ZodTypeAny; content?: ZodContentObject }>;
   /** Error responses beyond the auth defaults: status → `error` codes. */
   errors?: Record<number, string[]>;
+  /** Errors answer `text/plain` with the code as the body instead of the
+   *  JSON envelope (GET /postback, for senders that can't parse JSON). The
+   *  operation lists every code itself: no invalid_query or auth defaults. */
+  textErrors?: boolean;
   operationId: string;
 }
 
@@ -86,6 +94,8 @@ export interface DocumentedOperation {
   responses: Record<number, z.ZodTypeAny | undefined>;
   /** Error status → the `error` codes documented for it. */
   errors: Record<number, string[]>;
+  /** Errors are `text/plain` codes, not the JSON envelope. */
+  textErrors: boolean;
 }
 
 /** Express `/a/:b/c.:d` → OpenAPI `/a/{b}/c.{d}`. */
@@ -108,11 +118,14 @@ export function accessExtension(access: Access): { kind: Access['kind']; scopes:
       return { kind: 'partnerOrAdmin', scopes: access.scope ? [access.scope] : [], partner: true };
     case 'handler':
       return { kind: 'handler', scopes: access.scopes ?? [], partner: access.partner ?? false };
+    case 'postbackToken':
+      return { kind: 'postbackToken', scopes: [], partner: false };
   }
 }
 
 function securityFor(access: Access): RouteConfig['security'] {
   if (access.kind === 'public') return [];
+  if (access.kind === 'postbackToken') return [{ [SECURITY_SCHEMES.postbackToken]: [] }];
   const ext = accessExtension(access);
   return [
     { [SECURITY_SCHEMES.adminKey]: [] },
@@ -135,6 +148,8 @@ function accessSentence(access: Access): string {
         : "**Access:** admin key, or the partner's own key (`:id` must be that partner). Scoped keys get `403 forbidden`.";
     case 'handler':
       return `**Access:** ${access.rule}`;
+    case 'postbackToken':
+      return '**Access:** the conversion postback token in the `token` query parameter. API keys are not accepted, as a Bearer header or as `token`.';
   }
 }
 
@@ -166,6 +181,13 @@ export class OperationRegistry {
       description:
         'A partner-scoped key (`POST /partners/{id}/api-keys`). Acts as that one partner: it can read and write only that partner\'s own resources.',
     });
+    this.registry.registerComponent('securitySchemes', SECURITY_SCHEMES.postbackToken, {
+      type: 'apiKey',
+      in: 'query',
+      name: 'token',
+      description:
+        'The conversion postback token (`opcp_…`), minted and rotated under Admin → Integrations. It travels in the URL, so proxies, browser history and the sender\'s own logs keep it. It is built to be cheap to leak: it records conversions and nothing else, is never accepted as a Bearer key, can be pinned to the sender\'s IPs, and rotating it kills the old URL at once. Only `GET /postback` takes it.',
+    });
   }
 
   operation(spec: OperationSpec): void {
@@ -178,8 +200,10 @@ export class OperationRegistry {
     // Every operation is tenant-scoped: on a multi-tenant install a URL
     // without /t/<slug> answers 400 tenant_slug_missing.
     const errors: Record<number, string[]> = { 400: ['tenant_slug_missing'] };
-    if (spec.body || spec.query) errors[400]!.unshift(spec.body ? 'invalid_body' : 'invalid_query');
-    if (spec.access.kind !== 'public') Object.assign(errors, structuredClone(AUTH_ERRORS));
+    if (!spec.textErrors) {
+      if (spec.body || spec.query) errors[400]!.unshift(spec.body ? 'invalid_body' : 'invalid_query');
+      if (spec.access.kind !== 'public') Object.assign(errors, structuredClone(AUTH_ERRORS));
+    }
     for (const [status, codes] of Object.entries(spec.errors ?? {})) {
       const s = Number(status);
       errors[s] = [...new Set([...(errors[s] ?? []), ...codes])];
@@ -199,7 +223,9 @@ export class OperationRegistry {
     for (const [status, codes] of Object.entries(errors).sort(([a], [b]) => Number(a) - Number(b))) {
       responses[status] = {
         description: codes.map((c) => `\`${c}\``).join(', '),
-        content: { 'application/json': { schema: ErrorResponse } },
+        content: spec.textErrors
+          ? { 'text/plain': { schema: z.string().openapi({ description: 'The error code, e.g. `invalid_token`.' }) } }
+          : { 'application/json': { schema: ErrorResponse } },
       };
     }
 
@@ -229,6 +255,7 @@ export class OperationRegistry {
       operationId: spec.operationId,
       responses: Object.fromEntries(Object.entries(spec.responses).map(([status, r]) => [status, r.schema])),
       errors,
+      textErrors: spec.textErrors ?? false,
     });
   }
 }

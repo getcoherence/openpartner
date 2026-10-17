@@ -113,6 +113,12 @@
         "type": "http",
         "scheme": "bearer",
         "description": "A partner-scoped key (`POST /partners/{id}/api-keys`). Acts as that one partner: it can read and write only that partner's own resources."
+      },
+      "postbackToken": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "token",
+        "description": "The conversion postback token (`opcp_…`), minted and rotated under Admin → Integrations. It travels in the URL, so proxies, browser history and the sender's own logs keep it. It is built to be cheap to leak: it records conversions and nothing else, is never accepted as a Bearer key, can be pinned to the sender's IPs, and rotating it kills the old URL at once. Only `GET /postback` takes it."
       }
     },
     "schemas": {
@@ -3676,11 +3682,23 @@
                 "additionalProperties": {
                   "type": "integer"
                 }
+              },
+              "credentials": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  }
+                },
+                "description": "Fresh credentials for restored rows, per table, shown once. `WebhookEndpoint`: `{ id, url, secret }` for each endpoint restored (paused until you turn it back on)."
               }
             },
             "required": [
               "inserted",
-              "skipped"
+              "skipped",
+              "credentials"
             ]
           }
         },
@@ -4086,7 +4104,7 @@
           "Partners"
         ],
         "summary": "Bulk-create partners from CSV",
-        "description": "Creates many partners in one request: the way to load an existing customer base without spending your rate limit on one `POST /partners` per row.\n\nSend `text/csv` with a header row: `email` and `name` (required), `activatedAt` (ISO-8601, default now) and `metadata` (a JSON object string, e.g. `\"{\"\"appUserId\"\":\"\"u_1\"\"}\"`). Quoted fields may contain commas but not line breaks. Tools that can't send `text/csv` can POST `{\"csv\": \"...\"}` as JSON instead.\n\nUnlike `POST /partners`, an import:\n- grants every partner **every current program** (there is no `programIds`),\n- sends no email, mints no coupons, fires no `partner.created` webhooks,\n- shares nothing with the OpenPartner Network: as with `POST /partners`, only a partner's own opt-in does.\n\nRows whose email already exists are reported as `skipped_email_taken` with the existing `partnerId`, so re-running an import is safe. `?dryRun=true` validates and reports without writing. Rows are processed one by one in a single transaction; send large rosters in batches of a few thousand rows.\n\n**Access:** admin key, or a scoped key with `partners:write`.",
+        "description": "Creates many partners in one request: the way to load an existing customer base without spending your rate limit on one `POST /partners` per row.\n\nSend `text/csv` with a header row: `email` and `name` (required), `activatedAt` (ISO-8601, default now) and `metadata` (a JSON object string, e.g. `\"{\"\"appUserId\"\":\"\"u_1\"\"}\"`). Quoted fields may contain commas but not line breaks. Tools that can't send `text/csv` can POST `{\"csv\": \"...\"}` as JSON instead.\n\nUnlike `POST /partners`, an import:\n- grants every partner **every current program** (there is no `programIds`),\n- sends no email, mints no coupons, fires no `partner.created` webhooks,\n- shares nothing with the OpenPartner Network: as with `POST /partners`, only a partner's own opt-in does.\n\nRows whose email already exists are reported as `skipped_email_taken` with the existing `partnerId`, so re-running an import is safe. `?dryRun=true` validates and reports without writing. The file is written in one transaction, so a failed import writes nothing. A repeated email later in the same file is skipped like one already on the roster. Send very large rosters in batches of a few thousand rows.\n\n**Access:** admin key, or a scoped key with `partners:write`.",
         "security": [
           {
             "adminKey": []
@@ -6285,6 +6303,196 @@
         }
       }
     },
+    "/postback": {
+      "get": {
+        "operationId": "conversionPostback",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "Record a conversion from a postback URL",
+        "description": "`POST /attribution/conversions` for senders that can only fire a URL: affiliate networks, many lenders, tracking pixels. Same result: the click is stitched to a user and the event recorded, in one transaction.\n\n```\nGET /postback?click_id={click_id}&type=sale&amount=49.00&currency=USD&txn_id={transaction_id}&token=opcp_…\n```\n\n**The token is in the URL.** Proxies, browser history and the sender's own logs keep query strings, so treat a postback URL as leaked from the day you hand it out, and use `POST /attribution/conversions` with a Bearer key whenever the sender can set a header. The postback token is built for this: it records conversions and nothing else, is never accepted as a Bearer key (and an API key is never accepted as `token`), can be pinned to the sender's IPs (`ipAllowlist`), and rotating it on the Integrations page stops the old URL at once. OpenPartner's own request log redacts it. Always use `https://`.\n\n**Idempotency.** `txn_id` is the `externalEventId`: a network re-firing the postback records once. Keys share one namespace with `POST /attribution/conversions`, `POST /attribution/events` and `POST /coupons/redeem`, and reusing one for a different conversion is `409 external_event_id_conflict`.\n\n**Responses are plain text**, not JSON: `ok`, or the error code (`invalid_parameters` is followed by the offending names, e.g. `invalid_parameters: click_id, txn_id`). Every response is `Cache-Control: no-store`. `HEAD` answers `405` and records nothing, so a link checker can't create a conversion.\n\nThe token is checked before anything else, so a caller without one learns nothing about the parameters or clicks. Mint it under **Admin → Integrations** (or `POST /conversion-postback/token`).\n\n**Access:** the conversion postback token in the `token` query parameter. API keys are not accepted, as a Bearer header or as `token`.",
+        "security": [
+          {
+            "postbackToken": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "postbackToken",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The conversion postback token, `opcp_…`. Required."
+            },
+            "required": true,
+            "name": "token",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "description": "The click id, from the destination URL's `{click_id}` macro. Alias: `cref`. Required."
+            },
+            "required": true,
+            "name": "click_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Event type, e.g. `sale`, `loan_funded`. Required."
+            },
+            "required": true,
+            "name": "type",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 120,
+              "description": "The sender's transaction id: the idempotency key (`externalEventId`). Alias: `transaction_id`. Required."
+            },
+            "required": true,
+            "name": "txn_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Decimal value, e.g. `49.00`. Alias: `value`. Empty (an unfilled macro) means no amount."
+            },
+            "required": false,
+            "name": "amount",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 3,
+              "description": "ISO 4217 code."
+            },
+            "required": false,
+            "name": "currency",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Your own id for the user, as on `POST /attribution/conversions`."
+            },
+            "required": false,
+            "name": "user_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ],
+              "description": "`1` answers a 1×1 transparent GIF instead of `ok`, for senders that fire the postback as an image."
+            },
+            "required": false,
+            "name": "pixel",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recorded (or replayed): `ok`, or a 1×1 GIF with `pixel=1`.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "ok"
+                  ]
+                }
+              },
+              "image/gif": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`, `repeated_parameter`, `invalid_parameters`",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "description": "The error code, e.g. `invalid_token`."
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`missing_token`, `invalid_token`",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "description": "The error code, e.g. `invalid_token`."
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`ip_not_allowed`",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "description": "The error code, e.g. `invalid_token`."
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`click_not_found`",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "description": "The error code, e.g. `invalid_token`."
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`external_event_id_conflict`",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "description": "The error code, e.g. `invalid_token`."
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`click_flagged`",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "description": "The error code, e.g. `invalid_token`."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/clicks": {
       "post": {
         "operationId": "ingestClick",
@@ -8217,7 +8425,7 @@
           "Webhooks"
         ],
         "summary": "Subscribe a webhook endpoint",
-        "description": "Returns the signing `secret` once. The URL must be publicly reachable over HTTP(S); private and loopback addresses are refused at delivery time. See **Webhook events** for the catalogue.\n\n**Access:** admin key, or a scoped key with `webhooks:write`.",
+        "description": "Returns the signing `secret` once. The URL must be publicly reachable over HTTP(S): a URL that resolves to a private, loopback or link-local address, `localhost`, or (hosted) a port other than 80/443 is refused with `400 destination_not_allowed`, whose `reason` names the rule (`destination_not_public`, `blocked_hostname`, `port_not_allowed`, …). Every delivery checks again, so a DNS change made later still cannot reach a private address. See **Webhook events** for the catalogue.\n\n**Access:** admin key, or a scoped key with `webhooks:write`.",
         "security": [
           {
             "adminKey": []
@@ -8270,7 +8478,7 @@
             }
           },
           "400": {
-            "description": "`invalid_body`, `tenant_slug_missing`",
+            "description": "`invalid_body`, `tenant_slug_missing`, `destination_not_allowed`",
             "content": {
               "application/json": {
                 "schema": {
@@ -8469,7 +8677,7 @@
           "Webhooks"
         ],
         "summary": "Update a webhook endpoint",
-        "description": "**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "A new `url` gets the same check as `createWebhookEndpoint`.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -8521,7 +8729,7 @@
             }
           },
           "400": {
-            "description": "`invalid_body`, `tenant_slug_missing`",
+            "description": "`invalid_body`, `tenant_slug_missing`, `destination_not_allowed`",
             "content": {
               "application/json": {
                 "schema": {
@@ -9644,7 +9852,12 @@
                 "Commission",
                 "Payout",
                 "PortalCustomDomain",
-                "CommissionAdjustment"
+                "CommissionAdjustment",
+                "BrandAsset",
+                "WebhookEndpoint",
+                "PartnerPostback",
+                "ConversionPostbackToken",
+                "Config"
               ],
               "description": "Table name."
             },
@@ -9885,7 +10098,7 @@
           "Export"
         ],
         "summary": "Import an export bundle (self-host only)",
-        "description": "Idempotent: rows whose primary key exists are skipped. Accepts bundles up to 256 MB on single-tenant installs (1 MB under a `/t/<slug>` path).\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "Idempotent: rows whose primary key exists are skipped. Accepts bundles up to 256 MB on single-tenant installs (1 MB under a `/t/<slug>` path). Credentials are never in a bundle: restored webhook endpoints get a fresh signing secret and come back paused, and `report.credentials` shows those secrets once. See docs/data-portability.md.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
