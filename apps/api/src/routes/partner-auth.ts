@@ -29,7 +29,7 @@ import { ipRateLimit } from '../middleware/rate-limit.js';
 import { adminSigninEmail, buildMagicLinkUrl, partnerSigninEmail } from '../email-templates.js';
 import { linkTenantOf } from '../portal-url.js';
 import { tenantOf } from '../tenancy.js';
-import { isPendingReview } from '../partner-review.js';
+import { isPendingReview, partnerReviewOf } from '../partner-review.js';
 import type { WebhookPayload } from '../openapi/webhook-events.js';
 
 export const partnerAuthRouter = Router();
@@ -158,7 +158,10 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
     // fired at invite time; this is the "they accepted + are now
     // promoting" signal Zapier subscribers want for welcome
     // sequences, Slack pings, etc. (A partner created active, with
-    // sendInvite:false, gets theirs from POST /partners instead.)
+    // sendInvite:false or approved automatically on the join page, gets
+    // theirs when they're added instead.) So the only join-page partner
+    // activated here is an applicant held for review, and only they carry
+    // a review state.
     const { dispatchEvent } = await import('../webhook-dispatcher.js');
     dispatchEvent(tenantId, 'partner.activated', {
       partnerId: partner.id,
@@ -166,6 +169,7 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
       name: partner.name,
       activatedAt: new Date().toISOString(),
       invited: true,
+      source: partnerReviewOf(partner.metadata) ? 'join_page' : 'api',
     } satisfies WebhookPayload<'partner.activated'>);
   }
 

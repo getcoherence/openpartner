@@ -199,6 +199,7 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     invited: true,
     portalAccess: true,
     programIds: ['cmp_default'],
+    source: 'api',
   }),
   'partner.activated': () => ({
     partnerId: `01J${'1'.repeat(23)}`,
@@ -206,6 +207,7 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     name: 'Sample Partner',
     activatedAt: new Date().toISOString(),
     invited: true,
+    source: 'api',
   }),
   'partnership.approved': () => ({
     partnerId: `01J${'1'.repeat(23)}`,

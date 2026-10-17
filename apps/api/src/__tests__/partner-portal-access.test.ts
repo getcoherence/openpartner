@@ -344,7 +344,7 @@ describe.skipIf(skipIntegration)('partner.activated for partners created active'
   it('fires right after partner.created, with invited: false', async () => {
     const partner = await createHeadless('s@example.com', { portalAccess: false });
     const [created] = dispatched('partner.created');
-    expect(created).toMatchObject({ partnerId: partner.id, invited: false, portalAccess: false });
+    expect(created).toMatchObject({ partnerId: partner.id, invited: false, portalAccess: false, source: 'api' });
     const activated = dispatched('partner.activated');
     expect(activated).toHaveLength(1);
     expect(activated[0]).toEqual({
@@ -353,6 +353,7 @@ describe.skipIf(skipIntegration)('partner.activated for partners created active'
       name: 'Headless',
       activatedAt: (created as { activatedAt: string }).activatedAt,
       invited: false,
+      source: 'api',
     });
     const order = vi.mocked(dispatchEvent).mock.calls.map(([, e]) => e);
     expect(order.indexOf('partner.created')).toBeLessThan(order.indexOf('partner.activated'));
@@ -366,7 +367,7 @@ describe.skipIf(skipIntegration)('partner.activated for partners created active'
     expect((await request(app).post('/auth/magic/verify').send({ token: decodeURIComponent(token) })).status).toBe(200);
     const activated = dispatched('partner.activated');
     expect(activated).toHaveLength(1);
-    expect(activated[0]).toMatchObject({ partnerId: created.body.id, invited: true });
+    expect(activated[0]).toMatchObject({ partnerId: created.body.id, invited: true, source: 'api' });
   });
 });
 
