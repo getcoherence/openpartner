@@ -70,9 +70,9 @@ const GO_LIVE_ROUTES: GatedRoute[] = [
  * Express matches routes case-insensitively and ignores a trailing slash
  * (no `caseSensitive` / `strict` on the app), so `POST /Partners/` reaches
  * the /partners handler. Match on the same canonical form, or the gate is
- * one capital letter from bypassed.
+ * one capital letter from bypassed. Shared with the trial gate.
  */
-function canonicalPath(path: string): string {
+export function canonicalPath(path: string): string {
   const lower = path.toLowerCase();
   const trimmed = lower.replace(/\/+$/, '');
   return trimmed === '' ? '/' : trimmed;
