@@ -69,7 +69,7 @@ async function seedGmv(value: number, currency: string | null = 'USD'): Promise<
   await db(TABLES.Attribution).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, eventId, partnerId, programId, clickId, model: 'last_click', weight: '1', computedAt: new Date() });
 }
 
-const CLEAN = [TABLES.Attribution, TABLES.Event, TABLES.Identity, TABLES.Click, TABLES.Link, TABLES.Program, TABLES.Partner, TABLES.Config];
+const CLEAN = [TABLES.UsageLedger, TABLES.Attribution, TABLES.Event, TABLES.Identity, TABLES.Click, TABLES.Link, TABLES.Program, TABLES.Partner, TABLES.Config];
 
 beforeAll(async () => {
   if (skipIntegration) return;
