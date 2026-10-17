@@ -59,6 +59,15 @@ a `PartnerCommission` row that collides on **any** unique key, using a bare
 table conflicts on its primary key. The importer looks the key up per
 table rather than assuming `id`.
 
+Commission slabs (value bands and performance tiers,
+[commission-slabs.md](commission-slabs.md)) need nothing extra: they are
+JSON inside `Program.commissionRule` and `PartnerCommission.commissionRules`,
+and the band/tier each commission was paid at is JSON in
+`Commission.metadata` (Oct 2026). That column was added without a version
+bump — a bundle from before it imports with `metadata = {}`. The reverse
+(a newer bundle into an instance that hasn't run the migration) fails on
+the unknown column; migrate first.
+
 ### Versioning
 
 `SCHEMA_VERSION` is the current bundle version; `SUPPORTED_IMPORT_VERSIONS`

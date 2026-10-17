@@ -69,4 +69,31 @@ describe('renderCommissionSummary', () => {
       renderCommissionSummary([{ trigger: 'every', type: 'percent', value: 12.5, recurring: true }]),
     ).toBe('12.5% recurring');
   });
+
+  // Kept in lockstep with packages/db's copy (the API's marketplace summary).
+  it('renders slab rules as the range they pay', () => {
+    expect(
+      renderCommissionSummary([
+        {
+          trigger: 'every',
+          eventType: 'invoice_paid',
+          type: 'percent',
+          value: 10,
+          bands: { mode: 'whole', levels: [{ above: 50000, value: 15 }] },
+        },
+      ]),
+    ).toBe('10–15% on every invoice (slabs by invoice value)');
+    expect(
+      renderCommissionSummary([
+        {
+          trigger: 'first',
+          eventType: 'subscription_created',
+          type: 'fixed',
+          value: 50,
+          currency: 'INR',
+          tiers: { metric: 'conversions', window: 'rolling_days', windowDays: 30, levels: [{ atLeast: 10, value: 100 }] },
+        },
+      ]),
+    ).toBe('$50–$100 INR on first subscription (tiers by partner conversions, last 30 days)');
+  });
 });

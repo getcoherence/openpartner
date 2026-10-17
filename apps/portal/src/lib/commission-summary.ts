@@ -10,6 +10,13 @@
  *     → "$200 on first sale + 20% recurring on every invoice for 12 months"
  *   …with customerReward { type:'percent_off', value:25, duration:'repeating', durationInMonths:6 }
  *     → "$200 on first sale + 20% recurring on every invoice for 12 months — customers get 25% off for 6 months"
+ *   [{ trigger:'every', eventType:'invoice_paid', type:'percent', value:10,
+ *      bands:{ mode:'whole', levels:[{ above:50000, value:15 }] } }]
+ *     → "10–15% on every invoice (slabs by invoice value)"
+ *
+ * A slab rule renders as the range between its lowest and highest step,
+ * never as the top rate alone: a headline "15%" would promise every
+ * partner a rate most of them won't reach.
  *
  * Rendering this from the rule (rather than an admin-typed freeform string)
  * is the anti-fraud guarantee: brands can't make claims the engine won't
@@ -24,6 +31,14 @@ export interface CommissionSubRuleLike {
   currency?: string;
   recurring?: boolean;
   recurringMonths?: number;
+  bands?: { mode: 'whole' | 'marginal'; levels: Array<{ above: number; value: number }> };
+  tiers?: {
+    metric: 'revenue' | 'conversions';
+    window: 'lifetime' | 'calendar_month' | 'rolling_days';
+    windowDays?: number;
+    eventType?: string;
+    levels: Array<{ atLeast: number; value: number }>;
+  };
 }
 
 export interface CustomerRewardLike {
@@ -45,10 +60,7 @@ export function renderCommissionSummary(
 }
 
 function formatSubRule(rule: CommissionSubRuleLike): string {
-  const amount =
-    rule.type === 'percent'
-      ? `${trimNumber(rule.value)}%`
-      : `$${trimNumber(rule.value)}${rule.currency && rule.currency !== 'USD' ? ` ${rule.currency}` : ''}`;
+  const amount = formatAmount(rule);
   const eventPhrase = formatEventPhrase(rule.trigger, rule.eventType);
   const recurringPhrase = rule.recurring
     ? rule.recurringMonths
@@ -56,7 +68,33 @@ function formatSubRule(rule: CommissionSubRuleLike): string {
       : ''
     : '';
   const recurringPrefix = rule.recurring && rule.trigger !== 'first' ? ' recurring' : '';
-  return `${amount}${recurringPrefix}${eventPhrase}${recurringPhrase}`;
+  return `${amount}${recurringPrefix}${eventPhrase}${recurringPhrase}${formatSlabPhrase(rule)}`;
+}
+
+function formatAmount(rule: CommissionSubRuleLike): string {
+  const levels = (rule.bands ?? rule.tiers)?.levels;
+  const steps = [rule.value, ...(Array.isArray(levels) ? levels.map((l) => l.value) : [])];
+  const lo = Math.min(...steps);
+  const hi = Math.max(...steps);
+  if (rule.type === 'percent') {
+    return lo === hi ? `${trimNumber(lo)}%` : `${trimNumber(lo)}–${trimNumber(hi)}%`;
+  }
+  const range = lo === hi ? `$${trimNumber(lo)}` : `$${trimNumber(lo)}–$${trimNumber(hi)}`;
+  return `${range}${rule.currency && rule.currency !== 'USD' ? ` ${rule.currency}` : ''}`;
+}
+
+function formatSlabPhrase(rule: CommissionSubRuleLike): string {
+  if (rule.bands) {
+    const noun = rule.eventType ? humanizeEventType(rule.eventType) : 'event';
+    return ` (${rule.bands.mode === 'marginal' ? 'marginal ' : ''}slabs by ${noun} value)`;
+  }
+  if (rule.tiers) {
+    const metric = rule.tiers.metric === 'conversions' ? 'conversions' : 'revenue';
+    if (rule.tiers.window === 'lifetime') return ` (tiers by lifetime partner ${metric})`;
+    if (rule.tiers.window === 'calendar_month') return ` (tiers by monthly partner ${metric})`;
+    return ` (tiers by partner ${metric}, last ${rule.tiers.windowDays} days)`;
+  }
+  return '';
 }
 
 function formatEventPhrase(
