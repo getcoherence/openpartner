@@ -98,12 +98,13 @@ export function AdminIntegrations() {
   );
 }
 
-/** Full base URL an external system should call. On multi-tenant installs
- *  the path includes the tenant slug; see PayloadGuide. */
+/** Full API base URL an external system should call: `<origin>/api`, plus
+ *  `/t/<slug>` on multi-tenant installs. The slug goes after /api; see
+ *  PayloadGuide. */
 function useApiBase(): { apiBase: string; slug: string | null } {
   const origin = typeof window === 'undefined' ? 'https://your-instance' : window.location.origin;
   const slug = currentTenantSlug();
-  return { apiBase: slug ? `${origin}/t/${slug}` : origin, slug };
+  return { apiBase: slug ? `${origin}/api/t/${slug}` : `${origin}/api`, slug };
 }
 
 const codeInline = { background: theme.surface2, padding: '2px 6px', borderRadius: 4, fontSize: 12 } as const;
@@ -490,7 +491,7 @@ function PayloadGuide() {
           overflow: 'auto',
           margin: 0,
         }}
-      >{`curl -X POST ${apiBase}/api/attribution/events \\
+      >{`curl -X POST ${apiBase}/attribution/events \\
   -H "Authorization: Bearer <your-key>" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -545,7 +546,7 @@ function ClickIdGuide() {
         conversion in one call. No <code>identify()</code> or <code>userId</code> needed. It needs
         a key with <code>events:write</code>:
       </p>
-      <pre style={preBlock}>{`curl -X POST ${apiBase}/api/attribution/conversions \\
+      <pre style={preBlock}>{`curl -X POST ${apiBase}/attribution/conversions \\
   -H "Authorization: Bearer <your-key>" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -616,7 +617,7 @@ function PostbackPanel() {
   });
 
   const urlFor = (tokenText: string) =>
-    `${apiBase}/api/postback?click_id=CLICK_ID&type=sale&amount=AMOUNT&currency=USD&txn_id=TRANSACTION_ID&token=${tokenText}`;
+    `${apiBase}/postback?click_id=CLICK_ID&type=sale&amount=AMOUNT&currency=USD&txn_id=TRANSACTION_ID&token=${tokenText}`;
   const allowlistText = allowlistDraft ?? (token?.ipAllowlist ?? []).join('\n');
   const mutedButton = {
     background: 'transparent',
