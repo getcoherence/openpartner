@@ -112,6 +112,7 @@ export const TABLES = {
   NetworkOutbox: 'NetworkOutbox',
   Coupon: 'Coupon',
   PartnerCommission: 'PartnerCommission',
+  PartnerNetworkConsent: 'PartnerNetworkConsent',
   PartnerPostback: 'PartnerPostback',
   BrandAsset: 'BrandAsset',
   PortalCustomDomain: 'PortalCustomDomain',

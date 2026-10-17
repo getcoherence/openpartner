@@ -27,6 +27,13 @@ import { usePublicBrand } from '../lib/useBrand.js';
  * audience size and a pitch. The rules mirror the API's (validateJoinForm)
  * and Apply stays disabled until they pass.
  *
+ * When the brand offers the OpenPartner Network (status.networkOffered —
+ * never on white-label), an optional "also join the Network" checkbox sits
+ * under the application. It starts UNCHECKED: sharing the applicant's
+ * name and email with a separate service is a choice they make, and an
+ * applicant who skips past it is simply asked again in the portal. A
+ * pre-ticked box would turn "didn't notice" into consent.
+ *
  * Post-submit states mirror the API: auto-approve sends a sign-in link
  * right away; require-review only acknowledges the application (the
  * sign-in link comes with the admin's approval); the endpoint
@@ -131,17 +138,19 @@ export function PartnerJoinPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: 'form' });
+  const [networkOptIn, setNetworkOptIn] = useState(false);
   // Closed (or reviewed) is known before anyone fills in the form. If the
   // check fails (an older API without it), the form still works and a
   // closed program answers the submit with signup_disabled.
   const status = useQuery({
     queryKey: ['partner-signup-status', currentTenantSlug()],
-    queryFn: () => api<{ open: boolean; reviewRequired: boolean }>('/partner-signup/status'),
+    queryFn: () => api<{ open: boolean; reviewRequired: boolean; networkOffered?: boolean }>('/partner-signup/status'),
     retry: false,
     staleTime: 60_000,
   });
 
   const { errors, application } = validateJoinForm(values);
+  const networkOffered = status.data?.networkOffered === true;
   const set = <K extends JoinField>(key: K, value: JoinFormValues[K]) => setValues((v) => ({ ...v, [key]: value }));
   const touch = (key: JoinField) => setTouched((t) => (t[key] ? t : { ...t, [key]: true }));
   const shownError = (key: JoinField) => (touched[key] ? errors[key] : undefined);
@@ -157,7 +166,12 @@ export function PartnerJoinPage() {
     try {
       const r = await api<{ ok: boolean; status: string }>('/partner-signup', {
         method: 'POST',
-        body: { name: values.name.trim(), email: values.email.trim().toLowerCase(), application },
+        body: {
+          name: values.name.trim(),
+          email: values.email.trim().toLowerCase(),
+          application,
+          ...(networkOffered && networkOptIn ? { networkOptIn: true } : {}),
+        },
       });
       setPhase({ kind: 'sent', review: r.status.startsWith('pending_review') });
     } catch (e) {
@@ -362,6 +376,38 @@ export function PartnerJoinPage() {
             : `${pitchLength}/${LIMITS.pitchMax} characters`}
         </div>
         <FieldError message={shownError('pitch')} />
+
+        {networkOffered && (
+          <label
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'flex-start',
+              marginTop: 16,
+              padding: 12,
+              background: theme.surface2,
+              border: `1px solid ${theme.border}`,
+              borderRadius: theme.radiusSm,
+              cursor: 'pointer',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={networkOptIn}
+              onChange={(e) => setNetworkOptIn(e.target.checked)}
+              style={{ marginTop: 2, flexShrink: 0 }}
+            />
+            <span style={{ fontSize: 13, lineHeight: 1.5, color: theme.text }}>
+              <strong>Also join the OpenPartner Network</strong> (optional)
+              <span style={{ display: 'block', marginTop: 4, color: theme.textMuted }}>
+                The Network is a directory where other brands find creators for their partner programs. If you tick
+                this, {program || 'this brand'} shares your name, email address, website, social profiles and audience
+                size with it. Your pitch stays with {program || 'this brand'}. You can change this later in your partner
+                portal.
+              </span>
+            </span>
+          </label>
+        )}
 
         {err && <div role="alert" style={{ color: theme.danger, fontSize: 13, marginTop: 10 }}>{err}</div>}
         <button

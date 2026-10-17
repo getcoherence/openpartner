@@ -12,6 +12,7 @@ const TABLES = [
   'Program',
   'PartnerProgram',
   'PartnerCommission',
+  'PartnerNetworkConsent',
   'Coupon',
   'Link',
   'Click',

@@ -28,11 +28,13 @@
  * (self-host) it's /partner-signup. Tenant context comes from req.db
  * either way.
  *
- * Network behavior: if the vendor has Network membership enabled with
- * autoEnroll on, the new partner is pushed to /partners/upsert and the
+ * Network behavior: when the brand offers the Network to its partners
+ * (status reports networkOffered), the join page shows an optional,
+ * unchecked opt-in. Only an applicant who ticks it is recorded as
+ * consented and pushed to /partners/upsert (network-consent.ts); the
  * returned networkCreatorId is stamped on Partner.metadata.network.
- * Network failures are queued in NetworkOutbox and don't fail the
- * signup.
+ * Everyone else is asked once in the portal. Network failures are queued
+ * in NetworkOutbox and don't fail the signup.
  */
 
 import { Router } from 'express';
@@ -61,7 +63,7 @@ import { getPortalBaseUrl, linkTenantOf } from '../portal-url.js';
 import type { PartnerReview } from '../partner-review.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { tenantOf } from '../tenancy.js';
-import { getNetworkMembership, pushPartnerUpsert } from '../network-client.js';
+import { grantNetworkConsent, isNetworkOfferedToPartners, syncPartnerToNetwork } from '../network-consent.js';
 
 export const partnerSignupRouter = Router();
 
@@ -99,6 +101,10 @@ const schema = z.object({
   name: z.string().trim().min(1).max(120),
   profile: z.record(z.unknown()).optional(),
   application: applicationSchema,
+  /** The join page's optional "also join the OpenPartner Network"
+   *  checkbox. Unchecked (or absent) = not asked yet: the partner gets the
+   *  portal prompt instead. Ignored unless the brand offers the Network. */
+  networkOptIn: z.boolean().optional(),
 });
 
 // Partner.metadata keys the server owns. This endpoint is public, so a
@@ -182,7 +188,12 @@ async function readSignupSettings(
 partnerSignupRouter.get('/partner-signup/status', statusLimit, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const settings = await readSignupSettings(db, tenantId);
-  res.json({ open: !settings.disabled, reviewRequired: settings.policy === 'require_review' });
+  res.json({
+    open: !settings.disabled,
+    reviewRequired: settings.policy === 'require_review',
+    // Shows the optional Network checkbox. Never true for white-label.
+    networkOffered: await isNetworkOfferedToPartners(db, tenantId),
+  });
 });
 
 partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
@@ -246,47 +257,12 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
     throw err;
   }
 
-  // Push to Network if configured + autoEnroll. Fire-and-forget on the
-  // request hot path: a Network outage must not fail the signup. The
-  // pushPartnerUpsert helper handles outbox queueing internally.
-  const network = await getNetworkMembership(db, tenantId);
-  if (network?.enabled && network.autoEnroll) {
-    const result = await pushPartnerUpsert(db, tenantId, {
-      vendorPartnerId: partner.id,
-      email: partner.email,
-      name: partner.name,
-      profile,
-      joinedVendorAt: partner.createdAt.toISOString(),
-      status: activatedAt ? 'active' : 'pending',
-      metadata: { source: 'self_signup' },
-      // Fills blanks in the creator's Network profile. The pitch stays
-      // with this brand: it was written for this program.
-      creatorProfile: {
-        websiteUrl: application.websiteUrl,
-        socialUrls: application.socialUrls,
-        audienceSize: application.audienceSize,
-      },
-    });
-    if (result) {
-      // Stamp the canonical Network identity onto the Partner so the
-      // admin UI can show "this creator was already on the Network".
-      await db<PartnerRow>(TABLES.Partner)
-        .where({ id: partner.id })
-        .update({
-          metadata: db.raw(
-            `jsonb_set(coalesce("metadata", '{}'::jsonb), '{network}', ?::jsonb, true)`,
-            [
-              JSON.stringify({
-                creatorId: result.networkCreatorId,
-                preExisting: result.alreadyExisted,
-                affiliations: result.affiliations.length,
-                syncedAt: new Date().toISOString(),
-              }),
-            ],
-          ),
-          updatedAt: new Date(),
-        });
-    }
+  // Network: only if the applicant ticked the join page's opt-in AND the
+  // brand offers the Network. Fire-and-forget on the request hot path: a
+  // Network outage must not fail the signup (it queues in NetworkOutbox).
+  if (body.data.networkOptIn === true && (await isNetworkOfferedToPartners(db, tenantId))) {
+    await grantNetworkConsent(db, tenantId, partner.id, 'join_page');
+    await syncPartnerToNetwork(db, tenantId, partner, { profile });
   }
 
   const { resolveBrandName } = await import('../brand-name.js');
