@@ -188,15 +188,13 @@ function Stat({ label, value, muted }: { label: string; value: string; muted?: b
 
 /** What a commission on this program pays, resolved the way the engine
  *  does: program-scoped terms → partner-wide → the program's own rule.
- *  Holdback takes the first one that sets it, in the same order. */
+ *  Whichever terms win also set the holdback; terms that leave it blank
+ *  use the program's (API: EFFECTIVE_HOLDBACK_SQL). */
 function effectiveTerms(program: ProgramTerms, partnerWide: Snapshot | null) {
+  const terms = program.commission ?? partnerWide;
   const source = program.commission ? 'program' : partnerWide ? 'partner' : 'rule';
-  const rules = program.commission
-    ? snapshotRules(program.commission)
-    : partnerWide
-      ? snapshotRules(partnerWide)
-      : (program.commissionRule ?? []);
-  const holdbackDays = program.commission?.holdbackDays ?? partnerWide?.holdbackDays ?? program.holdbackDays;
+  const rules = terms ? snapshotRules(terms) : (program.commissionRule ?? []);
+  const holdbackDays = terms?.holdbackDays ?? program.holdbackDays;
   return { source, rules, holdbackDays } as const;
 }
 
@@ -293,6 +291,7 @@ function ProgramTermsList({
                     endpoint={`/partners/${partnerId}/programs/${p.id}/commission`}
                     current={p.commission}
                     fallbackRules={eff.rules.length > 0 ? eff.rules : DEFAULT_RULES}
+                    fallbackHoldback={eff.holdbackDays}
                     onSaved={() => {
                       setEditing(null);
                       onSaved();
@@ -324,7 +323,7 @@ const SCOPE_COPY = {
     clear: 'Clear program terms',
     clearing: 'Clearing…',
     confirm: 'Clear this program’s terms? Its commissions fall back to the partner-wide default, or the program rule.',
-    holdback: 'Holdback (days, blank = inherit)',
+    holdback: "Holdback (days, blank = program's)",
     applies: 'this partner’s commissions on this program accrue on the terms below, whatever the partner-wide default or program rule says',
   },
 } as const;
@@ -334,6 +333,7 @@ function EditCard({
   endpoint,
   current,
   fallbackRules,
+  fallbackHoldback = null,
   onSaved,
 }: {
   scope: 'partner' | 'program';
@@ -341,26 +341,33 @@ function EditCard({
   current: Snapshot | null;
   /** Editor's starting rules when there's no row yet. */
   fallbackRules: CommissionSubRule[];
+  /** Editor's starting holdback when there's no row yet. Program terms
+   *  start from the holdback the program gets today, so saving them
+   *  doesn't silently drop a longer partner-wide holdback: a blank one
+   *  would mean the program's own. */
+  fallbackHoldback?: number | null;
   onSaved: () => void;
 }) {
   const copy = SCOPE_COPY[scope];
+  const startHoldback = () => {
+    const days = current ? current.holdbackDays : fallbackHoldback;
+    return days != null ? String(days) : '';
+  };
   // Edits the snapshot's full rule array. This form used to show only
   // the legacy single-rule columns and PUT without commissionRules, which
   // the API reads as "replace with a single rule" and clears the stored
   // array, so saving any edit silently dropped a partner's compound
   // terms (first-sale bonus, event filters, recurring caps).
   const [rules, setRules] = useState<CommissionSubRule[]>(current ? snapshotRules(current) : fallbackRules);
-  const [holdback, setHoldback] = useState(
-    current?.holdbackDays != null ? String(current.holdbackDays) : '',
-  );
+  const [holdback, setHoldback] = useState(startHoldback);
 
   // Re-sync the form when the underlying snapshot changes (e.g. after
   // the user just saved). Without this the form would keep showing
   // the pre-save values until a hard refresh. Keyed on `current` only:
-  // fallbackRules is a fresh array each render.
+  // the fallbacks are recomputed each render.
   useEffect(() => {
     setRules(current ? snapshotRules(current) : fallbackRules);
-    setHoldback(current?.holdbackDays != null ? String(current.holdbackDays) : '');
+    setHoldback(startHoldback());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current]);
 

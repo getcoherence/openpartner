@@ -19,6 +19,7 @@ import { dispatchCommissionEvents } from '../commission-events.js';
 import { cursorTimestamp, decodeCursor, takePage, whereAfterCursor } from '../pagination.js';
 import { tenantOf } from '../tenancy.js';
 import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
+import { EFFECTIVE_HOLDBACK_SQL } from '../partner-commission.js';
 
 /**
  * List query for both commission lists:
@@ -81,12 +82,13 @@ async function listPage(db: Knex, q: z.infer<typeof listQuerySchema>, partnerId?
 }
 
 /** Shared base query — joins Commission → Attribution → Campaign and
- *  picks the effective holdback: the first non-null of the partner's
- *  snapshot scoped to this program (pcp), their partner-wide snapshot
- *  (pcw), then the program's own value. Same order as the auto-approve
- *  job (commission-auto-approve.ts). The UI uses this to show "Matures
- *  in N days" badges and to disable the approve button while holdback
- *  is active. */
+ *  picks the effective holdback (EFFECTIVE_HOLDBACK_SQL): the partner's
+ *  snapshot scoped to this program (pcp) if one exists, falling back to
+ *  the program's own value when it leaves holdback unset; else their
+ *  partner-wide snapshot (pcw); else the program's value. Same expression
+ *  as the auto-approve job (commission-auto-approve.ts). The UI uses this
+ *  to show "Matures in N days" badges and to disable the approve button
+ *  while holdback is active. */
 function listQueryBase(db: Knex) {
   return db(`${TABLES.Commission} as c`)
     .leftJoin(`${TABLES.Attribution} as a`, 'a.id', 'c.attributionId')
@@ -98,7 +100,7 @@ function listQueryBase(db: Knex) {
       j.on('pcw.partnerId', 'c.partnerId').andOnNull('pcw.programId'),
     )
     .select('c.*')
-    .select(db.raw('coalesce("pcp"."holdbackDays", "pcw"."holdbackDays", "cp"."holdbackDays") as "_holdbackDays"'))
+    .select(db.raw(`${EFFECTIVE_HOLDBACK_SQL} as "_holdbackDays"`))
     .select('cp.id as _campaignId')
     .select('cp.name as _campaignName')
     .orderBy([
@@ -140,8 +142,8 @@ commissionsRouter.post('/commissions/:id/approve', requireAuth, requireAdmin, as
 
   // Holdback check: refuse to approve before accruedAt + the effective
   // holdback. Read through listQueryBase so the guard uses exactly the
-  // holdback the review queue shows: the partner's program-scoped, then
-  // partner-wide, snapshot, then the program's, the same COALESCE the auto-approve job
+  // holdback the review queue shows (EFFECTIVE_HOLDBACK_SQL: the partner's
+  // own terms first, then the program's), the same expression the auto-approve job
   // applies. Checking only the program's value let an admin approve a
   // commission the partner's own (longer) holdback still covered.
   const row = await listQueryBase(db).where('c.id', req.params.id).first();

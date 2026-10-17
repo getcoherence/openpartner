@@ -175,9 +175,9 @@ describe('per-program terms', () => {
       { id: 'd', name: 'Delta', granted: false, commissionRule: rule(5), holdbackDays: null, commission: scoped('d', 40, 7) },
     ]);
 
-    // Holdback falls through tiers on its own: Alpha's terms leave it
-    // unset, so the partner-wide 10 days applies.
-    expect(rowText(page, 'Alpha')).toContain(`Program-specific terms: ${renderCommissionSummary(rule(50) as never)} · 10-day holdback`);
+    // Whichever terms win set the holdback too: Alpha's own terms leave it
+    // unset, which means Alpha's 30 days — not the partner-wide 10.
+    expect(rowText(page, 'Alpha')).toContain(`Program-specific terms: ${renderCommissionSummary(rule(50) as never)} · 30-day holdback`);
     expect(rowText(page, 'Beta')).toContain(`Partner-wide default: ${renderCommissionSummary(rule(30) as never)} · 10-day holdback`);
     // Not granted and no terms → not listed. Not granted WITH terms → listed.
     expect(page.queryByText('Gamma')).toBeNull();
@@ -197,9 +197,12 @@ describe('per-program terms', () => {
       { id: 'b', name: 'Beta', granted: true, commissionRule: rule(15), holdbackDays: null, commission: null },
     ]);
     fireEvent.click(page.getByText('Set terms'));
-    // The partner-wide editor plus this one.
+    // The partner-wide editor plus this one, which starts from the 10-day
+    // holdback Beta gets today rather than blank (= Beta's own, none).
     expect(page.getAllByPlaceholderText('0')).toHaveLength(2);
-    fireEvent.change(page.getAllByPlaceholderText('0')[1]!, { target: { value: '21' } });
+    const holdback = page.getAllByPlaceholderText('0')[1] as HTMLInputElement;
+    expect(holdback.value).toBe('10');
+    fireEvent.change(holdback, { target: { value: '21' } });
     fireEvent.click(page.getByText('Save program terms'));
 
     const isPut = (c: unknown[]) => (c[1] as { method?: string } | undefined)?.method === 'PUT';
@@ -213,6 +216,18 @@ describe('per-program terms', () => {
       commissionRules: rule(30), // seeded from the partner-wide default it was paying
       holdbackDays: 21,
     });
+  });
+
+  it('saving new program terms untouched keeps the holdback the program already had', async () => {
+    const page = show(PARTNER_WIDE, [
+      { id: 'b', name: 'Beta', granted: true, commissionRule: rule(15), holdbackDays: 30, commission: null },
+    ]);
+    fireEvent.click(page.getByText('Set terms'));
+    fireEvent.click(page.getByText('Save program terms'));
+    const isPut = (c: unknown[]) => (c[1] as { method?: string } | undefined)?.method === 'PUT';
+    await waitFor(() => expect(vi.mocked(api).mock.calls.some(isPut)).toBe(true));
+    // Partner-wide 10 days, explicitly — not blank, which would mean Beta's 30.
+    expect((vi.mocked(api).mock.calls.find(isPut)![1] as { body: { holdbackDays: unknown } }).body.holdbackDays).toBe(10);
   });
 
   it('clears only the program terms', async () => {

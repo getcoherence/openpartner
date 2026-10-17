@@ -21,6 +21,7 @@
 
 import type { Knex } from 'knex';
 import { TABLES, type CommissionRow } from '@openpartner/db';
+import { EFFECTIVE_HOLDBACK_SQL } from './partner-commission.js';
 
 export interface AutoApproveResult {
   approvedCount: number;
@@ -32,13 +33,12 @@ export async function autoApproveMatureCommissions(
   tenantId: string,
 ): Promise<AutoApproveResult> {
   // Find every accrued commission whose effective holdback has
-  // elapsed. Effective holdback = the first non-null of: the partner's
-  // snapshot scoped to this commission's program (pcp), the partner's
-  // partner-wide snapshot (pcw, programId null), then the program's own
-  // value. A snapshot's null holdbackDays means "not set", so it defers
-  // to the next tier rather than meaning zero. Same order as
-  // routes/commissions.ts listQueryBase, which the review queue and
-  // manual approve read through.
+  // elapsed. Effective holdback (EFFECTIVE_HOLDBACK_SQL): the partner's
+  // snapshot scoped to this commission's program (pcp) if one exists —
+  // falling back to the program's own value when it leaves holdback
+  // unset — else their partner-wide snapshot (pcw, programId null), else
+  // the program's value. Same expression as routes/commissions.ts
+  // listQueryBase, which the review queue and manual approve read through.
   //
   // Single statement so two scheduler ticks racing don't double-
   // process the same row. Each join matches at most one row (partial
@@ -65,9 +65,9 @@ export async function autoApproveMatureCommissions(
        and c.status = 'accrued'
        and c."attributionId" = a.id
        and c."partnerId" = a."partnerId"
-       and coalesce(pcp."holdbackDays", pcw."holdbackDays", cp."holdbackDays") is not null
-       and coalesce(pcp."holdbackDays", pcw."holdbackDays", cp."holdbackDays") > 0
-       and c."accruedAt" + (coalesce(pcp."holdbackDays", pcw."holdbackDays", cp."holdbackDays") * interval '1 day') <= now()
+       and ${EFFECTIVE_HOLDBACK_SQL} is not null
+       and ${EFFECTIVE_HOLDBACK_SQL} > 0
+       and c."accruedAt" + (${EFFECTIVE_HOLDBACK_SQL} * interval '1 day') <= now()
     returning c.*
     `,
     [tenantId],

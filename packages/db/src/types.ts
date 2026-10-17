@@ -275,7 +275,8 @@ export type PartnerCommissionSource = 'approval' | 'backfill' | 'amendment';
  *
  * Scope: `programId` null = partner-wide (every program without its own
  * row); set = that one program. Resolution order is program-specific →
- * partner-wide → Program rule, for the rule and for holdbackDays alike.
+ * partner-wide → Program rule. The winning row also sets holdbackDays; a
+ * null there means the Program's holdback (EFFECTIVE_HOLDBACK_SQL).
  * At most one row of each scope per (partner, program), enforced by
  * partial unique indexes.
  */

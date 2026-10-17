@@ -659,7 +659,7 @@ partnersRouter.delete('/partners/:id/commission-snapshot', requireAuth, requireA
 // Program-scoped commission terms: the same body and semantics as the
 // partner-wide snapshot above, for one program. On that program this row
 // beats the partner-wide one (attribution.ts resolveCommissionRule), and
-// its holdbackDays beats the partner-wide holdback.
+// it sets the holdback too (blank = the program's own, not the partner-wide one).
 partnersRouter.get(
   '/partners/:id/programs/:programId/commission',
   requireAuth,

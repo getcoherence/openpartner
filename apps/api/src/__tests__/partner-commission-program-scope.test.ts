@@ -8,7 +8,8 @@
  *
  *   - accrual (attribution.ts resolveCommissionRule) — whole-row precedence
  *   - holdback, in the auto-approve job, the review queue and manual
- *     approve — first non-null holdbackDays in the same order
+ *     approve — the winning row's holdbackDays, or the program's when it
+ *     leaves it unset (EFFECTIVE_HOLDBACK_SQL)
  *
  * Also covers the endpoints, POST /partners scoping (the Network approval
  * path), the backfill, and RLS on the reshaped table.
@@ -242,6 +243,9 @@ describe.skipIf(skipIntegration)('holdback precedence', () => {
    * Programs a, b, c all hold back 30 days. Commissions are 20 days old.
    *   p: partner-wide 10d; a scoped 60d; c scoped with holdback unset
    *   q: no partner-wide; a scoped 5d
+   *
+   * Whichever terms win set the holdback, and terms that leave it unset
+   * mean the PROGRAM's — so p's c-terms don't pick up the partner-wide 10d.
    */
   async function setup() {
     const a = await program({ percent: 10, holdbackDays: 30 });
@@ -256,18 +260,19 @@ describe.skipIf(skipIntegration)('holdback precedence', () => {
     return {
       pa: await accruedCommission(p, a, 20), // 60 → not yet
       pb: await accruedCommission(p, b, 20), // partner-wide 10 → mature
-      pc: await accruedCommission(p, c, 20), // unset → partner-wide 10 → mature
+      pc: await accruedCommission(p, c, 20), // unset → program 30, not partner-wide 10 → not yet
       qa: await accruedCommission(q, a, 20), // 5 → mature
       qb: await accruedCommission(q, b, 20), // program 30 → not yet
     };
   }
 
-  it('auto-approve takes the first holdback set: program-scoped, partner-wide, program', async () => {
+  it("auto-approve takes the winning terms' holdback, else the program's", async () => {
     const c = await setup();
     const res = await autoApproveMatureCommissions(db, T);
 
-    expect(res.approved.map((r) => r.id).sort()).toEqual([c.pb, c.pc, c.qa].sort());
+    expect(res.approved.map((r) => r.id).sort()).toEqual([c.pb, c.qa].sort());
     expect(await statusOf(c.pa)).toBe('accrued');
+    expect(await statusOf(c.pc)).toBe('accrued');
     expect(await statusOf(c.qb)).toBe('accrued');
   });
 
@@ -278,11 +283,14 @@ describe.skipIf(skipIntegration)('holdback precedence', () => {
     const holdback = Object.fromEntries(
       (list.body.commissions as Array<{ id: string; holdbackDays: number | null }>).map((r) => [r.id, r.holdbackDays]),
     );
-    expect(holdback).toEqual({ [c.pa]: 60, [c.pb]: 10, [c.pc]: 10, [c.qa]: 5, [c.qb]: 30 });
+    expect(holdback).toEqual({ [c.pa]: 60, [c.pb]: 10, [c.pc]: 30, [c.qa]: 5, [c.qb]: 30 });
 
     const early = await admin('post', `/commissions/${c.pa}/approve`);
     expect(early.status).toBe(409);
     expect(early.body).toMatchObject({ error: 'holdback_active', holdbackDays: 60 });
+    const unset = await admin('post', `/commissions/${c.pc}/approve`);
+    expect(unset.status).toBe(409);
+    expect(unset.body).toMatchObject({ error: 'holdback_active', holdbackDays: 30 });
     expect((await admin('post', `/commissions/${c.pb}/approve`)).status).toBe(200);
     expect((await admin('post', `/commissions/${c.qa}/approve`)).status).toBe(200);
     expect((await admin('post', `/commissions/${c.qb}/approve`)).status).toBe(409);

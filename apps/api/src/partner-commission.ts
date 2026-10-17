@@ -27,6 +27,21 @@ export const PARTNER_COMMISSION_COLUMNS = [
   'snapshottedAt',
 ] as const;
 
+/**
+ * Effective holdbackDays for a commission, as SQL over three joined
+ * aliases: `pcp` (the partner's row for the commission's program), `pcw`
+ * (their partner-wide row) and `cp` (the Program). Shared by the
+ * auto-approve job and the review queue / manual approve so the two can't
+ * drift.
+ *
+ * Same precedence as the rule: a program row replaces the partner-wide row
+ * entirely, so a program row without a holdback means the PROGRAM's own
+ * holdback, not the partner-wide one. Without a program row: partner-wide,
+ * then program. A null holdbackDays means "not set", never zero.
+ */
+export const EFFECTIVE_HOLDBACK_SQL =
+  'coalesce(pcp."holdbackDays", case when pcp.id is null then pcw."holdbackDays" end, cp."holdbackDays")';
+
 export function newPartnerCommissionId(): string {
   return `pcm_${ulid()}`;
 }
