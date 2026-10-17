@@ -320,8 +320,8 @@ async function runInTenant<T>(tenantId: string, fn: (trx: Knex.Transaction) => P
  *   2. For events whose payload doesn't carry our metadata (older Connect
  *      accounts, transfers identified only by payoutId), fall back to DB
  *      lookup via the privileged `db` (cross-tenant scan).
- *   3. On a single-tenant self-host, a customer event or a Checkout
- *      Session neither step resolves belongs to the one tenant there is
+ *   3. On a single-tenant self-host, a customer event, a Checkout Session
+ *      or a dispute neither step resolves belongs to the one tenant there is
  *      (unless a connected account sent it). A partner coupon may be the
  *      only thing tying it to a partner (maybeRedeemStripeCoupons).
  *      mapStripeEvent then decides whether it's attributable.
@@ -397,8 +397,7 @@ async function resolveTenantForEvent(event: Stripe.Event, family: SecretFamily):
     case 'customer.subscription.deleted':
     case 'invoice.paid':
     case 'invoice.payment_failed':
-    case 'charge.refunded':
-    case 'charge.dispute.created': {
+    case 'charge.refunded': {
       const customerId = extractCustomerId(event.data.object as { customer?: unknown; id?: string });
       if (!customerId) return null;
       // First, check whether this is a merchant-self-subscription
@@ -427,6 +426,18 @@ async function resolveTenantForEvent(event: Stripe.Event, family: SecretFamily):
       // when event.account is set: that's a connected account's event
       // (delivered on the legacy combined secret), and its customers aren't
       // the brand's.
+      if (event.account) return null;
+      return receivesBrandStripeEvents() ? DEFAULT_TENANT_ID : null;
+    }
+    case 'charge.dispute.created': {
+      // A Dispute names its charge and PaymentIntent, never a customer, so
+      // the customer lookups above can't place it. On a single-tenant
+      // self-host it's the one tenant's; mapStripeEvent finds the disputed
+      // payment's user, or skips it. Anywhere else the account is
+      // OpenPartner's billing account or one shared by many brands (see
+      // receivesBrandStripeEvents): its disputes are no brand's attribution,
+      // and stay unresolved without a Stripe read. Not a connected
+      // account's (as above).
       if (event.account) return null;
       return receivesBrandStripeEvents() ? DEFAULT_TENANT_ID : null;
     }
@@ -1062,15 +1073,18 @@ async function mapStripeEvent(
       // would create a worse experience than the rare manual reversal.
       const dispute = event.data.object as Stripe.Dispute;
       const chargeId = typeof dispute.charge === 'string' ? dispute.charge : dispute.charge?.id;
-      let userId: string | null = null;
-      if (chargeId) {
-        try {
-          const charge = await stripe.charges.retrieve(chargeId);
-          userId = await resolveUserIdFromCustomer(trx, stripe, charge.customer);
-        } catch {
-          // Charge might be deleted or inaccessible — log without attribution.
-        }
-      }
+      const paymentIntentId =
+        typeof dispute.payment_intent === 'string' ? dispute.payment_intent : dispute.payment_intent?.id ?? null;
+      // The customer is on the disputed charge, not the Dispute. A charge
+      // that's gone or out of reach (stripeReadOrNull) leaves the
+      // PaymentIntent, as does a guest one-time purchase, which has no
+      // Customer at all.
+      const charge = chargeId
+        ? await stripeReadOrNull('charges.retrieve', chargeId, () => stripe.charges.retrieve(chargeId))
+        : null;
+      const userId =
+        (await resolveUserIdFromCustomer(trx, stripe, charge?.customer ?? null)) ??
+        (await userIdForPaymentIntent(trx, paymentIntentId));
       if (!userId) return null;
       return {
         userId,
@@ -1080,6 +1094,7 @@ async function mapStripeEvent(
         metadata: {
           stripeDisputeId: dispute.id,
           ...(chargeId ? { stripeChargeId: chargeId } : {}),
+          ...(paymentIntentId ? { stripePaymentIntentId: paymentIntentId } : {}),
           reason: dispute.reason,
           status: dispute.status,
         },
@@ -1285,6 +1300,18 @@ async function couponSignup(
     type: 'signup',
     metadata: { source: 'coupon', code: redeemed.codes.join(',') },
   };
+}
+
+/** The user whose revenue Event (invoice_paid) recorded this PaymentIntent:
+ *  how a dispute of a guest one-time purchase (no Customer) finds the
+ *  referred user. */
+async function userIdForPaymentIntent(trx: Knex.Transaction, paymentIntentId: string | null): Promise<string | null> {
+  if (!paymentIntentId) return null;
+  const row = await trx<EventRow>(TABLES.Event)
+    .where('type', 'invoice_paid')
+    .whereRaw(`"metadata"->>'stripePaymentIntentId' = ?`, [paymentIntentId])
+    .first('userId');
+  return row?.userId ?? null;
 }
 
 /**
