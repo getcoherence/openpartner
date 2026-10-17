@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import type { Knex } from 'knex';
 import { z } from 'zod';
 import { ulid } from 'ulid';
 import { TABLES, type ApiKeyRow, type PartnerRow, type SessionRow } from '@openpartner/db';
@@ -14,6 +15,43 @@ import { autoMintCouponsForGrants } from './coupons.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
 import { refineCommissionSubRule } from '../commission-rule-schema.js';
 import { isPendingReview } from '../partner-review.js';
+import { findPartnerCommission, legacyRuleColumns, upsertPartnerCommission } from '../partner-commission.js';
+
+// Admin-set commission terms for a partner: the body of both override
+// PUTs (partner-wide and program-scoped) and of each POST /partners
+// `programCommissions` entry. Used for the "VIP gets 30%" case where a
+// brand wants to give a specific partner a different rate than the
+// program default.
+const overrideSchema = z.object({
+  commissionType: z.enum(['percent', 'fixed']),
+  commissionValue: z.number().nonnegative(),
+  recurring: z.boolean().optional(),
+  holdbackDays: z.number().int().nonnegative().nullable().optional(),
+  /** Optional compound-rule override. When omitted, the override is a
+   *  pure single-rule amendment and any prior compound rules attached
+   *  to this partner are cleared (set to NULL) so the engine doesn't
+   *  silently keep using stale sub-rules. Each sub-rule passes the same
+   *  cross-field checks as a program's terms (first/subsequent need an
+   *  eventType, recurringMonths needs recurring); values stay
+   *  nonnegative here so a 0% override remains expressible. */
+  commissionRules: z
+    .array(
+      z
+        .object({
+          trigger: z.enum(['every', 'first', 'subsequent']),
+          eventType: z.string().min(1).max(80).optional(),
+          type: z.enum(['percent', 'fixed']),
+          value: z.number().nonnegative(),
+          currency: z.string().length(3).optional(),
+          recurring: z.boolean().optional(),
+          recurringMonths: z.number().int().positive().max(600).optional(),
+        })
+        .superRefine(refineCommissionSubRule),
+    )
+    .min(1)
+    .max(10)
+    .optional(),
+});
 
 const createSchema = z.object({
   email: z.string().email(),
@@ -49,7 +87,15 @@ const createSchema = z.object({
    *  shape; `commissionType`/`commissionValue`/`recurring` are the
    *  legacy single-rule shape, still accepted so older Network
    *  deployments don't have to upgrade in lockstep. When both are
-   *  sent, `commissionRules` wins. */
+   *  sent, `commissionRules` wins.
+   *
+   *  Scope: when the request names exactly ONE program (`programIds`,
+   *  or the `campaignIds` alias) the snapshot is stamped for that
+   *  program only — the Network's approve flow always sends
+   *  `[offering.vendorProgramId]`, and the offering's terms describe
+   *  that program, not whatever the brand grants the partner later.
+   *  Any other request (several programs, or none = all) stamps a
+   *  partner-wide snapshot, as before. */
   commissionSnapshot: z
     .object({
       commissionType: z.enum(['percent', 'fixed']).optional(),
@@ -72,6 +118,13 @@ const createSchema = z.object({
         .max(10)
         .optional(),
     })
+    .optional(),
+  /** Per-program terms to stamp at creation, one entry per program. Each
+   *  program must be among the ones this request grants. Same body as
+   *  PUT /partners/:id/programs/:programId/commission. */
+  programCommissions: z
+    .array(overrideSchema.extend({ programId: z.string().min(1) }))
+    .max(100)
     .optional(),
 });
 
@@ -123,6 +176,30 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
     programIds = requestedProgramIds;
   } else {
     programIds = ((await db(TABLES.Program).select('id')) as Array<{ id: string }>).map((c) => c.id);
+  }
+
+  // Commission terms, also checked before the insert for the same
+  // orphan-row reason. The snapshot is program-scoped when exactly one
+  // program was named (see commissionSnapshot); programCommissions
+  // entries must target granted programs, at most one entry each, and
+  // not the program the snapshot already covers.
+  const snap = body.data.commissionSnapshot;
+  const hasSnapshot =
+    (snap?.commissionRules != null && snap.commissionRules.length > 0) ||
+    (snap?.commissionType != null && snap.commissionValue != null);
+  const namedPrograms = requestedProgramIds ? [...new Set(requestedProgramIds)] : [];
+  const snapshotProgramId = namedPrograms.length === 1 ? namedPrograms[0]! : null;
+  const programTerms = body.data.programCommissions ?? [];
+  const granted = new Set(programIds);
+  const termed = new Set<string>(hasSnapshot && snapshotProgramId ? [snapshotProgramId] : []);
+  for (const t of programTerms) {
+    if (!granted.has(t.programId)) {
+      return res.status(400).json({ error: 'program_commission_not_granted', programId: t.programId });
+    }
+    if (termed.has(t.programId)) {
+      return res.status(400).json({ error: 'duplicate_program_commission', programId: t.programId });
+    }
+    termed.add(t.programId);
   }
 
   let partner;
@@ -184,24 +261,22 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
   //
   // Without enough info to write either shape we fall back to the live
   // Campaign rule rather than silently mis-pricing.
-  const snap = body.data.commissionSnapshot;
   if (snap?.commissionRules && snap.commissionRules.length > 0) {
-    const legacy = snap.commissionRules.find((r) => r.trigger === 'every') ?? snap.commissionRules[0]!;
-    await db(TABLES.PartnerCommission).insert({
+    await upsertPartnerCommission(db, {
       partnerId: id,
       tenantId,
-      commissionType: legacy.type,
-      commissionValue: legacy.value.toFixed(4),
-      recurring: legacy.recurring ?? false,
+      programId: snapshotProgramId,
+      ...legacyRuleColumns(snap.commissionRules),
       commissionRules: JSON.stringify(snap.commissionRules),
       holdbackDays: snap.holdbackDays ?? null,
       source: 'approval',
       snapshottedAt: new Date(),
     });
   } else if (snap?.commissionType != null && snap.commissionValue != null) {
-    await db(TABLES.PartnerCommission).insert({
+    await upsertPartnerCommission(db, {
       partnerId: id,
       tenantId,
+      programId: snapshotProgramId,
       commissionType: snap.commissionType,
       commissionValue: snap.commissionValue.toFixed(4),
       recurring: snap.recurring ?? false,
@@ -209,6 +284,9 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
       source: 'approval',
       snapshottedAt: new Date(),
     });
+  }
+  for (const { programId, ...terms } of programTerms) {
+    await writeCommissionOverride(db, tenantId, id, programId, terms);
   }
 
   if (sendInvite) {
@@ -517,116 +595,111 @@ partnersRouter.get('/partners/:id', requireAuth, grantScope('partners:read'), re
   res.json(partner);
 });
 
-// Per-partner commission snapshot (PartnerCommission row, if any).
-// Surfaced separately because the partner detail page wants to show
+// Per-partner commission snapshot: the PARTNER-WIDE PartnerCommission row
+// (programId null), if any. Program-scoped rows have their own endpoints
+// below. Surfaced separately because the partner detail page wants to show
 // "Approved under: 20% recurring, 30d holdback (since 2026-04-15)"
 // and the snapshot is a sidecar table — keeps the GET /partners/:id
 // shape unchanged.
 partnersRouter.get('/partners/:id/commission-snapshot', requireAuth, requirePartnerOrAdmin('id'), async (req, res) => {
   const { db } = tenantOf(req);
-  const snapshot = await db(TABLES.PartnerCommission)
-    .where({ partnerId: req.params.id })
-    .first(
-      'partnerId',
-      'commissionType',
-      'commissionValue',
-      'recurring',
-      'commissionRules',
-      'holdbackDays',
-      'source',
-      'snapshottedAt',
-    );
-  if (!snapshot) return res.json({ snapshot: null });
-  res.json({ snapshot });
+  const snapshot = await findPartnerCommission(db, req.params.id!, null);
+  res.json({ snapshot: snapshot ?? null });
 });
 
-// Admin override: set or replace a partner's commission snapshot.
-// Used for the "VIP gets 30%" case where a brand wants to give a
-// specific partner a different rate than the campaign default. Stamped
-// with source='amendment' so it's distinguishable from the regular
-// approval-time + backfill snapshots in audit + reporting. PUT
-// semantics — replaces any existing row in full.
-const overrideSchema = z.object({
-  commissionType: z.enum(['percent', 'fixed']),
-  commissionValue: z.number().nonnegative(),
-  recurring: z.boolean().optional(),
-  holdbackDays: z.number().int().nonnegative().nullable().optional(),
-  /** Optional compound-rule override. When omitted, the override is a
-   *  pure single-rule amendment and any prior compound rules attached
-   *  to this partner are cleared (set to NULL) so the engine doesn't
-   *  silently keep using stale sub-rules. Each sub-rule passes the same
-   *  cross-field checks as a program's terms (first/subsequent need an
-   *  eventType, recurringMonths needs recurring); values stay
-   *  nonnegative here so a 0% override remains expressible. */
-  commissionRules: z
-    .array(
-      z
-        .object({
-          trigger: z.enum(['every', 'first', 'subsequent']),
-          eventType: z.string().min(1).max(80).optional(),
-          type: z.enum(['percent', 'fixed']),
-          value: z.number().nonnegative(),
-          currency: z.string().length(3).optional(),
-          recurring: z.boolean().optional(),
-          recurringMonths: z.number().int().positive().max(600).optional(),
-        })
-        .superRefine(refineCommissionSubRule),
-    )
-    .min(1)
-    .max(10)
-    .optional(),
-});
+/** Write an admin override for one scope (programId null = partner-wide).
+ *  Stamped with source='amendment' so it's distinguishable from the
+ *  regular approval-time + backfill snapshots in audit + reporting. PUT
+ *  semantics — replaces any existing row for that scope in full. */
+async function writeCommissionOverride(
+  db: Knex,
+  tenantId: string,
+  partnerId: string,
+  programId: string | null,
+  terms: z.infer<typeof overrideSchema>,
+): Promise<void> {
+  await upsertPartnerCommission(db, {
+    partnerId,
+    tenantId,
+    programId,
+    commissionType: terms.commissionType,
+    commissionValue: terms.commissionValue.toFixed(4),
+    recurring: terms.recurring ?? false,
+    commissionRules: terms.commissionRules ? JSON.stringify(terms.commissionRules) : null,
+    holdbackDays: terms.holdbackDays ?? null,
+    source: 'amendment',
+    snapshottedAt: new Date(),
+  });
+}
+
+// Admin override: set or replace a partner's partner-wide commission
+// snapshot. Program-scoped rows still win on their own programs.
 partnersRouter.put('/partners/:id/commission-snapshot', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = overrideSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
-  await db(TABLES.PartnerCommission)
-    .insert({
-      partnerId: partner.id,
-      tenantId,
-      commissionType: body.data.commissionType,
-      commissionValue: body.data.commissionValue.toFixed(4),
-      recurring: body.data.recurring ?? false,
-      commissionRules: body.data.commissionRules ? JSON.stringify(body.data.commissionRules) : null,
-      holdbackDays: body.data.holdbackDays ?? null,
-      source: 'amendment',
-      snapshottedAt: new Date(),
-    })
-    .onConflict('partnerId')
-    .merge();
-  const fresh = await db(TABLES.PartnerCommission)
-    .where({ partnerId: partner.id })
-    .first(
-      'partnerId',
-      'commissionType',
-      'commissionValue',
-      'recurring',
-      'commissionRules',
-      'holdbackDays',
-      'source',
-      'snapshottedAt',
-    );
-  res.json({ snapshot: fresh });
+  await writeCommissionOverride(db, tenantId, partner.id, null, body.data);
+  res.json({ snapshot: await findPartnerCommission(db, partner.id, null) });
 });
 
-// Admin: clear a partner's commission override. Drops the
+// Admin: clear a partner's partner-wide override. Drops that
 // PartnerCommission row, which means future commissions fall back to
-// the live Campaign rule again. Useful for unwinding a VIP rate when
-// a partnership downgrades.
+// the live Campaign rule again (program-scoped rows are left alone).
+// Useful for unwinding a VIP rate when a partnership downgrades.
 partnersRouter.delete('/partners/:id/commission-snapshot', requireAuth, requireAdmin, async (req, res) => {
   const { db } = tenantOf(req);
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
-  await db(TABLES.PartnerCommission).where({ partnerId: partner.id }).del();
+  await db(TABLES.PartnerCommission).where({ partnerId: partner.id }).whereNull('programId').del();
+  res.json({ ok: true });
+});
+
+// Program-scoped commission terms: the same body and semantics as the
+// partner-wide snapshot above, for one program. On that program this row
+// beats the partner-wide one (attribution.ts resolveCommissionRule), and
+// it sets the holdback too (blank = the program's own, not the partner-wide one).
+partnersRouter.get(
+  '/partners/:id/programs/:programId/commission',
+  requireAuth,
+  requirePartnerOrAdmin('id'),
+  async (req, res) => {
+    const { db } = tenantOf(req);
+    const snapshot = await findPartnerCommission(db, req.params.id!, req.params.programId!);
+    res.json({ snapshot: snapshot ?? null });
+  },
+);
+
+// Doesn't require a grant on the program: an admin can agree terms before
+// granting access, and terms outlive a revoked grant so links that keep
+// attributing after the revoke are still paid what was agreed.
+partnersRouter.put('/partners/:id/programs/:programId/commission', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = overrideSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  if (!partner) return res.status(404).json({ error: 'partner_not_found' });
+  const program = await db(TABLES.Program).where({ id: req.params.programId }).first('id');
+  if (!program) return res.status(404).json({ error: 'program_not_found' });
+  await writeCommissionOverride(db, tenantId, partner.id, program.id as string, body.data);
+  res.json({ snapshot: await findPartnerCommission(db, partner.id, program.id as string) });
+});
+
+// Clears the program-scoped row only. Commissions on the program then
+// fall back to the partner-wide snapshot, or the program rule.
+partnersRouter.delete('/partners/:id/programs/:programId/commission', requireAuth, requireAdmin, async (req, res) => {
+  const { db } = tenantOf(req);
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  if (!partner) return res.status(404).json({ error: 'partner_not_found' });
+  await db(TABLES.PartnerCommission).where({ partnerId: partner.id, programId: req.params.programId }).del();
   res.json({ ok: true });
 });
 
 // One-shot backfill of PartnerCommission for partners that predate
-// snapshot federation. Idempotent — can be run multiple times. See
-// backfillCommissionSnapshots for the (intentional) limitations
-// around multi-campaign partners.
+// snapshot federation: one program-scoped row per grant. Idempotent —
+// can be run multiple times. See backfillCommissionSnapshots for what
+// it skips.
 partnersRouter.post('/partners/backfill-commission-snapshots', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const { backfillCommissionSnapshots } = await import('../backfill-commission-snapshots.js');

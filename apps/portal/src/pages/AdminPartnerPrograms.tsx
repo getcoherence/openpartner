@@ -18,6 +18,8 @@ interface ProgramGrant {
   destinationUrl: string;
   granted: boolean;
   grantSource: 'admin' | 'offering' | null;
+  /** This partner's program-scoped commission terms, if any. */
+  commission: { id: string } | null;
 }
 
 export function AdminPartnerPrograms() {
@@ -104,6 +106,16 @@ export function AdminPartnerPrograms() {
                     <span style={{ fontSize: 11, color: theme.accentText, padding: '3px 8px', background: `${theme.accentA15}`, borderRadius: 12 }}>
                       via Network
                     </span>
+                  )}
+                  {c.commission && (
+                    // Terms outlive a revoked grant, so this shows on
+                    // unchecked rows too — that's where they get noticed.
+                    <TenantLink
+                      to={`/admin/partners/${partnerId}/commission`}
+                      style={{ fontSize: 11, color: theme.success, padding: '3px 8px', background: alpha(theme.success, 0.1), borderRadius: 12, whiteSpace: 'nowrap' }}
+                    >
+                      Custom terms
+                    </TenantLink>
                   )}
                 </label>
               );
