@@ -132,4 +132,5 @@ export const TABLES = {
   PayoutReversal: 'PayoutReversal',
   CommissionAdjustment: 'CommissionAdjustment',
   OperatorRecoveryRequest: 'OperatorRecoveryRequest',
+  UsageLedger: 'UsageLedger',
 } as const;

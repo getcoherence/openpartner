@@ -27,9 +27,18 @@ export async function deleteConfig(db: Knex, tenantId: string, key: string): Pro
 export const CONFIG_KEYS = {
   StripeMerchantCustomerId: 'stripe.merchant.customerId',
   StripeMerchantSubscriptionId: 'stripe.merchant.subscriptionId',
-  // High-water mark for usage reporting. Stored as ISO string. The next
-  // run aggregates Events with ts > this value, then advances the mark.
+  // When usage was last reported. Stored as ISO string. Keys the next
+  // report's meter identifier (one report per mark); what it bills comes
+  // from the UsageLedger diff, not from a ts window.
   LastUsageReportedAt: 'stripe.merchant.lastUsageReportedAt',
+  // USD the meter still owes the brand (negative) or, for fractions of a
+  // cent, the brand still owes (positive): refund credits larger than a
+  // report's new GMV, carried forward and netted against the next report.
+  // Stored as a number.
+  UsageCarryUsd: 'stripe.merchant.usageCarryUsd',
+  // When the UsageLedger was opened for this tenant (see
+  // usage-ledger.ts openLedger). Absent = not opened yet.
+  UsageLedgerOpenedAt: 'stripe.merchant.usageLedgerOpenedAt',
   // Outbox for exactly-once usage reporting: the frozen {rangeStart,
   // rangeEnd, amount, identifier} written BEFORE the Stripe meter call and
   // cleared only after the high-water mark advances. A crash between the

@@ -1089,6 +1089,26 @@ export interface CommissionAdjustmentRow {
   createdAt: Date;
 }
 
+/** HOSTED BILLING SIDECAR (not exported — see docs/data-portability.md):
+ *  what the platform-fee meter has billed or credited per conversion.
+ *  Append-only; a conversion's billed amount is the sum of its rows. See
+ *  apps/api/src/usage-ledger.ts. */
+export interface UsageLedgerRow {
+  id: string;
+  tenantId: string;
+  eventId: string;
+  /** The report that carried the row (`<meter identifier>@<run time>`),
+   *  or op-usage-opening-<tenant> for the cutover balance. */
+  reportKey: string;
+  reason: 'opening' | 'billed' | 'refunded' | 'reversed' | 'removed';
+  currency: string;
+  amount: string; // decimal, signed, the conversion's currency
+  /** Null: no published rate, held out of the meter. */
+  usdPerUnit: string | null;
+  amountUsd: string; // decimal, signed
+  createdAt: Date;
+}
+
 export type OperatorRecoveryRail = 'direct_connect' | 'hosted_funding';
 export type OperatorRecoveryKind =
   | 'release_intent_for_retry'
