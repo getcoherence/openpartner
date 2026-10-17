@@ -47,7 +47,7 @@ import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '..
 import { getTenancyMode, tenantOf } from '../tenancy.js';
 import { getMode } from '../stripe.js';
 import { attributeEvent } from '../attribution.js';
-import { sameConversion } from './events.js';
+import { sameConversion } from '../conversion-ingest.js';
 import { codeExistsInStripe, deactivateCustomerReward, provisionCustomerReward } from '../customer-rewards.js';
 
 export const couponsRouter = Router();

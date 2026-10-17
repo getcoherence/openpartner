@@ -24,6 +24,7 @@ import { getWhiteLabelState } from '../white-label.js';
 import { customerRewardDelivery } from '../customer-rewards.js';
 import { getStorage } from '../storage.js';
 import { commissionSlabFields, currencyCodeSchema, refineCommissionSubRule } from '../commission-rule-schema.js';
+import { destinationUrlSchema } from '../destination-url.js';
 
 /**
  * Commission rule schema. The wire format is an array of triggered sub-rules.
@@ -164,7 +165,10 @@ const createSchema = z.object({
   commissionRule: commissionRuleSchema,
   attributionWindowDays: z.number().int().min(1).max(365).optional(),
   attributionModel: z.enum(['last_click', 'first_click', 'linear', 'position']).optional(),
-  destinationUrl: z.string().url(),
+  /** Where partner links send visitors. May carry the {click_id} macro
+   *  (e.g. a Stripe Payment Link's ?client_reference_id={click_id}); the
+   *  router substitutes the click id there instead of appending cref. */
+  destinationUrl: destinationUrlSchema,
   /** Comma-separated host allowlist for partner deep-linking. Null/omitted
    *  means partners can't override the destination. */
   deepLinkAllowedDomains: z.string().max(1000).optional(),
@@ -215,7 +219,7 @@ const updateSchema = z.object({
   commissionRule: commissionRuleSchema.optional(),
   attributionWindowDays: z.number().int().min(1).max(365).optional(),
   attributionModel: z.enum(['last_click', 'first_click', 'linear', 'position']).optional(),
-  destinationUrl: z.string().url().optional(),
+  destinationUrl: destinationUrlSchema.optional(),
   deepLinkAllowedDomains: z.string().max(1000).nullable().optional(),
   holdbackDays: z.number().int().min(0).max(365).nullable().optional(),
   startsAt: z.string().datetime().nullable().optional(),

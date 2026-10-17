@@ -2626,3 +2626,312 @@ describe.skipIf(skipIntegration)('round-9: reversal activity on a duplicate_revi
     expect(res2.body.connect).toBe('transfer_created_observed');
   });
 });
+
+describe.skipIf(skipIntegration)('stripe webhook — one-time (mode=payment) Checkout revenue', () => {
+  // A Stripe Payment Link (or any mode=payment Checkout) sends no invoice.paid
+  // unless invoice creation is on, so the session's amount_total is the only
+  // record of the money. Before this, a self-host recorded a value-less
+  // signup for it and never the revenue, and a guest checkout (no Customer,
+  // the Payment Link default) recorded nothing at all.
+
+  const ADMIN = 'op_test_stripe_payment_mode_0123456789abcd';
+  let previousAdminKey: string | undefined;
+  beforeAll(() => {
+    previousAdminKey = process.env.ADMIN_API_KEY;
+    process.env.ADMIN_API_KEY = ADMIN;
+  });
+  afterAll(() => {
+    if (previousAdminKey === undefined) delete process.env.ADMIN_API_KEY;
+    else process.env.ADMIN_API_KEY = previousAdminKey;
+  });
+
+  function paymentSession(fields: Record<string, unknown> = {}) {
+    return {
+      id: `cs_${ulid()}`,
+      object: 'checkout.session',
+      mode: 'payment',
+      status: 'complete',
+      payment_status: 'paid',
+      amount_total: 12900,
+      currency: 'eur',
+      customer: null,
+      payment_intent: `pi_${ulid()}`,
+      invoice: null,
+      ...fields,
+    };
+  }
+
+  function checkoutEvent(session: Record<string, unknown>, type = 'checkout.session.completed') {
+    return { id: `evt_${ulid()}`, type, created: Math.floor(Date.now() / 1000), data: { object: session } };
+  }
+
+  async function eventsOfType(type: string) {
+    return db(TABLES.Event).where({ type }).orderBy('id');
+  }
+
+  async function commissionAmounts(eventId: string): Promise<string[]> {
+    const attributionIds = await db(TABLES.Attribution).where({ eventId }).pluck('id');
+    return db(TABLES.Commission).whereIn('attributionId', attributionIds).pluck('amount');
+  }
+
+  it('a guest Payment Link purchase stitches the click and records its signup and revenue', async () => {
+    const { clickId, partnerId } = await seedClick();
+    const session = paymentSession({ client_reference_id: clickId });
+
+    const res = await postWebhook(checkoutEvent(session));
+
+    expect(res.status).toBe(200);
+    expect(res.body.events).toHaveLength(2);
+    const userId = `click:${clickId}`;
+    expect(await db(TABLES.Identity).where({ clickId, userId })).toHaveLength(1);
+
+    const [signup] = await eventsOfType('signup');
+    expect(signup).toMatchObject({ userId, value: null });
+    const [revenue] = await eventsOfType('invoice_paid');
+    expect(revenue).toMatchObject({
+      userId,
+      value: '129.00',
+      currency: 'EUR',
+      externalEventId: session.id,
+      metadata: {
+        stripeType: 'checkout.session.completed',
+        stripeCheckoutSessionId: session.id,
+        checkoutMode: 'payment',
+        stripePaymentIntentId: session.payment_intent,
+      },
+    });
+    const attribution = await db(TABLES.Attribution).where({ eventId: revenue!.id }).first();
+    expect(attribution?.partnerId).toBe(partnerId);
+    // seedClick's program pays 20% of value.
+    expect(await commissionAmounts(revenue!.id)).toEqual(['25.80']);
+    // No Customer, so nothing to backfill.
+    expect(stripeApi.customersUpdate).not.toHaveBeenCalled();
+  });
+
+  it('a purchase with a Customer records both under the cus_ id', async () => {
+    const { clickId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+
+    await postWebhook(checkoutEvent(paymentSession({ client_reference_id: clickId, customer: customerId })));
+
+    expect((await eventsOfType('signup')).map((e) => e.userId)).toEqual([customerId]);
+    const [revenue] = await eventsOfType('invoice_paid');
+    expect(revenue).toMatchObject({ userId: customerId, value: '129.00' });
+    expect(await commissionAmounts(revenue!.id)).toEqual(['25.80']);
+  });
+
+  it('a redelivery records nothing new', async () => {
+    const { clickId } = await seedClick();
+    const payload = checkoutEvent(paymentSession({ client_reference_id: clickId }));
+
+    await postWebhook(payload);
+    const again = await postWebhook(payload);
+
+    expect(again.status).toBe(200);
+    expect(again.body).toMatchObject({ idempotent: true });
+    expect(await eventsOfType('signup')).toHaveLength(1);
+    expect(await eventsOfType('invoice_paid')).toHaveLength(1);
+    expect(await db(TABLES.Commission)).toHaveLength(1);
+  });
+
+  it('a subscription checkout takes no revenue from the session (invoice.paid carries it)', async () => {
+    const { clickId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+
+    await postWebhook(
+      checkoutEvent({
+        ...completedCheckout(customerId, clickId),
+        payment_status: 'paid',
+        amount_total: 4900,
+        currency: 'usd',
+      }),
+    );
+    await postWebhook(invoicePaid(customerId));
+
+    const revenue = await eventsOfType('invoice_paid');
+    expect(revenue).toHaveLength(1);
+    expect(revenue[0]!.metadata).toMatchObject({ stripeType: 'invoice.paid' });
+  });
+
+  it('a session with invoice creation on leaves the revenue to its invoice.paid', async () => {
+    const { clickId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+
+    await postWebhook(
+      checkoutEvent(paymentSession({ client_reference_id: clickId, customer: customerId, invoice: `in_${ulid()}` })),
+    );
+
+    expect(await eventsOfType('signup')).toHaveLength(1);
+    expect(await eventsOfType('invoice_paid')).toHaveLength(0);
+  });
+
+  it('nothing charged (a 100% discount) records the signup only', async () => {
+    const { clickId } = await seedClick();
+    await postWebhook(
+      checkoutEvent(
+        paymentSession({ client_reference_id: clickId, amount_total: 0, payment_status: 'no_payment_required' }),
+      ),
+    );
+    expect(await eventsOfType('signup')).toHaveLength(1);
+    expect(await eventsOfType('invoice_paid')).toHaveLength(0);
+  });
+
+  it('a delayed payment method records the revenue when async_payment_succeeded arrives, once', async () => {
+    const { clickId } = await seedClick();
+    const session = paymentSession({ client_reference_id: clickId, payment_status: 'unpaid' });
+
+    await postWebhook(checkoutEvent(session));
+    expect(await eventsOfType('signup')).toHaveLength(1);
+    expect(await eventsOfType('invoice_paid')).toHaveLength(0);
+
+    const cleared = checkoutEvent({ ...session, payment_status: 'paid' }, 'checkout.session.async_payment_succeeded');
+    const res = await postWebhook(cleared);
+    expect(res.status).toBe(200);
+    expect(await eventsOfType('signup')).toHaveLength(1);
+    const [revenue] = await eventsOfType('invoice_paid');
+    expect(revenue).toMatchObject({
+      userId: `click:${clickId}`,
+      value: '129.00',
+      externalEventId: session.id,
+      metadata: { stripeType: 'checkout.session.async_payment_succeeded' },
+    });
+
+    // Redelivered, or reported again under a different event id: still one.
+    await postWebhook(cleared);
+    await postWebhook({ ...cleared, id: `evt_${ulid()}` });
+    expect(await eventsOfType('invoice_paid')).toHaveLength(1);
+    expect(await db(TABLES.Commission)).toHaveLength(1);
+  });
+
+  it('a returning customer buying again without a partner link is credited, with no second signup', async () => {
+    const { clickId, partnerId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    await postWebhook(checkoutEvent(paymentSession({ client_reference_id: clickId, customer: customerId })));
+
+    const res = await postWebhook(
+      checkoutEvent(paymentSession({ client_reference_id: null, customer: customerId, amount_total: 5000 })),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await eventsOfType('signup')).toHaveLength(1);
+    const revenue = await eventsOfType('invoice_paid');
+    expect(revenue.map((e) => e.value)).toEqual(['129.00', '50.00']);
+    const attribution = await db(TABLES.Attribution).where({ eventId: revenue[1]!.id }).first();
+    expect(attribution?.partnerId).toBe(partnerId);
+  });
+
+  it('a purchase no partner referred is acknowledged and records nothing', async () => {
+    const res = await postWebhook(checkoutEvent(paymentSession({ client_reference_id: null, customer: `cus_${ulid()}` })));
+    expect(res.status).toBe(200);
+    expect(res.body.skipped).toBe('checkout.session.completed');
+    expect(await db(TABLES.Event)).toHaveLength(0);
+
+    // A cref that names no click.
+    const guest = await postWebhook(checkoutEvent(paymentSession({ client_reference_id: ulid() })));
+    expect(guest.status).toBe(200);
+    expect(await db(TABLES.Event)).toHaveLength(0);
+    expect(await db(TABLES.Identity)).toHaveLength(0);
+  });
+
+  it('a full refund of a guest purchase reverses its commission', async () => {
+    const { clickId } = await seedClick();
+    const session = paymentSession({ client_reference_id: clickId });
+    await postWebhook(checkoutEvent(session));
+    const [revenue] = await eventsOfType('invoice_paid');
+    const [commission] = await db(TABLES.Commission);
+    expect(commission!.status).toBe('accrued');
+
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'charge.refunded',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: `ch_${ulid()}`,
+          object: 'charge',
+          customer: null,
+          payment_intent: session.payment_intent,
+          invoice: null,
+          amount: 12900,
+          amount_captured: 12900,
+          amount_refunded: 12900,
+          currency: 'eur',
+        },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.corrective).toBe('refund');
+    expect((await db(TABLES.Commission).where({ id: commission!.id }).first())!.status).toBe('reversed');
+    const [refund] = await eventsOfType('refund');
+    expect(refund).toMatchObject({ userId: `click:${clickId}`, value: '-129.00' });
+    expect(refund!.metadata).toMatchObject({ reversedCommissions: 1, fullRefund: true });
+    await vi.waitFor(() =>
+      expect(dispatched('commission.reversed')).toContainEqual(
+        expect.objectContaining({ commissionId: commission!.id, eventId: revenue!.id, reason: 'refund' }),
+      ),
+    );
+  });
+
+  it('a partial refund of a one-time purchase reverses nothing and is flagged', async () => {
+    const { clickId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    const session = paymentSession({ client_reference_id: clickId, customer: customerId });
+    await postWebhook(checkoutEvent(session));
+
+    await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'charge.refunded',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: `ch_${ulid()}`,
+          customer: { id: customerId, metadata: {}, object: 'customer' },
+          payment_intent: session.payment_intent,
+          amount: 12900,
+          amount_captured: 12900,
+          amount_refunded: 2900,
+          currency: 'eur',
+        },
+      },
+    });
+
+    expect((await db(TABLES.Commission)).map((c) => c.status)).toEqual(['accrued']);
+    const [refund] = await eventsOfType('refund');
+    expect(refund!.metadata).toMatchObject({ partialRefundReversalSkipped: true, reversedCommissions: 0 });
+  });
+
+  it('a guest refund of a purchase no partner referred is skipped', async () => {
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'charge.refunded',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: `ch_${ulid()}`,
+          customer: null,
+          payment_intent: `pi_${ulid()}`,
+          amount: 500,
+          amount_refunded: 500,
+          currency: 'usd',
+        },
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.skipped).toBe('charge.refunded');
+    expect(await db(TABLES.Event)).toHaveLength(0);
+  });
+
+  it('counts as paid in the partner funnel and as billable GMV', async () => {
+    const { clickId, partnerId } = await seedClick();
+    await postWebhook(checkoutEvent(paymentSession({ client_reference_id: clickId })));
+
+    const funnel = await request(app).get(`/partners/${partnerId}/funnel`).set('Authorization', `Bearer ${ADMIN}`);
+    expect(funnel.status).toBe(200);
+    expect(funnel.body.stages).toMatchObject({ signups: 1, paid: 1 });
+    expect(funnel.body.revenue).toBe(129);
+
+    const { aggregateAttributedGmv } = await import('../usage-billing.js');
+    expect(await aggregateAttributedGmv(db, null, new Date(Date.now() + 60_000))).toBe(129);
+  });
+});

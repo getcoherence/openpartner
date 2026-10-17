@@ -62,6 +62,26 @@ describe('OpenPartnerServer', () => {
     });
   });
 
+  it('trackConversion POSTs the click id to /attribution/conversions', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+      new Response(
+        JSON.stringify({ ok: true, eventId: 'evt_9', userId: 'click:c1', attribution: { status: 'attributed' } }),
+        { status: 200 },
+      ),
+    );
+    const op = new OpenPartnerServer({ apiUrl: 'https://op.test', apiKey: 'k', fetch: fetchMock });
+
+    const res = await op.trackConversion({ clickId: 'c1', type: 'loan_funded', value: 5000, externalEventId: 'loan-1:funded' });
+    expect(res.userId).toBe('click:c1');
+    expect(fetchMock.mock.calls[0]![0]).toBe('https://op.test/attribution/conversions');
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]!.body))).toEqual({
+      clickId: 'c1',
+      type: 'loan_funded',
+      value: 5000,
+      externalEventId: 'loan-1:funded',
+    });
+  });
+
   it('identify forwards cref + userId to /attribution/identify', async () => {
     const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
       new Response(JSON.stringify({ ok: true, identityId: 'id_1', firstStitch: false }), { status: 200 }),

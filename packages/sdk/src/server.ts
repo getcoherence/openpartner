@@ -18,12 +18,22 @@
  *
  *   // On invoice paid — externalEventId makes retries safe:
  *   await op.trackEvent({ userId, type: 'invoice_paid', value: 249, currency: 'USD', externalEventId: invoice.id });
+ *
+ *   // Holding only the click id (from the link's {click_id} macro)? One call:
+ *   await op.trackConversion({ clickId, type: 'loan_funded', value: 5000, externalEventId: `${loan.id}:funded` });
  */
 
-import { OpenPartnerError, requestJson, type EventResponse, type IdentifyResponse, type JsonRequestInit } from './shared.js';
+import {
+  OpenPartnerError,
+  requestJson,
+  type ConversionResponse,
+  type EventResponse,
+  type IdentifyResponse,
+  type JsonRequestInit,
+} from './shared.js';
 
 export { OpenPartnerError };
-export type { EventResponse, IdentifyResponse };
+export type { ConversionResponse, EventResponse, IdentifyResponse };
 export type { EventAttribution } from './shared.js';
 
 export interface OpenPartnerServerConfig {
@@ -65,6 +75,33 @@ export interface TrackEventParams {
   externalEventId?: string;
 }
 
+export interface TrackConversionParams {
+  /** The click id the partner link handed you: the `{click_id}` macro in the
+   *  destination URL, or the `cref` query parameter. */
+  clickId: string;
+  /** Event type, e.g. 'loan_funded', 'opportunity_won', 'invoice_paid'. */
+  type: string;
+  /** Value of the conversion, for percent-commission rules. */
+  value?: number;
+  /** ISO 4217 currency code. Defaults to USD on the server if omitted. */
+  currency?: string;
+  /**
+   * Required idempotency key: your stable id for this one conversion (loan
+   * id plus stage, order id), max 120 chars. A retry returns the original
+   * result (`replayed: true`); reusing it for a different click or
+   * conversion throws `external_event_id_conflict` (409).
+   */
+  externalEventId: string;
+  /**
+   * Your own id for the user, if you have one. Omit it and the conversion is
+   * recorded under the click's own user, credited to that click alone.
+   */
+  userId?: string;
+  metadata?: Record<string, unknown>;
+  /** Event time. Defaults to now on the server. ISO 8601. */
+  ts?: string;
+}
+
 export class OpenPartnerServer {
   private readonly apiUrl: string;
   private readonly apiKey: string;
@@ -85,6 +122,17 @@ export class OpenPartnerServer {
    */
   async trackEvent(params: TrackEventParams): Promise<EventResponse> {
     return this.request<EventResponse>('/attribution/events', { method: 'POST', body: params });
+  }
+
+  /**
+   * Record a conversion against a click in one call, for when you have the
+   * click id but no identify()'d user: a lender reporting a funded loan, a
+   * CRM closing a deal. Stitches the click and records the event together.
+   * Throws `click_not_found` (404) for a click outside your program and
+   * `click_flagged` (422) for one flagged as fraud.
+   */
+  async trackConversion(params: TrackConversionParams): Promise<ConversionResponse> {
+    return this.request<ConversionResponse>('/attribution/conversions', { method: 'POST', body: params });
   }
 
   /**

@@ -802,6 +802,20 @@ export interface ApiKeyRow {
   revokedAt: Date | null;
 }
 
+/** Credential for the inbound GET /postback conversion URL. Records
+ *  conversions only; never a Bearer key. Hash-only, one live per tenant. */
+export interface ConversionPostbackTokenRow {
+  id: string;
+  tenantId: string;
+  prefix: string;
+  tokenHash: string;
+  /** IPs / CIDRs postbacks may come from. Empty = any source. */
+  ipAllowlist: string[];
+  createdAt: Date;
+  lastUsedAt: Date | null;
+  revokedAt: Date | null;
+}
+
 // ---- Outbound webhooks ----
 
 export type WebhookEventType =
