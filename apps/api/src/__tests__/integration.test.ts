@@ -380,7 +380,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
       .get('/export.json')
       .set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(exportRes.status).toBe(200);
-    expect(exportRes.body.schemaVersion).toBe(2);
+    expect(exportRes.body.schemaVersion).toBe(3);
     expect(exportRes.body.tables.Partner).toHaveLength(1);
 
     // Wipe, re-import.
@@ -388,7 +388,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const importRes = await request(app)
       .post('/import')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ schemaVersion: 2, tables: exportRes.body.tables });
+      .send({ schemaVersion: exportRes.body.schemaVersion, tables: exportRes.body.tables });
     expect(importRes.status).toBe(200);
     expect(importRes.body.report.inserted.Partner).toBe(1);
 

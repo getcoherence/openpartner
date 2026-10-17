@@ -21,6 +21,7 @@
 
 import type { Knex } from 'knex';
 import { TABLES, type CommissionRow } from '@openpartner/db';
+import { EFFECTIVE_HOLDBACK_SQL } from './partner-commission.js';
 
 export interface AutoApproveResult {
   approvedCount: number;
@@ -32,14 +33,16 @@ export async function autoApproveMatureCommissions(
   tenantId: string,
 ): Promise<AutoApproveResult> {
   // Find every accrued commission whose effective holdback has
-  // elapsed. Effective holdback = the partner's snapshotted value
-  // (PartnerCommission.holdbackDays, set at PartnershipRequest
-  // approval time via federation), with fallback to the campaign's
-  // value for legacy / non-Network partners. COALESCE picks the
-  // first non-null in order — partner snapshot, then campaign.
+  // elapsed. Effective holdback (EFFECTIVE_HOLDBACK_SQL): the partner's
+  // snapshot scoped to this commission's program (pcp) if one exists —
+  // falling back to the program's own value when it leaves holdback
+  // unset — else their partner-wide snapshot (pcw, programId null), else
+  // the program's value. Same expression as routes/commissions.ts
+  // listQueryBase, which the review queue and manual approve read through.
   //
   // Single statement so two scheduler ticks racing don't double-
-  // process the same row.
+  // process the same row. Each join matches at most one row (partial
+  // unique indexes on PartnerCommission), so the FROM list can't fan out.
   //
   // PartnerCommission is keyed on the partner via the Attribution row
   // (a."partnerId"), NOT the UPDATE target c."partnerId": Postgres forbids
@@ -54,14 +57,17 @@ export async function autoApproveMatureCommissions(
        set status = 'approved'
       from "${TABLES.Attribution}" a
       join "${TABLES.Program}" cp on a."programId" = cp.id
-      left join "${TABLES.PartnerCommission}" pc on pc."partnerId" = a."partnerId"
+      left join "${TABLES.PartnerCommission}" pcp
+             on pcp."partnerId" = a."partnerId" and pcp."programId" = a."programId"
+      left join "${TABLES.PartnerCommission}" pcw
+             on pcw."partnerId" = a."partnerId" and pcw."programId" is null
      where c."tenantId" = ?
        and c.status = 'accrued'
        and c."attributionId" = a.id
        and c."partnerId" = a."partnerId"
-       and coalesce(pc."holdbackDays", cp."holdbackDays") is not null
-       and coalesce(pc."holdbackDays", cp."holdbackDays") > 0
-       and c."accruedAt" + (coalesce(pc."holdbackDays", cp."holdbackDays") * interval '1 day') <= now()
+       and ${EFFECTIVE_HOLDBACK_SQL} is not null
+       and ${EFFECTIVE_HOLDBACK_SQL} > 0
+       and c."accruedAt" + (${EFFECTIVE_HOLDBACK_SQL} * interval '1 day') <= now()
     returning c.*
     `,
     [tenantId],

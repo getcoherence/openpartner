@@ -34,8 +34,20 @@ deploys, every Network-approved creator got:
   listed every program, so subscribers (Zapier etc.) got the wrong scope.
 
 Commissions on an extra program were priced at the **offering's
-snapshot** (`PartnerCommission` is per-partner, not per-program), not that
-program's own rule.
+snapshot**, not at that program's own rule, because `PartnerCommission`
+was per-partner, not per-program.
+
+*Update (Oct 2026):* `PartnerCommission` now has a nullable `programId`
+(migration `20261016000000_partner_commission_program_scope`). An approval
+that names one program stamps the snapshot for that program only, so new
+approvals no longer leak the offering's terms onto other programs.
+**Snapshots stamped before that are still partner-wide** (`programId`
+null), including every over-granted partner's. A further remediation option,
+not yet written or run: for partners whose Step 1 output names exactly one
+program, set `programId` on their `source = 'approval'` row to that program.
+Leave `amendment` rows alone, since a brand admin set those deliberately.
+Their commissions on the extra programs would then accrue at each program's
+own rule. Past commissions are unaffected.
 
 **A brand that already removed the extra grants isn't cleaned up.**
 `DELETE /partners/:id/programs/:programId` deletes only the

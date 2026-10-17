@@ -14,7 +14,7 @@ that overstates itself is worse than one with a documented hole.
 ```json
 {
   "exportedAt": "2026-08-09T12:00:00.000Z",
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "tables": { "Partner": [ … ], "Program": [ … ], … }
 }
 ```
@@ -33,7 +33,7 @@ appears after everything it references.
 | 1 | `Partner` | `id` | the roster |
 | 2 | `Program` | `id` | programs + their commission rules |
 | 3 | `PartnerProgram` | `id` | **which partners may promote which programs** |
-| 4 | `PartnerCommission` | `partnerId` | **snapshotted per-partner terms** |
+| 4 | `PartnerCommission` | `id` | **snapshotted per-partner terms** (partner-wide or per-program) |
 | 5 | `Coupon` | `id` | **code → (partner, program) attribution** |
 | 6 | `Link` | `id` | tracking links |
 | 7 | `Click` | `id` | raw click log |
@@ -49,9 +49,15 @@ Rows 3–5 were added in schemaVersion 2 (Aug 2026). Without them a restored
 instance had the roster but no grants, no coupon attribution, and no record
 of what any partnership was actually agreed at.
 
-Note `PartnerCommission` is keyed on **`partnerId`**, not `id` — one
-snapshot per partner. The importer looks the key up per table rather than
-assuming `id`.
+`PartnerCommission` rows carry a nullable `programId`. Null means the
+partner's partner-wide terms; a value means their terms for that one
+program (schemaVersion 3, Oct 2026). The table's natural key is one
+partner-wide row per partner and one row per (partner, program). Partial
+unique indexes enforce it, not the primary key. So both restore paths skip
+a `PartnerCommission` row that collides on **any** unique key, using a bare
+`ON CONFLICT DO NOTHING`, not just one that collides on `id`. Every other
+table conflicts on its primary key. The importer looks the key up per
+table rather than assuming `id`.
 
 ### Versioning
 
@@ -59,6 +65,31 @@ assuming `id`.
 is what `POST /import` accepts. **That list only ever grows.** A v1 bundle
 sitting on someone's disk keeps importing — it is simply a v2 bundle
 without the three tables added later.
+
+| Version | Change |
+|---|---|
+| 1 | original table set |
+| 2 (Aug 2026) | added `PartnerProgram`, `PartnerCommission`, `Coupon`; per-table primary keys |
+| 3 (Oct 2026) | `PartnerCommission` gains `id` (the new primary key; was `partnerId`) and `programId` |
+
+**Importing a v1 or v2 bundle.** `POST /import` upgrades older rows before
+inserting them (`upgradeBundle` in `apps/api/src/export.ts`). A v2
+`PartnerCommission` row applied to every program the partner was in, which
+is exactly what a v3 partner-wide row means. So it imports with
+`programId = null` and `id = 'pcm_' || partnerId`. That is the id the
+migration `20261016000000_partner_commission_program_scope` gave existing
+rows, so a bundle exported before the upgrade lines up row for row with the
+upgraded instance, and re-importing it changes nothing.
+
+**Restoring a v2 SQL dump.** A dump written before schemaVersion 3 ends its
+`PartnerCommission` statement with `ON CONFLICT ("partnerId") DO NOTHING`.
+`partnerId` is no longer unique on its own, so Postgres rejects the
+statement ("there is no unique or exclusion constraint matching the ON
+CONFLICT specification") and the whole restore rolls back. Change that one
+line to `ON CONFLICT DO NOTHING` and the dump restores. The rows become
+partner-wide terms, and `id` is filled by its column default. Alternatively,
+restore the same export's JSON bundle through `POST /import`, which needs
+no edit.
 
 ## Restoring
 
@@ -76,8 +107,9 @@ curl -X POST "$API/import" \
 
 Every row's `tenantId` is rewritten to the importing tenant — that's what
 lets an `acme` export land in a self-host `default` tenant. Inserts are
-`ON CONFLICT (pk) DO NOTHING`, so re-running is safe and a partial import
-can be resumed.
+`ON CONFLICT (pk) DO NOTHING` (a bare `ON CONFLICT DO NOTHING` for
+`PartnerCommission`, as described above), so re-running is safe and a
+partial import can be resumed.
 
 ### SQL — `GET /export.sql`
 
