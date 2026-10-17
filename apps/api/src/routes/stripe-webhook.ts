@@ -561,11 +561,11 @@ async function handleConnectEvent(
       // account.metadata.openpartner_partner_id would let one partner
       // re-point another's stripeConnectAccountId and hijack their payouts.
       const target = await trx<PartnerRow>(TABLES.Partner)
-        .where({ stripeConnectAccountId: account.id })
+        .where({ tenantId, stripeConnectAccountId: account.id })
         .first(['id']);
       if (!target) return 'account_updated_unlinked_account';
       await trx<PartnerRow>(TABLES.Partner)
-        .where({ id: target.id })
+        .where({ id: target.id, tenantId })
         .update({
           metadata: trx.raw(
             `jsonb_set(coalesce("metadata", '{}'::jsonb), '{stripe}', ?::jsonb, true)`,
@@ -975,7 +975,7 @@ async function mapStripeEvent(
         // stitchFromCompletedCheckouts. Anywhere else this is OpenPartner's
         // billing account, and the Stripe read would find nobody.
         if (!customerId || !receivesBrandStripeEvents() || !checkoutPaymentRevenue(session, customerId)) return null;
-        const userId = await resolveUserIdFromCustomer(trx, stripe, customerId);
+        const userId = await resolveUserIdFromCustomer(trx, tenantId, stripe, customerId);
         if (!userId) return null;
         if (userId !== customerId) await lockMerchantUser(trx, tenantId, userId);
         return checkoutEvents(revenue(userId));
@@ -1057,7 +1057,7 @@ async function mapStripeEvent(
       const sub = event.data.object as Stripe.Subscription;
       const userId =
         sub.metadata?.openpartner_user_id ??
-        (await resolveUserIdFromCustomer(trx, stripe, sub.customer)) ??
+        (await resolveUserIdFromCustomer(trx, tenantId, stripe, sub.customer)) ??
         (await stitchFromCompletedCheckouts(trx, stripe, sub.customer));
       if (!userId) return null;
       // Keyed to a merchant-set userId: wait out a concurrent checkout
@@ -1073,7 +1073,7 @@ async function mapStripeEvent(
       // on every renewal of every such customer.
       const fromCheckout = !RENEWAL_BILLING_REASONS.has(invoice.billing_reason ?? '');
       const userId =
-        (await resolveUserIdFromCustomer(trx, stripe, invoice.customer)) ??
+        (await resolveUserIdFromCustomer(trx, tenantId, stripe, invoice.customer)) ??
         (fromCheckout ? await stitchFromCompletedCheckouts(trx, stripe, invoice.customer) : null);
       if (!userId) return null;
       // As for customer.subscription.created.
@@ -1111,8 +1111,8 @@ async function mapStripeEvent(
       // A guest one-time purchase has no Customer to resolve; its revenue
       // Event names the PaymentIntent.
       const userId =
-        (await resolveUserIdFromCustomer(trx, stripe, charge.customer)) ??
-        (await userIdForPaymentIntent(trx, paymentIntentId));
+        (await resolveUserIdFromCustomer(trx, tenantId, stripe, charge.customer)) ??
+        (await userIdForPaymentIntent(trx, tenantId, paymentIntentId));
       if (!userId) return null;
       const rawInvoice = (charge as unknown as { invoice?: string | { id: string } | null }).invoice;
       const invoiceId = typeof rawInvoice === 'string' ? rawInvoice : rawInvoice?.id ?? null;
@@ -1137,7 +1137,7 @@ async function mapStripeEvent(
       // PaymentIntent's (a one-time Checkout).
       const reversal =
         (invoiceId || paymentIntentId) && isFullRefund
-          ? await reverseCommissionsForPayment(trx, { invoiceId, paymentIntentId })
+          ? await reverseCommissionsForPayment(trx, tenantId, { invoiceId, paymentIntentId })
           : { reversed: 0, reversedRows: [], alreadyPaid: 0, heldInTransfer: 0 };
 
       return {
@@ -1177,8 +1177,8 @@ async function mapStripeEvent(
         ? await stripeReadOrNull('charges.retrieve', chargeId, () => stripe.charges.retrieve(chargeId))
         : null;
       const userId =
-        (await resolveUserIdFromCustomer(trx, stripe, charge?.customer ?? null)) ??
-        (await userIdForPaymentIntent(trx, paymentIntentId));
+        (await resolveUserIdFromCustomer(trx, tenantId, stripe, charge?.customer ?? null)) ??
+        (await userIdForPaymentIntent(trx, tenantId, paymentIntentId));
       if (!userId) return null;
       return {
         userId,
@@ -1199,7 +1199,7 @@ async function mapStripeEvent(
       // have fired for this invoice in the first place, so there's nothing to
       // reverse. Useful when an admin is debugging "why didn't this convert?"
       const invoice = event.data.object as Stripe.Invoice;
-      const userId = await resolveUserIdFromCustomer(trx, stripe, invoice.customer);
+      const userId = await resolveUserIdFromCustomer(trx, tenantId, stripe, invoice.customer);
       if (!userId) return null;
       return {
         userId,
@@ -1230,14 +1230,17 @@ async function mapStripeEvent(
  */
 async function reverseCommissionsForPayment(
   trx: Knex.Transaction,
+  tenantId: string,
   payment: { invoiceId: string | null; paymentIntentId: string | null },
 ): Promise<{ reversed: number; reversedRows: CommissionRow[]; alreadyPaid: number; heldInTransfer: number }> {
   const none = { reversed: 0, reversedRows: [], alreadyPaid: 0, heldInTransfer: 0 };
   if (!payment.invoiceId && !payment.paymentIntentId) return none;
   // For the operator alerts below.
   const label = payment.invoiceId ? `invoice ${payment.invoiceId}` : `payment ${payment.paymentIntentId}`;
+  // Scoped to the tenant explicitly; the attributions and commissions
+  // below are reached from these events only.
   const sourceEvents = await trx<EventRow>(TABLES.Event)
-    .where('type', 'invoice_paid')
+    .where({ tenantId, type: 'invoice_paid' })
     .where((q) => {
       if (payment.invoiceId) q.orWhereRaw(`"metadata"->>'stripeInvoiceId' = ?`, [payment.invoiceId]);
       if (payment.paymentIntentId) {
@@ -1345,6 +1348,7 @@ async function reverseCommissionsForPayment(
 
 async function resolveUserIdFromCustomer(
   trx: Knex.Transaction,
+  tenantId: string,
   stripe: Stripe,
   customer: string | Stripe.Customer | Stripe.DeletedCustomer | null,
 ): Promise<string | null> {
@@ -1368,7 +1372,7 @@ async function resolveUserIdFromCustomer(
   // Fallback: Stripe Billing flow stitches Identity rows with userId =
   // customer.id. This covers the race where invoice.paid arrives before our
   // metadata-backfill on checkout.session.completed lands on Stripe's side.
-  const identity = await trx<IdentityRow>(TABLES.Identity).where({ userId: customerId }).first();
+  const identity = await trx<IdentityRow>(TABLES.Identity).where({ tenantId, userId: customerId }).first();
   return identity ? customerId : null;
 }
 
@@ -1410,10 +1414,14 @@ async function couponSignup(
 /** The user whose revenue Event (invoice_paid) recorded this PaymentIntent:
  *  how a refund or dispute of a guest one-time purchase (no Customer) finds
  *  the referred user. */
-async function userIdForPaymentIntent(trx: Knex.Transaction, paymentIntentId: string | null): Promise<string | null> {
+async function userIdForPaymentIntent(
+  trx: Knex.Transaction,
+  tenantId: string,
+  paymentIntentId: string | null,
+): Promise<string | null> {
   if (!paymentIntentId) return null;
   const row = await trx<EventRow>(TABLES.Event)
-    .where('type', 'invoice_paid')
+    .where({ tenantId, type: 'invoice_paid' })
     .whereRaw(`"metadata"->>'stripePaymentIntentId' = ?`, [paymentIntentId])
     .first('userId');
   return row?.userId ?? null;
@@ -1645,11 +1653,11 @@ async function maybeRedeemStripeCoupons(
   let firstStitch = false;
   const codes: string[] = [];
   for (const d of await collectDiscounts(stripe, event)) {
-    let coupon = await findCouponByPromotionCodeId(trx, d);
+    let coupon = await findCouponByPromotionCodeId(trx, tenantId, d);
     if (!coupon) {
       const code = await resolveDiscountCode(stripe, d);
       if (!code) continue;
-      coupon = await findCouponByCode(trx, code);
+      coupon = await findCouponByCode(trx, tenantId, code);
     }
     if (!coupon || codes.includes(coupon.code)) continue;
     if (!userId) {
@@ -1777,10 +1785,17 @@ function extractDiscounts(object: unknown): DiscountRef[] {
  * auto-generated, so the coupon-id fallback in resolveDiscountCode never
  * matches them.
  */
-async function findCouponByPromotionCodeId(trx: Knex.Transaction, d: DiscountRef): Promise<CouponRow | null> {
+async function findCouponByPromotionCodeId(
+  trx: Knex.Transaction,
+  tenantId: string,
+  d: DiscountRef,
+): Promise<CouponRow | null> {
   const id = typeof d.promotion_code === 'string' ? d.promotion_code : d.promotion_code?.id;
   if (!id) return null;
-  const row = await trx<CouponRow>(TABLES.Coupon).where({ stripePromotionCodeId: id }).whereNull('deactivatedAt').first();
+  const row = await trx<CouponRow>(TABLES.Coupon)
+    .where({ tenantId, stripePromotionCodeId: id })
+    .whereNull('deactivatedAt')
+    .first();
   return row ?? null;
 }
 

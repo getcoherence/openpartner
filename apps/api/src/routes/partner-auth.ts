@@ -51,7 +51,10 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
 
   // Admin first — if the same email is registered as both an admin and a
   // partner (unusual but possible on single-operator setups), admin wins.
-  const admin = await db<AdminRow>(TABLES.Admin).where({ email }).first();
+  // Email is unique per tenant, so both lookups name it: a pool that
+  // bypasses RLS would otherwise mint this tenant's sign-in link for
+  // another tenant's admin or partner.
+  const admin = await db<AdminRow>(TABLES.Admin).where({ tenantId, email }).first();
   if (admin?.activatedAt && !admin.revokedAt) {
     const issued = await issueMagicLink(db, {
       tenantId,
@@ -72,7 +75,7 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
     return res.json({ ok: true });
   }
 
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ email }).first();
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ tenantId, email }).first();
   // Revoked partners fall through silently — they were notified at
   // revoke time (if admin opted in) and emailing on every signin
   // attempt turns /auth/signin into a harassment vector: anyone can
@@ -112,18 +115,22 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
   const consumed = await consumeMagicLink(db, body.data.token);
   if (!consumed) return res.status(400).json({ error: 'invalid_or_expired_token' });
   const token = consumed.token;
+  // A link only signs in to the tenant that issued it. RLS hides other
+  // tenants' tokens from req.db; on a pool that bypasses RLS, another
+  // tenant's admin link would otherwise open a session here.
+  if (token.tenantId !== tenantId) return res.status(400).json({ error: 'invalid_or_expired_token' });
 
   if (token.principalKind === 'admin') {
-    const admin = await db<AdminRow>(TABLES.Admin).where({ id: token.principalId }).first();
+    const admin = await db<AdminRow>(TABLES.Admin).where({ id: token.principalId, tenantId }).first();
     if (!admin) return res.status(404).json({ error: 'admin_not_found' });
     if (admin.revokedAt) return res.status(403).json({ error: 'admin_revoked' });
 
     if (token.purpose === 'admin_invite' && !admin.activatedAt) {
       await db<AdminRow>(TABLES.Admin)
-        .where({ id: admin.id })
+        .where({ id: admin.id, tenantId })
         .update({ activatedAt: new Date(), updatedAt: new Date() });
     }
-    await db<AdminRow>(TABLES.Admin).where({ id: admin.id }).update({ lastSignInAt: new Date() });
+    await db<AdminRow>(TABLES.Admin).where({ id: admin.id, tenantId }).update({ lastSignInAt: new Date() });
 
     const session = await createSession(db, { tenantId, principalKind: 'admin', principalId: admin.id });
     res.cookie(SESSION_COOKIE_NAME, session.plaintext, sessionCookieOptions());
@@ -135,7 +142,7 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
   }
 
   // partner
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: token.principalId }).first();
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: token.principalId, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
   if (partner.revokedAt) return res.status(403).json({ error: 'partner_revoked' });
   // An applicant held for review can't sign in, or activate themselves,
@@ -144,7 +151,7 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
 
   if (token.purpose === 'partner_invite' && !partner.activatedAt) {
     await db<PartnerRow>(TABLES.Partner)
-      .where({ id: partner.id })
+      .where({ id: partner.id, tenantId })
       .update({ activatedAt: new Date(), updatedAt: new Date() });
     // Fire once, on the actual activation. partner.created already
     // fired at invite time; this is the "they accepted + are now

@@ -24,9 +24,9 @@ export const createSchema = z.object({
 export const linksRouter = Router();
 
 linksRouter.get('/partners/:id/links', requireAuth, grantScope('links:read'), requirePartnerOrAdmin('id'), async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const links = await db<LinkRow>(TABLES.Link)
-    .where({ partnerId: req.params.id })
+    .where({ tenantId, partnerId: req.params.id })
     .orderBy('createdAt', 'desc');
   res.json({ links });
 });
@@ -36,10 +36,10 @@ linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), 
   const body = createSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const partner = await db(TABLES.Partner).where({ id: req.params.id }).first();
+  const partner = await db(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
 
-  const campaign = await db<ProgramRow>(TABLES.Program).where({ id: body.data.programId }).first();
+  const campaign = await db<ProgramRow>(TABLES.Program).where({ id: body.data.programId, tenantId }).first();
   if (!campaign) return res.status(404).json({ error: 'campaign_not_found' });
 
   // Lifecycle gate: scheduled or ended campaigns refuse new Link
@@ -60,7 +60,7 @@ linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), 
   // check (they're the ones who'd grant it anyway).
   if (req.principal?.role === 'partner') {
     const grant = await db(TABLES.PartnerProgram)
-      .where({ partnerId: req.params.id, programId: body.data.programId })
+      .where({ tenantId, partnerId: req.params.id, programId: body.data.programId })
       .first();
     if (!grant) {
       return res.status(403).json({

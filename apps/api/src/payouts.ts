@@ -168,8 +168,13 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
   // retry would pay it twice under a different idempotency key (audit
   // #10). Claims are stamped by this function and released by the
   // executor when an intent is abandoned.
+  //
+  // tenantId is named explicitly. RLS scopes `db` to this tenant, but a
+  // multi-tenant pool that bypasses RLS (no app role) would otherwise plan
+  // payouts for every tenant's partners in this run. The reads below are
+  // keyed on a partnerId from these groups, so they stay in the tenant.
   const groups = (await db(TABLES.Commission)
-    .where({ status: 'approved' })
+    .where({ tenantId, status: 'approved' })
     .whereNull('payoutId')
     .groupBy('partnerId', 'currency')
     .select('partnerId', 'currency')) as Array<{ partnerId: string; currency: string }>;

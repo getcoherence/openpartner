@@ -508,8 +508,8 @@ settingsRouter.post('/config/network/backfill', requireAuth, requireAdmin, async
 
 /** How many partners have opted in / out — for the admin Network page. */
 settingsRouter.get('/config/network/partner-consent', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  res.json(await summarizeNetworkConsent(db));
+  const { db, tenantId } = tenantOf(req);
+  res.json(await summarizeNetworkConsent(db, tenantId));
 });
 
 // ---------- Network connect (self-serve onboarding) ----------
@@ -748,6 +748,7 @@ settingsRouter.get('/admin/network/me', requireAuth, requireAdmin, async (req, r
     // see on /admin/partners, so reconcile here.
     const remote = await networkProxy.whoami(db, tenantId);
     const partnerRows = await db(TABLES.Partner)
+      .where({ tenantId })
       .whereNull('revokedAt')
       .count<Array<{ count: string }>>({ count: '*' });
     const partnerCount = Number(partnerRows[0]?.count ?? 0);

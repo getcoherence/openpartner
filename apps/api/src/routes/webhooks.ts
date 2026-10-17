@@ -57,28 +57,28 @@ webhooksRouter.post('/webhooks', requireAuth, grantScope('webhooks:write'), requ
     label: body.data.label ?? null,
     active: true,
   });
-  const endpoint = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id }).first();
+  const endpoint = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id, tenantId }).first();
   res.status(201).json({ endpoint: strip(endpoint!), secret: secret.plaintext });
 });
 
 webhooksRouter.get('/webhooks', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  const endpoints = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).orderBy('createdAt', 'desc');
+  const { db, tenantId } = tenantOf(req);
+  const endpoints = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ tenantId }).orderBy('createdAt', 'desc');
   res.json({ endpoints: endpoints.map(strip) });
 });
 
 webhooksRouter.get('/webhooks/:id', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  const endpoint = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: req.params.id }).first();
+  const { db, tenantId } = tenantOf(req);
+  const endpoint = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: req.params.id, tenantId }).first();
   if (!endpoint) return res.status(404).json({ error: 'not_found' });
   res.json({ endpoint: strip(endpoint) });
 });
 
 webhooksRouter.patch('/webhooks/:id', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const body = updateSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
-  const existing = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: req.params.id }).first();
+  const existing = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: req.params.id, tenantId }).first();
   if (!existing) return res.status(404).json({ error: 'not_found' });
 
   const patch: Record<string, unknown> = {};
@@ -87,21 +87,21 @@ webhooksRouter.patch('/webhooks/:id', requireAuth, requireAdmin, async (req, res
   if (body.data.label !== undefined) patch.label = body.data.label;
   if (body.data.active !== undefined) patch.active = body.data.active;
 
-  await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: existing.id }).update(patch);
-  const fresh = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: existing.id }).first();
+  await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: existing.id, tenantId }).update(patch);
+  const fresh = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: existing.id, tenantId }).first();
   res.json({ endpoint: strip(fresh!) });
 });
 
 webhooksRouter.delete('/webhooks/:id', requireAuth, grantScope('webhooks:write'), requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   // Soft-delete via active=false keeps the delivery history intact for
   // forensics. We also allow hard-delete via ?hard=1 in case an operator
   // explicitly wants the row gone.
   if (req.query.hard === '1') {
-    await db(TABLES.WebhookDelivery).where({ endpointId: req.params.id }).del();
-    await db(TABLES.WebhookEndpoint).where({ id: req.params.id }).del();
+    await db(TABLES.WebhookDelivery).where({ tenantId, endpointId: req.params.id }).del();
+    await db(TABLES.WebhookEndpoint).where({ id: req.params.id, tenantId }).del();
   } else {
-    await db(TABLES.WebhookEndpoint).where({ id: req.params.id }).update({ active: false });
+    await db(TABLES.WebhookEndpoint).where({ id: req.params.id, tenantId }).update({ active: false });
   }
   res.json({ ok: true });
 });
@@ -109,9 +109,9 @@ webhooksRouter.delete('/webhooks/:id', requireAuth, grantScope('webhooks:write')
 // -------- Delivery log + retry --------
 
 webhooksRouter.get('/webhooks/:id/deliveries', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const deliveries = await db<WebhookDeliveryRow>(TABLES.WebhookDelivery)
-    .where({ endpointId: req.params.id })
+    .where({ tenantId, endpointId: req.params.id })
     .orderBy('createdAt', 'desc')
     .limit(100);
   res.json({ deliveries });
@@ -145,7 +145,7 @@ webhooksRouter.post('/webhooks/:id/test', requireAuth, requireAdmin, async (req,
   const { db, tenantId } = tenantOf(req);
   const q = testQuerySchema.safeParse(req.query);
   if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
-  const endpoint = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: req.params.id }).first();
+  const endpoint = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: req.params.id, tenantId }).first();
   if (!endpoint) return res.status(404).json({ error: 'not_found' });
   if (!endpoint.active) return res.status(400).json({ error: 'endpoint_inactive' });
   const { sendTest } = await import('../webhook-dispatcher.js');
@@ -164,7 +164,7 @@ webhooksRouter.post('/webhooks/:id/deliveries/:deliveryId/retry', requireAuth, r
   // to endpoint B would silently re-fire B's webhook before surfacing
   // the mismatch.
   const existing = await db<WebhookDeliveryRow>(TABLES.WebhookDelivery)
-    .where({ id: req.params.deliveryId! })
+    .where({ id: req.params.deliveryId!, tenantId })
     .first();
   if (!existing) return res.status(404).json({ error: 'not_found' });
   if (existing.endpointId !== req.params.id) return res.status(400).json({ error: 'endpoint_mismatch' });

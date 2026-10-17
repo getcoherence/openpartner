@@ -65,11 +65,19 @@ export async function attributeEvent(
   event: EventRow,
   modelOverride?: AttributionModel,
 ): Promise<AttributeResult> {
-  const identities = await db<IdentityRow>(TABLES.Identity).where({ userId: event.userId });
+  // userId is the BRAND's user ID, unique only within a tenant. RLS
+  // scopes `db`, but a multi-tenant pool that bypasses RLS (no app role)
+  // would otherwise match another brand's identity for the same userId
+  // and credit that brand's partner. So the identities, and the clicks
+  // they point at, are read for the event's tenant explicitly: an Identity
+  // stitched on such a pool can name another tenant's click. The partner
+  // and program reads below are keyed on these clicks.
+  const tenantId = event.tenantId;
+  const identities = await db<IdentityRow>(TABLES.Identity).where({ tenantId, userId: event.userId });
   if (identities.length === 0) return { status: 'no_identity' };
 
   const clickIds = identities.map((i) => i.clickId);
-  const clicks = await db<ClickRow>(TABLES.Click).whereIn('id', clickIds);
+  const clicks = await db<ClickRow>(TABLES.Click).where({ tenantId }).whereIn('id', clickIds);
   const cleanClicks = clicks.filter((c) => !c.fraudFlag);
   if (cleanClicks.length === 0) return { status: 'no_click' };
 
@@ -234,8 +242,9 @@ export async function attributeEvent(
   return { status: 'attributed', touches: results, model };
 }
 
-export async function attributeBacklogForUser(db: Knex, userId: string): Promise<number> {
-  const events = await db<EventRow>(TABLES.Event).where({ userId }).orderBy('ts', 'asc');
+export async function attributeBacklogForUser(db: Knex, tenantId: string, userId: string): Promise<number> {
+  // userId is unique per tenant only; see attributeEvent.
+  const events = await db<EventRow>(TABLES.Event).where({ tenantId, userId }).orderBy('ts', 'asc');
   let attributed = 0;
   for (const event of events) {
     const result = await attributeEvent(db, event);

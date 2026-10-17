@@ -218,7 +218,9 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
   // taken vs not. We don't want this endpoint to leak whether an email
   // is registered with this vendor (creator-facing privacy + a minor
   // hardening against credential-stuffing reconnaissance).
-  const existing = await db<PartnerRow>(TABLES.Partner).where({ email }).first();
+  // Email is unique per tenant: another brand's partner with this
+  // address must not swallow the signup.
+  const existing = await db<PartnerRow>(TABLES.Partner).where({ tenantId, email }).first();
   if (existing) {
     return res.json({ ok: true, status: 'already_registered' });
   }

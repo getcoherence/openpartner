@@ -111,11 +111,10 @@ async function requireEntitled(req: Parameters<typeof tenantOf>[0]): Promise<str
 }
 
 portalDomainsRouter.get('/config/domain', requireAuth, requireAdmin, async (req, res) => {
-  const { db: tdb } = tenantOf(req);
-  const rows = await tdb<PortalCustomDomainRow>(TABLES.PortalCustomDomain).orderBy(
-    'createdAt',
-    'desc',
-  );
+  const { db: tdb, tenantId } = tenantOf(req);
+  const rows = await tdb<PortalCustomDomainRow>(TABLES.PortalCustomDomain)
+    .where({ tenantId })
+    .orderBy('createdAt', 'desc');
   const target = await getDoNativeCnameTarget();
   res.json({ domains: rows.map((r) => publicRow(r, target)) });
 });
@@ -141,7 +140,7 @@ portalDomainsRouter.post('/config/domain', requireAuth, requireAdmin, async (req
   if (taken && taken.tenantId !== tenantId) return res.status(409).json({ error: 'domain_taken' });
   if (taken) {
     const existing = await tdb<PortalCustomDomainRow>(TABLES.PortalCustomDomain)
-      .where({ id: taken.id })
+      .where({ id: taken.id, tenantId })
       .first();
     return res.status(409).json({
       error: 'domain_already_registered',
@@ -180,7 +179,7 @@ portalDomainsRouter.post('/config/domain/:id/verify', requireAuth, requireAdmin,
   if (denied) return res.status(402).json({ error: denied });
 
   const row = await tdb<PortalCustomDomainRow>(TABLES.PortalCustomDomain)
-    .where({ id: req.params.id })
+    .where({ id: req.params.id, tenantId })
     .first();
   if (!row) return res.status(404).json({ error: 'not_found' });
 
@@ -209,7 +208,7 @@ portalDomainsRouter.post('/config/domain/:id/verify', requireAuth, requireAdmin,
       });
     }
     const [updated] = await tdb<PortalCustomDomainRow>(TABLES.PortalCustomDomain)
-      .where({ id: row.id })
+      .where({ id: row.id, tenantId })
       .update({ status: 'failed', lastCheckedAt: now, updatedAt: now })
       .returning('*');
     return res.status(422).json({
@@ -220,7 +219,7 @@ portalDomainsRouter.post('/config/domain/:id/verify', requireAuth, requireAdmin,
   }
 
   const [updated] = await tdb<PortalCustomDomainRow>(TABLES.PortalCustomDomain)
-    .where({ id: row.id })
+    .where({ id: row.id, tenantId })
     .update({ status: 'verified', verifiedAt: now, lastCheckedAt: now, updatedAt: now })
     .returning('*');
   // First verified domain becomes the tenant's primary (the host-resolution
@@ -247,10 +246,10 @@ portalDomainsRouter.post('/config/domain/:id/verify', requireAuth, requireAdmin,
 portalDomainsRouter.delete('/config/domain/:id', requireAuth, requireAdmin, async (req, res) => {
   const { db: tdb, tenantId } = tenantOf(req);
   const row = await tdb<PortalCustomDomainRow>(TABLES.PortalCustomDomain)
-    .where({ id: req.params.id })
+    .where({ id: req.params.id, tenantId })
     .first();
   if (!row) return res.status(404).json({ error: 'not_found' });
-  await tdb<PortalCustomDomainRow>(TABLES.PortalCustomDomain).where({ id: row.id }).del();
+  await tdb<PortalCustomDomainRow>(TABLES.PortalCustomDomain).where({ id: row.id, tenantId }).del();
   // If this was the primary, stop resolving it.
   await tdb<TenantRow>(TABLES.Tenant)
     .where({ id: tenantId, customDomain: row.domain })

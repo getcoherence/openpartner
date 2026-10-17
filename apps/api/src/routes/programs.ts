@@ -239,8 +239,8 @@ export const updateSchema = z.object({
 export const programsRouter = Router();
 
 programsRouter.get('/programs', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  const campaigns = await db<ProgramRow>(TABLES.Program).orderBy('createdAt', 'desc');
+  const { db, tenantId } = tenantOf(req);
+  const campaigns = await db<ProgramRow>(TABLES.Program).where({ tenantId }).orderBy('createdAt', 'desc');
   // Deployment-level, but the reward editor is the only reader and it
   // already loads this list — saves the portal a round trip.
   res.json({ programs: campaigns, customerRewardDelivery: customerRewardDelivery() });
@@ -262,10 +262,11 @@ programsRouter.get('/me/programs', requireAuth, async (req, res) => {
   if (p.role !== 'partner' && p.role !== 'admin') {
     return res.status(403).json({ error: 'forbidden' });
   }
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
 
   if (p.role === 'admin') {
     const campaigns = (await db<ProgramRow>(TABLES.Program)
+      .where({ tenantId })
       .select('id', 'name', 'destinationUrl', 'deepLinkAllowedDomains', 'startsAt', 'endsAt', 'partnersMayCustomizeCode', 'customerReward')
       .orderBy('createdAt', 'desc')) as Array<
         Pick<ProgramRow, 'id' | 'name' | 'destinationUrl' | 'deepLinkAllowedDomains' | 'startsAt' | 'endsAt' | 'partnersMayCustomizeCode' | 'customerReward'>
@@ -279,6 +280,7 @@ programsRouter.get('/me/programs', requireAuth, async (req, res) => {
   // edit dates.
   const rows = (await db(TABLES.Program)
     .join(TABLES.PartnerProgram, `${TABLES.PartnerProgram}.programId`, `${TABLES.Program}.id`)
+    .where(`${TABLES.Program}.tenantId`, tenantId)
     .where(`${TABLES.PartnerProgram}.partnerId`, p.partnerId!)
     .select(
       `${TABLES.Program}.id`,
@@ -371,6 +373,7 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
   // gets the new program).
   if (body.data.grantToAllPartners) {
     const partners = (await db(TABLES.Partner)
+      .where({ tenantId })
       .whereNull('revokedAt')
       .select('id')) as Array<{ id: string }>;
     if (partners.length > 0) {
@@ -411,7 +414,7 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
   const body = updateSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const existing = await db<ProgramRow>(TABLES.Program).where({ id: req.params.id }).first();
+  const existing = await db<ProgramRow>(TABLES.Program).where({ id: req.params.id, tenantId }).first();
   if (!existing) return res.status(404).json({ error: 'not_found' });
 
   const patch: Partial<ProgramRow> = {};
@@ -472,8 +475,8 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
     });
   }
 
-  await db<ProgramRow>(TABLES.Program).where({ id: req.params.id }).update(patch);
-  const updated = (await db<ProgramRow>(TABLES.Program).where({ id: req.params.id }).first()) as ProgramRow;
+  await db<ProgramRow>(TABLES.Program).where({ id: req.params.id, tenantId }).update(patch);
+  const updated = (await db<ProgramRow>(TABLES.Program).where({ id: req.params.id, tenantId }).first()) as ProgramRow;
 
   // Sync to the marketplace whenever the saved row could affect the
   // listing. We sync unconditionally (vs. diffing fields) — the helper

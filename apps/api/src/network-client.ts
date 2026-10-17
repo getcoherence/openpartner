@@ -1169,7 +1169,10 @@ export async function sendHeartbeat(db: Knex, tenantId: string): Promise<Heartbe
   // diagnose without server log access.
   let partnerCount = 0;
   try {
+    // tenantId named explicitly: a pool that bypasses RLS would otherwise
+    // report the whole platform's partner count as this brand's.
     const partnerRows = await db(TABLES.Partner)
+      .where({ tenantId })
       .whereNull('revokedAt')
       .count<Array<{ count: string }>>({ count: '*' });
     partnerCount = Number(partnerRows[0]?.count ?? 0);
@@ -1185,6 +1188,7 @@ export async function sendHeartbeat(db: Knex, tenantId: string): Promise<Heartbe
     // insert time. Using `createdAt` here was a typo that 500'd the
     // heartbeat in prod and poisoned the request transaction.
     const lastEventRow = await db(TABLES.Event)
+      .where({ tenantId })
       .orderBy('ts', 'desc')
       .first<{ ts: Date } | undefined>('ts');
     lastEventAt = lastEventRow?.ts ? new Date(lastEventRow.ts).toISOString() : undefined;
@@ -1251,8 +1255,11 @@ export async function drainOutbox(db: Knex, tenantId: string): Promise<{ drained
     return { drained: 0, succeeded: 0, dead: 0 };
   }
 
+  // Only this tenant's rows: they go out under this tenant's Network
+  // token. Named explicitly so a pool that bypasses RLS can't send another
+  // tenant's queued partner data as this brand.
   const due = await db<NetworkOutboxRow>(TABLES.NetworkOutbox)
-    .where({ status: 'pending' })
+    .where({ tenantId, status: 'pending' })
     .andWhere('nextAttemptAt', '<=', new Date())
     .orderBy('nextAttemptAt', 'asc')
     .limit(100);
@@ -1276,7 +1283,7 @@ export async function drainOutbox(db: Knex, tenantId: string): Promise<{ drained
       ? []
       : ((await db(TABLES.PartnerNetworkConsent)
           .whereIn('partnerId', pushedPartnerIds)
-          .where({ status: 'granted' })
+          .where({ tenantId, status: 'granted' })
           .pluck('partnerId')) as string[]),
   );
 

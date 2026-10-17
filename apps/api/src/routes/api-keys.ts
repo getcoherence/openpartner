@@ -53,8 +53,8 @@ export const listQuerySchema = z.object({ scope: z.string().optional() });
 apiKeysRouter.get('/api-keys', requireAuth, requireAdmin, async (req, res) => {
   const q = listQuerySchema.safeParse(req.query);
   if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
-  const { db } = tenantOf(req);
-  const query = db<ApiKeyRow>(TABLES.ApiKey).whereNotNull('scopes').orderBy('createdAt', 'desc');
+  const { db, tenantId } = tenantOf(req);
+  const query = db<ApiKeyRow>(TABLES.ApiKey).where({ tenantId }).whereNotNull('scopes').orderBy('createdAt', 'desc');
   const rows = await query.select('id', 'prefix', 'label', 'scopes', 'createdAt', 'lastUsedAt', 'revokedAt');
   const filtered = q.data.scope ? rows.filter((r) => Array.isArray(r.scopes) && r.scopes.includes(q.data.scope!)) : rows;
   res.json({ apiKeys: filtered });
@@ -70,7 +70,7 @@ apiKeysRouter.post(
     const body = createSchema.safeParse(req.body);
     if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
     const partnerId = req.params.id!;
-    const partner = await db(TABLES.Partner).where({ id: partnerId }).first();
+    const partner = await db(TABLES.Partner).where({ id: partnerId, tenantId }).first();
     if (!partner) return res.status(404).json({ error: 'partner_not_found' });
     const key = await createApiKeyRow(db, { tenantId, partnerId, label: body.data.label });
     res.status(201).json({ id: key.id, plaintext: key.plaintext });
@@ -82,9 +82,9 @@ apiKeysRouter.get(
   requireAuth,
   requirePartnerOrAdmin('id'),
   async (req, res) => {
-    const { db } = tenantOf(req);
+    const { db, tenantId } = tenantOf(req);
     const keys = await db<ApiKeyRow>(TABLES.ApiKey)
-      .where({ partnerId: req.params.id })
+      .where({ tenantId, partnerId: req.params.id })
       .select('id', 'prefix', 'label', 'createdAt', 'lastUsedAt', 'revokedAt')
       .orderBy('createdAt', 'desc');
     res.json({ apiKeys: keys });
@@ -93,14 +93,14 @@ apiKeysRouter.get(
 
 // Revoke. Admin can revoke any key; partner can only revoke their own.
 apiKeysRouter.delete('/api-keys/:keyId', requireAuth, async (req, res) => {
-  const { db } = tenantOf(req);
-  const key = await db<ApiKeyRow>(TABLES.ApiKey).where({ id: req.params.keyId }).first();
+  const { db, tenantId } = tenantOf(req);
+  const key = await db<ApiKeyRow>(TABLES.ApiKey).where({ id: req.params.keyId, tenantId }).first();
   if (!key) return res.status(404).json({ error: 'not_found' });
 
   const p = req.principal!;
   const allowed = p.role === 'admin' || (p.role === 'partner' && key.partnerId === p.partnerId);
   if (!allowed) return res.status(403).json({ error: 'forbidden' });
 
-  await db<ApiKeyRow>(TABLES.ApiKey).where({ id: key.id }).update({ revokedAt: new Date() });
+  await db<ApiKeyRow>(TABLES.ApiKey).where({ id: key.id, tenantId }).update({ revokedAt: new Date() });
   res.json({ ok: true });
 });

@@ -413,8 +413,8 @@ describe.skipIf(skipIntegration)('coupon reward scoping', () => {
 
     it('findCouponByCode (the Stripe webhook auto-redeem lookup) skips retired codes', async () => {
       await seedCoupons();
-      expect(await findCouponByCode(db, 'RETIRED15')).toBeNull();
-      expect((await findCouponByCode(db, 'live15'))?.code).toBe('LIVE15');
+      expect(await findCouponByCode(db, DEFAULT_TENANT_ID, 'RETIRED15')).toBeNull();
+      expect((await findCouponByCode(db, DEFAULT_TENANT_ID, 'live15'))?.code).toBe('LIVE15');
     });
   });
 });
@@ -452,7 +452,7 @@ describe.skipIf(skipIntegration)('revoking a program grant', () => {
     expect(res.status).toBe(200);
     expect(res.body.retiredCoupons).toEqual([revoked.code]);
     expect(fake.client.promotionCodes.update).toHaveBeenCalledWith(revoked.stripePromotionCodeId, { active: false });
-    expect(await findCouponByCode(db, revoked.code)).toBeNull();
+    expect(await findCouponByCode(db, DEFAULT_TENANT_ID, revoked.code)).toBeNull();
     // The code on the program that's still granted keeps working.
     const kept = (await couponsFor(partnerId)).find((c) => c.programId === otherProgramId)!;
     expect(kept.deactivatedAt).toBeNull();
