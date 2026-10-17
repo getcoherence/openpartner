@@ -64,7 +64,23 @@ import {
 import { linkVendorsToTenants } from '../network-review-reconcile.js';
 import { brandSetupFor } from '../brand-setup.js';
 import { brandReminderHistory, remindBrandNow, runBrandSetupReminders } from '../brand-setup-reminders.js';
-import { getNotificationSettings, setNotificationSettings } from '../platform-settings.js';
+import {
+  getFeeRuleSettings,
+  getNotificationSettings,
+  setFeeRuleSettings,
+  setNotificationSettings,
+} from '../platform-settings.js';
+import { METER_RATES, NOTICE_DAYS } from '../fee-terms.js';
+import { previewPricingNotices, sendPricingNotices } from '../fee-notice.js';
+import {
+  ContractTermsError,
+  contractStatement,
+  estimateFeeImpact,
+  listFeeTenants,
+  reviewSignals,
+  setContractTerms,
+} from '../fee-review.js';
+import { FxUnavailableError } from '../fx.js';
 import { resolveBrandName } from '../brand-name.js';
 import {
   createPlatformAdminSession,
@@ -1037,6 +1053,131 @@ platformAdminRouter.post(
     res.json({ ok: true, sentTo: admin.email, deadline: deadline.toISOString() });
   },
 );
+
+// --------------------------------------------------------------------------
+// Platform fee — the commission-floor rule (docs/platform-fee.md)
+// --------------------------------------------------------------------------
+//
+// Nothing here changes what a tenant is billed by itself: the cutover
+// moves only plans that start after it, the notice only moves a tenant 30+
+// days out, and both are deliberate operator acts. Read-only operators can
+// see everything and preview the notice; writes need the admin role.
+
+platformAdminRouter.get('/platform-admin/fees', requirePlatformAdmin, async (_req, res) => {
+  const settings = await getFeeRuleSettings(db);
+  res.json({ settings, meterRates: METER_RATES, noticeDays: NOTICE_DAYS, tenants: await listFeeTenants(db, settings) });
+});
+
+const feeRatesSchema = z
+  .object({ revenueRate: z.number().min(0).max(1).optional(), commissionRate: z.number().min(0).max(1).optional() })
+  .strict();
+const feeSettingsSchema = z
+  .object({
+    shadow: z.boolean().optional(),
+    cutoverAt: z.string().datetime({ offset: true }).nullable().optional(),
+    rates: z.object({ flat: feeRatesSchema.optional(), revshare: feeRatesSchema.optional() }).strict().optional(),
+  })
+  .strict();
+
+platformAdminRouter.put('/platform-admin/fees/settings', requirePlatformAdmin, requirePlatformAdminWrite, async (req, res) => {
+  const body = feeSettingsSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  // A cutover in the past would reclassify plans their owners bought under
+  // the old pricing. A day's slack covers "the moment the copy went live".
+  if (body.data.cutoverAt && Date.parse(body.data.cutoverAt) < Date.now() - 86_400_000) {
+    return res.status(400).json({ error: 'cutover_in_past' });
+  }
+  const actor = req.platformAdminActor!;
+  const settings = await setFeeRuleSettings(db, body.data, actor.email);
+  await writeAudit(db, { actor, action: 'fees.settings', targetType: 'platform', detail: body.data });
+  res.json({ settings });
+});
+
+const feeEstimateSchema = z.object({ days: z.number().int().min(1).max(365).default(90) });
+
+/** Live old-vs-new comparison over the trailing window, per tenant. */
+platformAdminRouter.post('/platform-admin/fees/estimate', requirePlatformAdmin, async (req, res) => {
+  const body = feeEstimateSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const settings = await getFeeRuleSettings(db);
+  res.json({ days: body.data.days, estimates: await estimateFeeImpact(db, settings, { days: body.data.days }) });
+});
+
+platformAdminRouter.get('/platform-admin/fees/signals', requirePlatformAdmin, async (req, res) => {
+  const days = Math.min(Math.max(Number(req.query.days ?? 60) || 60, 7), 365);
+  res.json(await reviewSignals(db, { days }));
+});
+
+const noticeRunSchema = z.object({
+  dryRun: z.boolean().default(true),
+  tenantIds: z.array(z.string().min(1)).max(500).optional(),
+});
+
+/** Preview (dryRun, the default) or send the pricing-change notice to every
+ *  tenant owed one. Sending needs the admin role and a cutover. */
+platformAdminRouter.post('/platform-admin/fees/notices', requirePlatformAdmin, async (req, res) => {
+  const body = noticeRunSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const actor = req.platformAdminActor!;
+  if (body.data.dryRun) return res.json({ dryRun: true, ...(await previewPricingNotices(db, { tenantIds: body.data.tenantIds })) });
+  if (actor.role !== 'admin') return res.status(403).json({ error: 'read_only_operator' });
+  if (!(await getFeeRuleSettings(db)).cutoverAt) return res.status(409).json({ error: 'no_cutover' });
+  const result = await sendPricingNotices(db, { operatorEmail: actor.email, tenantIds: body.data.tenantIds });
+  for (const s of result.sent) {
+    await writeAudit(db, {
+      actor,
+      action: 'fees.pricing_notice',
+      targetType: 'tenant',
+      targetId: s.tenantId,
+      detail: { recipients: s.recipients, failedRecipients: s.failedRecipients, effectiveAt: s.effectiveAt },
+    });
+  }
+  res.json({ dryRun: false, ...result });
+});
+
+const contractTermsSchema = z
+  .object({
+    revenueRate: z.number().min(0).max(1).nullable(),
+    commissionRate: z.number().min(0).max(1).nullable(),
+    monthlyMinimumUsd: z.number().min(0).max(10_000_000).nullable(),
+    effectiveAt: z.string().datetime({ offset: true }).nullable(),
+    note: z.string().trim().max(2000).nullable(),
+  })
+  .strict();
+
+platformAdminRouter.put(
+  '/platform-admin/fees/contracts/:tenantId',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = contractTermsSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const actor = req.platformAdminActor!;
+    try {
+      const terms = await setContractTerms(db, req.params.tenantId!, body.data, actor.email);
+      await writeAudit(db, { actor, action: 'fees.contract_terms', targetType: 'tenant', targetId: req.params.tenantId!, detail: body.data });
+      res.json({ terms });
+    } catch (err) {
+      if (err instanceof ContractTermsError) {
+        return res.status(err.code === 'not_found' ? 404 : 400).json({ error: err.code, detail: err.message });
+      }
+      throw err;
+    }
+  },
+);
+
+platformAdminRouter.get('/platform-admin/fees/contracts/:tenantId/statement', requirePlatformAdmin, async (req, res) => {
+  const month = typeof req.query.month === 'string' ? req.query.month : new Date().toISOString().slice(0, 7);
+  try {
+    res.json(await contractStatement(db, await getFeeRuleSettings(db), req.params.tenantId!, month));
+  } catch (err) {
+    if (err instanceof ContractTermsError) {
+      return res.status(err.code === 'not_found' ? 404 : 400).json({ error: err.code, detail: err.message });
+    }
+    if (err instanceof FxUnavailableError) return res.status(503).json({ error: 'fx_rates_unavailable' });
+    throw err;
+  }
+});
 
 // --------------------------------------------------------------------------
 // Audit

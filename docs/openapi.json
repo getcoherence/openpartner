@@ -1174,6 +1174,13 @@
           "partnersMayCustomizeCode": {
             "type": "boolean"
           },
+          "revenueEventTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Event types that are sales in this program beyond invoice_paid and subscription_created, which always are. Their value counts as partner-attributed revenue for the hosted platform fee."
+          },
           "shareOnNetwork": {
             "type": "boolean"
           },
@@ -1243,6 +1250,7 @@
           "customerReward",
           "categories",
           "partnersMayCustomizeCode",
+          "revenueEventTypes",
           "shareOnNetwork",
           "marketplaceDescription",
           "marketplaceCoverUrl",
@@ -1474,6 +1482,15 @@
           "partnersMayCustomizeCode": {
             "type": "boolean"
           },
+          "revenueEventTypes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "maxItems": 20
+          },
           "grantToAllPartners": {
             "type": "boolean"
           }
@@ -1617,6 +1634,15 @@
           },
           "partnersMayCustomizeCode": {
             "type": "boolean"
+          },
+          "revenueEventTypes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "maxItems": 20
           }
         }
       },
@@ -2459,7 +2485,7 @@
           "metadata": {
             "type": "object",
             "additionalProperties": {},
-            "description": "How the amount was worked out, where it took more than the rule's flat value. A banded or tiered rule records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. Empty for a flat rule."
+            "description": "How the amount was worked out. `rateType` is the sub-rule's `percent` or `fixed` (absent on commissions accrued before October 2026). A banded or tiered rule also records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. A replacement accrued for what a partial refund left records `refund`."
           },
           "holdbackDays": {
             "type": [
@@ -2582,7 +2608,7 @@
           "metadata": {
             "type": "object",
             "additionalProperties": {},
-            "description": "How the amount was worked out, where it took more than the rule's flat value. A banded or tiered rule records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. Empty for a flat rule."
+            "description": "How the amount was worked out. `rateType` is the sub-rule's `percent` or `fixed` (absent on commissions accrued before October 2026). A banded or tiered rule also records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. A replacement accrued for what a partial refund left records `refund`."
           }
         },
         "required": [

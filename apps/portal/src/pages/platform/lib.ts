@@ -172,6 +172,119 @@ export interface ReminderRunResult {
   failed: number;
 }
 
+/** Platform fee — the commission-floor rule (docs/platform-fee.md). */
+export interface FeeRates {
+  revenueRate: number;
+  commissionRate: number;
+}
+
+export interface FeeRuleSettings {
+  shadow: boolean;
+  cutoverAt: string | null;
+  rates: { flat: FeeRates; revshare: FeeRates };
+}
+
+export interface FeeTenantStatus {
+  tenantId: string;
+  slug: string;
+  displayName: string;
+  plan: string | null;
+  mode: string;
+  subscribed: boolean;
+  rule: 'new' | 'scheduled' | 'old';
+  effectiveAt: string | null;
+  effectiveSource: 'new_plan' | 'notice' | 'contract' | null;
+  planStartedAt: string | null;
+  noticeSentAt: string | null;
+  noticeRecipients: string[] | null;
+  revenueRate: number;
+  commissionRate: number;
+  contract: boolean;
+  monthlyMinimumUsd: number | null;
+  contractNote: string | null;
+  shadow: {
+    reports: number;
+    conversions: number;
+    oldFeeUsd: number;
+    newFeeUsd: number;
+    floorConversions: number;
+    renamedSaleConversions: number;
+  } | null;
+}
+
+export interface FeesState {
+  settings: FeeRuleSettings;
+  meterRates: { flat: number; revshare: number };
+  noticeDays: number;
+  tenants: FeeTenantStatus[];
+}
+
+export interface FeeComparison {
+  conversions: number;
+  oldBasisUsd: number;
+  newBasisUsd: number;
+  oldFeeUsd: number;
+  newFeeUsd: number;
+  floorConversions: number;
+  renamedSaleConversions: number;
+  heldOut: Record<string, number> | null;
+}
+
+export interface FeeEstimate extends FeeComparison {
+  tenantId: string;
+  slug: string;
+  mode: string;
+  revenueRate: number;
+  commissionRate: number;
+}
+
+export interface NoticeCandidate {
+  tenantId: string;
+  slug: string;
+  brandName: string;
+  plan: string | null;
+  recipients: Array<{ email: string; name: string | null }>;
+  revenueRate: number;
+  commissionRate: number;
+  effectiveAt: string | null;
+  error?: string;
+}
+
+export interface NoticeRun {
+  dryRun: boolean;
+  cutoverAt?: string | null;
+  candidates?: NoticeCandidate[];
+  sample?: { to: string; subject: string; text: string } | null;
+  sent?: Array<{ tenantId: string; slug: string; recipients: string[]; effectiveAt: string; failedRecipients: string[] }>;
+  skipped?: Array<{ tenantId: string; slug: string; reason: string }>;
+  failed?: Array<{ tenantId: string; slug: string; reason: string }>;
+}
+
+export interface ContractStatement {
+  month: string;
+  revenueRate: number;
+  commissionRate: number;
+  monthlyMinimumUsd: number | null;
+  conversions: number;
+  revenueByCurrency: Record<string, number>;
+  commissionsByCurrency: Record<string, number>;
+  feeUsd: number;
+  minimumTopUpUsd: number;
+  amountOwedUsd: number;
+  heldOut: Record<string, number> | null;
+}
+
+export interface FeeReviewSignals {
+  windowDays: number;
+  noCommissionActivity: Array<{ tenantId: string; slug: string; clicks: number; identities: number }>;
+  commissionAboveValue: Array<{ tenantId: string; slug: string; events: number; sampleEventIds: string[] }>;
+  lowConversion: {
+    peerMedian: number | null;
+    peers: number;
+    tenants: Array<{ tenantId: string; slug: string; clicks: number; conversions: number; rate: number }>;
+  };
+}
+
 export interface BlocklistEntry {
   id: string;
   type: 'email' | 'domain';
@@ -270,6 +383,14 @@ export function friendlyPlatformError(err: unknown): string {
       return 'That vendor is one of our hosted brands — approve or reject it on the Brands tab.';
     case 'network_not_configured':
       return 'NETWORK_URL / NETWORK_ADMIN_API_KEY aren’t set, so creator reminders can’t reach the Network.';
+    case 'cutover_in_past':
+      return 'The cutover can’t be more than a day in the past: it would reprice plans bought under the old pricing.';
+    case 'no_cutover':
+      return 'Set the cutover before sending pricing notices.';
+    case 'minimum_requires_enterprise':
+      return 'A monthly minimum is invoiced from the contract statement, so move the brand to the Enterprise plan first.';
+    case 'fx_rates_unavailable':
+      return 'The ECB rate feed is unreachable, so non-USD amounts can’t be converted right now. Try again later.';
     default:
       return raw;
   }
