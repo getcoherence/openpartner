@@ -85,6 +85,22 @@ describe('provisionCustomerReward', () => {
     });
   });
 
+  it("amount_off is in Stripe's integer form for the currency: ¥500 is 500, KWD 1.50 is 1500", async () => {
+    await provisionCustomerReward(
+      { type: 'amount_off', value: 500, currency: 'JPY', duration: 'once' },
+      'CODE',
+      'Campaign',
+    );
+    expect(couponCreate.mock.calls[0]![0]).toMatchObject({ amount_off: 500, currency: 'jpy' });
+
+    await provisionCustomerReward(
+      { type: 'amount_off', value: 1.5, currency: 'KWD', duration: 'once' },
+      'CODE2',
+      'Campaign',
+    );
+    expect(couponCreate.mock.calls[1]![0]).toMatchObject({ amount_off: 1500, currency: 'kwd' });
+  });
+
   it('free_months delivers as 100% repeating coupon', async () => {
     await provisionCustomerReward(
       { type: 'free_months', value: 2, duration: 'repeating' },

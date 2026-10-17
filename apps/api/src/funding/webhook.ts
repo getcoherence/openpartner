@@ -402,7 +402,7 @@ export async function handleTransferReversed(
   //
   // Taking `FOR UPDATE` first serialises the read-sum-write, so the later
   // handler always re-sums after the earlier one committed.
-  const payoutMinor = toMinor(payout.amount);
+  const payoutMinor = toMinor(payout.amount, payout.currency);
   let fullyReversed = false;
   let reversedMinor = 0;
   await db.transaction(async (trx) => {

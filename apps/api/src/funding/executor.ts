@@ -397,7 +397,7 @@ async function finalizeTransfer(
       id: payoutId,
       tenantId: batch.tenantId,
       partnerId: intent.partnerId,
-      amount: minorToMajorString(intent.amountMinor),
+      amount: minorToMajorString(intent.amountMinor, intent.currency),
       currency: intent.currency.toUpperCase(),
       method: 'stripe_connect',
       status: 'paid',
@@ -425,7 +425,7 @@ async function finalizeTransfer(
   dispatchEvent(batch.tenantId, 'payout.created', {
     payoutId,
     partnerId: intent.partnerId,
-    amount: minorToMajorString(intent.amountMinor),
+    amount: minorToMajorString(intent.amountMinor, intent.currency),
     currency: intent.currency.toUpperCase(),
     method: 'stripe_connect',
     commissionIds,

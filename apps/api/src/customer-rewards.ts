@@ -20,6 +20,7 @@
 import type Stripe from 'stripe';
 import type { CustomerReward } from '@openpartner/db';
 import { getMode, stripe } from './stripe.js';
+import { toStripeMinor } from './stripe-amounts.js';
 import { getTenancyMode } from './tenancy.js';
 
 export interface ProvisionedReward {
@@ -186,7 +187,7 @@ function toStripeCouponParams(
   if (!reward.currency) return null;
   return {
     ...base,
-    amount_off: Math.round(reward.value * 100),
+    amount_off: toStripeMinor(reward.value, reward.currency),
     currency: reward.currency.toLowerCase(),
     ...durationParams(reward),
   };

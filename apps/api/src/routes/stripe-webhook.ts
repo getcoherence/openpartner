@@ -31,6 +31,7 @@ import { handleFundingEvent, InboxEventHeldError } from '../funding/webhook.js';
 import { mirrorHostedBillingState, type MirroredSubscriptionStatus } from '../billing-plan.js';
 import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
 import { getMode } from '../stripe.js';
+import { fromStripeMinor } from '../stripe-amounts.js';
 import { getTenancyMode } from '../tenancy.js';
 import { dispatchCommissionEvents } from '../commission-events.js';
 
@@ -1093,7 +1094,7 @@ async function mapStripeEvent(
       return {
         userId,
         type: 'invoice_paid',
-        value: invoice.amount_paid / 100,
+        value: fromStripeMinor(invoice.amount_paid, invoice.currency),
         currency: invoice.currency?.toUpperCase() ?? 'USD',
         // Captured for refund/dispute lookup. Without these, charge.refunded
         // can't find the original Event to walk back to its Commissions.
@@ -1143,7 +1144,7 @@ async function mapStripeEvent(
       return {
         userId,
         type: 'refund',
-        value: -(charge.amount_refunded / 100),
+        value: -fromStripeMinor(charge.amount_refunded, charge.currency),
         currency: charge.currency?.toUpperCase() ?? 'USD',
         metadata: {
           stripeChargeId: charge.id,
@@ -1183,7 +1184,7 @@ async function mapStripeEvent(
       return {
         userId,
         type: 'dispute_created',
-        value: -(dispute.amount / 100),
+        value: -fromStripeMinor(dispute.amount, dispute.currency),
         currency: dispute.currency?.toUpperCase() ?? 'USD',
         metadata: {
           stripeDisputeId: dispute.id,
@@ -1204,7 +1205,7 @@ async function mapStripeEvent(
       return {
         userId,
         type: 'invoice_payment_failed',
-        value: -(invoice.amount_due / 100),
+        value: -fromStripeMinor(invoice.amount_due, invoice.currency),
         currency: invoice.currency?.toUpperCase() ?? 'USD',
         metadata: {
           stripeInvoiceId: invoice.id,
@@ -1449,7 +1450,7 @@ function checkoutPaymentRevenue(session: Stripe.Checkout.Session, userId: string
   return {
     userId,
     type: 'invoice_paid',
-    value: amount / 100,
+    value: fromStripeMinor(amount, session.currency),
     currency: session.currency?.toUpperCase() ?? 'USD',
     externalEventId: session.id,
     metadata: {

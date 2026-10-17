@@ -59,6 +59,7 @@ import {
   type TenantRow,
 } from '@openpartner/db';
 import { REVSHARE_FEE_BPS, type OpenPartnerMode } from './stripe.js';
+import { centsToStripeMinor, fromStripeMinor, majorToCents } from './stripe-amounts.js';
 import type { PayoutTransferMeta } from './payout-transfers.js';
 import { getTenantBillingState } from './billing-plan.js';
 import { dispatchEvent } from './webhook-dispatcher.js';
@@ -184,22 +185,29 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     const partner = await db<PartnerRow>(TABLES.Partner).where({ id: group.partnerId }).first();
     if (!partner) continue;
 
-    // Read the exact rows first and derive the total from them, in minor
-    // units. The group total and a later SELECT can disagree under READ
-    // COMMITTED (each statement takes a fresh snapshot), and the transfer
-    // amount must equal the sum of the commissions we actually claim —
-    // never a stale aggregate.
+    // Read the exact rows first and derive the total from them. The group
+    // total and a later SELECT can disagree under READ COMMITTED (each
+    // statement takes a fresh snapshot), and the transfer amount must
+    // equal the sum of the commissions we actually claim — never a stale
+    // aggregate.
     const commissions = await db<CommissionRow>(TABLES.Commission)
       .where({ partnerId: group.partnerId, currency: group.currency, status: 'approved' })
       .whereNull('payoutId');
     if (commissions.length === 0) continue;
-    const amountMinor = commissions.reduce((s, c) => s + Math.round(Number(c.amount) * 100), 0);
-    const amount = amountMinor / 100;
+    // Summed in hundredths, the storage precision, so the total is exact.
+    // `amountMinor` is that total in Stripe's integer form for this
+    // currency (¥1,000 is 1000, KWD 1.23 is 1230; stripe-amounts.ts) and
+    // is what a transfer sends. `amount` is the same figure in major
+    // units, so the Payout row records what is paid: it differs from the
+    // commission sum only where Stripe has no fractions (¥100.50 → ¥101).
+    const amountCents = commissions.reduce((s, c) => s + majorToCents(c.amount), 0);
+    const amountMinor = centsToStripeMinor(amountCents, group.currency);
+    const amount = fromStripeMinor(amountMinor, group.currency);
 
     // Threshold gate: balances below the tenant minimum stay 'approved'
     // and roll over to the next run. Cents are the storage unit on the
-    // tenant column, so the comparison happens in minor units.
-    if (thresholdCents > 0 && amountMinor < thresholdCents) {
+    // tenant column, so the comparison happens in hundredths.
+    if (thresholdCents > 0 && amountCents < thresholdCents) {
       skipped.push({ partnerId: partner.id, currency: group.currency, amount });
       continue;
     }
@@ -434,7 +442,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     for (const [currency, candidates] of byCurrency) {
       if (!auth) {
         for (const c of candidates) {
-          skippedUnfunded.push({ partnerId: c.partnerId, currency, amount: c.amountMinor / 100 });
+          skippedUnfunded.push({ partnerId: c.partnerId, currency, amount: fromStripeMinor(c.amountMinor, currency) });
         }
         console.error(
           `[payouts] funding enabled but tenant ${tenantId} has no funding authorization — ${candidates.length} group(s) held`,
@@ -448,7 +456,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
         );
       } else if (reserved.skipped && reserved.skipped !== 'open_batch_exists') {
         for (const c of candidates) {
-          skippedUnfunded.push({ partnerId: c.partnerId, currency, amount: c.amountMinor / 100 });
+          skippedUnfunded.push({ partnerId: c.partnerId, currency, amount: fromStripeMinor(c.amountMinor, currency) });
         }
       }
       // open_batch_exists: eligible commissions roll forward silently —

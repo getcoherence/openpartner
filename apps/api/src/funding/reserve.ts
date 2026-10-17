@@ -106,7 +106,7 @@ export async function reserveFundingBatch(
       const ids = c.commissionIds.filter((id) => lockedIds.has(id));
       const amountMinor = lockable
         .filter((row) => ids.includes(row.id))
-        .reduce((sum, row) => sum + toMinor(row.amount as unknown as string), 0);
+        .reduce((sum, row) => sum + toMinor(row.amount as unknown as string, ccy), 0);
       return { partnerId: c.partnerId, commissionIds: ids, amountMinor };
     })
     .filter((g) => g.commissionIds.length > 0 && g.amountMinor > 0);
@@ -143,7 +143,7 @@ export async function reserveFundingBatch(
           batchId,
           commissionId,
           partnerId: g.partnerId,
-          amountMinor: toMinor(row.amount as unknown as string),
+          amountMinor: toMinor(row.amount as unknown as string, ccy),
           state: 'reserved',
           createdAt: now,
           updatedAt: now,
