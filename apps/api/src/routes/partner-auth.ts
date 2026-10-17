@@ -29,6 +29,7 @@ import { ipRateLimit } from '../middleware/rate-limit.js';
 import { adminSigninEmail, buildMagicLinkUrl, partnerSigninEmail } from '../email-templates.js';
 import { linkTenantOf } from '../portal-url.js';
 import { tenantOf } from '../tenancy.js';
+import { onCommit } from '../on-commit.js';
 import { isPendingReview } from '../partner-review.js';
 import type { WebhookPayload } from '../openapi/webhook-events.js';
 
@@ -143,20 +144,23 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
   if (isPendingReview(partner)) return res.status(403).json({ error: 'pending_review' });
 
   if (token.purpose === 'partner_invite' && !partner.activatedAt) {
+    const activatedAt = new Date();
     await db<PartnerRow>(TABLES.Partner)
       .where({ id: partner.id })
-      .update({ activatedAt: new Date(), updatedAt: new Date() });
+      .update({ activatedAt, updatedAt: activatedAt });
     // Fire once, on the actual activation. partner.created already
     // fired at invite time; this is the "they accepted + are now
     // promoting" signal Zapier subscribers want for welcome
-    // sequences, Slack pings, etc.
+    // sequences, Slack pings, etc. After COMMIT, so a receiver reading
+    // the partner sees them activated (on-commit.ts).
     const { dispatchEvent } = await import('../webhook-dispatcher.js');
-    dispatchEvent(tenantId, 'partner.activated', {
+    const activatedPayload = {
       partnerId: partner.id,
       email: partner.email,
       name: partner.name,
-      activatedAt: new Date().toISOString(),
-    } satisfies WebhookPayload<'partner.activated'>);
+      activatedAt: activatedAt.toISOString(),
+    } satisfies WebhookPayload<'partner.activated'>;
+    onCommit(db, 'partner.activated webhook', () => dispatchEvent(tenantId, 'partner.activated', activatedPayload));
   }
 
   const session = await createSession(db, { tenantId, principalKind: 'partner', principalId: partner.id });

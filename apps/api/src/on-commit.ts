@@ -1,7 +1,8 @@
 /**
  * Work that must only describe committed rows, queued against whichever
  * database handle wrote them. Today: webhooks (attribution.created,
- * commission.accrued, the manual commission routes).
+ * commission.accrued, the manual commission routes, partner.created,
+ * partnership.approved, partner.activated).
  *
  * The attribution engine runs on whatever handle its caller passes: the
  * request transaction (tenantMiddleware), the Stripe webhook's own tenant

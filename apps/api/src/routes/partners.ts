@@ -18,6 +18,7 @@ import {
 } from '../network-consent.js';
 import { autoMintCouponsForGrants } from './coupons.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
+import { onCommit } from '../on-commit.js';
 import type { WebhookPayload } from '../openapi/webhook-events.js';
 import { commissionSlabFields, currencyCodeSchema, refineCommissionSubRule } from '../commission-rule-schema.js';
 import { vetApprovalSnapshot } from '../commission-slabs.js';
@@ -359,24 +360,28 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
   // (metadata.source === 'openpartner_network' set by the Network's
   // approve flow). Subscribers like Zapier / ActivePieces use these
   // to drive Slack notifications, CRM contact creation, welcome
-  // sequences, etc. Async — failures don't block the response.
+  // sequences, etc. Async — failures don't block the response. After
+  // COMMIT: a receiver may fetch the partner straight away, and a
+  // rolled-back request must announce nothing (on-commit.ts).
   const partnerRow = partner as PartnerRow;
-  dispatchEvent(tenantId, 'partner.created', {
+  const createdPayload = {
     partnerId: id,
     email,
     name: body.data.name,
     activatedAt: partnerRow.activatedAt ? partnerRow.activatedAt.toISOString() : null,
     invited: sendInvite,
     programIds,
-  } satisfies WebhookPayload<'partner.created'>);
+  } satisfies WebhookPayload<'partner.created'>;
+  onCommit(db, 'partner.created webhook', () => dispatchEvent(tenantId, 'partner.created', createdPayload));
   if ((body.data.metadata as Record<string, unknown> | undefined)?.source === 'openpartner_network') {
-    dispatchEvent(tenantId, 'partnership.approved', {
+    const approvedPayload = {
       partnerId: id,
       email,
       name: body.data.name,
       networkCreatorId: (body.data.metadata as Record<string, unknown>).networkCreatorId,
       programIds,
-    } satisfies WebhookPayload<'partnership.approved'>);
+    } satisfies WebhookPayload<'partnership.approved'>;
+    onCommit(db, 'partnership.approved webhook', () => dispatchEvent(tenantId, 'partnership.approved', approvedPayload));
   }
 
   res.status(201).json({ ...partner, invited: sendInvite });
