@@ -28,7 +28,9 @@ import {
   exportTable,
   importBundle,
   isSafeTenantId,
+  legacyPartnerCommissionId,
   primaryKeyOf,
+  upgradeBundle,
 } from '../export.js';
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
@@ -275,7 +277,10 @@ describe.skipIf(skipIntegration)('export coverage', () => {
   });
 
   it('knows each table real primary key — not just `id`', () => {
-    expect(primaryKeyOf(TABLES.PartnerCommission)).toBe('partnerId');
+    // PartnerCommission was keyed on partnerId until schemaVersion 3; its
+    // natural key now lives in partial unique indexes.
+    expect(primaryKeyOf(TABLES.PartnerCommission)).toBe('id');
+    expect(EXPORT_TABLES.find((s) => s.table === TABLES.PartnerCommission)).toMatchObject({ conflict: 'any' });
     expect(primaryKeyOf(TABLES.PartnerNetworkConsent)).toBe('partnerId');
     expect(primaryKeyOf(TABLES.Commission)).toBe('id');
   });
@@ -347,7 +352,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     await importBundle(db, TENANT, bundle);
     const second = await importBundle(db, TENANT, bundle);
 
-    // PartnerCommission is the one keyed on partnerId: with the old
+    // PartnerCommission used to be keyed on partnerId: with the old
     // hardcoded `id` conflict target this threw instead of skipping.
     for (const { table } of EXPORT_TABLES) {
       expect(second.inserted[table] ?? 0, `${table} should not re-insert`).toBe(0);
@@ -415,6 +420,185 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     // is pushed to the Network until they opt in on the new instance.
     expect(after[TABLES.PartnerNetworkConsent]).toBe(0);
   }, 30_000);
+
+  it('accepts a v3 bundle — program-scoped commission terms, but no Network consent yet', async () => {
+    await seedEverything();
+    const full = await exportAll(db, TENANT);
+    const v3: Record<string, unknown[]> = { ...full };
+    delete v3[TABLES.PartnerNetworkConsent];
+    await wipe();
+
+    const app = createApp();
+    const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+    const viaRoute = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: 3, tables: v3 });
+    expect(viaRoute.status).toBe(200);
+    const after = await counts();
+    expect(after[TABLES.Partner]).toBe(1);
+    expect(after[TABLES.PartnerCommission]).toBe((full[TABLES.PartnerCommission] ?? []).length);
+    expect(after[TABLES.PartnerNetworkConsent]).toBe(0);
+  }, 30_000);
+
+  it('exports at schemaVersion 4', () => {
+    expect(SCHEMA_VERSION).toBe(4);
+  });
+});
+
+describe.skipIf(skipIntegration)('PartnerCommission program scope (schemaVersion 3)', () => {
+  /** A second program with a program-scoped row on it, next to the
+   *  seeded partner-wide row. */
+  async function seedProgramScoped(seeded: Seeded): Promise<{ programId: string; id: string }> {
+    const programId = ulid();
+    await db(TABLES.Program).insert({
+      id: programId,
+      tenantId: TENANT,
+      name: 'Second program',
+      commissionRule: JSON.stringify([{ trigger: 'every', type: 'percent', value: 10 }]),
+      destinationUrl: 'https://x.test/second',
+      attributionWindowDays: 60,
+      attributionModel: 'last_click',
+    });
+    const id = `pcm_${ulid()}`;
+    await db(TABLES.PartnerCommission).insert({
+      id,
+      partnerId: seeded.partnerId,
+      tenantId: TENANT,
+      programId,
+      commissionType: 'fixed',
+      commissionValue: '50.0000',
+      recurring: false,
+      commissionRules: JSON.stringify([{ trigger: 'first', eventType: 'subscription_created', type: 'fixed', value: 50 }]),
+      holdbackDays: 7,
+      source: 'amendment',
+    });
+    return { programId, id };
+  }
+
+  /** Terms rows keyed by scope ('*' = partner-wide). */
+  async function termsByScope(): Promise<Record<string, Record<string, unknown>>> {
+    const rows = (await db(TABLES.PartnerCommission).select(
+      'id',
+      'partnerId',
+      'programId',
+      'commissionRules',
+      'holdbackDays',
+      'source',
+    )) as Array<Record<string, unknown>>;
+    return Object.fromEntries(rows.map((r) => [(r.programId as string | null) ?? '*', r]));
+  }
+
+  it('JSON: partner-wide and program-scoped rows both restore with their ids and scope', async () => {
+    const seeded = await seedEverything();
+    const scoped = await seedProgramScoped(seeded);
+    const before = await termsByScope();
+    expect(Object.keys(before).sort()).toEqual(['*', scoped.programId].sort());
+
+    const bundle = await exportAll(db, TENANT);
+    await wipe();
+    const report = await importBundle(db, TENANT, bundle);
+
+    expect(report.inserted[TABLES.PartnerCommission]).toBe(2);
+    expect(await termsByScope()).toEqual(before);
+    expect((await termsByScope())[scoped.programId]!.id).toBe(scoped.id);
+  }, 30_000);
+
+  it('JSON: a row whose natural key is taken under another id is skipped, not a failed import', async () => {
+    const seeded = await seedEverything();
+    await seedProgramScoped(seeded);
+    const bundle = await exportAll(db, TENANT);
+    // Same (partner, scope) pairs, fresh ids — e.g. the bundle came from an
+    // instance that re-created the terms. Nothing is wiped.
+    const reKeyed = {
+      ...bundle,
+      [TABLES.PartnerCommission]: (bundle[TABLES.PartnerCommission] as Array<Record<string, unknown>>).map((r) => ({
+        ...r,
+        id: `pcm_${ulid()}`,
+      })),
+    };
+
+    const report = await importBundle(db, TENANT, reKeyed);
+
+    expect(report.inserted[TABLES.PartnerCommission]).toBe(0);
+    expect(report.skipped[TABLES.PartnerCommission]).toBe(2);
+    expect((await counts())[TABLES.PartnerCommission]).toBe(2);
+  }, 30_000);
+
+  it('a v2 bundle imports its PartnerCommission rows as partner-wide, with the migration id', async () => {
+    const seeded = await seedEverything();
+    const bundle = await exportAll(db, TENANT);
+    // What a v2 export carried: no id, no programId.
+    const v2 = {
+      ...bundle,
+      [TABLES.PartnerCommission]: (bundle[TABLES.PartnerCommission] as Array<Record<string, unknown>>).map(
+        ({ id: _id, programId: _programId, ...rest }) => rest,
+      ),
+    };
+    expect(upgradeBundle(bundle)).toEqual(bundle); // current rows pass through untouched
+    await wipe();
+
+    const app = createApp();
+    const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+    const first = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: 2, tables: v2 });
+    expect(first.status).toBe(200);
+    expect(first.body.report.inserted[TABLES.PartnerCommission]).toBe(1);
+
+    const terms = await termsByScope();
+    expect(Object.keys(terms)).toEqual(['*']);
+    expect(terms['*']!.id).toBe(legacyPartnerCommissionId(seeded.partnerId));
+    expect(terms['*']!.holdbackDays).toBe(30);
+
+    // Idempotent on re-import, same as every other version.
+    const again = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: 2, tables: v2 });
+    expect(again.status).toBe(200);
+    expect(again.body.report.skipped[TABLES.PartnerCommission]).toBe(1);
+    expect((await counts())[TABLES.PartnerCommission]).toBe(1);
+  }, 30_000);
+
+  it('SQL: program-scoped rows restore, and re-running the dump skips them', async () => {
+    const seeded = await seedEverything();
+    await seedProgramScoped(seeded);
+    const before = await termsByScope();
+    const dump = buildSqlDump(await exportAll(db, TENANT), { tenantId: TENANT, columnTypes: await exportColumnTypes(db) });
+
+    await wipe();
+    await runSql(dump);
+    expect(await termsByScope()).toEqual(before);
+
+    await runSql(dump);
+    expect((await counts())[TABLES.PartnerCommission]).toBe(2);
+  }, 30_000);
+
+  // docs/data-portability.md: a dump written before schemaVersion 3 says
+  // ON CONFLICT ("partnerId") for PartnerCommission, which no longer names
+  // a unique index. Relaxed to a bare ON CONFLICT DO NOTHING it restores —
+  // the id default covers the column the old dump doesn't have.
+  it('SQL: a pre-v3 PartnerCommission insert restores once its ON CONFLICT is made bare', async () => {
+    const partnerId = ulid();
+    await db(TABLES.Partner).insert({ id: partnerId, tenantId: TENANT, email: `v2-${partnerId}@x.test`, name: 'V2' });
+    const v2Insert = (onConflict: string) => `
+      INSERT INTO "PartnerCommission" ("partnerId", "tenantId", "commissionType", "commissionValue", "recurring", "holdbackDays", "source", "snapshottedAt") VALUES
+        ('${partnerId}', '${TENANT}', 'percent', '25.0000', true, 14, 'approval', '2026-09-01T00:00:00.000Z')
+      ${onConflict};`;
+
+    await expect(runSql(v2Insert('ON CONFLICT ("partnerId") DO NOTHING'))).rejects.toThrow(
+      /no unique or exclusion constraint/,
+    );
+    await runSql(v2Insert('ON CONFLICT DO NOTHING'));
+    await runSql(v2Insert('ON CONFLICT DO NOTHING')); // still idempotent
+
+    const rows = await db(TABLES.PartnerCommission).where({ partnerId });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].programId).toBeNull();
+    expect(rows[0].id).toMatch(/^pcm_/);
+  }, 30_000);
 });
 
 describe.skipIf(skipIntegration)('SQL dump', () => {
@@ -470,7 +654,10 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
     expect(dump).toMatch(/'\[\{[^']*"type":"percent"[^']*\}\]'/);
     expect(dump).toContain(`'{"saas","devtools"}'`);
     expect(dump).toContain('NULL');
-    expect(dump).toContain(`ON CONFLICT ("partnerId") DO NOTHING;`); // PartnerCommission
+    // PartnerCommission: bare, so a row whose natural key is taken under a
+    // different id is skipped instead of aborting the restore.
+    expect(dump).toMatch(/INSERT INTO "PartnerCommission" [^;]*\nON CONFLICT DO NOTHING;/);
+    expect(dump).toContain(`ON CONFLICT ("id") DO NOTHING;`); // everything else
     expect(dump).toContain(`-- OpenPartner export — schemaVersion ${SCHEMA_VERSION}`);
   });
 

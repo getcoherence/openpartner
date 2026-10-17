@@ -282,6 +282,51 @@ scoped to one program instead of every program. A pre-rename brand has
 to upgrade to be approvable. `campaignIds` can be dropped once no
 pre-rename brand is federated.
 
+### Commission terms on `POST /partners`
+
+The Network sends the approved offering's terms as `commissionSnapshot`
+(`commissionRules`, plus the legacy `commissionType` / `commissionValue` /
+`recurring`, and `holdbackDays`). The brand stores them as a
+`PartnerCommission` row and pays future commissions from it instead of
+the live program rule.
+
+**Scope (brand-side, Oct 2026).** When the request names exactly one
+program (`programIds`, or `campaignIds` if `programIds` is absent), the
+snapshot is stored for **that program only**. The Network's approve flow
+always sends `[offering.vendorProgramId]`, so its terms now price
+commissions on the offering's program and nothing else. If the brand later
+grants the creator another program, that program accrues at its own rule,
+or at the brand's partner-wide override for the creator if one exists.
+Before this change the row was partner-wide, so the offering's terms priced
+every program the creator was ever granted. Requests naming several
+programs, or none (none means every program), still store a partner-wide
+snapshot.
+
+**The Network's side of the contract is unchanged.** It sends the same
+payload and reads the same response. Only the brand's interpretation got
+narrower, and it now matches what the Network already records: the terms
+live on the `Partnership` row, which is per offering. Brand instances from
+before this change keep storing the snapshot partner-wide.
+
+`POST /partners` also accepts `programCommissions:
+[{ programId, commissionType, commissionValue, recurring?, holdbackDays?,
+commissionRules? }]` for per-program terms at creation. Each `programId`
+must be among the programs the request grants, and at most one set of
+terms may target a program (the scoped snapshot counts as one). The
+Network doesn't send `programCommissions` today. It's there for brands'
+own integrations.
+
+Brand admins can edit both scopes afterwards:
+`GET|PUT|DELETE /partners/:id/commission-snapshot` (partner-wide) and
+`GET|PUT|DELETE /partners/:id/programs/:programId/commission`
+(one program).
+
+Still open: approving a creator who is **already** a partner at the brand
+(say, a second offering from the same brand) fails, because
+`POST /partners` 409s on `email_taken`. Fixing that needs a federation call
+that adds a grant plus program-scoped terms to an existing partner, and
+that call doesn't exist yet on either side.
+
 The Network uses the scoped key registered in `/vendors/register` for
 all of these. On hosted multi-tenant the URL is
 `{instanceUrl}/partners` where `instanceUrl` already includes the

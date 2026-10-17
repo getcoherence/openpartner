@@ -5,9 +5,10 @@ import { ArrowLeft } from 'lucide-react';
 import { api } from '../api.js';
 import { alpha, theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
-import { Button, Card, ErrorBanner, Input, Label, Page } from '../ui.js';
+import { Button, Card, ErrorBanner, Input, Label, Page, SectionHeading } from '../ui.js';
 import { CompoundRuleEditor, ruleEventTypeMissing, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
+import { useIsMobile } from '../lib/useMediaQuery.js';
 
 interface Partner {
   id: string;
@@ -18,7 +19,10 @@ interface Partner {
 type CommissionSource = 'approval' | 'backfill' | 'amendment';
 
 interface Snapshot {
+  id?: string;
   partnerId: string;
+  /** Null = partner-wide; set = terms for that one program. */
+  programId?: string | null;
   /** Legacy single-rule summary. The engine ignores these whenever
    *  commissionRules is set. */
   commissionType: 'percent' | 'fixed';
@@ -30,6 +34,18 @@ interface Snapshot {
   holdbackDays: number | null;
   source: CommissionSource;
   snapshottedAt: string;
+}
+
+/** One row of GET /partners/:id/programs. */
+interface ProgramTerms {
+  id: string;
+  name: string;
+  granted: boolean;
+  /** The program's own rule (always the array shape post-migration). */
+  commissionRule: CommissionSubRule[] | null;
+  holdbackDays: number | null;
+  /** This partner's program-scoped terms, if any. */
+  commission: Snapshot | null;
 }
 
 /** The rule array the engine resolves for this snapshot, with the same
@@ -72,30 +88,52 @@ export function AdminPartnerCommission() {
     enabled: !!partnerId,
   });
 
+  // Same query (and key) as the Programs page: every program in the
+  // tenant with this partner's grant state and program-scoped terms.
+  const programs = useQuery({
+    queryKey: ['partner-campaigns', partnerId],
+    queryFn: () => api<{ programs: ProgramTerms[] }>(`/partners/${partnerId}/programs`),
+    enabled: !!partnerId,
+  });
+
   const partnerName = partner.data?.name ?? '…';
+  const partnerWide = snapshot.data?.snapshot ?? null;
 
   return (
     <Page
       title={`Commission · ${partnerName}`}
-      subtitle="Override this partner's commission rate or holdback. Useful for VIP creators on a higher cut than the campaign default."
+      subtitle="Override this partner's commission terms, for every program at once or for one program. Useful for VIP creators on a higher cut than the program default."
     >
       <div style={{ marginBottom: 14 }}>
         <TenantLink to="/admin/partners" style={{ color: theme.textMuted, fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <ArrowLeft size={14} /> Back to Partners
         </TenantLink>
       </div>
-      <ErrorBanner error={partner.error ?? snapshot.error} />
+      <ErrorBanner error={partner.error ?? snapshot.error ?? programs.error} />
       {snapshot.isLoading ? (
         <Card>Loading…</Card>
       ) : (
         <>
-          <CurrentSnapshotCard snapshot={snapshot.data?.snapshot ?? null} />
+          <SectionHeading>Partner-wide default</SectionHeading>
+          <CurrentSnapshotCard snapshot={partnerWide} />
           <div style={{ height: 14 }} />
           <EditCard
-            partnerId={partnerId}
-            current={snapshot.data?.snapshot ?? null}
+            scope="partner"
+            endpoint={`/partners/${partnerId}/commission-snapshot`}
+            current={partnerWide}
+            fallbackRules={DEFAULT_RULES}
             onSaved={() => {
               qc.invalidateQueries({ queryKey: ['partner-commission-snapshot', partnerId] });
+            }}
+          />
+          <SectionHeading>Per-program terms</SectionHeading>
+          <ProgramTermsList
+            partnerId={partnerId}
+            programs={programs.data?.programs}
+            loading={programs.isLoading}
+            partnerWide={partnerWide}
+            onSaved={() => {
+              qc.invalidateQueries({ queryKey: ['partner-campaigns', partnerId] });
             }}
           />
         </>
@@ -110,10 +148,10 @@ function CurrentSnapshotCard({ snapshot }: { snapshot: Snapshot | null }) {
       <Card>
         <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>No snapshot</div>
         <p style={{ fontSize: 13, color: theme.textMuted, margin: 0, lineHeight: 1.5 }}>
-          This partner has no <code>PartnerCommission</code> row, so commissions accrue at
-          their bound campaign&rsquo;s live rate. Editing the campaign post-conversion would
-          re-price their accruals — set an override below to grandfather their current rate
-          and protect them from future campaign edits.
+          This partner has no partner-wide <code>PartnerCommission</code> row, so programs
+          without their own terms below accrue at the program&rsquo;s live rate. Editing the
+          program post-conversion would re-price their accruals — set an override below to
+          grandfather their current rate and protect them from future program edits.
         </p>
       </Card>
     );
@@ -148,31 +186,189 @@ function Stat({ label, value, muted }: { label: string; value: string; muted?: b
   );
 }
 
-function EditCard({
+/** What a commission on this program pays, resolved the way the engine
+ *  does: program-scoped terms → partner-wide → the program's own rule.
+ *  Whichever terms win also set the holdback; terms that leave it blank
+ *  use the program's (API: EFFECTIVE_HOLDBACK_SQL). */
+function effectiveTerms(program: ProgramTerms, partnerWide: Snapshot | null) {
+  const terms = program.commission ?? partnerWide;
+  const source = program.commission ? 'program' : partnerWide ? 'partner' : 'rule';
+  const rules = terms ? snapshotRules(terms) : (program.commissionRule ?? []);
+  const holdbackDays = terms?.holdbackDays ?? program.holdbackDays;
+  return { source, rules, holdbackDays } as const;
+}
+
+const EFFECTIVE_LABEL = {
+  program: 'Program-specific terms',
+  partner: 'Partner-wide default',
+  rule: 'Program rule',
+} as const;
+
+function ProgramTermsList({
   partnerId,
-  current,
+  programs,
+  loading,
+  partnerWide,
   onSaved,
 }: {
   partnerId: string;
-  current: Snapshot | null;
+  programs: ProgramTerms[] | undefined;
+  loading: boolean;
+  partnerWide: Snapshot | null;
   onSaved: () => void;
 }) {
+  const isMobile = useIsMobile();
+  const [editing, setEditing] = useState<string | null>(null);
+  // Granted programs, plus any program that still has terms after its
+  // grant was revoked — so those can be seen and cleared.
+  const rows = (programs ?? []).filter((p) => p.granted || p.commission);
+
+  if (loading) return <Card>Loading…</Card>;
+  if (rows.length === 0) {
+    return (
+      <Card>
+        <p style={{ fontSize: 13, color: theme.textMuted, margin: 0, lineHeight: 1.5 }}>
+          This partner isn&rsquo;t granted any programs yet. Grant one on the Programs page to give it
+          its own terms.
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 14px', lineHeight: 1.5 }}>
+        Terms set here apply to that program only and win over the partner-wide default. Programs
+        without their own terms use the partner-wide default, or the program&rsquo;s rule when there
+        isn&rsquo;t one.
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {rows.map((p) => {
+          const eff = effectiveTerms(p, partnerWide);
+          const open = editing === p.id;
+          return (
+            <div
+              key={p.id}
+              style={{
+                padding: '10px 12px',
+                background: p.commission ? alpha(theme.success, 0.063) : theme.surface2,
+                border: `1px solid ${p.commission ? alpha(theme.success, 0.267) : theme.borderSubtle}`,
+                borderRadius: theme.radiusSm,
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: isMobile ? 'column' : 'row',
+                  alignItems: isMobile ? 'stretch' : 'center',
+                  gap: isMobile ? 8 : 12,
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 500 }}>
+                    {p.name}
+                    {!p.granted && (
+                      <span style={{ marginLeft: 8, fontSize: 11, color: theme.textMuted, fontWeight: 400 }}>
+                        not granted
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 2, lineHeight: 1.4 }}>
+                    <span style={{ color: theme.textDim }}>{EFFECTIVE_LABEL[eff.source]}:</span>{' '}
+                    {renderCommissionSummary(eff.rules)}
+                    {' · '}
+                    {eff.holdbackDays ? `${eff.holdbackDays}-day holdback` : 'no holdback'}
+                  </div>
+                </div>
+                <Button variant="secondary" onClick={() => setEditing(open ? null : p.id)}>
+                  {open ? 'Close' : p.commission ? 'Edit terms' : 'Set terms'}
+                </Button>
+              </div>
+              {open && (
+                <div style={{ marginTop: 12 }}>
+                  <EditCard
+                    scope="program"
+                    endpoint={`/partners/${partnerId}/programs/${p.id}/commission`}
+                    current={p.commission}
+                    fallbackRules={eff.rules.length > 0 ? eff.rules : DEFAULT_RULES}
+                    fallbackHoldback={eff.holdbackDays}
+                    onSaved={() => {
+                      setEditing(null);
+                      onSaved();
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+const SCOPE_COPY = {
+  partner: {
+    title: (hasCurrent: boolean) => (hasCurrent ? 'Edit override' : 'Set override'),
+    save: (hasCurrent: boolean) => (hasCurrent ? 'Update override' : 'Set override'),
+    clear: 'Clear override',
+    clearing: 'Clearing…',
+    confirm: 'Clear this partner’s partner-wide override? Programs without their own terms fall back to the live program rule.',
+    holdback: "Holdback (days, blank = program's)",
+    applies: 'this partner’s commissions on every program without its own terms accrue on the terms below',
+  },
+  program: {
+    title: (hasCurrent: boolean) => (hasCurrent ? 'Edit program terms' : 'Set program terms'),
+    save: () => 'Save program terms',
+    clear: 'Clear program terms',
+    clearing: 'Clearing…',
+    confirm: 'Clear this program’s terms? Its commissions fall back to the partner-wide default, or the program rule.',
+    holdback: "Holdback (days, blank = program's)",
+    applies: 'this partner’s commissions on this program accrue on the terms below, whatever the partner-wide default or program rule says',
+  },
+} as const;
+
+function EditCard({
+  scope,
+  endpoint,
+  current,
+  fallbackRules,
+  fallbackHoldback = null,
+  onSaved,
+}: {
+  scope: 'partner' | 'program';
+  endpoint: string;
+  current: Snapshot | null;
+  /** Editor's starting rules when there's no row yet. */
+  fallbackRules: CommissionSubRule[];
+  /** Editor's starting holdback when there's no row yet. Program terms
+   *  start from the holdback the program gets today, so saving them
+   *  doesn't silently drop a longer partner-wide holdback: a blank one
+   *  would mean the program's own. */
+  fallbackHoldback?: number | null;
+  onSaved: () => void;
+}) {
+  const copy = SCOPE_COPY[scope];
+  const startHoldback = () => {
+    const days = current ? current.holdbackDays : fallbackHoldback;
+    return days != null ? String(days) : '';
+  };
   // Edits the snapshot's full rule array. This form used to show only
   // the legacy single-rule columns and PUT without commissionRules, which
   // the API reads as "replace with a single rule" and clears the stored
   // array, so saving any edit silently dropped a partner's compound
   // terms (first-sale bonus, event filters, recurring caps).
-  const [rules, setRules] = useState<CommissionSubRule[]>(current ? snapshotRules(current) : DEFAULT_RULES);
-  const [holdback, setHoldback] = useState(
-    current?.holdbackDays != null ? String(current.holdbackDays) : '',
-  );
+  const [rules, setRules] = useState<CommissionSubRule[]>(current ? snapshotRules(current) : fallbackRules);
+  const [holdback, setHoldback] = useState(startHoldback);
 
   // Re-sync the form when the underlying snapshot changes (e.g. after
   // the user just saved). Without this the form would keep showing
-  // the pre-save values until a hard refresh.
+  // the pre-save values until a hard refresh. Keyed on `current` only:
+  // the fallbacks are recomputed each render.
   useEffect(() => {
-    setRules(current ? snapshotRules(current) : DEFAULT_RULES);
-    setHoldback(current?.holdbackDays != null ? String(current.holdbackDays) : '');
+    setRules(current ? snapshotRules(current) : fallbackRules);
+    setHoldback(startHoldback());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current]);
 
   const rulesInvalid =
@@ -185,7 +381,7 @@ function EditCard({
       // every-event rule, else the first rule); the engine reads
       // commissionRules.
       const summary = rules.find((r) => r.trigger === 'every') ?? rules[0]!;
-      return api(`/partners/${partnerId}/commission-snapshot`, {
+      return api(endpoint, {
         method: 'PUT',
         body: {
           commissionType: summary.type,
@@ -200,26 +396,22 @@ function EditCard({
   });
 
   const clear = useMutation({
-    mutationFn: () =>
-      api(`/partners/${partnerId}/commission-snapshot`, { method: 'DELETE' }),
+    mutationFn: () => api(endpoint, { method: 'DELETE' }),
     onSuccess: onSaved,
   });
 
   return (
     <Card>
-      <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>
-        {current ? 'Edit override' : 'Set override'}
-      </div>
+      <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>{copy.title(!!current)}</div>
       <p style={{ fontSize: 12, color: theme.textMuted, margin: '0 0 14px', lineHeight: 1.5 }}>
         Stamps a <code>PartnerCommission</code> row with{' '}
-        <code>source = &lsquo;amendment&rsquo;</code>. From the next conversion onward, this
-        partner&rsquo;s commissions accrue on the terms below regardless of the campaign rule.
+        <code>source = &lsquo;amendment&rsquo;</code>. From the next conversion onward, {copy.applies}.
         Past commissions aren&rsquo;t recomputed — only future events.
       </p>
       <ErrorBanner error={save.error ?? clear.error} />
       <CompoundRuleEditor rules={rules} onChange={setRules} />
       <div style={{ marginBottom: 14, maxWidth: 220 }}>
-        <Label>Holdback (days, blank = none)</Label>
+        <Label>{copy.holdback}</Label>
         <Input
           type="number"
           value={holdback}
@@ -227,15 +419,15 @@ function EditCard({
           placeholder="0"
         />
       </div>
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         <Button onClick={() => save.mutate()} disabled={save.isPending || rulesInvalid}>
-          {save.isPending ? 'Saving…' : current ? 'Update override' : 'Set override'}
+          {save.isPending ? 'Saving…' : copy.save(!!current)}
         </Button>
         {current && (
           <button
             type="button"
             onClick={() => {
-              if (confirm('Clear this partner’s override? They’ll fall back to the live campaign rule.')) {
+              if (confirm(copy.confirm)) {
                 clear.mutate();
               }
             }}
@@ -250,7 +442,7 @@ function EditCard({
               cursor: 'pointer',
             }}
           >
-            {clear.isPending ? 'Clearing…' : 'Clear override'}
+            {clear.isPending ? copy.clearing : copy.clear}
           </button>
         )}
       </div>

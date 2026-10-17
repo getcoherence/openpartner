@@ -25,19 +25,30 @@ import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 /** Bundle format version. Bumped when the table set or row shape changes.
  *  v1 → v2 (Aug 2026): added PartnerProgram, PartnerCommission, Coupon;
  *  every table now carries its real primary key instead of assuming `id`.
- *  v2 → v3 (Oct 2026): added PartnerNetworkConsent. */
-export const SCHEMA_VERSION = 3;
+ *  v2 → v3 (Oct 2026): PartnerCommission rows carry `id` (the new primary
+ *  key) and `programId` (null = partner-wide, set = one program).
+ *  v3 → v4 (Oct 2026): added PartnerNetworkConsent. */
+export const SCHEMA_VERSION = 4;
 /** Older bundles still import — a v1 bundle is a v2 bundle minus three
- *  tables, a v2 bundle a v3 bundle minus one. Dropping support for a
- *  version people hold on disk would break the portability promise, so
- *  this list only ever grows. */
-export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3] as const;
+ *  tables, a v2 bundle's PartnerCommission rows are partner-wide v3 rows
+ *  (see upgradeBundle), and a v3 bundle is a v4 bundle minus
+ *  PartnerNetworkConsent. Dropping support for a version people hold on
+ *  disk would break the portability promise, so this list only ever grows. */
+export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4] as const;
 
 export interface ExportTableSpec {
   table: string;
-  /** Conflict target for idempotent re-import. NOT always `id` —
-   *  PartnerCommission is keyed on partnerId (one snapshot per partner). */
+  /** The table's real primary key. NOT always `id` in general, so it's
+   *  looked up per table rather than assumed. */
   primaryKey: string;
+  /** What a re-imported row may collide on. 'primaryKey' (the default)
+   *  makes the primary key the ON CONFLICT target. 'any' skips a row that
+   *  collides with ANY unique constraint — for tables whose natural key is
+   *  a separate unique index: PartnerCommission allows one partner-wide
+   *  row per partner and one row per (partner, program), and a row with
+   *  a fresh id but a taken natural key must be skipped, not fail the
+   *  whole import. */
+  conflict?: 'primaryKey' | 'any';
 }
 
 /**
@@ -54,8 +65,9 @@ export const EXPORT_TABLES = [
   // silently shows partners with no programs.
   { table: TABLES.PartnerProgram, primaryKey: 'id' },
   // Snapshotted per-partner commission rules — the terms a partnership was
-  // agreed on. Keyed on partnerId, one row per partner.
-  { table: TABLES.PartnerCommission, primaryKey: 'partnerId' },
+  // agreed on. One partner-wide row (programId null) and/or one row per
+  // program, per partner.
+  { table: TABLES.PartnerCommission, primaryKey: 'id', conflict: 'any' },
   // Each partner's own OpenPartner Network opt-in: how and when they
   // consented, withdrew or declined. Keyed on partnerId, one row per
   // partner. Without it a restored instance would forget who agreed to
@@ -89,6 +101,46 @@ export const IMPORT_ORDER = EXPORT_TABLES;
 
 export function primaryKeyOf(table: string): string {
   return EXPORT_TABLES.find((s) => s.table === table)?.primaryKey ?? 'id';
+}
+
+function conflictModeOf(spec: ExportTableSpec): 'primaryKey' | 'any' {
+  return spec.conflict ?? 'primaryKey';
+}
+
+/**
+ * The id a pre-v3 PartnerCommission row gets. Must match the
+ * `'pcm_' || "partnerId"` backfill in migration
+ * 20261016000000_partner_commission_program_scope, so a bundle exported
+ * before that migration and imported after it gets the same ids the
+ * migrated instance has.
+ */
+export function legacyPartnerCommissionId(partnerId: string): string {
+  return `pcm_${partnerId}`;
+}
+
+/**
+ * Rewrite older rows into the current shape. Pure — returns a new bundle.
+ *
+ * PartnerCommission before program scoping (bundles up to v2): one row per
+ * partner, keyed on partnerId, applying to all of the partner's programs.
+ * That is exactly a partner-wide row today: `programId` null, plus the id
+ * the migration gave existing rows. (v1 bundles have no PartnerCommission.)
+ *
+ * Keyed on the row's shape (no `id`), not on the bundle's version number,
+ * so it stays right however versions are numbered — every row exported
+ * since the change carries a NOT NULL `id` and is left alone.
+ */
+export function upgradeBundle(bundle: ImportBundle): ImportBundle {
+  const rows = bundle[TABLES.PartnerCommission];
+  if (!Array.isArray(rows)) return bundle;
+  return {
+    ...bundle,
+    [TABLES.PartnerCommission]: rows.map((r) => {
+      const row = r as Record<string, unknown>;
+      if (row.id != null) return row;
+      return { ...row, id: legacyPartnerCommissionId(String(row.partnerId)), programId: null };
+    }),
+  };
 }
 
 export function isExportable(name: string): name is ExportableTable {
@@ -251,7 +303,8 @@ function commentSafe(v: string): string {
 /**
  * Render a bundle as a re-importable SQL dump.
  *
- * Every statement is `ON CONFLICT (pk) DO NOTHING`, so a restore is
+ * Every statement is `ON CONFLICT (pk) DO NOTHING` (bare `ON CONFLICT DO
+ * NOTHING` for a table whose spec says conflict: 'any'), so a restore is
  * idempotent and a partial-then-resumed restore works — the same
  * guarantee `importBundle` gives the JSON path. Tables are emitted in
  * IMPORT_ORDER so foreign keys resolve as the file is read top to bottom.
@@ -303,7 +356,9 @@ export function buildSqlDump(bundle: ImportBundle, opts: SqlDumpOptions = {}): s
   out.push(`SELECT set_config('app.tenant_id', ${tenantExpr}, true);`);
   out.push('');
 
-  for (const { table, primaryKey } of EXPORT_TABLES) {
+  for (const spec of EXPORT_TABLES as readonly ExportTableSpec[]) {
+    const { table, primaryKey } = spec;
+    const onConflict = conflictModeOf(spec) === 'any' ? 'ON CONFLICT DO NOTHING;' : `ON CONFLICT (${quoteIdent(primaryKey)}) DO NOTHING;`;
     const rows = (bundle[table] ?? []) as Record<string, unknown>[];
     if (rows.length === 0) {
       out.push(`-- ${table}: no rows`);
@@ -324,7 +379,7 @@ export function buildSqlDump(bundle: ImportBundle, opts: SqlDumpOptions = {}): s
       );
       out.push(`INSERT INTO ${quoteIdent(table)} (${columnList}) VALUES`);
       out.push(values.join(',\n'));
-      out.push(`ON CONFLICT (${quoteIdent(primaryKey)}) DO NOTHING;`);
+      out.push(onConflict);
     }
     out.push('');
   }
@@ -409,6 +464,9 @@ export interface ImportReport {
  * This is what lets a hosted-tier export ("acme" tenantId throughout)
  * round-trip into a self-host installation (default tenantId), satisfying
  * the data-portability commitment in CLAUDE.md.
+ *
+ * Rows from older bundles are upgraded to the current shape first
+ * (upgradeBundle).
  */
 export async function importBundle(
   db: Knex,
@@ -417,9 +475,11 @@ export async function importBundle(
 ): Promise<ImportReport> {
   const inserted: Record<string, number> = {};
   const skipped: Record<string, number> = {};
+  const current = upgradeBundle(bundle);
 
-  for (const { table, primaryKey } of IMPORT_ORDER) {
-    const rows = bundle[table];
+  for (const spec of IMPORT_ORDER as readonly ExportTableSpec[]) {
+    const { table, primaryKey } = spec;
+    const rows = current[table];
     if (!Array.isArray(rows) || rows.length === 0) continue;
 
     // Read the destination's column types once per table. Without this a
@@ -433,10 +493,10 @@ export async function importBundle(
 
     // The conflict target has to be the table's REAL primary key —
     // assuming `id` silently broke every table keyed on something else
-    // (PartnerCommission is keyed on partnerId).
-    const result = await db(table)
-      .insert(normalized)
-      .onConflict(primaryKey)
+    // (PartnerCommission was keyed on partnerId until schemaVersion 3).
+    // Tables with a separate natural key skip on any unique collision.
+    const insert = db(table).insert(normalized);
+    const result = await (conflictModeOf(spec) === 'any' ? insert.onConflict() : insert.onConflict(primaryKey))
       .ignore()
       .returning(primaryKey);
 

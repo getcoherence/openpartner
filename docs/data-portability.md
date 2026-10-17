@@ -14,7 +14,7 @@ that overstates itself is worse than one with a documented hole.
 ```json
 {
   "exportedAt": "2026-08-09T12:00:00.000Z",
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "tables": { "Partner": [ … ], "Program": [ … ], … }
 }
 ```
@@ -33,7 +33,7 @@ appears after everything it references.
 | 1 | `Partner` | `id` | the roster |
 | 2 | `Program` | `id` | programs + their commission rules |
 | 3 | `PartnerProgram` | `id` | **which partners may promote which programs** |
-| 4 | `PartnerCommission` | `partnerId` | **snapshotted per-partner terms** |
+| 4 | `PartnerCommission` | `id` | **snapshotted per-partner terms** (partner-wide or per-program) |
 | 5 | `PartnerNetworkConsent` | `partnerId` | **each partner's own OpenPartner Network opt-in** |
 | 6 | `Coupon` | `id` | **code → (partner, program) attribution** |
 | 7 | `Link` | `id` | tracking links |
@@ -50,25 +50,58 @@ Rows 3, 4 and 6 were added in schemaVersion 2 (Aug 2026). Without them a
 restored instance had the roster but no grants, no coupon attribution, and
 no record of what any partnership was actually agreed at.
 
-Row 5 was added in schemaVersion 3 (Oct 2026). It records whether each
+Row 5 was added in schemaVersion 4 (Oct 2026). It records whether each
 partner opted in to the OpenPartner Network, declined or withdrew, how
 (join page, portal prompt, portal setting, joined from a Network offering,
 or grandfathered from the old brand-level auto-enroll), and when. It is the
-partner's decision, not the brand's, so it travels with the roster. A v1
-or v2 bundle restores with no consent rows, so every restored partner
+partner's decision, not the brand's, so it travels with the roster. A v1,
+v2 or v3 bundle restores with no consent rows, so every restored partner
 starts undecided and nobody is sent to the Network until they opt in on
 the new instance.
 
-Note `PartnerCommission` and `PartnerNetworkConsent` are keyed on
-**`partnerId`**, not `id`: one row per partner. The importer looks the key
-up per table rather than assuming `id`.
+`PartnerCommission` rows carry a nullable `programId`. Null means the
+partner's partner-wide terms; a value means their terms for that one
+program (schemaVersion 3, Oct 2026). The table's natural key is one
+partner-wide row per partner and one row per (partner, program). Partial
+unique indexes enforce it, not the primary key. So both restore paths skip
+a `PartnerCommission` row that collides on **any** unique key, using a bare
+`ON CONFLICT DO NOTHING`, not just one that collides on `id`. Every other
+table conflicts on its primary key; `PartnerNetworkConsent` is keyed on
+**`partnerId`**, one row per partner. The importer looks the key up per
+table rather than assuming `id`.
 
 ### Versioning
 
 `SCHEMA_VERSION` is the current bundle version; `SUPPORTED_IMPORT_VERSIONS`
 is what `POST /import` accepts. **That list only ever grows.** A v1 bundle
-sitting on someone's disk keeps importing — it is simply a v3 bundle
+sitting on someone's disk keeps importing — it is simply a v4 bundle
 without the four tables added later.
+
+| Version | Change |
+|---|---|
+| 1 | original table set |
+| 2 (Aug 2026) | added `PartnerProgram`, `PartnerCommission`, `Coupon`; per-table primary keys |
+| 3 (Oct 2026) | `PartnerCommission` gains `id` (the new primary key; was `partnerId`) and `programId` |
+| 4 (Oct 2026) | added `PartnerNetworkConsent` |
+
+**Importing a v1 or v2 bundle.** `POST /import` upgrades older rows before
+inserting them (`upgradeBundle` in `apps/api/src/export.ts`). A v2
+`PartnerCommission` row applied to every program the partner was in, which
+is exactly what a v3 partner-wide row means. So it imports with
+`programId = null` and `id = 'pcm_' || partnerId`. That is the id the
+migration `20261016000000_partner_commission_program_scope` gave existing
+rows, so a bundle exported before the upgrade lines up row for row with the
+upgraded instance, and re-importing it changes nothing.
+
+**Restoring a v2 SQL dump.** A dump written before schemaVersion 3 ends its
+`PartnerCommission` statement with `ON CONFLICT ("partnerId") DO NOTHING`.
+`partnerId` is no longer unique on its own, so Postgres rejects the
+statement ("there is no unique or exclusion constraint matching the ON
+CONFLICT specification") and the whole restore rolls back. Change that one
+line to `ON CONFLICT DO NOTHING` and the dump restores. The rows become
+partner-wide terms, and `id` is filled by its column default. Alternatively,
+restore the same export's JSON bundle through `POST /import`, which needs
+no edit.
 
 ## Restoring
 
@@ -86,8 +119,9 @@ curl -X POST "$API/import" \
 
 Every row's `tenantId` is rewritten to the importing tenant — that's what
 lets an `acme` export land in a self-host `default` tenant. Inserts are
-`ON CONFLICT (pk) DO NOTHING`, so re-running is safe and a partial import
-can be resumed.
+`ON CONFLICT (pk) DO NOTHING` (a bare `ON CONFLICT DO NOTHING` for
+`PartnerCommission`, as described above), so re-running is safe and a
+partial import can be resumed.
 
 ### SQL — `GET /export.sql`
 
