@@ -33,6 +33,7 @@ const stripeApi = vi.hoisted(() => ({
   invoicesRetrieve: vi.fn(),
   checkoutSessionsRetrieve: vi.fn(),
   promotionCodesRetrieve: vi.fn(),
+  chargesRetrieve: vi.fn(),
 }));
 
 function resetStripeApi() {
@@ -42,6 +43,7 @@ function resetStripeApi() {
   stripeApi.invoicesRetrieve.mockReset().mockRejectedValue(new Error('unexpected invoices.retrieve'));
   stripeApi.checkoutSessionsRetrieve.mockReset().mockRejectedValue(new Error('unexpected checkout.sessions.retrieve'));
   stripeApi.promotionCodesRetrieve.mockReset().mockRejectedValue(new Error('unexpected promotionCodes.retrieve'));
+  stripeApi.chargesRetrieve.mockReset().mockRejectedValue(new Error('unexpected charges.retrieve'));
 }
 resetStripeApi();
 
@@ -65,6 +67,7 @@ vi.mock('stripe', async () => {
     (instance as unknown as { promotionCodes: unknown }).promotionCodes = {
       retrieve: stripeApi.promotionCodesRetrieve,
     };
+    (instance as unknown as { charges: unknown }).charges = { retrieve: stripeApi.chargesRetrieve };
     return instance;
   }
   // Preserve the static `webhooks` namespace for any direct imports.
@@ -387,6 +390,31 @@ describe.skipIf(skipIntegration)('stripe webhook — merchant billing flow', () 
     }
   });
 });
+
+// Every deployment but a single-tenant self-host. There the Stripe account
+// is OpenPartner's billing account (hosted) or shared by many brands
+// (multi-tenant self-host): its checkouts, invoices and charges aren't the
+// brand's end-customers'.
+const deployments = [
+  ['flat', 'multi'],
+  ['revshare', 'multi'],
+  ['flat', 'single'],
+  ['selfhost', 'multi'],
+] as const;
+
+async function inDeployment(mode: string, tenancy: string, fn: () => Promise<void>) {
+  process.env.OPENPARTNER_MODE = mode;
+  process.env.OPENPARTNER_TENANCY = tenancy;
+  try {
+    await fn();
+  } finally {
+    process.env.OPENPARTNER_MODE = 'selfhost';
+    process.env.OPENPARTNER_TENANCY = 'single';
+    await db(TABLES.Tenant)
+      .where({ id: DEFAULT_TENANT_ID })
+      .update({ stripeCustomerId: null, stripeSubscriptionId: null });
+  }
+}
 
 describe.skipIf(skipIntegration)('stripe webhook — coupon auto-redemption (single-tenant self-host)', () => {
   // A customer who typed a partner's code at checkout without ever clicking
@@ -786,30 +814,6 @@ describe.skipIf(skipIntegration)('stripe webhook — coupon auto-redemption (sin
   });
 
   describe('anywhere but a single-tenant self-host', () => {
-    // There the Stripe account is OpenPartner's billing account (hosted) or
-    // shared by many brands (multi-tenant self-host): its checkouts and
-    // invoices aren't the brand's end-customers'.
-    const deployments = [
-      ['flat', 'multi'],
-      ['revshare', 'multi'],
-      ['flat', 'single'],
-      ['selfhost', 'multi'],
-    ] as const;
-
-    async function inDeployment(mode: string, tenancy: string, fn: () => Promise<void>) {
-      process.env.OPENPARTNER_MODE = mode;
-      process.env.OPENPARTNER_TENANCY = tenancy;
-      try {
-        await fn();
-      } finally {
-        process.env.OPENPARTNER_MODE = 'selfhost';
-        process.env.OPENPARTNER_TENANCY = 'single';
-        await db(TABLES.Tenant)
-          .where({ id: DEFAULT_TENANT_ID })
-          .update({ stripeCustomerId: null, stripeSubscriptionId: null });
-      }
-    }
-
     it.each(deployments)(
       "%s/%s: the brand's own plan invoice, paid with a partner's code, credits no partner",
       (mode, tenancy) =>
@@ -1649,6 +1653,181 @@ describe.skipIf(skipIntegration)('stripe webhook — partial refund stopgap', ()
     const refundEvent = await db(TABLES.Event).where({ type: 'refund' }).first();
     expect((refundEvent!.metadata as { fullRefund?: boolean }).fullRefund).toBe(true);
   });
+});
+
+describe.skipIf(skipIntegration)('stripe webhook — disputes', () => {
+  // A Dispute names its charge and PaymentIntent, never a customer.
+  function disputeCreated(chargeId: string, paymentIntentId: string) {
+    return {
+      id: `evt_${ulid()}`,
+      type: 'charge.dispute.created',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: `dp_${ulid()}`,
+          object: 'dispute',
+          charge: chargeId,
+          payment_intent: paymentIntentId,
+          amount: 4900,
+          currency: 'usd',
+          reason: 'fraudulent',
+          status: 'needs_response',
+          metadata: {},
+        },
+      },
+    };
+  }
+
+  /** A guest one-time purchase as its revenue Event records it: invoice_paid
+   *  naming the PaymentIntent, under a user no Stripe Customer carries. */
+  async function seedGuestPurchase(paymentIntentId: string): Promise<string> {
+    const { clickId } = await seedClick();
+    const userId = `click:${clickId}`;
+    await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId, userId });
+    await db(TABLES.Event).insert({
+      id: ulid(),
+      tenantId: DEFAULT_TENANT_ID,
+      userId,
+      type: 'invoice_paid',
+      value: '49.00',
+      currency: 'USD',
+      externalEventId: `cs_${ulid()}`,
+      metadata: { checkoutMode: 'payment', stripePaymentIntentId: paymentIntentId },
+      ts: new Date(),
+    });
+    return userId;
+  }
+
+  it("a dispute on a stitched customer's charge records dispute_created and reverses nothing", async () => {
+    const { clickId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    const chargeId = `ch_${ulid()}`;
+    const paymentIntentId = `pi_${ulid()}`;
+    await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: { object: completedCheckout(customerId, clickId) },
+    });
+    await postWebhook(invoicePaid(customerId, { charge: chargeId }));
+    const invoicePaidEvent = await db(TABLES.Event).where({ type: 'invoice_paid' }).first();
+    const attributionIds = (await db(TABLES.Attribution).where({ eventId: invoicePaidEvent!.id })).map((a) => a.id);
+    const accrued = await db(TABLES.Commission).whereIn('attributionId', attributionIds).where({ status: 'accrued' });
+    expect(accrued.length).toBeGreaterThan(0);
+    stripeApi.chargesRetrieve.mockResolvedValue({
+      id: chargeId,
+      object: 'charge',
+      customer: customerId,
+      payment_intent: paymentIntentId,
+    });
+
+    const dispute = disputeCreated(chargeId, paymentIntentId);
+    const res = await postWebhook(dispute);
+
+    expect(res.status).toBe(200);
+    expect(res.body.corrective).toBe('dispute_created');
+    expect(stripeApi.chargesRetrieve).toHaveBeenCalledWith(chargeId);
+    const disputeEvents = await db(TABLES.Event).where({ type: 'dispute_created' });
+    expect(disputeEvents).toHaveLength(1);
+    expect(disputeEvents[0]).toMatchObject({ userId: customerId, currency: 'USD', externalEventId: dispute.id });
+    expect(Number(disputeEvents[0].value)).toBe(-49);
+    expect(disputeEvents[0].metadata).toMatchObject({
+      stripeDisputeId: dispute.data.object.id,
+      stripeChargeId: chargeId,
+      stripePaymentIntentId: paymentIntentId,
+      reason: 'fraudulent',
+      status: 'needs_response',
+    });
+
+    // Recorded for review, never acted on: disputes can be won. No
+    // attribution of the corrective Event, no commission touched.
+    expect(await db(TABLES.Attribution).where({ eventId: disputeEvents[0].id })).toHaveLength(0);
+    const after = await db(TABLES.Commission).whereIn('attributionId', attributionIds);
+    expect(after.map((c) => c.status)).toEqual(accrued.map(() => 'accrued'));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(dispatched('commission.reversed')).toHaveLength(0);
+
+    // A redelivery records nothing new.
+    const redelivery = await postWebhook(dispute);
+    expect(redelivery.status).toBe(200);
+    expect(redelivery.body.idempotent).toBe(true);
+    expect(await db(TABLES.Event).where({ type: 'dispute_created' })).toHaveLength(1);
+  });
+
+  it.each([
+    ['its charge has no customer', () => ({ object: 'charge', customer: null })],
+    ['its charge is gone (resource_missing)', () => stripeError('StripeInvalidRequestError', 'resource_missing')],
+  ])('a dispute of a guest one-time purchase resolves via its PaymentIntent when %s', async (_label, charge) => {
+    const paymentIntentId = `pi_${ulid()}`;
+    const guestUserId = await seedGuestPurchase(paymentIntentId);
+    const read = charge();
+    if (read instanceof Error) stripeApi.chargesRetrieve.mockRejectedValue(read);
+    else stripeApi.chargesRetrieve.mockResolvedValue(read);
+
+    const res = await postWebhook(disputeCreated(`ch_${ulid()}`, paymentIntentId));
+
+    expect(res.status).toBe(200);
+    expect(res.body.corrective).toBe('dispute_created');
+    expect(stripeApi.customersRetrieve).not.toHaveBeenCalled();
+    const disputeEvents = await db(TABLES.Event).where({ type: 'dispute_created' });
+    expect(disputeEvents).toHaveLength(1);
+    expect(disputeEvents[0].userId).toBe(guestUserId);
+    expect(disputeEvents[0].metadata).toMatchObject({ stripePaymentIntentId: paymentIntentId });
+  });
+
+  it('a dispute no partner referred is acknowledged 2xx and records nothing', async () => {
+    const chargeId = `ch_${ulid()}`;
+    const paymentIntentId = `pi_${ulid()}`;
+    stripeApi.chargesRetrieve.mockResolvedValue({
+      id: chargeId,
+      object: 'charge',
+      customer: `cus_${ulid()}`,
+      payment_intent: paymentIntentId,
+    });
+
+    const res = await postWebhook(disputeCreated(chargeId, paymentIntentId));
+
+    expect(res.status).toBe(200);
+    expect(res.body.skipped).toBe('charge.dispute.created');
+    expect(await db(TABLES.Event)).toHaveLength(0);
+  });
+
+  it('a transient charge read failure is a 500, so Stripe redelivers', async () => {
+    const paymentIntentId = `pi_${ulid()}`;
+    await seedGuestPurchase(paymentIntentId);
+    stripeApi.chargesRetrieve.mockRejectedValue(stripeError('StripeConnectionError'));
+
+    const res = await postWebhook(disputeCreated(`ch_${ulid()}`, paymentIntentId));
+
+    expect(res.status).toBe(500);
+    expect(await db(TABLES.Event).where({ type: 'dispute_created' })).toHaveLength(0);
+  });
+
+  it("a connected account's dispute stays unresolved", async () => {
+    const paymentIntentId = `pi_${ulid()}`;
+    await seedGuestPurchase(paymentIntentId);
+
+    const res = await postWebhook({ ...disputeCreated(`ch_${ulid()}`, paymentIntentId), account: 'acct_connected_test' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.reason).toBe('unresolved_tenant');
+    expect(stripeApi.chargesRetrieve).not.toHaveBeenCalled();
+    expect(await db(TABLES.Event).where({ type: 'dispute_created' })).toHaveLength(0);
+  });
+
+  it.each(deployments)('%s/%s: a dispute stays unresolved, with no Stripe read', (mode, tenancy) =>
+    inDeployment(mode, tenancy, async () => {
+      const paymentIntentId = `pi_${ulid()}`;
+      await seedGuestPurchase(paymentIntentId);
+
+      const res = await postWebhook(disputeCreated(`ch_${ulid()}`, paymentIntentId));
+
+      expect(res.status).toBe(200);
+      expect(res.body.reason).toBe('unresolved_tenant');
+      expect(stripeApi.chargesRetrieve).not.toHaveBeenCalled();
+      expect(await db(TABLES.Event).where({ type: 'dispute_created' })).toHaveLength(0);
+    }),
+  );
 });
 
 // --------------------------------------------------------------------------
