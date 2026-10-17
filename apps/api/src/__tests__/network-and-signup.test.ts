@@ -866,7 +866,7 @@ describe.skipIf(skipIntegration)('Network-access fee scope', () => {
       });
     }
 
-    expect(await aggregateNetworkOriginatedPayouts(db, null, new Date())).toBe(40);
+    expect(await aggregateNetworkOriginatedPayouts(db, null, new Date())).toEqual({ USD: 40 });
   });
 });
 

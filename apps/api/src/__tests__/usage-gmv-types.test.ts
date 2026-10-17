@@ -54,13 +54,13 @@ describe.skipIf(skipIntegration)('aggregateAttributedGmv billable types', () => 
   it('excludes a custom revenue type by default (the leak)', async () => {
     await seedAttributedEvent('order_paid', 100);
     const gmv = await aggregateAttributedGmv(db, null, new Date());
-    expect(gmv).toBe(0);
+    expect(gmv).toEqual({});
   });
 
   it('counts a custom revenue type when it is in the billable set', async () => {
     await seedAttributedEvent('order_paid', 100);
     await seedAttributedEvent('invoice_paid', 50);
     const gmv = await aggregateAttributedGmv(db, null, new Date(), ['invoice_paid', 'subscription_created', 'order_paid']);
-    expect(gmv).toBe(150);
+    expect(gmv).toEqual({ USD: 150 });
   });
 });

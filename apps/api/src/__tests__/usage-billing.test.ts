@@ -6,7 +6,7 @@
  * re-aggregating an overlapping window and double-billing.
  */
 
-import { afterAll, beforeEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ulid } from 'ulid';
 import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 
@@ -40,12 +40,19 @@ vi.mock('../stripe.js', async () => {
 const { db } = await import('../db.js');
 const { reportUsageToStripe } = await import('../usage-billing.js');
 const { getConfig, setConfig, CONFIG_KEYS } = await import('../config.js');
+const { ECB_DATE, USD_PER_INR, stubEcbFetch } = await import('./ecb-fixture.js');
+
+let ecb: import('./ecb-fixture.js').EcbStub | null = null;
+afterEach(() => {
+  ecb?.restore();
+  ecb = null;
+});
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 
 const CUSTOMER = 'cus_usage_test';
 
-async function seedGmv(value: number): Promise<void> {
+async function seedGmv(value: number, currency: string | null = 'USD'): Promise<void> {
   const partnerId = ulid();
   const programId = ulid();
   const linkId = ulid();
@@ -58,7 +65,7 @@ async function seedGmv(value: number): Promise<void> {
   });
   await db(TABLES.Link).insert({ id: linkId, tenantId: DEFAULT_TENANT_ID, partnerId, programId, linkKey: `lk-${linkId}`, destinationUrl: 'https://x/' });
   await db(TABLES.Click).insert({ id: clickId, tenantId: DEFAULT_TENANT_ID, linkId, partnerId, programId, landingUrl: 'https://x/', ipHash: 'h', ts: new Date() });
-  await db(TABLES.Event).insert({ id: eventId, tenantId: DEFAULT_TENANT_ID, userId: `u-${eventId}`, type: 'invoice_paid', value: value.toFixed(2), currency: 'USD', ts: new Date() });
+  await db(TABLES.Event).insert({ id: eventId, tenantId: DEFAULT_TENANT_ID, userId: `u-${eventId}`, type: 'invoice_paid', value: value.toFixed(2), currency, ts: new Date() });
   await db(TABLES.Attribution).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, eventId, partnerId, programId, clickId, model: 'last_click', weight: '1', computedAt: new Date() });
 }
 
@@ -148,5 +155,100 @@ describe.skipIf(skipIntegration)('reportUsageToStripe exactly-once', () => {
     expect(await getConfig(db, DEFAULT_TENANT_ID, CONFIG_KEYS.PendingUsageReport)).toBeNull();
     // Mark advanced past the abandoned window so the tenant isn't stuck.
     expect(await getConfig(db, DEFAULT_TENANT_ID, CONFIG_KEYS.LastUsageReportedAt)).toBe(staleEnd);
+  });
+});
+
+describe.skipIf(skipIntegration)('reportUsageToStripe currencies', () => {
+  it('meters INR at the ECB rate instead of adding it as dollars', async () => {
+    // The Oct 17 verification mix, which was metered as $1,108,377.
+    ecb = stubEcbFetch('ok');
+    await seedGmv(963_377, 'INR');
+    await seedGmv(85_000, 'USD');
+    await seedGmv(60_000, 'inr');
+
+    const res = await reportUsageToStripe(db, DEFAULT_TENANT_ID);
+    expect(res.reported).toBe(true);
+    expect(res.gmvByCurrency).toEqual({ INR: 1_023_377, USD: 85_000 });
+    // 85,000 + 1,023,377 × 0.0125 = 97,792.2125
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]!.value).toBe('97792.21');
+    expect(res.amount).toBe(97_792.21);
+    expect(res.fx).toEqual({ source: 'ecb', date: ECB_DATE, usdPerUnit: { INR: expect.closeTo(USD_PER_INR, 12) } });
+    expect(res.heldOut).toBeUndefined();
+  });
+
+  it('counts a null-currency event as USD and never reads the feed for USD-only GMV', async () => {
+    ecb = stubEcbFetch('down');
+    await seedGmv(40, null);
+    await seedGmv(2, 'usd');
+    const res = await reportUsageToStripe(db, DEFAULT_TENANT_ID);
+    expect(res.reported).toBe(true);
+    expect(h.calls[0]!.value).toBe('42.00');
+    expect(ecb.calls()).toBe(0);
+  });
+
+  it('skips the run and keeps the window when the rate feed is down', async () => {
+    ecb = stubEcbFetch('down');
+    await seedGmv(500, 'INR');
+    await seedGmv(10, 'USD');
+
+    const skipped = await reportUsageToStripe(db, DEFAULT_TENANT_ID);
+    expect(skipped.reported).toBe(false);
+    expect(skipped.reason).toBe('fx_rates_unavailable');
+    expect(h.calls).toHaveLength(0);
+    expect(await getConfig(db, DEFAULT_TENANT_ID, CONFIG_KEYS.LastUsageReportedAt)).toBeNull();
+    expect(await getConfig(db, DEFAULT_TENANT_ID, CONFIG_KEYS.PendingUsageReport)).toBeNull();
+
+    // Feed back: the next run bills the same window, once.
+    ecb.restore();
+    ecb = stubEcbFetch('ok');
+    const res = await reportUsageToStripe(db, DEFAULT_TENANT_ID);
+    expect(res.reported).toBe(true);
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]!.value).toBe('16.25');
+    expect(h.calls[0]!.identifier).toMatch(/-genesis$/);
+  });
+
+  it('holds out a currency with no reference rate, meters the rest, and moves on', async () => {
+    ecb = stubEcbFetch('ok');
+    await seedGmv(100, 'USD');
+    await seedGmv(700, 'AED');
+    const res = await reportUsageToStripe(db, DEFAULT_TENANT_ID);
+    expect(res.reported).toBe(true);
+    expect(h.calls[0]!.value).toBe('100.00');
+    expect(res.heldOut).toEqual({ AED: 700 });
+    expect(await getConfig(db, DEFAULT_TENANT_ID, CONFIG_KEYS.LastUsageReportedAt)).toBe(res.rangeEnd.toISOString());
+  });
+
+  it('meters nothing when every currency is held out', async () => {
+    ecb = stubEcbFetch('ok');
+    await seedGmv(700, 'AED');
+    const res = await reportUsageToStripe(db, DEFAULT_TENANT_ID);
+    expect(res.reported).toBe(false);
+    expect(res.reason).toBe('only GMV with no reference rate in range');
+    expect(res.heldOut).toEqual({ AED: 700 });
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('freezes the rates with the report, so crash recovery resends without the feed', async () => {
+    ecb = stubEcbFetch('ok');
+    await seedGmv(800, 'INR');
+    h.failNext = true;
+    await expect(reportUsageToStripe(db, DEFAULT_TENANT_ID)).rejects.toThrow();
+    const pending = await getConfig<{ amount: number; gmvByCurrency: unknown; fx: { date: string } }>(
+      db,
+      DEFAULT_TENANT_ID,
+      CONFIG_KEYS.PendingUsageReport,
+    );
+    expect(pending).toMatchObject({ amount: 10, gmvByCurrency: { INR: 800 }, fx: { date: ECB_DATE } });
+
+    ecb.restore();
+    ecb = stubEcbFetch('down');
+    const res = await reportUsageToStripe(db, DEFAULT_TENANT_ID);
+    expect(res.reported).toBe(true);
+    expect(h.calls).toHaveLength(2);
+    expect(h.calls[1]).toEqual(h.calls[0]);
+    expect(h.calls[1]!.value).toBe('10.00');
+    expect(res.fx).toMatchObject({ date: ECB_DATE });
   });
 });
