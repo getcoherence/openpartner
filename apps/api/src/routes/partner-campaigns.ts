@@ -73,7 +73,7 @@ partnerCampaignsRouter.get('/partners/:id/programs', requireAuth, requireAdmin, 
   res.json({ programs: result });
 });
 
-const addSchema = z.object({
+export const addSchema = z.object({
   programIds: z.array(z.string().min(1)).min(1),
 });
 

@@ -1,0 +1,11 @@
+{
+  "name": "openpartner-in-app-referral-example",
+  "private": true,
+  "description": "Minimal in-app referral page on the OpenPartner API. Not part of the pnpm workspace.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "setup": "node setup.mjs",
+    "start": "node server.mjs"
+  }
+}

@@ -31,7 +31,7 @@ import { EFFECTIVE_HOLDBACK_SQL } from '../partner-commission.js';
  * page. Ordered accruedAt DESC, id DESC — same keyset scheme as
  * GET /partners (see pagination.ts).
  */
-const listQuerySchema = z.object({
+export const listQuerySchema = z.object({
   status: z.enum(['accrued', 'approved', 'paid', 'reversed']).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional().default(100),
   cursor: z.string().optional(),

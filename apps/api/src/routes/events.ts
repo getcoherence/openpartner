@@ -7,7 +7,7 @@ import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import { sameConversion, storedAttribution } from '../conversion-ingest.js';
 import { tenantOf } from '../tenancy.js';
 
-const schema = z.object({
+export const schema = z.object({
   userId: z.string().min(1),
   type: z.string().min(1),
   value: z.number().nonnegative().optional(),

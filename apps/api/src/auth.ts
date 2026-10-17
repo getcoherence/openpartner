@@ -55,6 +55,22 @@ export function hashKey(plaintext: string): string {
   return createHash('sha256').update(plaintext).digest('hex');
 }
 
+/**
+ * 400 for a tenant-scoped route reached without a resolved tenant — on a
+ * multi-tenant install, a URL missing (or misplacing) /t/<slug>. Shared by
+ * requireAuth and the unauthenticated tenant routes (identify).
+ *
+ * The slug goes right after /api: the hosted ingress routes /api/* to this
+ * service, so /t/<slug>/api/* lands on the static portal and never gets here.
+ */
+export function sendTenantSlugMissing(res: Response): void {
+  res.status(400).json({
+    error: 'tenant_slug_missing',
+    detail:
+      'This API request did not pass through tenant resolution. On multi-tenant installs, include the tenant slug right after /api: /api/t/<your-slug>/... (or /t/<your-slug>/... when calling the API service directly).',
+  });
+}
+
 export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   // Multi-tenant requests need to come in under /t/<slug>/ so the
   // tenant middleware fires and sets req.db. Without that, every
@@ -64,11 +80,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   // callers — Zapier, CRM webhooks, raw curl — get an actionable
   // hint about the missing prefix.
   if (!req.db) {
-    res.status(400).json({
-      error: 'tenant_slug_missing',
-      detail:
-        'This API request did not pass through tenant resolution. On multi-tenant installs, include the tenant slug in the URL: /t/<your-slug>/api/...',
-    });
+    sendTenantSlugMissing(res);
     return;
   }
   const principal = await resolvePrincipal(req);
@@ -88,14 +100,23 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
   next();
 }
 
+// Guard tags the OpenAPI drift test (__tests__/openapi.test.ts) reads off a
+// route's middleware chain. It can't compare functions by identity:
+// express-async-errors wraps every route handler (copying own properties).
+Object.assign(requireAuth, { guard: 'requireAuth' });
+Object.assign(requireAdmin, { guard: 'requireAdmin' });
+
 export function requirePartnerOrAdmin(paramName: string = 'id') {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  const guard = (req: Request, res: Response, next: NextFunction): void => {
     const p = req.principal;
     if (!p) return void res.status(401).json({ error: 'unauthorized' });
     if (p.role === 'admin') return next();
     if (p.role === 'partner' && p.partnerId === req.params[paramName]) return next();
     res.status(403).json({ error: 'forbidden' });
   };
+  // Read by the OpenAPI drift test (__tests__/openapi.test.ts) to check the
+  // documented access rule against the route's real middleware chain.
+  return Object.assign(guard, { partnerParam: paramName });
 }
 
 async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
@@ -187,7 +208,7 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
  * scopes — just add `grantScope('x:y')` to the routes federation reaches.
  */
 export function grantScope(scope: string) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  const grant = (req: Request, res: Response, next: NextFunction): void => {
     const p = req.principal;
     if (!p || p.role !== 'scoped') return next();
     if (!p.scopes.includes(scope)) {
@@ -197,6 +218,9 @@ export function grantScope(scope: string) {
     req.principal = { role: 'admin', source: 'db', apiKeyId: p.apiKeyId };
     next();
   };
+  // Read by the OpenAPI drift test, which checks every documented scope
+  // against the grantScope on the route it describes.
+  return Object.assign(grant, { grantsScope: scope });
 }
 
 function constantTimeEqual(a: string, b: string): boolean {

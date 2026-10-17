@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Refer &amp; earn</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --border: #e3e6ea;
+    --text: #15181d;
+    --muted: #5d6673;
+    --accent: #0f766e;
+    --accent-ink: #ffffff;
+    --pending: #a15c07;
+    --ok: #15803d;
+    --bad: #b42318;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216;
+      --surface: #171b21;
+      --border: #2a3039;
+      --text: #e8ebef;
+      --muted: #98a2b0;
+      --accent: #2dd4bf;
+      --accent-ink: #062a26;
+      --pending: #f5b453;
+      --ok: #4ade80;
+      --bad: #f87171;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 880px; margin: 0 auto; padding: 32px 16px 64px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  h1 { font-size: 26px; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  .muted { color: var(--muted); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  .share { display: flex; gap: 8px; flex-wrap: wrap; }
+  .share input { flex: 1 1 260px; min-width: 0; font: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+  button { font: inherit; font-weight: 600; padding: 10px 16px; border-radius: 8px; border: 0; background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--border); font-weight: 500; padding: 6px 12px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .stat .label { color: var(--muted); font-size: 13px; }
+  .stat .value { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  td.num, th.num { text-align: right; }
+  .pill { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; }
+  .s-accrued, .s-approved, .s-pending, .s-processing { color: var(--pending); }
+  .s-paid { color: var(--ok); }
+  .s-reversed, .s-failed { color: var(--bad); }
+  .empty { color: var(--muted); font-size: 14px; margin: 0; }
+  .error { color: var(--bad); }
+  footer { color: var(--muted); font-size: 13px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Refer &amp; earn</h1>
+      <div class="muted" id="who">Loading…</div>
+    </div>
+    <div class="muted" style="font-size:13px">Demo user: <a href="/?as=ada@example.com">Ada</a> · <a href="/?as=grace@example.com">Grace</a></div>
+  </header>
+
+  <section class="card">
+    <h2>Your referral link</h2>
+    <p class="muted" style="margin:0 0 12px">Share it. When someone signs up and pays, you earn a commission.</p>
+    <div class="share">
+      <input id="share" readonly aria-label="Your referral link" value="">
+      <button id="copy" type="button">Copy link</button>
+    </div>
+  </section>
+
+  <section class="stats" id="stats" aria-label="Your referral stats"></section>
+
+  <section class="card" style="margin-top:16px">
+    <h2>Earnings</h2>
+    <div class="table-wrap" id="commissions"></div>
+  </section>
+
+  <section class="card">
+    <h2>Payouts</h2>
+    <div class="table-wrap" id="payouts"></div>
+  </section>
+
+  <footer>
+    <span id="refreshed"></span>
+    <button class="secondary" id="refresh" type="button">Refresh</button>
+  </footer>
+</main>
+
+<script type="module">
+  const $ = (id) => document.getElementById(id);
+  const money = (amount, currency) =>
+    new Intl.NumberFormat(undefined, { style: 'currency', currency: currency || 'USD' }).format(Number(amount) || 0);
+  const date = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { dateStyle: 'medium' }) : '');
+
+  function el(tag, props = {}, ...children) {
+    const node = Object.assign(document.createElement(tag), props);
+    node.append(...children);
+    return node;
+  }
+
+  function table(rows, columns, emptyText) {
+    if (rows.length === 0) return el('p', { className: 'empty', textContent: emptyText });
+    return el(
+      'table',
+      {},
+      el('thead', {}, el('tr', {}, ...columns.map((c) => el('th', { className: c.num ? 'num' : '', textContent: c.label })))),
+      el('tbody', {}, ...rows.map((r) => el('tr', {}, ...columns.map((c) => el('td', { className: c.num ? 'num' : '' }, c.render(r)))))),
+    );
+  }
+
+  const pill = (status) => el('span', { className: `pill s-${status}`, textContent: status });
+
+  // One line per currency; amounts in different currencies are never added.
+  const moneyByCurrency = (totals, key) => {
+    const parts = Object.entries(totals)
+      .filter(([, t]) => t[key] > 0)
+      .map(([currency, t]) => money(t[key], currency));
+    return parts.length ? parts.join(' + ') : money(0, Object.keys(totals)[0] || 'USD');
+  };
+
+  function render(view) {
+    $('who').textContent = `Signed in as ${view.user.name}`;
+    $('share').value = view.shareUrl;
+    const s = view.stats;
+    const tiles = [
+      ['Clicks', s.clicks.toLocaleString()],
+      ['Sign-ups', s.signups.toLocaleString()],
+      ['Payments', s.payments.toLocaleString()],
+      ['Pending earnings', moneyByCurrency(view.totals, 'pending')],
+      // In a payout that hasn't been sent yet.
+      ['Processing', moneyByCurrency(view.totals, 'processing')],
+      ['Paid out', moneyByCurrency(view.totals, 'paidOut')],
+    ];
+    $('stats').replaceChildren(
+      ...tiles.map(([label, value]) => el('div', { className: 'stat' }, el('div', { className: 'label', textContent: label }), el('div', { className: 'value', textContent: value }))),
+    );
+    $('commissions').replaceChildren(
+      table(
+        view.commissions,
+        [
+          { label: 'Date', render: (c) => date(c.accruedAt) },
+          { label: 'Status', render: (c) => pill(c.status) },
+          { label: 'Available', render: (c) => (c.status === 'accrued' && c.matureAt ? date(c.matureAt) : '') },
+          { label: 'Amount', num: true, render: (c) => money(c.amount, c.currency) },
+        ],
+        'No earnings yet. They appear here when someone you referred pays.',
+      ),
+    );
+    $('payouts').replaceChildren(
+      table(
+        view.payouts,
+        [
+          { label: 'Date', render: (p) => date(p.completedAt || p.createdAt) },
+          { label: 'Status', render: (p) => pill(p.status) },
+          { label: 'Amount', num: true, render: (p) => money(p.amount, p.currency) },
+        ],
+        'No payouts yet.',
+      ),
+    );
+    $('refreshed').textContent = `Updated ${new Date(view.refreshedAt).toLocaleTimeString()}${view.stale ? ' (couldn’t refresh just now)' : ''}`;
+  }
+
+  async function load(refresh = false) {
+    try {
+      const res = await fetch(`/api/referral${refresh ? '?refresh=1' : ''}`, { credentials: 'same-origin' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      render(await res.json());
+    } catch (err) {
+      $('who').replaceChildren(el('span', { className: 'error', textContent: 'Your referral details are unavailable right now. Try again shortly.' }));
+      console.error(err);
+    }
+  }
+
+  $('copy').addEventListener('click', async () => {
+    await navigator.clipboard.writeText($('share').value);
+    $('copy').textContent = 'Copied';
+    setTimeout(() => ($('copy').textContent = 'Copy link'), 1500);
+  });
+  $('refresh').addEventListener('click', () => load(true));
+  load();
+</script>
+</body>
+</html>

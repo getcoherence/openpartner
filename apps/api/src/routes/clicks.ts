@@ -22,7 +22,7 @@ import { TABLES, type ClickRow, type LinkRow } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 
-const ingestSchema = z.object({
+export const ingestSchema = z.object({
   /** ULID minted by the federating caller (Network). Replays carry the
    *  same id so we can dedupe via the unique primary key. */
   id: z.string().min(20).max(40),

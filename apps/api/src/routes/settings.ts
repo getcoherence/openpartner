@@ -449,7 +449,7 @@ async function blockNetworkForWhiteLabel(
   return false;
 }
 
-const networkMembershipSchema = z.object({
+export const networkMembershipSchema = z.object({
   enabled: z.boolean().optional(),
   networkUrl: z.string().url().optional().or(z.literal('')),
   /** Plaintext bearer issued by the Network on /vendors/register. Undefined keeps existing. */

@@ -30,6 +30,7 @@ import { adminSigninEmail, buildMagicLinkUrl, partnerSigninEmail } from '../emai
 import { linkTenantOf } from '../portal-url.js';
 import { tenantOf } from '../tenancy.js';
 import { isPendingReview } from '../partner-review.js';
+import type { WebhookPayload } from '../openapi/webhook-events.js';
 
 export const partnerAuthRouter = Router();
 
@@ -155,7 +156,7 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
       email: partner.email,
       name: partner.name,
       activatedAt: new Date().toISOString(),
-    });
+    } satisfies WebhookPayload<'partner.activated'>);
   }
 
   const session = await createSession(db, { tenantId, principalKind: 'partner', principalId: partner.id });

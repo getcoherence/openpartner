@@ -62,6 +62,7 @@ import { REVSHARE_FEE_BPS, type OpenPartnerMode } from './stripe.js';
 import type { PayoutTransferMeta } from './payout-transfers.js';
 import { getTenantBillingState } from './billing-plan.js';
 import { dispatchEvent } from './webhook-dispatcher.js';
+import type { WebhookPayload } from './openapi/webhook-events.js';
 import { dispatchCommissionEvents } from './commission-events.js';
 import { fundingEnabled, tryTenantPayoutLock } from './funding/state.js';
 import {
@@ -109,15 +110,7 @@ export interface PayoutRunResult {
  *  for each commission it paid. */
 export interface PendingPayoutNotification {
   /** The payout.created payload, exactly as dispatched. */
-  payout: {
-    payoutId: string;
-    partnerId: string;
-    amount: string;
-    currency: string;
-    method: PayoutMethod;
-    commissionIds: string[];
-    platformFee?: number;
-  };
+  payout: WebhookPayload<'payout.created'>;
   commissions: Array<Pick<CommissionRow, 'id' | 'partnerId' | 'attributionId' | 'amount' | 'currency'>>;
 }
 

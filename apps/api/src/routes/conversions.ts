@@ -29,7 +29,7 @@ import { tenantOf } from '../tenancy.js';
  */
 export const conversionsRouter = Router();
 
-const conversionSchema = z.object({
+export const conversionSchema = z.object({
   clickId: z.string().min(1).max(64),
   type: z.string().min(1).max(255),
   value: z.number().nonnegative().optional(),

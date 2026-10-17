@@ -160,7 +160,7 @@ function coverUrlProblem(tenantId: string, url: string | null | undefined) {
   };
 }
 
-const createSchema = z.object({
+export const createSchema = z.object({
   name: z.string().min(1),
   commissionRule: commissionRuleSchema,
   attributionWindowDays: z.number().int().min(1).max(365).optional(),
@@ -214,7 +214,7 @@ const createSchema = z.object({
   grantToAllPartners: z.boolean().optional(),
 });
 
-const updateSchema = z.object({
+export const updateSchema = z.object({
   name: z.string().min(1).optional(),
   commissionRule: commissionRuleSchema.optional(),
   attributionWindowDays: z.number().int().min(1).max(365).optional(),

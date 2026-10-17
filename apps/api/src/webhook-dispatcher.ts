@@ -154,7 +154,11 @@ export async function sendTest(
 /** Sample payload bodies for each known event type — shape-matches
  *  what real fires from attribution.ts / payouts.ts / commissions.ts
  *  produce, so a Zap built against a synthetic sample works
- *  identically against real events. Keys with no entry fall through
+ *  identically against real events. __tests__/openapi.test.ts parses
+ *  each one against the documented catalogue (openapi/webhook-events.ts),
+ *  which the contract test checks against real deliveries — event values
+ *  are decimal strings there, as Event.value comes back from Postgres.
+ *  Keys with no entry fall through
  *  to the generic webhook.test body (useful when an admin wants to
  *  test a custom event type they're firing themselves). */
 const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
@@ -167,9 +171,8 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     model: 'last_click',
     weight: 1,
     eventType: 'invoice_paid',
-    eventValue: 60.0,
+    eventValue: '60.00',
     commissionId: `01J${'0'.repeat(23)}`,
-    commissionAmount: '12.00',
     commissionCurrency: 'USD',
   }),
   'commission.accrued': () => ({
@@ -182,7 +185,7 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     amount: '12.00',
     currency: 'USD',
     eventType: 'invoice_paid',
-    eventValue: 60.0,
+    eventValue: '60.00',
   }),
   // Lifecycle events share commission-events.ts's payload shape.
   'commission.approved': () => sampleLifecyclePayload(),
@@ -214,7 +217,8 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     partnerId: `01J${'1'.repeat(23)}`,
     amount: '120.00',
     currency: 'USD',
-    commissionCount: 10,
+    method: 'manual',
+    commissionIds: [`01J${'0'.repeat(23)}`],
   }),
 };
 
@@ -233,7 +237,7 @@ function sampleLifecyclePayload(extra: Record<string, unknown> = {}): Record<str
   };
 }
 
-function payloadFor(eventType: string, endpointId: string): Record<string, unknown> {
+export function payloadFor(eventType: string, endpointId: string): Record<string, unknown> {
   const factory = SYNTHETIC_PAYLOADS[eventType];
   if (factory) {
     return { ...factory(), _synthetic: true, _endpointId: endpointId };

@@ -6,7 +6,7 @@ import { grantScope, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { destinationUrlSchema } from '../destination-url.js';
 
-const createSchema = z.object({
+export const createSchema = z.object({
   linkKey: z
     .string()
     .min(3)

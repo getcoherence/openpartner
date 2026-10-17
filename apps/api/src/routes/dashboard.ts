@@ -144,7 +144,7 @@ dashboardRouter.get('/partners/:id/dashboard', requireAuth, grantScope('partners
 // creator portal scopes the chart correctly. The Network forwards the
 // programId from Partnership.offering.vendorProgramId.
 
-const timeseriesQuerySchema = z.object({
+export const timeseriesQuerySchema = z.object({
   since: z.string().datetime().optional(),
   until: z.string().datetime().optional(),
   programId: z.string().min(1).optional(),
@@ -307,7 +307,7 @@ function bucketKey(d: Date): string {
 // this partner, newest first. Includes Click context (linkKey, referer)
 // and Attribution weight so the partner can see why they were credited.
 
-const eventsQuerySchema = z.object({
+export const eventsQuerySchema = z.object({
   programId: z.string().min(1).optional(),
   type: z.string().min(1).max(80).optional(),
   since: z.string().datetime().optional(),
@@ -410,7 +410,7 @@ dashboardRouter.get(
 // first-touch click + lifetime attributed revenue. Useful for the
 // Customers tab where a creator wants to see who they brought in.
 
-const customersQuerySchema = z.object({
+export const customersQuerySchema = z.object({
   programId: z.string().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
   offset: z.coerce.number().int().min(0).optional(),
@@ -502,7 +502,7 @@ const DIMENSION_COLUMN: Record<SqlDimension, string> = {
 
 const DEFAULT_UA_SAMPLE_LIMIT = 5000;
 
-const breakdownQuerySchema = z.object({
+export const breakdownQuerySchema = z.object({
   dimension: z.enum([...SQL_DIMENSIONS, ...UA_DIMENSIONS] as [AnyDimension, ...AnyDimension[]]),
   programId: z.string().min(1).optional(),
   since: z.string().datetime().optional(),
