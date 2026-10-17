@@ -3,7 +3,7 @@
   "info": {
     "title": "OpenPartner API",
     "version": "1.0.0",
-    "description": "The OpenPartner tenant API: partners, programs, links, attribution, commissions, payouts, reporting, webhooks and export. Use it to run a referral or affiliate program from your own backend, for example an in-app \"Refer & earn\" page with no separate OpenPartner login. Walkthrough: [Build an in-app referral page](https://github.com/getcoherence/openpartner/blob/main/docs/headless-referral.md).\n\nThis document is generated from the API's own request validators. It is served at `/openapi.json`, and the rendered reference at `/docs`, on every deployment. White-label custom domains don't serve them; use the platform host, e.g. `https://app.openpartner.dev/api/docs`.\n\n## Base URL and tenancy\n\nEvery path below is relative to your tenant's API base:\n\n| Deployment | API base | Share links |\n| --- | --- | --- |\n| OpenPartner Cloud | `https://app.openpartner.dev/api/t/<tenant-slug>` | `https://app.openpartner.dev/r/<tenant-slug>/<linkKey>` |\n| Cloud with a white-label domain | `https://<your-domain>/api` | `https://<your-domain>/r/<linkKey>` |\n| Self-hosted, single tenant | your API origin, e.g. `https://api.example.com` (or `<portal>/api` behind the bundled proxy) | `<router origin>/r/<linkKey>` |\n| Self-hosted, multi-tenant | `<api origin>/t/<tenant-slug>` (or `<portal>/api/t/<tenant-slug>`) | `<router origin>/r/<tenant-slug>/<linkKey>` |\n\nThe slug comes **after** `/api`. `https://app.openpartner.dev/t/<slug>/api/...` reaches the portal's static site, not the API, and returns HTML. On a multi-tenant deployment a request with no `/t/<slug>` prefix fails with `400 tenant_slug_missing`, and an unknown slug gets a plain `404`. Your slug is the `/t/<slug>/` segment in your admin portal's address.\n\nKeys minted through the API are bound to their tenant. A key sent to another tenant's path is `401 unauthorized`.\n\n## Authentication\n\nSend a key as a bearer token: `Authorization: Bearer op_…`. Keys are server-side credentials: never ship one to a browser or mobile app. There are three kinds:\n\n- **Admin key.** Unscoped, full access to the tenant. Minted with `POST /api-keys`, or the deployment's `ADMIN_API_KEY` (self-host). The admin portal's session cookie is accepted wherever an admin key is.\n- **Scoped key.** Minted with `POST /api-keys/scoped` and a list of scopes. It can call only the operations its scopes unlock, and it acts on any partner in the tenant. Calling something it lacks the scope for returns `403 forbidden_scope` with the `required` scope; calling an operation with no scope returns `403 forbidden`. Use one for every integration so a leaked key can't do everything.\n- **Partner key.** Minted with `POST /partners/{id}/api-keys` by an admin or the partner. It acts as that one partner and can only reach that partner's own resources (`/partners/{its id}/…`). Revoking the partner revokes its keys.\n\nEach operation says which of these it accepts. Scopes:\n\n| Scope | Unlocks |\n| --- | --- |\n| `clicks:write` | `POST /clicks` |\n| `commissions:read` | `GET /partners/{id}/commissions`<br>`GET /commissions` |\n| `events:write` | `POST /attribution/events`<br>`POST /coupons/redeem` |\n| `links:read` | `GET /partners/{id}/links` |\n| `links:write` | `POST /partners/{id}/links` |\n| `partners:read` | `GET /partners`<br>`GET /partners/{id}`<br>`GET /partners/{id}/dashboard`<br>`GET /partners/{id}/timeseries`<br>`GET /partners/{id}/events`<br>`GET /partners/{id}/customers`<br>`GET /partners/{id}/breakdowns` |\n| `partners:write` | `POST /partners`<br>`POST /import/partners-csv`<br>`POST /partners/{id}/invite`<br>`POST /partners/{id}/revoke`<br>`POST /partners/{id}/coupons`<br>`DELETE /partners/{id}/coupons/{couponId}` |\n| `payouts:read` | `GET /partners/{id}/payouts` |\n| `webhooks:write` | `POST /webhooks`<br>`DELETE /webhooks/{id}` |\n\n`partners:read` also unlocks `GET /brand-resources` (brand logo, colours and shareable assets), which this reference doesn't cover yet. The OpenPartner Network federation key holds `partners:write`, `partners:read`, `links:write`, `commissions:read`, `clicks:write`.\n\n**Scoped reads that don't exist yet:** `GET /partners/{id}/funnel`, `/coupons` and `/commission-snapshot` accept no scope. Read them with an admin key from your server, or use `/timeseries` (which has `partners:read`) for funnel-like counts.\n\n## Requests and responses\n\n- JSON bodies (`content-type: application/json`), up to 1 MB. `POST /import` takes up to 256 MB on single-tenant installs.\n- Errors are `{ \"error\": \"<code>\", \"detail\": … }`. Branch on `error`; `detail` is for humans.\n- **Timestamps are ISO-8601 in UTC and must end in `Z`**: `2026-10-16T10:00:00Z`. An offset such as `+00:00` (Python's `isoformat()` default) is rejected with `400 invalid_body` / `invalid_query`.\n- Money in major units. Commission and payout amounts, and `eventValue` in webhook payloads, are decimal **strings** such as `\"12.50\"`. Report endpoints (dashboard, timeseries, a partner's events list) return JSON numbers.\n- Fields may be added to any response at any time. Ignore fields you don't know.\n- Send `X-Request-Id` to correlate a call; every response echoes one back (generated if you didn't send it). Quote it in support requests.\n\n## Idempotency\n\n`POST /attribution/events` and `POST /coupons/redeem` take an `externalEventId`: your stable id for that one event. A retry with the same key replays the original result (`replayed: true`) and records nothing, even when the duplicates arrive at the same moment. A key reused for a different event is `409 external_event_id_conflict`. `POST /clicks` is idempotent on the click `id`. Other writes are not idempotent: `POST /partners` answers a duplicate email with `409 email_taken`, so look the partner up with `GET /partners?email=`.\n\n## Pagination\n\n`GET /partners` and the commission lists are keyset-paginated: pass the response's `nextCursor` as `cursor` until it is `null`. Cursors are opaque. `GET /partners/{id}/events` and `/customers` use `limit` + `offset`. `GET /partners/{id}/payouts` returns the 200 most recent, and `GET /webhooks/{id}/deliveries` the 100 most recent.\n\n## Rate limits\n\nThe API shares one limit of **600 requests per 5 minutes per client IP** across its routes (a few infrastructure paths are exempt). A backend calls from one IP, so that is your whole integration's budget, event ingest included: at four calls per page view, about 150 uncached page views per 5 minutes. Cache partner stats for a few minutes, don't let users force a refresh, and report events from a queue that backs off on `429`. Over the limit you get `429 rate_limited` with the IETF `RateLimit` and `RateLimit-Policy` headers.\n\n`POST /attribution/identify` has its own limit of 120 per minute per IP, answered with `429 rate_limited` and `Retry-After`. When the browser SDK calls it, that is each visitor's IP; when your backend calls it, every stitch counts against your backend's IP, so prefer the browser for identify at volume.\n\n## Webhooks\n\nSubscribe with `POST /webhooks`; the event catalogue is under **Webhook events**. Each delivery is a JSON `POST` of an envelope `{ id, event, created, data }` with:\n\n| Header | Value |\n| --- | --- |\n| `X-OpenPartner-Signature` | hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint's secret (the whole `whsec_…` string) |\n| `X-OpenPartner-Timestamp` | Unix seconds when the attempt was signed |\n| `X-OpenPartner-Event` | the event type |\n| `X-OpenPartner-Delivery` | the envelope `id` |\n\nTo verify a delivery, recompute the HMAC over the **raw** request body, before any JSON parsing, and compare it in constant time. Reject timestamps more than 5 minutes from now. Then dedupe on `id`:\n\n```js\nimport { createHmac, timingSafeEqual } from 'node:crypto';\n\nfunction verify(rawBody, headers, secret) {\n  const ts = headers['x-openpartner-timestamp'];\n  const sig = headers['x-openpartner-signature'] ?? '';\n  if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;\n  const expected = Buffer.from(createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex'));\n  const given = Buffer.from(sig);\n  return given.length === expected.length && timingSafeEqual(given, expected);\n}\n```\n\nDelivery is at most once per trigger: a non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed, and **failed deliveries are not retried automatically**. Find them with `GET /webhooks/{id}/deliveries` and resend with `POST /webhooks/{id}/deliveries/{deliveryId}/retry`. A resend carries the same `id` and a fresh signature. Treat webhooks as notifications and the list endpoints as the record: reconcile from `GET /commissions` if you can't afford to miss one.\n\nEndpoints must be publicly reachable. Private, loopback and link-local destinations are refused at delivery time, and OpenPartner Cloud delivers only to ports 80 and 443. A single-tenant self-host can allow specific private ranges with `OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS`.",
+    "description": "The OpenPartner tenant API: partners, programs, links, attribution, commissions, payouts, reporting, webhooks and export. Use it to run a referral or affiliate program from your own backend, for example an in-app \"Refer & earn\" page with no separate OpenPartner login. Walkthrough: [Build an in-app referral page](https://github.com/getcoherence/openpartner/blob/main/docs/headless-referral.md).\n\nThis document is generated from the API's own request validators. It is served at `/openapi.json`, and the rendered reference at `/docs`, on every deployment. White-label custom domains don't serve them; use the platform host, e.g. `https://app.openpartner.dev/api/docs`.\n\n## Base URL and tenancy\n\nEvery path below is relative to your tenant's API base:\n\n| Deployment | API base | Share links |\n| --- | --- | --- |\n| OpenPartner Cloud | `https://app.openpartner.dev/api/t/<tenant-slug>` | `https://app.openpartner.dev/r/<tenant-slug>/<linkKey>` |\n| Cloud with a white-label domain | `https://<your-domain>/api` | `https://<your-domain>/r/<linkKey>` |\n| Self-hosted, single tenant | your API origin, e.g. `https://api.example.com` (or `<portal>/api` behind the bundled proxy) | `<router origin>/r/<linkKey>` |\n| Self-hosted, multi-tenant | `<api origin>/t/<tenant-slug>` (or `<portal>/api/t/<tenant-slug>`) | `<router origin>/r/<tenant-slug>/<linkKey>` |\n\nThe slug comes **after** `/api`. `https://app.openpartner.dev/t/<slug>/api/...` reaches the portal's static site, not the API, and returns HTML. On a multi-tenant deployment a request with no `/t/<slug>` prefix fails with `400 tenant_slug_missing`, and an unknown slug gets a plain `404`. Your slug is the `/t/<slug>/` segment in your admin portal's address.\n\nKeys minted through the API are bound to their tenant. A key sent to another tenant's path is `401 unauthorized`.\n\n## Authentication\n\nSend a key as a bearer token: `Authorization: Bearer op_…`. Keys are server-side credentials: never ship one to a browser or mobile app. There are three kinds:\n\n- **Admin key.** Unscoped, full access to the tenant. Minted with `POST /api-keys`, or the deployment's `ADMIN_API_KEY` (self-host). The admin portal's session cookie is accepted wherever an admin key is.\n- **Scoped key.** Minted with `POST /api-keys/scoped` and a list of scopes. It can call only the operations its scopes unlock, and it acts on any partner in the tenant. Calling something it lacks the scope for returns `403 forbidden_scope` with the `required` scope; calling an operation with no scope returns `403 forbidden`. Use one for every integration so a leaked key can't do everything.\n- **Partner key.** Minted with `POST /partners/{id}/api-keys` by an admin or the partner. It acts as that one partner and can only reach that partner's own resources (`/partners/{its id}/…`). Revoking the partner revokes its keys.\n\nEach operation says which of these it accepts. Scopes:\n\n| Scope | Unlocks |\n| --- | --- |\n| `clicks:write` | `POST /clicks` |\n| `commissions:read` | `GET /partners/{id}/commissions`<br>`GET /commissions` |\n| `events:write` | `POST /attribution/events`<br>`POST /attribution/conversions`<br>`POST /coupons/redeem` |\n| `links:read` | `GET /partners/{id}/links` |\n| `links:write` | `POST /partners/{id}/links` |\n| `partners:read` | `GET /partners`<br>`GET /partners/{id}`<br>`GET /partners/{id}/dashboard`<br>`GET /partners/{id}/timeseries`<br>`GET /partners/{id}/events`<br>`GET /partners/{id}/customers`<br>`GET /partners/{id}/breakdowns` |\n| `partners:write` | `POST /partners`<br>`POST /import/partners-csv`<br>`POST /partners/{id}/invite`<br>`POST /partners/{id}/revoke`<br>`POST /partners/{id}/coupons`<br>`DELETE /partners/{id}/coupons/{couponId}` |\n| `payouts:read` | `GET /partners/{id}/payouts` |\n| `webhooks:write` | `POST /webhooks`<br>`DELETE /webhooks/{id}` |\n\n`partners:read` also unlocks `GET /brand-resources` (brand logo, colours and shareable assets), which this reference doesn't cover yet. The OpenPartner Network federation key holds `partners:write`, `partners:read`, `links:write`, `commissions:read`, `clicks:write`.\n\n**Scoped reads that don't exist yet:** `GET /partners/{id}/funnel`, `/coupons` and `/commission-snapshot` accept no scope. Read them with an admin key from your server, or use `/timeseries` (which has `partners:read`) for funnel-like counts.\n\n## Requests and responses\n\n- JSON bodies (`content-type: application/json`), up to 1 MB. `POST /import` takes up to 256 MB on single-tenant installs.\n- Errors are `{ \"error\": \"<code>\", \"detail\": … }`. Branch on `error`; `detail` is for humans.\n- **Timestamps are ISO-8601 in UTC and must end in `Z`**: `2026-10-16T10:00:00Z`. An offset such as `+00:00` (Python's `isoformat()` default) is rejected with `400 invalid_body` / `invalid_query`.\n- Money in major units. Commission and payout amounts, and `eventValue` in webhook payloads, are decimal **strings** such as `\"12.50\"`. Report endpoints (dashboard, timeseries, a partner's events list) return JSON numbers.\n- Fields may be added to any response at any time. Ignore fields you don't know.\n- Send `X-Request-Id` to correlate a call; every response echoes one back (generated if you didn't send it). Quote it in support requests.\n\n## Idempotency\n\n`POST /attribution/events` and `POST /coupons/redeem` take an `externalEventId`: your stable id for that one event. A retry with the same key replays the original result (`replayed: true`) and records nothing, even when the duplicates arrive at the same moment. A key reused for a different event is `409 external_event_id_conflict`. `POST /clicks` is idempotent on the click `id`. Other writes are not idempotent: `POST /partners` answers a duplicate email with `409 email_taken`, so look the partner up with `GET /partners?email=`.\n\n## Pagination\n\n`GET /partners` and the commission lists are keyset-paginated: pass the response's `nextCursor` as `cursor` until it is `null`. Cursors are opaque. `GET /partners/{id}/events` and `/customers` use `limit` + `offset`. `GET /partners/{id}/payouts` returns the 200 most recent, and `GET /webhooks/{id}/deliveries` the 100 most recent.\n\n## Rate limits\n\nThe API shares one limit of **600 requests per 5 minutes per client IP** across its routes (a few infrastructure paths are exempt). A backend calls from one IP, so that is your whole integration's budget, event ingest included: at four calls per page view, about 150 uncached page views per 5 minutes. Cache partner stats for a few minutes, don't let users force a refresh, and report events from a queue that backs off on `429`. Over the limit you get `429 rate_limited` with the IETF `RateLimit` and `RateLimit-Policy` headers.\n\n`POST /attribution/identify` has its own limit of 120 per minute per IP, answered with `429 rate_limited` and `Retry-After`. When the browser SDK calls it, that is each visitor's IP; when your backend calls it, every stitch counts against your backend's IP, so prefer the browser for identify at volume.\n\n## Webhooks\n\nSubscribe with `POST /webhooks`; the event catalogue is under **Webhook events**. Each delivery is a JSON `POST` of an envelope `{ id, event, created, data }` with:\n\n| Header | Value |\n| --- | --- |\n| `X-OpenPartner-Signature` | hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint's secret (the whole `whsec_…` string) |\n| `X-OpenPartner-Timestamp` | Unix seconds when the attempt was signed |\n| `X-OpenPartner-Event` | the event type |\n| `X-OpenPartner-Delivery` | the envelope `id` |\n\nTo verify a delivery, recompute the HMAC over the **raw** request body, before any JSON parsing, and compare it in constant time. Reject timestamps more than 5 minutes from now. Then dedupe on `id`:\n\n```js\nimport { createHmac, timingSafeEqual } from 'node:crypto';\n\nfunction verify(rawBody, headers, secret) {\n  const ts = headers['x-openpartner-timestamp'];\n  const sig = headers['x-openpartner-signature'] ?? '';\n  if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;\n  const expected = Buffer.from(createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex'));\n  const given = Buffer.from(sig);\n  return given.length === expected.length && timingSafeEqual(given, expected);\n}\n```\n\nDelivery is at most once per trigger: a non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed, and **failed deliveries are not retried automatically**. Find them with `GET /webhooks/{id}/deliveries` and resend with `POST /webhooks/{id}/deliveries/{deliveryId}/retry`. A resend carries the same `id` and a fresh signature. Treat webhooks as notifications and the list endpoints as the record: reconcile from `GET /commissions` if you can't afford to miss one.\n\nEndpoints must be publicly reachable. Private, loopback and link-local destinations are refused at delivery time, and OpenPartner Cloud delivers only to ports 80 and 443. A single-tenant self-host can allow specific private ranges with `OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS`.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -90,7 +90,7 @@
     },
     {
       "name": "Network settings",
-      "description": "The tenant's OpenPartner Network membership, including partner auto-enroll."
+      "description": "The tenant's OpenPartner Network membership, including whether partners are offered the Network."
     },
     {
       "name": "Webhook events",
@@ -324,7 +324,9 @@
                       "type": "integer",
                       "exclusiveMinimum": 0,
                       "maximum": 600
-                    }
+                    },
+                    "bands": {},
+                    "tiers": {}
                   },
                   "required": [
                     "trigger",
@@ -394,8 +396,7 @@
                       },
                       "currency": {
                         "type": "string",
-                        "minLength": 3,
-                        "maxLength": 3
+                        "pattern": "^[A-Za-z]{3}$"
                       },
                       "recurring": {
                         "type": "boolean"
@@ -404,6 +405,101 @@
                         "type": "integer",
                         "exclusiveMinimum": 0,
                         "maximum": 600
+                      },
+                      "bands": {
+                        "type": "object",
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "enum": [
+                              "whole",
+                              "marginal"
+                            ],
+                            "default": "whole"
+                          },
+                          "levels": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "above": {
+                                  "type": "number",
+                                  "exclusiveMinimum": 0
+                                },
+                                "value": {
+                                  "type": "number",
+                                  "minimum": 0
+                                }
+                              },
+                              "required": [
+                                "above",
+                                "value"
+                              ]
+                            },
+                            "minItems": 1,
+                            "maxItems": 10
+                          }
+                        },
+                        "required": [
+                          "levels"
+                        ]
+                      },
+                      "tiers": {
+                        "type": "object",
+                        "properties": {
+                          "metric": {
+                            "type": "string",
+                            "enum": [
+                              "revenue",
+                              "conversions"
+                            ]
+                          },
+                          "window": {
+                            "type": "string",
+                            "enum": [
+                              "lifetime",
+                              "calendar_month",
+                              "rolling_days"
+                            ]
+                          },
+                          "windowDays": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 3650
+                          },
+                          "eventType": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "levels": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "atLeast": {
+                                  "type": "number",
+                                  "exclusiveMinimum": 0
+                                },
+                                "value": {
+                                  "type": "number",
+                                  "minimum": 0
+                                }
+                              },
+                              "required": [
+                                "atLeast",
+                                "value"
+                              ]
+                            },
+                            "minItems": 1,
+                            "maxItems": 10
+                          }
+                        },
+                        "required": [
+                          "metric",
+                          "window",
+                          "levels"
+                        ]
                       }
                     },
                     "required": [
@@ -489,6 +585,103 @@
         "description": "A decimal amount as a string, e.g. `\"12.50\"`. Major currency units.",
         "example": "12.50"
       },
+      "CommissionBands": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "whole",
+              "marginal"
+            ],
+            "default": "whole"
+          },
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "above": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "value": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "above",
+                "value"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 10
+          }
+        },
+        "required": [
+          "levels"
+        ],
+        "description": "Value bands: the rate steps up with the event's value. The sub-rule's own `value` is the base band; `levels` lists the steps above it. `whole` pays the reached band's rate on the whole value, `marginal` pays each slice at its own band's rate."
+      },
+      "CommissionTiers": {
+        "type": "object",
+        "properties": {
+          "metric": {
+            "type": "string",
+            "enum": [
+              "revenue",
+              "conversions"
+            ]
+          },
+          "window": {
+            "type": "string",
+            "enum": [
+              "lifetime",
+              "calendar_month",
+              "rolling_days"
+            ]
+          },
+          "windowDays": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 3650
+          },
+          "eventType": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "atLeast": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "value": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "atLeast",
+                "value"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 10
+          }
+        },
+        "required": [
+          "metric",
+          "window",
+          "levels"
+        ],
+        "description": "Performance tiers: the rate steps up with the partner's own revenue or conversions over a window. Not combined with `bands`."
+      },
       "CommissionSnapshot": {
         "type": "object",
         "properties": {
@@ -555,6 +748,12 @@
                 },
                 "recurringMonths": {
                   "type": "integer"
+                },
+                "bands": {
+                  "$ref": "#/components/schemas/CommissionBands"
+                },
+                "tiers": {
+                  "$ref": "#/components/schemas/CommissionTiers"
                 }
               },
               "required": [
@@ -653,8 +852,7 @@
                 },
                 "currency": {
                   "type": "string",
-                  "minLength": 3,
-                  "maxLength": 3
+                  "pattern": "^[A-Za-z]{3}$"
                 },
                 "recurring": {
                   "type": "boolean"
@@ -663,6 +861,101 @@
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 600
+                },
+                "bands": {
+                  "type": "object",
+                  "properties": {
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "whole",
+                        "marginal"
+                      ],
+                      "default": "whole"
+                    },
+                    "levels": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "above": {
+                            "type": "number",
+                            "exclusiveMinimum": 0
+                          },
+                          "value": {
+                            "type": "number",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "above",
+                          "value"
+                        ]
+                      },
+                      "minItems": 1,
+                      "maxItems": 10
+                    }
+                  },
+                  "required": [
+                    "levels"
+                  ]
+                },
+                "tiers": {
+                  "type": "object",
+                  "properties": {
+                    "metric": {
+                      "type": "string",
+                      "enum": [
+                        "revenue",
+                        "conversions"
+                      ]
+                    },
+                    "window": {
+                      "type": "string",
+                      "enum": [
+                        "lifetime",
+                        "calendar_month",
+                        "rolling_days"
+                      ]
+                    },
+                    "windowDays": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 3650
+                    },
+                    "eventType": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    },
+                    "levels": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "atLeast": {
+                            "type": "number",
+                            "exclusiveMinimum": 0
+                          },
+                          "value": {
+                            "type": "number",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "atLeast",
+                          "value"
+                        ]
+                      },
+                      "minItems": 1,
+                      "maxItems": 10
+                    }
+                  },
+                  "required": [
+                    "metric",
+                    "window",
+                    "levels"
+                  ]
                 }
               },
               "required": [
@@ -716,6 +1009,12 @@
                 },
                 "recurringMonths": {
                   "type": "integer"
+                },
+                "bands": {
+                  "$ref": "#/components/schemas/CommissionBands"
+                },
+                "tiers": {
+                  "$ref": "#/components/schemas/CommissionTiers"
                 }
               },
               "required": [
@@ -1054,148 +1353,7 @@
             "type": "string",
             "minLength": 1
           },
-          "commissionRule": {
-            "anyOf": [
-              {
-                "type": "array",
-                "items": {
-                  "allOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "trigger": {
-                          "type": "string",
-                          "enum": [
-                            "every",
-                            "first",
-                            "subsequent"
-                          ]
-                        },
-                        "eventType": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 80
-                        },
-                        "recurring": {
-                          "type": "boolean"
-                        },
-                        "recurringMonths": {
-                          "type": "integer",
-                          "exclusiveMinimum": 0,
-                          "maximum": 600
-                        }
-                      },
-                      "required": [
-                        "trigger"
-                      ]
-                    },
-                    {
-                      "oneOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "type": {
-                              "type": "string",
-                              "enum": [
-                                "percent"
-                              ]
-                            },
-                            "value": {
-                              "type": "number",
-                              "exclusiveMinimum": 0
-                            }
-                          },
-                          "required": [
-                            "type",
-                            "value"
-                          ]
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "type": {
-                              "type": "string",
-                              "enum": [
-                                "fixed"
-                              ]
-                            },
-                            "value": {
-                              "type": "number",
-                              "exclusiveMinimum": 0
-                            },
-                            "currency": {
-                              "type": "string",
-                              "minLength": 3,
-                              "maxLength": 3
-                            }
-                          },
-                          "required": [
-                            "type",
-                            "value"
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                },
-                "minItems": 1,
-                "maxItems": 10
-              },
-              {
-                "oneOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "enum": [
-                          "percent"
-                        ]
-                      },
-                      "value": {
-                        "type": "number",
-                        "exclusiveMinimum": 0
-                      },
-                      "recurring": {
-                        "type": "boolean"
-                      }
-                    },
-                    "required": [
-                      "type",
-                      "value"
-                    ]
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "enum": [
-                          "fixed"
-                        ]
-                      },
-                      "value": {
-                        "type": "number",
-                        "exclusiveMinimum": 0
-                      },
-                      "currency": {
-                        "type": "string",
-                        "minLength": 3,
-                        "maxLength": 3
-                      },
-                      "recurring": {
-                        "type": "boolean"
-                      }
-                    },
-                    "required": [
-                      "type",
-                      "value"
-                    ]
-                  }
-                ]
-              }
-            ]
-          },
+          "commissionRule": {},
           "attributionWindowDays": {
             "type": "integer",
             "minimum": 1,
@@ -1333,148 +1491,7 @@
             "type": "string",
             "minLength": 1
           },
-          "commissionRule": {
-            "anyOf": [
-              {
-                "type": "array",
-                "items": {
-                  "allOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "trigger": {
-                          "type": "string",
-                          "enum": [
-                            "every",
-                            "first",
-                            "subsequent"
-                          ]
-                        },
-                        "eventType": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 80
-                        },
-                        "recurring": {
-                          "type": "boolean"
-                        },
-                        "recurringMonths": {
-                          "type": "integer",
-                          "exclusiveMinimum": 0,
-                          "maximum": 600
-                        }
-                      },
-                      "required": [
-                        "trigger"
-                      ]
-                    },
-                    {
-                      "oneOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "type": {
-                              "type": "string",
-                              "enum": [
-                                "percent"
-                              ]
-                            },
-                            "value": {
-                              "type": "number",
-                              "exclusiveMinimum": 0
-                            }
-                          },
-                          "required": [
-                            "type",
-                            "value"
-                          ]
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "type": {
-                              "type": "string",
-                              "enum": [
-                                "fixed"
-                              ]
-                            },
-                            "value": {
-                              "type": "number",
-                              "exclusiveMinimum": 0
-                            },
-                            "currency": {
-                              "type": "string",
-                              "minLength": 3,
-                              "maxLength": 3
-                            }
-                          },
-                          "required": [
-                            "type",
-                            "value"
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                },
-                "minItems": 1,
-                "maxItems": 10
-              },
-              {
-                "oneOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "enum": [
-                          "percent"
-                        ]
-                      },
-                      "value": {
-                        "type": "number",
-                        "exclusiveMinimum": 0
-                      },
-                      "recurring": {
-                        "type": "boolean"
-                      }
-                    },
-                    "required": [
-                      "type",
-                      "value"
-                    ]
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "enum": [
-                          "fixed"
-                        ]
-                      },
-                      "value": {
-                        "type": "number",
-                        "exclusiveMinimum": 0
-                      },
-                      "currency": {
-                        "type": "string",
-                        "minLength": 3,
-                        "maxLength": 3
-                      },
-                      "recurring": {
-                        "type": "boolean"
-                      }
-                    },
-                    "required": [
-                      "type",
-                      "value"
-                    ]
-                  }
-                ]
-              }
-            ]
-          },
+          "commissionRule": {},
           "attributionWindowDays": {
             "type": "integer",
             "minimum": 1,
@@ -1947,6 +1964,96 @@
           "type"
         ]
       },
+      "ConversionResult": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "eventId": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string",
+            "description": "The user the click was stitched to: your `userId`, or the click's own synthetic user when you sent none."
+          },
+          "attribution": {
+            "$ref": "#/components/schemas/AttributionResult"
+          },
+          "replayed": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "Present when an earlier call with the same `externalEventId` already recorded this conversion. `eventId` and `attribution` are that call's."
+          }
+        },
+        "required": [
+          "ok",
+          "eventId",
+          "userId",
+          "attribution"
+        ]
+      },
+      "RecordConversionRequest": {
+        "type": "object",
+        "properties": {
+          "clickId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "value": {
+            "type": "number",
+            "minimum": 0
+          },
+          "currency": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 3
+          },
+          "externalEventId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "description": "Idempotency key: your stable id for this one conversion (a loan or transaction id), up to 120 characters. A number is used as its string."
+          },
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "clickId",
+          "type",
+          "externalEventId"
+        ]
+      },
       "ClickIngestResult": {
         "type": "object",
         "properties": {
@@ -2349,6 +2456,11 @@
               "null"
             ]
           },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "How the amount was worked out, where it took more than the rule's flat value. A banded or tiered rule records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. Empty for a flat rule."
+          },
           "holdbackDays": {
             "type": [
               "integer",
@@ -2389,6 +2501,7 @@
           "accruedAt",
           "paidAt",
           "payoutId",
+          "metadata",
           "holdbackDays",
           "programId",
           "campaignName",
@@ -2465,6 +2578,11 @@
               "string",
               "null"
             ]
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "How the amount was worked out, where it took more than the rule's flat value. A banded or tiered rule records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. Empty for a flat rule."
           }
         },
         "required": [
@@ -2477,7 +2595,8 @@
           "status",
           "accruedAt",
           "paidAt",
-          "payoutId"
+          "payoutId",
+          "metadata"
         ]
       },
       "PayoutRunResult": {
@@ -3612,7 +3731,7 @@
           },
           "autoEnroll": {
             "type": "boolean",
-            "description": "When `enabled && autoEnroll`, every partner created by POST /partners or self-signup is pushed to the OpenPartner Network (name, email, metadata)."
+            "description": "Stored name for \"offer the Network to my partners\". When `enabled && autoEnroll`, partners are asked whether to join, and only those who opt in are shared (name and email; never `metadata`)."
           }
         },
         "required": [
@@ -3669,7 +3788,7 @@
           "Partners"
         ],
         "summary": "Create a partner",
-        "description": "Creates a partner and grants it programs.\n\n- `sendInvite: false` creates the partner **active immediately** and sends no email. Use this when your own app is the partner's UI (headless / in-app referral). The default sends a magic-link invite.\n- `programIds` omitted grants **every current program**. Pass an explicit list (even `[]`) to control access.\n- A coupon is auto-minted per granted program.\n- Fires `partner.created`.\n\n**Email and portal access.** A `sendInvite: false` partner is active, so anyone who knows its email can request a sign-in link on the hosted partner portal (`POST /auth/signin`): OpenPartner then emails that address, and the partner can use the portal. There is no setting to turn that off per partner yet. If that matters, give headless partners an address that can't receive mail.\n\n**OpenPartner Network:** while the tenant's Network membership has `autoEnroll` on (`GET /config/network`), this call pushes the partner's name, email and `metadata` to the OpenPartner Network, with or without an invite. Turn `autoEnroll` off before creating customer-referral partners: `POST /config/network {\"autoEnroll\": false}`.\n\nOn OpenPartner Cloud the brand needs an active plan (`402 plan_required`) and an approved account (`403 brand_pending_review`).\n\n**Access:** admin key, or a scoped key with `partners:write`.",
+        "description": "Creates a partner and grants it programs.\n\n- `sendInvite: false` creates the partner **active immediately** and sends no email. Use this when your own app is the partner's UI (headless / in-app referral). The default sends a magic-link invite.\n- `programIds` omitted grants **every current program**. Pass an explicit list (even `[]`) to control access.\n- A coupon is auto-minted per granted program.\n- Fires `partner.created`.\n\n**Email and portal access.** A `sendInvite: false` partner is active, so anyone who knows its email can request a sign-in link on the hosted partner portal (`POST /auth/signin`): OpenPartner then emails that address, and the partner can use the portal. There is no setting to turn that off per partner yet. If that matters, give headless partners an address that can't receive mail.\n\n**OpenPartner Network:** this call shares nothing with the OpenPartner Network. A partner's name and email reach it only if the partner opts in themselves, while the tenant offers the Network (`autoEnroll` on, `GET /config/network`): they're asked on the join page, once on first portal sign-in, and in a portal setting. `metadata` is never sent. To keep customer-referral partners from being asked, turn offering off: `POST /config/network {\"autoEnroll\": false}`.\n\nOn OpenPartner Cloud the brand needs an active plan (`402 plan_required`) and an approved account (`403 brand_pending_review`).\n\n**Access:** admin key, or a scoped key with `partners:write`.",
         "security": [
           {
             "adminKey": []
@@ -3967,7 +4086,7 @@
           "Partners"
         ],
         "summary": "Bulk-create partners from CSV",
-        "description": "Creates many partners in one request: the way to load an existing customer base without spending your rate limit on one `POST /partners` per row.\n\nSend `text/csv` with a header row: `email` and `name` (required), `activatedAt` (ISO-8601, default now) and `metadata` (a JSON object string, e.g. `\"{\"\"appUserId\"\":\"\"u_1\"\"}\"`). Quoted fields may contain commas but not line breaks. Tools that can't send `text/csv` can POST `{\"csv\": \"...\"}` as JSON instead.\n\nUnlike `POST /partners`, an import:\n- grants every partner **every current program** (there is no `programIds`),\n- sends no email, mints no coupons, fires no `partner.created` webhooks,\n- never pushes partners to the OpenPartner Network, whatever `autoEnroll` says.\n\nRows whose email already exists are reported as `skipped_email_taken` with the existing `partnerId`, so re-running an import is safe. `?dryRun=true` validates and reports without writing. Rows are processed one by one in a single transaction; send large rosters in batches of a few thousand rows.\n\n**Access:** admin key, or a scoped key with `partners:write`.",
+        "description": "Creates many partners in one request: the way to load an existing customer base without spending your rate limit on one `POST /partners` per row.\n\nSend `text/csv` with a header row: `email` and `name` (required), `activatedAt` (ISO-8601, default now) and `metadata` (a JSON object string, e.g. `\"{\"\"appUserId\"\":\"\"u_1\"\"}\"`). Quoted fields may contain commas but not line breaks. Tools that can't send `text/csv` can POST `{\"csv\": \"...\"}` as JSON instead.\n\nUnlike `POST /partners`, an import:\n- grants every partner **every current program** (there is no `programIds`),\n- sends no email, mints no coupons, fires no `partner.created` webhooks,\n- shares nothing with the OpenPartner Network: as with `POST /partners`, only a partner's own opt-in does.\n\nRows whose email already exists are reported as `skipped_email_taken` with the existing `partnerId`, so re-running an import is safe. `?dryRun=true` validates and reports without writing. Rows are processed one by one in a single transaction; send large rosters in batches of a few thousand rows.\n\n**Access:** admin key, or a scoped key with `partners:write`.",
         "security": [
           {
             "adminKey": []
@@ -6046,6 +6165,115 @@
           },
           "409": {
             "description": "`external_event_id_conflict`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/attribution/conversions": {
+      "post": {
+        "operationId": "recordConversion",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "Record a conversion against a click",
+        "description": "For senders that hold a click id but never saw an identify: a lender reporting a funded loan, a CRM, an affiliate network. The click id reaches them through the destination URL's `{click_id}` macro, or the `cref` the router appends. One call stitches the click to a user and records the event, in one transaction.\n\nSend `userId` when you have your own id for the user: attribution then follows the program's model across every click that user is stitched to, as on `POST /attribution/events`. Without it the click's own synthetic user is used, and this click alone is credited. Events recorded for the user before this stitch are not backfilled; `POST /attribution/identify` does that.\n\n**Idempotency.** `externalEventId` is required. A retry with the same key returns `200` with `replayed: true` and the original result, even if the click has been flagged since. Reusing a key for a different click, userId, type, value or currency returns `409 external_event_id_conflict`. Keys share one namespace with `POST /attribution/events`, `GET /postback` and `POST /coupons/redeem`.\n\nA click flagged by velocity limits or a revoked partner earns nothing: `422 click_flagged`.\n\n**Access:** admin key, or a scoped key with `events:write`.",
+        "security": [
+          {
+            "adminKey": []
+          },
+          {
+            "scopedKey": [
+              "events:write"
+            ]
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [
+            "events:write"
+          ],
+          "partner": false
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordConversionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Recorded (or replayed).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversionResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`click_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`external_event_id_conflict`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`click_flagged`",
             "content": {
               "application/json": {
                 "schema": {
@@ -9406,6 +9634,7 @@
                 "Program",
                 "PartnerProgram",
                 "PartnerCommission",
+                "PartnerNetworkConsent",
                 "Coupon",
                 "Link",
                 "Click",
@@ -9728,7 +9957,7 @@
           "Network settings"
         ],
         "summary": "Get the tenant's OpenPartner Network membership",
-        "description": "Check `enabled && autoEnroll` before creating customer-referral partners: while both are true, POST /partners pushes each partner to the Network.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "`enabled && autoEnroll` means the tenant offers the Network to its partners: each is asked whether to join, and only those who opt in are shared. Nothing is shared for a partner who hasn't.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -9787,8 +10016,8 @@
         "tags": [
           "Network settings"
         ],
-        "summary": "Update Network membership (e.g. turn off auto-enroll)",
-        "description": "Send `{\"autoEnroll\": false}` to stop pushing new partners to the Network. Partners already pushed stay on it, and pushes that failed earlier and are queued for retry are still delivered. Reconnecting the Network later (Admin → Network → Connect) turns `autoEnroll` back on, so re-check after any reconnect.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "summary": "Update Network membership (e.g. stop offering the Network to partners)",
+        "description": "`autoEnroll` is the stored name for \"offer the Network to my partners\". Send `{\"autoEnroll\": false}` to stop asking partners and stop sharing anyone, whatever they chose. Partners already on the Network stay on it. Reconnecting the Network later (Admin → Network → Connect) turns `autoEnroll` back on, so re-check after any reconnect.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []

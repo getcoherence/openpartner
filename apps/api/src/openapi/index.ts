@@ -106,6 +106,11 @@ function applyOverrides(document: OpenApiDocument): void {
     description:
       'Idempotency key: your stable id for this one event, up to 120 characters. A number is used as its string. `null`, `""` or a blank string mean no key.',
   });
+  // routes/conversions.ts: required, and a number is its string.
+  set('RecordConversionRequest', 'externalEventId', {
+    anyOf: [{ type: 'string', minLength: 1, maxLength: 120 }, { type: 'number' }],
+    description: 'Idempotency key: your stable id for this one conversion (a loan or transaction id), up to 120 characters. A number is used as its string.',
+  });
 }
 
 function build() {

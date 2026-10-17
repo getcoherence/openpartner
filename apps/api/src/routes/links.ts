@@ -4,6 +4,7 @@ import { ulid } from 'ulid';
 import { TABLES, type ProgramRow, type LinkRow } from '@openpartner/db';
 import { grantScope, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
+import { destinationUrlSchema } from '../destination-url.js';
 
 export const createSchema = z.object({
   linkKey: z
@@ -15,8 +16,9 @@ export const createSchema = z.object({
   /** Optional override of Campaign.destinationUrl. Allowed only when
    *  the Campaign has deepLinkAllowedDomains set AND the override host
    *  matches one of those domains. Otherwise rejected with
-   *  destination_override_not_allowed. */
-  destinationUrl: z.string().url().optional(),
+   *  destination_override_not_allowed. May carry the {click_id} macro,
+   *  as Program.destinationUrl may. */
+  destinationUrl: destinationUrlSchema.optional(),
 });
 
 export const linksRouter = Router();

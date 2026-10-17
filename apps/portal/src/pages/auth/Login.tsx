@@ -172,7 +172,7 @@ function KeyTab() {
         Partner keys are issued from the Partners admin view.
         <br />
         <strong style={{ color: theme.textMuted }}>Not for integration keys</strong> — scoped
-        keys minted under Admin → CRM integration are server-to-server credentials and can&rsquo;t
+        keys minted under Admin → Integrations are server-to-server credentials and can&rsquo;t
         sign into the portal.
       </div>
     </form>

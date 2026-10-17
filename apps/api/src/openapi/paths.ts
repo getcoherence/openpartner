@@ -21,6 +21,7 @@ import * as events from '../routes/events.js';
 import * as clicks from '../routes/clicks.js';
 import * as coupons from '../routes/coupons.js';
 import * as commissions from '../routes/commissions.js';
+import * as conversions from '../routes/conversions.js';
 import * as dashboard from '../routes/dashboard.js';
 import * as webhooks from '../routes/webhooks.js';
 import * as apiKeys from '../routes/api-keys.js';
@@ -42,6 +43,7 @@ export const SCOPED_ROUTES_OUTSIDE_SPEC: Record<string, string> = {
  *  reaches the handler. The drift test fails on any route of that shape
  *  that isn't listed here, so a new one shows up in review. */
 const NETWORK_PROXY = 'Partner-facing OpenPartner Network proxy for the portal; the handler checks the caller.';
+const NETWORK_CONSENT = "The partner's own OpenPartner Network opt-in, for the portal; the handler checks the caller is a partner.";
 export const HANDLER_GUARDED_ROUTES_OUTSIDE_SPEC: Record<string, string> = {
   'GET /auth/whoami': 'Who the current session or key is; any authenticated caller.',
   'GET /config/program': 'Program branding the portal renders; any authenticated caller.',
@@ -59,6 +61,8 @@ export const HANDLER_GUARDED_ROUTES_OUTSIDE_SPEC: Record<string, string> = {
   'GET /network/me/affiliations': NETWORK_PROXY,
   'GET /network/me/affiliations/:id/earnings': NETWORK_PROXY,
   'POST /network/me/uploads/avatar': NETWORK_PROXY,
+  'GET /network/me/consent': NETWORK_CONSENT,
+  'POST /network/me/consent': NETWORK_CONSENT,
 };
 
 /** Routes on documented routers that are deliberately left out of the spec. */
@@ -66,6 +70,12 @@ export const UNDOCUMENTED_ROUTES: Record<string, string> = {
   'POST /partners/backfill-commission-snapshots': 'One-shot maintenance job for pre-snapshot partners, not an integration surface.',
   'GET /openapi.json': 'The spec itself.',
   'GET /docs': 'The rendered reference page.',
+  'GET /postback':
+    'Query-string pixel for senders that can only fire a URL. Authenticated by the conversion postback token, not an API key, and answers plain text; documented on the admin Integrations page and in docs/quickstart.md.',
+  'GET /conversion-postback': 'Portal settings for the conversion postback token.',
+  'POST /conversion-postback/token': 'Portal settings for the conversion postback token.',
+  'PATCH /conversion-postback': 'Portal settings for the conversion postback token.',
+  'DELETE /conversion-postback/token': 'Portal settings for the conversion postback token.',
 };
 
 const sinceQuery = z.object({
@@ -444,6 +454,26 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
     body: events.schema.openapi('RecordEventRequest'),
     responses: { 200: { description: 'Recorded (or replayed).', schema: S.EventResult } },
     errors: { 409: ['external_event_id_conflict'] },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/attribution/conversions',
+    tag: 'Attribution',
+    operationId: 'recordConversion',
+    summary: 'Record a conversion against a click',
+    description: `
+For senders that hold a click id but never saw an identify: a lender reporting a funded loan, a CRM, an affiliate network. The click id reaches them through the destination URL's \`{click_id}\` macro, or the \`cref\` the router appends. One call stitches the click to a user and records the event, in one transaction.
+
+Send \`userId\` when you have your own id for the user: attribution then follows the program's model across every click that user is stitched to, as on \`POST /attribution/events\`. Without it the click's own synthetic user is used, and this click alone is credited. Events recorded for the user before this stitch are not backfilled; \`POST /attribution/identify\` does that.
+
+**Idempotency.** \`externalEventId\` is required. A retry with the same key returns \`200\` with \`replayed: true\` and the original result, even if the click has been flagged since. Reusing a key for a different click, userId, type, value or currency returns \`409 external_event_id_conflict\`. Keys share one namespace with \`POST /attribution/events\`, \`GET /postback\` and \`POST /coupons/redeem\`.
+
+A click flagged by velocity limits or a revoked partner earns nothing: \`422 click_flagged\`.`,
+    access: { kind: 'admin', scope: 'events:write' },
+    body: conversions.conversionSchema.openapi('RecordConversionRequest'),
+    responses: { 200: { description: 'Recorded (or replayed).', schema: S.ConversionResult } },
+    errors: { 404: ['click_not_found'], 409: ['external_event_id_conflict'], 422: ['click_flagged'] },
   });
 
   r.operation({

@@ -5,12 +5,14 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import helmet from 'helmet';
 import pinoHttp from 'pino-http';
+import type { DestinationStream } from 'pino';
 import rateLimit from 'express-rate-limit';
 import { ulid } from 'ulid';
 
 import { stripeWebhookRouter } from './routes/stripe-webhook.js';
 import { identifyRouter } from './routes/identify.js';
 import { eventsRouter } from './routes/events.js';
+import { conversionsRouter } from './routes/conversions.js';
 import { partnersRouter } from './routes/partners.js';
 import { programsRouter } from './routes/programs.js';
 import { linksRouter } from './routes/links.js';
@@ -57,8 +59,9 @@ import { tenantMiddleware } from './tenancy.js';
 import { trialGate } from './middleware/trial-gate.js';
 import { approvalGate } from './middleware/approval-gate.js';
 import { corsOriginDecider } from './cors-origins.js';
+import { redactRequest, redactUrl } from './request-log.js';
 
-export function createApp(options: { enableLogger?: boolean } = {}) {
+export function createApp(options: { enableLogger?: boolean; logDestination?: DestinationStream } = {}) {
   const app = express();
   const MODE = process.env.OPENPARTNER_MODE ?? 'selfhost';
 
@@ -174,9 +177,15 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
 
   if (options.enableLogger !== false) {
     app.use(
-      pinoHttp({
-        genReqId: (req) => (req as Request & { id?: string }).id ?? ulid(),
-      }),
+      pinoHttp(
+        {
+          genReqId: (req) => (req as Request & { id?: string }).id ?? ulid(),
+          // URL-borne tokens (GET /postback) and auth headers never reach
+          // the log store. See request-log.ts.
+          serializers: { req: redactRequest },
+        },
+        options.logDestination,
+      ),
     );
   }
 
@@ -262,6 +271,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
   app.use(webhooksRouter);
   app.use(identifyRouter);
   app.use(eventsRouter);
+  app.use(conversionsRouter);
   app.use(partnersRouter);
   app.use(programsRouter);
   app.use(linksRouter);
@@ -290,7 +300,7 @@ export function createApp(options: { enableLogger?: boolean } = {}) {
     // test harness would otherwise swallow. Safe — these are
     // unauthenticated server-side error paths; we're logging them
     // anyway via pino when the logger's on.
-    console.error(`[500] ${req.method} ${req.url} ${err?.message}\n${err?.stack ?? ''}`);
+    console.error(`[500] ${req.method} ${redactUrl(req.originalUrl ?? req.url)} ${err?.message}\n${err?.stack ?? ''}`);
     res.status(500).json({ error: 'internal_error' });
   });
 

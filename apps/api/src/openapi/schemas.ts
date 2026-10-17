@@ -16,6 +16,7 @@
 
 import { z } from 'zod';
 import { ATTRIBUTION_MODELS, COMMISSION_STATUSES, PAYOUT_METHODS, PAYOUT_STATUSES } from './enums.js';
+import { commissionBandsSchema, commissionTiersSchema } from '../commission-rule-schema.js';
 
 import './registry.js'; // extendZodWithOpenApi before any .openapi() call
 
@@ -69,6 +70,13 @@ const commissionSubRule = z.object({
   currency: z.string().optional(),
   recurring: z.boolean().optional(),
   recurringMonths: z.number().int().optional(),
+  bands: commissionBandsSchema.optional().openapi('CommissionBands', {
+    description:
+      "Value bands: the rate steps up with the event's value. The sub-rule's own `value` is the base band; `levels` lists the steps above it. `whole` pays the reached band's rate on the whole value, `marginal` pays each slice at its own band's rate.",
+  }),
+  tiers: commissionTiersSchema.optional().openapi('CommissionTiers', {
+    description: "Performance tiers: the rate steps up with the partner's own revenue or conversions over a window. Not combined with `bands`.",
+  }),
 });
 
 export const CommissionSnapshot = z
@@ -244,6 +252,18 @@ export const EventResult = z
   })
   .openapi('EventResult');
 
+export const ConversionResult = z
+  .object({
+    ok: z.literal(true),
+    eventId: id,
+    userId: z.string().openapi({ description: "The user the click was stitched to: your `userId`, or the click's own synthetic user when you sent none." }),
+    attribution: Attribution,
+    replayed: z.literal(true).optional().openapi({
+      description: "Present when an earlier call with the same `externalEventId` already recorded this conversion. `eventId` and `attribution` are that call's.",
+    }),
+  })
+  .openapi('ConversionResult');
+
 export const ClickIngestResult = z.object({ ok: z.literal(true), id, replayed: z.literal(true).optional() }).openapi('ClickIngestResult');
 
 // ---------- Coupons ----------
@@ -294,6 +314,10 @@ const CommissionRowShape = z.object({
   accruedAt: ts,
   paidAt: tsNullable,
   payoutId: z.string().nullable(),
+  metadata: z.record(z.unknown()).openapi({
+    description:
+      "How the amount was worked out, where it took more than the rule's flat value. A banded or tiered rule records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. Empty for a flat rule.",
+  }),
 });
 
 export const Commission = CommissionRowShape.openapi('Commission');

@@ -505,6 +505,25 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     check('listPartnerCoupons', await admin.get(`/partners/${other.id}/coupons`));
     check('deactivatePartnerCoupon', await admin.delete(`/partners/${other.id}/coupons/${coupon.id}`));
 
+    // One-call conversions against a click, with and without the sender's userId.
+    const otherLink = check<{ linkKey: string }>(
+      'createPartnerLink',
+      await admin.post(`/partners/${other.id}/links`, { linkKey: 'other-loans', programId: program.id }),
+    );
+    const loanClick = ulid();
+    check(
+      'ingestClick',
+      await admin.post('/clicks', { id: loanClick, linkKey: otherLink.linkKey, landingUrl: 'https://app.example.com/signup', fraudFlag: null, ts: new Date().toISOString() }),
+    );
+    const loan = { clickId: loanClick, type: 'invoice_paid', value: 80, currency: 'USD', externalEventId: 'loan_1' };
+    const converted = check<{ attribution: { status: string } }>('recordConversion', await admin.post('/attribution/conversions', loan));
+    expect(converted.attribution.status).toBe('attributed');
+    const replayedLoan = check<{ replayed?: boolean }>('recordConversion', await admin.post('/attribution/conversions', loan));
+    expect(replayedLoan.replayed).toBe(true);
+    check('recordConversion', await admin.post('/attribution/conversions', { ...loan, value: 81 }));
+    check('recordConversion', await admin.post('/attribution/conversions', { ...loan, clickId: 'nope', externalEventId: 'loan_2' }));
+    check('recordConversion', await admin.post('/attribution/conversions', { clickId: loanClick, type: 'signup', externalEventId: 4242, userId: 'borrower_1' }));
+
     // Revoke / reinstate.
     check('revokePartner', await admin.post(`/partners/${other.id}/revoke`, { notify: false }));
     check('revokePartner', await admin.post(`/partners/${other.id}/revoke`, { notify: false }));

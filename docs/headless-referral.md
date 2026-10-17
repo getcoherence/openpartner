@@ -61,7 +61,7 @@ curl -s -X POST $OP/api-keys/scoped -H "Authorization: Bearer $ADMIN" -H 'conten
 | `links:write` / `links:read` | `POST` / `GET /partners/{id}/links` |
 | `commissions:read` | `GET /partners/{id}/commissions` |
 | `payouts:read` | `GET /partners/{id}/payouts` |
-| `events:write` | `POST /attribution/events`, `POST /coupons/redeem` |
+| `events:write` | `POST /attribution/events`, `POST /attribution/conversions`, `POST /coupons/redeem` |
 
 The full table, generated from the routes, is in the API reference under **Authentication**. A scoped key acts on every partner in your tenant, so **your backend must decide which partner a request is for from its own session, never from a parameter the browser sends.**
 
@@ -384,6 +384,7 @@ For an operator dashboard or storefront, the same API covers the admin side (adm
 | Review commissions | `GET /commissions?status=accrued` (`commissions:read`), `POST /commissions/{id}/approve`, `.../reverse` |
 | Pay partners | `POST /payouts/run`, `POST /payouts/{id}/confirm` (manual rail) |
 | Coupon-code attribution | `GET/POST /partners/{id}/coupons`, `POST /coupons/redeem` (`events:write`) |
+| Conversions reported by a click id (a lender, CRM or affiliate network) | `POST /attribution/conversions` (`events:write`), or the `GET /postback` URL on Admin → Integrations |
 | Your data, any time | `GET /export.json`, `GET /export/{table}.{json\|csv\|sql}`, `GET /export.sql` |
 
 ## Not built yet
