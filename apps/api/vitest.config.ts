@@ -7,5 +7,8 @@ export default defineConfig({
   test: {
     fileParallelism: false,
     setupFiles: ['src/__tests__/setup-env.ts'],
+    // After-hooks in reverse order, so the leak guard setup-env registers
+    // checks each file only once the file's own afterAll has cleaned up.
+    sequence: { hooks: 'stack' },
   },
 });
