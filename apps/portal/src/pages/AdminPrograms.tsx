@@ -359,7 +359,8 @@ function EditProgramDates({
             rules.some(ruleEventTypeMissing) ||
             rules.some((r) => ruleSlabProblem(r) !== null) ||
             (shareOnNetwork && !marketplaceDescription.trim()) ||
-            (shareOnNetwork && videoLinkInvalid(videoUrl))
+            (shareOnNetwork && videoLinkInvalid(videoUrl)) ||
+            revenueEventTypesProblem(revenueEventTypes) !== null
           }
         >
           {save.isPending ? 'Saving…' : 'Save changes'}
@@ -374,6 +375,22 @@ function parseEventTypes(text: string): string[] {
   return [...new Set(text.split(',').map((t) => t.trim()).filter(Boolean))];
 }
 
+/** Corrective event types the API refuses as revenue (CORRECTIVE_TYPES in
+ *  apps/api/src/routes/programs.ts). Keep the two lists identical. */
+const CORRECTIVE_EVENT_TYPES = new Set(['refund', 'chargeback', 'dispute_created', 'invoice_payment_failed']);
+
+/** What the API's revenueEventTypes schema would refuse, said here
+ *  instead of as a bare invalid_body after Save. */
+function revenueEventTypesProblem(text: string): string | null {
+  const types = parseEventTypes(text);
+  const corrective = types.filter((t) => CORRECTIVE_EVENT_TYPES.has(t));
+  if (corrective.length === 1) return `${corrective[0]} corrects a sale, so it can’t be revenue. Remove it.`;
+  if (corrective.length > 1) return `${corrective.join(', ')} correct sales, so they can’t be revenue. Remove them.`;
+  if (types.length > 20) return 'List at most 20 event types.';
+  if (types.some((t) => t.length > 80)) return 'An event type can be at most 80 characters.';
+  return null;
+}
+
 /**
  * Event types that are sales in this program, beyond invoice_paid and
  * subscription_created (always sales). Their value is partner-attributed
@@ -382,10 +399,17 @@ function parseEventTypes(text: string): string[] {
  * counts as a sale whatever its type, so this matters for fixed bounties.
  */
 function RevenueEventTypesField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const problem = revenueEventTypesProblem(value);
   return (
     <div style={{ marginBottom: 16 }}>
       <Label>Revenue event types</Label>
-      <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder="e.g. order_paid, deal_won" />
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="e.g. order_paid, deal_won"
+        style={problem ? { borderColor: alpha(theme.danger, 0.533) } : undefined}
+      />
+      {problem && <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>{problem}</div>}
       <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4, lineHeight: 1.5 }}>
         Event types in this program that are sales, comma-separated. <code>invoice_paid</code> and{' '}
         <code>subscription_created</code> always are, and so is any conversion that pays a percentage

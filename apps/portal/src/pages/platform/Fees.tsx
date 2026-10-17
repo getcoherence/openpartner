@@ -17,14 +17,34 @@ import {
 
 const PLAN_LABEL: Record<'flat' | 'revshare', string> = { flat: 'Flex', revshare: 'Revshare' };
 
+/** Tenant.billingPlan for display. Enterprise meters as `flat`, so label
+ *  from the plan, never the mode. */
+function planLabel(plan: string | null): string {
+  if (plan === 'flex') return 'Flex';
+  if (plan === 'revshare') return 'Revshare';
+  if (plan === 'enterprise') return 'Enterprise';
+  return plan ?? '—';
+}
+
 function pct(rate: number): string {
   return `${Number((rate * 100).toFixed(3))}%`;
+}
+
+/** Fraction → percent text field, without float noise (0.035 → "3.5"). */
+function rateField(rate: number): string {
+  return String(Number((rate * 100).toFixed(4)));
 }
 
 /** Percent text field ↔ fraction. */
 function toRate(text: string): number | null {
   const n = Number(text);
   return text.trim() === '' || !Number.isFinite(n) || n < 0 || n > 100 ? null : n / 100;
+}
+
+/** Effective dates are UTC midnights (period boundaries, the contract
+ *  date): show the UTC day, as the notice email does, not the local one. */
+function utcDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 }
 
 const muted = { fontSize: 13, color: theme.textMuted, lineHeight: 1.5 } as const;
@@ -51,7 +71,7 @@ export function FeesPage({ operator }: { operator: PlatformOperator }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <SettingsCard state={state.data} canWrite={canWrite} />
           <TenantsCard state={state.data} canWrite={canWrite} />
-          <EstimateCard />
+          <EstimateCard tenants={state.data.tenants} />
           <NoticeCard state={state.data} canWrite={canWrite} />
           <SignalsCard />
         </div>
@@ -65,8 +85,8 @@ function SettingsCard({ state, canWrite }: { state: FeesState; canWrite: boolean
   const s = state.settings;
   const [cutover, setCutover] = useState(s.cutoverAt ? s.cutoverAt.slice(0, 16) : '');
   const [rates, setRates] = useState({
-    flat: { revenueRate: String(s.rates.flat.revenueRate * 100), commissionRate: String(s.rates.flat.commissionRate * 100) },
-    revshare: { revenueRate: String(s.rates.revshare.revenueRate * 100), commissionRate: String(s.rates.revshare.commissionRate * 100) },
+    flat: { revenueRate: rateField(s.rates.flat.revenueRate), commissionRate: rateField(s.rates.flat.commissionRate) },
+    revshare: { revenueRate: rateField(s.rates.revshare.revenueRate), commissionRate: rateField(s.rates.revshare.commissionRate) },
   });
   const save = useMutation({
     mutationFn: (patch: Partial<Omit<FeeRuleSettings, 'rates'>> & { rates?: FeeRuleSettings['rates'] }) =>
@@ -89,11 +109,14 @@ function SettingsCard({ state, canWrite }: { state: FeesState; canWrite: boolean
   }
 
   function saveCutover(clear: boolean) {
-    const iso = clear ? null : new Date(cutover).toISOString();
-    const msg = clear
-      ? 'Clear the cutover? Brands already moved stay moved; no more move automatically.'
-      : `Set the cutover to ${new Date(cutover).toUTCString()}? Paid plans starting from then are billed on the new rule from day one.`;
-    if (window.confirm(msg)) save.mutate({ cutoverAt: iso });
+    // The field is UTC (it's prefilled from the stored UTC instant), so
+    // don't let the browser read it as local time.
+    const at = clear ? null : new Date(`${cutover}Z`);
+    if (at && Number.isNaN(at.getTime())) return;
+    const msg = at
+      ? `Set the cutover to ${at.toUTCString()}? Paid plans starting from then are billed on the new rule from day one.`
+      : 'Clear the cutover? Brands already moved stay moved; no more move automatically.';
+    if (window.confirm(msg)) save.mutate({ cutoverAt: at ? at.toISOString() : null });
   }
 
   return (
@@ -187,7 +210,7 @@ function SettingsCard({ state, canWrite }: { state: FeesState; canWrite: boolean
 
 function ruleLabel(t: FeeTenantStatus): string {
   if (t.rule === 'old') return 'Old rule';
-  const when = t.effectiveAt && new Date(t.effectiveAt).getTime() > 0 ? formatDate(t.effectiveAt) : 'first conversion';
+  const when = t.effectiveAt && new Date(t.effectiveAt).getTime() > 0 ? utcDate(t.effectiveAt) : 'first conversion';
   const why = t.effectiveSource === 'new_plan' ? 'new plan' : t.effectiveSource === 'notice' ? 'notice' : 'contract';
   return t.rule === 'scheduled' ? `Moves ${when} (${why})` : `New rule since ${when} (${why})`;
 }
@@ -205,22 +228,25 @@ function TenantsCard({ state, canWrite }: { state: FeesState; canWrite: boolean 
         <Table
           columns={['Brand', 'Plan', 'Rule', 'Rates', { label: 'Old fee (30d)', align: 'right' }, { label: 'New fee (30d)', align: 'right' }, 'Floor / renamed', '']}
           empty="No hosted brands."
+          // The table never wraps by itself (max-content), so the wordy
+          // cells get a width to wrap at: eight columns must leave the
+          // Contract button on screen at a 1280px laptop width.
           rows={rows.map((t) => [
-            <div key="b" style={{ minWidth: 0 }}>
+            <div key="b" style={{ minWidth: 0, maxWidth: 170 }}>
               <div style={{ fontSize: 13 }}>{t.displayName}</div>
               <div style={{ fontSize: 12, color: theme.textDim }}>/t/{t.slug}/</div>
             </div>,
             <span key="p" style={{ fontSize: 13 }}>
-              {t.plan ?? '—'}
-              {!t.subscribed && t.plan !== 'enterprise' ? <span style={{ color: theme.textDim }}> · no sub</span> : null}
+              {planLabel(t.plan)}
+              {!t.subscribed && t.plan !== 'enterprise' ? <div style={{ fontSize: 12, color: theme.textDim }}>no subscription</div> : null}
             </span>,
-            <span key="r" style={{ fontSize: 12.5, color: t.rule === 'old' ? theme.textMuted : theme.text }}>
+            <div key="r" style={{ fontSize: 12.5, maxWidth: 150, color: t.rule === 'old' ? theme.textMuted : theme.text }}>
               {ruleLabel(t)}
               {t.noticeSentAt ? <div style={{ color: theme.textDim }}>noticed {formatDate(t.noticeSentAt)}</div> : null}
-            </span>,
+            </div>,
             <span key="rt" style={{ fontSize: 12.5 }}>
               {pct(t.revenueRate)} / {pct(t.commissionRate)}
-              {t.contract ? <span style={{ color: theme.accentText }}> · contract</span> : null}
+              {t.contract ? <div style={{ color: theme.accentText }}>contract</div> : null}
               {t.monthlyMinimumUsd !== null ? <div style={{ color: theme.textDim }}>min {money(t.monthlyMinimumUsd)}/mo</div> : null}
             </span>,
             t.shadow ? money(t.shadow.oldFeeUsd) : '—',
@@ -238,15 +264,17 @@ function TenantsCard({ state, canWrite }: { state: FeesState; canWrite: boolean 
           ])}
         />
       </div>
-      {editing && <ContractEditor tenant={rows.find((t) => t.tenantId === editing)!} onDone={() => setEditing(null)} />}
+      {/* Keyed by brand: switching brands must not carry the last one's
+          typed terms (or statement) over to the next. */}
+      {editing && <ContractEditor key={editing} tenant={rows.find((t) => t.tenantId === editing)!} onDone={() => setEditing(null)} />}
     </Card>
   );
 }
 
 function ContractEditor({ tenant, onDone }: { tenant: FeeTenantStatus; onDone: () => void }) {
   const qc = useQueryClient();
-  const [rr, setRr] = useState(tenant.contract ? String(tenant.revenueRate * 100) : '');
-  const [cr, setCr] = useState(tenant.contract ? String(tenant.commissionRate * 100) : '');
+  const [rr, setRr] = useState(tenant.contract ? rateField(tenant.revenueRate) : '');
+  const [cr, setCr] = useState(tenant.contract ? rateField(tenant.commissionRate) : '');
   const [minimum, setMinimum] = useState(tenant.monthlyMinimumUsd === null ? '' : String(tenant.monthlyMinimumUsd));
   const [effective, setEffective] = useState(tenant.effectiveSource === 'contract' && tenant.effectiveAt ? tenant.effectiveAt.slice(0, 10) : '');
   const [note, setNote] = useState(tenant.contractNote ?? '');
@@ -335,8 +363,9 @@ function ContractEditor({ tenant, onDone }: { tenant: FeeTenantStatus; onDone: (
   );
 }
 
-function EstimateCard() {
+function EstimateCard({ tenants }: { tenants: FeeTenantStatus[] }) {
   const [days, setDays] = useState('90');
+  const planOf = new Map(tenants.map((t) => [t.tenantId, t.plan]));
   const run = useMutation({
     mutationFn: () => papi<{ days: number; estimates: FeeEstimate[] }>('/platform-admin/fees/estimate', { method: 'POST', body: { days: Number(days) || 90 } }),
   });
@@ -365,7 +394,7 @@ function EstimateCard() {
             empty="No conversions in the window."
             rows={run.data.estimates.map((e) => [
               `/t/${e.slug}/`,
-              e.mode === 'flat' ? 'Flex' : 'Revshare',
+              planOf.has(e.tenantId) ? planLabel(planOf.get(e.tenantId)!) : e.mode === 'flat' ? 'Flex' : 'Revshare',
               String(e.conversions),
               money(e.oldFeeUsd),
               <span key="n" style={{ color: e.newFeeUsd > e.oldFeeUsd ? theme.warn : theme.text }}>{money(e.newFeeUsd)}</span>,
@@ -425,7 +454,7 @@ function NoticeCard({ state, canWrite }: { state: FeesState; canWrite: boolean }
               `/t/${c.slug}/`,
               <span key="r" style={{ fontSize: 12.5 }}>{c.recipients.map((r) => r.email).join(', ') || '—'}</span>,
               `${pct(c.revenueRate)} / ${pct(c.commissionRate)}`,
-              c.effectiveAt ? formatDate(c.effectiveAt) : '—',
+              c.effectiveAt ? utcDate(c.effectiveAt) : '—',
               c.error ? <span key="e" style={{ fontSize: 12.5, color: theme.danger }}>{c.error}</span> : null,
             ])}
           />

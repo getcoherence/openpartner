@@ -333,7 +333,9 @@ function PlanCard({ status }: { status: BillingStatus }) {
               Current period ends {new Date(status.currentPeriodEnd * 1000).toLocaleDateString()}.
             </p>
           )}
-          {status.feeRate && (
+          {/* The fee card below explains the fee; on the commission-floor
+              rule this one-liner would be wrong. */}
+          {status.feeRate && !status.fee && (
             <p style={{ marginTop: 6, fontSize: 12, color: theme.textDim }}>
               Metered fee: {status.feeRate} of attributed GMV.
             </p>
