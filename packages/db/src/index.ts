@@ -30,6 +30,7 @@ export {
   CLICK_ID_MACRO,
   clickDestination,
   clickDestinationProblem,
+  clickDestinationWarning,
   hasClickIdMacro,
 } from './click-destination.js';
 export type { ProgramVideo, VideoProvider } from './program-video.js';

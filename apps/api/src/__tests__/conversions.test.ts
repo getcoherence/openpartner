@@ -30,6 +30,7 @@ import { db } from '../db.js';
 import { createApp } from '../app.js';
 import { clickUserId } from '../conversion-ingest.js';
 import { ipAllowed, rotatePostbackToken, verifyPostbackToken } from '../conversion-postback.js';
+import { POSTBACK_BODIES, postbackBody, type ConversionOutcome } from '../routes/conversions.js';
 
 const ADMIN_KEY = 'op_test_conversions_0123456789abcdef012345';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
@@ -51,6 +52,7 @@ const TABLES_TO_CLEAN = [
   TABLES.WebhookEndpoint,
   TABLES.ApiKey,
   TABLES.ConversionPostbackToken,
+  TABLES.PartnerCommission,
   TABLES.Partner,
   TABLES.Config,
 ];
@@ -204,7 +206,7 @@ describe.skipIf(skipIntegration)('POST /attribution/conversions', () => {
   it("404s a click that doesn't exist, or belongs to another tenant", async () => {
     const missing = await postConversion({ clickId: ulid(), type: 'loan_funded', externalEventId: `x-${ulid()}` });
     expect(missing.status).toBe(404);
-    expect(missing.body.error).toBe('click_not_found');
+    expect(missing.body).toEqual({ error: 'click_not_found', detail: 'No click with this id in this tenant.' });
 
     const foreign = await seedClick({ tenantId: OTHER_TENANT_ID });
     const res = await postConversion({ clickId: foreign.clickId, type: 'loan_funded', externalEventId: `x-${ulid()}` });
@@ -267,6 +269,157 @@ describe.skipIf(skipIntegration)('POST /attribution/conversions', () => {
   });
 });
 
+// The request names no program: the click does. A tenant's keys (and its
+// postback token) report for every program in it, as documented.
+describe.skipIf(skipIntegration)('conversions are scoped to the tenant, not a program', () => {
+  it("credits a click from any of the tenant's programs, to that click's program", async () => {
+    const shop = await seedClick({ programName: 'Shop' });
+    const loans = await seedClick({ programName: 'Loans', commissionRule: [{ trigger: 'every', type: 'fixed', value: 40 }] });
+
+    for (const click of [shop, loans]) {
+      const res = await postConversion({ clickId: click.clickId, type: 'sale', value: 100, externalEventId: `s-${ulid()}` });
+      expect(res.status).toBe(200);
+      expect(res.body.outcome).toBe('attributed');
+      const attribution = await db(TABLES.Attribution).where({ eventId: res.body.eventId }).first();
+      expect(attribution).toMatchObject({ programId: click.programId, partnerId: click.partnerId });
+    }
+  });
+});
+
+describe.skipIf(skipIntegration)('the response says what the conversion came to', () => {
+  const STAGES = [
+    { trigger: 'every', eventType: 'approved', type: 'fixed', value: 25 },
+    { trigger: 'first', eventType: 'loan_funded', type: 'fixed', value: 400 },
+  ];
+
+  it('attributed: credited and earning', async () => {
+    const { clickId } = await seedClick({ commissionRule: STAGES });
+    const res = await postConversion({ clickId, type: 'approved', externalEventId: `l-${ulid()}:approved` });
+    expect(res.body).toMatchObject({ outcome: 'attributed', attribution: { status: 'attributed', commission: 'accrued' } });
+    expect(res.body).not.toHaveProperty('reason');
+  });
+
+  it('no_matching_rule: a typo’d stage name is recorded and credited, and pays nothing', async () => {
+    const { clickId } = await seedClick({ commissionRule: STAGES });
+    const body = { clickId, type: 'funded', value: 5000, externalEventId: `l-${ulid()}:funded` };
+    const res = await postConversion(body);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ outcome: 'no_matching_rule', attribution: { status: 'attributed', commission: 'no_matching_rule' } });
+    expect(await commissionsFor(res.body.eventId)).toHaveLength(0);
+
+    // A retry hears the same thing.
+    const retry = await postConversion(body);
+    expect(retry.body).toMatchObject({ replayed: true, outcome: 'no_matching_rule' });
+  });
+
+  it('attributed no_commission: the rule takes the type, but a first-only rule already paid', async () => {
+    const { clickId } = await seedClick({ commissionRule: STAGES });
+    await postConversion({ clickId, type: 'loan_funded', value: 5000, externalEventId: `l-${ulid()}:funded` });
+    const second = await postConversion({ clickId, type: 'loan_funded', value: 5000, externalEventId: `l-${ulid()}:funded` });
+    expect(second.body).toMatchObject({ outcome: 'attributed', reason: 'no_commission', attribution: { commission: 'none' } });
+  });
+
+  it('not_attributed outside_window: a click older than the program’s window', async () => {
+    const { clickId } = await seedClick({ clickAgeMs: 90 * 24 * 60 * 60 * 1000 });
+    const body = { clickId, type: 'sale', value: 10, externalEventId: `s-${ulid()}` };
+    const res = await postConversion(body);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ outcome: 'not_attributed', reason: 'outside_window', attribution: { status: 'outside_window' } });
+
+    // Which miss it was isn't stored, so a replay says only not_attributed.
+    const retry = await postConversion(body);
+    expect(retry.body.outcome).toBe('not_attributed');
+    expect(retry.body).not.toHaveProperty('reason');
+  });
+
+  it('GET /postback answers the same words as text, still 200', async () => {
+    const token = await mintPostbackToken();
+    const fire = (clickId: string, type: string) =>
+      request(app).get('/postback').query({ click_id: clickId, type, txn_id: `T-${ulid()}`, token });
+
+    const staged = await seedClick({ commissionRule: STAGES });
+    expect((await fire(staged.clickId, 'approved')).text).toBe('ok attributed');
+    const typo = await fire(staged.clickId, 'funded');
+    expect([typo.status, typo.text]).toEqual([200, 'ok no_matching_rule']);
+    await fire(staged.clickId, 'loan_funded');
+    expect((await fire(staged.clickId, 'loan_funded')).text).toBe('ok attributed no_commission');
+
+    const old = await seedClick({ clickAgeMs: 90 * 24 * 60 * 60 * 1000 });
+    const late = await fire(old.clickId, 'sale');
+    expect([late.status, late.text]).toEqual([200, 'ok not_attributed outside_window']);
+
+    const revoked = await seedClick();
+    await db(TABLES.Partner).where({ id: revoked.partnerId }).update({ revokedAt: new Date() });
+    expect((await fire(revoked.clickId, 'sale')).text).toBe('ok not_attributed no_click');
+  });
+
+  it('every outcome maps to a documented postback body', () => {
+    const outcomes: ConversionOutcome[] = [
+      { outcome: 'attributed' },
+      { outcome: 'attributed', reason: 'no_commission' },
+      { outcome: 'no_matching_rule' },
+      { outcome: 'not_attributed' },
+      { outcome: 'not_attributed', reason: 'outside_window' },
+      { outcome: 'not_attributed', reason: 'no_click' },
+      { outcome: 'not_attributed', reason: 'no_identity' },
+    ];
+    expect(outcomes.map(postbackBody).sort()).toEqual([...POSTBACK_BODIES].sort());
+  });
+});
+
+describe.skipIf(skipIntegration)('GET /attribution/unmatched-event-types', () => {
+  it('lists recent credited types that no rule takes, and clears once a rule does', async () => {
+    const { clickId, programId } = await seedClick({
+      programName: 'Lender A',
+      commissionRule: [{ trigger: 'every', eventType: 'loan_funded', type: 'fixed', value: 400 }],
+    });
+    await postConversion({ clickId, type: 'funded', externalEventId: `l-1:${ulid()}` });
+    await postConversion({ clickId, type: 'funded', externalEventId: `l-2:${ulid()}` });
+    await postConversion({ clickId, type: 'loan_funded', externalEventId: `l-3:${ulid()}` });
+    // OpenPartner's own types are expected to go unpaid (a payments-only rule
+    // pays nothing on signups), so they're not listed.
+    await postConversion({ clickId, type: 'signup', externalEventId: `su:${ulid()}` });
+    // A miss credits no partner, so it has no rule to be checked against.
+    const old = await seedClick({ clickAgeMs: 90 * 24 * 60 * 60 * 1000 });
+    await postConversion({ clickId: old.clickId, type: 'apporved', externalEventId: `o:${ulid()}` });
+
+    const res = await request(app).get('/attribution/unmatched-event-types').set(admin);
+    expect(res.status).toBe(200);
+    expect(res.body.eventTypes).toEqual([
+      { type: 'funded', events: 2, lastSeenAt: expect.any(String), programs: [{ id: programId, name: 'Lender A' }] },
+    ]);
+
+    const fixed = await request(app)
+      .patch(`/programs/${programId}`)
+      .set(admin)
+      .send({
+        commissionRule: [
+          { trigger: 'every', eventType: 'loan_funded', type: 'fixed', value: 400 },
+          { trigger: 'every', eventType: 'funded', type: 'fixed', value: 400 },
+        ],
+      });
+    expect(fixed.status).toBe(200);
+    expect((await request(app).get('/attribution/unmatched-event-types').set(admin)).body.eventTypes).toEqual([]);
+  });
+
+  it("checks each partner's own terms: an override without the type lists it", async () => {
+    const { clickId, partnerId, programId } = await seedClick({ commissionRule: [{ trigger: 'every', eventType: 'approved', type: 'fixed', value: 25 }] });
+    const override = await request(app)
+      .put(`/partners/${partnerId}/programs/${programId}/commission`)
+      .set(admin)
+      .send({ commissionType: 'fixed', commissionValue: 400, commissionRules: [{ trigger: 'every', eventType: 'loan_funded', type: 'fixed', value: 400 }] });
+    expect(override.status).toBe(200);
+    await postConversion({ clickId, type: 'approved', externalEventId: `a:${ulid()}` });
+    const res = await request(app).get('/attribution/unmatched-event-types').set(admin);
+    expect(res.body.eventTypes.map((t: { type: string }) => t.type)).toEqual(['approved']);
+  });
+
+  it('is admin-only', async () => {
+    const key = await mintScopedKey(['events:write']);
+    expect((await request(app).get('/attribution/unmatched-event-types').set({ Authorization: `Bearer ${key}` })).status).toBe(403);
+  });
+});
+
 describe.skipIf(skipIntegration)('GET /postback', () => {
   it('a multi-tenant URL without /t/<slug> is a plain-text 400, not a 500', async () => {
     process.env.OPENPARTNER_TENANCY = 'multi';
@@ -293,7 +446,7 @@ describe.skipIf(skipIntegration)('GET /postback', () => {
       token,
     });
     expect(res.status).toBe(200);
-    expect(res.text).toBe('ok');
+    expect(res.text).toBe('ok attributed');
     expect(res.headers['content-type']).toMatch(/text\/plain/);
     expect(res.headers['cache-control']).toBe('no-store');
 
@@ -545,8 +698,8 @@ async function expectRowCounts(
 /** A click on a 10% program, inserted directly (the router isn't in this
  *  process). */
 async function seedClick(
-  opts: { tenantId?: string; fraudFlag?: string; commissionRule?: unknown } = {},
-): Promise<{ clickId: string; partnerId: string }> {
+  opts: { tenantId?: string; fraudFlag?: string; commissionRule?: unknown; clickAgeMs?: number; programName?: string } = {},
+): Promise<{ clickId: string; partnerId: string; programId: string }> {
   const tenantId = opts.tenantId ?? DEFAULT_TENANT_ID;
   const partnerId = ulid();
   const programId = ulid();
@@ -556,7 +709,7 @@ async function seedClick(
   await db(TABLES.Program).insert({
     id: programId,
     tenantId,
-    name: 'Loans',
+    name: opts.programName ?? 'Loans',
     attributionModel: 'last_click',
     attributionWindowDays: 60,
     commissionRule: JSON.stringify(opts.commissionRule ?? [{ trigger: 'every', type: 'percent', value: 10 }]),
@@ -571,7 +724,7 @@ async function seedClick(
     programId,
     landingUrl: `https://lender.example.com/apply?ref=${clickId}`,
     fraudFlag: opts.fraudFlag ?? null,
-    ts: new Date(Date.now() - 60_000),
+    ts: new Date(Date.now() - (opts.clickAgeMs ?? 60_000)),
   });
-  return { clickId, partnerId };
+  return { clickId, partnerId, programId };
 }

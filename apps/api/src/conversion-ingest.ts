@@ -22,8 +22,9 @@ import {
   type CommissionRow,
   type EventRow,
   type IdentityRow,
+  type ProgramRow,
 } from '@openpartner/db';
-import { attributeEvent, type AttributeResult } from './attribution.js';
+import { attributeEvent, resolveCommissionRule, ruleTakesEventType, type AttributeResult } from './attribution.js';
 
 /**
  * A replay must describe the same conversion. Reusing a key for a different
@@ -55,7 +56,9 @@ export type ReplayedAttribution = Omit<AttributeResult, 'status'> & { status: 'a
  * request wrote, rather than re-running attributeEvent — a replay mutates
  * nothing. A miss leaves no row, so which one it was (no_identity / no_click /
  * outside_window) isn't recoverable: that reports 'not_attributed'. Weights
- * come back at their stored 4-dp precision.
+ * come back at their stored 4-dp precision. `commission` is 'accrued' when
+ * the first request wrote a commission; otherwise it's checked against the
+ * rules as they are now, so a retried typo still hears `no_matching_rule`.
  */
 export async function storedAttribution(db: Knex, eventId: string): Promise<ReplayedAttribution> {
   // Touch order matches attributeEvent's (click ts ascending). computedAt
@@ -93,7 +96,26 @@ export async function storedAttribution(db: Knex, eventId: string): Promise<Repl
       attributionId: t.id,
       commissionId: commissionByAttribution.get(t.id),
     })),
+    commission: commissions.length > 0 ? 'accrued' : await unpaidReason(db, eventId, touches),
   };
+}
+
+async function unpaidReason(
+  db: Knex,
+  eventId: string,
+  touches: AttributionRow[],
+): Promise<'none' | 'no_matching_rule'> {
+  const event = await db<EventRow>(TABLES.Event).where({ id: eventId }).first('type');
+  const programs = await db<ProgramRow>(TABLES.Program)
+    .whereIn('id', [...new Set(touches.map((t) => t.programId))])
+    .select('id', 'commissionRule');
+  for (const touch of touches) {
+    const program = programs.find((p) => p.id === touch.programId);
+    if (!program || !event) continue;
+    const rules = await resolveCommissionRule(db, touch.partnerId, touch.programId, program.commissionRule);
+    if (rules.some((r) => ruleTakesEventType(r, event.type))) return 'none';
+  }
+  return 'no_matching_rule';
 }
 
 /**

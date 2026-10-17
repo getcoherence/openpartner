@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { TABLES, type CommissionRow } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { dispatchCommissionEvents } from '../commission-events.js';
+import { onCommit } from '../on-commit.js';
 import { cursorTimestamp, decodeCursor, takePage, whereAfterCursor } from '../pagination.js';
 import { tenantOf } from '../tenancy.js';
 import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
@@ -166,7 +167,9 @@ commissionsRouter.post('/commissions/:id/approve', requireAuth, requireAdmin, as
     return res.status(409).json({ error: 'not_approvable', detail: 'must be in accrued state' });
   }
   const c = updated[0]!;
-  void dispatchCommissionEvents(tenantId, 'commission.approved', [c]);
+  // After COMMIT, so a receiver reading the commission sees it approved.
+  // Not awaited: the origin lookup needn't hold up the response.
+  onCommit(db, 'commission.approved webhook', () => void dispatchCommissionEvents(tenantId, 'commission.approved', [c]));
   res.json({ commission: c });
 });
 
@@ -209,6 +212,8 @@ commissionsRouter.post('/commissions/:id/reverse', requireAuth, requireAdmin, as
     return res.status(409).json({ error: 'not_reversible', detail: 'only accrued or approved commissions' });
   }
   const c = updated[0]!;
-  void dispatchCommissionEvents(tenantId, 'commission.reversed', [c], { reason: 'manual' });
+  onCommit(db, 'commission.reversed webhook', () =>
+    void dispatchCommissionEvents(tenantId, 'commission.reversed', [c], { reason: 'manual' }),
+  );
   res.json({ commission: c });
 });

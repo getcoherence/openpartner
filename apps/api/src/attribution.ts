@@ -35,6 +35,7 @@ import {
   type IdentityRow,
 } from '@openpartner/db';
 import { dispatchEvent } from './webhook-dispatcher.js';
+import { onCommit } from './on-commit.js';
 import type { WebhookPayload } from './openapi/webhook-events.js';
 import { accrueSlabRule, commissionMetadata, type SubRuleAccrual } from './commission-slabs.js';
 
@@ -54,6 +55,23 @@ export interface AttributeResult {
   status: 'attributed' | 'no_identity' | 'no_click' | 'outside_window' | 'already_attributed';
   touches?: Array<{ clickId: string; partnerId: string; weight: number; attributionId: string; commissionId?: string }>;
   model?: AttributionModel;
+  /**
+   * What the attributed touches earned. Set only when status is 'attributed'.
+   *   accrued          at least one commission was written
+   *   no_matching_rule no commission rule on any touch's terms takes this
+   *                    event type: a typo'd stage name (`funded` for
+   *                    `loan_funded`), or a stage nobody pays on yet
+   *   none             a rule takes the type but nothing accrued: the
+   *                    program has ended, a `first` rule already paid, a cap
+   *                    was reached, or the amount came to zero
+   */
+  commission?: 'accrued' | 'no_matching_rule' | 'none';
+}
+
+/** Whether `subRule` can fire for an event of `eventType` at all. A rule
+ *  without an eventType takes every type. */
+export function ruleTakesEventType(subRule: Pick<CommissionSubRule, 'eventType'>, eventType: string): boolean {
+  return !subRule.eventType || subRule.eventType === eventType;
 }
 
 interface ClickWithCampaign extends ClickRow {
@@ -127,6 +145,10 @@ export async function attributeEvent(
 
   const results: NonNullable<AttributeResult['touches']> = [];
   let allDup = true;
+  // For AttributeResult.commission: did anything accrue, and was there a
+  // rule that could have (a lapsed program counts as one).
+  let accrued = false;
+  let typeTaken = false;
 
   for (const { click, weight } of touches) {
     if (weight === 0) continue;
@@ -156,6 +178,7 @@ export async function attributeEvent(
     // shouldn't exist for a not-yet-started campaign).
     const { commissionEarnable } = await import('./campaign-lifecycle.js');
     if (!commissionEarnable(click.campaign, new Date(event.ts))) {
+      typeTaken = true;
       continue;
     }
 
@@ -167,6 +190,7 @@ export async function attributeEvent(
     // back to the Campaign rule (status quo). A snapshot scoped to this
     // click's program beats the partner-wide one.
     const rules = await resolveCommissionRule(db, click.partnerId, click.programId, click.campaign.commissionRule);
+    if (rules.some((r) => ruleTakesEventType(r, event.type))) typeTaken = true;
 
     // Walk every sub-rule. A single event may produce multiple Commission
     // rows (e.g., a `subscription_created` matches both a one-time bonus
@@ -191,8 +215,11 @@ export async function attributeEvent(
         metadata: commissionMetadata(accrual, ruleIndex),
       });
       if (!firstCommissionId) firstCommissionId = commissionId;
+      accrued = true;
 
-      dispatchEvent(event.tenantId, 'commission.accrued', {
+      // After COMMIT: a receiver may fetch the commission straight away,
+      // and a rolled-back request must announce nothing (on-commit.ts).
+      const accruedPayload = {
         commissionId,
         partnerId: click.partnerId,
         attributionId,
@@ -206,7 +233,8 @@ export async function attributeEvent(
         currency: event.currency ?? 'USD',
         eventType: event.type,
         eventValue: event.value,
-      } satisfies WebhookPayload<'commission.accrued'>);
+      } satisfies WebhookPayload<'commission.accrued'>;
+      onCommit(db, 'commission.accrued webhook', () => dispatchEvent(event.tenantId, 'commission.accrued', accruedPayload));
     }
 
     // attribution.created fires once per Attribution regardless of how many
@@ -215,7 +243,7 @@ export async function attributeEvent(
     // that key off a single commission per attribution; multi-rule consumers
     // should listen to commission.accrued.
     results.push({ clickId: click.id, partnerId: click.partnerId, weight, attributionId, commissionId: firstCommissionId });
-    dispatchEvent(event.tenantId, 'attribution.created', {
+    const attributionPayload = {
       attributionId,
       eventId: event.id,
       partnerId: click.partnerId,
@@ -227,11 +255,13 @@ export async function attributeEvent(
       eventValue: event.value,
       commissionId: firstCommissionId,
       commissionCurrency: event.currency ?? 'USD',
-    } satisfies WebhookPayload<'attribution.created'>);
+    } satisfies WebhookPayload<'attribution.created'>;
+    onCommit(db, 'attribution.created webhook', () => dispatchEvent(event.tenantId, 'attribution.created', attributionPayload));
   }
 
   if (allDup) return { status: 'already_attributed', model };
-  return { status: 'attributed', touches: results, model };
+  const commission = accrued ? 'accrued' : typeTaken ? 'none' : 'no_matching_rule';
+  return { status: 'attributed', touches: results, model, commission };
 }
 
 export async function attributeBacklogForUser(db: Knex, userId: string): Promise<number> {
@@ -313,23 +343,31 @@ export function parseCommissionRule(raw: unknown): CommissionRule {
  *      recurring) — wrapped into a 1-element array for the engine
  *   3. Campaign.commissionRule (no snapshot exists)
  */
-async function resolveCommissionRule(
+export async function resolveCommissionRule(
   db: Knex,
   partnerId: string,
   programId: string,
   campaignRule: unknown,
 ): Promise<CommissionRule> {
-  const snapshot = await db<{
-    commissionType: 'percent' | 'fixed';
-    commissionValue: string;
-    recurring: boolean;
-    commissionRules: CommissionRule | null;
-  }>(TABLES.PartnerCommission)
+  const snapshot = await db<CommissionSnapshotRules>(TABLES.PartnerCommission)
     .where({ partnerId })
     .andWhere((q) => q.where({ programId }).orWhereNull('programId'))
     .orderByRaw('"programId" is null') // false (program-scoped) sorts first
     .first('commissionType', 'commissionValue', 'recurring', 'commissionRules');
+  return rulesFor(snapshot, campaignRule);
+}
 
+/** The PartnerCommission columns the engine pays on. */
+export interface CommissionSnapshotRules {
+  commissionType: 'percent' | 'fixed';
+  commissionValue: string;
+  recurring: boolean;
+  commissionRules: CommissionRule | null;
+}
+
+/** resolveCommissionRule's precedence, for a snapshot already in hand (the
+ *  program-scoped row if any, else the partner-wide one, else undefined). */
+export function rulesFor(snapshot: CommissionSnapshotRules | undefined, campaignRule: unknown): CommissionRule {
   if (snapshot?.commissionRules) return snapshot.commissionRules;
 
   if (snapshot) {
@@ -362,7 +400,7 @@ async function evaluateSubRule(
   partnerId: string,
   programId: string,
 ): Promise<SubRuleAccrual | null> {
-  if (subRule.eventType && subRule.eventType !== event.type) return null;
+  if (!ruleTakesEventType(subRule, event.type)) return null;
 
   if (subRule.trigger === 'first' || subRule.trigger === 'subsequent') {
     // "Has this (partner, user, eventType) been attributed before?"

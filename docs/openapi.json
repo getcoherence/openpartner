@@ -1352,6 +1352,43 @@
           "customerReward"
         ]
       },
+      "SaveWarnings": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "field": {
+              "type": "string",
+              "enum": [
+                "destinationUrl"
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "field",
+            "message"
+          ]
+        },
+        "description": "Present only when there is something to fix. Today: a Stripe Payment Link (`buy.stripe.com`, `checkout.stripe.com`) without `client_reference_id={click_id}`. Stripe reads the referral only from that parameter, so without it no purchase through the link can be credited to the partner."
+      },
+      "ProgramSaved": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Program"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "warnings": {
+                "$ref": "#/components/schemas/SaveWarnings"
+              }
+            }
+          }
+        ]
+      },
       "CreateProgramRequest": {
         "type": "object",
         "properties": {
@@ -1759,6 +1796,22 @@
         ],
         "description": "A partner share link. The public URL is built from the router base, not stored: `https://app.openpartner.dev/r/<tenantSlug>/<linkKey>` on OpenPartner Cloud, `https://<custom-domain>/r/<linkKey>` on a white-label domain, `<router-origin>/r/<linkKey>` self-hosted."
       },
+      "LinkSaved": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Link"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "warnings": {
+                "$ref": "#/components/schemas/SaveWarnings"
+              }
+            }
+          }
+        ],
+        "description": "A partner share link. The public URL is built from the router base, not stored: `https://app.openpartner.dev/r/<tenantSlug>/<linkKey>` on OpenPartner Cloud, `https://<custom-domain>/r/<linkKey>` on a white-label domain, `<router-origin>/r/<linkKey>` self-hosted."
+      },
       "CreateLinkRequest": {
         "type": "object",
         "properties": {
@@ -1885,6 +1938,15 @@
                 "attributionId"
               ]
             }
+          },
+          "commission": {
+            "type": "string",
+            "enum": [
+              "accrued",
+              "no_matching_rule",
+              "none"
+            ],
+            "description": "Present when `status` is `attributed`. `accrued`: at least one commission was written. `no_matching_rule`: no commission rule on the partner's terms takes this event type, so nothing is paid. Usually a typo'd stage name (`funded` for `loan_funded`); such types are listed under `GET /attribution/unmatched-event-types`. `none`: a rule takes the type but nothing accrued (the program has ended, a `first` rule already paid, a cap was reached, or the amount came to zero). On a replay with no commission, checked against the rules as they are now."
           }
         },
         "required": [
@@ -1986,6 +2048,25 @@
             "type": "string",
             "description": "The user the click was stitched to: your `userId`, or the click's own synthetic user when you sent none."
           },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "attributed",
+              "no_matching_rule",
+              "not_attributed"
+            ],
+            "description": "What the conversion came to. `attributed`: a partner was credited (check `reason` and `attribution.commission`). `no_matching_rule`: a partner was credited, but no commission rule takes this `type`, so nothing is paid: check the stage name. `not_attributed`: no partner was credited (see `reason`). The conversion is recorded either way, so don't retry it. `GET /postback` answers the same words as text."
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "no_commission",
+              "outside_window",
+              "no_click",
+              "no_identity"
+            ],
+            "description": "With `attributed`: `no_commission` when a rule takes the type but nothing accrued. With `not_attributed`: `outside_window` (the click is older than the program's attribution window, or newer than the conversion's `ts`), `no_click` (the partner was revoked). A replay of a miss carries no reason, because which miss it was isn't stored."
+          },
           "attribution": {
             "$ref": "#/components/schemas/AttributionResult"
           },
@@ -2001,6 +2082,7 @@
           "ok",
           "eventId",
           "userId",
+          "outcome",
           "attribution"
         ]
       },
@@ -2058,6 +2140,135 @@
           "clickId",
           "type",
           "externalEventId"
+        ]
+      },
+      "PostbackToken": {
+        "type": "object",
+        "properties": {
+          "prefix": {
+            "type": "string",
+            "description": "The start of the token, `opcp_…`, to tell tokens apart. The full token is shown only once."
+          },
+          "ipAllowlist": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "IP addresses or CIDR ranges `GET /postback` accepts calls from. Empty: any address."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "lastUsedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "pattern": "Z$"
+          }
+        },
+        "required": [
+          "prefix",
+          "ipAllowlist",
+          "createdAt",
+          "lastUsedAt"
+        ]
+      },
+      "RotatePostbackTokenRequest": {
+        "type": "object",
+        "properties": {
+          "ipAllowlist": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "maxItems": 50,
+            "example": [
+              "203.0.113.0/24"
+            ]
+          }
+        }
+      },
+      "UpdatePostbackAllowlistRequest": {
+        "type": "object",
+        "properties": {
+          "ipAllowlist": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "maxItems": 50,
+            "example": [
+              "203.0.113.0/24",
+              "198.51.100.7"
+            ]
+          }
+        },
+        "required": [
+          "ipAllowlist"
+        ]
+      },
+      "UnmatchedEventTypes": {
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "eventTypes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string"
+                },
+                "events": {
+                  "type": "integer",
+                  "description": "Attributed events of this type since `since` that no rule took."
+                },
+                "lastSeenAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "Z$"
+                },
+                "programs": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "type",
+                "events",
+                "lastSeenAt",
+                "programs"
+              ]
+            }
+          }
+        },
+        "required": [
+          "since",
+          "eventTypes"
         ]
       },
       "ClickIngestResult": {
@@ -4742,7 +4953,7 @@
           "Partners"
         ],
         "summary": "Set a partner's commission override",
-        "description": "Replaces the program's commission rule for this partner's future commissions on every program that has no program-scoped terms for them (see `setPartnerProgramCommission`). Omitting `commissionRules` clears any compound rules.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "Replaces the program's commission rule for this partner's future commissions on every program that has no program-scoped terms for them (see `setPartnerProgramCommission`). Omitting `commissionRules` clears any compound rules.\n\n**The override replaces the whole rule set; it doesn't merge.** A program that pays $25 on `approved` and $400 on `loan_funded`, overridden with only the `loan_funded` rule, pays this partner nothing on `approved`. To change one stage, send the program's full `commissionRule` array with that one rule edited.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -5022,7 +5233,7 @@
           "Partners"
         ],
         "summary": "Set a partner's commission terms on one program",
-        "description": "Same body as `setPartnerCommissionOverride`, for one program. On that program these terms beat the partner-wide override and set the holdback too (omitted = the program's own). The partner doesn't need a grant on the program: terms can be agreed before access, and outlive a revoked grant.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "Same body as `setPartnerCommissionOverride`, for one program. On that program these terms beat the partner-wide override and set the holdback too (omitted = the program's own). The partner doesn't need a grant on the program: terms can be agreed before access, and outlive a revoked grant.\n\n**These terms replace the whole rule set; they don't merge.** The engine uses this row's `commissionRules` instead of the partner-wide override and the program's `commissionRule`, so any stage the row leaves out pays this partner nothing. For example, a program pays $25 on `approved` and $400 on `loan_funded`. Terms holding only `{ \"eventType\": \"loan_funded\", \"type\": \"fixed\", \"value\": 500 }` pay $500 on `loan_funded` and **$0 on `approved`**.\n\nTo raise one stage, start from the rules the partner earns on today, change that one rule, and send the whole array. `GET /partners/{id}/programs` returns each program's `commissionRule` and this partner's program-scoped `commission`; `GET /partners/{id}/commission-snapshot` returns the partner-wide override.\n\n```json\n{ \"commissionType\": \"fixed\", \"commissionValue\": 25, \"recurring\": false,\n  \"commissionRules\": [\n    { \"trigger\": \"every\", \"eventType\": \"approved\",    \"type\": \"fixed\", \"value\": 25 },\n    { \"trigger\": \"every\", \"eventType\": \"loan_funded\", \"type\": \"fixed\", \"value\": 500 }\n  ] }\n```\n\nThe legacy `commissionType`/`commissionValue`/`recurring` columns are still required. When `commissionRules` is set the engine ignores them, so fill them from one of the rules.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -5282,7 +5493,7 @@
           "Programs"
         ],
         "summary": "Create a program",
-        "description": "A program is one set of terms: commission rule, attribution window and model, destination URL.\n\n`shareOnNetwork` defaults to **true** when the tenant is on the OpenPartner Network, which lists the program on the public marketplace and makes `marketplaceDescription` required. Pass `shareOnNetwork: false` for a private program such as customer referral.\n\n`holdbackDays` above 0 means commissions are **approved automatically** that many days after they accrue (by the scheduled jobs), and then paid by the next payout run. 0 or omitted means every commission waits for `POST /commissions/{id}/approve`.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "A program is one set of terms: commission rule, attribution window and model, destination URL.\n\n`shareOnNetwork` defaults to **true** when the tenant is on the OpenPartner Network, which lists the program on the public marketplace and makes `marketplaceDescription` required. Pass `shareOnNetwork: false` for a private program such as customer referral.\n\n`holdbackDays` above 0 means commissions are **approved automatically** that many days after they accrue (by the scheduled jobs), and then paid by the next payout run. 0 or omitted means every commission waits for `POST /commissions/{id}/approve`.\n\n**Destination and the click id.** The router appends `?cref=<click id>` to `destinationUrl`. To put the id in a parameter of your own instead, write the `{click_id}` macro where it goes, exactly like that (`%7Bclick_id%7D` works too). It may go in the path, query or fragment, not the host. Any other brace text, such as `{{click_id}}`, `{ click_id }`, `{CLICK_ID}` or `{subid}`, is refused with `400`, because the router would send it through as text. A Stripe Payment Link (`buy.stripe.com`) reads the referral only from `client_reference_id`: without `?client_reference_id={click_id}` the program still saves, with a `warnings` entry.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -5305,11 +5516,11 @@
         },
         "responses": {
           "201": {
-            "description": "Created.",
+            "description": "Created. `warnings` flags a destination that will probably lose referrals.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Program"
+                  "$ref": "#/components/schemas/ProgramSaved"
                 }
               }
             }
@@ -5474,11 +5685,11 @@
         },
         "responses": {
           "200": {
-            "description": "The updated program.",
+            "description": "The updated program. `warnings` flags a destination that will probably lose referrals.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Program"
+                  "$ref": "#/components/schemas/ProgramSaved"
                 }
               }
             }
@@ -5975,11 +6186,11 @@
         },
         "responses": {
           "201": {
-            "description": "Created.",
+            "description": "Created. `warnings` flags a destination override that will probably lose referrals.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Link"
+                  "$ref": "#/components/schemas/LinkSaved"
                 }
               }
             }
@@ -6201,7 +6412,7 @@
           "Attribution"
         ],
         "summary": "Record a conversion against a click",
-        "description": "For senders that hold a click id but never saw an identify: a lender reporting a funded loan, a CRM, an affiliate network. The click id reaches them through the destination URL's `{click_id}` macro, or the `cref` the router appends. One call stitches the click to a user and records the event, in one transaction.\n\nSend `userId` when you have your own id for the user: attribution then follows the program's model across every click that user is stitched to, as on `POST /attribution/events`. Without it the click's own synthetic user is used, and this click alone is credited. Events recorded for the user before this stitch are not backfilled; `POST /attribution/identify` does that.\n\n**Idempotency.** `externalEventId` is required. A retry with the same key returns `200` with `replayed: true` and the original result, even if the click has been flagged since. Reusing a key for a different click, userId, type, value or currency returns `409 external_event_id_conflict`. Keys share one namespace with `POST /attribution/events`, `GET /postback` and `POST /coupons/redeem`.\n\nA click flagged by velocity limits or a revoked partner earns nothing: `422 click_flagged`.\n\n**Access:** admin key, or a scoped key with `events:write`.",
+        "description": "For senders that hold a click id but never saw an identify: a lender reporting a funded loan, a CRM, an affiliate network. The click id reaches them through the destination URL's `{click_id}` macro, or the `cref` the router appends. One call stitches the click to a user and records the event, in one transaction.\n\nSend `userId` when you have your own id for the user: attribution then follows the program's model across every click that user is stitched to, as on `POST /attribution/events`. Without it the click's own synthetic user is used, and this click alone is credited. Events recorded for the user before this stitch are not backfilled; `POST /attribution/identify` does that.\n\n**Scope.** Conversions are scoped to the tenant, not to a program. The click id already says which program the click came through, so there's no `programId` to send, and a click from any program in this tenant is accepted. A click id this tenant doesn't have is `404 click_not_found`. Keys with `events:write` (and the postback token) work across every program in the tenant, so a sender holding one can report against any of its clicks.\n\n**Idempotency.** `externalEventId` is required. A retry with the same key returns `200` with `replayed: true` and the original result, even if the click has been flagged since. Keys are unique across the **whole tenant**: one namespace shared by `POST /attribution/events`, `GET /postback` (`txn_id`), `POST /coupons/redeem` and the Stripe webhook. Reusing a key for a different click, userId, type, value or currency returns `409 external_event_id_conflict`, and that conversion is not recorded. So:\n- **One key per stage.** A loan reported as `approved` and later `loan_funded` needs two keys, e.g. `loan-881:approved` and `loan-881:funded`.\n- **Prefix keys per sender.** Two suppliers' order ids can collide: `acme:loan-881:funded`, `zenlend:loan-881:funded`.\n\n**Outcome.** Every `200` carries `outcome` (and sometimes `reason`), which says what the conversion came to: `attributed`, `no_matching_rule` (credited, but no commission rule takes this `type`, which usually means a typo'd stage name) or `not_attributed` (e.g. `outside_window`). The conversion is recorded in every case, so don't retry on these. Fix the cause and send the next conversion.\n\nA click flagged by velocity limits or a revoked partner earns nothing: `422 click_flagged`.\n\n**Access:** admin key, or a scoped key with `events:write`.",
         "security": [
           {
             "adminKey": []
@@ -6310,7 +6521,7 @@
           "Attribution"
         ],
         "summary": "Record a conversion from a postback URL",
-        "description": "`POST /attribution/conversions` for senders that can only fire a URL: affiliate networks, many lenders, tracking pixels. Same result: the click is stitched to a user and the event recorded, in one transaction.\n\n```\nGET /postback?click_id={click_id}&type=sale&amount=49.00&currency=USD&txn_id={transaction_id}&token=opcp_…\n```\n\n**The token is in the URL.** Proxies, browser history and the sender's own logs keep query strings, so treat a postback URL as leaked from the day you hand it out, and use `POST /attribution/conversions` with a Bearer key whenever the sender can set a header. The postback token is built for this: it records conversions and nothing else, is never accepted as a Bearer key (and an API key is never accepted as `token`), can be pinned to the sender's IPs (`ipAllowlist`), and rotating it on the Integrations page stops the old URL at once. OpenPartner's own request log redacts it. Always use `https://`.\n\n**Idempotency.** `txn_id` is the `externalEventId`: a network re-firing the postback records once. Keys share one namespace with `POST /attribution/conversions`, `POST /attribution/events` and `POST /coupons/redeem`, and reusing one for a different conversion is `409 external_event_id_conflict`.\n\n**Responses are plain text**, not JSON: `ok`, or the error code (`invalid_parameters` is followed by the offending names, e.g. `invalid_parameters: click_id, txn_id`). Every response is `Cache-Control: no-store`. `HEAD` answers `405` and records nothing, so a link checker can't create a conversion.\n\nThe token is checked before anything else, so a caller without one learns nothing about the parameters or clicks. Mint it under **Admin → Integrations** (or `POST /conversion-postback/token`).\n\n**Access:** the conversion postback token in the `token` query parameter. API keys are not accepted, as a Bearer header or as `token`.",
+        "description": "`POST /attribution/conversions` for senders that can only fire a URL: affiliate networks, many lenders, tracking pixels. Same result: the click is stitched to a user and the event recorded, in one transaction.\n\n```\nGET /postback?click_id={click_id}&type=sale&amount=49.00&currency=USD&txn_id={transaction_id}&token=opcp_…\n```\n\n**The token is in the URL.** Proxies, browser history and the sender's own logs keep query strings, so treat a postback URL as leaked from the day you hand it out, and use `POST /attribution/conversions` with a Bearer key whenever the sender can set a header. The postback token is built for this: it records conversions and nothing else, is never accepted as a Bearer key (and an API key is never accepted as `token`), can be pinned to the sender's IPs (`ipAllowlist`), and rotating it on the Integrations page stops the old URL at once. OpenPartner's own request log redacts it. Always use `https://`.\n\n**One token per tenant.** The token records conversions for every program in the tenant, so any sender holding it can report against any click. When several suppliers or networks send postbacks, pin the token to their addresses with `ipAllowlist` (`PATCH /conversion-postback`), and rotate it when one leaves.\n\n**Idempotency.** `txn_id` is the `externalEventId`: a network re-firing the postback records once. Keys are unique across the whole tenant, in one namespace with `POST /attribution/conversions`, `POST /attribution/events`, `POST /coupons/redeem` and the Stripe webhook. Reusing one for a different conversion is `409 external_event_id_conflict`, and that conversion is not recorded. Send a different `txn_id` for each stage (`loan-881:approved`, `loan-881:funded`), prefixed per sender.\n\n**Responses are plain text**, not JSON. A `200` is `ok` followed by what the conversion came to:\n\n| Body | Meaning |\n| --- | --- |\n| `ok attributed` | A partner was credited and earned commission. |\n| `ok attributed no_commission` | Credited, but nothing accrued: the program has ended, a `first` rule already paid, a cap was reached, or the amount was zero. |\n| `ok no_matching_rule` | Credited, but no commission rule takes this `type`. Usually a typo'd stage name. Admin → Integrations lists these types. |\n| `ok not_attributed outside_window` | No partner credited: the click is older than the program's attribution window. |\n| `ok not_attributed no_click` | No partner credited: the partner was revoked. |\n| `ok not_attributed` | A replay of a conversion that wasn't attributed the first time. |\n\nAll of these are `200` because the conversion is recorded: a retry would only replay it. Match on the `ok` prefix to tell success from an error. Errors are the bare code (`invalid_parameters` is followed by the offending names, e.g. `invalid_parameters: click_id, txn_id`). Every response is `Cache-Control: no-store`. `HEAD` answers `405` and records nothing, so a link checker can't create a conversion.\n\nThe token is checked before anything else, so a caller without one learns nothing about the parameters or clicks. Mint it under **Admin → Integrations** (or `POST /conversion-postback/token`).\n\n**Access:** the conversion postback token in the `token` query parameter. API keys are not accepted, as a Bearer header or as `token`.",
         "security": [
           {
             "postbackToken": []
@@ -6406,14 +6617,21 @@
         ],
         "responses": {
           "200": {
-            "description": "Recorded (or replayed): `ok`, or a 1×1 GIF with `pixel=1`.",
+            "description": "Recorded (or replayed): `ok` and the outcome, or a 1×1 GIF with `pixel=1`.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string",
                   "enum": [
-                    "ok"
-                  ]
+                    "ok attributed",
+                    "ok attributed no_commission",
+                    "ok no_matching_rule",
+                    "ok not_attributed",
+                    "ok not_attributed outside_window",
+                    "ok not_attributed no_click",
+                    "ok not_attributed no_identity"
+                  ],
+                  "example": "ok attributed"
                 }
               },
               "image/gif": {
@@ -6486,6 +6704,393 @@
                 "schema": {
                   "type": "string",
                   "description": "The error code, e.g. `invalid_token`."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/conversion-postback": {
+      "get": {
+        "operationId": "getConversionPostbackToken",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "Get the conversion postback token",
+        "description": "The live postback token's prefix, IP allowlist and last use, or `null` when postbacks are off. The token itself is never shown again after it's minted.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "responses": {
+          "200": {
+            "description": "The live token, or null.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/PostbackToken"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "token"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateConversionPostbackAllowlist",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "Set the postback token's IP allowlist",
+        "description": "Replaces the allowlist on the live token without rotating it, so URLs already handed out keep working. `[]` accepts any address.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePostbackAllowlistRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "$ref": "#/components/schemas/PostbackToken"
+                    }
+                  },
+                  "required": [
+                    "token"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_postback_token`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/conversion-postback/token": {
+      "post": {
+        "operationId": "rotateConversionPostbackToken",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "Mint or rotate the conversion postback token",
+        "description": "Mints the token `GET /postback` authenticates with, and returns it **once** as `plaintext`. A tenant has one live token: minting again revokes the old one immediately, so every URL carrying it stops working. Do that when a sender leaves, or when a URL may have leaked.\n\nThe token covers every program in the tenant, so a sender holding it can report against any click. `ipAllowlist` limits where it's accepted from: IP addresses or CIDR ranges, matched against the client address the API sees through one trusted proxy hop. Omitted, the previous token's allowlist carries over.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RotatePostbackTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Minted. `plaintext` is shown only here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "plaintext": {
+                      "type": "string",
+                      "example": "opcp_…"
+                    },
+                    "token": {
+                      "$ref": "#/components/schemas/PostbackToken"
+                    }
+                  },
+                  "required": [
+                    "plaintext",
+                    "token"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "revokeConversionPostbackToken",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "Turn postbacks off",
+        "description": "Revokes the live token without minting another. `GET /postback` then answers `401 invalid_token`.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "responses": {
+          "200": {
+            "description": "`revoked` is false when there was no live token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "revoked": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "revoked"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/attribution/unmatched-event-types": {
+      "get": {
+        "operationId": "listUnmatchedEventTypes",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "Event types that matched no commission rule",
+        "description": "Event types from the last 30 days that were credited to a partner but that no commission rule on the partner's terms takes, so the partner earned nothing. A sender reporting `funded` when the program pays on `loan_funded` shows up here. Admin → Integrations shows the same list as a warning.\n\nChecked against the rules as they are now: adding a rule for the type, or fixing the sender, clears the entry for later events. OpenPartner's own types (`signup`, `trial_started`, `subscription_created`, `invoice_paid`, `refund`, `dispute_created`, `invoice_payment_failed`) are left out, because a program that pays only on payments is meant to pay nothing on signups. Newest first.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "responses": {
+          "200": {
+            "description": "Newest first; empty when every type matched a rule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnmatchedEventTypes"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }

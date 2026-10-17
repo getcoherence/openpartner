@@ -24,7 +24,7 @@ import { getWhiteLabelState } from '../white-label.js';
 import { customerRewardDelivery } from '../customer-rewards.js';
 import { getStorage } from '../storage.js';
 import { commissionSlabFields, currencyCodeSchema, refineCommissionSubRule } from '../commission-rule-schema.js';
-import { destinationUrlSchema } from '../destination-url.js';
+import { destinationUrlSchema, destinationWarnings } from '../destination-url.js';
 
 /**
  * Commission rule schema. The wire format is an array of triggered sub-rules.
@@ -403,7 +403,7 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
     (campaign as ProgramRow).networkOfferingId = offeringId;
   }
 
-  res.status(201).json(campaign);
+  res.status(201).json({ ...campaign, ...destinationWarnings((campaign as ProgramRow).destinationUrl) });
 });
 
 programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res) => {
@@ -489,5 +489,5 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
     updated.networkOfferingId = offeringId;
   }
 
-  res.json(updated);
+  res.json({ ...updated, ...destinationWarnings(updated.destinationUrl) });
 });
