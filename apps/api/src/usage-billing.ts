@@ -141,6 +141,39 @@ export async function aggregateAttributedGmv(
 export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<UsageReportResult> {
   const state = await getTenantBillingState(db, tenantId);
   const mode = state.mode;
+
+  // Enterprise is contract-priced and billed out of band: no Stripe product,
+  // no Checkout, and the contract covers the platform fee. planToMode still
+  // maps it to 'flat', so without this it was metered like Flex. A meter
+  // event is inert when the customer has no subscription on the meter, but a
+  // tenant moved to enterprise from a self-serve plan keeps its Stripe
+  // customer, and a subscription left running would bill the % on top of the
+  // contract. The mark still advances (and a crash-frozen report is dropped),
+  // so a later move to Flex or Revshare bills from then, not the contract
+  // period.
+  if (state.plan === 'enterprise') {
+    const rangeEnd = new Date();
+    const pending = await getConfig<PendingUsageReport>(db, tenantId, CONFIG_KEYS.PendingUsageReport);
+    if (pending) {
+      console.error(
+        `[usage] ALERT: dropping pending usage report for enterprise tenant=${tenantId} ` +
+          `rangeEnd=${pending.rangeEndIso} amount=${pending.amount} — reconcile in Stripe manually`,
+      );
+      await deleteConfig(db, tenantId, CONFIG_KEYS.PendingUsageReport);
+    }
+    await setConfig(db, tenantId, CONFIG_KEYS.LastUsageReportedAt, rangeEnd.toISOString());
+    return {
+      mode,
+      meterEventName: '',
+      customerId: '',
+      amount: 0,
+      rangeStart: null,
+      rangeEnd,
+      reported: false,
+      reason: 'enterprise plan is billed out of band',
+    };
+  }
+
   const meterEventName = MODE_TO_METER[mode];
   if (!meterEventName) {
     return {

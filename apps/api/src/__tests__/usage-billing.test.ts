@@ -85,6 +85,47 @@ beforeEach(async () => {
   await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ billingPlan: 'revshare', stripeCustomerId: CUSTOMER });
 });
 
+describe.skipIf(skipIntegration)('reportUsageToStripe on the enterprise plan', () => {
+  it('sends no meter event, even with a Stripe customer, and still advances the mark', async () => {
+    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ billingPlan: 'enterprise' });
+    await seedGmv(100);
+
+    const res = await reportUsageToStripe(db, DEFAULT_TENANT_ID);
+    expect(res.reported).toBe(false);
+    expect(res.reason).toBe('enterprise plan is billed out of band');
+    expect(h.calls).toHaveLength(0);
+    expect(await getConfig(db, DEFAULT_TENANT_ID, CONFIG_KEYS.LastUsageReportedAt)).toBe(res.rangeEnd.toISOString());
+
+    // Moving to a metered plan later bills from then on, not the contract period.
+    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ billingPlan: 'flex' });
+    await seedGmv(25);
+    const next = await reportUsageToStripe(db, DEFAULT_TENANT_ID);
+    expect(next.reported).toBe(true);
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]!.value).toBe('25.00');
+  });
+
+  it('drops a frozen report instead of resending it', async () => {
+    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ billingPlan: 'enterprise' });
+    await setConfig(db, DEFAULT_TENANT_ID, CONFIG_KEYS.PendingUsageReport, {
+      rangeStartIso: null,
+      rangeEndIso: new Date().toISOString(),
+      amount: 40,
+      identifier: 'op-usage-flat-frozen',
+      meterEventName: 'openpartner_attributed_gmv',
+      customerId: CUSTOMER,
+    });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await reportUsageToStripe(db, DEFAULT_TENANT_ID);
+    expect(res.reported).toBe(false);
+    expect(h.calls).toHaveLength(0);
+    expect(await getConfig(db, DEFAULT_TENANT_ID, CONFIG_KEYS.PendingUsageReport)).toBeNull();
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('dropping pending usage report for enterprise'));
+    err.mockRestore();
+  });
+});
+
 describe.skipIf(skipIntegration)('reportUsageToStripe exactly-once', () => {
   it('freezes then clears the pending report on a clean run', async () => {
     await seedGmv(50);
