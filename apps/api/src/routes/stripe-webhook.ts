@@ -18,6 +18,7 @@ import {
 import { appDb, db } from '../db.js';
 import { attributeEvent } from '../attribution.js';
 import { clickUserId } from '../conversion-ingest.js';
+import { ingestCurrency } from '../currency.js';
 import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFromStripeSub } from './billing.js';
 import {
   handleCancellationScheduleChanged,
@@ -294,7 +295,8 @@ async function recordMappedEvent(
       userId: mapped.userId,
       type: mapped.type,
       value: mapped.value != null ? mapped.value.toFixed(2) : null,
-      currency: mapped.currency ?? 'USD',
+      // Stripe sends lower case ("inr"); stored upper case like every path.
+      currency: await ingestCurrency(trx, tenantId, mapped.currency),
       externalEventId,
       metadata: { stripeEventId: event.id, stripeType: event.type, ...(mapped.metadata ?? {}) },
       ts: new Date(event.created * 1000),
@@ -1094,7 +1096,7 @@ async function mapStripeEvent(
         userId,
         type: 'invoice_paid',
         value: invoice.amount_paid / 100,
-        currency: invoice.currency?.toUpperCase() ?? 'USD',
+        currency: invoice.currency ?? undefined,
         // Captured for refund/dispute lookup. Without these, charge.refunded
         // can't find the original Event to walk back to its Commissions.
         metadata: {
@@ -1144,7 +1146,7 @@ async function mapStripeEvent(
         userId,
         type: 'refund',
         value: -(charge.amount_refunded / 100),
-        currency: charge.currency?.toUpperCase() ?? 'USD',
+        currency: charge.currency ?? undefined,
         metadata: {
           stripeChargeId: charge.id,
           ...(invoiceId ? { stripeInvoiceId: invoiceId } : {}),
@@ -1184,7 +1186,7 @@ async function mapStripeEvent(
         userId,
         type: 'dispute_created',
         value: -(dispute.amount / 100),
-        currency: dispute.currency?.toUpperCase() ?? 'USD',
+        currency: dispute.currency ?? undefined,
         metadata: {
           stripeDisputeId: dispute.id,
           ...(chargeId ? { stripeChargeId: chargeId } : {}),
@@ -1205,7 +1207,7 @@ async function mapStripeEvent(
         userId,
         type: 'invoice_payment_failed',
         value: -(invoice.amount_due / 100),
-        currency: invoice.currency?.toUpperCase() ?? 'USD',
+        currency: invoice.currency ?? undefined,
         metadata: {
           stripeInvoiceId: invoice.id,
           attemptCount: invoice.attempt_count,
@@ -1450,7 +1452,7 @@ function checkoutPaymentRevenue(session: Stripe.Checkout.Session, userId: string
     userId,
     type: 'invoice_paid',
     value: amount / 100,
-    currency: session.currency?.toUpperCase() ?? 'USD',
+    currency: session.currency ?? undefined,
     externalEventId: session.id,
     metadata: {
       stripeCheckoutSessionId: session.id,

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { TABLES } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import { recordClickConversion, type ClickConversionResult } from '../conversion-ingest.js';
+import { currencyInputSchema } from '../currency.js';
 import {
   MAX_IP_ALLOWLIST,
   invalidAllowlistEntries,
@@ -33,7 +34,8 @@ export const conversionSchema = z.object({
   clickId: z.string().min(1).max(64),
   type: z.string().min(1).max(255),
   value: z.number().nonnegative().optional(),
-  currency: z.string().length(3).optional(),
+  /** Any case; stored upper case. Omitted → the tenant's default currency. */
+  currency: currencyInputSchema.optional(),
   /** Required: a sender that retries without one would pay twice. A numeric
    *  order id is its string, as on /attribution/events. */
   externalEventId: z.preprocess(
@@ -102,7 +104,8 @@ const postbackSchema = z.object({
     (v) => (v === '' || v === undefined ? undefined : Number(v)),
     z.number().finite().nonnegative().optional(),
   ),
-  currency: z.string().length(3).optional(),
+  // Same for currency: '' falls back to the tenant's default.
+  currency: z.preprocess((v) => (v === '' ? undefined : v), currencyInputSchema.optional()),
   txnId: z.string().min(1).max(120),
   userId: z.string().min(1).max(255).optional(),
 });

@@ -385,19 +385,41 @@ export const PayoutRunResult = z
 
 // ---------- Reporting ----------
 
+const amountsByCurrency = z.record(z.string(), z.number()).openapi({
+  description: 'Amount per ISO 4217 currency code. Currencies with nothing are absent; nothing is converted.',
+});
+
+const commissionByStatusAndCurrency = z.record(z.string(), z.record(z.enum(COMMISSION_STATUSES), z.number())).openapi({
+  description: 'Commission totals per currency, then per status. Currencies and statuses with nothing are absent.',
+});
+
 export const PartnerDashboard = z
   .object({
     partnerId: id,
     since: ts,
+    currency: z.string().openapi({
+      description: "The brand's default currency: the currency of `attributedRevenue` and `commissionByStatus`.",
+      example: 'USD',
+    }),
     clicks: z.number().int(),
     attributedEvents: z.number().int(),
-    attributedRevenue: z.number(),
+    attributedRevenue: z.number().openapi({ description: 'Attributed revenue in `currency` only.' }),
+    attributedRevenueByCurrency: amountsByCurrency,
     commissionByStatus: z.record(z.enum(COMMISSION_STATUSES), z.number()).openapi({
       description:
-        'Sum of commission amounts accrued since `since`, keyed by status, across all currencies (no conversion). Statuses with nothing are absent. `paid` includes manual payouts not yet sent: read payouts for money that went out.',
+        'Sum of commission amounts in `currency` accrued since `since`, keyed by status. Statuses with nothing are absent. Commissions in other currencies are in `commissionByCurrency`. `paid` includes manual payouts not yet sent: read payouts for money that went out.',
     }),
+    commissionByCurrency: commissionByStatusAndCurrency,
     links: z
-      .array(z.object({ linkKey: z.string(), clicks: z.number().int(), attributedEvents: z.number().int(), attributedRevenue: z.number() }))
+      .array(
+        z.object({
+          linkKey: z.string(),
+          clicks: z.number().int(),
+          attributedEvents: z.number().int(),
+          attributedRevenue: z.number().openapi({ description: 'In `currency` only.' }),
+          attributedRevenueByCurrency: amountsByCurrency,
+        }),
+      )
       .optional()
       .openapi({ description: 'Only with `includeLinks=true`.' }),
   })

@@ -10,8 +10,35 @@ type PayoutCadence = 'weekly' | 'biweekly' | 'monthly' | 'manual';
 
 interface PayoutSettings {
   rail: PayoutRail;
+  /** Hundredths of a unit of thresholdCurrency. */
   thresholdCents: number;
+  /** The brand's default currency. Absent from an API that predates it. */
+  thresholdCurrency?: string;
   cadence: PayoutCadence;
+}
+
+/** Matches the API cap: 10,000,000 units of the default currency. */
+const MAX_THRESHOLD_UNITS = 10_000_000;
+
+/** Every ISO 4217 code the browser knows, labelled with its name. */
+function currencyOptions(current: string): Array<{ code: string; label: string }> {
+  let codes: string[] = [];
+  try {
+    codes = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf?.('currency') ?? [];
+  } catch {
+    codes = [];
+  }
+  const all = Array.from(new Set([current, 'USD', 'EUR', 'GBP', 'INR', ...codes])).sort();
+  let names: Intl.DisplayNames | null = null;
+  try {
+    names = new Intl.DisplayNames(['en'], { type: 'currency' });
+  } catch {
+    names = null;
+  }
+  return all.map((code) => {
+    const name = names?.of(code);
+    return { code, label: name && name !== code ? `${code} — ${name}` : code };
+  });
 }
 
 interface ProgramSettings {
@@ -25,6 +52,8 @@ interface ProgramSettings {
   faviconUrl: string | null;
   brandColor: string | null;
   programTermsUrl: string | null;
+  /** ISO 4217. Absent from an API that predates it. */
+  defaultCurrency?: string;
   whiteLabel: boolean;
 }
 
@@ -171,10 +200,12 @@ function ProgramSection() {
   const [supportEmail, setSupportEmail] = useState('');
   const [brandColor, setBrandColor] = useState('');
   const [programTermsUrl, setProgramTermsUrl] = useState('');
+  const [defaultCurrency, setDefaultCurrency] = useState('USD');
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (!data) return;
+    setDefaultCurrency(data.defaultCurrency ?? 'USD');
     setPartnerNetworkVisible(data.partnerNetworkVisible ?? true);
     setRouterUrl(data.routerUrl ?? '');
     setProgramName(data.programName ?? '');
@@ -187,10 +218,12 @@ function ProgramSection() {
     mutationFn: () =>
       api<ProgramSettings>('/config/program', {
         method: 'POST',
-        body: { programName, supportEmail, brandColor, programTermsUrl, routerUrl, partnerNetworkVisible },
+        body: { programName, supportEmail, brandColor, programTermsUrl, routerUrl, partnerNetworkVisible, defaultCurrency },
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['program-settings'] });
+      // The minimum payout is read in the default currency.
+      qc.invalidateQueries({ queryKey: ['payout-settings'] });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     },
@@ -280,6 +313,20 @@ function ProgramSection() {
           />
           <Hint>Linked from the partner portal footer. Blank = no terms link shown.</Hint>
         </div>
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <Label>Default currency</Label>
+        <Select value={defaultCurrency} onChange={(e) => setDefaultCurrency(e.target.value)} style={{ maxWidth: 320 }}>
+          {currencyOptions(defaultCurrency).map((c) => (
+            <option key={c.code} value={c.code}>
+              {c.label}
+            </option>
+          ))}
+        </Select>
+        <Hint>
+          Events, conversions and coupon redemptions sent without a currency are recorded in it, and the minimum payout is
+          set in it. Changing it doesn&rsquo;t relabel anything already recorded: every amount keeps the currency it came in.
+        </Hint>
       </div>
       {/* Self-host only, and moot for white-label (already hidden). */}
       {data?.partnerNetworkToggleAvailable && !data.whiteLabel && (
@@ -669,8 +716,9 @@ function PayoutSection() {
   });
 
   const [rail, setRail] = useState<PayoutRail>('auto');
-  // Stored as cents on the server; rendered as dollars in the UI.
+  // Stored as hundredths of the default currency; rendered in whole units.
   const [thresholdDollars, setThresholdDollars] = useState('0');
+  const thresholdCurrency = data?.thresholdCurrency ?? 'USD';
   const [cadence, setCadence] = useState<PayoutCadence>('weekly');
   const [saved, setSaved] = useState(false);
 
@@ -726,20 +774,19 @@ function PayoutSection() {
       </div>
 
       <div style={{ marginBottom: 16 }}>
-        <Label>Minimum payout (USD)</Label>
+        <Label>Minimum payout ({thresholdCurrency})</Label>
         <Input
           type="number"
           min="0"
-          max="1000"
+          max={MAX_THRESHOLD_UNITS}
           step="1"
           value={thresholdDollars}
           onChange={(e) => setThresholdDollars(e.target.value)}
           style={{ maxWidth: 160 }}
         />
         <Hint>
-          Balances below this stay in "approved" status and roll into the next payout
-          run. 0 = no minimum. Common values: $25, $50, $100. Anything above $1000 is
-          probably a misconfiguration and won't save.
+          Balances in {thresholdCurrency}, your default currency (Brand info), below this stay in "approved" status and roll
+          into the next payout run. Balances in other currencies pay out at any amount. 0 = no minimum.
         </Hint>
       </div>
 

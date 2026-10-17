@@ -15,6 +15,8 @@ export interface ProgramSettings {
   logoUrl: string | null;
   brandColor: string | null;
   programTermsUrl: string | null;
+  /** The brand's currency (ISO 4217). Absent from an API that predates it. */
+  defaultCurrency?: string;
   whiteLabel: boolean;
 }
 
@@ -67,6 +69,21 @@ export function useBrand(): Brand {
     routerUrl: data?.routerUrl ?? null,
     isLoading,
   };
+}
+
+/**
+ * The tenant's default currency, from the same cached `/config/program`
+ * fetch as useBrand. Use it to format an amount that has no currency of its
+ * own: a zero total, an empty state. An amount from a row always formats in
+ * that row's currency.
+ */
+export function useDefaultCurrency(): string {
+  const { data } = useQuery({
+    queryKey: ['program-settings'],
+    queryFn: () => api<ProgramSettings>('/config/program'),
+    staleTime: 60_000,
+  });
+  return data?.defaultCurrency ?? 'USD';
 }
 
 /** Shape of the public `GET /branding` bootstrap (no auth). */

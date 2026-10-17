@@ -23,6 +23,9 @@ const API = required('OPENPARTNER_API_URL').replace(/\/$/, ''); // tenant API ba
 const KEY = required('OPENPARTNER_API_KEY'); // scoped key from setup.mjs; never sent to the browser
 const PROGRAM_ID = required('OPENPARTNER_PROGRAM_ID');
 const SHARE_BASE = required('OPENPARTNER_SHARE_URL_BASE').replace(/\/$/, ''); // e.g. https://app.openpartner.dev/r/acme
+// Your OpenPartner default currency (Settings → Brand info). Payments are
+// reported in it unless the caller names one, and an empty balance shows in it.
+const CURRENCY = (process.env.OPENPARTNER_CURRENCY || 'USD').toUpperCase();
 const PORT = Number(process.env.PORT ?? 3000);
 // Loopback by default: the demo hooks below must not be reachable from the network.
 const HOST = process.env.HOST ?? '127.0.0.1';
@@ -221,6 +224,8 @@ async function buildView(user, { partnerId, linkKey, since }) {
   return {
     user: { name: user.name, email: user.email },
     shareUrl: `${SHARE_BASE}/${linkKey}`,
+    // What a balance with nothing in it is shown in.
+    currency: CURRENCY,
     stats: {
       clicks: sum('clicks'),
       // Per attribution: signups and trials, and events with a value.
@@ -294,7 +299,7 @@ async function onSignup({ userId, cref }) {
 /** Payment: report it as invoice_paid, keyed by your invoice id. In a real
  *  app, send this from a job queue and retry on 429 / network errors with
  *  the same externalEventId; a retry can never pay twice. */
-async function onInvoicePaid({ userId, invoiceId, amount, currency = 'USD' }) {
+async function onInvoicePaid({ userId, invoiceId, amount, currency = CURRENCY }) {
   return op('POST', '/attribution/events', {
     userId,
     type: 'invoice_paid',

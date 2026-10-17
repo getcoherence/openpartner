@@ -125,11 +125,12 @@
   const pill = (status) => el('span', { className: `pill s-${status}`, textContent: status });
 
   // One line per currency; amounts in different currencies are never added.
-  const moneyByCurrency = (totals, key) => {
+  // Nothing to show is a zero in the program's currency, not in dollars.
+  const moneyByCurrency = (totals, key, fallbackCurrency) => {
     const parts = Object.entries(totals)
       .filter(([, t]) => t[key] > 0)
       .map(([currency, t]) => money(t[key], currency));
-    return parts.length ? parts.join(' + ') : money(0, Object.keys(totals)[0] || 'USD');
+    return parts.length ? parts.join(' + ') : money(0, fallbackCurrency || Object.keys(totals)[0] || 'USD');
   };
 
   function render(view) {
@@ -140,10 +141,10 @@
       ['Clicks', s.clicks.toLocaleString()],
       ['Sign-ups', s.signups.toLocaleString()],
       ['Payments', s.payments.toLocaleString()],
-      ['Pending earnings', moneyByCurrency(view.totals, 'pending')],
+      ['Pending earnings', moneyByCurrency(view.totals, 'pending', view.currency)],
       // In a payout that hasn't been sent yet.
-      ['Processing', moneyByCurrency(view.totals, 'processing')],
-      ['Paid out', moneyByCurrency(view.totals, 'paidOut')],
+      ['Processing', moneyByCurrency(view.totals, 'processing', view.currency)],
+      ['Paid out', moneyByCurrency(view.totals, 'paidOut', view.currency)],
     ];
     $('stats').replaceChildren(
       ...tiles.map(([label, value]) => el('div', { className: 'stat' }, el('div', { className: 'label', textContent: label }), el('div', { className: 'value', textContent: value }))),
