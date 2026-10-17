@@ -1050,11 +1050,21 @@ export const partnerProxy = {
 // against a Config high-water mark. Hosted-tier vendors get 204'd by
 // the Network (their billing is bundled), so this is a no-op cost
 // from their perspective.
+//
+// Payouts are per currency. Non-USD totals are converted at the ECB
+// reference rate (fx.ts) as the GMV meter does; one with no published
+// rate is held out and alerted on, and a feed outage skips the run
+// without advancing the mark.
 
 export interface NetworkPayoutsReportResult {
   rangeStart: Date | null;
   rangeEnd: Date;
   amountUsd: number;
+  /** Network-originated payouts in the window, per currency. */
+  payoutsByCurrency?: Record<string, number>;
+  fx?: import('./fx.js').FxSnapshot;
+  /** Payouts in currencies with no published rate: not reported. */
+  heldOut?: Record<string, number>;
   reported: boolean;
   reason?: string;
 }
@@ -1077,17 +1087,43 @@ export async function reportNetworkPayoutsToNetwork(
 
   const { CONFIG_KEYS, getConfig, setConfig } = await import('./config.js');
   const { aggregateNetworkOriginatedPayouts } = await import('./usage-billing.js');
+  const { convertToUsd, FxUnavailableError } = await import('./fx.js');
 
   const lastIso = await getConfig<string>(db, tenantId, CONFIG_KEYS.LastNetworkPayoutsReportedAt);
   const rangeStart = lastIso ? new Date(lastIso) : null;
-  const amountUsd = await aggregateNetworkOriginatedPayouts(db, rangeStart, rangeEnd);
+  const payoutsByCurrency = await aggregateNetworkOriginatedPayouts(db, rangeStart, rangeEnd);
+
+  let conversion: Awaited<ReturnType<typeof convertToUsd>>;
+  try {
+    conversion = await convertToUsd(payoutsByCurrency);
+  } catch (err) {
+    if (!(err instanceof FxUnavailableError)) throw err;
+    console.error(
+      `[network-payouts] ALERT: not reported, no FX rates tenant=${tenantId} ` +
+        `payouts=${JSON.stringify(payoutsByCurrency)}: ${err.message}`,
+    );
+    return { rangeStart, rangeEnd, amountUsd: 0, payoutsByCurrency, reported: false, reason: 'fx_rates_unavailable' };
+  }
+  const { amountUsd, fx, heldOut } = conversion;
+  const audit = {
+    payoutsByCurrency,
+    ...(fx ? { fx } : {}),
+    ...(Object.keys(heldOut).length > 0 ? { heldOut } : {}),
+  };
+  if (audit.heldOut) {
+    console.error(
+      `[network-payouts] ALERT: payouts held out, no reference rate tenant=${tenantId} ` +
+        `range=${rangeStart ? rangeStart.toISOString() : 'genesis'}..${rangeEnd.toISOString()} ` +
+        `heldOut=${JSON.stringify(audit.heldOut)}`,
+    );
+  }
 
   if (amountUsd <= 0) {
     // Advance the high-water mark anyway so we don't re-scan the
     // same window. The Network endpoint short-circuits on 0 too,
     // but skipping the round-trip is cheaper.
     await setConfig(db, tenantId, CONFIG_KEYS.LastNetworkPayoutsReportedAt, rangeEnd.toISOString());
-    return { rangeStart, rangeEnd, amountUsd: 0, reported: false, reason: 'no_network_payouts_in_range' };
+    return { rangeStart, rangeEnd, amountUsd: 0, ...audit, reported: false, reason: 'no_network_payouts_in_range' };
   }
 
   const url = `${m.networkUrl.replace(/\/$/, '')}/vendors/me/report-payouts`;
@@ -1114,12 +1150,13 @@ export async function reportNetworkPayoutsToNetwork(
       rangeStart,
       rangeEnd,
       amountUsd,
+      ...audit,
       reported: false,
       reason: `network ${res.status}: ${text.slice(0, 200)}`,
     };
   }
   await setConfig(db, tenantId, CONFIG_KEYS.LastNetworkPayoutsReportedAt, rangeEnd.toISOString());
-  return { rangeStart, rangeEnd, amountUsd, reported: true };
+  return { rangeStart, rangeEnd, amountUsd, ...audit, reported: true };
 }
 
 // ---------- Heartbeat (Network liveness probe) ----------

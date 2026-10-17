@@ -2935,6 +2935,7 @@ describe.skipIf(skipIntegration)('stripe webhook — one-time (mode=payment) Che
     expect(funnel.body.revenue).toBe(129);
 
     const { aggregateAttributedGmv } = await import('../usage-billing.js');
-    expect(await aggregateAttributedGmv(db, null, new Date(Date.now() + 60_000))).toBe(129);
+    // The session is in EUR: it is EUR GMV, not 129 dollars.
+    expect(await aggregateAttributedGmv(db, null, new Date(Date.now() + 60_000))).toEqual({ EUR: 129 });
   });
 });

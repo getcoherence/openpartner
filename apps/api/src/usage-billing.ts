@@ -19,6 +19,14 @@
  * Multi-tenant: each tenant has its own Stripe customer + high-water mark
  * (Config rows are tenant-scoped). The scheduler iterates tenants and calls
  * this once per tenant; the billing route passes the request's tenant.
+ *
+ * Currency: the metered prices are USD, and GMV is in whatever currency the
+ * brand's customers paid. GMV is summed per currency (never across) and
+ * converted to USD at the ECB reference rate (fx.ts); the rates are frozen
+ * into the report. A currency with no published rate is held out of the
+ * meter and alerted on, never billed at a guess. If the rate feed is down
+ * the run is skipped and the high-water mark stays put, so the next run
+ * bills the window.
  */
 
 import type { Knex } from 'knex';
@@ -26,6 +34,7 @@ import { TABLES, type EventRow } from '@openpartner/db';
 import { CONFIG_KEYS, deleteConfig, getConfig, setConfig } from './config.js';
 import { requireStripe } from './stripe.js';
 import { getTenantBillingState } from './billing-plan.js';
+import { convertToUsd, FxUnavailableError, type FxSnapshot, type UsdConversion } from './fx.js';
 
 // The explicit billable-GMV semantic: event types whose Event.value counts
 // toward attributed GMV (summed over events that have an Attribution — i.e.
@@ -51,11 +60,21 @@ const MODE_TO_METER: Record<string, string> = {
   revshare: 'openpartner_attributed_gmv',
 };
 
+/** Amounts keyed by upper-case ISO 4217 code. */
+export type AmountsByCurrency = Record<string, number>;
+
 export interface UsageReportResult {
   mode: string;
   meterEventName: string;
   customerId: string;
-  amount: number; // dollars
+  /** USD sent to the meter: GMV converted, held-out currencies excluded. */
+  amount: number;
+  /** Attributed GMV in the window, per currency, before conversion. */
+  gmvByCurrency?: AmountsByCurrency;
+  /** Rates the conversion used, when any GMV wasn't USD. */
+  fx?: FxSnapshot;
+  /** GMV in currencies with no published rate: not metered, alerted. */
+  heldOut?: AmountsByCurrency;
   rangeStart: Date | null;
   rangeEnd: Date;
   reported: boolean;
@@ -71,7 +90,7 @@ export interface UsageReportResult {
 export const NETWORK_ORIGIN_SOURCE = 'openpartner_network';
 
 /**
- * Sum payout amounts (in dollars) for payouts whose Partner came from
+ * Sum payout amounts, per currency, for payouts whose Partner came from
  * the OpenPartner Network — i.e., Partner.metadata.source is
  * NETWORK_ORIGIN_SOURCE, set when the Network's approve flow created
  * the Partner.
@@ -96,21 +115,22 @@ export async function aggregateNetworkOriginatedPayouts(
   db: Knex,
   since: Date | null,
   until: Date,
-): Promise<number> {
+): Promise<AmountsByCurrency> {
   const q = db(TABLES.Payout)
     .join(TABLES.Partner, `${TABLES.Partner}.id`, `${TABLES.Payout}.partnerId`)
     .where(`${TABLES.Payout}.status`, 'paid')
     .andWhere(`${TABLES.Payout}.completedAt`, '<=', until)
     .andWhereRaw(`"${TABLES.Partner}"."metadata"->>'source' = ?`, [NETWORK_ORIGIN_SOURCE]);
   if (since) q.andWhere(`${TABLES.Payout}.completedAt`, '>', since);
-  const rows = (await q.sum({ total: `${TABLES.Payout}.amount` })) as Array<{ total: string | null }>;
-  return Number(rows[0]?.total ?? 0);
+  return sumByCurrency(db, q, `"${TABLES.Payout}"."currency"`, `"${TABLES.Payout}"."amount"`);
 }
 
 /**
- * Sum attributed GMV (in dollars) for events with `ts > since` and `ts <= until`.
- * Only counts events that have at least one Attribution row (i.e. a partner
- * was credited). Refund/dispute events are excluded by event-type filter.
+ * Sum attributed GMV, per currency, for events with `ts > since` and
+ * `ts <= until`. Only counts events that have at least one Attribution row
+ * (i.e. a partner was credited). Refund/dispute events are excluded by
+ * event-type filter. Currencies are never added together: 963,377 INR and
+ * 85,000 USD are two amounts, not 1,048,377 of anything.
  *
  * Tenant scope is provided by the caller (req.db with app.tenant_id set, or
  * a transaction the scheduler opened with the GUC pinned).
@@ -120,7 +140,7 @@ export async function aggregateAttributedGmv(
   since: Date | null,
   until: Date,
   eventTypes: string[] = REVENUE_EVENT_TYPES,
-): Promise<number> {
+): Promise<AmountsByCurrency> {
   const q = db<EventRow>(TABLES.Event)
     .whereIn('type', eventTypes)
     .where('ts', '<=', until)
@@ -128,8 +148,30 @@ export async function aggregateAttributedGmv(
       qb.select(db.raw('1')).from(TABLES.Attribution).whereRaw('"Attribution"."eventId" = "Event"."id"');
     });
   if (since) q.where('ts', '>', since);
-  const rows = (await q.sum({ total: 'value' })) as Array<{ total: string | null }>;
-  return Number(rows[0]?.total ?? 0);
+  return sumByCurrency(db, q, `"${TABLES.Event}"."currency"`, `"${TABLES.Event}"."value"`);
+}
+
+/**
+ * Group a money query by currency. Codes are compared upper-cased, so "inr"
+ * and "INR" are one currency, and a null currency is USD, which is what
+ * every reader of these rows has always taken it to mean.
+ */
+async function sumByCurrency(
+  db: Knex,
+  q: Knex.QueryBuilder,
+  currencyCol: string,
+  amountCol: string,
+): Promise<AmountsByCurrency> {
+  const code = `upper(coalesce(${currencyCol}, 'USD'))`;
+  const rows = (await q
+    .select(db.raw(`${code} as currency`), db.raw(`sum(${amountCol}) as total`))
+    .groupByRaw(code)) as Array<{ currency: string; total: string | null }>;
+  const out: AmountsByCurrency = {};
+  for (const r of rows) {
+    const total = Number(r.total ?? 0);
+    if (total !== 0) out[r.currency] = total;
+  }
+  return out;
 }
 
 /**
@@ -204,6 +246,9 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
         meterEventName: pending.meterEventName,
         customerId: pending.customerId,
         amount: pending.amount,
+        gmvByCurrency: pending.gmvByCurrency,
+        fx: pending.fx,
+        heldOut: pending.heldOut,
         rangeStart: pending.rangeStartIso ? new Date(pending.rangeStartIso) : null,
         rangeEnd: new Date(pending.rangeEndIso),
         reported: false,
@@ -223,6 +268,9 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
       meterEventName: pending.meterEventName,
       customerId: pending.customerId,
       amount: pending.amount,
+      gmvByCurrency: pending.gmvByCurrency,
+      fx: pending.fx,
+      heldOut: pending.heldOut,
       rangeStart: pending.rangeStartIso ? new Date(pending.rangeStartIso) : null,
       rangeEnd: new Date(pending.rangeEndIso),
       reported: true,
@@ -233,7 +281,46 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
   const lastReportedAtIso = await getConfig<string>(db, tenantId, CONFIG_KEYS.LastUsageReportedAt);
   const rangeStart = lastReportedAtIso ? new Date(lastReportedAtIso) : null;
   const rangeEnd = new Date();
-  const amount = await aggregateAttributedGmv(db, rangeStart, rangeEnd);
+  const gmvByCurrency = await aggregateAttributedGmv(db, rangeStart, rangeEnd);
+
+  let conversion: UsdConversion;
+  try {
+    conversion = await convertToUsd(gmvByCurrency);
+  } catch (err) {
+    if (!(err instanceof FxUnavailableError)) throw err;
+    // Don't advance the mark: the next run converts and bills this window.
+    console.error(
+      `[usage] ALERT: usage not reported, no FX rates tenant=${tenantId} ` +
+        `gmv=${JSON.stringify(gmvByCurrency)}: ${err.message}`,
+    );
+    return {
+      mode,
+      meterEventName,
+      customerId,
+      amount: 0,
+      gmvByCurrency,
+      rangeStart,
+      rangeEnd,
+      reported: false,
+      reason: 'fx_rates_unavailable',
+    };
+  }
+  const { amountUsd: amount, fx, heldOut } = conversion;
+  const audit = {
+    gmvByCurrency,
+    ...(fx ? { fx } : {}),
+    ...(Object.keys(heldOut).length > 0 ? { heldOut } : {}),
+  };
+  if (audit.heldOut) {
+    // The window still advances (a currency the ECB doesn't publish would
+    // wedge the tenant forever otherwise), so this line is the record:
+    // invoice the held-out GMV by hand.
+    console.error(
+      `[usage] ALERT: GMV held out of the meter, no reference rate tenant=${tenantId} ` +
+        `range=${rangeStart ? rangeStart.toISOString() : 'genesis'}..${rangeEnd.toISOString()} ` +
+        `heldOut=${JSON.stringify(audit.heldOut)}: bill it manually`,
+    );
+  }
 
   if (amount <= 0) {
     // Still advance the high-water mark — we've "reported" zero usage for
@@ -245,10 +332,11 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
       meterEventName,
       customerId,
       amount,
+      ...audit,
       rangeStart,
       rangeEnd,
       reported: false,
-      reason: 'no attributed GMV in range',
+      reason: audit.heldOut ? 'only GMV with no reference rate in range' : 'no attributed GMV in range',
     };
   }
 
@@ -267,6 +355,7 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
     identifier,
     meterEventName,
     customerId,
+    ...audit,
   };
   await setConfig(db, tenantId, CONFIG_KEYS.PendingUsageReport, frozen);
 
@@ -284,6 +373,7 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
     meterEventName,
     customerId,
     amount,
+    ...audit,
     rangeStart,
     rangeEnd,
     reported: true,
@@ -293,8 +383,14 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
 interface PendingUsageReport {
   rangeStartIso: string | null;
   rangeEndIso: string;
+  /** USD, as sent to the meter. */
   amount: number;
   identifier: string;
   meterEventName: string;
   customerId: string;
+  /** How `amount` was reached. Absent on reports frozen before currencies
+   *  were metered apart. */
+  gmvByCurrency?: AmountsByCurrency;
+  fx?: FxSnapshot;
+  heldOut?: AmountsByCurrency;
 }
