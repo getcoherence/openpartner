@@ -70,6 +70,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!skipIntegration) {
+    // Leave nothing behind: a later file that deletes Partner without
+    // knowing about Link would trip over this file's last links.
+    for (const t of TABLES_TO_CLEAN) await db(t).where({ tenantId: DEFAULT_TENANT_ID }).del();
     for (const t of [TABLES.Event, TABLES.Click, TABLES.Link, TABLES.Program, TABLES.Partner]) {
       await db(t).where({ tenantId: OTHER_TENANT_ID }).del();
     }

@@ -1408,8 +1408,8 @@ async function couponSignup(
 }
 
 /** The user whose revenue Event (invoice_paid) recorded this PaymentIntent:
- *  how a dispute of a guest one-time purchase (no Customer) finds the
- *  referred user. */
+ *  how a refund or dispute of a guest one-time purchase (no Customer) finds
+ *  the referred user. */
 async function userIdForPaymentIntent(trx: Knex.Transaction, paymentIntentId: string | null): Promise<string | null> {
   if (!paymentIntentId) return null;
   const row = await trx<EventRow>(TABLES.Event)
@@ -1466,18 +1466,6 @@ function checkoutPaymentRevenue(session: Stripe.Checkout.Session, userId: string
 function checkoutEvents(...events: Array<MappedEvent | null>): MappedEvent[] | null {
   const recorded = events.filter((e): e is MappedEvent => e !== null);
   return recorded.length > 0 ? recorded : null;
-}
-
-/** The user a one-time Checkout purchase was recorded under, found by its
- *  PaymentIntent: how a refund of a guest purchase (no Customer) finds the
- *  referred user. */
-async function userIdForPaymentIntent(trx: Knex.Transaction, paymentIntentId: string | null): Promise<string | null> {
-  if (!paymentIntentId) return null;
-  const row = await trx<EventRow>(TABLES.Event)
-    .where('type', 'invoice_paid')
-    .whereRaw(`"metadata"->>'stripePaymentIntentId' = ?`, [paymentIntentId])
-    .first('userId');
-  return row?.userId ?? null;
 }
 
 /**

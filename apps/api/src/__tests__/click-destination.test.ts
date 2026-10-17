@@ -86,20 +86,27 @@ describe('clickDestinationProblem', () => {
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
 
+const TABLES_TO_CLEAN = [TABLES.Commission, TABLES.Attribution, TABLES.Event, TABLES.Identity, TABLES.Click, TABLES.Link, TABLES.PartnerProgram, TABLES.Program, TABLES.Partner];
+
+async function clean(): Promise<void> {
+  for (const t of TABLES_TO_CLEAN) await db(t).del();
+}
+
 beforeAll(async () => {
   if (skipIntegration) return;
   await db.raw('select 1');
 });
 
 afterAll(async () => {
+  // Leave nothing behind: a later file that deletes Partner without
+  // knowing about Link would trip over this file's last links.
+  if (!skipIntegration) await clean();
   await db.destroy();
 });
 
 beforeEach(async () => {
   if (skipIntegration) return;
-  for (const t of [TABLES.Commission, TABLES.Attribution, TABLES.Event, TABLES.Identity, TABLES.Click, TABLES.Link, TABLES.PartnerProgram, TABLES.Program, TABLES.Partner]) {
-    await db(t).del();
-  }
+  await clean();
 });
 
 describe.skipIf(skipIntegration)('destination validation on programs and links', () => {
