@@ -48,9 +48,9 @@ partnerPostbacksRouter.get(
   requireAuth,
   requirePartnerOrAdmin('id'),
   async (req, res) => {
-    const { db } = tenantOf(req);
+    const { db, tenantId } = tenantOf(req);
     const rows = await db<PartnerPostbackRow>(TABLES.PartnerPostback)
-      .where({ partnerId: req.params.id })
+      .where({ tenantId, partnerId: req.params.id })
       .orderBy('createdAt', 'desc');
     res.json({ postbacks: rows, supportedEvents: postbackEventsList() });
   },
@@ -65,7 +65,7 @@ partnerPostbacksRouter.post(
     const body = createSchema.safeParse(req.body);
     if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-    const partner = await db(TABLES.Partner).where({ id: req.params.id }).first();
+    const partner = await db(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
     if (!partner) return res.status(404).json({ error: 'partner_not_found' });
 
     const id = ulid();
@@ -88,7 +88,7 @@ partnerPostbacksRouter.patch(
   requireAuth,
   requirePartnerOrAdmin('id'),
   async (req, res) => {
-    const { db } = tenantOf(req);
+    const { db, tenantId } = tenantOf(req);
     const body = updateSchema.safeParse(req.body);
     if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
@@ -100,7 +100,7 @@ partnerPostbacksRouter.patch(
     if (body.data.enabled !== undefined) patch.enabled = body.data.enabled;
 
     const updated = await db<PartnerPostbackRow>(TABLES.PartnerPostback)
-      .where({ id: req.params.postbackId, partnerId: req.params.id })
+      .where({ id: req.params.postbackId, tenantId, partnerId: req.params.id })
       .update(patch)
       .returning('*');
     if (updated.length === 0) return res.status(404).json({ error: 'postback_not_found' });
@@ -113,9 +113,9 @@ partnerPostbacksRouter.delete(
   requireAuth,
   requirePartnerOrAdmin('id'),
   async (req, res) => {
-    const { db } = tenantOf(req);
+    const { db, tenantId } = tenantOf(req);
     const deleted = await db(TABLES.PartnerPostback)
-      .where({ id: req.params.postbackId, partnerId: req.params.id })
+      .where({ id: req.params.postbackId, tenantId, partnerId: req.params.id })
       .del();
     if (deleted === 0) return res.status(404).json({ error: 'postback_not_found' });
     res.status(204).send();

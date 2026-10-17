@@ -15,6 +15,9 @@
  *   - admin routes: programs, admins (the last-active-admin guard),
  *     commissions, webhooks, API keys, portal domains, coupons, billing,
  *     onboarding
+ *   - routes keyed on a partner ID in the URL, which requirePartnerOrAdmin
+ *     lets any admin name: manual payout confirmation and payout history,
+ *     Stripe Connect onboarding and status, partner postbacks
  *   - per-tenant-unique keys: coupon codes, link keys, sign-in emails and
  *     magic links, the public signup
  *
@@ -24,7 +27,7 @@
  */
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { ulid } from 'ulid';
 import Stripe from 'stripe';
@@ -55,6 +58,7 @@ const { attributeEvent } = await import('../attribution.js');
 const { drainOutbox } = await import('../network-client.js');
 const { encryptSecret } = await import('../crypto.js');
 const { __setMailerForTests } = await import('../mailer.js');
+const { stripe } = await import('../stripe.js');
 type Message = import('../mailer.js').Message;
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
@@ -730,6 +734,130 @@ describe.skipIf(skipIntegration)('admin routes without RLS', () => {
     const res = await request(app).get(`/t/${B.slug}/admin/onboarding-status`).set(asB());
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ campaignCount: 1, partnerCount: 1 });
+  });
+});
+
+// ---------- routes keyed on a partner ID ----------
+//
+// requirePartnerOrAdmin('id') passes any admin straight through, whatever
+// partner ID the URL names, so tenant B's admin can name tenant A's
+// partner (or payout) here.
+
+describe.skipIf(skipIntegration)('partner-keyed routes without RLS', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function seedPayout(tenantId: string, partnerId: string, status: 'pending' | 'paid'): Promise<string> {
+    const id = ulid();
+    await db(TABLES.Payout).insert({
+      id,
+      tenantId,
+      partnerId,
+      amount: '20.00',
+      currency: 'USD',
+      method: 'manual',
+      status,
+      metadata: {},
+      completedAt: status === 'paid' ? new Date() : null,
+    });
+    return id;
+  }
+
+  async function seedPostback(tenantId: string, partnerId: string): Promise<{ id: string; url: string }> {
+    const id = ulid();
+    const url = `https://tracker.tenant-a.test/pb/${tag()}?cid={click_id}`;
+    await db(TABLES.PartnerPostback).insert({
+      id,
+      tenantId,
+      partnerId,
+      url,
+      events: JSON.stringify(['commission.accrued']) as unknown as never,
+    });
+    return { id, url };
+  }
+
+  it("POST /payouts/:id/confirm doesn't mark another tenant's manual payout paid", async () => {
+    const payoutId = await seedPayout(A.id, aPartnerId, 'pending');
+
+    const res = await request(app).post(`/t/${B.slug}/payouts/${payoutId}/confirm`).set(asB());
+
+    // Not found, rather than 409 with the payout's method and status.
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'payout_not_found' });
+    expect(await db(TABLES.Payout).where({ id: payoutId }).first()).toMatchObject({ status: 'pending', completedAt: null });
+  });
+
+  it("GET /partners/:id/payouts doesn't list another tenant's partner's payouts", async () => {
+    await seedPayout(A.id, aPartnerId, 'paid');
+    const res = await request(app).get(`/t/${B.slug}/partners/${aPartnerId}/payouts`).set(asB());
+    expect(res.status).toBe(200);
+    expect(res.body.payouts).toEqual([]);
+  });
+
+  it("Connect onboarding doesn't start for another tenant's partner", async () => {
+    const createAccount = vi.spyOn(stripe!.accounts, 'create').mockResolvedValue({ id: 'acct_scope_test' } as never);
+    const createLink = vi
+      .spyOn(stripe!.accountLinks, 'create')
+      .mockResolvedValue({ url: 'https://connect.stripe.test/setup', expires_at: 0 } as never);
+
+    const res = await request(app)
+      .post(`/t/${B.slug}/partners/${aPartnerId}/connect/start`)
+      .set(asB())
+      .send({ returnUrl: 'https://b.example.test/done', refreshUrl: 'https://b.example.test/retry' });
+
+    expect(res.status).toBe(404);
+    expect(createAccount).not.toHaveBeenCalled();
+    expect(createLink).not.toHaveBeenCalled();
+    expect(await db(TABLES.Partner).where({ id: aPartnerId }).first()).toMatchObject({ stripeConnectAccountId: null });
+  });
+
+  it("Connect status doesn't read another tenant's partner's account", async () => {
+    await db(TABLES.Partner).where({ id: aPartnerId }).update({ stripeConnectAccountId: 'acct_tenant_a' });
+    const retrieve = vi.spyOn(stripe!.accounts, 'retrieve').mockResolvedValue({
+      id: 'acct_tenant_a',
+      charges_enabled: true,
+      payouts_enabled: true,
+      details_submitted: true,
+    } as never);
+
+    const res = await request(app).get(`/t/${B.slug}/partners/${aPartnerId}/connect/status`).set(asB());
+
+    expect(res.status).toBe(404);
+    expect(retrieve).not.toHaveBeenCalled();
+  });
+
+  it("GET /partners/:id/postbacks doesn't list another tenant's partner's postbacks", async () => {
+    await seedPostback(A.id, aPartnerId);
+    const res = await request(app).get(`/t/${B.slug}/partners/${aPartnerId}/postbacks`).set(asB());
+    expect(res.status).toBe(200);
+    expect(res.body.postbacks).toEqual([]);
+  });
+
+  it("POST /partners/:id/postbacks doesn't add a postback to another tenant's partner", async () => {
+    const res = await request(app)
+      .post(`/t/${B.slug}/partners/${aPartnerId}/postbacks`)
+      .set(asB())
+      .send({ url: 'https://tracker.tenant-b.test/pb?cid={click_id}', events: ['commission.accrued'] });
+    expect(res.status).toBe(404);
+    expect(await db(TABLES.PartnerPostback).where({ partnerId: aPartnerId })).toEqual([]);
+  });
+
+  it("PATCH /partners/:id/postbacks/:postbackId doesn't edit another tenant's postback", async () => {
+    const postback = await seedPostback(A.id, aPartnerId);
+    const res = await request(app)
+      .patch(`/t/${B.slug}/partners/${aPartnerId}/postbacks/${postback.id}`)
+      .set(asB())
+      .send({ url: 'https://tracker.tenant-b.test/pb?cid={click_id}' });
+    expect(res.status).toBe(404);
+    expect(await db(TABLES.PartnerPostback).where({ id: postback.id }).first()).toMatchObject({ url: postback.url });
+  });
+
+  it("DELETE /partners/:id/postbacks/:postbackId doesn't delete another tenant's postback", async () => {
+    const postback = await seedPostback(A.id, aPartnerId);
+    const res = await request(app).delete(`/t/${B.slug}/partners/${aPartnerId}/postbacks/${postback.id}`).set(asB());
+    expect(res.status).toBe(404);
+    expect(await db(TABLES.PartnerPostback).where({ id: postback.id })).toHaveLength(1);
   });
 });
 
