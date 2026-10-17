@@ -79,6 +79,16 @@ bump — a bundle from before it imports with `metadata = {}`. The reverse
 (a newer bundle into an instance that hasn't run the migration) fails on
 the unknown column; migrate first.
 
+Refunds and chargebacks (Oct 2026) need nothing extra either, and no
+version bump. The refund itself is an `Event` (`type` `refund` or
+`chargeback`, negative `value`; an API refund names its conversion in
+`metadata.conversionEventId`). A partial refund's replacement commission
+is an ordinary `Commission` row whose `metadata.refund` names the
+commission it replaced and the refund behind it. A clawback on a paid
+commission is a `CommissionAdjustment` with `reason = 'refund_clawback'`.
+All three tables are already in the bundle, so a restored instance has
+the same refund history and the same derived amounts.
+
 ### Versioning
 
 `SCHEMA_VERSION` is the current bundle version; `SUPPORTED_IMPORT_VERSIONS`

@@ -6,8 +6,9 @@
  *
  * Only admins can approve or reverse — partners can see their own queue but
  * not change state. Status transitions are enforced here; once paid, rows are
- * considered part of the immutable ledger (reversal should be a compensating
- * entry, not a mutation — TODO when we add refund handling).
+ * part of the immutable ledger and this route refuses them. A refund of a
+ * paid commission is a compensating CommissionAdjustment instead
+ * (refunds.ts, via POST /attribution/refunds or Stripe's charge.refunded).
  */
 
 import { Router } from 'express';

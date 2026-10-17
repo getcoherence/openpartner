@@ -338,6 +338,15 @@ Stripe runs async verification. Wait 30–120 seconds, then re-check
 check Stripe → Connect → that account → Requirements for missing fields.
 
 **Refunded transactions still showing accrued commissions.**
-The refund handler reverses non-paid commissions automatically. Already-paid
-ones are surfaced on the corrective Event's `metadata.alreadyPaidCommissions`
-count for admin review. There is no automated clawback in v1.
+Refunds reach commissions from Stripe's `charge.refunded` (self-host) or from
+`POST /attribution/refunds` (any deployment). Both use the same code
+(`apps/api/src/refunds.ts`). A full refund reverses non-paid commissions; a
+partial one reverses each and accrues a replacement for the kept share
+(`metadata.refund` names the original). Already-paid commissions stay paid. A
+negative `CommissionAdjustment` (`reason = 'refund_clawback'`) records what the
+partner holds, and the Stripe refund Event counts them in
+`metadata.alreadyPaidCommissions` / `clawbackCommissions`. Nothing nets a
+clawback off later payouts: recover it from the partner by hand. A
+commission that was mid-payout is left alone (`heldInTransferCommissions`;
+`held_in_transfer` in the API response). Re-send the refund once the payout
+settles (the API's replay, or the next `charge.refunded` for that charge).

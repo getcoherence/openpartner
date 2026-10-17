@@ -22,6 +22,7 @@ import * as clicks from '../routes/clicks.js';
 import * as coupons from '../routes/coupons.js';
 import * as commissions from '../routes/commissions.js';
 import * as conversions from '../routes/conversions.js';
+import * as refunds from '../routes/refunds.js';
 import * as dashboard from '../routes/dashboard.js';
 import * as webhooks from '../routes/webhooks.js';
 import * as apiKeys from '../routes/api-keys.js';
@@ -423,7 +424,7 @@ Rows whose email already exists are reported as \`skipped_email_taken\` with the
     description: `
 Links the click id (\`cref\`) a visitor arrived with to your user id. The browser SDK calls this on signup and login; your backend can call it instead if it receives the \`cref\`.
 
-Repeat calls for the same pair are no-ops. Events already recorded for the user are attributed when the stitch lands (\`backfilledAttributions\`). Calling it on login too stitches a user who clicked on another device; until a pending fix ships, a second click stitched to a user with already-attributed events can credit those events again, so prefer calling it at signup.
+Repeat calls for the same pair are no-ops. Events already recorded for the user that have not attributed yet are attributed when the stitch lands (\`backfilledAttributions\`); an event that already attributed keeps its credit, and refunds and other corrective events are never attributed. Calling it on login too stitches a user who clicked on another device.
 
 Unauthenticated by design. It accepts any origin (CORS) and is limited to 120 requests per minute per client IP. Use the same \`userId\` you later send to \`POST /attribution/events\`.`,
     access: { kind: 'public' },
@@ -448,6 +449,8 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
 \`value\` is in major units (\`49.99\`), defaulting to no value; \`currency\` defaults to USD.
 
 **Idempotency.** Always send \`externalEventId\`: your system's stable id for this one event (invoice id, order id, deal id + stage). A retry with the same key returns \`200\` with \`replayed: true\` and the original result, writing nothing. Reusing a key for a different userId, type, value or currency returns \`409 external_event_id_conflict\`. Keys are per tenant, up to 120 characters, and shared with \`POST /coupons/redeem\`.
+
+**Refunds.** Report them to \`POST /attribution/refunds\`. A \`refund\` or \`chargeback\` event sent here is recorded but never attributed (\`attribution.status\` \`corrective\`) and reverses nothing.
 
 **Don't report a payment twice.** If your Stripe account also sends webhooks to this deployment (\`/webhooks/stripe\`, self-host), those payments are already recorded, keyed by the Stripe event id. Reporting the same payment here under your own invoice id records it a second time.`,
     access: { kind: 'admin', scope: 'events:write' },
@@ -474,6 +477,33 @@ A click flagged by velocity limits or a revoked partner earns nothing: \`422 cli
     body: conversions.conversionSchema.openapi('RecordConversionRequest'),
     responses: { 200: { description: 'Recorded (or replayed).', schema: S.ConversionResult } },
     errors: { 404: ['click_not_found'], 409: ['external_event_id_conflict'], 422: ['click_flagged'] },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/attribution/refunds',
+    tag: 'Attribution',
+    operationId: 'recordRefund',
+    summary: 'Report a refund or chargeback',
+    description: `
+Reports that a conversion was refunded, in full or in part, or charged back. Reference the conversion by the \`externalEventId\` you sent with it (\`conversionExternalEventId\`, preferred) or by the \`eventId\` OpenPartner returned (\`conversionEventId\`): exactly one. Conversions the self-host Stripe webhook recorded can be referenced too, but their Stripe refunds are already handled there; don't report those twice.
+
+The refund is recorded as a corrective event (type \`refund\` or \`chargeback\`, a negative \`value\`) that is never attributed, and the conversion's commissions follow it. Each commission ends up worth its original amount times the share of the conversion the customer kept:
+- **Not yet paid** (\`accrued\`, \`approved\`): reversed, firing \`commission.reversed\` (reason \`refund\` or \`chargeback\`) and the partner's postback. On a partial refund a replacement commission for the kept amount follows (\`commission.accrued\` with \`replacesCommissionId\`), keeping the original's status and accrual date, so its holdback doesn't restart.
+- **Already paid**: it stays paid. A negative adjustment records the refunded revenue the partner holds (\`clawback_recorded\`). OpenPartner doesn't deduct it from later payouts; recover it with the partner.
+- **In a payout right now**: left alone (\`held_in_transfer\`). Retry the same request once the payout settles.
+
+\`amount\` is in major units and defaults to everything not yet refunded. Partial refunds add up: two refunds of 30 and 20 on a 100 conversion leave each commission at 50%. A conversion with no \`value\` can only be refunded in full. A \`chargeback\` reverses commissions like a refund, so report it once it is final, not when a dispute opens.
+
+**Idempotency.** \`externalEventId\` is required: your id for this refund (refund id, credit note id). A retry with the same key returns \`200\` with \`replayed: true\`, records nothing new, and re-applies the refund, which also finishes any commission that was held in transfer. Reusing a key for a different conversion, kind or amount returns \`409 external_event_id_conflict\`. Keys share one namespace with \`POST /attribution/events\`.`,
+    access: { kind: 'admin', scope: 'events:write' },
+    body: refunds.refundSchema.openapi('RecordRefundRequest'),
+    responses: { 200: { description: 'Recorded (or replayed).', schema: S.RefundResult } },
+    errors: {
+      404: ['conversion_not_found'],
+      409: ['external_event_id_conflict'],
+      422: ['not_a_conversion', 'currency_mismatch', 'partial_refund_needs_value', 'refund_exceeds_remaining', 'nothing_to_refund'],
+    },
   });
 
   r.operation({

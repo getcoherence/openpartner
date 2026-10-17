@@ -97,7 +97,7 @@ curl -s -X PATCH http://localhost:4601/programs/$PROGRAM \
   -d '{"destinationUrl":"https://buy.stripe.com/abc123?client_reference_id={click_id}"}'
 ```
 
-The macro may go in the path, query or fragment, not the host. A misspelling such as `{clickid}` or `{cref}` is rejected. Click ids are ULIDs (26 letters and digits), so they fit Stripe's `client_reference_id`. On a single-tenant self-host whose Stripe webhook points here, a Payment Link purchase is then recorded automatically: a `signup`, plus the paid amount as `invoice_paid`. A refund of the whole purchase reverses its commission. Subscribe the webhook to `checkout.session.async_payment_succeeded` too, so purchases paid by SEPA, ACH or Bacs are counted when they clear.
+The macro may go in the path, query or fragment, not the host. A misspelling such as `{clickid}` or `{cref}` is rejected. Click ids are ULIDs (26 letters and digits), so they fit Stripe's `client_reference_id`. On a single-tenant self-host whose Stripe webhook points here, a Payment Link purchase is then recorded automatically: a `signup`, plus the paid amount as `invoice_paid`. A refund of the whole purchase reverses its commission; a partial refund cuts it to the share the customer kept. Subscribe the webhook to `checkout.session.async_payment_succeeded` too, so purchases paid by SEPA, ACH or Bacs are counted when they clear.
 
 **Report it in one call.** Whatever holds the click id posts the conversion with a key that has `events:write`. No identify step:
 

@@ -30,7 +30,7 @@ export interface EventAttribution {
   /**
    * 'not_attributed' only appears on a replay (`replayed: true`) of an event
    * that didn't attribute the first time; which miss it was isn't stored.
-   * 'corrective': refund / dispute_created / invoice_payment_failed —
+   * 'corrective': refund / chargeback / dispute_created / invoice_payment_failed —
    * recorded, never attributed.
    */
   status:

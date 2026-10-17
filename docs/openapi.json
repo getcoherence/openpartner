@@ -3,7 +3,7 @@
   "info": {
     "title": "OpenPartner API",
     "version": "1.0.0",
-    "description": "The OpenPartner tenant API: partners, programs, links, attribution, commissions, payouts, reporting, webhooks and export. Use it to run a referral or affiliate program from your own backend, for example an in-app \"Refer & earn\" page with no separate OpenPartner login. Walkthrough: [Build an in-app referral page](https://github.com/getcoherence/openpartner/blob/main/docs/headless-referral.md).\n\nThis document is generated from the API's own request validators. It is served at `/openapi.json`, and the rendered reference at `/docs`, on every deployment. White-label custom domains don't serve them; use the platform host, e.g. `https://app.openpartner.dev/api/docs`.\n\n## Base URL and tenancy\n\nEvery path below is relative to your tenant's API base:\n\n| Deployment | API base | Share links |\n| --- | --- | --- |\n| OpenPartner Cloud | `https://app.openpartner.dev/api/t/<tenant-slug>` | `https://app.openpartner.dev/r/<tenant-slug>/<linkKey>` |\n| Cloud with a white-label domain | `https://<your-domain>/api` | `https://<your-domain>/r/<linkKey>` |\n| Self-hosted, single tenant | your API origin, e.g. `https://api.example.com` (or `<portal>/api` behind the bundled proxy) | `<router origin>/r/<linkKey>` |\n| Self-hosted, multi-tenant | `<api origin>/t/<tenant-slug>` (or `<portal>/api/t/<tenant-slug>`) | `<router origin>/r/<tenant-slug>/<linkKey>` |\n\nThe slug comes **after** `/api`. `https://app.openpartner.dev/t/<slug>/api/...` reaches the portal's static site, not the API, and returns HTML. On a multi-tenant deployment a request with no `/t/<slug>` prefix fails with `400 tenant_slug_missing`, and an unknown slug gets a plain `404`. Your slug is the `/t/<slug>/` segment in your admin portal's address.\n\nKeys minted through the API are bound to their tenant. A key sent to another tenant's path is `401 unauthorized`.\n\n## Authentication\n\nSend a key as a bearer token: `Authorization: Bearer op_…`. Keys are server-side credentials: never ship one to a browser or mobile app. There are three kinds:\n\n- **Admin key.** Unscoped, full access to the tenant. Minted with `POST /api-keys`, or the deployment's `ADMIN_API_KEY` (self-host). The admin portal's session cookie is accepted wherever an admin key is.\n- **Scoped key.** Minted with `POST /api-keys/scoped` and a list of scopes. It can call only the operations its scopes unlock, and it acts on any partner in the tenant. Calling something it lacks the scope for returns `403 forbidden_scope` with the `required` scope; calling an operation with no scope returns `403 forbidden`. Use one for every integration so a leaked key can't do everything.\n- **Partner key.** Minted with `POST /partners/{id}/api-keys` by an admin or the partner. It acts as that one partner and can only reach that partner's own resources (`/partners/{its id}/…`). Revoking the partner revokes its keys.\n\nEach operation says which of these it accepts. Scopes:\n\n| Scope | Unlocks |\n| --- | --- |\n| `clicks:write` | `POST /clicks` |\n| `commissions:read` | `GET /partners/{id}/commissions`<br>`GET /commissions` |\n| `events:write` | `POST /attribution/events`<br>`POST /attribution/conversions`<br>`POST /coupons/redeem` |\n| `links:read` | `GET /partners/{id}/links` |\n| `links:write` | `POST /partners/{id}/links` |\n| `partners:read` | `GET /partners`<br>`GET /partners/{id}`<br>`GET /partners/{id}/dashboard`<br>`GET /partners/{id}/timeseries`<br>`GET /partners/{id}/events`<br>`GET /partners/{id}/customers`<br>`GET /partners/{id}/breakdowns` |\n| `partners:write` | `POST /partners`<br>`POST /import/partners-csv`<br>`POST /partners/{id}/invite`<br>`POST /partners/{id}/revoke`<br>`POST /partners/{id}/coupons`<br>`DELETE /partners/{id}/coupons/{couponId}` |\n| `payouts:read` | `GET /partners/{id}/payouts` |\n| `webhooks:write` | `POST /webhooks`<br>`DELETE /webhooks/{id}` |\n\n`partners:read` also unlocks `GET /brand-resources` (brand logo, colours and shareable assets), which this reference doesn't cover yet. The OpenPartner Network federation key holds `partners:write`, `partners:read`, `links:write`, `commissions:read`, `clicks:write`.\n\n**Scoped reads that don't exist yet:** `GET /partners/{id}/funnel`, `/coupons` and `/commission-snapshot` accept no scope. Read them with an admin key from your server, or use `/timeseries` (which has `partners:read`) for funnel-like counts.\n\n## Requests and responses\n\n- JSON bodies (`content-type: application/json`), up to 1 MB. `POST /import` takes up to 256 MB on single-tenant installs.\n- Errors are `{ \"error\": \"<code>\", \"detail\": … }`. Branch on `error`; `detail` is for humans.\n- **Timestamps are ISO-8601 in UTC and must end in `Z`**: `2026-10-16T10:00:00Z`. An offset such as `+00:00` (Python's `isoformat()` default) is rejected with `400 invalid_body` / `invalid_query`.\n- Money in major units. Commission and payout amounts, and `eventValue` in webhook payloads, are decimal **strings** such as `\"12.50\"`. Report endpoints (dashboard, timeseries, a partner's events list) return JSON numbers.\n- Fields may be added to any response at any time. Ignore fields you don't know.\n- Send `X-Request-Id` to correlate a call; every response echoes one back (generated if you didn't send it). Quote it in support requests.\n\n## Idempotency\n\n`POST /attribution/events` and `POST /coupons/redeem` take an `externalEventId`: your stable id for that one event. A retry with the same key replays the original result (`replayed: true`) and records nothing, even when the duplicates arrive at the same moment. A key reused for a different event is `409 external_event_id_conflict`. `POST /clicks` is idempotent on the click `id`. Other writes are not idempotent: `POST /partners` answers a duplicate email with `409 email_taken`, so look the partner up with `GET /partners?email=`.\n\n## Pagination\n\n`GET /partners` and the commission lists are keyset-paginated: pass the response's `nextCursor` as `cursor` until it is `null`. Cursors are opaque. `GET /partners/{id}/events` and `/customers` use `limit` + `offset`. `GET /partners/{id}/payouts` returns the 200 most recent, and `GET /webhooks/{id}/deliveries` the 100 most recent.\n\n## Rate limits\n\nThe API shares one limit of **600 requests per 5 minutes per client IP** across its routes (a few infrastructure paths are exempt). A backend calls from one IP, so that is your whole integration's budget, event ingest included: at four calls per page view, about 150 uncached page views per 5 minutes. Cache partner stats for a few minutes, don't let users force a refresh, and report events from a queue that backs off on `429`. Over the limit you get `429 rate_limited` with the IETF `RateLimit` and `RateLimit-Policy` headers.\n\n`POST /attribution/identify` has its own limit of 120 per minute per IP, answered with `429 rate_limited` and `Retry-After`. When the browser SDK calls it, that is each visitor's IP; when your backend calls it, every stitch counts against your backend's IP, so prefer the browser for identify at volume.\n\n## Webhooks\n\nSubscribe with `POST /webhooks`; the event catalogue is under **Webhook events**. Each delivery is a JSON `POST` of an envelope `{ id, event, created, data }` with:\n\n| Header | Value |\n| --- | --- |\n| `X-OpenPartner-Signature` | hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint's secret (the whole `whsec_…` string) |\n| `X-OpenPartner-Timestamp` | Unix seconds when the attempt was signed |\n| `X-OpenPartner-Event` | the event type |\n| `X-OpenPartner-Delivery` | the envelope `id` |\n\nTo verify a delivery, recompute the HMAC over the **raw** request body, before any JSON parsing, and compare it in constant time. Reject timestamps more than 5 minutes from now. Then dedupe on `id`:\n\n```js\nimport { createHmac, timingSafeEqual } from 'node:crypto';\n\nfunction verify(rawBody, headers, secret) {\n  const ts = headers['x-openpartner-timestamp'];\n  const sig = headers['x-openpartner-signature'] ?? '';\n  if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;\n  const expected = Buffer.from(createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex'));\n  const given = Buffer.from(sig);\n  return given.length === expected.length && timingSafeEqual(given, expected);\n}\n```\n\nDelivery is at most once per trigger: a non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed, and **failed deliveries are not retried automatically**. Find them with `GET /webhooks/{id}/deliveries` and resend with `POST /webhooks/{id}/deliveries/{deliveryId}/retry`. A resend carries the same `id` and a fresh signature. Treat webhooks as notifications and the list endpoints as the record: reconcile from `GET /commissions` if you can't afford to miss one.\n\nEndpoints must be publicly reachable. Private, loopback and link-local destinations are refused at delivery time, and OpenPartner Cloud delivers only to ports 80 and 443. A single-tenant self-host can allow specific private ranges with `OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS`.",
+    "description": "The OpenPartner tenant API: partners, programs, links, attribution, commissions, payouts, reporting, webhooks and export. Use it to run a referral or affiliate program from your own backend, for example an in-app \"Refer & earn\" page with no separate OpenPartner login. Walkthrough: [Build an in-app referral page](https://github.com/getcoherence/openpartner/blob/main/docs/headless-referral.md).\n\nThis document is generated from the API's own request validators. It is served at `/openapi.json`, and the rendered reference at `/docs`, on every deployment. White-label custom domains don't serve them; use the platform host, e.g. `https://app.openpartner.dev/api/docs`.\n\n## Base URL and tenancy\n\nEvery path below is relative to your tenant's API base:\n\n| Deployment | API base | Share links |\n| --- | --- | --- |\n| OpenPartner Cloud | `https://app.openpartner.dev/api/t/<tenant-slug>` | `https://app.openpartner.dev/r/<tenant-slug>/<linkKey>` |\n| Cloud with a white-label domain | `https://<your-domain>/api` | `https://<your-domain>/r/<linkKey>` |\n| Self-hosted, single tenant | your API origin, e.g. `https://api.example.com` (or `<portal>/api` behind the bundled proxy) | `<router origin>/r/<linkKey>` |\n| Self-hosted, multi-tenant | `<api origin>/t/<tenant-slug>` (or `<portal>/api/t/<tenant-slug>`) | `<router origin>/r/<tenant-slug>/<linkKey>` |\n\nThe slug comes **after** `/api`. `https://app.openpartner.dev/t/<slug>/api/...` reaches the portal's static site, not the API, and returns HTML. On a multi-tenant deployment a request with no `/t/<slug>` prefix fails with `400 tenant_slug_missing`, and an unknown slug gets a plain `404`. Your slug is the `/t/<slug>/` segment in your admin portal's address.\n\nKeys minted through the API are bound to their tenant. A key sent to another tenant's path is `401 unauthorized`.\n\n## Authentication\n\nSend a key as a bearer token: `Authorization: Bearer op_…`. Keys are server-side credentials: never ship one to a browser or mobile app. There are three kinds:\n\n- **Admin key.** Unscoped, full access to the tenant. Minted with `POST /api-keys`, or the deployment's `ADMIN_API_KEY` (self-host). The admin portal's session cookie is accepted wherever an admin key is.\n- **Scoped key.** Minted with `POST /api-keys/scoped` and a list of scopes. It can call only the operations its scopes unlock, and it acts on any partner in the tenant. Calling something it lacks the scope for returns `403 forbidden_scope` with the `required` scope; calling an operation with no scope returns `403 forbidden`. Use one for every integration so a leaked key can't do everything.\n- **Partner key.** Minted with `POST /partners/{id}/api-keys` by an admin or the partner. It acts as that one partner and can only reach that partner's own resources (`/partners/{its id}/…`). Revoking the partner revokes its keys.\n\nEach operation says which of these it accepts. Scopes:\n\n| Scope | Unlocks |\n| --- | --- |\n| `clicks:write` | `POST /clicks` |\n| `commissions:read` | `GET /partners/{id}/commissions`<br>`GET /commissions` |\n| `events:write` | `POST /attribution/events`<br>`POST /attribution/conversions`<br>`POST /attribution/refunds`<br>`POST /coupons/redeem` |\n| `links:read` | `GET /partners/{id}/links` |\n| `links:write` | `POST /partners/{id}/links` |\n| `partners:read` | `GET /partners`<br>`GET /partners/{id}`<br>`GET /partners/{id}/dashboard`<br>`GET /partners/{id}/timeseries`<br>`GET /partners/{id}/events`<br>`GET /partners/{id}/customers`<br>`GET /partners/{id}/breakdowns` |\n| `partners:write` | `POST /partners`<br>`POST /import/partners-csv`<br>`POST /partners/{id}/invite`<br>`POST /partners/{id}/revoke`<br>`POST /partners/{id}/coupons`<br>`DELETE /partners/{id}/coupons/{couponId}` |\n| `payouts:read` | `GET /partners/{id}/payouts` |\n| `webhooks:write` | `POST /webhooks`<br>`DELETE /webhooks/{id}` |\n\n`partners:read` also unlocks `GET /brand-resources` (brand logo, colours and shareable assets), which this reference doesn't cover yet. The OpenPartner Network federation key holds `partners:write`, `partners:read`, `links:write`, `commissions:read`, `clicks:write`.\n\n**Scoped reads that don't exist yet:** `GET /partners/{id}/funnel`, `/coupons` and `/commission-snapshot` accept no scope. Read them with an admin key from your server, or use `/timeseries` (which has `partners:read`) for funnel-like counts.\n\n## Requests and responses\n\n- JSON bodies (`content-type: application/json`), up to 1 MB. `POST /import` takes up to 256 MB on single-tenant installs.\n- Errors are `{ \"error\": \"<code>\", \"detail\": … }`. Branch on `error`; `detail` is for humans.\n- **Timestamps are ISO-8601 in UTC and must end in `Z`**: `2026-10-16T10:00:00Z`. An offset such as `+00:00` (Python's `isoformat()` default) is rejected with `400 invalid_body` / `invalid_query`.\n- Money in major units. Commission and payout amounts, and `eventValue` in webhook payloads, are decimal **strings** such as `\"12.50\"`. Report endpoints (dashboard, timeseries, a partner's events list) return JSON numbers.\n- Fields may be added to any response at any time. Ignore fields you don't know.\n- Send `X-Request-Id` to correlate a call; every response echoes one back (generated if you didn't send it). Quote it in support requests.\n\n## Idempotency\n\n`POST /attribution/events`, `POST /attribution/conversions`, `POST /attribution/refunds` and `POST /coupons/redeem` take an `externalEventId`: your stable id for that one event (required on conversions and refunds). A retry with the same key replays the original result (`replayed: true`) and records nothing, even when the duplicates arrive at the same moment. A key reused for a different event is `409 external_event_id_conflict`. `POST /clicks` is idempotent on the click `id`. Other writes are not idempotent: `POST /partners` answers a duplicate email with `409 email_taken`, so look the partner up with `GET /partners?email=`.\n\n## Pagination\n\n`GET /partners` and the commission lists are keyset-paginated: pass the response's `nextCursor` as `cursor` until it is `null`. Cursors are opaque. `GET /partners/{id}/events` and `/customers` use `limit` + `offset`. `GET /partners/{id}/payouts` returns the 200 most recent, and `GET /webhooks/{id}/deliveries` the 100 most recent.\n\n## Rate limits\n\nThe API shares one limit of **600 requests per 5 minutes per client IP** across its routes (a few infrastructure paths are exempt). A backend calls from one IP, so that is your whole integration's budget, event ingest included: at four calls per page view, about 150 uncached page views per 5 minutes. Cache partner stats for a few minutes, don't let users force a refresh, and report events from a queue that backs off on `429`. Over the limit you get `429 rate_limited` with the IETF `RateLimit` and `RateLimit-Policy` headers.\n\n`POST /attribution/identify` has its own limit of 120 per minute per IP, answered with `429 rate_limited` and `Retry-After`. When the browser SDK calls it, that is each visitor's IP; when your backend calls it, every stitch counts against your backend's IP, so prefer the browser for identify at volume.\n\n## Webhooks\n\nSubscribe with `POST /webhooks`; the event catalogue is under **Webhook events**. Each delivery is a JSON `POST` of an envelope `{ id, event, created, data }` with:\n\n| Header | Value |\n| --- | --- |\n| `X-OpenPartner-Signature` | hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint's secret (the whole `whsec_…` string) |\n| `X-OpenPartner-Timestamp` | Unix seconds when the attempt was signed |\n| `X-OpenPartner-Event` | the event type |\n| `X-OpenPartner-Delivery` | the envelope `id` |\n\nTo verify a delivery, recompute the HMAC over the **raw** request body, before any JSON parsing, and compare it in constant time. Reject timestamps more than 5 minutes from now. Then dedupe on `id`:\n\n```js\nimport { createHmac, timingSafeEqual } from 'node:crypto';\n\nfunction verify(rawBody, headers, secret) {\n  const ts = headers['x-openpartner-timestamp'];\n  const sig = headers['x-openpartner-signature'] ?? '';\n  if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;\n  const expected = Buffer.from(createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex'));\n  const given = Buffer.from(sig);\n  return given.length === expected.length && timingSafeEqual(given, expected);\n}\n```\n\nDelivery is at most once per trigger: a non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed, and **failed deliveries are not retried automatically**. Find them with `GET /webhooks/{id}/deliveries` and resend with `POST /webhooks/{id}/deliveries/{deliveryId}/retry`. A resend carries the same `id` and a fresh signature. Treat webhooks as notifications and the list endpoints as the record: reconcile from `GET /commissions` if you can't afford to miss one.\n\nEndpoints must be publicly reachable. Private, loopback and link-local destinations are refused at delivery time, and OpenPartner Cloud delivers only to ports 80 and 443. A single-tenant self-host can allow specific private ranges with `OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS`.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -1838,9 +1838,10 @@
               "no_click",
               "outside_window",
               "already_attributed",
-              "not_attributed"
+              "not_attributed",
+              "corrective"
             ],
-            "description": "`not_attributed` appears only on a replay of an event that did not attribute the first time; which miss it was is not stored."
+            "description": "`not_attributed` appears only on a replay of an event that did not attribute the first time; which miss it was is not stored. `corrective`: a `refund`, `chargeback`, `dispute_created` or `invoice_payment_failed` event, recorded but never attributed. It reverses nothing; report refunds to `POST /attribution/refunds`."
           },
           "model": {
             "type": "string",
@@ -2052,6 +2053,263 @@
           "clickId",
           "type",
           "externalEventId"
+        ]
+      },
+      "RefundCommission": {
+        "type": "object",
+        "properties": {
+          "commissionId": {
+            "type": "string",
+            "description": "The commission the conversion originally accrued."
+          },
+          "partnerId": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "originalAmount": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "keptAmount": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "description": "What the partner keeps for this conversion now: the live commission's amount, or a paid one's amount net of adjustments."
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "reversed",
+              "reduced",
+              "clawback_recorded",
+              "held_in_transfer",
+              "unchanged"
+            ],
+            "description": "`reversed`: unpaid, and nothing is kept (a full refund), so it was reversed. `reduced`: unpaid; reversed and replaced by `currentCommissionId` for the kept amount (a partial refund). `clawback_recorded`: already paid. It stays paid, and a negative adjustment of `clawbackAmount` records the refunded revenue the partner holds. OpenPartner does not net it off later payouts; recover it with the partner. `held_in_transfer`: a payout for it is in flight, so nothing changed. Retry this request (same `externalEventId`) once the payout settles. `unchanged`: nothing to take back."
+          },
+          "currentCommissionId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The live commission row: the original, its replacement, or null once reversed."
+          },
+          "currentStatus": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "accrued",
+              "approved",
+              "paid",
+              null
+            ]
+          },
+          "clawbackAmount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Paid commissions only: the refund clawbacks recorded against it, negative. Null when none."
+          }
+        },
+        "required": [
+          "commissionId",
+          "partnerId",
+          "currency",
+          "originalAmount",
+          "keptAmount",
+          "status",
+          "currentCommissionId",
+          "currentStatus",
+          "clawbackAmount"
+        ]
+      },
+      "RefundResult": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "refundEventId": {
+            "type": "string",
+            "description": "The corrective event recorded for this refund."
+          },
+          "conversionEventId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "refund",
+              "chargeback"
+            ]
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "This refund's amount, positive. Null for a refund of a conversion with no value."
+          },
+          "refundedAmount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Everything refunded on this conversion so far, this refund included. Null when the conversion has no value."
+          },
+          "conversionValue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency": {
+            "type": "string"
+          },
+          "fullRefund": {
+            "type": "boolean",
+            "description": "Nothing of the conversion is left."
+          },
+          "actionRequired": {
+            "type": "boolean",
+            "description": "Some commission is `held_in_transfer` (retry later) or `clawback_recorded` (the partner was already paid)."
+          },
+          "commissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RefundCommission"
+            },
+            "description": "One entry per commission the conversion accrued; empty when no partner was credited."
+          },
+          "replayed": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "Present when an earlier call with the same `externalEventId` recorded this refund. Nothing new is recorded; the refund is re-applied, which finishes any commission that was held in transfer, and `commissions` shows where they stand now."
+          }
+        },
+        "required": [
+          "ok",
+          "refundEventId",
+          "conversionEventId",
+          "kind",
+          "amount",
+          "refundedAmount",
+          "conversionValue",
+          "currency",
+          "fullRefund",
+          "actionRequired",
+          "commissions"
+        ]
+      },
+      "RecordRefundRequest": {
+        "type": "object",
+        "properties": {
+          "conversionExternalEventId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "description": "The `externalEventId` you sent with the conversion being refunded. Send this or `conversionEventId`, not both. A number is used as its string."
+          },
+          "conversionEventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "amount": {
+            "type": "number",
+            "minimum": 0.01,
+            "description": "Major units. Omit to refund everything not yet refunded."
+          },
+          "currency": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 3
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "refund",
+              "chargeback"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "externalEventId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "description": "Idempotency key: your stable id for this one refund (a refund or credit-note id), up to 120 characters. A number is used as its string."
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "externalEventId"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "conversionExternalEventId"
+            ]
+          },
+          {
+            "required": [
+              "conversionEventId"
+            ]
+          }
         ]
       },
       "ClickIngestResult": {
@@ -6026,7 +6284,7 @@
           "Attribution"
         ],
         "summary": "Stitch a click to a user",
-        "description": "Links the click id (`cref`) a visitor arrived with to your user id. The browser SDK calls this on signup and login; your backend can call it instead if it receives the `cref`.\n\nRepeat calls for the same pair are no-ops. Events already recorded for the user are attributed when the stitch lands (`backfilledAttributions`). Calling it on login too stitches a user who clicked on another device; until a pending fix ships, a second click stitched to a user with already-attributed events can credit those events again, so prefer calling it at signup.\n\nUnauthenticated by design. It accepts any origin (CORS) and is limited to 120 requests per minute per client IP. Use the same `userId` you later send to `POST /attribution/events`.\n\n**Access:** public, no API key. Rate-limited per client IP.",
+        "description": "Links the click id (`cref`) a visitor arrived with to your user id. The browser SDK calls this on signup and login; your backend can call it instead if it receives the `cref`.\n\nRepeat calls for the same pair are no-ops. Events already recorded for the user that have not attributed yet are attributed when the stitch lands (`backfilledAttributions`); an event that already attributed keeps its credit, and refunds and other corrective events are never attributed. Calling it on login too stitches a user who clicked on another device.\n\nUnauthenticated by design. It accepts any origin (CORS) and is limited to 120 requests per minute per client IP. Use the same `userId` you later send to `POST /attribution/events`.\n\n**Access:** public, no API key. Rate-limited per client IP.",
         "security": [],
         "x-openpartner-access": {
           "kind": "public",
@@ -6094,7 +6352,7 @@
           "Attribution"
         ],
         "summary": "Record a conversion event",
-        "description": "Server-to-server conversion ingest. The event is attributed to the partner whose click the user was stitched to (within the program's window and model) and commissions accrue.\n\n**Event types.** Any string is accepted. Two have built-in meaning:\n- `signup` is the funnel's *signups* stage (`signup` and `trial_started` are *leads* in the timeseries).\n- `invoice_paid` is the funnel's *paid* stage, and on OpenPartner Cloud it is billable GMV, as is `subscription_created`. Report payments as `invoice_paid`. Other types with a value still accrue commission but are not counted as GMV.\n\n`value` is in major units (`49.99`), defaulting to no value; `currency` defaults to USD.\n\n**Idempotency.** Always send `externalEventId`: your system's stable id for this one event (invoice id, order id, deal id + stage). A retry with the same key returns `200` with `replayed: true` and the original result, writing nothing. Reusing a key for a different userId, type, value or currency returns `409 external_event_id_conflict`. Keys are per tenant, up to 120 characters, and shared with `POST /coupons/redeem`.\n\n**Don't report a payment twice.** If your Stripe account also sends webhooks to this deployment (`/webhooks/stripe`, self-host), those payments are already recorded, keyed by the Stripe event id. Reporting the same payment here under your own invoice id records it a second time.\n\n**Access:** admin key, or a scoped key with `events:write`.",
+        "description": "Server-to-server conversion ingest. The event is attributed to the partner whose click the user was stitched to (within the program's window and model) and commissions accrue.\n\n**Event types.** Any string is accepted. Two have built-in meaning:\n- `signup` is the funnel's *signups* stage (`signup` and `trial_started` are *leads* in the timeseries).\n- `invoice_paid` is the funnel's *paid* stage, and on OpenPartner Cloud it is billable GMV, as is `subscription_created`. Report payments as `invoice_paid`. Other types with a value still accrue commission but are not counted as GMV.\n\n`value` is in major units (`49.99`), defaulting to no value; `currency` defaults to USD.\n\n**Idempotency.** Always send `externalEventId`: your system's stable id for this one event (invoice id, order id, deal id + stage). A retry with the same key returns `200` with `replayed: true` and the original result, writing nothing. Reusing a key for a different userId, type, value or currency returns `409 external_event_id_conflict`. Keys are per tenant, up to 120 characters, and shared with `POST /coupons/redeem`.\n\n**Refunds.** Report them to `POST /attribution/refunds`. A `refund` or `chargeback` event sent here is recorded but never attributed (`attribution.status` `corrective`) and reverses nothing.\n\n**Don't report a payment twice.** If your Stripe account also sends webhooks to this deployment (`/webhooks/stripe`, self-host), those payments are already recorded, keyed by the Stripe event id. Reporting the same payment here under your own invoice id records it a second time.\n\n**Access:** admin key, or a scoped key with `events:write`.",
         "security": [
           {
             "adminKey": []
@@ -6274,6 +6532,115 @@
           },
           "422": {
             "description": "`click_flagged`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/attribution/refunds": {
+      "post": {
+        "operationId": "recordRefund",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "Report a refund or chargeback",
+        "description": "Reports that a conversion was refunded, in full or in part, or charged back. Reference the conversion by the `externalEventId` you sent with it (`conversionExternalEventId`, preferred) or by the `eventId` OpenPartner returned (`conversionEventId`): exactly one. Conversions the self-host Stripe webhook recorded can be referenced too, but their Stripe refunds are already handled there; don't report those twice.\n\nThe refund is recorded as a corrective event (type `refund` or `chargeback`, a negative `value`) that is never attributed, and the conversion's commissions follow it. Each commission ends up worth its original amount times the share of the conversion the customer kept:\n- **Not yet paid** (`accrued`, `approved`): reversed, firing `commission.reversed` (reason `refund` or `chargeback`) and the partner's postback. On a partial refund a replacement commission for the kept amount follows (`commission.accrued` with `replacesCommissionId`), keeping the original's status and accrual date, so its holdback doesn't restart.\n- **Already paid**: it stays paid. A negative adjustment records the refunded revenue the partner holds (`clawback_recorded`). OpenPartner doesn't deduct it from later payouts; recover it with the partner.\n- **In a payout right now**: left alone (`held_in_transfer`). Retry the same request once the payout settles.\n\n`amount` is in major units and defaults to everything not yet refunded. Partial refunds add up: two refunds of 30 and 20 on a 100 conversion leave each commission at 50%. A conversion with no `value` can only be refunded in full. A `chargeback` reverses commissions like a refund, so report it once it is final, not when a dispute opens.\n\n**Idempotency.** `externalEventId` is required: your id for this refund (refund id, credit note id). A retry with the same key returns `200` with `replayed: true`, records nothing new, and re-applies the refund, which also finishes any commission that was held in transfer. Reusing a key for a different conversion, kind or amount returns `409 external_event_id_conflict`. Keys share one namespace with `POST /attribution/events`.\n\n**Access:** admin key, or a scoped key with `events:write`.",
+        "security": [
+          {
+            "adminKey": []
+          },
+          {
+            "scopedKey": [
+              "events:write"
+            ]
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [
+            "events:write"
+          ],
+          "partner": false
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordRefundRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Recorded (or replayed).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefundResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`conversion_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`external_event_id_conflict`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`not_a_conversion`, `currency_mismatch`, `partial_refund_needs_value`, `refund_exceeds_remaining`, `nothing_to_refund`",
             "content": {
               "application/json": {
                 "schema": {
@@ -10356,6 +10723,10 @@
                           }
                         ],
                         "description": "The triggering event's `value` (decimal string), or null."
+                      },
+                      "replacesCommissionId": {
+                        "type": "string",
+                        "description": "Set when a partial refund reduced a commission: this one carries the amount the partner keeps, and replaces the commission named here (reversed in the `commission.reversed` sent just before)."
                       }
                     },
                     "required": [
@@ -10751,9 +11122,18 @@
                         "type": "string",
                         "enum": [
                           "manual",
-                          "refund"
+                          "refund",
+                          "chargeback"
                         ],
-                        "description": "`manual` = an admin reversed it; `refund` = a Stripe refund or dispute."
+                        "description": "`manual` = an admin reversed it; `refund` = a refund (`POST /attribution/refunds`, or a Stripe refund on self-host); `chargeback` = a chargeback reported to `POST /attribution/refunds`."
+                      },
+                      "refundEventId": {
+                        "type": "string",
+                        "description": "The refund or chargeback event behind a `refund` / `chargeback` reversal."
+                      },
+                      "replacementCommissionId": {
+                        "type": "string",
+                        "description": "Partial refunds only: the commission accrued for the amount the partner keeps (sent next as `commission.accrued`)."
                       }
                     },
                     "required": [

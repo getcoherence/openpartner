@@ -64,11 +64,22 @@ export const WEBHOOK_PAYLOADS = {
     currency: z.string(),
     eventType: z.string(),
     eventValue,
+    replacesCommissionId: id.optional().openapi({
+      description:
+        'Set when a partial refund reduced a commission: this one carries the amount the partner keeps, and replaces the commission named here (reversed in the `commission.reversed` sent just before).',
+    }),
   }),
   'commission.approved': lifecycleBase,
   'commission.paid': lifecycleBase.extend({ payoutId: id }),
   'commission.reversed': lifecycleBase.extend({
-    reason: z.enum(['manual', 'refund']).openapi({ description: '`manual` = an admin reversed it; `refund` = a Stripe refund or dispute.' }),
+    reason: z.enum(['manual', 'refund', 'chargeback']).openapi({
+      description:
+        '`manual` = an admin reversed it; `refund` = a refund (`POST /attribution/refunds`, or a Stripe refund on self-host); `chargeback` = a chargeback reported to `POST /attribution/refunds`.',
+    }),
+    refundEventId: id.optional().openapi({ description: 'The refund or chargeback event behind a `refund` / `chargeback` reversal.' }),
+    replacementCommissionId: id.optional().openapi({
+      description: 'Partial refunds only: the commission accrued for the amount the partner keeps (sent next as `commission.accrued`).',
+    }),
   }),
   'partner.created': z.object({
     partnerId: id,

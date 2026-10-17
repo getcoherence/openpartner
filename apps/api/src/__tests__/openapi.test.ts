@@ -49,6 +49,7 @@ const DOCUMENTED_ROUTERS: Record<string, Router> = {
   identify: (await import('../routes/identify.js')).identifyRouter,
   events: (await import('../routes/events.js')).eventsRouter,
   conversions: (await import('../routes/conversions.js')).conversionsRouter,
+  refunds: (await import('../routes/refunds.js')).refundsRouter,
   clicks: (await import('../routes/clicks.js')).clicksRouter,
   coupons: (await import('../routes/coupons.js')).couponsRouter,
   commissions: (await import('../routes/commissions.js')).commissionsRouter,
