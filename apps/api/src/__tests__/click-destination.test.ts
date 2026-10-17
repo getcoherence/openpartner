@@ -13,7 +13,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { ulid } from 'ulid';
-import { TABLES, clickDestination, clickDestinationProblem, hasClickIdMacro } from '@openpartner/db';
+import { DEFAULT_TENANT_ID, TABLES, clickDestination, clickDestinationProblem, hasClickIdMacro } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApp } from '../app.js';
 
@@ -81,6 +81,13 @@ describe('clickDestinationProblem', () => {
     expect(clickDestinationProblem('https://{click_id}.example.com/')).toMatch(/not the host/);
     expect(clickDestinationProblem('https://user:{click_id}@example.com/')).toMatch(/not the host/);
   });
+
+  it('catches an encoded near miss, and stays linear on many unclosed encoded braces', () => {
+    expect(clickDestinationProblem('https://x.test/?a=%7Bclickid%7D')).toMatch(/Unknown macro/);
+    const started = Date.now();
+    expect(clickDestinationProblem(`https://x.test/?a=${'%7ba'.repeat(50_000)}`)).toBeNull();
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
 });
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
@@ -90,6 +97,9 @@ const TABLES_TO_CLEAN = [TABLES.Commission, TABLES.Attribution, TABLES.Event, TA
 
 async function clean(): Promise<void> {
   for (const t of TABLES_TO_CLEAN) await db(t).del();
+  // Network membership makes shareOnNetwork default on, so POST /programs
+  // would demand a marketplaceDescription. Other files leave it set.
+  await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID, key: 'network_membership' }).del();
 }
 
 beforeAll(async () => {

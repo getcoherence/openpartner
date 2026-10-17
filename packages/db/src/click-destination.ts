@@ -28,7 +28,10 @@ const MACRO_RE = /\{click_id\}|%7[Bb]click_id%7[Dd]/g;
 // Brace tokens that look like an attempt at the macro ({clickid}, {CLICK_ID},
 // {click-id}, {cref}). Left alone they'd reach the destination as literal
 // text while the click id went to a `cref` the destination never reads.
-const BRACE_TOKEN_RE = /\{([^{}]*)\}|%7[Bb](.*?)%7[Dd]/g;
+// The encoded form's body is short and %-free (no near-miss name has a %):
+// an open-ended `.*?` there rescans to the end of the string from every
+// unclosed %7B, which is quadratic on a hostile URL.
+const BRACE_TOKEN_RE = /\{([^{}]*)\}|%7[Bb]([^%]{0,40})%7[Dd]/g;
 const NEAR_MISS_NAMES = new Set(['clickid', 'cref']);
 
 // Stand-in click id for validating a destination before any click exists.
