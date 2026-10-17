@@ -365,6 +365,8 @@ A Stripe Payment Link takes the buyer straight to Stripe, so no page of yours ru
 
 A runnable version of steps 2 and 3 is [`examples/stripe-payment-link-forwarder`](../examples/stripe-payment-link-forwarder): about 50 lines of Node, no dependencies.
 
+> If **Admin → Integrations** offers **Connect Stripe**, use that instead of steps 2 and 3. OpenPartner then reads the checkout from your Stripe account itself. While the connection is healthy, a forwarded session id answers `409 recorded_from_stripe`, so a forwarder left running records nothing twice. Step 1 is still needed.
+
 **1. Send the click id to Stripe.** Set the program's destination to the Payment Link with the `{click_id}` macro in `client_reference_id`, written exactly like this:
 
 ```

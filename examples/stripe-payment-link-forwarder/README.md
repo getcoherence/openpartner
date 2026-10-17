@@ -2,6 +2,8 @@
 
 On OpenPartner Cloud, Stripe's webhooks go to your own account, not to OpenPartner. This ~50-line server is the piece in between. It receives Stripe's checkout webhooks, checks Stripe's signature, and reports each paid Checkout Session that came from a partner link to `POST /attribution/conversions`.
 
+If **Admin → Integrations** offers **Connect Stripe**, use that instead: OpenPartner then reads checkouts from your Stripe account itself, and a forwarded session answers `409 recorded_from_stripe` (which this server treats as done).
+
 The full walkthrough, including subscriptions and refunds, is [Stripe Payment Links on OpenPartner Cloud](../../docs/headless-referral.md#stripe-payment-links-on-openpartner-cloud). This folder is not part of the pnpm workspace, so nothing here is built or tested in CI.
 
 ## Before you start
