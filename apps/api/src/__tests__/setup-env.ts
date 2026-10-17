@@ -9,9 +9,7 @@
  * test files that exercise hosted billing set their own mode at module
  * scope, which runs after this.
  */
-// Top-level await needs module status, and dynamic import() alone doesn't
-// confer it (TS1375).
-export {};
+import { installLeakGuard } from './leak-guard.js';
 
 process.env.OPENPARTNER_MODE = 'selfhost';
 
@@ -26,23 +24,26 @@ process.env.OPENPARTNER_MODE = 'selfhost';
 // Load .env first — DATABASE_URL comes from dotenv, which the test files
 // only trigger via their own db.js import (after this setup runs).
 await import('../env.js');
+const TENANT_RESET = {
+  billingPlan: null,
+  stripeCustomerId: null,
+  stripeSubscriptionId: null,
+  trialEndsAt: null,
+  firstTrialActivatedAt: null,
+  whiteLabel: false,
+  customDomain: null,
+};
 if (process.env.DATABASE_URL && process.env.INTEGRATION !== 'skip') {
   try {
     const { DEFAULT_TENANT_ID, TABLES } = await import('@openpartner/db');
     const { db } = await import('../db.js');
-    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({
-      billingPlan: null,
-      stripeCustomerId: null,
-      stripeSubscriptionId: null,
-      trialEndsAt: null,
-      firstTrialActivatedAt: null,
-      whiteLabel: false,
-      customDomain: null,
-    });
+    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update(TENANT_RESET);
   } catch (err) {
     console.warn(
       '[test-setup] could not reset default tenant billing state (DB unreachable?) — DB-backed suites will self-skip',
       err instanceof Error ? err.message : err,
     );
   }
+  // Everything else a file changes must be undone by the file itself.
+  installLeakGuard(process.env.DATABASE_URL, Object.keys(TENANT_RESET));
 }
