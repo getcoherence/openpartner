@@ -162,6 +162,8 @@ export interface PartnerUpsertCreatorProfile {
 export interface PartnerUpsertResponse {
   networkCreatorId: string;
   alreadyExisted: boolean;
+  /** Always an array here: pushPartnerUpsert reads a reply that omits it
+   *  as []. */
   affiliations: Array<{
     vendorId: string;
     vendorPartnerId: string;
@@ -286,7 +288,44 @@ export async function pushPartnerUpsert(
   tenantId: string,
   payload: PartnerUpsertPayload,
 ): Promise<PartnerUpsertResponse | null> {
-  return dispatch<PartnerUpsertResponse>(db, tenantId, 'partner_upsert', payload as unknown as Record<string, unknown>);
+  const reply = await dispatch<Partial<PartnerUpsertResponse>>(
+    db,
+    tenantId,
+    'partner_upsert',
+    payload as unknown as Record<string, unknown>,
+  );
+  if (!reply) return null;
+  // By the time the reply is read the Network already has the partner, so
+  // a field it left out must not throw here. A Network that omits
+  // `affiliations` used to 500 POST /network/me/consent on `.length`.
+  return {
+    networkCreatorId: reply.networkCreatorId as string,
+    alreadyExisted: reply.alreadyExisted === true,
+    affiliations: Array.isArray(reply.affiliations) ? reply.affiliations : [],
+  };
+}
+
+/** Stamp the Network identity back on the Partner (the admin UI's "already
+ *  on the Network" marker). Not consent and not billing — see
+ *  usage-billing.ts NETWORK_ORIGIN_SOURCE for what the Network fee keys on. */
+export async function stampPartnerNetworkSync(
+  db: Knex,
+  partnerId: string,
+  result: PartnerUpsertResponse,
+): Promise<void> {
+  await db(TABLES.Partner)
+    .where({ id: partnerId })
+    .update({
+      metadata: db.raw(`jsonb_set(coalesce("metadata", '{}'::jsonb), '{network}', ?::jsonb, true)`, [
+        JSON.stringify({
+          creatorId: result.networkCreatorId,
+          preExisting: result.alreadyExisted,
+          affiliations: result.affiliations.length,
+          syncedAt: new Date().toISOString(),
+        }),
+      ]),
+      updatedAt: new Date(),
+    });
 }
 
 /**
@@ -369,24 +408,7 @@ export async function backfillPartners(
       metadata: { source: 'backfill' },
     });
     if (result) {
-      // Stamp the canonical Network id back onto the Partner row so
-      // future admin views can show "this creator is on the Network".
-      await db(TABLES.Partner)
-        .where({ id: p.id })
-        .update({
-          metadata: db.raw(
-            `jsonb_set(coalesce("metadata", '{}'::jsonb), '{network}', ?::jsonb, true)`,
-            [
-              JSON.stringify({
-                creatorId: result.networkCreatorId,
-                preExisting: result.alreadyExisted,
-                affiliations: result.affiliations.length,
-                syncedAt: new Date().toISOString(),
-              }),
-            ],
-          ),
-          updatedAt: new Date(),
-        });
+      await stampPartnerNetworkSync(db, p.id, result);
       pushed += 1;
     } else {
       queued += 1;

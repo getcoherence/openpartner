@@ -268,6 +268,18 @@ describe.skipIf(skipIntegration)('POST /attribution/conversions', () => {
 });
 
 describe.skipIf(skipIntegration)('GET /postback', () => {
+  it('a multi-tenant URL without /t/<slug> is a plain-text 400, not a 500', async () => {
+    process.env.OPENPARTNER_TENANCY = 'multi';
+    try {
+      const res = await request(app).get('/postback').query({ token: 'opcp_whatever', click_id: 'c', type: 't', txn_id: 'x' });
+      expect(res.status).toBe(400);
+      expect(res.text).toBe('tenant_slug_missing');
+      expect(res.headers['content-type']).toMatch(/text\/plain/);
+    } finally {
+      process.env.OPENPARTNER_TENANCY = 'single';
+    }
+  });
+
   it('records the conversion with the postback token and answers a tiny ok', async () => {
     const { clickId, partnerId } = await seedClick();
     const token = await mintPostbackToken();

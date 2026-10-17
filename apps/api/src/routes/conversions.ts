@@ -125,6 +125,8 @@ conversionsRouter.get('/postback', async (req, res) => {
   // Express runs GET handlers for HEAD too. A link checker's HEAD must not
   // record a conversion.
   if (req.method === 'HEAD') return res.status(405).set('Allow', 'GET').end();
+  // Multi-tenant URL without /t/<slug>: tenantOf would throw a 500.
+  if (!req.db) return reply(res, 400, 'tenant_slug_missing');
 
   const { db, tenantId } = tenantOf(req);
   const token = queryParam(req, 'token');

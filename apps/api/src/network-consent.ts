@@ -34,6 +34,7 @@ import {
   pushPartnerRevoke,
   pushPartnerUnlink,
   pushPartnerUpsert,
+  stampPartnerNetworkSync,
   type BackfillPartnersResult,
   type PartnerUpsertPayload,
 } from './network-client.js';
@@ -166,29 +167,6 @@ function upsertPayloadFor(
   };
 }
 
-/** Stamp the Network identity back on the Partner (the admin UI's "already
- *  on the Network" marker). Not consent and not billing — see
- *  usage-billing.ts NETWORK_ORIGIN_SOURCE for what the Network fee keys on. */
-async function stampNetworkSync(
-  db: Knex,
-  partnerId: string,
-  result: { networkCreatorId: string; alreadyExisted: boolean; affiliations: unknown[] },
-): Promise<void> {
-  await db<PartnerRow>(TABLES.Partner)
-    .where({ id: partnerId })
-    .update({
-      metadata: db.raw(`jsonb_set(coalesce("metadata", '{}'::jsonb), '{network}', ?::jsonb, true)`, [
-        JSON.stringify({
-          creatorId: result.networkCreatorId,
-          preExisting: result.alreadyExisted,
-          affiliations: result.affiliations.length,
-          syncedAt: new Date().toISOString(),
-        }),
-      ]),
-      updatedAt: new Date(),
-    });
-}
-
 export type NetworkSyncOutcome = 'pushed' | 'queued' | 'not_offered' | 'no_consent';
 
 /**
@@ -206,7 +184,7 @@ export async function syncPartnerToNetwork(
   if (!(await hasNetworkConsent(db, partner.id))) return 'no_consent';
   const result = await pushPartnerUpsert(db, tenantId, upsertPayloadFor(partner, opts));
   if (!result) return 'queued';
-  await stampNetworkSync(db, partner.id, result);
+  await stampPartnerNetworkSync(db, partner.id, result);
   return 'pushed';
 }
 

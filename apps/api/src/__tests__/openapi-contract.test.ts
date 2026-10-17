@@ -68,6 +68,7 @@ const TABLES_TO_CLEAN = [
   TABLES.PartnerProgram,
   TABLES.PartnerCommission,
   TABLES.ApiKey,
+  TABLES.ConversionPostbackToken,
   TABLES.Session,
   TABLES.MagicLinkToken,
   TABLES.Program,
@@ -163,7 +164,13 @@ function check<T = Record<string, unknown>>(operationId: string, res: Exchange):
   }
   const codes = op.errors[res.status];
   if (!codes) {
-    throw new Error(`${operationId} returned undocumented status ${res.status}: ${JSON.stringify(res.body)}`);
+    throw new Error(`${operationId} returned undocumented status ${res.status}: ${JSON.stringify(res.body ?? res.text)}`);
+  }
+  if (op.textErrors) {
+    // The code is the whole body (`invalid_parameters` adds `: <names>`).
+    expect(res.type, `${operationId} → ${res.status} content type`).toBe('text/plain');
+    expect(codes, `${operationId} → ${res.status} error code`).toContain(res.text.split(':')[0]);
+    return res.text as T;
   }
   expectShape(ErrorResponse, res.body, `${operationId} → ${res.status}`);
   expect(codes, `${operationId} → ${res.status} error code`).toContain(res.body.error);
@@ -524,6 +531,26 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     check('recordConversion', await admin.post('/attribution/conversions', { ...loan, clickId: 'nope', externalEventId: 'loan_2' }));
     check('recordConversion', await admin.post('/attribution/conversions', { clickId: loanClick, type: 'signup', externalEventId: 4242, userId: 'borrower_1' }));
 
+    // The same, as a postback URL: token in the query, plain-text answers.
+    const minted = await admin.post('/conversion-postback/token', {});
+    expect(minted.status).toBe(201);
+    const postback = (query: Record<string, string>) => anon.get('/postback').query(query);
+    const pb = { click_id: loanClick, type: 'loan_funded', amount: '120.00', currency: 'USD', txn_id: 'pb_1', token: minted.body.plaintext as string };
+    const recorded = await postback(pb);
+    check('conversionPostback', recorded);
+    expect(recorded.text).toBe('ok');
+    check('conversionPostback', await postback(pb)); // replay
+    const pixel = await postback({ ...pb, txn_id: 'pb_2', pixel: '1', amount: '' });
+    check('conversionPostback', pixel);
+    expect(pixel.type).toBe('image/gif');
+    check('conversionPostback', await postback({ ...pb, amount: '121.00' })); // 409
+    check('conversionPostback', await postback({ ...pb, click_id: 'nope', txn_id: 'pb_3' })); // 404
+    check('conversionPostback', await postback({ ...pb, txn_id: '', type: '' })); // 400 invalid_parameters
+    check('conversionPostback', await postback({ ...pb, token: 'opcp_not_a_token' })); // 401
+    const { token: _token, ...noToken } = pb;
+    check('conversionPostback', await postback(noToken)); // 401
+    check('conversionPostback', await postback({ ...pb, token: ADMIN_KEY })); // an API key is no postback token
+
     // Revoke / reinstate.
     check('revokePartner', await admin.post(`/partners/${other.id}/revoke`, { notify: false }));
     check('revokePartner', await admin.post(`/partners/${other.id}/revoke`, { notify: false }));
@@ -603,6 +630,15 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       const anonymous = await call(op, null, 'missing');
       if (op.access.kind === 'public') {
         want(`${name} without a key`, !isDenied(anonymous), anonymous);
+        continue;
+      }
+      if (op.access.kind === 'postbackToken') {
+        // Only the postback token opens it: no API key does, the admin's included.
+        want(`${name} without a token`, anonymous.status === 401, anonymous);
+        for (const [label, key] of [['the admin key', ADMIN_KEY], ['a scoped key', noneKey], ['a partner key', ownKey]] as const) {
+          const r = await call(op, key, own.id);
+          want(`${name} with ${label} and no token`, r.status === 401, r);
+        }
         continue;
       }
       want(`${name} without a key`, anonymous.status === 401, anonymous);

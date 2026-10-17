@@ -22,6 +22,7 @@ import {
 import { requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { isPostbackEvent, postbackEventsList } from '../partner-postback.js';
+import { checkOutboundDestination } from '../outbound-guard.js';
 
 const URL_MAX = 2048;
 
@@ -67,6 +68,10 @@ partnerPostbacksRouter.post(
 
     const partner = await db(TABLES.Partner).where({ id: req.params.id }).first();
     if (!partner) return res.status(404).json({ error: 'partner_not_found' });
+    // Same check every fire runs (partner trust: never the private-CIDR
+    // escape hatch), so a URL no fire could reach is refused up front.
+    const refused = await checkOutboundDestination(body.data.url, 'partner');
+    if (refused) return res.status(400).json({ error: 'destination_not_allowed', ...refused });
 
     const id = ulid();
     const [row] = await db<PartnerPostbackRow>(TABLES.PartnerPostback)
@@ -91,6 +96,11 @@ partnerPostbacksRouter.patch(
     const { db } = tenantOf(req);
     const body = updateSchema.safeParse(req.body);
     if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+    if (body.data.url !== undefined) {
+      const refused = await checkOutboundDestination(body.data.url, 'partner');
+      if (refused) return res.status(400).json({ error: 'destination_not_allowed', ...refused });
+    }
 
     const patch: Partial<PartnerPostbackRow> = { updatedAt: new Date() };
     if (body.data.url !== undefined) patch.url = body.data.url;

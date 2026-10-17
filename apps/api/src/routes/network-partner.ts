@@ -25,7 +25,7 @@ import { z } from 'zod';
 import type { Knex } from 'knex';
 import { AUDIENCE_SIZES, TABLES, type PartnerRow } from '@openpartner/db';
 import { requireAuth } from '../auth.js';
-import { tenantOf } from '../tenancy.js';
+import { afterCommit, tenantOf } from '../tenancy.js';
 import { partnerProxy, NetworkProxyError } from '../network-client.js';
 import {
   declineNetworkConsent,
@@ -142,19 +142,26 @@ networkPartnerRouter.post('/network/me/consent', requireAuth, async (req, res) =
   const { db, tenantId } = tenantOf(req);
   const { decision, via } = body.data;
 
+  // The decision commits with the request; the Network hears about it only
+  // after that (afterCommit). Pushed from inside the request transaction, a
+  // failure after the push rolled the consent back while the Network kept
+  // the partner. Now the worst case is a push that is queued for retry —
+  // and the outbox re-checks consent before every retry.
   if (decision === 'grant') {
     if (!(await isNetworkOfferedToPartners(db, tenantId))) return res.status(409).json({ error: 'network_not_offered' });
     await grantNetworkConsent(db, tenantId, partnerId, via === 'prompt' ? 'portal_prompt' : 'portal_setting');
-    const partner = await db<PartnerRow>(TABLES.Partner).where({ id: partnerId }).first();
-    if (partner) await syncPartnerToNetwork(db, tenantId, partner);
+    afterCommit(req, 'network consent push', async (trx) => {
+      const partner = await trx<PartnerRow>(TABLES.Partner).where({ id: partnerId }).first();
+      if (partner) await syncPartnerToNetwork(trx, tenantId, partner);
+    });
   } else if (decision === 'decline') {
     // The prompt's "No thanks" — only while undecided.
     if (via !== 'prompt') return res.status(400).json({ error: 'decline_is_prompt_only' });
     if (!(await declineNetworkConsent(db, tenantId, partnerId))) return res.status(409).json({ error: 'already_decided' });
-    await removePartnerFromNetwork(db, tenantId, partnerId, 'consent_declined');
+    afterCommit(req, 'network consent unlink', (trx) => removePartnerFromNetwork(trx, tenantId, partnerId, 'consent_declined'));
   } else {
     if (!(await withdrawNetworkConsent(db, partnerId))) return res.status(409).json({ error: 'not_opted_in' });
-    await removePartnerFromNetwork(db, tenantId, partnerId, 'consent_withdrawn');
+    afterCommit(req, 'network consent unlink', (trx) => removePartnerFromNetwork(trx, tenantId, partnerId, 'consent_withdrawn'));
   }
   res.json(await consentState(db, tenantId, partnerId));
 });

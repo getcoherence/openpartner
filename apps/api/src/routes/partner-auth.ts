@@ -72,7 +72,7 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
     return res.json({ ok: true });
   }
 
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ email }).first();
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ tenantId, email }).first();
   // Revoked partners fall through silently — they were notified at
   // revoke time (if admin opted in) and emailing on every signin
   // attempt turns /auth/signin into a harassment vector: anyone can
