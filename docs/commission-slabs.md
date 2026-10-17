@@ -72,6 +72,8 @@ A touch's share is its `Attribution.weight` divided by the sum of that event's w
 
 The tier applied is the highest level whose `atLeast` is less than or equal to the metric.
 
+Renewals count. A renewal that keeps its partner past the attribution window ([renewal-attribution.md](renewal-attribution.md)) is an ordinary Attribution row with the original weights, so it adds to the partner's revenue and conversions like any other event.
+
 ### Crossing a tier is not retroactive
 
 The event that pushes a partner over a threshold pays the **old** rate, and the events after it pay the new one. Earlier commissions are never recomputed, because the ledger is immutable. Brands get a rule they can explain ("once you've driven 100,000 this month, every further invoice pays 15%"), and the tier never depends on events that hadn't happened yet.

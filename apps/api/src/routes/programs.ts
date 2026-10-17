@@ -163,8 +163,17 @@ function coverUrlProblem(tenantId: string, url: string | null | undefined) {
 export const createSchema = z.object({
   name: z.string().min(1),
   commissionRule: commissionRuleSchema,
+  /** Days a click can win a customer's first conversion of an event
+   *  type. Default 60. With renewalsStayWithPartner, it doesn't limit
+   *  renewals. */
   attributionWindowDays: z.number().int().min(1).max(365).optional(),
   attributionModel: z.enum(['last_click', 'first_click', 'linear', 'position']).optional(),
+  /** Default true: a repeat event (a type the customer already converted
+   *  on, e.g. the 13th invoice_paid) keeps that first conversion's
+   *  partners and weights, whatever the click's age; past the window only
+   *  recurring sub-rules pay on it, up to recurringMonths. False: every
+   *  event is attributed on its own within the window. */
+  renewalsStayWithPartner: z.boolean().optional(),
   /** Where partner links send visitors. May carry the {click_id} macro
    *  (e.g. a Stripe Payment Link's ?client_reference_id={click_id}); the
    *  router substitutes the click id there instead of appending cref. */
@@ -219,6 +228,8 @@ export const updateSchema = z.object({
   commissionRule: commissionRuleSchema.optional(),
   attributionWindowDays: z.number().int().min(1).max(365).optional(),
   attributionModel: z.enum(['last_click', 'first_click', 'linear', 'position']).optional(),
+  /** Not retroactive: decides events attributed from now on. */
+  renewalsStayWithPartner: z.boolean().optional(),
   destinationUrl: destinationUrlSchema.optional(),
   deepLinkAllowedDomains: z.string().max(1000).nullable().optional(),
   holdbackDays: z.number().int().min(0).max(365).nullable().optional(),
@@ -348,6 +359,7 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
       commissionRule: JSON.stringify(body.data.commissionRule) as unknown as CommissionRule,
       attributionWindowDays: body.data.attributionWindowDays ?? 60,
       attributionModel: body.data.attributionModel ?? 'last_click',
+      renewalsStayWithPartner: body.data.renewalsStayWithPartner ?? true,
       destinationUrl: body.data.destinationUrl,
       deepLinkAllowedDomains: body.data.deepLinkAllowedDomains ?? null,
       holdbackDays: body.data.holdbackDays ?? null,
@@ -421,6 +433,9 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
   }
   if (body.data.attributionWindowDays !== undefined) patch.attributionWindowDays = body.data.attributionWindowDays;
   if (body.data.attributionModel !== undefined) patch.attributionModel = body.data.attributionModel;
+  if (body.data.renewalsStayWithPartner !== undefined) {
+    patch.renewalsStayWithPartner = body.data.renewalsStayWithPartner;
+  }
   if (body.data.destinationUrl !== undefined) patch.destinationUrl = body.data.destinationUrl;
   if (body.data.deepLinkAllowedDomains !== undefined) patch.deepLinkAllowedDomains = body.data.deepLinkAllowedDomains;
   if (body.data.holdbackDays !== undefined) patch.holdbackDays = body.data.holdbackDays;

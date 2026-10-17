@@ -27,14 +27,18 @@ import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
  *  every table now carries its real primary key instead of assuming `id`.
  *  v2 → v3 (Oct 2026): PartnerCommission rows carry `id` (the new primary
  *  key) and `programId` (null = partner-wide, set = one program).
- *  v3 → v4 (Oct 2026): added PartnerNetworkConsent. */
-export const SCHEMA_VERSION = 4;
+ *  v3 → v4 (Oct 2026): added PartnerNetworkConsent.
+ *  v4 → v5 (Oct 2026): Program rows carry `renewalsStayWithPartner`. */
+export const SCHEMA_VERSION = 5;
 /** Older bundles still import — a v1 bundle is a v2 bundle minus three
  *  tables, a v2 bundle's PartnerCommission rows are partner-wide v3 rows
- *  (see upgradeBundle), and a v3 bundle is a v4 bundle minus
- *  PartnerNetworkConsent. Dropping support for a version people hold on
- *  disk would break the portability promise, so this list only ever grows. */
-export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4] as const;
+ *  (see upgradeBundle), a v3 bundle is a v4 bundle minus
+ *  PartnerNetworkConsent, and a v4 Program row without
+ *  `renewalsStayWithPartner` takes the column default (true), the value
+ *  the migration gave every existing program. Dropping support for a
+ *  version people hold on disk would break the portability promise, so
+ *  this list only ever grows. */
+export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4, 5] as const;
 
 export interface ExportTableSpec {
   table: string;

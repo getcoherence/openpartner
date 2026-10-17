@@ -261,7 +261,10 @@ export interface CommissionSubRule {
    *  (The accrued Commission is always in the event's currency.) */
   currency?: string;
   /** When true, the rule keeps firing on subsequent matching events
-   *  (renewals). Combined with recurringMonths to cap duration. */
+   *  (renewals), including renewals past the attribution window that
+   *  Program.renewalsStayWithPartner carries. A rule without it pays
+   *  only while the earning click is inside the window. Combined with
+   *  recurringMonths to cap duration. */
   recurring?: boolean;
   /** Cap (in months) after the first attributed event of this type for
    *  the (partner, user) pair. Null/omitted = no cap. */
@@ -590,8 +593,18 @@ export interface ProgramRow {
   tenantId: string;
   name: string;
   commissionRule: CommissionRule;
+  /** How old a click may be and still win a customer's FIRST conversion
+   *  of an event type. With renewalsStayWithPartner, later events of that
+   *  type keep the first one's attribution however old the click is. */
   attributionWindowDays: number;
   attributionModel: AttributionModel;
+  /** True (default): a repeat event — a type the customer already has an
+   *  attributed conversion of — keeps that conversion's partners and
+   *  weights instead of being re-decided against the window. Past the
+   *  window only `recurring` sub-rules pay on it, up to recurringMonths.
+   *  False: every event is attributed on its own within the window.
+   *  Spec: docs/renewal-attribution.md. */
+  renewalsStayWithPartner: boolean;
   /** Where partner share-links for this Campaign land by default. Brand
    *  controls this; partners can only override if deepLinkAllowedDomains
    *  is set and their override matches. */

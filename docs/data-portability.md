@@ -14,7 +14,7 @@ that overstates itself is worse than one with a documented hole.
 ```json
 {
   "exportedAt": "2026-08-09T12:00:00.000Z",
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "tables": { "Partner": [ … ], "Program": [ … ], … }
 }
 ```
@@ -22,6 +22,11 @@ that overstates itself is worse than one with a documented hole.
 Rows are raw DB rows — the same shape `select *` returns, no reshaping,
 no derived fields. Anything derived (attribution, commissions) is present
 as its own table *and* re-derivable from the raw layers.
+
+To re-derive `Attribution`, replay each customer's events in `ts` order. A
+renewal takes the attribution of the customer's first attributed event of
+its type ([renewal-attribution.md](renewal-attribution.md)), so replayed
+out of order it would be decided as a first conversion instead.
 
 ### Tables, in import order
 
@@ -83,8 +88,14 @@ the unknown column; migrate first.
 
 `SCHEMA_VERSION` is the current bundle version; `SUPPORTED_IMPORT_VERSIONS`
 is what `POST /import` accepts. **That list only ever grows.** A v1 bundle
-sitting on someone's disk keeps importing — it is simply a v4 bundle
+sitting on someone's disk keeps importing — it is simply a v5 bundle
 without the four tables added later.
+
+**Importing a v1–v4 bundle's programs.** Their `Program` rows have no
+`renewalsStayWithPartner`, so the column default applies: `true`, the same
+value the migration `20261017010000_program_renewals_stay_with_partner`
+gave every existing program. Set it to `false` afterwards on any program
+that should attribute every event against the window alone.
 
 | Version | Change |
 |---|---|
@@ -92,6 +103,7 @@ without the four tables added later.
 | 2 (Aug 2026) | added `PartnerProgram`, `PartnerCommission`, `Coupon`; per-table primary keys |
 | 3 (Oct 2026) | `PartnerCommission` gains `id` (the new primary key; was `partnerId`) and `programId` |
 | 4 (Oct 2026) | added `PartnerNetworkConsent` |
+| 5 (Oct 2026) | `Program` rows carry `renewalsStayWithPartner` |
 
 **Importing a v1 or v2 bundle.** `POST /import` upgrades older rows before
 inserting them (`upgradeBundle` in `apps/api/src/export.ts`). A v2

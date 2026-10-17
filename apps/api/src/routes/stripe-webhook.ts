@@ -16,7 +16,7 @@ import {
   type TenantRow,
 } from '@openpartner/db';
 import { appDb, db } from '../db.js';
-import { attributeEvent } from '../attribution.js';
+import { attributeEvent, CORRECTIVE_EVENT_TYPES } from '../attribution.js';
 import { clickUserId } from '../conversion-ingest.js';
 import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFromStripeSub } from './billing.js';
 import {
@@ -267,8 +267,6 @@ stripeWebhookRouter.post(
     res.json({ ok: true, ...result });
   },
 );
-
-const CORRECTIVE_EVENT_TYPES = new Set(['refund', 'dispute_created', 'invoice_payment_failed']);
 
 /**
  * Insert one mapped Event and attribute it.
