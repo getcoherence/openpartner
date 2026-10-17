@@ -147,7 +147,9 @@ sent only `{ vendorPartnerId, status, revokedAt }`. The Network rejected
 that with a 400 on every attempt until the outbox gave up, so no revoke
 from those versions ever landed.
 
-### `POST /partners/unlink` — NEW, not yet implemented by the Network
+### `POST /partners/unlink`
+
+Implemented in openpartner-network#11 (Oct 2026).
 
 Removes one vendor's affiliation with a partner, because the partner
 withdrew Network consent or declined it. The body carries **no personal
@@ -176,21 +178,25 @@ Required Network behaviour:
    call, acting as that partner (`x-act-as-vendor-partner`) must fail with
    `invalid_acting_context`.
 2. Then, if the creator has **no** remaining affiliations, Partnerships or
-   PartnershipRequests, and has never signed in to the Network themselves,
-   delete the `Creator`. Delete with it everything vendors filled in for
-   them: `CreatorPlatform` rows and `creatorProfile` fill-ins. Such a
-   creator only existed because vendors pushed them, so removing the last
-   push removes them. A creator who signed in, or who works with another
-   brand, keeps their account.
+   PartnershipRequests, has never signed in to the Network themselves (no
+   `lastSignInAt`, no consumed sign-in link), and is still `active`, delete
+   the `Creator`. Delete with it everything vendors filled in for them:
+   `CreatorPlatform` rows and `creatorProfile` fill-ins. Such a creator
+   only existed because vendors pushed them, so removing the last push
+   removes them. A creator who signed in, or who works with another brand,
+   keeps their account. So does a creator an operator blocked or
+   suspended, so the decision stays on record.
 3. Don't touch Partnerships the creator made on the Network. Those are the
    creator's own marketplace relationships, which they manage on the
    Network.
 4. Be idempotent: an unknown `vendorPartnerId` answers `200` with
    `removed: false`, never `404`.
+5. Accept the call from a suspended vendor too. It only removes data, and
+   suspension mustn't trap a partner who wants out.
 
-**404 is reserved for "endpoint not implemented".** Until the Network
-ships this endpoint, vendors keep unlink calls queued in `NetworkOutbox`
-and retry them every 12h. They never mark them dead, so every withdrawal
+**404 is reserved for "endpoint not implemented".** Against a Network
+that predates this endpoint, vendors keep unlink calls queued in
+`NetworkOutbox` and retry them every 12h. They never mark them dead, so every withdrawal
 made in the meantime is delivered once the endpoint exists. Any other
 failure follows the normal outbox limit (8 attempts, about 24h).
 
@@ -305,8 +311,7 @@ Implementing this contract means building:
 1. Storage: `Vendor`, `Creator` (email-unique), `VendorAffiliation`
    (vendorId × creatorId), `EnrollmentToken` (one-time, for vendor
    registration).
-2. The POST endpoints above (`/partners/unlink` is the newest. Until it
-   ships, vendors hold partner withdrawals in their outbox).
+2. The POST endpoints above.
 3. Network → vendor client (already-known shape: scoped key + REST).
 4. A vendor-facing dashboard for admins to mint enrollment tokens, see
    live vendors, and prune abandoned ones.
