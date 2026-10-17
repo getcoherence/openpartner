@@ -391,8 +391,11 @@ partial one reverses each and accrues a replacement for the kept share
 (`metadata.refund` names the original). Already-paid commissions stay paid. A
 negative `CommissionAdjustment` (`reason = 'refund_clawback'`) records what the
 partner holds, and the Stripe refund Event counts them in
-`metadata.alreadyPaidCommissions` / `clawbackCommissions`. Nothing nets a
-clawback off later payouts: recover it from the partner by hand. A
+`metadata.alreadyPaidCommissions` / `clawbackCommissions`. The partner's
+next manual or Stripe Connect payout deducts outstanding clawbacks
+(`Payout.metadata.netting`; see
+[refund-clawback-netting.md](refund-clawback-netting.md)), and a partner
+who owes at least what they're due is held until enough accrues. A
 commission that was mid-payout is left alone (`heldInTransferCommissions`;
 `held_in_transfer` in the API response). Re-send the refund once the payout
 settles (the API's replay, or the next `charge.refunded` for that charge).

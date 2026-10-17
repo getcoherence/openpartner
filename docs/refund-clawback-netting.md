@@ -1,12 +1,11 @@
 # Netting refund clawbacks off the next payout — design
 
-**Status (Oct 17 2026): design only. Not built.** The manual and
-direct-Connect rails can net safely. The hosted-funding rail can't, not
-without a new kind of allocation row that its executor, interlocks,
-reconcile sweep and reversal webhook would all have to learn (§4). The brief
-was to build only if all three rails are safe, so this stops here. §5 is
-the build plan for the two safe rails if netting on two of three is
-accepted.
+**Status (Oct 17 2026): built for the manual and direct-Connect rails.**
+The hosted-funding rail can't net safely, not without a new kind of
+allocation row that its executor, interlocks, reconcile sweep and reversal
+webhook would all have to learn (§4). Keith accepted two-rail netting, so
+the funding rail keeps today's behaviour: its clawbacks stay outstanding.
+§5 is what was built.
 
 Branch `feat/refund-clawback-netting`, stacked on `feat/refunds-api`.
 
@@ -74,7 +73,7 @@ null`. A short count aborts the run, exactly like the commission claim.
 Nothing has been announced or sent at that point.
 
 **Ledger.** `Payout.amount` is the net amount. `Payout.metadata.netting =
-{ grossMinor, clawbackMinor, adjustmentIds }` is an audit copy; the column
+{ grossCents, clawbackCents, adjustmentIds }` (hundredths) is an audit copy; the column
 stays the source of truth. `payout.created` gains optional `grossAmount`
 and `clawbackAdjustmentIds`, so a subscriber can reconcile Σ commissions
 against the amount (OpenAPI regeneration needed).
@@ -82,6 +81,12 @@ against the amount (OpenAPI regeneration needed).
 **Invariant N, kept on every rail that nets:**
 
     payout.amountMinor = Σ commissions(payoutId = X) + Σ adjustments(appliedPayoutId = X)
+
+Both sums are taken in hundredths, the storage precision, and the result
+is converted to Stripe's integer form for the payout currency
+(stripe-amounts.ts), the unit the intent freezes: ¥1,000 is 1000, KWD 1.23
+is 1230. "Never negative" is checked in that unit too, so a net of ¥0.40
+(¥0 to Stripe) is held like any other non-positive net.
 
 Also: `appliedPayoutId = X` only while X is live or has paid the partner.
 Every path that ends with the partner holding nothing from X clears it.
@@ -167,21 +172,24 @@ a different rail than the original payment is legitimate: same brand, same
 partner. The cost is a product one. Inside a hosted tenant, Connect
 partners (funding) are paid gross while manual partners are paid net.
 
-## 5. Build plan if two-rail netting is accepted
+## 5. What was built (two rails)
 
-- Migration `20261017000000_commission_adjustment_applied_payout.ts`:
+- Migration `20261018000000_commission_adjustment_applied_payout.ts`:
   column and partial index. `CommissionAdjustmentRow.appliedPayoutId`.
-  Add a data-portability.md note (no version bump).
-- New `apps/api/src/clawback-netting.ts`: `openClawbacks(trx, tenantId,
-  partnerId, currency)` (lock, cap, oldest first) and
-  `stampClawbacks(trx, payoutId, ids)` (compare-and-set). One home, called
-  from the planner.
-- payouts.ts: resolve the rail before the threshold. Net only on the
-  manual and `canTransfer` paths, never on funding candidates, unfunded
-  refusals or `connectBlocked` failure rows. Add `heldForClawback`,
-  threshold on net, `metadata.netting`. `platformFee` (ledger note) on net.
-- payout-transfers.ts: the `preflight` sum, and the release in
-  `releaseClaims`.
+  Added a data-portability.md note (no version bump).
+- New `apps/api/src/clawback-netting.ts`: `outstandingClawbacks(trx,
+  tenantId, partnerId, currency)` (lock, cap, oldest first),
+  `stampClawbacks(trx, payoutId, ids)` (compare-and-set),
+  `nettedClawbackCents` (for preflight) and `releaseNettedClawbacks` (for
+  `releaseClaims`). One home for all of it.
+- payouts.ts: the rail is resolved before the threshold. Netting happens
+  only on the manual and `canTransfer` paths, never on funding candidates,
+  unfunded refusals or `connectBlocked` failure rows. Adds
+  `heldForClawback`, the threshold on the net amount, `metadata.netting`,
+  and `clawbackAmount` on each run row. `platformFee` (a ledger note) is
+  taken on the net amount.
+- payout-transfers.ts: the `preflight` sum (plus `amount_not_positive`),
+  the release in `releaseClaims`, and the `payout.created` netting fields.
 - refunds.ts: doc comment. The clawback now nets off the partner's next
   manual or direct payout. `actionRequired` stays true, because the rail
   isn't known at refund time.
@@ -190,8 +198,10 @@ partners (funding) are paid gross while manual partners are paid net.
 - Do not touch usage-billing.ts. Platform fee is GMV-based and has its own
   refund work.
 
-**Tests**, in the refunds.test.ts / payout-transfer-intent.test.ts style,
-on a scratch DB:
+**Tests** are in `apps/api/src/__tests__/clawback-netting.test.ts`, written
+in the refunds.test.ts / payout-transfer-intent.test.ts style and run on a
+scratch DB. They cover the cases below, plus an end-to-end refund →
+netted payout → second refund:
 
 - manual nets, and the amount equals invariant N
 - `K ≥ G` holds the group, and the next run nets once accrual exceeds K

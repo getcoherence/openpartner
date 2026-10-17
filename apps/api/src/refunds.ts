@@ -19,8 +19,11 @@
  *   paid               → stays paid: it is ledger history and the partner
  *                        has the money. A negative CommissionAdjustment
  *                        (`refund_clawback`) records what they now hold for
- *                        refunded revenue. Nothing nets it off a later payout
- *                        yet, so the caller is told (`clawback_recorded`).
+ *                        refunded revenue, and the caller is told
+ *                        (`clawback_recorded`). The partner's next manual or
+ *                        direct-Connect payout deducts it
+ *                        (clawback-netting.ts); the hosted funding rail
+ *                        doesn't, so it stays an action for the caller.
  *   in a payout        → left alone (`held_in_transfer`): an open payout
  *                        intent or a transfer_pending funding allocation is
  *                        moving that money right now.

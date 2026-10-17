@@ -2364,7 +2364,7 @@
               "held_in_transfer",
               "unchanged"
             ],
-            "description": "`reversed`: unpaid, and nothing is kept (a full refund), so it was reversed. `reduced`: unpaid; reversed and replaced by `currentCommissionId` for the kept amount (a partial refund). `clawback_recorded`: already paid. It stays paid, and a negative adjustment of `clawbackAmount` records the refunded revenue the partner holds. OpenPartner does not net it off later payouts; recover it with the partner. `held_in_transfer`: a payout for it is in flight, so nothing changed. Retry this request (same `externalEventId`) once the payout settles. `unchanged`: nothing to take back."
+            "description": "`reversed`: unpaid, and nothing is kept (a full refund), so it was reversed. `reduced`: unpaid; reversed and replaced by `currentCommissionId` for the kept amount (a partial refund). `clawback_recorded`: already paid. It stays paid, and a negative adjustment of `clawbackAmount` records the refunded revenue the partner holds. OpenPartner deducts it from the partner's next manual or self-hosted Stripe Connect payout; funded Stripe Connect payouts on hosted OpenPartner don't, so recover those with the partner. `held_in_transfer`: a payout for it is in flight, so nothing changed. Retry this request (same `externalEventId`) once the payout settles. `unchanged`: nothing to take back."
           },
           "currentCommissionId": {
             "type": [
@@ -2473,7 +2473,7 @@
           },
           "actionRequired": {
             "type": "boolean",
-            "description": "Some commission is `held_in_transfer` (retry later) or `clawback_recorded` (the partner was already paid)."
+            "description": "Some commission is `held_in_transfer` (retry later) or `clawback_recorded` (the partner was already paid; usually deducted from their next payout, see `clawback_recorded`)."
           },
           "commissions": {
             "type": "array",
@@ -3188,6 +3188,33 @@
               ]
             }
           },
+          "heldForClawback": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "partnerId": {
+                  "type": "string"
+                },
+                "currency": {
+                  "type": "string"
+                },
+                "amount": {
+                  "type": "number"
+                },
+                "clawbackAmount": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "partnerId",
+                "currency",
+                "amount",
+                "clawbackAmount"
+              ]
+            },
+            "description": "Partners not paid this run because their outstanding refund clawbacks are at least what they are owed (`amount`, before clawbacks). Their commissions stay approved and are paid, net, once enough accrues."
+          },
           "payouts": {
             "type": "array",
             "items": {
@@ -3223,6 +3250,10 @@
                 },
                 "platformFee": {
                   "type": "number"
+                },
+                "clawbackAmount": {
+                  "type": "number",
+                  "description": "Refund clawbacks netted off this payout. `amount` is already net of them."
                 },
                 "error": {
                   "type": "string"
@@ -3330,6 +3361,7 @@
           "mode",
           "skippedBelowThreshold",
           "skippedUnfunded",
+          "heldForClawback",
           "payouts",
           "transfers"
         ]
@@ -7590,7 +7622,7 @@
           "Attribution"
         ],
         "summary": "Report a refund or chargeback",
-        "description": "Reports that a conversion was refunded, in full or in part, or charged back. Reference the conversion by the `externalEventId` you sent with it (`conversionExternalEventId`, preferred) or by the `eventId` OpenPartner returned (`conversionEventId`): exactly one. Conversions the self-host Stripe webhook recorded can be referenced too, but their Stripe refunds are already handled there; don't report those twice.\n\nThe refund is recorded as a corrective event (type `refund` or `chargeback`, a negative `value`) that is never attributed, and the conversion's commissions follow it. Each commission ends up worth its original amount times the share of the conversion the customer kept:\n- **Not yet paid** (`accrued`, `approved`): reversed, firing `commission.reversed` (reason `refund` or `chargeback`) and the partner's postback. On a partial refund a replacement commission for the kept amount follows (`commission.accrued` with `replacesCommissionId`), keeping the original's status and accrual date, so its holdback doesn't restart.\n- **Already paid**: it stays paid. A negative adjustment records the refunded revenue the partner holds (`clawback_recorded`). OpenPartner doesn't deduct it from later payouts; recover it with the partner.\n- **In a payout right now**: left alone (`held_in_transfer`). Retry the same request once the payout settles.\n\n`amount` is in major units and defaults to everything not yet refunded. Partial refunds add up: two refunds of 30 and 20 on a 100 conversion leave each commission at 50%. A conversion with no `value` can only be refunded in full. A `chargeback` reverses commissions like a refund, so report it once it is final, not when a dispute opens.\n\n**Idempotency.** `externalEventId` is required: your id for this refund (refund id, credit note id). A retry with the same key returns `200` with `replayed: true`, records nothing new, and re-applies the refund, which also finishes any commission that was held in transfer. Reusing a key for a different conversion, kind or amount returns `409 external_event_id_conflict`. Keys share one namespace with `POST /attribution/events`.\n\n**Access:** admin key, or a scoped key with `events:write`.",
+        "description": "Reports that a conversion was refunded, in full or in part, or charged back. Reference the conversion by the `externalEventId` you sent with it (`conversionExternalEventId`, preferred) or by the `eventId` OpenPartner returned (`conversionEventId`): exactly one. Conversions the self-host Stripe webhook recorded can be referenced too, but their Stripe refunds are already handled there; don't report those twice.\n\nThe refund is recorded as a corrective event (type `refund` or `chargeback`, a negative `value`) that is never attributed, and the conversion's commissions follow it. Each commission ends up worth its original amount times the share of the conversion the customer kept:\n- **Not yet paid** (`accrued`, `approved`): reversed, firing `commission.reversed` (reason `refund` or `chargeback`) and the partner's postback. On a partial refund a replacement commission for the kept amount follows (`commission.accrued` with `replacesCommissionId`), keeping the original's status and accrual date, so its holdback doesn't restart.\n- **Already paid**: it stays paid. A negative adjustment records the refunded revenue the partner holds (`clawback_recorded`). OpenPartner deducts it from the partner's next manual or self-hosted Stripe Connect payout; a partner who owes more than they are due is not paid until enough accrues. Funded Stripe Connect payouts on hosted OpenPartner don't deduct it: recover those with the partner.\n- **In a payout right now**: left alone (`held_in_transfer`). Retry the same request once the payout settles.\n\n`amount` is in major units and defaults to everything not yet refunded. Partial refunds add up: two refunds of 30 and 20 on a 100 conversion leave each commission at 50%. A conversion with no `value` can only be refunded in full. A `chargeback` reverses commissions like a refund, so report it once it is final, not when a dispute opens.\n\n**Idempotency.** `externalEventId` is required: your id for this refund (refund id, credit note id). A retry with the same key returns `200` with `replayed: true`, records nothing new, and re-applies the refund, which also finishes any commission that was held in transfer. Reusing a key for a different conversion, kind or amount returns `409 external_event_id_conflict`. Keys share one namespace with `POST /attribution/events`.\n\n**Access:** admin key, or a scoped key with `events:write`.",
         "security": [
           {
             "adminKey": []
@@ -12829,6 +12861,33 @@
                       "platformFee": {
                         "type": "number",
                         "description": "Revenue-share tier only: the platform fee noted on the payout (a ledger note, not a deduction)."
+                      },
+                      "grossAmount": {
+                        "allOf": [
+                          {
+                            "$ref": "#/components/schemas/Decimal"
+                          },
+                          {
+                            "description": "Present when refund clawbacks were netted off this payout: the sum of `commissionIds`, before them. `amount` = `grossAmount` − `clawbackAmount`, rounded to whole units in a currency Stripe pays without fractions (JPY, for example)."
+                          }
+                        ]
+                      },
+                      "clawbackAmount": {
+                        "allOf": [
+                          {
+                            "$ref": "#/components/schemas/Decimal"
+                          },
+                          {
+                            "description": "Refund clawbacks deducted from this payout: commission the partner was already paid on revenue that was later refunded."
+                          }
+                        ]
+                      },
+                      "clawbackAdjustmentIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "The `refund_clawback` commission adjustments this payout deducted."
                       }
                     },
                     "required": [

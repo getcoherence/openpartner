@@ -132,6 +132,15 @@ export const WEBHOOK_PAYLOADS = {
     method: z.enum(PAYOUT_METHODS),
     commissionIds: z.array(id),
     platformFee: z.number().optional().openapi({ description: 'Revenue-share tier only: the platform fee noted on the payout (a ledger note, not a deduction).' }),
+    grossAmount: Decimal.optional().openapi({
+      description: 'Present when refund clawbacks were netted off this payout: the sum of `commissionIds`, before them. `amount` = `grossAmount` − `clawbackAmount`, rounded to whole units in a currency Stripe pays without fractions (JPY, for example).',
+    }),
+    clawbackAmount: Decimal.optional().openapi({
+      description: 'Refund clawbacks deducted from this payout: commission the partner was already paid on revenue that was later refunded.',
+    }),
+    clawbackAdjustmentIds: z.array(id).optional().openapi({
+      description: 'The `refund_clawback` commission adjustments this payout deducted.',
+    }),
   }),
 } satisfies Record<Exclude<(typeof KNOWN_EVENTS)[number], '*'>, z.AnyZodObject>;
 

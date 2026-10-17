@@ -206,6 +206,16 @@ commission is a `CommissionAdjustment` with `reason = 'refund_clawback'`.
 All three tables are already in the bundle, so a restored instance has
 the same refund history and the same derived amounts.
 
+Netting a clawback off a later payout (Oct 2026,
+[refund-clawback-netting.md](refund-clawback-netting.md)) adds one
+nullable column, `CommissionAdjustment.appliedPayoutId`: the `Payout` that
+deducted it, or null while it is still outstanding. No version bump, for
+the same reason as `Commission.metadata`. An older bundle imports with
+null, and a newer bundle needs the migration first. Restored, a netted
+clawback stays netted. An outstanding one is deducted from that partner's
+next manual or direct-Connect payout on the new instance, as it would have
+been on the old one.
+
 ### Versioning
 
 `SCHEMA_VERSION` is the current bundle version; `SUPPORTED_IMPORT_VERSIONS`
