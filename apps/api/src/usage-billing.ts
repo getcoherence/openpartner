@@ -90,16 +90,25 @@ export const NETWORK_ORIGIN_SOURCE = 'openpartner_network';
  * 'paid' payouts count — pending / failed don't generate Network fee
  * because no money actually moved to the partner.
  *
- * Tenant scope: caller provides db + GUC.
+ * Tenant scope: filtered on `tenantId` explicitly, not left to RLS. On a
+ * pool that bypasses RLS an unfiltered sum bills one tenant for every
+ * tenant's payouts.
  */
 export async function aggregateNetworkOriginatedPayouts(
   db: Knex,
+  tenantId: string,
   since: Date | null,
   until: Date,
 ): Promise<number> {
   const q = db(TABLES.Payout)
-    .join(TABLES.Partner, `${TABLES.Partner}.id`, `${TABLES.Payout}.partnerId`)
-    .where(`${TABLES.Payout}.status`, 'paid')
+    .join(TABLES.Partner, (j) =>
+      j.on(`${TABLES.Partner}.id`, `${TABLES.Payout}.partnerId`).andOn(
+        `${TABLES.Partner}.tenantId`,
+        `${TABLES.Payout}.tenantId`,
+      ),
+    )
+    .where(`${TABLES.Payout}.tenantId`, tenantId)
+    .andWhere(`${TABLES.Payout}.status`, 'paid')
     .andWhere(`${TABLES.Payout}.completedAt`, '<=', until)
     .andWhereRaw(`"${TABLES.Partner}"."metadata"->>'source' = ?`, [NETWORK_ORIGIN_SOURCE]);
   if (since) q.andWhere(`${TABLES.Payout}.completedAt`, '>', since);
@@ -112,16 +121,20 @@ export async function aggregateNetworkOriginatedPayouts(
  * Only counts events that have at least one Attribution row (i.e. a partner
  * was credited). Refund/dispute events are excluded by event-type filter.
  *
- * Tenant scope is provided by the caller (req.db with app.tenant_id set, or
- * a transaction the scheduler opened with the GUC pinned).
+ * Tenant scope: filtered on `tenantId` explicitly, as well as by the caller's
+ * GUC (req.db with app.tenant_id set, or the scheduler's per-tenant
+ * transaction). On a pool that bypasses RLS the unfiltered sum metered every
+ * tenant's GMV to each tenant's Stripe customer.
  */
 export async function aggregateAttributedGmv(
   db: Knex,
+  tenantId: string,
   since: Date | null,
   until: Date,
   eventTypes: string[] = REVENUE_EVENT_TYPES,
 ): Promise<number> {
   const q = db<EventRow>(TABLES.Event)
+    .where('tenantId', tenantId)
     .whereIn('type', eventTypes)
     .where('ts', '<=', until)
     .whereExists((qb) => {
@@ -233,7 +246,7 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
   const lastReportedAtIso = await getConfig<string>(db, tenantId, CONFIG_KEYS.LastUsageReportedAt);
   const rangeStart = lastReportedAtIso ? new Date(lastReportedAtIso) : null;
   const rangeEnd = new Date();
-  const amount = await aggregateAttributedGmv(db, rangeStart, rangeEnd);
+  const amount = await aggregateAttributedGmv(db, tenantId, rangeStart, rangeEnd);
 
   if (amount <= 0) {
     // Still advance the high-water mark — we've "reported" zero usage for

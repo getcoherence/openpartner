@@ -186,7 +186,7 @@ describe.skipIf(skipIntegration)('aggregateNetworkOriginatedPayouts', () => {
     // Direct partner: doesn't count even if paid.
     await seedPayout({ partnerId: directPartner, amount: 500, status: 'paid' });
 
-    const total = await aggregateNetworkOriginatedPayouts(db, null, new Date());
+    const total = await aggregateNetworkOriginatedPayouts(db, DEFAULT_TENANT_ID, null, new Date());
     expect(total).toBe(350);
   });
 
@@ -197,7 +197,7 @@ describe.skipIf(skipIntegration)('aggregateNetworkOriginatedPayouts', () => {
     const synced = await seedPartner({ origin: 'direct', synced: true });
     await seedPayout({ partnerId: synced, amount: 800, status: 'paid' });
 
-    const total = await aggregateNetworkOriginatedPayouts(db, null, new Date());
+    const total = await aggregateNetworkOriginatedPayouts(db, DEFAULT_TENANT_ID, null, new Date());
     expect(total).toBe(0);
   });
 
@@ -205,7 +205,7 @@ describe.skipIf(skipIntegration)('aggregateNetworkOriginatedPayouts', () => {
     const unsynced = await seedPartner({ origin: 'network', synced: false });
     await seedPayout({ partnerId: unsynced, amount: 120, status: 'paid' });
 
-    const total = await aggregateNetworkOriginatedPayouts(db, null, new Date());
+    const total = await aggregateNetworkOriginatedPayouts(db, DEFAULT_TENANT_ID, null, new Date());
     expect(total).toBe(120);
   });
 
@@ -217,12 +217,12 @@ describe.skipIf(skipIntegration)('aggregateNetworkOriginatedPayouts', () => {
     await seedPayout({ partnerId: p, amount: 75, status: 'paid', completedAt: later });
 
     // Window: (earlier, later] — first payout is excluded by since.
-    const total = await aggregateNetworkOriginatedPayouts(db, earlier, later);
+    const total = await aggregateNetworkOriginatedPayouts(db, DEFAULT_TENANT_ID, earlier, later);
     expect(total).toBe(75);
   });
 
   it('returns 0 when no payouts in range', async () => {
-    const total = await aggregateNetworkOriginatedPayouts(db, null, new Date());
+    const total = await aggregateNetworkOriginatedPayouts(db, DEFAULT_TENANT_ID, null, new Date());
     expect(total).toBe(0);
   });
 });

@@ -1,6 +1,7 @@
 import { createApp } from './app.js';
 import { startScheduler } from './scheduler.js';
 import { outboundPolicy } from './outbound-guard.js';
+import { assertAppPoolEnforcesRls } from './tenant-isolation-guard.js';
 
 const PORT = Number(process.env.API_PORT ?? 4601);
 const MODE = process.env.OPENPARTNER_MODE ?? 'selfhost';
@@ -43,6 +44,15 @@ console.log(JSON.stringify({
 // Validate the outbound (SSRF) guard config now so a bad
 // OPENPARTNER_OUTBOUND_* value fails startup rather than every delivery.
 outboundPolicy();
+
+// Multi-tenant isolation rests on RLS, so a multi-tenant API whose app pool
+// bypasses it (DATABASE_URL_APP unset, or a privileged role) must not serve.
+try {
+  await assertAppPoolEnforcesRls();
+} catch (err) {
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+}
 
 const app = createApp();
 app.listen(PORT, () => {

@@ -162,8 +162,12 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
   // Duplicate-email pre-check — we'd rather 409 with a clean error than
   // let Postgres throw a unique-constraint violation that would surface
   // to the admin as a generic 500. Race between the check + insert is
-  // caught below via the unique-violation path.
-  const existing = await db<PartnerRow>(TABLES.Partner).where({ email }).first();
+  // caught below via the unique-violation path. Email is unique per tenant.
+  //
+  // Every query here filters on tenantId explicitly rather than leaning on
+  // RLS alone: on a pool that bypasses RLS, these read and granted every
+  // tenant's partners and programs (Oct 2026 verification).
+  const existing = await db<PartnerRow>(TABLES.Partner).where({ email, tenantId }).first();
   if (existing) return res.status(409).json({ error: 'email_taken' });
 
   // Resolve program (campaign) grants before inserting the Partner so a
@@ -180,6 +184,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
     // and surfaces to the caller as an opaque 500. Federation flows
     // need a clean error message back instead.
     const known = (await db(TABLES.Program)
+      .where({ tenantId })
       .whereIn('id', requestedProgramIds)
       .select('id')) as Array<{ id: string }>;
     const knownIds = new Set(known.map((c) => c.id));
@@ -189,7 +194,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
     }
     programIds = requestedProgramIds;
   } else {
-    programIds = ((await db(TABLES.Program).select('id')) as Array<{ id: string }>).map((c) => c.id);
+    programIds = ((await db(TABLES.Program).where({ tenantId }).select('id')) as Array<{ id: string }>).map((c) => c.id);
   }
 
   // Commission terms, also checked before the insert for the same
@@ -394,7 +399,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
  */
 partnersRouter.post('/partners/:id/invite', requireAuth, grantScope('partners:write'), requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });
   if (partner.activatedAt) return res.status(409).json({ error: 'already_activated' });
 
@@ -461,7 +466,7 @@ partnersRouter.post('/partners/:id/revoke', requireAuth, grantScope('partners:wr
   const body = revokeSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });
   if (partner.revokedAt) return res.status(409).json({ error: 'already_revoked' });
 
@@ -524,8 +529,8 @@ partnersRouter.post('/partners/:id/revoke', requireAuth, grantScope('partners:wr
 
 /** Undo revoke — partner regains dashboard access and future attribution. */
 partnersRouter.post('/partners/:id/reinstate', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const { db, tenantId } = tenantOf(req);
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });
   if (!partner.revokedAt) return res.status(409).json({ error: 'not_revoked' });
 
@@ -567,8 +572,9 @@ function containsPattern(term: string): string {
 partnersRouter.get('/partners', requireAuth, grantScope('partners:read'), requireAdmin, async (req, res) => {
   const q = listQuerySchema.safeParse(req.query);
   if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const query = db<PartnerRow>(TABLES.Partner)
+    .where({ tenantId })
     .select('*', cursorTimestamp(db, 'createdAt'))
     .orderBy([
       { column: 'createdAt', order: 'desc' },
@@ -595,8 +601,8 @@ partnersRouter.get('/partners', requireAuth, grantScope('partners:read'), requir
 // scoped integration key — it just saves a headless integration paging
 // the list to look one partner up.
 partnersRouter.get('/partners/:id', requireAuth, grantScope('partners:read'), requirePartnerOrAdmin('id'), async (req, res) => {
-  const { db } = tenantOf(req);
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const { db, tenantId } = tenantOf(req);
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });
   res.json(partner);
 });
@@ -644,7 +650,7 @@ partnersRouter.put('/partners/:id/commission-snapshot', requireAuth, requireAdmi
   const { db, tenantId } = tenantOf(req);
   const body = overrideSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
   await writeCommissionOverride(db, tenantId, partner.id, null, body.data);
   res.json({ snapshot: await findPartnerCommission(db, partner.id, null) });
@@ -655,8 +661,8 @@ partnersRouter.put('/partners/:id/commission-snapshot', requireAuth, requireAdmi
 // the live Campaign rule again (program-scoped rows are left alone).
 // Useful for unwinding a VIP rate when a partnership downgrades.
 partnersRouter.delete('/partners/:id/commission-snapshot', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const { db, tenantId } = tenantOf(req);
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
   await db(TABLES.PartnerCommission).where({ partnerId: partner.id }).whereNull('programId').del();
   res.json({ ok: true });
@@ -684,9 +690,9 @@ partnersRouter.put('/partners/:id/programs/:programId/commission', requireAuth, 
   const { db, tenantId } = tenantOf(req);
   const body = overrideSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
-  const program = await db(TABLES.Program).where({ id: req.params.programId }).first('id');
+  const program = await db(TABLES.Program).where({ id: req.params.programId, tenantId }).first('id');
   if (!program) return res.status(404).json({ error: 'program_not_found' });
   await writeCommissionOverride(db, tenantId, partner.id, program.id as string, body.data);
   res.json({ snapshot: await findPartnerCommission(db, partner.id, program.id as string) });
@@ -695,8 +701,8 @@ partnersRouter.put('/partners/:id/programs/:programId/commission', requireAuth, 
 // Clears the program-scoped row only. Commissions on the program then
 // fall back to the partner-wide snapshot, or the program rule.
 partnersRouter.delete('/partners/:id/programs/:programId/commission', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const { db, tenantId } = tenantOf(req);
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
   await db(TABLES.PartnerCommission).where({ partnerId: partner.id, programId: req.params.programId }).del();
   res.json({ ok: true });

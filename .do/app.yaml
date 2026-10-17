@@ -70,9 +70,10 @@ services:
         scope: RUN_TIME
       # App-pool connection — connects as openpartner_app (a NOLOGIN-by-
       # default role provisioned by migration 20260507020000_app_role.ts).
-      # Required in multi-tenant deploys for RLS to actually engage at
-      # runtime; in single-tenant self-host you can leave it unset and
-      # let everything run as the migration role.
+      # Required in multi-tenant deploys: the api refuses to boot when
+      # OPENPARTNER_TENANCY=multi and this connection bypasses RLS
+      # (unset, superuser, BYPASSRLS or table owner). In single-tenant
+      # self-host you can leave it unset and run as the migration role.
       - key: DATABASE_URL_APP
         type: SECRET
         scope: RUN_TIME
