@@ -605,13 +605,13 @@ describe.skipIf(skipIntegration)('PartnerCommission RLS isolation', () => {
     expect(rows.filter((r) => r.programId === null)).toHaveLength(1);
   });
 
-  it('no GUC sees nothing; the platform_admin GUC sees both tenants', async () => {
+  it('no GUC sees nothing, and the retired platform_admin GUC widens nothing', async () => {
     if (!appRoleAvailable) return;
     expect(await asAppRole({}, (trx) => trx(TABLES.PartnerCommission).select('id'))).toHaveLength(0);
-    const all = await asAppRole({ platformAdmin: true }, (trx) =>
+    const admin = await asAppRole({ platformAdmin: true }, (trx) =>
       trx(TABLES.PartnerCommission).whereIn('tenantId', [TENANT_A, TENANT_B]).select('tenantId'),
     );
-    expect(all).toHaveLength(4);
+    expect(admin).toHaveLength(0);
   });
 
   it("WITH CHECK refuses a row stamped for another tenant, and B can't touch A's rows", async () => {

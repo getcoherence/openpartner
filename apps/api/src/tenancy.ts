@@ -268,8 +268,9 @@ export function afterCommit(req: Request, label: string, fn: (trx: Knex.Transact
 /**
  * Express middleware that:
  *   1. Resolves the tenantId for the request
- *   2. Opens a transaction on the appDb pool
- *   3. Sets `app.tenant_id` (and `app.platform_admin` if applicable)
+ *   2. Opens a transaction on the appDb pool (the privileged pool for a
+ *      platform admin, whose reach is cross-tenant)
+ *   3. Sets `app.tenant_id`
  *   4. Stashes the trx as `req.db` so handlers can issue tenant-scoped queries
  *   5. Awaits response completion before committing/rolling back
  *
@@ -340,11 +341,13 @@ export async function tenantMiddleware(
   // integration test that follows POST /partners with db('Click').insert().
   let trx: Knex.Transaction;
   try {
-    trx = await appDb.transaction();
+    // A platform admin's cross-tenant reach is the privileged pool, the same
+    // one /platform-admin/* runs on. The tenant policies are plain
+    // `tenantId = app.tenant_id` equality (so tenant-leading indexes apply),
+    // and no setting the app role could flip for itself widens them.
+    const pool = req.platformAdmin ? (await import('./db.js')).db : appDb;
+    trx = await pool.transaction();
     await trx.raw(`set local app.tenant_id = '${tenantId.replace(/'/g, "''")}'`);
-    if (req.platformAdmin) {
-      await trx.raw(`set local app.platform_admin = 'on'`);
-    }
   } catch (err) {
     return next(err);
   }
