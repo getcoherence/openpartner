@@ -7,7 +7,7 @@ import { useBrand } from '../lib/useBrand.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
 import { CompoundRuleEditor, ruleEventTypeMissing, ruleSlabProblem, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
-import { PROGRAM_CATEGORIES, categoryLabel, clickDestinationProblem, parseVideoUrl } from '@openpartner/db';
+import { PROGRAM_CATEGORIES, clickDestinationProblem, parseVideoUrl } from '@openpartner/db';
 
 interface CustomerReward {
   type: 'percent_off' | 'amount_off' | 'free_months';
