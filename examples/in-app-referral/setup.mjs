@@ -7,8 +7,8 @@
 //   node setup.mjs
 //
 // It:
-//   1. turns OFF OpenPartner Network auto-enroll, so creating a partner per
-//      customer never pushes their name and email to the Network;
+//   1. stops offering the OpenPartner Network to partners, so customers
+//      aren't asked to join it (nobody is shared without opting in anyway);
 //   2. creates a private referral program (not listed on the marketplace);
 //   3. mints a scoped key with only the scopes the referral page needs;
 //   4. writes .env for server.mjs (unless one exists; then it prints it).
@@ -47,13 +47,14 @@ async function op(method, path, body) {
   return json;
 }
 
-// 1. Network auto-enroll off. Do this before the first partner exists.
+// 1. Stop offering the Network to partners (stored as autoEnroll). Do this
+//    before the first partner exists.
 const network = await op('GET', '/config/network');
 if (network.autoEnroll) {
   await op('POST', '/config/network', { autoEnroll: false });
-  console.log('✓ Network auto-enroll turned off');
+  console.log('✓ Network no longer offered to partners');
 } else {
-  console.log('✓ Network auto-enroll already off');
+  console.log('✓ Network already not offered to partners');
 }
 
 // 2. A private program: 20% of every payment for the first 12 months.

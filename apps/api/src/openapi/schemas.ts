@@ -520,9 +520,9 @@ export const NetworkMembership = z
     networkUrl: z.string(),
     hasVendorToken: z.boolean(),
     scopedKeyId: z.string().nullable(),
-    // TODO(#124): partner opt-in changes what autoEnroll means.
     autoEnroll: z.boolean().openapi({
-      description: 'When `enabled && autoEnroll`, every partner created by POST /partners or self-signup is pushed to the OpenPartner Network (name, email, metadata).',
+      description:
+        'Stored name for "offer the Network to my partners". When `enabled && autoEnroll`, partners are asked whether to join, and only those who opt in are shared (name and email; never `metadata`).',
     }),
   })
   .openapi('NetworkMembership');

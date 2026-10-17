@@ -4,7 +4,7 @@ A minimal "Refer & earn" page inside your own app, built on the OpenPartner API.
 
 - `server.mjs` is your backend. It holds the API key, creates each user's partner and link on first visit, and serves their stats. It has no dependencies; Node 22+.
 - `public/index.html` is the page. It calls only `server.mjs`, never OpenPartner.
-- `setup.mjs` is a one-time step run with an admin key: it turns off Network auto-enroll, creates a private program, and mints a scoped key.
+- `setup.mjs` is a one-time step run with an admin key: it stops offering the Network to partners, creates a private program, and mints a scoped key.
 
 The full walkthrough is [docs/headless-referral.md](../../docs/headless-referral.md). This folder is not part of the pnpm workspace, so nothing here is built or tested in CI.
 

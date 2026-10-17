@@ -90,7 +90,7 @@ Creates a partner and grants it programs.
 
 **Email and portal access.** A \`sendInvite: false\` partner is active, so anyone who knows its email can request a sign-in link on the hosted partner portal (\`POST /auth/signin\`): OpenPartner then emails that address, and the partner can use the portal. There is no setting to turn that off per partner yet. If that matters, give headless partners an address that can't receive mail.
 
-**OpenPartner Network:** while the tenant's Network membership has \`autoEnroll\` on (\`GET /config/network\`), this call pushes the partner's name, email and \`metadata\` to the OpenPartner Network, with or without an invite. Turn \`autoEnroll\` off before creating customer-referral partners: \`POST /config/network {"autoEnroll": false}\`.
+**OpenPartner Network:** this call shares nothing with the OpenPartner Network. A partner's name and email reach it only if the partner opts in themselves, while the tenant offers the Network (\`autoEnroll\` on, \`GET /config/network\`): they're asked on the join page, once on first portal sign-in, and in a portal setting. \`metadata\` is never sent. To keep customer-referral partners from being asked, turn offering off: \`POST /config/network {"autoEnroll": false}\`.
 
 On OpenPartner Cloud the brand needs an active plan (\`402 plan_required\`) and an approved account (\`403 brand_pending_review\`).`,
     access: { kind: 'admin', scope: 'partners:write' },
@@ -138,7 +138,7 @@ Send \`text/csv\` with a header row: \`email\` and \`name\` (required), \`activa
 Unlike \`POST /partners\`, an import:
 - grants every partner **every current program** (there is no \`programIds\`),
 - sends no email, mints no coupons, fires no \`partner.created\` webhooks,
-- never pushes partners to the OpenPartner Network, whatever \`autoEnroll\` says.
+- shares nothing with the OpenPartner Network: as with \`POST /partners\`, only a partner's own opt-in does.
 
 Rows whose email already exists are reported as \`skipped_email_taken\` with the existing \`partnerId\`, so re-running an import is safe. \`?dryRun=true\` validates and reports without writing. Rows are processed one by one in a single transaction; send large rosters in batches of a few thousand rows.`,
     access: { kind: 'admin', scope: 'partners:write' },
@@ -965,7 +965,8 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
     tag: 'Network settings',
     operationId: 'getNetworkMembership',
     summary: "Get the tenant's OpenPartner Network membership",
-    description: 'Check `enabled && autoEnroll` before creating customer-referral partners: while both are true, POST /partners pushes each partner to the Network.',
+    description:
+      '`enabled && autoEnroll` means the tenant offers the Network to its partners: each is asked whether to join, and only those who opt in are shared. Nothing is shared for a partner who hasn\'t.',
     access: { kind: 'admin' },
     responses: { 200: { description: 'Membership.', schema: S.NetworkMembership } },
   });
@@ -975,10 +976,9 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
     path: '/config/network',
     tag: 'Network settings',
     operationId: 'updateNetworkMembership',
-    summary: 'Update Network membership (e.g. turn off auto-enroll)',
+    summary: 'Update Network membership (e.g. stop offering the Network to partners)',
     description:
-      // TODO(#124): rewrite when partner opt-in for the Network merges.
-      'Send `{"autoEnroll": false}` to stop pushing new partners to the Network. Partners already pushed stay on it, and pushes that failed earlier and are queued for retry are still delivered. Reconnecting the Network later (Admin → Network → Connect) turns `autoEnroll` back on, so re-check after any reconnect.',
+      '`autoEnroll` is the stored name for "offer the Network to my partners". Send `{"autoEnroll": false}` to stop asking partners and stop sharing anyone, whatever they chose. Partners already on the Network stay on it. Reconnecting the Network later (Admin → Network → Connect) turns `autoEnroll` back on, so re-check after any reconnect.',
     access: { kind: 'admin' },
     body: settings.networkMembershipSchema.openapi('UpdateNetworkMembershipRequest'),
     responses: { 200: { description: 'The saved membership.', schema: S.NetworkMembership } },

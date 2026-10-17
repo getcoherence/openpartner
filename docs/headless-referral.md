@@ -65,13 +65,13 @@ curl -s -X POST $OP/api-keys/scoped -H "Authorization: Bearer $ADMIN" -H 'conten
 
 The full table, generated from the routes, is in the API reference under **Authentication**. A scoped key acts on every partner in your tenant, so **your backend must decide which partner a request is for from its own session, never from a parameter the browser sends.**
 
-## 1. Turn off Network auto-enroll first
+## 1. Decide whether partners are offered the Network
 
 Do this before you create the first partner.
 
-**What happens today:** when your tenant is on the OpenPartner Network with `autoEnroll` on, every `POST /partners` pushes the new partner's **name, email and `metadata`** to the OpenPartner Network. That happens even with `sendInvite: false`, so a customer-referral program would copy your customers' details into a separate service. Partner self-signup does the same. Hosted brands are enrolled with `autoEnroll: true` by default when they sign up. CSV import does not push.
+**What happens:** a partner's name and email reach the OpenPartner Network only if the partner opts in themselves. `POST /partners` never shares anyone, with or without an invite, and a brand can't opt in for a partner. Your own `metadata` on a partner is never sent. While your tenant offers the Network (`autoEnroll` on: the stored name for "offer the Network to my partners"), partners are asked: a checkbox on the join page, a one-time prompt on their first portal sign-in, and a setting in the portal. Hosted brands start with `autoEnroll: true`.
 
-Check and turn it off with the admin key:
+A customer-referral program usually shouldn't ask customers at all. Check the setting and turn offering off with the admin key:
 
 ```bash
 curl -s $OP/config/network -H "Authorization: Bearer $ADMIN"
@@ -82,14 +82,12 @@ curl -s -X POST $OP/config/network -H "Authorization: Bearer $ADMIN" \
 # { "enabled": true, "autoEnroll": false, ... }
 ```
 
-Or use **Admin → Network** in the portal and switch off auto-enroll. The setting is per tenant.
+Or use **Admin → Network** in the portal and switch off **Offer the Network to your partners**. The setting is per tenant.
 
-- Partners already pushed stay on the Network. Turning the setting off only stops new pushes. A push that failed earlier and is queued for retry is still delivered.
+- With offering off, partners aren't asked and nothing is sent for anyone, whatever they chose earlier. Partners already on the Network stay there: turning it off doesn't unlink them.
 - **Reconnecting to the Network** (the Connect or one-click enroll buttons on Admin → Network) sets `autoEnroll` back to `true`. Check `GET /config/network` after any reconnect.
-- Don't run **Admin → Network → Backfill** (`POST /config/network/backfill`). It pushes every existing partner.
+- **Re-sync** (`POST /config/network/backfill`) sends only partners who opted in, and answers `409 network_not_offered` while offering is off.
 - Scoped keys can't read or change this setting. Use the admin key.
-
-> **TODO ([#124](https://github.com/getcoherence/openpartner/pull/124), open as of 2026-10-16):** Network membership is moving to partner opt-in. Each partner will choose whether to join, and `autoEnroll` will only mean "offer the Network to my partners". Once that ships, update this section. Until then, the behaviour above is what runs.
 
 ## 2. Create a private program
 
@@ -114,7 +112,8 @@ curl -s -X POST $OP/programs -H "Authorization: Bearer $ADMIN" -H 'content-type:
 - **`holdbackDays`** above 0 means a commission is **approved automatically** once it's that many days old, and paid by the next payout run. Set it to your refund window so refunds land before approval. With `0` or no holdback, nothing is approved until you call `POST /commissions/{id}/approve`. Use that if you want to review every commission.
 - **Rules** are an array of sub-rules, each with `trigger` (`every` / `first` / `subsequent`), an optional `eventType`, and a `percent` or `fixed` amount. Scope each rule to an event type: a `fixed` rule with no `eventType` pays on every event, signups included.
 
-> **TODO (in progress, not merged):** revenue-based commission slabs and tiers. Today a program's rule is flat. You can override one partner's terms with `PUT /partners/{id}/commission-snapshot` (admin key); that override applies to all of the partner's programs. Scoping it to one program is [#123](https://github.com/getcoherence/openpartner/pull/123), also open.
+- **Slabs.** A sub-rule can pay more on bigger orders (`bands`: thresholds on the event's value) or as the partner grows (`tiers`: thresholds on their own revenue or conversions over a window). See `CommissionBands` and `CommissionTiers` in the API reference.
+- **One partner's own terms.** `PUT /partners/{id}/commission-snapshot` (admin key) overrides the rule on all of that partner's programs; `PUT /partners/{id}/programs/{programId}/commission` overrides it on one program, and wins there.
 
 ## 3. Create a partner for each customer
 
@@ -357,7 +356,7 @@ await crm.updateContact(partner.metadata.crmContactId, {
 });
 ```
 
-Writing totals rather than adding each webhook's amount means a duplicate, missed or out-of-order delivery can't skew the field. The next event corrects it. Store the CRM record id in the partner's `metadata` when you create it (step 3); with Network auto-enroll off, that metadata stays in your tenant. For HubSpot, the update is `PATCH /crm/v3/objects/contacts/{id}`; for Zoho, `PUT /crm/v6/Contacts/{id}` or an upsert. See their API docs for auth.
+Writing totals rather than adding each webhook's amount means a duplicate, missed or out-of-order delivery can't skew the field. The next event corrects it. Store the CRM record id in the partner's `metadata` when you create it (step 3); metadata stays in your tenant, even for a partner who joins the Network. For HubSpot, the update is `PATCH /crm/v3/objects/contacts/{id}`; for Zoho, `PUT /crm/v6/Contacts/{id}` or an upsert. See their API docs for auth.
 
 ## Security checklist
 
@@ -365,7 +364,7 @@ Writing totals rather than adding each webhook's amount means a duplicate, misse
 - [ ] The runtime key is scoped, and the admin key isn't deployed.
 - [ ] Your backend takes the partner id from its own session, never from a request parameter. A scoped key can read every partner.
 - [ ] A partner found by email is linked to a user only when its `metadata.appUserId` matches (step 3), and only verified emails are used.
-- [ ] Network auto-enroll is off (step 1), and you re-check it after any Network reconnect.
+- [ ] If customers shouldn't be asked to join the Network, offering is off (step 1), and you re-check it after any Network reconnect.
 - [ ] Webhook signatures are verified on the raw body, with the 5-minute timestamp window, and deliveries are deduped on `id`.
 - [ ] `userId` is an opaque internal id, not an email address.
 - [ ] "Paid out" in your UI comes from payouts with status `paid`, not from commissions marked `paid` (step 5).
@@ -392,8 +391,6 @@ For an operator dashboard or storefront, the same API covers the admin side (adm
 These are tracked as follow-ups. None of them is available today:
 
 - **Embedding the hosted partner portal without a separate login** (a signed embed/SSO token from your backend). Today, either build your own page (this guide) or have partners sign in to the portal with a magic link.
-- **Partner opt-in for the OpenPartner Network** ([#124](https://github.com/getcoherence/openpartner/pull/124), open; see step 1).
-- **Revenue-based commission slabs and tiers** (in progress; see step 2).
 - **Scoped reads** for `/partners/{id}/funnel`, `/coupons` and `/commission-snapshot`.
 - **Per-key rate limits.** Today the limit is per client IP (step 5).
 - **Turning off portal sign-in for headless partners.** Today any active partner can request a sign-in link (step 3).
