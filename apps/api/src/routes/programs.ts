@@ -23,7 +23,7 @@ import { campaignAcceptsNewActivity } from '../campaign-lifecycle.js';
 import { getWhiteLabelState } from '../white-label.js';
 import { customerRewardDelivery } from '../customer-rewards.js';
 import { getStorage } from '../storage.js';
-import { refineCommissionSubRule } from '../commission-rule-schema.js';
+import { commissionSlabFields, currencyCodeSchema, refineCommissionSubRule } from '../commission-rule-schema.js';
 
 /**
  * Commission rule schema. The wire format is an array of triggered sub-rules.
@@ -42,10 +42,15 @@ const subRuleSchema = z.intersection(
      *  attributed event of this type for the partner+user). Null/omitted
      *  = no cap. Capped at 600 (50 years) to keep the cap a sane integer. */
     recurringMonths: z.number().int().positive().max(600).optional(),
+    /** Optional slab table — rate by event value (bands) or by the
+     *  partner's attributed performance (tiers). `value` below stays the
+     *  base rate. See docs/commission-slabs.md. */
+    ...commissionSlabFields,
   }),
   z.discriminatedUnion('type', [
-    z.object({ type: z.literal('percent'), value: z.number().positive() }),
-    z.object({ type: z.literal('fixed'), value: z.number().positive(), currency: z.string().length(3).optional() }),
+    // A percent rule's currency is the currency of its slab thresholds.
+    z.object({ type: z.literal('percent'), value: z.number().positive(), currency: currencyCodeSchema.optional() }),
+    z.object({ type: z.literal('fixed'), value: z.number().positive(), currency: currencyCodeSchema.optional() }),
   ]),
 ).superRefine(refineCommissionSubRule);
 
@@ -59,16 +64,33 @@ const legacyRuleSchema = z.discriminatedUnion('type', [
   }),
 ]);
 
-const commissionRuleSchema = z.union([
-  z.array(subRuleSchema).min(1).max(10),
-  legacyRuleSchema.transform((legacy) => [{
-    trigger: 'every' as const,
-    type: legacy.type,
-    value: legacy.value,
-    ...('currency' in legacy && legacy.currency ? { currency: legacy.currency } : {}),
-    ...(legacy.recurring ? { recurring: legacy.recurring } : {}),
-  }]),
-]);
+// The legacy object shape predates slabs and its schema strips unknown
+// keys, so `{type, value, bands}` used to save as a flat rule — the brand
+// asked for slabs and silently got none. Refuse it and point at the array
+// form instead. (Checked before the union: inside it the strip has already
+// happened.)
+const commissionRuleSchema = z
+  .unknown()
+  .superRefine((raw, ctx) => {
+    if (raw && typeof raw === 'object' && !Array.isArray(raw) && ('bands' in raw || 'tiers' in raw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'bands and tiers need the array form of commissionRule',
+      });
+    }
+  })
+  .pipe(
+    z.union([
+      z.array(subRuleSchema).min(1).max(10),
+      legacyRuleSchema.transform((legacy) => [{
+        trigger: 'every' as const,
+        type: legacy.type,
+        value: legacy.value,
+        ...('currency' in legacy && legacy.currency ? { currency: legacy.currency } : {}),
+        ...(legacy.recurring ? { recurring: legacy.recurring } : {}),
+      }]),
+    ]),
+  );
 
 /**
  * Customer-side reward (dual-sided). Validated by reward type:
