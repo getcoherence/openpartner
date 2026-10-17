@@ -165,7 +165,7 @@ All of these work with the scoped key:
 
 | Call | Gives you |
 | --- | --- |
-| `GET /partners/{id}/dashboard?since=<iso>` | `clicks`, `attributedEvents`, `attributedRevenue`, and `commissionByStatus` (`accrued` / `approved` / `paid` / `reversed` totals). Defaults to the last 30 days. |
+| `GET /partners/{id}/dashboard?since=<iso>` | `clicks`, `attributedEvents`, `attributedRevenue` and `commissionByStatus` (`accrued` / `approved` / `paid` / `reversed` totals) in `currency`, your default currency. `attributedRevenueByCurrency` and `commissionByCurrency` hold every currency. Defaults to the last 30 days. |
 | `GET /partners/{id}/timeseries?since=&until=&programId=` | Dense daily (or weekly) buckets: `clicks`, `leads` (`signup` + `trial_started`), `sales` (events with a value), `revenue`, `earnings`. |
 | `GET /partners/{id}/events?limit=&offset=` | Each attributed event, with the click it came through. |
 | `GET /partners/{id}/commissions?limit=&cursor=&status=` | The commission ledger, newest first, cursor-paginated. Each row has `amount`, `status` and `matureAt` (when the holdback ends). |
@@ -177,7 +177,7 @@ What to show:
 - **Processing:** commissions with status `paid` whose payout is still `pending`. On the manual rail (below), commissions become `paid` as soon as the payout is planned, before any money moves.
 - **Paid out:** payouts with status `paid`. Only these are money that actually went out.
 
-Sum by currency: `commissionByStatus` adds amounts across currencies, and it only covers commissions accrued since `since` (default 30 days), so it isn't a lifetime total. For lifetime figures, page through `/commissions`.
+Amounts in different currencies are never added together. `commissionByStatus` is in `currency` (your default currency, Settings → Brand info) and `commissionByCurrency` has the rest. Both only cover commissions accrued since `since` (default 30 days), so neither is a lifetime total. For lifetime figures, page through `/commissions`. With nothing to show, format the zero in `currency`, not in dollars.
 
 - Commission and payout amounts are decimal strings such as `"9.80"`. Report endpoints (dashboard, timeseries, the events list) return numbers.
 - `GET /partners/{id}/funnel` (click → identity → signup → paid) does **not** accept scoped keys yet. Call it with an admin key from your server, or build the same counts from `/timeseries`. *TODO: a scoped read for `/funnel` and `/coupons` isn't built yet.*
@@ -248,7 +248,8 @@ Or use the server SDK, `@openpartner/sdk/server`: `await op.trackEvent({ userId,
 For example, if you track clicks, signups, leads, demos and paid customers: clicks come from the router, signups are `signup`, payments are `invoice_paid`, and leads and demos are custom types. To pay a flat bounty for a booked demo, add a sub-rule such as `{ "trigger": "first", "eventType": "demo_booked", "type": "fixed", "value": 10 }`.
 
 - **Always send `externalEventId`.** Use your own stable id for that one event: invoice id, order id, or deal id plus stage. A retry with the same key returns `200` with `"replayed": true` and records nothing, even for duplicates that arrive at the same moment. Reusing a key for a different event returns `409 external_event_id_conflict`. Keys are per tenant and up to 120 characters.
-- `value` is in major units (`49.00`, not `4900`). `currency` defaults to USD.
+- `value` is a JSON number in major units: `49.00`, not `4900` and not `"49.00"`. Omit it for an event with no value; `null` gets `400 invalid_body`.
+- `currency` is an ISO 4217 code in any case (`inr` is stored as `INR`). Without one, the event is recorded in your **default currency** (Admin → Settings → Brand info), which is USD until you change it. Set it before your first payment, and send `currency` anyway whenever you take more than one currency.
 - A `ts` you send must be UTC and end in `Z` (`2026-10-16T10:00:00Z`). An offset like `+00:00`, the default from Python's `isoformat()`, gets `400 invalid_body`. Omit `ts` to use the time OpenPartner receives the event.
 - Send events from a job queue, not inline in your request handler. On `429`, or on a network error, retry later with the same `externalEventId`.
 - An event for a user with no stitched click returns `"status": "no_identity"` and is kept. If the user is stitched later, earlier events are attributed then (`backfilledAttributions` on the identify response).
@@ -300,9 +301,12 @@ POST https://app.openpartner.dev/api/t/acme/attribution/events
 Authorization: Bearer op_<events:write key>
 Content-Type: application/json
 
-{ "userId": "<App User ID field>", "type": "invoice_paid", "value": <Amount>, "currency": "USD",
+{ "userId": "<App User ID field>", "type": "invoice_paid", "value": <Amount>, "currency": "<Currency field, e.g. INR>",
   "externalEventId": "crm:<deal id>:closed_won" }
 ```
+
+- `value` must be a JSON **number**. A quoted merge field (`"value": "25000"`) and an empty one (`null`) are both refused with `400`. Leave `value` out of the body rather than send it empty.
+- Always send `currency`. Without it the payment is recorded in your default currency, which is USD unless you changed it, so a ₹25,000 deal sent without a currency becomes USD 25,000.
 
 - **Zoho CRM:** create a Workflow Rule on Deals (for example, Stage is Closed Won) with a Webhook action: method POST, the URL above, the `Authorization` and `Content-Type` headers, and a JSON body built from merge fields. If your edition can't send a raw JSON body, use a Deluge function action instead, with the deal id as its argument and the key in an org variable or connection rather than the code:
 
@@ -311,7 +315,14 @@ Content-Type: application/json
   payload = Map();
   payload.put("userId", deal.get("App_User_ID"));
   payload.put("type", "invoice_paid");
-  payload.put("value", deal.get("Amount"));
+  amount = deal.get("Amount");
+  if(amount != null)
+  {
+    // A number, never a string or null.
+    payload.put("value", amount.toDecimal());
+  }
+  // The deal's currency when multi-currency is on, else your home currency.
+  payload.put("currency", ifnull(deal.get("Currency"), "INR"));
   payload.put("externalEventId", "zoho:" + deal.get("id") + ":closed_won");
   response = invokeurl
   [
@@ -326,11 +337,18 @@ Content-Type: application/json
 
   ```js
   exports.main = async (event, callback) => {
-    const { app_user_id, amount, hs_object_id } = event.inputFields;
+    const { app_user_id, amount, deal_currency_code, hs_object_id } = event.inputFields;
     const res = await fetch('https://app.openpartner.dev/api/t/acme/attribution/events', {
       method: 'POST',
       headers: { Authorization: `Bearer ${process.env.OPENPARTNER_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: app_user_id, type: 'invoice_paid', value: Number(amount), externalEventId: `hubspot:${hs_object_id}:closedwon` }),
+      body: JSON.stringify({
+        userId: app_user_id,
+        type: 'invoice_paid',
+        // A number; leave it out when the deal has no amount.
+        ...(amount ? { value: Number(amount) } : {}),
+        currency: deal_currency_code,
+        externalEventId: `hubspot:${hs_object_id}:closedwon`,
+      }),
     });
     callback({ outputFields: { openpartnerStatus: res.status } });
   };
@@ -345,16 +363,28 @@ CRM workflows retry, and a deal can be moved back and forth. Because the `extern
 CRMs can't check an HMAC signature themselves, so put a small relay in between. It verifies the signature (section 8), maps `data.partnerId` to the CRM record, and writes absolute values read back from the API:
 
 ```js
-// On any commission.* or payout.created webhook (signature verified):
+// On any commission.* or payout.created webhook (signature verified),
+// and right after your own POST /payouts/{id}/confirm:
 const { partnerId } = envelope.data;
 const partner = await op('GET', `/partners/${partnerId}`);          // metadata.crmContactId, set at creation
-const dash = await op('GET', `/partners/${partnerId}/dashboard?since=2020-01-01T00:00:00Z`);
+const [dash, { payouts }] = await Promise.all([
+  op('GET', `/partners/${partnerId}/dashboard?since=2020-01-01T00:00:00Z`),
+  op('GET', `/partners/${partnerId}/payouts`),
+]);
+const cur = dash.currency;                                           // your default currency
+const owed = dash.commissionByCurrency[cur] ?? {};
+const payoutTotal = (status) =>
+  payouts.filter((p) => p.status === status && p.currency === cur).reduce((n, p) => n + Number(p.amount), 0);
 await crm.updateContact(partner.metadata.crmContactId, {
-  referral_earnings_pending: (dash.commissionByStatus.accrued ?? 0) + (dash.commissionByStatus.approved ?? 0),
-  referral_earnings_paid: dash.commissionByStatus.paid ?? 0,
+  referral_earnings_pending: (owed.accrued ?? 0) + (owed.approved ?? 0),
+  referral_earnings_processing: payoutTotal('pending'),             // planned, not sent yet
+  referral_earnings_paid: payoutTotal('paid'),                      // money that went out
+  referral_currency: cur,
   referral_clicks: dash.clicks,
 });
 ```
+
+"Paid" comes from **payouts** with status `paid`, not from commissions with status `paid`. On the manual rail, a commission turns `paid` when its payout is planned, before you've sent anything (see [How headless partners get paid](#how-headless-partners-get-paid)). The payout turns `paid` only when you confirm it, and no webhook fires for that, so refresh the record from the code that confirms. `/payouts` returns the 200 most recent, which is plenty for one customer's referral earnings. If a partner can earn in more than one currency, write one field per currency, or one line per currency, from `commissionByCurrency` and each payout's `currency`.
 
 Writing totals rather than adding each webhook's amount means a duplicate, missed or out-of-order delivery can't skew the field. The next event corrects it. Store the CRM record id in the partner's `metadata` when you create it (step 3); metadata stays in your tenant, even for a partner who joins the Network. For HubSpot, the update is `PATCH /crm/v3/objects/contacts/{id}`; for Zoho, `PUT /crm/v6/Contacts/{id}` or an upsert. See their API docs for auth.
 

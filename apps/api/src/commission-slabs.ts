@@ -20,6 +20,7 @@
 import type { Knex } from 'knex';
 import { TABLES, type CommissionRule, type CommissionSubRule, type CommissionTiers, type EventRow } from '@openpartner/db';
 import { approvalSnapshotSlabRuleSchema } from './commission-rule-schema.js';
+import { rowCurrency } from './currency.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -71,14 +72,16 @@ export interface SubRuleAccrual {
 
 type SlabEvent = Pick<EventRow, 'id' | 'type' | 'value' | 'currency' | 'ts'>;
 
-/** Pre-weight amount for a sub-rule that carries bands or tiers. */
+/** Pre-weight amount for a sub-rule that carries bands or tiers. A fixed
+ *  amount is in the rule's currency, and is booked in it (attribution.ts
+ *  commissionCurrency); a percent amount is in the event's currency. */
 export async function accrueSlabRule(
   db: Knex,
   subRule: CommissionSubRule,
   event: SlabEvent,
   ctx: { partnerId: string; programId: string },
 ): Promise<SubRuleAccrual> {
-  const eventCurrency = (event.currency ?? 'USD').toUpperCase();
+  const eventCurrency = rowCurrency(event.currency);
   const currency = (subRule.currency ?? eventCurrency).toUpperCase();
   const eventValue = event.value != null ? Number(event.value) : 0;
 

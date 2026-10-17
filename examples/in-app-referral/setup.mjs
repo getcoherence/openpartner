@@ -11,7 +11,8 @@
 //      aren't asked to join it (nobody is shared without opting in anyway);
 //   2. creates a private referral program (not listed on the marketplace);
 //   3. mints a scoped key with only the scopes the referral page needs;
-//   4. writes .env for server.mjs (unless one exists; then it prints it).
+//   4. reads your default currency (Settings → Brand info);
+//   5. writes .env for server.mjs (unless one exists; then it prints it).
 
 import { existsSync, writeFileSync } from 'node:fs';
 
@@ -85,11 +86,18 @@ const key = await op('POST', '/api-keys/scoped', {
 });
 console.log(`✓ Scoped key ${key.id} minted`);
 
+// 4. Your default currency: what a payment reported without one is recorded
+//    in, and what the page shows a zero balance in. Set it in Settings →
+//    Brand info before reporting any payments.
+const { defaultCurrency = 'USD' } = await op('GET', '/config/program');
+console.log(`✓ Default currency ${defaultCurrency}${defaultCurrency === 'USD' ? ' (change it in Settings → Brand info if you bill in another currency, then re-run)' : ''}`);
+
 const env = [
   `OPENPARTNER_API_URL=${API}`,
   `OPENPARTNER_API_KEY=${key.plaintext}`,
   `OPENPARTNER_PROGRAM_ID=${program.id}`,
   `OPENPARTNER_SHARE_URL_BASE=${SHARE_BASE}`,
+  `OPENPARTNER_CURRENCY=${defaultCurrency}`,
   'PORT=3000',
   '',
 ].join('\n');

@@ -196,14 +196,25 @@ describe.skipIf(skipIntegration)('GET /admin/overview at scale', () => {
     const res = await admin('/admin/overview');
     expect(res.status).toBe(200);
     const sumWhere = (s: string) => active.filter((a) => a.status === s).reduce((n, a) => n + a.commission, 0);
+    const revenue = active.reduce((n, a) => n + a.revenue, 0);
     expect(res.body.totals).toEqual({
       partners: 250,
       clicks: 40,
-      attributedRevenue: active.reduce((n, a) => n + a.revenue, 0),
+      currency: 'USD',
+      attributedRevenue: revenue,
+      attributedRevenueByCurrency: { USD: revenue },
       attributedEvents: 40,
       commissionAccrued: sumWhere('accrued'),
       commissionApproved: sumWhere('approved'),
       commissionPaid: sumWhere('paid'),
+      commissionByCurrency: {
+        USD: {
+          accrued: sumWhere('accrued'),
+          approved: sumWhere('approved'),
+          paid: sumWhere('paid'),
+          reversed: sumWhere('reversed'),
+        },
+      },
     });
     expect(sumWhere('accrued')).toBeGreaterThan(0);
   });

@@ -93,7 +93,23 @@ The engine does no FX. A sub-rule's `currency`, when set, is the currency of its
 
 - **Bands:** if the rule's currency differs from the event's, the thresholds can't be compared. The base rate applies, and the Commission row records `currencyMismatch: true`.
 - **Revenue tiers:** only prior events in the threshold currency are summed. The rate that results applies to the current event whatever its currency.
-- The accrued Commission is in the event's currency, as it always has been.
+- Currency codes compare upper-cased (`inr` is `INR`). Every ingest path stores them upper case. An event sent without a currency is stored in the tenant's default currency (Settings → Brand info, USD unless changed). A legacy row with no currency counts as USD.
+
+### Which currency the Commission is in
+
+| Sub-rule | Commission currency |
+| --- | --- |
+| `fixed` with `currency` | The rule's currency. |
+| `fixed` without `currency` | The event's currency. |
+| `percent` (with or without `currency`) | The event's currency. A percent is a share of the event's value, and the rule's `currency` only says what its thresholds are in. |
+
+A fixed amount is a bounty in the currency the brand wrote it in. "₹100 per lead" pays ₹100 whatever the event says: a lead sent with no currency, or a sale reported in USD. Before Oct 2026 the amount was booked in the event's currency, so that lead earned "100.00 USD".
+
+We considered and rejected two alternatives:
+- **Convert the amount to the event's currency.** The engine has no FX, by design. A commission is a raw-data derivation that has to come out the same on every re-derivation, and a rate feed would make it depend on the day it ran. FX exists only in platform billing (`fx.ts`), which converts OpenPartner's own fee, never a partner's earnings.
+- **Skip or reject a mismatched event.** A lead or demo event usually carries no money at all, so its currency says nothing. Refusing to pay a ₹100 bounty because the CRM didn't send `INR` would drop a commission the rule plainly promises.
+
+A partner who earns in two currencies has two balances and gets one payout per currency. Banded and tiered `fixed` rules follow the table too: their amounts, and the base amount paid on a `currencyMismatch`, are in the rule's currency.
 
 ## Audit trail: `Commission.metadata`
 

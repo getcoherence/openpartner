@@ -18,18 +18,47 @@ import { api, type Principal } from '../api.js';
 import { useTenantBase } from '../tenant-base.js';
 import { TenantLink } from '../tenant-link.js';
 import { alpha, theme } from '../theme.js';
-import { useBrand } from '../lib/useBrand.js';
-import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, SectionHeading, Select, Stat, StatusPill, money } from '../ui.js';
+import { useBrand, useDefaultCurrency } from '../lib/useBrand.js';
+import {
+  Avatar,
+  Button,
+  Card,
+  EmptyState,
+  ErrorBanner,
+  Page,
+  SectionHeading,
+  Select,
+  Stat,
+  StatusPill,
+  moneyByCurrency,
+  statusAmounts,
+} from '../ui.js';
 
 // ---------- Partner ----------
 
 interface PartnerDashboard {
   partnerId: string;
   since: string;
+  /** The brand's default currency: the currency of the scalar fields.
+   *  The ByCurrency maps are absent from an API that predates them. */
+  currency?: string;
   clicks: number;
   attributedEvents: number;
   attributedRevenue: number;
+  attributedRevenueByCurrency?: Record<string, number>;
   commissionByStatus: Record<string, number>;
+  commissionByCurrency?: Record<string, Record<string, number>>;
+}
+
+/** Every currency's amounts, never added together. An API that predates
+ *  the ByCurrency maps only has the scalars, in `currency`. */
+function dashboardAmounts(data: PartnerDashboard, fallbackCurrency: string) {
+  const currency = data.currency ?? fallbackCurrency;
+  return {
+    currency,
+    revenue: data.attributedRevenueByCurrency ?? { [currency]: data.attributedRevenue },
+    commissions: data.commissionByCurrency ?? { [currency]: data.commissionByStatus },
+  };
 }
 
 export function Dashboard({ principal }: { principal: Principal }) {
@@ -72,14 +101,17 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
     queryFn: () => api<{ links: unknown[] }>(`/partners/${partnerId}/links`),
   });
 
+  const defaultCurrency = useDefaultCurrency();
+  const amounts = data ? dashboardAmounts(data, defaultCurrency) : null;
+
   const linkCount = links.data?.links.length ?? 0;
   const hasLink = linkCount > 0;
   const hasActiveConnect = !!connect.data?.connected && !!connect.data?.payoutsEnabled;
 
-  const owedAmount = (data?.commissionByStatus.approved ?? 0) + (data?.commissionByStatus.accrued ?? 0);
+  const owed = amounts ? statusAmounts(amounts.commissions, 'approved', 'accrued') : {};
   const needsConnect =
-    !!data &&
-    owedAmount > 0 &&
+    !!amounts &&
+    Object.keys(owed).length > 0 &&
     connect.data != null &&
     (!connect.data.connected || !connect.data.payoutsEnabled);
 
@@ -99,37 +131,45 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
         <GettingStarted hasLink={hasLink} connectReady={hasActiveConnect} />
       )}
       {needsConnect && !showGettingStarted && (
-        <ConnectNudge owed={owedAmount} connected={connect.data!.connected} />
+        <ConnectNudge owed={moneyByCurrency(owed, amounts!.currency)} connected={connect.data!.connected} />
       )}
-      {isLoading || !data ? (
+      {isLoading || !data || !amounts ? (
         <Card>Loading…</Card>
       ) : (
         <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
             <Stat label="Clicks" value={data.clicks} icon={<MousePointerClick size={16} />} />
             <Stat label="Attributed events" value={data.attributedEvents} icon={<Receipt size={16} />} />
-            <Stat label="Attributed revenue" value={money(data.attributedRevenue)} icon={<Wallet size={16} />} />
-            <Stat label="Earned (paid)" value={money(data.commissionByStatus.paid ?? 0)} icon={<Wallet size={16} />} />
+            <Stat
+              label="Attributed revenue"
+              value={moneyByCurrency(amounts.revenue, amounts.currency)}
+              icon={<Wallet size={16} />}
+            />
+            <Stat
+              label="Earned (paid)"
+              value={moneyByCurrency(statusAmounts(amounts.commissions, 'paid'), amounts.currency)}
+              icon={<Wallet size={16} />}
+            />
           </div>
 
           {funnel.data && <FunnelChart funnel={funnel.data} />}
 
           <SectionHeading>Commissions</SectionHeading>
           <Card>
-            {Object.keys(data.commissionByStatus).length === 0 ? (
+            {Object.keys(amounts.commissions).length === 0 ? (
               <div style={{ color: theme.textMuted, fontSize: 14 }}>
                 You'll see commission activity here once events start attributing.
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {(['accrued', 'approved', 'paid', 'reversed'] as const).map((status) => {
-                  const amount = data.commissionByStatus[status] ?? 0;
-                  if (amount === 0) return null;
+                  const byCurrency = statusAmounts(amounts.commissions, status);
+                  if (Object.keys(byCurrency).length === 0) return null;
                   return (
                     <div key={status} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                       <StatusPill status={status} />
                       <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 15, fontWeight: 500 }}>
-                        {money(amount)}
+                        {moneyByCurrency(byCurrency, amounts.currency)}
                       </span>
                     </div>
                   );
@@ -218,7 +258,7 @@ function ChecklistRow({
   );
 }
 
-function ConnectNudge({ owed, connected }: { owed: number; connected: boolean }) {
+function ConnectNudge({ owed, connected }: { owed: string; connected: boolean }) {
   return (
     <Card>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
@@ -230,7 +270,7 @@ function ConnectNudge({ owed, connected }: { owed: number; connected: boolean })
             {connected ? 'Finish Stripe onboarding to receive payouts' : 'Connect Stripe to receive payouts'}
           </div>
           <div style={{ fontSize: 13, color: theme.textMuted }}>
-            You have {money(owed)} in commissions {connected ? 'waiting — complete onboarding to get paid.' : 'that can’t be paid out yet.'}
+            You have {owed} in commissions {connected ? 'waiting — complete onboarding to get paid.' : 'that can’t be paid out yet.'}
           </div>
         </div>
         <TenantLink to="/connect" style={{ textDecoration: 'none' }}>
@@ -319,11 +359,16 @@ interface AdminOverview {
   totals: {
     partners: number;
     clicks: number;
+    /** The brand's default currency: the currency of the scalar amounts.
+     *  The ByCurrency maps are absent from an API that predates them. */
+    currency?: string;
     attributedRevenue: number;
+    attributedRevenueByCurrency?: Record<string, number>;
     attributedEvents: number;
     commissionAccrued: number;
     commissionApproved: number;
     commissionPaid: number;
+    commissionByCurrency?: Record<string, Record<string, number>>;
   };
   partners: Array<{
     id: string;
@@ -332,8 +377,10 @@ interface AdminOverview {
     stripeConnected: boolean;
     clicks: number;
     revenue: number;
+    revenueByCurrency?: Record<string, number>;
     events: number;
     commission: Record<string, number>;
+    commissionByCurrency?: Record<string, Record<string, number>>;
   }>;
 }
 
@@ -355,6 +402,13 @@ function AdminDashboard() {
   });
   const totals = data?.pages[0]?.totals;
   const partners = data?.pages.flatMap((p) => p.partners) ?? [];
+  const defaultCurrency = useDefaultCurrency();
+  const currency = totals?.currency ?? defaultCurrency;
+  const totalCommissions = totals
+    ? (totals.commissionByCurrency ?? {
+        [currency]: { accrued: totals.commissionAccrued, approved: totals.commissionApproved, paid: totals.commissionPaid },
+      })
+    : {};
 
   return (
     <Page title="Partner Program" subtitle="Overview of every partner driving attributed revenue.">
@@ -368,11 +422,15 @@ function AdminDashboard() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
             <Stat label="Partners" value={totals.partners.toLocaleString()} icon={<Users size={16} />} />
             <Stat label="Clicks (30d)" value={totals.clicks.toLocaleString()} icon={<MousePointerClick size={16} />} />
-            <Stat label="Attributed revenue" value={money(totals.attributedRevenue)} icon={<Wallet size={16} />} />
+            <Stat
+              label="Attributed revenue"
+              value={moneyByCurrency(totals.attributedRevenueByCurrency ?? { [currency]: totals.attributedRevenue }, currency)}
+              icon={<Wallet size={16} />}
+            />
             <Stat
               label="Awaiting approval"
-              value={money(totals.commissionAccrued)}
-              hint={`${money(totals.commissionApproved)} approved, ${money(totals.commissionPaid)} paid`}
+              value={moneyByCurrency(statusAmounts(totalCommissions, 'accrued'), currency)}
+              hint={`${moneyByCurrency(statusAmounts(totalCommissions, 'approved'), currency)} approved, ${moneyByCurrency(statusAmounts(totalCommissions, 'paid'), currency)} paid`}
               icon={<Receipt size={16} />}
             />
           </div>
@@ -415,7 +473,7 @@ function AdminDashboard() {
                 }}
               >
                 {partners.map((p) => (
-                  <PartnerCard key={p.id} partner={p} />
+                  <PartnerCard key={p.id} partner={p} currency={currency} />
                 ))}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, marginTop: 16, flexWrap: 'wrap' }}>
@@ -438,9 +496,13 @@ function AdminDashboard() {
 
 function PartnerCard({
   partner,
+  currency,
 }: {
   partner: AdminOverview['partners'][number];
+  /** The brand's default currency; it leads, and formats a zero. */
+  currency: string;
 }) {
+  const commissions = partner.commissionByCurrency ?? { [currency]: partner.commission };
   return (
     <Card>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
@@ -456,11 +518,8 @@ function PartnerCard({
         {partner.stripeConnected && <StatusPill status="connected" />}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <MiniStat label="Revenue" value={money(partner.revenue)} />
-        <MiniStat
-          label="Payouts"
-          value={money((partner.commission.paid ?? 0) + (partner.commission.approved ?? 0))}
-        />
+        <MiniStat label="Revenue" value={moneyByCurrency(partner.revenueByCurrency ?? { [currency]: partner.revenue }, currency)} />
+        <MiniStat label="Payouts" value={moneyByCurrency(statusAmounts(commissions, 'paid', 'approved'), currency)} />
         <MiniStat label="Clicks" value={String(partner.clicks)} />
         <MiniStat label="Events" value={String(partner.events)} />
       </div>

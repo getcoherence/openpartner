@@ -242,7 +242,9 @@ is an FK to it) can't simply be added to the bundle.
 
 **Not exported yet — known gaps, not decisions:**
 
-- `Tenant` — brand name, logo, colours, payout settings. The destination
+- `Tenant` — brand name, logo, colours, default currency, payout settings.
+  (Every Event, Commission and Payout row carries its own currency, so the
+  raw layers don't depend on the default currency.) The destination
   tenant row has to exist before an import can run, so restoring one needs
   a merge strategy rather than an insert.
 - `Config` — program name, support email and other UI-managed settings.
