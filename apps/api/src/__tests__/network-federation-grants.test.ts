@@ -101,6 +101,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Don't leave the last test's rows for later files.
+  if (!skipIntegration) for (const t of TABLES_TO_CLEAN) await db(t).whereIn('tenantId', [DEFAULT_TENANT_ID]).del();
   await db.destroy();
 });
 

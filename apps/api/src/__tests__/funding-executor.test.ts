@@ -133,30 +133,34 @@ const FUNDING_TABLES = [
   TABLES.StripeWebhookInbox,
 ];
 
+const TABLES_TO_CLEAN = [
+  ...FUNDING_TABLES,
+  TABLES.Commission,
+  TABLES.Attribution,
+  TABLES.Event,
+  TABLES.Identity,
+  TABLES.Click,
+  TABLES.Link,
+  TABLES.Coupon,
+  TABLES.PartnerProgram,
+  TABLES.PartnerCommission,
+  TABLES.Payout,
+  TABLES.Program,
+  TABLES.Partner,
+];
+
 beforeEach(async () => {
   if (skipIntegration) return;
-  for (const t of [
-    ...FUNDING_TABLES,
-    TABLES.Commission,
-    TABLES.Attribution,
-    TABLES.Event,
-    TABLES.Identity,
-    TABLES.Click,
-    TABLES.Link,
-    TABLES.Coupon,
-    TABLES.PartnerProgram,
-    TABLES.PartnerCommission,
-    TABLES.Payout,
-    TABLES.Program,
-    TABLES.Partner,
-  ]) {
+  for (const t of TABLES_TO_CLEAN) {
     await db(t).del();
   }
 });
 
 afterAll(async () => {
+  // All of it, not just the funding rows: the last test's Partner, Program,
+  // Click, Event and Attribution would otherwise outlive this file.
   if (!skipIntegration) {
-    for (const t of [...FUNDING_TABLES, TABLES.Commission, TABLES.Payout]) {
+    for (const t of TABLES_TO_CLEAN) {
       await db(t).del();
     }
   }
