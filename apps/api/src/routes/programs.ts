@@ -160,6 +160,30 @@ function coverUrlProblem(tenantId: string, url: string | null | undefined) {
   };
 }
 
+/** Event types that correct a conversion (refunds, chargebacks, disputes,
+ *  failed payments): never revenue, whatever a program declares. */
+const CORRECTIVE_TYPES = new Set(['refund', 'chargeback', 'dispute_created', 'invoice_payment_failed']);
+
+/** Event types the brand declares are sales in this program: their value is
+ *  partner-attributed revenue for the hosted platform fee
+ *  (docs/platform-fee.md). invoice_paid and subscription_created always
+ *  are, so they needn't be listed. */
+const revenueEventTypesSchema = z
+  .array(
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(80)
+      .refine((t) => !CORRECTIVE_TYPES.has(t), { message: 'a refund, chargeback, dispute or failed payment is never revenue' }),
+  )
+  .max(20);
+
+/** Stored form: unique, without the two types that are always revenue. */
+function normalizeRevenueEventTypes(types: string[]): string[] {
+  return [...new Set(types)].filter((t) => t !== 'invoice_paid' && t !== 'subscription_created');
+}
+
 export const createSchema = z.object({
   name: z.string().min(1),
   commissionRule: commissionRuleSchema,
@@ -206,6 +230,11 @@ export const createSchema = z.object({
    *  creator portal (federation-allowed PATCH on the coupon row).
    *  Defaults to false — admin keeps full control of code strings. */
   partnersMayCustomizeCode: z.boolean().optional(),
+  /** Event types that are sales in this program beyond invoice_paid and
+   *  subscription_created — e.g. `order_paid` paid with fixed bounties.
+   *  Their value counts as partner-attributed revenue for the hosted
+   *  platform fee. Omitted = none. */
+  revenueEventTypes: revenueEventTypesSchema.optional(),
   /** When true, after creating the campaign, also grant every existing
    *  non-revoked partner access to it (source='admin'). Defaults to
    *  false so VIP / scoped campaigns stay private unless the brand opts
@@ -234,6 +263,7 @@ export const updateSchema = z.object({
     .max(5)
     .optional(),
   partnersMayCustomizeCode: z.boolean().optional(),
+  revenueEventTypes: revenueEventTypesSchema.optional(),
 });
 
 export const programsRouter = Router();
@@ -362,6 +392,7 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
       marketplaceVideoUrl: body.data.marketplaceVideoUrl ?? null,
       categories: body.data.categories ?? [],
       partnersMayCustomizeCode: body.data.partnersMayCustomizeCode ?? false,
+      revenueEventTypes: normalizeRevenueEventTypes(body.data.revenueEventTypes ?? []),
     })
     .returning('*');
 
@@ -449,6 +480,9 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
   if (body.data.categories !== undefined) patch.categories = body.data.categories;
   if (body.data.partnersMayCustomizeCode !== undefined) {
     patch.partnersMayCustomizeCode = body.data.partnersMayCustomizeCode;
+  }
+  if (body.data.revenueEventTypes !== undefined) {
+    patch.revenueEventTypes = normalizeRevenueEventTypes(body.data.revenueEventTypes);
   }
 
   // White-label tenants are isolated from the marketplace — pin the flag

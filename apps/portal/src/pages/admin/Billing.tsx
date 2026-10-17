@@ -29,6 +29,17 @@ interface BillingStatus {
   // Enterprise:
   enterprise?: boolean;
   message?: string;
+  /** How the platform fee is worked out (docs/platform-fee.md). */
+  fee?: FeeDescription | null;
+}
+
+interface FeeDescription {
+  revenueRate: number;
+  commissionRate: number;
+  rule: 'old' | 'scheduled' | 'new';
+  effectiveAt: string | null;
+  contract: boolean;
+  monthlyMinimumUsd: number | null;
 }
 
 interface Invoice {
@@ -73,6 +84,12 @@ export function AdminBilling() {
       ) : status.data ? (
         <>
           <PlanCard status={status.data} />
+          {status.data.fee && (
+            <>
+              <div style={{ height: 16 }} />
+              <FeeBasisCard fee={status.data.fee} />
+            </>
+          )}
           {status.data.mode !== 'selfhost' && (
             <>
               <div style={{ height: 16 }} />
@@ -666,6 +683,86 @@ function InvoicesCard({ invoices }: { invoices: Invoice[] }) {
           </div>
         ))}
       </div>
+    </Card>
+  );
+}
+
+function pct(rate: number): string {
+  return `${Number((rate * 100).toFixed(3))}%`;
+}
+
+function feeDate(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+}
+
+/**
+ * Plain-language account of the platform fee. On the commission-floor rule
+ * each conversion costs the greater of a share of its revenue and a share of
+ * the commissions partners earned on it; a brand still on the old rule sees
+ * the date it moves, when it has one.
+ */
+function FeeBasisCard({ fee }: { fee: FeeDescription }) {
+  const rr = pct(fee.revenueRate);
+  const cr = pct(fee.commissionRate);
+  const breakEven = fee.commissionRate > 0 ? pct(fee.revenueRate / fee.commissionRate) : null;
+  const p = { fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.55 } as const;
+  const newRule = (
+    <>
+      <p style={p}>
+        For each conversion a partner is credited for, you pay the greater of{' '}
+        <strong style={{ color: theme.text }}>{rr} of its revenue</strong>
+        {fee.commissionRate > 0 && (
+          <>
+            {' '}or <strong style={{ color: theme.text }}>{cr} of the commissions</strong> partners earned on it
+          </>
+        )}
+        .
+      </p>
+      <p style={p}>
+        A conversion counts as revenue when it’s an invoice or subscription payment, when it pays a percentage
+        commission, or when its event type is marked as revenue on the program (Programs → Revenue event types).
+      </p>
+      {breakEven && fee.revenueRate > 0 && (
+        <p style={p}>
+          If your commissions are at most {breakEven} of the revenue you report, that’s simply {rr} of revenue. The
+          commission minimum only matters for a conversion with no value, an understated value, or a fixed bounty
+          larger than {breakEven} of its value.
+        </p>
+      )}
+      <p style={p}>A refund lowers the fee once the partner’s commission on that conversion is reversed or clawed back.</p>
+    </>
+  );
+  return (
+    <Card>
+      <SectionHeader title="How your platform fee is calculated" />
+      {fee.rule === 'old' && (
+        <p style={p}>
+          {rr} of partner-attributed revenue: the value of invoice and subscription payments, and of event types you
+          mark as revenue on a program, that a partner was credited for. A refund lowers it once the partner’s
+          commission on that conversion is reversed or clawed back.
+        </p>
+      )}
+      {fee.rule === 'scheduled' && (
+        <>
+          <p style={{ ...p, color: theme.text }}>
+            Until {fee.effectiveAt ? feeDate(fee.effectiveAt) : 'your change date'}: {rr} of partner-attributed revenue,
+            as today. From then on, as we let you know by email:
+          </p>
+          {newRule}
+        </>
+      )}
+      {fee.rule === 'new' && newRule}
+      {fee.contract && (
+        <p style={p}>
+          These rates come from your contract
+          {fee.monthlyMinimumUsd !== null ? `, with a minimum of $${fee.monthlyMinimumUsd.toLocaleString()} a month` : ''}.
+        </p>
+      )}
+      <p style={{ ...p, margin: 0 }}>
+        <a href="https://openpartner.dev/pricing" target="_blank" rel="noreferrer" style={{ color: theme.accentText }}>
+          Pricing details
+        </a>
+      </p>
     </Card>
   );
 }

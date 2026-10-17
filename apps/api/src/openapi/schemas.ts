@@ -138,6 +138,10 @@ export const Program = z
     customerReward: orNull(CustomerReward),
     categories: z.array(z.string()),
     partnersMayCustomizeCode: z.boolean(),
+    revenueEventTypes: z.array(z.string()).openapi({
+      description:
+        'Event types that are sales in this program beyond invoice_paid and subscription_created, which always are. Their value counts as partner-attributed revenue for the hosted platform fee.',
+    }),
     shareOnNetwork: z.boolean(),
     marketplaceDescription: z.string().nullable(),
     marketplaceCoverUrl: z.string().nullable(),
@@ -316,7 +320,7 @@ const CommissionRowShape = z.object({
   payoutId: z.string().nullable(),
   metadata: z.record(z.unknown()).openapi({
     description:
-      "How the amount was worked out, where it took more than the rule's flat value. A banded or tiered rule records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. Empty for a flat rule.",
+      "How the amount was worked out. `rateType` is the sub-rule's `percent` or `fixed` (absent on commissions accrued before October 2026). A banded or tiered rule also records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. A replacement accrued for what a partial refund left records `refund`.",
   }),
 });
 

@@ -188,7 +188,7 @@ export async function attributeEvent(
         amount: amount.toFixed(2),
         currency: event.currency ?? 'USD',
         status: 'accrued',
-        metadata: commissionMetadata(accrual, ruleIndex),
+        metadata: commissionMetadata(accrual, ruleIndex, subRule.type),
       });
       if (!firstCommissionId) firstCommissionId = commissionId;
 

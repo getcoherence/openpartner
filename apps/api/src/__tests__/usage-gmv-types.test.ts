@@ -1,9 +1,11 @@
 /**
- * Billable-GMV event types (metering leak #3). By default only Stripe-native
- * revenue events count, so a merchant reporting revenue under a CUSTOM type
- * accrues partner commissions but escapes the platform %. The billable set is
- * now explicit + extensible (default + OPENPARTNER_BILLABLE_EVENT_TYPES_EXTRA),
- * and aggregateAttributedGmv accepts the set so a custom type can be counted.
+ * Billable-GMV event types (metering leak #3). Only Stripe-native revenue
+ * events count by default, so a merchant reporting revenue under a CUSTOM
+ * type accrued partner commissions but escaped the platform %. A program
+ * now declares its own revenue types (Program.revenueEventTypes), which
+ * replaced the platform-wide OPENPARTNER_BILLABLE_EVENT_TYPES_EXTRA env var.
+ * (On the commission-floor rule a percent commission makes any type revenue;
+ * see usage-fee-rule.test.ts.)
  */
 
 import { afterAll, beforeEach, beforeAll, describe, expect, it } from 'vitest';
@@ -18,7 +20,7 @@ const { aggregateAttributedGmv } = await import('../usage-billing.js');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 
-async function seedAttributedEvent(type: string, value: number): Promise<void> {
+async function seedAttributedEvent(type: string, value: number, revenueEventTypes: string[] = []): Promise<void> {
   const partnerId = ulid();
   const programId = ulid();
   const linkId = ulid();
@@ -28,6 +30,7 @@ async function seedAttributedEvent(type: string, value: number): Promise<void> {
   await db(TABLES.Program).insert({
     id: programId, tenantId: DEFAULT_TENANT_ID, name: 'Prog', attributionModel: 'last_click',
     attributionWindowDays: 60, commissionRule: { type: 'percent', value: 20 }, destinationUrl: 'https://x/',
+    revenueEventTypes,
   });
   await db(TABLES.Link).insert({ id: linkId, tenantId: DEFAULT_TENANT_ID, partnerId, programId, linkKey: `lk-${linkId}`, destinationUrl: 'https://x/' });
   await db(TABLES.Click).insert({ id: clickId, tenantId: DEFAULT_TENANT_ID, linkId, partnerId, programId, landingUrl: 'https://x/', ipHash: 'h', ts: new Date() });
@@ -51,16 +54,18 @@ beforeEach(async () => {
 });
 
 describe.skipIf(skipIntegration)('aggregateAttributedGmv billable types', () => {
-  it('excludes a custom revenue type by default (the leak)', async () => {
+  it('excludes a custom revenue type its program has not declared (the leak)', async () => {
     await seedAttributedEvent('order_paid', 100);
     const gmv = await aggregateAttributedGmv(db, null, new Date());
     expect(gmv).toEqual({});
   });
 
-  it('counts a custom revenue type when it is in the billable set', async () => {
-    await seedAttributedEvent('order_paid', 100);
+  it('counts a custom revenue type its program declares', async () => {
+    await seedAttributedEvent('order_paid', 100, ['order_paid']);
     await seedAttributedEvent('invoice_paid', 50);
-    const gmv = await aggregateAttributedGmv(db, null, new Date(), ['invoice_paid', 'subscription_created', 'order_paid']);
+    // Declared on one program only: another program's order_paid isn't revenue.
+    await seedAttributedEvent('order_paid', 70);
+    const gmv = await aggregateAttributedGmv(db, null, new Date());
     expect(gmv).toEqual({ USD: 150 });
   });
 });

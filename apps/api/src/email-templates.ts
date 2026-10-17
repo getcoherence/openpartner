@@ -497,6 +497,53 @@ export function marketplacePolicyWarningEmail(opts: {
   return { subject, text, html: wrap(text, opts.dashboardUrl, 'Review my programs') };
 }
 
+/**
+ * Brand admin: the platform fee is changing (the Terms' 30 days' notice).
+ * An essential contractual notice about the account, not marketing: it goes
+ * to every admin and has no unsubscribe link, like a security or billing
+ * notice. Sent only when an operator clicks send in the ops console.
+ */
+export function pricingChangeNoticeEmail(opts: {
+  adminName: string | null;
+  brandName: string;
+  /** e.g. "3%" and "10%". */
+  revenueRate: string;
+  commissionRate: string;
+  /** The commission share at or below which honest programs pay the same as
+   *  today, e.g. "30%". */
+  breakEven: string;
+  effectiveDate: string;
+  pricingUrl: string;
+  billingUrl: string;
+}): EmailTemplate {
+  const subject = `Notice of a pricing change for ${opts.brandName} on OpenPartner, effective ${opts.effectiveDate}`;
+  const text = [
+    `Hi ${opts.adminName?.trim() || 'there'},`,
+    ``,
+    `We're changing how the OpenPartner platform fee is calculated. This email is the 30 days' notice our Terms require.`,
+    ``,
+    `What changes, from ${opts.effectiveDate} (the start of your first billing period after the notice period):`,
+    `  - Your fee stays ${opts.revenueRate} of partner-attributed revenue, with a minimum of ${opts.commissionRate} of the commissions your partners earn on each conversion.`,
+    `  - A conversion counts as revenue when it's an invoice or subscription payment, when it pays a percentage commission, or when you've marked its event type as revenue on a program.`,
+    `  - A refund lowers the fee once the partner's commission on it is reversed or clawed back.`,
+    ``,
+    `What doesn't change:`,
+    `  - If you pay partners up to ${opts.breakEven} of the revenue you report, you pay ${opts.revenueRate} of revenue, the same as today.`,
+    `  - Conversions attributed before ${opts.effectiveDate} are billed as they are today.`,
+    ``,
+    `Pricing details: ${opts.pricingUrl}`,
+    `Your billing page: ${opts.billingUrl}`,
+    ``,
+    `Questions? Just reply to this email.`,
+  ].join('\n');
+  const footer = `You're receiving this service notice because you're an admin of ${opts.brandName} on OpenPartner.`;
+  return {
+    subject,
+    text: `${text}\n\n--\n${footer}`,
+    html: wrapWithFooter(text, opts.pricingUrl, 'See pricing', escapeHtml(footer)),
+  };
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

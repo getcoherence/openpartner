@@ -133,4 +133,6 @@ export const TABLES = {
   CommissionAdjustment: 'CommissionAdjustment',
   OperatorRecoveryRequest: 'OperatorRecoveryRequest',
   UsageLedger: 'UsageLedger',
+  HostedFeeTerms: 'HostedFeeTerms',
+  UsageFeeShadow: 'UsageFeeShadow',
 } as const;

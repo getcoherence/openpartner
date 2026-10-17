@@ -653,6 +653,12 @@ export interface ProgramRow {
    *  the first successful federation upsert; subsequent edits PATCH
    *  this id instead of creating a new offering. */
   networkOfferingId: string | null;
+  /** Event types the brand declares are sales in this program, on top of
+   *  invoice_paid / subscription_created (which always are) — e.g.
+   *  `order_paid` paid with fixed bounties. Their value is partner-
+   *  attributed revenue for the hosted platform fee (docs/platform-fee.md).
+   *  Empty = none beyond the two. */
+  revenueEventTypes: string[];
   /** Platform-operator takedown (anti-spam). When set, the router refuses
    *  to serve this program's partner links regardless of the brand's
    *  approvalStatus — a per-program removal that leaves the brand live.
@@ -767,9 +773,11 @@ export interface CommissionRow {
   accruedAt: Date;
   paidAt: Date | null;
   payoutId: string | null;
-  /** How the amount was computed, for audit. Holds `slab` (see
-   *  CommissionSlabTrace in apps/api/src/commission-slabs.ts) when a band
-   *  or tier set the rate; `{}` otherwise. */
+  /** How the amount was computed, for audit. `rateType` is the sub-rule's
+   *  `percent` | `fixed` (absent on rows accrued before Oct 2026); `slab`
+   *  (see CommissionSlabTrace in apps/api/src/commission-slabs.ts) when a
+   *  band or tier set the rate; `refund` on a replacement accrued for the
+   *  share a partial refund left (refunds.ts). */
   metadata: Record<string, unknown>;
 }
 
@@ -1106,6 +1114,53 @@ export interface UsageLedgerRow {
   /** Null: no published rate, held out of the meter. */
   usdPerUnit: string | null;
   amountUsd: string; // decimal, signed
+  /** The fee terms the conversion was billed under (usage-ledger.ts
+   *  FeeTerms). Null on rows from before the commission floor: the old rule. */
+  terms: Record<string, unknown> | null;
+  createdAt: Date;
+}
+
+/** HOSTED BILLING SIDECAR (not exported — see docs/data-portability.md):
+ *  how the platform fee applies to one tenant. See
+ *  apps/api/src/fee-terms.ts and docs/platform-fee.md. */
+export interface HostedFeeTermsRow {
+  tenantId: string;
+  planSubscriptionId: string | null;
+  /** Start of the tenant's paid Stripe subscription. */
+  planStartedAt: Date | null;
+  /** Conversions first attributed at or after this are billed on the
+   *  commission-floor rule. Null: the old rule. */
+  effectiveAt: Date | null;
+  effectiveSource: 'new_plan' | 'notice' | 'contract' | null;
+  noticeSentAt: Date | null;
+  noticeSentByEmail: string | null;
+  noticeRecipients: string[] | null;
+  /** Contract overrides; null = the plan's platform rates. Fractions. */
+  revenueRate: string | null;
+  commissionRate: string | null;
+  monthlyMinimumUsd: string | null;
+  contractNote: string | null;
+  updatedByEmail: string | null;
+  updatedAt: Date;
+}
+
+/** HOSTED BILLING SIDECAR (not exported): what the commission-floor rule
+ *  would have billed, next to what the old rule did, per usage report. */
+export interface UsageFeeShadowRow {
+  id: string;
+  tenantId: string;
+  reportKey: string;
+  rangeStart: Date | null;
+  rangeEnd: Date;
+  mode: string;
+  conversions: number;
+  oldBasisUsd: string;
+  newBasisUsd: string;
+  oldFeeUsd: string;
+  newFeeUsd: string;
+  floorConversions: number;
+  renamedSaleConversions: number;
+  heldOut: Record<string, number> | null;
   createdAt: Date;
 }
 
