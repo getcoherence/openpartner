@@ -317,9 +317,22 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     // Only mark commissions paid on the manual-commit path. Connect
     // path defers until after the transfer succeeds.
     if (method === 'manual') {
-      await db(TABLES.Commission)
+      // Compare-and-set, like the Connect claim below: the rows were read
+      // without a lock, and a refund or an admin reversal can flip one to
+      // 'reversed' in between. An unguarded UPDATE turned it back into
+      // 'paid', paying refunded revenue (and, after a partial refund, its
+      // replacement commission too). A short count aborts the whole run;
+      // nothing has been announced yet, so the next run starts clean.
+      const marked = await db(TABLES.Commission)
         .whereIn('id', commissions.map((c) => c.id))
+        .where({ status: 'approved' })
+        .whereNull('payoutId')
         .update({ status: 'paid', paidAt: new Date(), payoutId });
+      if (marked !== commissions.length) {
+        throw new Error(
+          `manual payout ${payoutId}: marked ${marked}/${commissions.length} commissions paid for partner ${partner.id} — a commission was reversed or claimed concurrently; aborting`,
+        );
+      }
     }
 
     if (connectBlocked) {
