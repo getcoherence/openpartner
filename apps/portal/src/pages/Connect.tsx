@@ -2,6 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { CreditCard, CheckCircle2, XCircle } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { theme } from '../theme.js';
+import { useBrand } from '../lib/useBrand.js';
 import { Button, Card, EmptyState, ErrorBanner, Page } from '../ui.js';
 
 interface ConnectStatus {
@@ -14,6 +15,7 @@ interface ConnectStatus {
 
 export function ConnectPage({ principal }: { principal: Principal }) {
   const partnerId = principal.role === 'partner' ? principal.partnerId : null;
+  const { programName } = useBrand();
 
   const status = useQuery({
     queryKey: ['connect-status', partnerId],
@@ -59,7 +61,7 @@ export function ConnectPage({ principal }: { principal: Principal }) {
           <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>Connect an account</div>
           <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 16, maxWidth: 560 }}>
             You'll be redirected to Stripe's hosted onboarding. Once you've finished,
-            OpenPartner will transfer approved commissions directly to your balance.
+            {' '}{programName} will transfer approved commissions directly to your balance.
           </div>
           <Button onClick={() => start.mutate()} disabled={start.isPending}>
             {start.isPending ? 'Preparing…' : 'Connect Stripe'}
@@ -68,13 +70,13 @@ export function ConnectPage({ principal }: { principal: Principal }) {
       ) : (
         <Card>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-            <CreditCard size={18} color={theme.accent} />
+            <CreditCard size={18} style={{ color: theme.accentText }} />
             <div>
               <div style={{ fontSize: 14, fontWeight: 500 }}>Connected</div>
               <code style={{ fontSize: 12, color: theme.textMuted }}>{s.accountId}</code>
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+          <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
             <ChecklistItem label="Details submitted" ok={!!s.detailsSubmitted} />
             <ChecklistItem label="Charges enabled" ok={!!s.chargesEnabled} />
             <ChecklistItem label="Payouts enabled" ok={!!s.payoutsEnabled} />
@@ -106,7 +108,7 @@ function ChecklistItem({ label, ok }: { label: string; ok: boolean }) {
         fontSize: 13,
       }}
     >
-      {ok ? <CheckCircle2 size={14} color={theme.success} /> : <XCircle size={14} color={theme.textDim} />}
+      {ok ? <CheckCircle2 size={14} style={{ color: theme.success }} /> : <XCircle size={14} style={{ color: theme.textDim }} />}
       <span style={{ color: ok ? theme.text : theme.textMuted }}>{label}</span>
     </div>
   );

@@ -11,15 +11,30 @@
  */
 
 import { Router } from 'express';
+import type { Knex } from 'knex';
 import { z } from 'zod';
 import { TABLES, type CommissionRow } from '@openpartner/db';
-import { db } from '../db.js';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
-import { dispatchEvent } from '../webhook-dispatcher.js';
+import { dispatchCommissionEvents } from '../commission-events.js';
+import { cursorTimestamp, decodeCursor, takePage, whereAfterCursor } from '../pagination.js';
+import { tenantOf } from '../tenancy.js';
+import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
+import { EFFECTIVE_HOLDBACK_SQL } from '../partner-commission.js';
 
-const listQuerySchema = z.object({
+/**
+ * List query for both commission lists:
+ *   - ?status=…  — filter to one lifecycle state
+ *   - ?limit=N   — page size (1-500, default 100)
+ *   - ?cursor=…  — opaque cursor returned by the previous page
+ *
+ * Returns { commissions, nextCursor }; nextCursor is null on the last
+ * page. Ordered accruedAt DESC, id DESC — same keyset scheme as
+ * GET /partners (see pagination.ts).
+ */
+export const listQuerySchema = z.object({
   status: z.enum(['accrued', 'approved', 'paid', 'reversed']).optional(),
-  limit: z.coerce.number().int().min(1).max(500).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional().default(100),
+  cursor: z.string().optional(),
 });
 
 export const commissionsRouter = Router();
@@ -30,32 +45,119 @@ commissionsRouter.get(
   grantScope('commissions:read'),
   requirePartnerOrAdmin('id'),
   async (req, res) => {
+    const { db } = tenantOf(req);
     const q = listQuerySchema.safeParse(req.query);
     if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
 
-    const query = db<CommissionRow>(TABLES.Commission)
-      .where({ partnerId: req.params.id })
-      .orderBy('accruedAt', 'desc')
-      .limit(q.data.limit ?? 100);
-    if (q.data.status) query.andWhere({ status: q.data.status });
-
-    const commissions = await query;
-    res.json({ commissions });
+    const result = await listPage(db, q.data, req.params.id);
+    if (!result) return res.status(400).json({ error: 'invalid_cursor' });
+    res.json(result);
   },
 );
 
-commissionsRouter.get('/commissions', requireAuth, requireAdmin, async (req, res) => {
+commissionsRouter.get('/commissions', requireAuth, grantScope('commissions:read'), requireAdmin, async (req, res) => {
+  const { db } = tenantOf(req);
   const q = listQuerySchema.safeParse(req.query);
   if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
 
-  const query = db<CommissionRow>(TABLES.Commission).orderBy('accruedAt', 'desc').limit(q.data.limit ?? 100);
-  if (q.data.status) query.andWhere({ status: q.data.status });
-
-  const commissions = await query;
-  res.json({ commissions });
+  const result = await listPage(db, q.data);
+  if (!result) return res.status(400).json({ error: 'invalid_cursor' });
+  res.json(result);
 });
 
+/** One page of commissions, optionally for a single partner. Null when
+ *  the cursor doesn't decode. */
+async function listPage(db: Knex, q: z.infer<typeof listQuerySchema>, partnerId?: string) {
+  const query = listQueryBase(db).select(cursorTimestamp(db, 'c.accruedAt')).limit(q.limit + 1);
+  if (partnerId) query.where('c.partnerId', partnerId);
+  if (q.status) query.andWhere('c.status', q.status);
+  if (q.cursor) {
+    const cursor = decodeCursor(q.cursor);
+    if (!cursor) return null;
+    whereAfterCursor(query, 'c.accruedAt', 'c.id', cursor);
+  }
+  const rows = (await query) as Array<Parameters<typeof decorateMaturity>[0] & { _cursorTs: string }>;
+  const { page, nextCursor } = takePage(rows, q.limit);
+  return { commissions: page.map(decorateMaturity), nextCursor };
+}
+
+/** Shared base query — joins Commission → Attribution → Campaign and
+ *  picks the effective holdback (EFFECTIVE_HOLDBACK_SQL): the partner's
+ *  snapshot scoped to this program (pcp) if one exists, falling back to
+ *  the program's own value when it leaves holdback unset; else their
+ *  partner-wide snapshot (pcw); else the program's value. Same expression
+ *  as the auto-approve job (commission-auto-approve.ts). The UI uses this
+ *  to show "Matures in N days" badges and to disable the approve button
+ *  while holdback is active. */
+function listQueryBase(db: Knex) {
+  return db(`${TABLES.Commission} as c`)
+    .leftJoin(`${TABLES.Attribution} as a`, 'a.id', 'c.attributionId')
+    .leftJoin(`${TABLES.Program} as cp`, 'cp.id', 'a.programId')
+    .leftJoin(`${TABLES.PartnerCommission} as pcp`, (j) =>
+      j.on('pcp.partnerId', 'c.partnerId').andOn('pcp.programId', 'a.programId'),
+    )
+    .leftJoin(`${TABLES.PartnerCommission} as pcw`, (j) =>
+      j.on('pcw.partnerId', 'c.partnerId').andOnNull('pcw.programId'),
+    )
+    .select('c.*')
+    .select(db.raw(`${EFFECTIVE_HOLDBACK_SQL} as "_holdbackDays"`))
+    .select('cp.id as _campaignId')
+    .select('cp.name as _campaignName')
+    .orderBy([
+      { column: 'c.accruedAt', order: 'desc' },
+      { column: 'c.id', order: 'desc' },
+    ]);
+}
+
+interface DecoratedCommission extends CommissionRow {
+  holdbackDays: number | null;
+  programId: string | null;
+  campaignName: string | null;
+  matureAt: string | null;
+}
+
+function decorateMaturity(row: CommissionRow & {
+  _holdbackDays: number | null;
+  _campaignId: string | null;
+  _campaignName: string | null;
+}): DecoratedCommission {
+  const { _holdbackDays, _campaignId, _campaignName, ...c } = row;
+  let matureAt: string | null = null;
+  if (_holdbackDays && _holdbackDays > 0) {
+    const m = new Date(c.accruedAt);
+    m.setUTCDate(m.getUTCDate() + _holdbackDays);
+    matureAt = m.toISOString();
+  }
+  return {
+    ...c,
+    holdbackDays: _holdbackDays,
+    programId: _campaignId,
+    campaignName: _campaignName,
+    matureAt,
+  };
+}
+
 commissionsRouter.post('/commissions/:id/approve', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+
+  // Holdback check: refuse to approve before accruedAt + the effective
+  // holdback. Read through listQueryBase so the guard uses exactly the
+  // holdback the review queue shows (EFFECTIVE_HOLDBACK_SQL: the partner's
+  // own terms first, then the program's), the same expression the auto-approve job
+  // applies. Checking only the program's value let an admin approve a
+  // commission the partner's own (longer) holdback still covered.
+  const row = await listQueryBase(db).where('c.id', req.params.id).first();
+  if (!row) return res.status(404).json({ error: 'not_found' });
+  const { holdbackDays, matureAt } = decorateMaturity(row);
+  if (matureAt && new Date(matureAt) > new Date()) {
+    return res.status(409).json({
+      error: 'holdback_active',
+      detail: `Commission can't be approved until ${matureAt} (holdback: ${holdbackDays} days from accrual).`,
+      matureAt,
+      holdbackDays,
+    });
+  }
+
   const updated = await db<CommissionRow>(TABLES.Commission)
     .where({ id: req.params.id, status: 'accrued' })
     .update({ status: 'approved' })
@@ -64,31 +166,49 @@ commissionsRouter.post('/commissions/:id/approve', requireAuth, requireAdmin, as
     return res.status(409).json({ error: 'not_approvable', detail: 'must be in accrued state' });
   }
   const c = updated[0]!;
-  dispatchEvent('commission.approved', {
-    commissionId: c.id,
-    partnerId: c.partnerId,
-    amount: c.amount,
-    currency: c.currency,
-    attributionId: c.attributionId,
-  });
+  void dispatchCommissionEvents(tenantId, 'commission.approved', [c]);
   res.json({ commission: c });
 });
 
 commissionsRouter.post('/commissions/:id/reverse', requireAuth, requireAdmin, async (req, res) => {
-  const updated = await db<CommissionRow>(TABLES.Commission)
-    .where({ id: req.params.id })
-    .whereIn('status', ['accrued', 'approved'])
+  const { db, tenantId } = tenantOf(req);
+  // Funding interlock (spec §8): a commission whose money is mid-transfer
+  // cannot be flipped; one still in a reserved allocation gets the
+  // allocation canceled first so no charge/transfer fires for it.
+  const interlock = await interlockCommissionReversal(db, [req.params.id!]);
+  if (interlock.held.length > 0) {
+    return res.status(409).json({
+      error: 'commission_in_transfer',
+      detail:
+        'a payout for this commission is in flight (funding transfer, or a committed Connect payout intent); retry once it settles, then claw back via adjustment',
+    });
+  }
+  // Re-assert the interlock INSIDE the update. The check above is a
+  // separate statement, and between the two the payout planner can commit
+  // an intent and claim this commission — after which reversing it would
+  // let the transfer go out for the frozen amount with the commission
+  // never marked paid.
+  const updated = await whereNotClaimedByOpenIntent(
+    db,
+    db<CommissionRow>(TABLES.Commission)
+      .where({ [`${TABLES.Commission}.id`]: req.params.id })
+      .whereIn('status', ['accrued', 'approved']),
+  )
     .update({ status: 'reversed' })
     .returning('*');
   if (updated.length === 0) {
+    const current = await db<CommissionRow>(TABLES.Commission).where({ id: req.params.id }).first();
+    if (current && ['accrued', 'approved'].includes(current.status)) {
+      // Status was fine, so the guard is what refused: a payout intent
+      // claimed it in the gap.
+      return res.status(409).json({
+        error: 'commission_in_transfer',
+        detail: 'a payout intent claimed this commission while the request was in flight; retry once it settles',
+      });
+    }
     return res.status(409).json({ error: 'not_reversible', detail: 'only accrued or approved commissions' });
   }
   const c = updated[0]!;
-  dispatchEvent('commission.reversed', {
-    commissionId: c.id,
-    partnerId: c.partnerId,
-    amount: c.amount,
-    currency: c.currency,
-  });
+  void dispatchCommissionEvents(tenantId, 'commission.reversed', [c], { reason: 'manual' });
   res.json({ commission: c });
 });

@@ -4,7 +4,7 @@
  * stay fixed even as surrounding code changes.
  *
  * Groups:
- *   1. Stripe webhook idempotency (externalEventId + partial unique idx)
+ *   1. Stripe webhook idempotency ((tenantId, externalEventId) unique)
  *   2. Dashboard multi-touch weight math (Σ value × weight)
  *   3. Fraud-unflag over-attribution (drop accrued rows before re-run)
  *   4. Webhook retry endpoint-mismatch verified before firing
@@ -15,12 +15,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { ulid } from 'ulid';
-import { TABLES } from '@openpartner/db';
+import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApp } from '../app.js';
 
 const ADMIN_KEY = 'op_test_regressions_0123456789abcdef0123';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
+process.env.OPENPARTNER_TENANCY = 'single';
 
 const TABLES_TO_CLEAN = [
   TABLES.Commission,
@@ -29,7 +30,7 @@ const TABLES_TO_CLEAN = [
   TABLES.Identity,
   TABLES.Click,
   TABLES.Link,
-  TABLES.Campaign,
+  TABLES.Program,
   TABLES.Payout,
   TABLES.WebhookDelivery,
   TABLES.WebhookEndpoint,
@@ -71,21 +72,23 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
-      campaignId: campaign.id,
+      programId: campaign.id,
       landingUrl: 'https://example.com/',
       ts: new Date(),
     });
     const userId = `u-${Date.now()}`;
-    await db(TABLES.Identity).insert({ id: ulid(), clickId, userId });
+    await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId, userId });
 
     // Directly insert two rows with the same externalEventId — emulates
-    // what the Stripe handler would try on a retry. The partial unique
-    // index must block the second.
+    // what the Stripe handler would try on a retry. The per-tenant unique
+    // constraint must block the second.
     const externalEventId = `evt_${ulid()}`;
     await db(TABLES.Event).insert({
       id: ulid(),
+      tenantId: DEFAULT_TENANT_ID,
       userId,
       type: 'invoice_paid',
       value: '100.00',
@@ -98,6 +101,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
     const inserted = await db(TABLES.Event)
       .insert({
         id: ulid(),
+        tenantId: DEFAULT_TENANT_ID,
         userId,
         type: 'invoice_paid',
         value: '100.00',
@@ -106,7 +110,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
         metadata: { stripeEventId: externalEventId },
         ts: new Date(),
       })
-      .onConflict('externalEventId')
+      .onConflict(['tenantId', 'externalEventId'])
       .ignore()
       .returning('id');
 
@@ -129,16 +133,18 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
     for (const cid of clickIds) {
       await db(TABLES.Click).insert({
         id: cid,
+        tenantId: DEFAULT_TENANT_ID,
         linkId: link.id,
         partnerId: partner.id,
-        campaignId: campaign.id,
+        programId: campaign.id,
         landingUrl: 'https://example.com/',
         ts: new Date(),
       });
-      await db(TABLES.Identity).insert({ id: ulid(), clickId: cid, userId });
+      await db(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId: cid, userId });
     }
     await db(TABLES.Event).insert({
       id: eventId,
+      tenantId: DEFAULT_TENANT_ID,
       userId,
       type: 'invoice_paid',
       value: '300.00',
@@ -148,10 +154,11 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
     for (const cid of clickIds) {
       await db(TABLES.Attribution).insert({
         id: ulid(),
+        tenantId: DEFAULT_TENANT_ID,
         eventId,
         clickId: cid,
         partnerId: partner.id,
-        campaignId: campaign.id,
+        programId: campaign.id,
         model: 'linear',
         weight: '0.3333',
         computedAt: new Date(),
@@ -183,25 +190,27 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
     await db(TABLES.Click).insert([
       {
         id: flaggedClick,
+        tenantId: DEFAULT_TENANT_ID,
         linkId: link.id,
         partnerId: partner.id,
-        campaignId: campaign.id,
+        programId: campaign.id,
         landingUrl: 'https://example.com/',
         fraudFlag: 'velocity',
         ts: new Date(Date.now() - 2000),
       },
       {
         id: okClick,
+        tenantId: DEFAULT_TENANT_ID,
         linkId: link.id,
         partnerId: partner.id,
-        campaignId: campaign.id,
+        programId: campaign.id,
         landingUrl: 'https://example.com/',
         ts: new Date(Date.now() - 1000),
       },
     ]);
     await db(TABLES.Identity).insert([
-      { id: ulid(), clickId: flaggedClick, userId },
-      { id: ulid(), clickId: okClick, userId },
+      { id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId: flaggedClick, userId },
+      { id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId: okClick, userId },
     ]);
 
     // Post an event — only the ok click earns; there's one attribution row.
@@ -244,6 +253,7 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
     const deliveryId = ulid();
     await db(TABLES.WebhookDelivery).insert({
       id: deliveryId,
+      tenantId: DEFAULT_TENANT_ID,
       endpointId: epA.id,
       eventId: `evt_${ulid()}`,
       eventType: 'commission.paid',
@@ -295,21 +305,23 @@ describe.skipIf(skipIntegration)('ultrareview regressions', () => {
   }
   async function createCampaign(overrides: Record<string, unknown> = {}) {
     const res = await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
       .send({
         name: 'Regression',
         commissionRule: { type: 'percent', value: 10, recurring: true },
+        destinationUrl: 'https://example.com/signup',
+        deepLinkAllowedDomains: 'e.com,example.com',
         ...overrides,
       });
     expect(res.status).toBe(201);
     return res.body as { id: string };
   }
-  async function createLink(partnerId: string, campaignId: string, linkKey: string) {
+  async function createLink(partnerId: string, programId: string, linkKey: string) {
     const res = await request(app)
       .post(`/partners/${partnerId}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey, campaignId, destinationUrl: 'https://example.com/' });
+      .send({ linkKey, programId, destinationUrl: 'https://example.com/' });
     expect(res.status).toBe(201);
     return res.body as { id: string };
   }

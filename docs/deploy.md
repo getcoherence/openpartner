@@ -26,11 +26,12 @@ Ingress rules fan incoming traffic out: `/api/*` → `api`, everything else → 
    ```
 3. **Set the secrets** App Platform marked as `SECRET` in the spec:
    - `ADMIN_API_KEY` — bootstrap admin token. Generate with `node -e "console.log('op_' + require('crypto').randomBytes(24).toString('hex'))"`.
-   - `NETWORK_ENCRYPTION_KEY` — 32 hex bytes for AES-256-GCM. `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
-   - `POSTMARK_SERVER_TOKEN`, `MAIL_FROM` — your Postmark creds + verified sender.
-   - `PORTAL_URL` — e.g. `https://partners.yourdomain.com`. Magic-link emails link to this.
-   - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_FLAT_PRICE_ID` — only if running `flat` or `revshare` mode.
+   - `PORTAL_URL` — e.g. `https://partners.yourdomain.com`. Required in production (CORS allowlist + invite email links).
+   - `SECRETS_ENCRYPTION_KEY` — 32 bytes (hex or base64) used to encrypt SMTP passwords / Postmark tokens stored in the Config table. **Required in production.** Generate with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
+   - `POSTMARK_SERVER_TOKEN`, `MAIL_FROM` (or `SMTP_HOST` + SMTP vars, or neither) — mail provider fallback. You can skip these entirely and let the admin configure mail from the Settings UI after install; these env vars win only when UI settings are empty.
+   - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_FLAT_PRICE_ID`, `STRIPE_FLAT_USAGE_PRICE_ID`, `STRIPE_REVSHARE_USAGE_PRICE_ID` — only if running `flat` or `revshare` mode. `STRIPE_SECRET_KEY=sk_... node apps/api/scripts/setup-stripe.mjs` creates the prices and prints their ids. Flex Checkout needs `STRIPE_FLAT_PRICE_ID` and bills only that base price unless `STRIPE_FLAT_USAGE_PRICE_ID` is also set. Revshare Checkout fails without `STRIPE_REVSHARE_USAGE_PRICE_ID`. To bind each webhook signing secret to its Stripe destination, set `STRIPE_WEBHOOK_SECRET_PLATFORM` and `STRIPE_WEBHOOK_SECRET_CONNECT` instead of the legacy `STRIPE_WEBHOOK_SECRET`. The spec doesn't declare those two, so add them as encrypted env vars ([deploy-production.md §6](./deploy-production.md#6-configure-stripe-webhook-destinations)).
    - `COOKIE_DOMAIN` — `.yourdomain.com` so the router's `_cref` cookie covers your landing pages.
+   - `METRICS_TOKEN` — optional; set to require Bearer auth on `/metrics`.
 4. **Deploy.** The API container runs migrations on first boot via `apps/api/docker-entrypoint.sh`, so an empty Postgres bootstraps automatically. Subsequent deploys re-run and are idempotent against `knex_migrations`.
 5. **Wire custom domains.** In the App Platform UI → Settings → Domains:
    - Primary: `partners.yourdomain.com` → `portal` component.
@@ -70,9 +71,30 @@ cd openpartner
 cp .env.example .env
 # Edit .env — set:
 #   OPENPARTNER_DOMAIN, CADDY_EMAIL, ADMIN_API_KEY,
-#   NETWORK_ENCRYPTION_KEY, POSTMARK_SERVER_TOKEN, MAIL_FROM, etc.
+#   PORTAL_HOST, API_HOST, ROUTER_HOST, etc.
 docker compose -f docker-compose.prod.yml up -d
 ```
+
+### Scheduled jobs
+
+Scheduled payouts, Connect transfer retries, commission auto-approval, usage reporting, and the reminder and cleanup sweeps run on the API's in-process scheduler. It starts only when `OPENPARTNER_ENABLE_SCHEDULER=1`. Any other value, or none, leaves it off. Nothing then runs on a timer: you approve commissions and run payouts by hand (the **Payouts** page, or `POST /payouts/run`).
+
+**`docker-compose.prod.yml` turns the scheduler on by default.** It passes `OPENPARTNER_ENABLE_SCHEDULER` through from `.env` and defaults it to `1`. Set it to `0` in `.env` to keep the scheduler off. `.do/app.yaml` sets it to `1` for App Platform.
+
+**Upgrading a compose deploy from an earlier release turns the scheduler on**, because earlier compose files didn't pass the variable at all, so it was always off. Before you upgrade, check the list below against your setup, or set `OPENPARTNER_ENABLE_SCHEDULER=0` in `.env` first.
+
+With the scheduler on, the API does all of the following unattended:
+
+- **Pays partners, Mondays 09:00 UTC.** Each tenant runs on its **Settings → Payouts → Payout cadence**: weekly unless you changed it, never if it's **Manual**. Each run batches every approved, unpaid commission per partner and currency, above the **Minimum payout**.
+  - **Stripe Connect rail:** partners with a connected, payouts-enabled Stripe account get a **real Stripe transfer** from the Stripe account behind `STRIPE_SECRET_KEY`. In `selfhost` mode that's your own balance, and no funding check stands in front of it. A job every 15 minutes retries transfers that didn't complete. **Payout rail** decides who is on this rail: `Auto`, the default, uses Connect for every partner who has a connected account. In `flat` and `revshare` modes, Connect payouts that hosted funding doesn't cover are refused and their commissions stay approved.
+  - **Manual rail:** the run records a pending payout and marks its commissions `paid`. You send the money yourself.
+- **Approves commissions after holdback, daily 05:15 UTC.** An accrued commission is approved once its holdback has elapsed, when that holdback (the partner's override, else the program's) is above 0 days. That includes any backlog already past its holdback, which the next payout run then pays. Commissions with no holdback still wait for manual approval.
+- **Reports usage to Stripe, daily 03:15 UTC (`flat` and `revshare` only).** For each tenant subscribed through `/billing/checkout`, attributed GMV since the last report goes to the Stripe usage meter. A tenant that has never been reported has no starting point, so its first report covers all attributed GMV to date.
+- **Housekeeping**, including campaign-end emails 7 days before a program ends, hard-deleting tenants 30 days after a deletion request, Network sync for tenants connected to the Network, and (outside `selfhost`) Stripe subscription reconciliation.
+
+To keep paying partners by hand while the other jobs run, set **Payout cadence** to **Manual** before you turn the scheduler on.
+
+**Run it on exactly one API process.** Each job runs under a Postgres advisory lock keyed on its name, so two processes can't run the same job at the same time. They can still run it twice back to back, when one process's tick lands after the other's run has finished. Don't `docker compose up --scale api=N` with the scheduler on. If you need more API replicas, run the extra ones as a separate service with `OPENPARTNER_ENABLE_SCHEDULER=0`. See [deploy-production.md](./deploy-production.md#scheduled-jobs).
 
 ### Skipping the build — prebuilt images
 
@@ -126,8 +148,8 @@ The router URL is what creators embed in their promo content (`go.yourdomain.com
 
 On first successful boot, sign in at `https://partners.yourdomain.com/login` with the API key tab, paste your `ADMIN_API_KEY`. From there:
 
-1. **Create a partner** (Admin → Partners → New partner).
-2. **Create a campaign** with a commission rule.
+1. **Create a partner** (Admin → Partners → Invite partner).
+2. **Create a program** with a commission rule (Admin → Programs).
 3. **Create a link** for the partner.
 4. **Embed the SDK** in your product — see [`packages/sdk/README.md`](../packages/sdk/README.md).
 5. Optional: **join the Network** (Admin → Network → Vendors) to start getting creator applications.

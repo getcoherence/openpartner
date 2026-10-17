@@ -1,9 +1,25 @@
-import { useQuery } from '@tanstack/react-query';
-import { Link, Navigate } from 'react-router-dom';
-import { MousePointerClick, Receipt, Wallet, Users, UserCheck, CreditCard, AlertCircle } from 'lucide-react';
+import { useState } from 'react';
+import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
+import {
+  MousePointerClick,
+  Receipt,
+  Wallet,
+  Users,
+  UserCheck,
+  CreditCard,
+  AlertCircle,
+  Link2,
+  CheckCircle2,
+  Circle,
+  ArrowRight,
+} from 'lucide-react';
 import { api, type Principal } from '../api.js';
-import { theme } from '../theme.js';
-import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, SectionHeading, Stat, StatusPill, money } from '../ui.js';
+import { useTenantBase } from '../tenant-base.js';
+import { TenantLink } from '../tenant-link.js';
+import { alpha, theme } from '../theme.js';
+import { useBrand } from '../lib/useBrand.js';
+import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, SectionHeading, Select, Stat, StatusPill, money } from '../ui.js';
 
 // ---------- Partner ----------
 
@@ -20,12 +36,6 @@ export function Dashboard({ principal }: { principal: Principal }) {
   if (principal.role === 'admin') return <AdminDashboard />;
   if (principal.role === 'partner') {
     return <PartnerDashboard partnerId={principal.partnerId!} name={principal.partner?.name ?? ''} />;
-  }
-  // Network roles don't have a "dashboard" in the vendor-partner sense —
-  // their useful landing page is their Partnerships view, which already
-  // renders the earnings projection.
-  if (principal.role === 'network_creator' || principal.role === 'network_vendor') {
-    return <Navigate to="/network/partnerships" replace />;
   }
   return null;
 }
@@ -57,6 +67,14 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
     queryFn: () => api<ConnectStatus>(`/partners/${partnerId}/connect/status`),
     retry: false,
   });
+  const links = useQuery({
+    queryKey: ['links', partnerId],
+    queryFn: () => api<{ links: unknown[] }>(`/partners/${partnerId}/links`),
+  });
+
+  const linkCount = links.data?.links.length ?? 0;
+  const hasLink = linkCount > 0;
+  const hasActiveConnect = !!connect.data?.connected && !!connect.data?.payoutsEnabled;
 
   const owedAmount = (data?.commissionByStatus.approved ?? 0) + (data?.commissionByStatus.accrued ?? 0);
   const needsConnect =
@@ -65,13 +83,24 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
     connect.data != null &&
     (!connect.data.connected || !connect.data.payoutsEnabled);
 
+  // Getting-started card shows while EITHER onboarding task is outstanding.
+  // We only render it once we know the state of both (connect + links),
+  // otherwise the card can flash during initial load.
+  const showGettingStarted =
+    !links.isLoading && !connect.isLoading && (!hasLink || !hasActiveConnect);
+
   return (
     <Page
       title={`Hi ${name.split(' ')[0] || 'there'}`}
       subtitle="Last 30 days"
     >
       <ErrorBanner error={error} />
-      {needsConnect && <ConnectNudge owed={owedAmount} connected={connect.data!.connected} />}
+      {showGettingStarted && (
+        <GettingStarted hasLink={hasLink} connectReady={hasActiveConnect} />
+      )}
+      {needsConnect && !showGettingStarted && (
+        <ConnectNudge owed={owedAmount} connected={connect.data!.connected} />
+      )}
       {isLoading || !data ? (
         <Card>Loading…</Card>
       ) : (
@@ -114,6 +143,81 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
   );
 }
 
+function GettingStarted({ hasLink, connectReady }: { hasLink: boolean; connectReady: boolean }) {
+  return (
+    <Card>
+      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Getting started</div>
+      <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 16 }}>
+        Two quick steps and you're earning. This card goes away once both are done.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <ChecklistRow
+          done={hasLink}
+          icon={<Link2 size={16} />}
+          title="Create your first share link"
+          hint="Pick a short slug; anyone who clicks it gets attributed back to you."
+          cta="Create link"
+          to="/links"
+        />
+        <ChecklistRow
+          done={connectReady}
+          icon={<CreditCard size={16} />}
+          title="Connect Stripe to get paid"
+          hint="Commissions you earn land directly in your Stripe balance."
+          cta={connectReady ? 'Manage' : 'Connect Stripe'}
+          to="/connect"
+        />
+      </div>
+    </Card>
+  );
+}
+
+function ChecklistRow({
+  done,
+  icon,
+  title,
+  hint,
+  cta,
+  to,
+}: {
+  done: boolean;
+  icon: React.ReactNode;
+  title: string;
+  hint: string;
+  cta: string;
+  to: string;
+}) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        padding: '12px 14px',
+        background: done ? theme.successSoft : theme.surface2,
+        border: `1px solid ${done ? alpha(theme.success, 0.267) : theme.borderSubtle}`,
+        borderRadius: theme.radiusSm,
+      }}
+    >
+      <div style={{ color: done ? theme.success : theme.textDim, display: 'inline-flex' }}>
+        {done ? <CheckCircle2 size={18} /> : <Circle size={18} />}
+      </div>
+      <div style={{ color: theme.textMuted, display: 'inline-flex' }}>{icon}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, color: theme.text, textDecoration: done ? 'line-through' : 'none' }}>
+          {title}
+        </div>
+        <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>{hint}</div>
+      </div>
+      {!done && (
+        <TenantLink to={to} style={{ textDecoration: 'none' }}>
+          <Button size="sm">{cta}</Button>
+        </TenantLink>
+      )}
+    </div>
+  );
+}
+
 function ConnectNudge({ owed, connected }: { owed: number; connected: boolean }) {
   return (
     <Card>
@@ -129,9 +233,9 @@ function ConnectNudge({ owed, connected }: { owed: number; connected: boolean })
             You have {money(owed)} in commissions {connected ? 'waiting — complete onboarding to get paid.' : 'that can’t be paid out yet.'}
           </div>
         </div>
-        <Link to="/connect" style={{ textDecoration: 'none' }}>
+        <TenantLink to="/connect" style={{ textDecoration: 'none' }}>
           <Button icon={<CreditCard size={14} />}>{connected ? 'Finish onboarding' : 'Connect Stripe'}</Button>
-        </Link>
+        </TenantLink>
       </div>
     </Card>
   );
@@ -155,9 +259,9 @@ function FunnelChart({ funnel }: { funnel: Funnel }) {
           {stages.map((s, i) => {
             const width = `${Math.max(6, (s.value / max) * 100)}%`;
             return (
-              <div key={s.key} style={{ display: 'grid', gridTemplateColumns: '120px 1fr 140px', gap: 12, alignItems: 'center' }}>
+              <div key={s.key} className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '120px 1fr 140px', gap: 12, alignItems: 'center' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: theme.textMuted }}>
-                  <span style={{ color: theme.accent, display: 'inline-flex' }}>{s.icon}</span>
+                  <span style={{ color: theme.accentText, display: 'inline-flex' }}>{s.icon}</span>
                   {s.label}
                 </div>
                 <div style={{ background: theme.bg, border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm, height: 28, position: 'relative', overflow: 'hidden' }}>
@@ -166,10 +270,12 @@ function FunnelChart({ funnel }: { funnel: Funnel }) {
                       width,
                       height: '100%',
                       background: `linear-gradient(90deg, ${theme.accent}, ${theme.accentHover})`,
-                      opacity: 0.85,
+                      // Saturated bar on dark, a pale tint on light so the
+                      // count (dark ink in both) reads on bar and track.
+                      opacity: 'var(--op-funnel-opacity, 0.85)',
                     }}
                   />
-                  <div style={{ position: 'absolute', left: 12, top: 0, bottom: 0, display: 'flex', alignItems: 'center', fontSize: 13, fontWeight: 600, color: theme.accentInk, mixBlendMode: 'multiply' }}>
+                  <div style={{ position: 'absolute', left: 12, top: 0, bottom: 0, display: 'flex', alignItems: 'center', fontSize: 13, fontWeight: 600, color: `var(--op-funnel-ink, ${theme.accentInk})`, mixBlendMode: 'multiply' }}>
                     {s.value.toLocaleString()}
                   </div>
                 </div>
@@ -187,7 +293,7 @@ function FunnelChart({ funnel }: { funnel: Funnel }) {
         </div>
         <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${theme.borderSubtle}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ fontSize: 13, color: theme.textMuted }}>Click → paid</span>
-          <span style={{ fontSize: 14, fontWeight: 600, color: theme.accent, fontVariantNumeric: 'tabular-nums' }}>
+          <span style={{ fontSize: 14, fontWeight: 600, color: theme.accentText, fontVariantNumeric: 'tabular-nums' }}>
             {pct(funnel.rates.overall)}
           </span>
         </div>
@@ -198,8 +304,18 @@ function FunnelChart({ funnel }: { funnel: Funnel }) {
 
 // ---------- Admin ----------
 
+type OverviewSort = 'revenue' | 'commission' | 'clicks';
+
+const OVERVIEW_SORTS: Array<{ value: OverviewSort; label: string }> = [
+  { value: 'revenue', label: 'Top by revenue' },
+  { value: 'commission', label: 'Top by commission' },
+  { value: 'clicks', label: 'Top by clicks' },
+];
+
 interface AdminOverview {
   since: string;
+  sort: OverviewSort;
+  nextCursor: string | null;
   totals: {
     partners: number;
     clicks: number;
@@ -222,43 +338,97 @@ interface AdminOverview {
 }
 
 function AdminDashboard() {
-  const { data, error, isLoading } = useQuery({
-    queryKey: ['admin-overview'],
-    queryFn: () => api<AdminOverview>('/admin/overview'),
+  const [sort, setSort] = useState<OverviewSort>('revenue');
+  // Totals come from the first page (every page carries the same
+  // whole-tenant aggregates); partner cards accumulate page by page so a
+  // program with tens of thousands of partners never loads them all.
+  const { data, error, isLoading, isFetching, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
+    queryKey: ['admin-overview', sort],
+    queryFn: ({ pageParam }) => {
+      const qs = new URLSearchParams({ sort });
+      if (pageParam) qs.set('cursor', pageParam);
+      return api<AdminOverview>(`/admin/overview?${qs}`);
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor,
+    placeholderData: keepPreviousData,
   });
+  const totals = data?.pages[0]?.totals;
+  const partners = data?.pages.flatMap((p) => p.partners) ?? [];
 
   return (
     <Page title="Partner Program" subtitle="Overview of every partner driving attributed revenue.">
       <ErrorBanner error={error} />
-      {isLoading || !data ? (
+      <PendingApprovalsBanner />
+      <BrandOnboarding />
+      {isLoading || !totals ? (
         <Card>Loading…</Card>
       ) : (
         <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
-            <Stat label="Partners" value={data.totals.partners} icon={<Users size={16} />} />
-            <Stat label="Clicks (30d)" value={data.totals.clicks} icon={<MousePointerClick size={16} />} />
-            <Stat label="Attributed revenue" value={money(data.totals.attributedRevenue)} icon={<Wallet size={16} />} />
+            <Stat label="Partners" value={totals.partners.toLocaleString()} icon={<Users size={16} />} />
+            <Stat label="Clicks (30d)" value={totals.clicks.toLocaleString()} icon={<MousePointerClick size={16} />} />
+            <Stat label="Attributed revenue" value={money(totals.attributedRevenue)} icon={<Wallet size={16} />} />
             <Stat
               label="Awaiting approval"
-              value={money(data.totals.commissionAccrued)}
-              hint={`${money(data.totals.commissionApproved)} approved, ${money(data.totals.commissionPaid)} paid`}
+              value={money(totals.commissionAccrued)}
+              hint={`${money(totals.commissionApproved)} approved, ${money(totals.commissionPaid)} paid`}
               icon={<Receipt size={16} />}
             />
           </div>
 
-          <SectionHeading>Partners</SectionHeading>
-          {data.partners.length === 0 ? (
+          <SectionHeading
+            actions={
+              totals.partners > 0 && (
+                <Select
+                  aria-label="Rank partners by"
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value as OverviewSort)}
+                  style={{ width: 'auto', padding: '6px 10px', fontSize: 13 }}
+                >
+                  {OVERVIEW_SORTS.map((s) => (
+                    <option key={s.value} value={s.value}>
+                      {s.label}
+                    </option>
+                  ))}
+                </Select>
+              )
+            }
+          >
+            Partners
+          </SectionHeading>
+          {partners.length === 0 ? (
             <EmptyState
               title="No partners yet"
               hint="Create one from Admin → Partners to get started."
               icon={<Users size={28} strokeWidth={1.25} />}
             />
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
-              {data.partners.map((p) => (
-                <PartnerCard key={p.id} partner={p} />
-              ))}
-            </div>
+            <>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                  gap: 14,
+                  opacity: isFetching && !isFetchingNextPage ? 0.6 : 1,
+                  transition: 'opacity 120ms ease',
+                }}
+              >
+                {partners.map((p) => (
+                  <PartnerCard key={p.id} partner={p} />
+                ))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, marginTop: 16, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, color: theme.textMuted, fontVariantNumeric: 'tabular-nums' }}>
+                  Showing {partners.length.toLocaleString()} of {totals.partners.toLocaleString()} partners
+                </span>
+                {hasNextPage && (
+                  <Button variant="secondary" size="sm" onClick={() => void fetchNextPage()} disabled={isFetchingNextPage}>
+                    {isFetchingNextPage ? 'Loading…' : 'Load more'}
+                  </Button>
+                )}
+              </div>
+            </>
           )}
         </>
       )}
@@ -307,4 +477,250 @@ function MiniStat({ label, value }: { label: string; value: string }) {
       <div style={{ fontSize: 15, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
     </div>
   );
+}
+
+interface BrandOnboardingStatus {
+  brandInfoComplete: boolean;
+  campaignCount: number;
+  networkConnected: boolean;
+  offeringPublishedCount: number;
+  partnerCount: number;
+  pendingPartnershipRequests: number;
+  billingReady: boolean;
+  trialEndsAt: string | null;
+  trialDaysRemaining: number | null;
+  /** Absent on an older API — treated as not-yet-known (step hidden). */
+  trackingInstalled?: boolean;
+  approvalStatus?: 'pending' | 'approved' | 'rejected';
+  complete: boolean;
+}
+
+/** Shown above the dashboard when creators have applied via the Network
+ *  but the brand hasn't subscribed yet — they can't approve until they
+ *  do (trial-gate enforces). Stays present even after the Getting
+ *  Started checklist is done; goes away once billing is set up. */
+function PendingApprovalsBanner() {
+  const tenantBase = useTenantBase();
+  const { data } = useQuery({
+    queryKey: ['admin-onboarding-status'],
+    queryFn: () => api<BrandOnboardingStatus>('/admin/onboarding-status'),
+    staleTime: 30_000,
+    retry: false,
+  });
+  if (!data || data.billingReady || data.pendingPartnershipRequests <= 0) return null;
+  const expired = data.trialDaysRemaining != null && data.trialDaysRemaining <= 0;
+  const tone = expired ? 'danger' : 'warning';
+  const palette = tone === 'danger'
+    ? { bg: theme.dangerSoft, border: alpha(theme.danger, 0.333), fg: theme.danger }
+    : { bg: theme.warnSoft, border: alpha(theme.warn, 0.333), fg: theme.warn };
+  const count = data.pendingPartnershipRequests;
+  const noun = count === 1 ? 'partner is' : 'partners are';
+  const headline = expired
+    ? `${count} ${noun} waiting — subscribe to approve them`
+    : `${count} ${noun} waiting for your approval`;
+  const body = expired
+    ? 'Your evaluation period has ended. Subscribe to start approving creator applications again.'
+    : 'Subscribe before your evaluation period ends so you can keep approving creators without interruption.';
+  return (
+    <div
+      style={{
+        background: palette.bg,
+        border: `1px solid ${palette.border}`,
+        borderRadius: theme.radiusSm,
+        padding: '14px 16px',
+        marginBottom: 18,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14,
+      }}
+    >
+      <AlertCircle size={20} style={{ color: palette.fg, flexShrink: 0 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: palette.fg, marginBottom: 2 }}>
+          {headline}
+        </div>
+        <div style={{ fontSize: 13, color: theme.textMuted }}>{body}</div>
+      </div>
+      <TenantLink to={`${tenantBase}/admin/billing`} style={{ textDecoration: 'none' }}>
+        <Button size="sm" variant="primary">Set up billing</Button>
+      </TenantLink>
+    </div>
+  );
+}
+
+function BrandOnboarding() {
+  const tenantBase = useTenantBase();
+  const { programName, whiteLabel } = useBrand();
+  const { data } = useQuery({
+    queryKey: ['admin-onboarding-status'],
+    queryFn: () => api<BrandOnboardingStatus>('/admin/onboarding-status'),
+    staleTime: 30_000,
+    retry: false,
+  });
+  if (!data || data.complete) return null;
+  const items = [
+    { done: true, label: 'Brand account created', href: null as string | null },
+    {
+      done: data.brandInfoComplete,
+      label: 'Set your brand name and support email',
+      href: `${tenantBase}/admin/settings`,
+    },
+    {
+      done: data.campaignCount > 0,
+      label: 'Create your first program (Campaign)',
+      hint: 'Set the destination URL and commission terms.',
+      href: `${tenantBase}/admin/programs`,
+    },
+    // The Network is the shared cross-tenant marketplace — white-label
+    // tenants are isolated from it, so drop the listing step entirely.
+    ...(whiteLabel
+      ? []
+      : [
+          {
+            done: data.networkConnected,
+            label: 'List your brand on the OpenPartner Network',
+            hint: 'Lets creators across the federation discover and apply.',
+            href: `${tenantBase}/admin/network`,
+          },
+        ]),
+    // Listing = a program shared to the marketplace (the "Share on the
+    // OpenPartner Network" toggle on the program). Only meaningful for
+    // on-Network, non-white-label brands.
+    ...(data.networkConnected && !whiteLabel
+      ? [
+          {
+            done: data.offeringPublishedCount > 0,
+            label: 'Publish a program on the marketplace',
+            hint:
+              data.approvalStatus === 'pending'
+                ? 'Turn on "Share on the OpenPartner Network" for a program. It appears to creators once your brand is approved.'
+                : 'Turn on "Share on the OpenPartner Network" for a program so creators can find and apply to it.',
+            href: `${tenantBase}/admin/programs`,
+          },
+        ]
+      : []),
+    ...(data.trackingInstalled === undefined
+      ? []
+      : [
+          {
+            done: data.trackingInstalled,
+            label: 'Connect conversion tracking',
+            hint: 'Install the OpenPartner SDK (identify signups) or connect Stripe so partner referrals are credited.',
+            href: `${tenantBase}/admin/integrations`,
+          },
+        ]),
+    {
+      done: data.partnerCount > 0,
+      label: whiteLabel ? 'Invite a partner' : 'Invite a partner — or wait for Network applications',
+      href: `${tenantBase}/admin/partners`,
+    },
+    buildBillingStep(data, `${tenantBase}/admin/billing`, programName),
+  ];
+  return (
+    <Card style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Getting started</div>
+      <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
+        A few one-clicks to get your brand fully set up. The card disappears when you&rsquo;re done.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {items.map((it, i) => (
+          <BrandStep key={i} done={it.done} label={it.label} hint={it.hint} href={it.href} tone={it.tone} />
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+type StepTone = 'default' | 'warning' | 'danger';
+
+interface OnboardingStep {
+  done: boolean;
+  label: string;
+  hint?: string;
+  href: string | null;
+  tone?: StepTone;
+}
+
+/** The billing step doubles as the trial-deadline pressure. Once
+ *  billingReady, it just shows checked. Otherwise the label is
+ *  "Subscribe by <date>" and the tone shifts to warning then danger as
+ *  the evaluation window closes. */
+function buildBillingStep(data: BrandOnboardingStatus, href: string, programName: string): OnboardingStep {
+  if (data.billingReady) {
+    return { done: true, label: 'Set up billing', href };
+  }
+  const days = data.trialDaysRemaining;
+  if (days == null) {
+    return { done: false, label: 'Set up billing', href };
+  }
+  if (days <= 0) {
+    return {
+      done: false,
+      label: `Subscribe to keep using ${programName}`,
+      hint: 'Your 14-day evaluation period has ended.',
+      href,
+      tone: 'danger',
+    };
+  }
+  const date = data.trialEndsAt ? formatTrialDate(data.trialEndsAt) : '';
+  return {
+    done: false,
+    label: date ? `Subscribe by ${date}` : 'Subscribe before your evaluation ends',
+    hint: `${days} day${days === 1 ? '' : 's'} left in your evaluation period.`,
+    href,
+    tone: days <= 3 ? 'danger' : days <= 7 ? 'warning' : 'default',
+  };
+}
+
+function formatTrialDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const now = new Date();
+  const sameYear = d.getUTCFullYear() === now.getUTCFullYear();
+  return d.toLocaleDateString(undefined, sameYear
+    ? { month: 'short', day: 'numeric' }
+    : { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function BrandStep({ done, label, hint, href, tone = 'default' }: OnboardingStep) {
+  const palette = stepPalette(done, tone);
+  const inner = (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        padding: '10px 12px',
+        background: palette.bg,
+        border: `1px solid ${palette.border}`,
+        borderRadius: theme.radiusSm,
+      }}
+    >
+      <div style={{ color: palette.icon, display: 'inline-flex' }}>
+        {done ? <CheckCircle2 size={18} /> : <Circle size={18} />}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, color: theme.text, textDecoration: done ? 'line-through' : 'none' }}>
+          {label}
+        </div>
+        {hint && !done && <div style={{ fontSize: 12, color: palette.hint, marginTop: 2 }}>{hint}</div>}
+      </div>
+      {!done && href && <ArrowRight size={14} style={{ color: theme.textDim }} />}
+    </div>
+  );
+  if (done || !href) return inner;
+  return <Link to={href} style={{ textDecoration: 'none' }}>{inner}</Link>;
+}
+
+function stepPalette(done: boolean, tone: StepTone) {
+  if (done) {
+    return { bg: theme.successSoft, border: alpha(theme.success, 0.267), icon: theme.success, hint: theme.textDim };
+  }
+  if (tone === 'danger') {
+    return { bg: theme.dangerSoft, border: alpha(theme.danger, 0.4), icon: theme.danger, hint: theme.danger };
+  }
+  if (tone === 'warning') {
+    return { bg: theme.warnSoft, border: alpha(theme.warn, 0.4), icon: theme.warn, hint: theme.warn };
+  }
+  return { bg: theme.surface2, border: theme.borderSubtle, icon: theme.textDim, hint: theme.textDim };
 }

@@ -10,8 +10,14 @@ services:
       POSTGRES_USER: openpartner
       POSTGRES_PASSWORD: openpartner
       POSTGRES_DB: openpartner
+      # Picked up by ./docker/initdb/10-app-role.sh on first boot to
+      # provision the openpartner_app RLS-bound role. Leave unset and
+      # the role is created NOLOGIN (still useful for SET ROLE in
+      # isolation tests; not for a runtime-app connection).
+      OPENPARTNER_APP_DB_PASSWORD: ${OPENPARTNER_APP_DB_PASSWORD:-}
     volumes:
       - openpartner-pg-data:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U openpartner"]
       interval: 5s

@@ -50,7 +50,7 @@
   "devDependencies": {
     "jsdom": "^29.0.2",
     "tsup": "^8.5.1",
-    "typescript": "5.4.5",
-    "vitest": "^1.6.0"
+    "typescript": "6.0.3",
+    "vitest": "^3.2.4"
   }
 }

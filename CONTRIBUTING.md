@@ -29,6 +29,8 @@ pnpm lint         # same as typecheck today
 
 All three run in CI. PRs with failing CI are unlikely to get reviewed quickly.
 
+**Changing the API?** The OpenAPI spec (`apps/api/src/openapi/`) is generated from the routes' own zod schemas, and `src/__tests__/openapi.test.ts` fails when a route, its auth or a response drifts from it. Register a new route in `apps/api/src/openapi/paths.ts` (or list it in `UNDOCUMENTED_ROUTES` with a reason), then refresh the committed copy with `pnpm --filter @openpartner/api openapi:update` and commit the `docs/openapi.json` diff.
+
 ## What we merge
 
 - **Bugs with tests.** If you're fixing something, add a test that would have caught it.

@@ -12,6 +12,12 @@ async function main(): Promise<void> {
   const sub = process.argv[2] ?? 'latest';
   const db = knex(config[process.env.NODE_ENV === 'production' ? 'production' : 'development']!);
 
+  // Migrations modify schema and seed data across tenants — they must
+  // bypass RLS. `SET row_security = off` disables policies for this
+  // session. afterCreate runs once per pooled connection, which works
+  // because migrations use a single connection from the pool.
+  await db.raw('set row_security = off');
+
   try {
     if (sub === 'latest') {
       const [batch, files] = await db.migrate.latest();

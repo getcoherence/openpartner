@@ -11,13 +11,18 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { ulid } from 'ulid';
-import { TABLES } from '@openpartner/db';
+import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApp } from '../app.js';
 
 const ADMIN_KEY = 'op_test_admin_key_0123456789abcdef0123';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
-process.env.OPENPARTNER_MODE = process.env.OPENPARTNER_MODE ?? 'selfhost';
+// Force selfhost — vitest auto-loads .env, so the ?? form would let a
+// developer's local .env mode bleed into the suite.
+process.env.OPENPARTNER_MODE = 'selfhost';
+// Force single tenancy — every direct insert below gets stamped with the
+// default tenant; routes go through tenantMiddleware which sets the same.
+process.env.OPENPARTNER_TENANCY = 'single';
 
 const TABLES_TO_CLEAN = [
   TABLES.Commission,
@@ -26,11 +31,8 @@ const TABLES_TO_CLEAN = [
   TABLES.Identity,
   TABLES.Click,
   TABLES.Link,
-  TABLES.Campaign,
+  TABLES.Program,
   TABLES.Payout,
-  TABLES.Session,
-  TABLES.MagicLinkToken,
-  TABLES.DevMessage,
   TABLES.ApiKey,
   TABLES.Partner,
   TABLES.Config,
@@ -47,6 +49,16 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Truncate before destroying so subsequent test files (which share
+  // this DB and may not list every Partner-referencing table in their
+  // own beforeEach) start from a clean slate. Without this, a Link or
+  // Click left behind here cascades into FK violations when another
+  // file's `delete from Partner` runs.
+  if (!skipIntegration) {
+    for (const t of TABLES_TO_CLEAN) {
+      await db(t).del();
+    }
+  }
   await db.destroy();
 });
 
@@ -58,6 +70,141 @@ beforeEach(async () => {
 });
 
 describe.skipIf(skipIntegration)('api integration', () => {
+  it('local partner sessions manage only their own granted customizable coupon codes', async () => {
+    const { createSession } = await import('../auth-sessions.js');
+    const createPartner = async (email: string) => {
+      const response = await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email, name: email, programIds: [] });
+      expect(response.status).toBe(201);
+      return response.body.id as string;
+    };
+    const owner = await createPartner('coupon-owner@example.com');
+    const other = await createPartner('coupon-other@example.com');
+    const program = await request(app).post('/programs').set('Authorization', `Bearer ${ADMIN_KEY}`).send({
+      name: 'Coupons', destinationUrl: 'https://example.com', commissionRule: { type: 'percent', value: 10 }, partnersMayCustomizeCode: true,
+    });
+    expect(program.status).toBe(201);
+    const programId = program.body.id as string;
+    const session = await createSession(db, { tenantId: DEFAULT_TENANT_ID, principalKind: 'partner', principalId: owner });
+    const cookie = `op_session=${session.plaintext}`;
+    const oldTenant = await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first('couponIntegrationVerifiedAt');
+    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ couponIntegrationVerifiedAt: new Date() });
+    try {
+      const post = (partnerId: string, code: string) => request(app).post(`/partners/${partnerId}/coupons`).set('Cookie', cookie).send({ programId, code });
+      expect((await post(other, 'OTHER')).status).toBe(403);
+      const ungranted = await post(owner, 'UNGRANTED');
+      expect(ungranted.status).toBe(403);
+      expect(ungranted.body.error).toBe('campaign_not_granted');
+      await db(TABLES.PartnerProgram).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, partnerId: owner, programId, source: 'admin' });
+      const reward = { type: 'percent_off', value: 15, duration: 'repeating', durationInMonths: 3 };
+      await db(TABLES.Program).where({ id: programId }).update({ customerReward: JSON.stringify(reward) });
+      const programs = await request(app).get('/me/programs').set('Cookie', cookie);
+      expect(programs.body.programs).toHaveLength(1);
+      expect(programs.body.programs[0].customerReward).toEqual(reward);
+      expect(programs.body.programs[0].commissionRule).toBeUndefined();
+      const adminPrograms = await request(app).get('/me/programs').set('Authorization', `Bearer ${ADMIN_KEY}`);
+      expect(adminPrograms.body.programs[0].customerReward).toEqual(reward);
+      await db(TABLES.Program).where({ id: programId }).update({ customerReward: null });
+      expect(programs.body.programs[0].partnersMayCustomizeCode).toBe(true);
+      await db(TABLES.Program).where({ id: programId }).update({ partnersMayCustomizeCode: false });
+      expect((await post(owner, 'DISABLED')).body.error).toBe('partner_customization_disabled');
+      await db(TABLES.Program).where({ id: programId }).update({ partnersMayCustomizeCode: true, endsAt: new Date(Date.now() - 1000) });
+      expect((await post(owner, 'ENDED')).body.error).toBe('campaign_not_active');
+      await db(TABLES.Program).where({ id: programId }).update({ endsAt: null });
+      const created = await post(owner, 'MYCODE');
+      expect(created.status).toBe(201);
+      const couponId = created.body.id as string;
+      const otherCoupon = await request(app).post(`/partners/${other}/coupons`).set('Authorization', `Bearer ${ADMIN_KEY}`).send({ programId, code: 'OTHERCODE' });
+      expect(otherCoupon.status).toBe(201);
+      expect((await request(app).delete(`/partners/${other}/coupons/${otherCoupon.body.id}`).set('Cookie', cookie)).status).toBe(403);
+      expect((await request(app).delete(`/partners/${owner}/coupons/${otherCoupon.body.id}`).set('Cookie', cookie)).status).toBe(404);
+      for (let index = 0; index < 4; index++) expect((await post(owner, `CODE${index}`)).status).toBe(201);
+      expect((await post(owner, 'LIMIT')).body.error).toBe('active_codes_cap_reached');
+      await db(TABLES.Program).where({ id: programId }).update({ partnersMayCustomizeCode: false });
+      expect((await request(app).delete(`/partners/${owner}/coupons/${couponId}`).set('Cookie', cookie)).body.error).toBe('partner_customization_disabled');
+      await db(TABLES.Program).where({ id: programId }).update({ partnersMayCustomizeCode: true });
+      expect((await request(app).delete(`/partners/${owner}/coupons/${couponId}`).set('Cookie', cookie)).status).toBe(200);
+      const replacement = await post(owner, 'REPLACEMENT');
+      expect(replacement.status).toBe(201);
+      expect((await request(app).post('/coupons/redeem').set('Cookie', cookie).send({})).status).toBe(403);
+
+      // Create/deactivate churn is capped per 24h (each mint can create
+      // Stripe objects on self-host). Six created so far; four more cycles
+      // reach the cap of ten, then the next create is refused.
+      let latest = replacement.body.id as string;
+      for (let index = 0; index < 4; index++) {
+        expect((await request(app).delete(`/partners/${owner}/coupons/${latest}`).set('Cookie', cookie)).status).toBe(200);
+        const churn = await post(owner, `CHURN${index}`);
+        expect(churn.status).toBe(201);
+        latest = churn.body.id as string;
+      }
+      expect((await request(app).delete(`/partners/${owner}/coupons/${latest}`).set('Cookie', cookie)).status).toBe(200);
+      const capped = await post(owner, 'ONEMORE');
+      expect(capped.status).toBe(429);
+      expect(capped.body.error).toBe('daily_code_limit_reached');
+
+      // The brand-wide verification gate runs after the access checks and
+      // gives partners a partner-facing message, not the brand's coupon
+      // count or integration instructions.
+      await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ couponIntegrationVerifiedAt: null });
+      expect((await post(other, 'NOTMINE')).status).toBe(403);
+      await db(TABLES.Coupon).where({ partnerId: owner }).update({ createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) });
+      const gated = await post(owner, 'GATED');
+      expect(gated.status).toBe(409);
+      expect(gated.body.error).toBe('verification_required');
+      expect(gated.body.existing).toBeUndefined();
+      expect(gated.body.detail).not.toMatch(/coupons\/redeem|webhook/);
+    } finally {
+      await db(TABLES.Session).where({ id: session.id }).del();
+      await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ couponIntegrationVerifiedAt: oldTenant?.couponIntegrationVerifiedAt ?? null });
+    }
+  });
+  it('persists partner Network visibility across unrelated settings saves', async () => {
+    const initial = await request(app).get('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(initial.body.partnerNetworkVisible).toBe(true);
+    const saved = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ partnerNetworkVisible: false });
+    expect(saved.status).toBe(200);
+    expect(saved.body.partnerNetworkVisible).toBe(false);
+    const other = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ programName: 'Brand' });
+    expect(other.body.partnerNetworkVisible).toBe(false);
+    const invalid = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ partnerNetworkVisible: 'false' });
+    expect(invalid.status).toBe(400);
+    expect(other.body.partnerNetworkToggleAvailable).toBe(true);
+  });
+  it('the hosted (multi-tenant) platform ignores the partner Network toggle', async () => {
+    // The stored value from a self-host era (or a direct API call) must not
+    // hide Network discovery from a hosted brand's partners.
+    const tenantId = ulid();
+    const slug = `hosted${tenantId.slice(-8).toLowerCase()}`;
+    await db(TABLES.Tenant).insert({ id: tenantId, slug, displayName: 'Hosted Brand', status: 'active', approvalStatus: 'approved' });
+    await db(TABLES.Config).insert({ tenantId, key: 'program_settings', value: { partnerNetworkVisible: false } as never, updatedAt: new Date() });
+    process.env.OPENPARTNER_TENANCY = 'multi';
+    try {
+      const read = await request(app).get(`/t/${slug}/config/program`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+      expect(read.status).toBe(200);
+      expect(read.body.partnerNetworkVisible).toBe(true);
+      expect(read.body.partnerNetworkToggleAvailable).toBe(false);
+      const save = await request(app).post(`/t/${slug}/config/program`).set('Authorization', `Bearer ${ADMIN_KEY}`).send({ partnerNetworkVisible: false });
+      expect(save.status).toBe(200);
+      expect(save.body.partnerNetworkVisible).toBe(true);
+    } finally {
+      process.env.OPENPARTNER_TENANCY = 'single';
+      await db(TABLES.Config).where({ tenantId }).del();
+      await db(TABLES.Tenant).where({ id: tenantId }).del();
+    }
+  });
+  it('validates and persists the public router origin across settings saves', async () => {
+    for (const routerUrl of ['javascript:alert(1)', 'https://user:pass@example.com', 'https://example.com/r', 'https://example.com?x=1', 'https://example.com/#x']) {
+      const rejected = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ routerUrl });
+      expect(rejected.status).toBe(400);
+    }
+    const saved = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ routerUrl: 'https://links.example.com/' });
+    expect(saved.status).toBe(200);
+    expect(saved.body.routerUrl).toBe('https://links.example.com');
+    const other = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ programName: 'Brand' });
+    expect(other.body.routerUrl).toBe('https://links.example.com');
+    const cleared = await request(app).post('/config/program').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ routerUrl: '' });
+    expect(cleared.body.routerUrl).toBeNull();
+  });
   it('full funnel: partner → link → click → identify → event → attribution → payout', async () => {
     // 1. Admin creates a partner.
     const partnerRes = await request(app)
@@ -69,27 +216,28 @@ describe.skipIf(skipIntegration)('api integration', () => {
 
     // 2. Admin creates a campaign (20% commission).
     const campaignRes = await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ name: 'Default', commissionRule: { type: 'percent', value: 20 } });
+      .send({ name: 'Default', commissionRule: { type: 'percent', value: 20 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
     expect(campaignRes.status).toBe(201);
-    const campaignId = campaignRes.body.id;
+    const programId = campaignRes.body.id;
 
     // 3. Admin creates a link for the partner.
     const linkKey = `test_${Date.now()}`;
     const linkRes = await request(app)
       .post(`/partners/${partnerId}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey, campaignId, destinationUrl: 'https://example.com/signup' });
+      .send({ linkKey, programId, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
     expect(linkRes.status).toBe(201);
 
     // 4. Simulate a click (normally written by the router).
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId: linkRes.body.id,
       partnerId,
-      campaignId,
+      programId,
       landingUrl: 'https://example.com/signup?cref=' + clickId,
       ipHash: 'test-hash',
       userAgent: 'test',
@@ -163,22 +311,23 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const partnerId = partnerRes.body.id;
 
     const campaignRes = await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ name: 'C', commissionRule: { type: 'percent', value: 10 } });
-    const campaignId = campaignRes.body.id;
+      .send({ name: 'C', commissionRule: { type: 'percent', value: 10 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' });
+    const programId = campaignRes.body.id;
 
     const linkRes = await request(app)
       .post(`/partners/${partnerId}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey: `fraud_${Date.now()}`, campaignId, destinationUrl: 'https://e.com' });
+      .send({ linkKey: `fraud_${Date.now()}`, programId, destinationUrl: 'https://e.com' });
 
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId: linkRes.body.id,
       partnerId,
-      campaignId,
+      programId,
       landingUrl: 'https://e.com',
       ipHash: 'x',
       userAgent: 'x',
@@ -231,7 +380,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
       .get('/export.json')
       .set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(exportRes.status).toBe(200);
-    expect(exportRes.body.schemaVersion).toBe(1);
+    expect(exportRes.body.schemaVersion).toBe(4);
     expect(exportRes.body.tables.Partner).toHaveLength(1);
 
     // Wipe, re-import.
@@ -239,7 +388,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const importRes = await request(app)
       .post('/import')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ schemaVersion: 1, tables: exportRes.body.tables });
+      .send({ schemaVersion: exportRes.body.schemaVersion, tables: exportRes.body.tables });
     expect(importRes.status).toBe(200);
     expect(importRes.body.report.inserted.Partner).toBe(1);
 
@@ -255,28 +404,28 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const p2 = (await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email: 'p2@x.com', name: 'P2' })).body.id;
 
     const linearCampaign = (await request(app)
-      .post('/campaigns')
+      .post('/programs')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ name: 'Linear', commissionRule: { type: 'percent', value: 20 }, attributionModel: 'linear' })).body.id;
+      .send({ name: 'Linear', commissionRule: { type: 'percent', value: 20 }, attributionModel: 'linear', destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })).body.id;
 
     const link1 = (await request(app)
       .post(`/partners/${p1}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey: `l1_${Date.now()}`, campaignId: linearCampaign, destinationUrl: 'https://e.com' })).body;
+      .send({ linkKey: `l1_${Date.now()}`, programId: linearCampaign, destinationUrl: 'https://e.com' })).body;
     const link2 = (await request(app)
       .post(`/partners/${p2}/links`)
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ linkKey: `l2_${Date.now()}`, campaignId: linearCampaign, destinationUrl: 'https://e.com' })).body;
+      .send({ linkKey: `l2_${Date.now()}`, programId: linearCampaign, destinationUrl: 'https://e.com' })).body;
 
     const click1 = ulid();
     const click2 = ulid();
     await db(TABLES.Click).insert({
-      id: click1, linkId: link1.id, partnerId: p1, campaignId: linearCampaign,
+      id: click1, tenantId: DEFAULT_TENANT_ID, linkId: link1.id, partnerId: p1, programId: linearCampaign,
       landingUrl: 'x', ipHash: 'x', userAgent: 'x', referer: null, fraudFlag: null,
       ts: new Date(Date.now() - 10_000),
     });
     await db(TABLES.Click).insert({
-      id: click2, linkId: link2.id, partnerId: p2, campaignId: linearCampaign,
+      id: click2, tenantId: DEFAULT_TENANT_ID, linkId: link2.id, partnerId: p2, programId: linearCampaign,
       landingUrl: 'x', ipHash: 'x', userAgent: 'x', referer: null, fraudFlag: null,
       ts: new Date(Date.now() - 5_000),
     });
@@ -354,15 +503,15 @@ describe.skipIf(skipIntegration)('api integration', () => {
     ).body;
     const campaign = (
       await request(app)
-        .post('/campaigns')
+        .post('/programs')
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ name: 'F', commissionRule: { type: 'percent', value: 10 } })
+        .send({ name: 'F', commissionRule: { type: 'percent', value: 10 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })
     ).body;
     const link = (
       await request(app)
         .post(`/partners/${partner.id}/links`)
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ linkKey: `fk_${Date.now()}`, campaignId: campaign.id, destinationUrl: 'https://e.com' })
+        .send({ linkKey: `fk_${Date.now()}`, programId: campaign.id, destinationUrl: 'https://e.com' })
     ).body;
 
     // 3 clicks, one flagged.
@@ -370,9 +519,9 @@ describe.skipIf(skipIntegration)('api integration', () => {
     const click2 = ulid();
     const click3 = ulid();
     await db(TABLES.Click).insert([
-      { id: click1, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'a', userAgent: 'x', referer: null, fraudFlag: null },
-      { id: click2, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'b', userAgent: 'x', referer: null, fraudFlag: null },
-      { id: click3, linkId: link.id, partnerId: partner.id, campaignId: campaign.id, landingUrl: 'x', ipHash: 'c', userAgent: 'x', referer: null, fraudFlag: 'velocity' },
+      { id: click1, tenantId: DEFAULT_TENANT_ID, linkId: link.id, partnerId: partner.id, programId: campaign.id, landingUrl: 'x', ipHash: 'a', userAgent: 'x', referer: null, fraudFlag: null },
+      { id: click2, tenantId: DEFAULT_TENANT_ID, linkId: link.id, partnerId: partner.id, programId: campaign.id, landingUrl: 'x', ipHash: 'b', userAgent: 'x', referer: null, fraudFlag: null },
+      { id: click3, tenantId: DEFAULT_TENANT_ID, linkId: link.id, partnerId: partner.id, programId: campaign.id, landingUrl: 'x', ipHash: 'c', userAgent: 'x', referer: null, fraudFlag: 'velocity' },
     ]);
 
     // User 1 stitches, signs up, pays.
@@ -419,24 +568,25 @@ describe.skipIf(skipIntegration)('api integration', () => {
     ).body;
     const campaign = (
       await request(app)
-        .post('/campaigns')
+        .post('/programs')
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ name: 'Fr', commissionRule: { type: 'percent', value: 20 } })
+        .send({ name: 'Fr', commissionRule: { type: 'percent', value: 20 }, destinationUrl: 'https://example.com/signup', deepLinkAllowedDomains: 'e.com,example.com' })
     ).body;
     const link = (
       await request(app)
         .post(`/partners/${partner.id}/links`)
         .set('Authorization', `Bearer ${ADMIN_KEY}`)
-        .send({ linkKey: `fr_${Date.now()}`, campaignId: campaign.id, destinationUrl: 'https://e.com' })
+        .send({ linkKey: `fr_${Date.now()}`, programId: campaign.id, destinationUrl: 'https://e.com' })
     ).body;
 
     // Click comes in flagged as velocity.
     const clickId = ulid();
     await db(TABLES.Click).insert({
       id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
       linkId: link.id,
       partnerId: partner.id,
-      campaignId: campaign.id,
+      programId: campaign.id,
       landingUrl: 'x',
       ipHash: 'x',
       userAgent: 'x',
@@ -480,5 +630,157 @@ describe.skipIf(skipIntegration)('api integration', () => {
 
     const unauth = await request(app).get('/auth/whoami');
     expect(unauth.status).toBe(401);
+  });
+});
+
+describe.skipIf(skipIntegration)('audit safe-fixes', () => {
+  it('POST /billing/plan rejects enterprise (sales-led), accepts flex', async () => {
+    // enterprise counts as active + white-label with no Stripe sub, so it
+    // must not be self-assignable through this authenticated setter.
+    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ billingPlan: null });
+    try {
+      const bad = await request(app)
+        .post('/billing/plan')
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ plan: 'enterprise' });
+      expect(bad.status).toBe(400);
+
+      const ok = await request(app)
+        .post('/billing/plan')
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ plan: 'flex' });
+      expect(ok.status).toBe(200);
+    } finally {
+      await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ billingPlan: null });
+    }
+  });
+
+  it('a click that happened AFTER the event does not attribute it (negative age)', async () => {
+    const partnerId = (
+      await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email: `fut-${ulid()}@x.com`, name: 'Fut' })
+    ).body.id;
+    const programId = (
+      await request(app).post('/programs').set('Authorization', `Bearer ${ADMIN_KEY}`).send({
+        name: 'Fut',
+        commissionRule: { type: 'percent', value: 20 },
+        destinationUrl: 'https://example.com/signup',
+      })
+    ).body.id;
+    const linkId = (
+      await request(app).post(`/partners/${partnerId}/links`).set('Authorization', `Bearer ${ADMIN_KEY}`).send({ linkKey: `fut_${ulid()}`, programId })
+    ).body.id;
+
+    // Click NOW; the conversion event is backdated to before it.
+    const clickId = ulid();
+    await db(TABLES.Click).insert({
+      id: clickId, tenantId: DEFAULT_TENANT_ID, linkId, partnerId, programId,
+      landingUrl: 'https://example.com/signup', ipHash: 'h', userAgent: 't', referer: null, ts: new Date(),
+    });
+    const userId = `u_${ulid()}`;
+    await request(app).post('/attribution/identify').send({ cref: clickId, userId });
+    const eventRes = await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId, type: 'invoice_paid', value: 100, currency: 'USD', ts: new Date(Date.now() - 3600_000).toISOString() });
+
+    expect(eventRes.status).toBe(200);
+    expect(eventRes.body.attribution.status).toBe('outside_window');
+    const attributions = await db(TABLES.Attribution).where({ partnerId });
+    expect(attributions).toHaveLength(0);
+  });
+
+  it('an event a few seconds before its click still attributes (skew grace)', async () => {
+    // The companion to the test above, and the reason the negative-age check
+    // is not a strict `< 0`. Stripe stamps `created` in whole SECONDS, so a
+    // conversion in the same second as the click truncates to BEFORE it, and
+    // the click clock is not the event clock. A strict check dropped these
+    // silently. Revert the grace in attribution.ts and this test fails.
+    const partnerId = (
+      await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email: `skew-${ulid()}@x.com`, name: 'Skew' })
+    ).body.id;
+    const programId = (
+      await request(app).post('/programs').set('Authorization', `Bearer ${ADMIN_KEY}`).send({
+        name: 'Skew',
+        commissionRule: { type: 'percent', value: 20 },
+        destinationUrl: 'https://example.com/signup',
+      })
+    ).body.id;
+    const linkId = (
+      await request(app).post(`/partners/${partnerId}/links`).set('Authorization', `Bearer ${ADMIN_KEY}`).send({ linkKey: `skew_${ulid()}`, programId })
+    ).body.id;
+
+    const clickId = ulid();
+    await db(TABLES.Click).insert({
+      id: clickId, tenantId: DEFAULT_TENANT_ID, linkId, partnerId, programId,
+      landingUrl: 'https://example.com/signup', ipHash: 'h', userAgent: 't', referer: null, ts: new Date(),
+    });
+    const userId = `u_${ulid()}`;
+    await request(app).post('/attribution/identify').send({ cref: clickId, userId });
+    const eventRes = await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId, type: 'invoice_paid', value: 100, currency: 'USD', ts: new Date(Date.now() - 2_000).toISOString() });
+
+    expect(eventRes.status).toBe(200);
+    expect(eventRes.body.attribution.status).toBe('attributed');
+    const attributions = await db(TABLES.Attribution).where({ partnerId });
+    expect(attributions).toHaveLength(1);
+  });
+});
+
+describe.skipIf(skipIntegration)('server-to-server ingest routes reject partner principals', () => {
+  // Regression: /coupons/redeem and /clicks are admin-or-scoped-key ingest
+  // routes (grantScope + requireAdmin, same as /attribution/events). A
+  // partner principal must NOT reach them — /coupons/redeem mints
+  // commissions, so a partner without the gate could forge conversions
+  // crediting themselves.
+  async function mintPartnerKey(): Promise<string> {
+    const p = (
+      await request(app)
+        .post('/partners')
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ email: `s2s-${ulid()}@x.com`, name: 'S2S' })
+    ).body.id;
+    const keyRes = await request(app)
+      .post(`/partners/${p}/api-keys`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ label: 'test' });
+    return keyRes.body.plaintext as string;
+  }
+
+  it('POST /coupons/redeem: partner key → 403; admin passes auth (404 unknown coupon)', async () => {
+    const partnerKey = await mintPartnerKey();
+    const body = { code: 'NOPE', eventType: 'sale', userId: 'u1', externalEventId: ulid(), value: 100 };
+
+    const asPartner = await request(app)
+      .post('/coupons/redeem')
+      .set('Authorization', `Bearer ${partnerKey}`)
+      .send(body);
+    expect(asPartner.status).toBe(403);
+
+    const asAdmin = await request(app)
+      .post('/coupons/redeem')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send(body);
+    expect(asAdmin.status).not.toBe(403);
+    expect(asAdmin.status).toBe(404); // coupon_not_found — reached the handler
+  });
+
+  it('POST /clicks: partner key → 403; admin passes auth (404 unknown link)', async () => {
+    const partnerKey = await mintPartnerKey();
+    const body = { id: ulid(), linkKey: 'nope', landingUrl: 'https://x/', ts: new Date().toISOString() };
+
+    const asPartner = await request(app)
+      .post('/clicks')
+      .set('Authorization', `Bearer ${partnerKey}`)
+      .send(body);
+    expect(asPartner.status).toBe(403);
+
+    const asAdmin = await request(app)
+      .post('/clicks')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send(body);
+    expect(asAdmin.status).not.toBe(403);
+    expect(asAdmin.status).toBe(404); // link_not_found — reached the handler
   });
 });

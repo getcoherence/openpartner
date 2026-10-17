@@ -1,0 +1,41 @@
+# GitHub CODEOWNERS file.
+#
+# Lines map a path glob to a GitHub user / team. The last matching line
+# wins. When a PR touches a path, GitHub auto-requests review from the
+# matching owner(s); when the protected-branch rule "Require review from
+# Code Owners" is on, the PR can't merge without their approval.
+#
+# Keep this list short and meaningful — every entry is a hard
+# review-block. Default reviewer covers everything; specific paths
+# below add no extra owners (yet) but reserve the slots for when a
+# team forms around the repo.
+
+# Default reviewer for everything not matched below.
+*  @keithfawcett
+
+# Build, deploy, and CI configuration. Changes here affect the release
+# pipeline and supply chain — surface them clearly.
+/.github/                          @keithfawcett
+/.do/                              @keithfawcett
+/Dockerfile                        @keithfawcett
+/docker-compose*.yml               @keithfawcett
+/apps/api/Dockerfile               @keithfawcett
+/apps/portal/Dockerfile            @keithfawcett
+/apps/router/Dockerfile            @keithfawcett
+
+# Cryptography + auth + storage of secrets. Anything under here gets
+# extra eyes because a regression is hard to catch in review.
+/apps/api/src/crypto.ts            @keithfawcett
+/apps/api/src/auth.ts              @keithfawcett
+/apps/api/src/db.ts                @keithfawcett
+/apps/api/src/tenancy.ts           @keithfawcett
+/packages/db/src/ssl.ts            @keithfawcett
+
+# Database migrations. Bad migrations are the most expensive class of
+# mistake — explicitly route to the maintainer even when they're small.
+/packages/db/migrations/           @keithfawcett
+
+# Network-protocol contract. Any wire-shape change must go through the
+# maintainer because it's the federation API openpartner-network builds
+# against.
+/docs/network-protocol.md          @keithfawcett

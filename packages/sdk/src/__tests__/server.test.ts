@@ -34,6 +34,22 @@ describe('OpenPartnerServer', () => {
     expect(body).toEqual({ userId: 'u1', type: 'invoice_paid', value: 249, currency: 'USD' });
   });
 
+  it('trackEvent forwards externalEventId and surfaces a replay', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+      new Response(
+        JSON.stringify({ ok: true, replayed: true, eventId: 'evt_1', attribution: { status: 'not_attributed' } }),
+        { status: 200 },
+      ),
+    );
+    const op = new OpenPartnerServer({ apiUrl: 'https://op.test', apiKey: 'k', fetch: fetchMock });
+
+    const res = await op.trackEvent({ userId: 'u1', type: 'invoice_paid', value: 249, externalEventId: 'in_123' });
+    expect(res.replayed).toBe(true);
+    expect(res.attribution.status).toBe('not_attributed');
+    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body));
+    expect(body).toEqual({ userId: 'u1', type: 'invoice_paid', value: 249, externalEventId: 'in_123' });
+  });
+
   it('wraps non-2xx into OpenPartnerError with status + code', async () => {
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ error: 'invalid_body', detail: { whatever: 1 } }), { status: 400 }),
@@ -43,6 +59,26 @@ describe('OpenPartnerServer', () => {
       name: 'OpenPartnerError',
       status: 400,
       code: 'invalid_body',
+    });
+  });
+
+  it('trackConversion POSTs the click id to /attribution/conversions', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+      new Response(
+        JSON.stringify({ ok: true, eventId: 'evt_9', userId: 'click:c1', attribution: { status: 'attributed' } }),
+        { status: 200 },
+      ),
+    );
+    const op = new OpenPartnerServer({ apiUrl: 'https://op.test', apiKey: 'k', fetch: fetchMock });
+
+    const res = await op.trackConversion({ clickId: 'c1', type: 'loan_funded', value: 5000, externalEventId: 'loan-1:funded' });
+    expect(res.userId).toBe('click:c1');
+    expect(fetchMock.mock.calls[0]![0]).toBe('https://op.test/attribution/conversions');
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]!.body))).toEqual({
+      clickId: 'c1',
+      type: 'loan_funded',
+      value: 5000,
+      externalEventId: 'loan-1:funded',
     });
   });
 

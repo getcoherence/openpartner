@@ -1,0 +1,455 @@
+/**
+ * Funding-scoped Stripe webhook handling — spec §6/§8/§9.
+ *
+ * Funding events are identified by our own metadata stamps
+ * (`openpartner_funding_batch_id` on PaymentIntents/charges,
+ * `openpartner_transfer_intent_id` on transfers) and processed on the
+ * privileged pool BEFORE the tenant-scoped attribution path: they are
+ * platform-money events, not merchant conversion events.
+ *
+ * Every handler is CAS-based and replays are absorbed by the inbox, so
+ * out-of-order and duplicate deliveries degrade to logged no-ops. A stale
+ * event that loses its CAS re-reads the live Stripe object before deciding
+ * anything (finding 7).
+ */
+
+import type Stripe from 'stripe';
+import type { Knex } from 'knex';
+import { ulid } from 'ulid';
+import {
+  TABLES,
+  type CommissionRow,
+  type HostedFundingBatchRow,
+  type HostedFundingTransferRow,
+  type PayoutRow,
+} from '@openpartner/db';
+import { casBatch, toMinor } from './state.js';
+import { claimInboxEvent, releaseInboxClaim, stampInboxOutcome } from './inbox.js';
+import { confirmFundingFromPaymentIntent } from './confirm.js';
+import { releaseBatch } from './release.js';
+
+/** Event types the funding pipeline may own. Everything else short-circuits
+ *  in the caller without touching the inbox. */
+const FUNDING_EVENT_TYPES = new Set([
+  'payment_intent.succeeded',
+  'payment_intent.payment_failed',
+  'payment_intent.canceled',
+  'charge.refunded',
+  'charge.dispute.created',
+  'transfer.reversed',
+]);
+
+/**
+ * Another worker holds an unfinished claim on this event. The caller must
+ * turn this into a non-2xx so Stripe redelivers — acknowledging would end
+ * delivery for an event that is not yet processed.
+ */
+/** Pages of reversals we're willing to walk before giving up and asking
+ *  for a human. Deliberately finite — but a truncated result is reported,
+ *  never used to derive state. */
+const REVERSAL_PAGE_CAP = 20;
+
+export class InboxEventHeldError extends Error {
+  constructor(public stripeEventId: string) {
+    super(`funding webhook ${stripeEventId} is being processed by another worker`);
+    this.name = 'InboxEventHeldError';
+  }
+}
+
+/**
+ * The event is genuinely ours, but our own state isn't ready for it yet —
+ * typically a reversal arriving before finalization has linked the Payout.
+ *
+ * This must NOT be a terminal outcome. Stamping one acknowledges the event
+ * to Stripe, which stops redelivery, and an unprocessed reversal that will
+ * never be redelivered is money we never learn came back. Throwing sends it
+ * back through the retry path instead: the claim is released, the route
+ * answers 5xx, and the redelivery finds a linked payout.
+ */
+export class FundingEventNotReadyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FundingEventNotReadyError';
+  }
+}
+
+function fundingBatchIdOf(event: Stripe.Event): string | null {
+  const obj = event.data.object as { metadata?: Record<string, string> | null };
+  return obj?.metadata?.openpartner_funding_batch_id ?? null;
+}
+
+function transferIntentIdOf(event: Stripe.Event): string | null {
+  const obj = event.data.object as { metadata?: Record<string, string> | null };
+  return obj?.metadata?.openpartner_transfer_intent_id ?? null;
+}
+
+/**
+ * Handle an event if the funding pipeline owns it. Returns an outcome
+ * string when handled (caller responds 2xx and stops), null when the event
+ * is not funding-scoped (caller continues down the normal path).
+ */
+export async function handleFundingEvent(
+  db: Knex,
+  stripe: Stripe,
+  event: Stripe.Event,
+): Promise<string | null> {
+  if (!FUNDING_EVENT_TYPES.has(event.type)) return null;
+
+  const batchId = fundingBatchIdOf(event);
+  const intentId = event.type === 'transfer.reversed' ? transferIntentIdOf(event) : null;
+  if (!batchId && !intentId) return null; // not ours — merchant-side event
+
+  // The claim is a lease: it blocks replays of an event we FINISHED, and
+  // blocks concurrent workers, but a claim whose worker died is taken
+  // over by a later redelivery instead of swallowing the event forever
+  // (inbox.ts).
+  const claim = await claimInboxEvent(db, event.id, event.type);
+  if (claim.status === 'done') return 'inbox_replay';
+  if (claim.status === 'held') {
+    // Unfinished and owned by someone else. Do NOT acknowledge: a 2xx
+    // here tells Stripe the event is delivered, and if that worker dies
+    // the redelivery we're refusing is the only thing that would ever
+    // process it. Throwing → 5xx → Stripe retries later, by which point
+    // the lease has either completed or expired for takeover.
+    throw new InboxEventHeldError(event.id);
+  }
+
+  let outcome: string;
+  try {
+    outcome = await routeFundingEvent(db, stripe, event, batchId, intentId);
+  } catch (err) {
+    if (err instanceof FundingEventNotReadyError) {
+      // KEEP the claim (round 7). Dropping it on every attempt made an
+      // intent whose payoutId is never populated invisible: the batch can
+      // reach a terminal state the executor no longer scans (a disputed
+      // funding charge), so the intent never finalizes, every redelivery
+      // throws, every claim is deleted, and when Stripe finally gives up
+      // the reversal is lost with NO row for the stuck-claim alert to see.
+      //
+      // Leaving the claim in place with a null outcome means the 5-minute
+      // lease expires and the next redelivery takes over as normal, but the
+      // row persists — so the 1h unfinished-claim alert in reconcile.ts
+      // surfaces it to a human instead of it disappearing quietly.
+      console.error(
+        `[funding] event ${event.id} is not yet processable (${err.message}) — claim retained so the stuck-claim alert can see it if this persists`,
+      );
+      throw err;
+    }
+    // Drop the claim, then rethrow → 5xx → Stripe redelivers, and the
+    // redelivery is processed at once rather than waiting out the lease.
+    // Every handler is idempotent, so re-running is safe.
+    await releaseInboxClaim(db, event.id, claim.token);
+    throw err;
+  }
+  // Scoped to our token: if our lease expired and another worker took
+  // over, this loses and THEY own the outcome.
+  await stampInboxOutcome(db, event.id, outcome, claim.token);
+  return outcome;
+}
+
+async function routeFundingEvent(
+  db: Knex,
+  stripe: Stripe,
+  event: Stripe.Event,
+  batchId: string | null,
+  intentId: string | null,
+): Promise<string> {
+  switch (event.type) {
+    case 'payment_intent.succeeded': {
+      // Never trust the payload — fetch the live PI with the balance
+      // transaction expanded so confirm can stamp the actual rail fee.
+      const payloadPi = event.data.object as Stripe.PaymentIntent;
+      const pi = await stripe.paymentIntents.retrieve(payloadPi.id, {
+        expand: ['latest_charge.balance_transaction'],
+      });
+      const result = await confirmFundingFromPaymentIntent(db, batchId!, pi);
+      return `confirm:${result}`;
+    }
+    case 'payment_intent.payment_failed': {
+      const pi = event.data.object as Stripe.PaymentIntent;
+      const failure =
+        pi.last_payment_error?.message ?? pi.last_payment_error?.code ?? 'payment_failed';
+      const moved = await casBatch(db, batchId!, 'payment_processing', 'funding_failed', {
+        failureReason: failure.slice(0, 500),
+      });
+      // Retry cadence is owned by the collector (~day 1/3/7 against the
+      // same PI); this handler only records the failure.
+      return moved ? 'payment_failed_recorded' : 'payment_failed_stale';
+    }
+    case 'payment_intent.canceled': {
+      // Usually our own release protocol canceling the PI — releaseBatch
+      // CASes to release_requested first, so this event finds the batch
+      // already past the states releaseBatch claims and no-ops. An
+      // externally-canceled PI (Stripe expiry) goes through the full
+      // release protocol here for promptness; the collector would catch
+      // it on the next tick anyway.
+      const batch = (await db(TABLES.HostedFundingBatch)
+        .where({ id: batchId! })
+        .first()) as HostedFundingBatchRow | undefined;
+      if (!batch) return 'batch_not_found';
+      if (!['reserved', 'invoicing', 'payment_processing', 'funding_failed'].includes(batch.status)) {
+        return `canceled_noop:${batch.status}`;
+      }
+      const released = await releaseBatch(db, stripe, batch, 'pi_canceled_webhook');
+      return `canceled:${released}`;
+    }
+    case 'charge.refunded':
+    case 'charge.dispute.created': {
+      // The brand's funding charge came back (spec §8). Freeze the batch:
+      // funding_disputed stops the executor cold (it only consumes
+      // funded/transferring). Transfer reversals + the receivables ledger
+      // are an operator flow — this handler makes the state loud and safe.
+      return recordFundingChargeClawback(db, batchId!, event.type);
+    }
+    case 'transfer.reversed': {
+      return handleTransferReversed(db, stripe, event.data.object as Stripe.Transfer, intentId!);
+    }
+    default:
+      return 'unhandled';
+  }
+}
+
+/**
+ * The brand's funding charge was refunded or disputed.
+ *
+ * Non-terminal batches are FROZEN as `funding_disputed`, which stops the
+ * executor (it only consumes funded/transferring).
+ *
+ * Terminal ones — `settled` / `settled_with_residual` — are deliberately
+ * NOT moved. `funding_disputed` is inside the "one open batch per
+ * tenant/currency" unique index, so dragging a historical batch back into
+ * it fails outright whenever a newer batch is open, and the failure took
+ * the whole handler down with it (webhook 500s, sweep logged an
+ * exception). Nothing is gained by the transition either: a settled batch
+ * has already transferred, so there is nothing left to stop. The clawback
+ * is recorded on the row and alerted for operator recovery instead.
+ *
+ * Shared by the webhook and the daily reconcile sweep so both behave
+ * identically.
+ */
+export async function recordFundingChargeClawback(
+  db: Knex,
+  batchId: string,
+  reason: string,
+): Promise<string> {
+  // EVERY non-terminal state, not just the mid-flight ones. Stripe does
+  // not order webhooks, so a refund can arrive while the batch sits in
+  // `reserved`, `invoicing`, `funding_failed` or `release_requested` —
+  // and confirm.ts explicitly allows release_requested → funded, so an
+  // acked-but-unapplied clawback could be followed by the batch funding
+  // and paying out normally.
+  const moved = await casBatch(
+    db,
+    batchId,
+    ['reserved', 'invoicing', 'payment_processing', 'funding_failed', 'release_requested', 'funded', 'transferring'],
+    'funding_disputed',
+    { failureReason: reason },
+  );
+  if (moved) {
+    console.error(
+      `[funding] ALERT: funding charge ${reason} on batch ${batchId} — batch frozen as funding_disputed; operator action required`,
+    );
+    return 'funding_disputed';
+  }
+
+  const batch = (await db(TABLES.HostedFundingBatch)
+    .where({ id: batchId })
+    .first(['status', 'failureReason'])) as
+    | { status: string; failureReason: string | null }
+    | undefined;
+  if (!batch) return 'batch_not_found';
+
+  if (['settled', 'settled_with_residual'].includes(batch.status)) {
+    // Record without changing status — see the note above.
+    await db(TABLES.HostedFundingBatch)
+      .where({ id: batchId })
+      .update({ failureReason: reason, updatedAt: new Date() });
+    console.error(
+      `[funding] ALERT: funding charge ${reason} on ALREADY-SETTLED batch ${batchId} — money was already transferred to partners; recovery is a receivable, operator action required`,
+    );
+    return `clawback_on_settled:${batch.status}`;
+  }
+
+  console.error(
+    `[funding] ALERT: funding charge ${reason} on batch ${batchId} (${batch.status}) — no transition applied; operator action required`,
+  );
+  return `dispute_stale_cas:${batch.status}`;
+}
+
+/**
+ * A partner-bound transfer was reversed (spec §4 PayoutReversal, finding
+ * 11). Payout state is DERIVED from the reversal ledger; Commission rows
+ * are never flipped paid → reversed — a compensating CommissionAdjustment
+ * records the clawback when the payout is fully reversed.
+ */
+async function allReversalsOf(
+  stripe: Stripe,
+  transfer: Stripe.Transfer,
+): Promise<{ reversals: Stripe.TransferReversal[]; complete: boolean }> {
+  const embedded = transfer.reversals?.data ?? [];
+  if (!transfer.reversals?.has_more) return { reversals: embedded, complete: true };
+  const all = [...embedded];
+  let startingAfter = embedded[embedded.length - 1]?.id;
+  let complete = false;
+  for (let page = 0; page < REVERSAL_PAGE_CAP && startingAfter; page += 1) {
+    const next = await stripe.transfers.listReversals(transfer.id, {
+      limit: 100,
+      starting_after: startingAfter,
+    });
+    all.push(...next.data);
+    if (!next.has_more || next.data.length === 0) {
+      complete = true;
+      break;
+    }
+    startingAfter = next.data[next.data.length - 1]!.id;
+  }
+  console.warn(
+    `[funding] transfer ${transfer.id} had more than one page of reversals — paged ${all.length}${complete ? ' (complete)' : ' (TRUNCATED)'}`,
+  );
+  return { reversals: all, complete };
+}
+
+export async function handleTransferReversed(
+  db: Knex,
+  stripe: Stripe,
+  transfer: Stripe.Transfer,
+  intentId: string,
+): Promise<string> {
+  const intent = (await db(TABLES.HostedFundingTransfer)
+    .where({ id: intentId })
+    .first()) as HostedFundingTransferRow | undefined;
+  if (!intent) return 'transfer_intent_unknown';
+  if (!intent.payoutId) {
+    // NOT YET LINKED is not the same as UNKNOWN, and returning a terminal
+    // outcome here lost reversals permanently (round-6 review).
+    //
+    // The intent is committed before the Stripe call, but its Payout is
+    // only linked during finalization. A reversal landing in that gap —
+    // or after a crash before finalization — used to return
+    // 'transfer_intent_unknown', which the wrapper stamped as a terminal
+    // inbox outcome and answered 2xx. Stripe then stopped redelivering,
+    // so the only notice we would ever get that the money came back was
+    // discarded, and a later executor pass could finalize the reversed
+    // transfer as a paid payout.
+    //
+    // Throwing instead reuses the path that already exists for handler
+    // errors: handleFundingEvent releases the inbox claim and rethrows,
+    // the route answers 5xx, and Stripe redelivers — by which time
+    // finalization has linked the Payout and the reversal applies
+    // normally. Handlers are idempotent, so redelivery is safe.
+    throw new FundingEventNotReadyError(
+      `transfer intent ${intentId} has no payout yet (reversal arrived before finalization)`,
+    );
+  }
+
+  const payout = (await db(TABLES.Payout).where({ id: intent.payoutId }).first()) as
+    | PayoutRow
+    | undefined;
+  if (!payout) return 'payout_not_found';
+
+  // Record every reversal exactly once (unique stripeReversalId).
+  //
+  // The embedded list is only the ten most recent, so a transfer reversed
+  // in many small pieces would be under-counted — and under-counting is
+  // what decides `partially_reversed` vs `reversed`, i.e. whether the
+  // clawback adjustments get written at all. Page the full list when
+  // Stripe says there is more (same lesson as the transfer-listing
+  // pagination in #71).
+  const { reversals, complete } = await allReversalsOf(stripe, transfer);
+  let recorded = 0;
+  for (const reversal of reversals) {
+    const inserted = await db(TABLES.PayoutReversal)
+      .insert({
+        id: ulid(),
+        tenantId: intent.tenantId,
+        payoutId: payout.id,
+        stripeReversalId: reversal.id,
+        amountMinor: reversal.amount,
+        reason: null,
+        balanceTransactionId:
+          typeof reversal.balance_transaction === 'string' ? reversal.balance_transaction : null,
+        createdAt: new Date(reversal.created * 1000),
+      })
+      .onConflict('stripeReversalId')
+      .ignore()
+      .returning('id');
+    recorded += inserted.length;
+  }
+
+  if (!complete) {
+    // The rows above are real and were recorded (the unique
+    // stripeReversalId makes that idempotent) — throwing them away would
+    // discard a valid audit trail and re-fetch the same prefix forever.
+    // What we must NOT do is derive `reversed` vs `partially_reversed`
+    // from a ledger we know is incomplete: that writes a terminal state
+    // that never self-corrects.
+    console.error(
+      `[funding] ALERT: transfer ${transfer.id} has more reversals than this job will page — ${recorded} newly recorded, payout status NOT derived; operator reconciliation required`,
+    );
+    return `reversal_list_truncated:${recorded}`;
+  }
+
+  // Derive the payout state from the full reversal ledger, UNDER A LOCK.
+  //
+  // Distinct Stripe events are leased independently, so two reversal
+  // handlers for one payout run concurrently. Summing and updating without
+  // the payout row locked let them interleave read/write and REGRESS the
+  // status (round-6 review): handler A records $30 and reads $30; handler
+  // B records the remaining $50, reads $80 and writes `reversed`; A then
+  // wakes and writes `partially_reversed` over it. The ledger was complete
+  // at $80 but the payout claimed otherwise — and `reversed` is what gates
+  // the clawback adjustments below.
+  //
+  // Taking `FOR UPDATE` first serialises the read-sum-write, so the later
+  // handler always re-sums after the earlier one committed.
+  const payoutMinor = toMinor(payout.amount);
+  let fullyReversed = false;
+  let reversedMinor = 0;
+  await db.transaction(async (trx) => {
+    await trx(TABLES.Payout).where({ id: payout.id }).forUpdate().first();
+    const sumRow = (await trx(TABLES.PayoutReversal)
+      .where({ payoutId: payout.id })
+      .sum({ total: 'amountMinor' })
+      .first()) as { total: string | null } | undefined;
+    reversedMinor = Number(sumRow?.total ?? 0);
+    fullyReversed = reversedMinor >= payoutMinor;
+    await trx(TABLES.Payout)
+      .where({ id: payout.id })
+      .update({ status: fullyReversed ? 'reversed' : 'partially_reversed' });
+  });
+
+  if (fullyReversed) {
+    // Compensating entries for the payout's commissions — paid rows stay
+    // paid (immutable history); the adjustment ledger carries the clawback.
+    const commissions = (await db(TABLES.Commission)
+      .where({ payoutId: payout.id })) as CommissionRow[];
+    for (const c of commissions) {
+      // check-then-insert is only safe under a lock: this handler can run
+      // concurrently with itself (a redelivery taking over an expired
+      // lease) and with the reconcile sweep, and CommissionAdjustment has
+      // no unique constraint to catch a duplicate clawback.
+      await db.transaction(async (trx) => {
+        await trx(TABLES.Commission).where({ id: c.id }).forUpdate().first(['id']);
+        const already = await trx(TABLES.CommissionAdjustment)
+          .where({ commissionId: c.id, reason: 'transfer_reversed' })
+          .first(['id']);
+        if (already) return;
+        await trx(TABLES.CommissionAdjustment).insert({
+          id: ulid(),
+          tenantId: c.tenantId,
+          commissionId: c.id,
+          amount: `-${c.amount}`,
+          currency: c.currency,
+          reason: 'transfer_reversed',
+          metadata: { stripeTransferId: transfer.id },
+          createdAt: new Date(),
+        });
+      });
+    }
+  } else {
+    console.error(
+      `[funding] ALERT: partial transfer reversal on payout ${payout.id} (${reversedMinor}/${payoutMinor} minor) — commission-level disposition needs an operator`,
+    );
+  }
+  return `reversal_recorded:${recorded}:${fullyReversed ? 'full' : 'partial'}`;
+}

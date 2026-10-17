@@ -3,7 +3,38 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Theme bootstrap: resolve the System / Light / Dark preference and set
+      <html data-theme> before first paint so the page never flashes the
+      wrong palette. Mirrors src/lib/theme-preference.ts (localStorage key
+      "op-theme"; anything else = follow the OS). Inline on purpose: no
+      Content-Security-Policy covers the portal HTML (nginx, App Platform
+      static site and Caddy send none; helmet only wraps the API). If a CSP
+      is ever added, allow this block by hash rather than moving it to an
+      external file: nginx caches every .js for a year as immutable.
+    -->
+    <script>
+      (function () {
+        var t = 'dark';
+        try {
+          var p = window.localStorage.getItem('op-theme');
+          if (p === 'light' || p === 'dark') t = p;
+          else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) t = 'light';
+        } catch (e) {
+          try {
+            if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) t = 'light';
+          } catch (e2) {}
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      })();
+    </script>
     <title>OpenPartner</title>
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta property="og:title" content="OpenPartner" />
+    <meta property="og:image" content="/og-default.png" />
   </head>
   <body>
     <div id="root"></div>

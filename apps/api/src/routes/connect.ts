@@ -8,14 +8,17 @@
  *
  * Active/ready status is confirmed via the `account.updated` webhook, not at
  * the callback — the callback fires before Stripe has finalized verification.
+ *
+ * Multi-tenant: Connect accounts are stamped with openpartner_tenant_id so
+ * the webhook handler can resolve the tenant on inbound account.* events.
  */
 
 import { Router } from 'express';
 import { z } from 'zod';
 import { TABLES, type PartnerRow } from '@openpartner/db';
-import { db } from '../db.js';
 import { requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { requireStripe } from '../stripe.js';
+import { tenantOf } from '../tenancy.js';
 
 const startSchema = z.object({
   returnUrl: z.string().url(),
@@ -29,6 +32,7 @@ connectRouter.post(
   requireAuth,
   requirePartnerOrAdmin('id'),
   async (req, res) => {
+    const { db, tenantId } = tenantOf(req);
     const body = startSchema.safeParse(req.body);
     if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
@@ -41,7 +45,10 @@ connectRouter.post(
       const account = await stripe.accounts.create({
         type: 'standard',
         email: partner.email,
-        metadata: { openpartner_partner_id: partner.id },
+        metadata: {
+          openpartner_partner_id: partner.id,
+          openpartner_tenant_id: tenantId,
+        },
       });
       accountId = account.id;
       await db<PartnerRow>(TABLES.Partner)
@@ -65,6 +72,7 @@ connectRouter.get(
   requireAuth,
   requirePartnerOrAdmin('id'),
   async (req, res) => {
+    const { db } = tenantOf(req);
     const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
     if (!partner) return res.status(404).json({ error: 'partner_not_found' });
 
