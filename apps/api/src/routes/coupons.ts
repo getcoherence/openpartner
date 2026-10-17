@@ -504,6 +504,16 @@ function isRedemptionOf(event: EventRow, coupon: CouponRow): boolean {
  * Used by both the /coupons/redeem route and the Stripe webhook auto-
  * redemption path. Returns null when the code doesn't match anything in
  * this tenant — letting the caller no-op rather than 404.
+ *
+ * Two steps, for the index. Codes are stored upper case (createSchema;
+ * generated codes too), so the exact upper-cased code is looked up first
+ * on the (tenantId, code) unique. The case-insensitive match is only the
+ * fallback, for misses and older mixed-case codes: under the RLS app role
+ * it reads every coupon in the tenant, because Postgres keeps a
+ * non-leakproof function like lower() out of index conditions on an RLS
+ * table, so the (tenantId, lower(code)) index serves only connections
+ * that bypass RLS. Non-ASCII input skips the first step: its toUpperCase()
+ * can name a different code (ß → SS) than lower() would match.
  */
 export async function findCouponByCode(
   db: import('knex').Knex,
@@ -515,6 +525,13 @@ export async function findCouponByCode(
   // partner holding the same code.
   // Explicit tenant filter, not RLS alone: appDb can run without the app
   // role, and the Stripe paths match codes taken from a Stripe payload.
+  if (/^[\x20-\x7e]+$/.test(code)) {
+    const exact = await db<CouponRow>(TABLES.Coupon)
+      .where({ tenantId, code: code.toUpperCase() })
+      .whereNull('deactivatedAt')
+      .first();
+    if (exact) return exact;
+  }
   const row = await db<CouponRow>(TABLES.Coupon)
     .where({ tenantId })
     .whereRaw('lower("code") = ?', [code.toLowerCase()])
