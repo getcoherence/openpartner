@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import { hasActivePlan } from '../billing-plan.js';
 import type { TenantBillingState } from '../billing-plan.js';
-import { isPlanRequiredRoute } from '../middleware/trial-gate.js';
+import { isPlanRequiredRoute, isTrialGatedRoute } from '../middleware/trial-gate.js';
 
 function billing(overrides: Partial<TenantBillingState> = {}): TenantBillingState {
   return {
@@ -85,5 +85,36 @@ describe('plan-required route matching', () => {
     expect(isPlanRequiredRoute('POST', '/coupons/redeem')).toBe(false);
     expect(isPlanRequiredRoute('GET', '/partners')).toBe(false);
     expect(isPlanRequiredRoute('POST', '/auth/signin')).toBe(false);
+  });
+
+  it('cannot be bypassed with case or a trailing slash (Express routes both)', () => {
+    expect(isPlanRequiredRoute('POST', '/Partners/')).toBe(true);
+    expect(isPlanRequiredRoute('POST', '/PARTNER-SIGNUP')).toBe(true);
+    expect(isPlanRequiredRoute('POST', '/admin/network/requests/REQ_1/Approve/')).toBe(true);
+  });
+});
+
+describe('trial-gated route matching', () => {
+  it('gates every program-expansion action', () => {
+    expect(isTrialGatedRoute('POST', '/programs')).toBe(true);
+    expect(isTrialGatedRoute('POST', '/partners/p_1/coupons')).toBe(true);
+    // Granting programs to a partner. This was `/partners/:id/campaigns`
+    // until the Campaign → Program rename moved the route, which left
+    // grants open after the trial lapsed.
+    expect(isTrialGatedRoute('POST', '/partners/p_1/programs')).toBe(true);
+    expect(isTrialGatedRoute('POST', '/import/partners-csv')).toBe(true);
+    expect(isTrialGatedRoute('POST', '/admin/network/offerings')).toBe(true);
+  });
+
+  it('cannot be bypassed with case or a trailing slash (Express routes both)', () => {
+    expect(isTrialGatedRoute('POST', '/Partners/p_1/Programs/')).toBe(true);
+    expect(isTrialGatedRoute('POST', '/PROGRAMS')).toBe(true);
+    expect(isTrialGatedRoute('POST', '/partners/p_1/coupons//')).toBe(true);
+  });
+
+  it('leaves reads and revocations open', () => {
+    expect(isTrialGatedRoute('GET', '/partners/p_1/programs')).toBe(false);
+    expect(isTrialGatedRoute('DELETE', '/partners/p_1/programs/prog_1')).toBe(false);
+    expect(isTrialGatedRoute('POST', '/attribution/events')).toBe(false);
   });
 });

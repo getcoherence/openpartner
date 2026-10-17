@@ -471,9 +471,12 @@ function FundingCard() {
             {!f.enabled && ' Automated funding is not switched on for this deployment yet — payouts stay on the manual rail until it is.'}
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <Button variant="secondary" onClick={() => setup.mutate()} disabled={setup.isPending}>
-              {setup.isPending ? 'Opening Stripe…' : 'Replace bank account'}
-            </Button>
+            {/* The API refuses setup while funding is off; revoke stays available. */}
+            {f.enabled && (
+              <Button variant="secondary" onClick={() => setup.mutate()} disabled={setup.isPending}>
+                {setup.isPending ? 'Opening Stripe…' : 'Replace bank account'}
+              </Button>
+            )}
             <Button variant="danger" onClick={() => revoke.mutate()} disabled={revoke.isPending}>
               {revoke.isPending ? 'Revoking…' : 'Revoke authorization'}
             </Button>
@@ -483,6 +486,13 @@ function FundingCard() {
             authorization they started with.
           </p>
         </>
+      ) : !f.enabled ? (
+        // Shown only for a tenant with funding history (the API hides the
+        // card otherwise): no new authorization until funding is on.
+        <p style={{ fontSize: 13, color: theme.textMuted, margin: 0 }}>
+          Automated funding isn&rsquo;t switched on for this deployment. Payouts stay on the manual
+          rail.
+        </p>
       ) : (
         <>
           <label
