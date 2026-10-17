@@ -49,6 +49,7 @@ import { getMode } from '../stripe.js';
 import { attributeEvent } from '../attribution.js';
 import { sameConversion } from '../conversion-ingest.js';
 import { codeExistsInStripe, deactivateCustomerReward, provisionCustomerReward } from '../customer-rewards.js';
+import { RECORDED_FROM_STRIPE_DETAIL, recordedFromStripe } from '../stripe-app.js';
 
 export const couponsRouter = Router();
 
@@ -267,7 +268,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
   if (!adminChosen) {
     let shadowsStripe: boolean;
     try {
-      shadowsStripe = await codeExistsInStripe(code);
+      shadowsStripe = await codeExistsInStripe(tenantId, code);
     } catch (err) {
       console.error('[coupons] Stripe code check failed', { code, err });
       return res.status(503).json({
@@ -285,7 +286,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
   // the row is still inserted, just without the auto-applied discount.
   const reward = (program.customerReward as CustomerReward | null) ?? null;
   const provisioned = reward
-    ? await provisionCustomerReward(reward, code, program.name)
+    ? await provisionCustomerReward(tenantId, reward, code, program.name)
     : null;
 
   try {
@@ -304,7 +305,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
   } catch (err) {
     // No row owns the promo we just provisioned — release it so the code
     // doesn't keep discounting at checkout with nothing to attribute to.
-    if (provisioned) await deactivateCustomerReward(provisioned.stripePromotionCodeId);
+    if (provisioned) await deactivateCustomerReward(tenantId, provisioned.stripePromotionCodeId);
     if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505') {
       // Per-tenant code uniqueness only — the (partner, program) unique
       // is gone after the append-only migration.
@@ -363,7 +364,7 @@ couponsRouter.delete('/partners/:id/coupons/:couponId', requireAuth, async (req,
   // code without a matching active OpenPartner Coupon would just
   // discount the customer without attributing.
   if (coupon.stripePromotionCodeId) {
-    await deactivateCustomerReward(coupon.stripePromotionCodeId);
+    await deactivateCustomerReward(coupon.tenantId, coupon.stripePromotionCodeId);
   }
 
   await db<CouponRow>(TABLES.Coupon)
@@ -419,10 +420,17 @@ couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), r
   const body = redeemSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const coupon = await findCouponByCode(db, body.data.code);
+  const coupon = await findCouponByCode(db, tenantId, body.data.code);
   if (!coupon) return res.status(404).json({ error: 'coupon_not_found' });
 
   const { userId, eventType, value, currency, externalEventId } = body.data;
+  // Keyed on a Checkout Session or invoice while the brand's Stripe account
+  // is connected: the app records that checkout, and redeems a partner code
+  // entered at Stripe Checkout itself. A redemption under the same key would
+  // take it first and the checkout's revenue would be dropped as a replay.
+  if (await recordedFromStripe(db, tenantId, externalEventId)) {
+    return res.status(409).json({ error: 'recorded_from_stripe', detail: RECORDED_FROM_STRIPE_DETAIL });
+  }
   const ts = body.data.ts ? new Date(body.data.ts) : new Date();
   const row = {
     id: ulid(),
@@ -493,9 +501,13 @@ function isRedemptionOf(event: EventRow, coupon: CouponRow): boolean {
  */
 export async function findCouponByCode(
   db: import('knex').Knex,
+  tenantId: string,
   code: string,
 ): Promise<CouponRow | null> {
+  // Explicit tenant filter, not RLS alone: appDb can run without the app
+  // role, and the Stripe paths match codes taken from a Stripe payload.
   const row = await db<CouponRow>(TABLES.Coupon)
+    .where({ tenantId })
     .whereRaw('lower("code") = ?', [code.toLowerCase()])
     .whereNull('deactivatedAt')
     .first();
@@ -579,9 +591,9 @@ function defaultCode(email: string): string {
 /** Auto-mint's use of codeExistsInStripe. A generated code is a random
  *  draw rather than anyone's choice, so a Stripe outage shouldn't block
  *  the grant: fail open and log. (The POST route fails closed.) */
-async function generatedCodeShadowsStripe(code: string): Promise<boolean> {
+async function generatedCodeShadowsStripe(tenantId: string, code: string): Promise<boolean> {
   try {
-    return await codeExistsInStripe(code);
+    return await codeExistsInStripe(tenantId, code);
   } catch (err) {
     console.error('[coupons] auto-mint Stripe code check failed; proceeding', { code, err });
     return false;
@@ -640,10 +652,10 @@ export async function autoMintCouponsForGrants(
     // partner-grant operation.
     for (let attempt = 1; attempt <= 2; attempt++) {
       const code = defaultCode(partner.email);
-      if (await generatedCodeShadowsStripe(code)) continue;
+      if (await generatedCodeShadowsStripe(tenantId, code)) continue;
 
       const provisioned = campaign.customerReward
-        ? await provisionCustomerReward(campaign.customerReward, code, campaign.name)
+        ? await provisionCustomerReward(tenantId, campaign.customerReward, code, campaign.name)
         : null;
 
       let inserted: Array<Pick<CouponRow, 'id'>>;
@@ -667,13 +679,13 @@ export async function autoMintCouponsForGrants(
           .ignore()
           .returning('id')) as Array<Pick<CouponRow, 'id'>>;
       } catch (err) {
-        if (provisioned) await deactivateCustomerReward(provisioned.stripePromotionCodeId);
+        if (provisioned) await deactivateCustomerReward(tenantId, provisioned.stripePromotionCodeId);
         console.error('[coupons] auto-mint failed', { partnerId: partner.id, programId, err });
         break;
       }
       if (inserted.length > 0) break;
       // Collided: no row owns the promo provisioned for this draw.
-      if (provisioned) await deactivateCustomerReward(provisioned.stripePromotionCodeId);
+      if (provisioned) await deactivateCustomerReward(tenantId, provisioned.stripePromotionCodeId);
     }
   }
 }

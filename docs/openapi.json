@@ -6094,7 +6094,7 @@
           "Attribution"
         ],
         "summary": "Record a conversion event",
-        "description": "Server-to-server conversion ingest. The event is attributed to the partner whose click the user was stitched to (within the program's window and model) and commissions accrue.\n\n**Event types.** Any string is accepted. Two have built-in meaning:\n- `signup` is the funnel's *signups* stage (`signup` and `trial_started` are *leads* in the timeseries).\n- `invoice_paid` is the funnel's *paid* stage, and on OpenPartner Cloud it is billable GMV, as is `subscription_created`. Report payments as `invoice_paid`. Other types with a value still accrue commission but are not counted as GMV.\n\n`value` is in major units (`49.99`), defaulting to no value; `currency` defaults to USD.\n\n**Idempotency.** Always send `externalEventId`: your system's stable id for this one event (invoice id, order id, deal id + stage). A retry with the same key returns `200` with `replayed: true` and the original result, writing nothing. Reusing a key for a different userId, type, value or currency returns `409 external_event_id_conflict`. Keys are per tenant, up to 120 characters, and shared with `POST /coupons/redeem`.\n\n**Don't report a payment twice.** If your Stripe account also sends webhooks to this deployment (`/webhooks/stripe`, self-host), those payments are already recorded, keyed by the Stripe event id. Reporting the same payment here under your own invoice id records it a second time.\n\n**Access:** admin key, or a scoped key with `events:write`.",
+        "description": "Server-to-server conversion ingest. The event is attributed to the partner whose click the user was stitched to (within the program's window and model) and commissions accrue.\n\n**Event types.** Any string is accepted. Two have built-in meaning:\n- `signup` is the funnel's *signups* stage (`signup` and `trial_started` are *leads* in the timeseries).\n- `invoice_paid` is the funnel's *paid* stage, and on OpenPartner Cloud it is billable GMV, as is `subscription_created`. Report payments as `invoice_paid`. Other types with a value still accrue commission but are not counted as GMV.\n\n`value` is in major units (`49.99`), defaulting to no value; `currency` defaults to USD.\n\n**Idempotency.** Always send `externalEventId`: your system's stable id for this one event (invoice id, order id, deal id + stage). A retry with the same key returns `200` with `replayed: true` and the original result, writing nothing. Reusing a key for a different userId, type, value or currency returns `409 external_event_id_conflict`. Keys are per tenant, up to 120 characters, and shared with `POST /coupons/redeem`.\n\n**Don't report a payment twice.** If your Stripe account also sends webhooks to this deployment (`/webhooks/stripe`, self-host), those payments are already recorded, keyed by the Stripe event id. Reporting the same payment here under your own invoice id records it a second time.\n\n**Stripe connected (OpenPartner Cloud).** Once your Stripe account is connected through the OpenPartner Stripe App, Stripe invoices and Checkout payments are recorded from Stripe itself, keyed by the invoice or Checkout Session id. An `externalEventId` that is one of those ids (`in_…`, `cs_live_…`, `cs_test_…`) returns `409 recorded_from_stripe`: Stripe's record of the payment wins.\n\n**Access:** admin key, or a scoped key with `events:write`.",
         "security": [
           {
             "adminKey": []
@@ -6164,7 +6164,7 @@
             }
           },
           "409": {
-            "description": "`external_event_id_conflict`",
+            "description": "`external_event_id_conflict`, `recorded_from_stripe`",
             "content": {
               "application/json": {
                 "schema": {
@@ -6183,7 +6183,7 @@
           "Attribution"
         ],
         "summary": "Record a conversion against a click",
-        "description": "For senders that hold a click id but never saw an identify: a lender reporting a funded loan, a CRM, an affiliate network. The click id reaches them through the destination URL's `{click_id}` macro, or the `cref` the router appends. One call stitches the click to a user and records the event, in one transaction.\n\nSend `userId` when you have your own id for the user: attribution then follows the program's model across every click that user is stitched to, as on `POST /attribution/events`. Without it the click's own synthetic user is used, and this click alone is credited. Events recorded for the user before this stitch are not backfilled; `POST /attribution/identify` does that.\n\n**Idempotency.** `externalEventId` is required. A retry with the same key returns `200` with `replayed: true` and the original result, even if the click has been flagged since. Reusing a key for a different click, userId, type, value or currency returns `409 external_event_id_conflict`. Keys share one namespace with `POST /attribution/events`, `GET /postback` and `POST /coupons/redeem`.\n\nA click flagged by velocity limits or a revoked partner earns nothing: `422 click_flagged`.\n\n**Access:** admin key, or a scoped key with `events:write`.",
+        "description": "For senders that hold a click id but never saw an identify: a lender reporting a funded loan, a CRM, an affiliate network. The click id reaches them through the destination URL's `{click_id}` macro, or the `cref` the router appends. One call stitches the click to a user and records the event, in one transaction.\n\nSend `userId` when you have your own id for the user: attribution then follows the program's model across every click that user is stitched to, as on `POST /attribution/events`. Without it the click's own synthetic user is used, and this click alone is credited. Events recorded for the user before this stitch are not backfilled; `POST /attribution/identify` does that.\n\n**Idempotency.** `externalEventId` is required. A retry with the same key returns `200` with `replayed: true` and the original result, even if the click has been flagged since. Reusing a key for a different click, userId, type, value or currency returns `409 external_event_id_conflict`. Keys share one namespace with `POST /attribution/events`, `GET /postback` and `POST /coupons/redeem`. With your Stripe account connected, a Stripe invoice or Checkout Session id as the key returns `409 recorded_from_stripe`, as on `POST /attribution/events`.\n\nA click flagged by velocity limits or a revoked partner earns nothing: `422 click_flagged`.\n\n**Access:** admin key, or a scoped key with `events:write`.",
         "security": [
           {
             "adminKey": []
@@ -6263,7 +6263,7 @@
             }
           },
           "409": {
-            "description": "`external_event_id_conflict`",
+            "description": "`external_event_id_conflict`, `recorded_from_stripe`",
             "content": {
               "application/json": {
                 "schema": {
@@ -6721,7 +6721,7 @@
           "Coupons"
         ],
         "summary": "Record a coupon redemption",
-        "description": "Call from your checkout when a customer uses a partner code. Records the conversion and stitches the user to the partner, so their later events attribute too. `externalEventId` is required and works as on `POST /attribution/events` (same namespace).\n\n**Access:** admin key, or a scoped key with `events:write`.",
+        "description": "Call from your checkout when a customer uses a partner code. Records the conversion and stitches the user to the partner, so their later events attribute too. `externalEventId` is required and works as on `POST /attribution/events` (same namespace). With your Stripe account connected, codes entered at Stripe Checkout are redeemed from Stripe, and a Stripe invoice or Checkout Session id as the key returns `409 recorded_from_stripe`.\n\n**Access:** admin key, or a scoped key with `events:write`.",
         "security": [
           {
             "adminKey": []
@@ -6811,7 +6811,7 @@
             }
           },
           "409": {
-            "description": "`external_event_id_conflict`",
+            "description": "`external_event_id_conflict`, `recorded_from_stripe`",
             "content": {
               "application/json": {
                 "schema": {

@@ -239,11 +239,12 @@ export const updateSchema = z.object({
 export const programsRouter = Router();
 
 programsRouter.get('/programs', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const campaigns = await db<ProgramRow>(TABLES.Program).orderBy('createdAt', 'desc');
-  // Deployment-level, but the reward editor is the only reader and it
-  // already loads this list — saves the portal a round trip.
-  res.json({ programs: campaigns, customerRewardDelivery: customerRewardDelivery() });
+  // Per deployment, and on hosted per Stripe App connection. The reward
+  // editor is the only reader and it already loads this list — saves the
+  // portal a round trip.
+  res.json({ programs: campaigns, customerRewardDelivery: await customerRewardDelivery(tenantId) });
 });
 
 /**

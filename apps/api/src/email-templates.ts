@@ -384,6 +384,26 @@ export function opsTenantSubscriptionEndedEmail(
   return { subject, text, html: plainHtml(text) };
 }
 
+/** Platform ops: a brand's Stripe App connection stopped refreshing, so
+ *  its Stripe events are skipped until the brand reconnects. */
+export function opsStripeAppReconnectEmail(
+  brandName: string,
+  slug: string,
+  stripeAccountId: string,
+  error: string,
+): EmailTemplate {
+  const subject = `[Stripe App] ${brandName} (${slug}) needs to reconnect Stripe`;
+  const text = [
+    `Stripe refused to refresh the Stripe App connection for ${brandName} (${slug}), account ${stripeAccountId}.`,
+    `Stripe said: ${error}`,
+    ``,
+    `Until the brand reconnects (Admin → Integrations → Connect Stripe), its Stripe events are acknowledged`,
+    `and skipped: checkouts, invoices, refunds and promo-code redemptions from that account are not recorded.`,
+    `The portal already shows the brand a "reconnect needed" banner.`,
+  ].join('\n');
+  return { subject, text, html: plainHtml(text) };
+}
+
 /** Platform ops: Stripe failed to collect a tenant's own OpenPartner
  *  invoice (dunning). */
 export function opsTenantInvoicePaymentFailedEmail(

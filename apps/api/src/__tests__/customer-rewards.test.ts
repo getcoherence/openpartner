@@ -37,6 +37,10 @@ const { codeExistsInStripe, deactivateCustomerReward, provisionCustomerReward } 
   '../customer-rewards.js'
 );
 
+// No Stripe App keys in this file, so hosted tenants have no connection to
+// reach and never touch the database.
+const TENANT = 'tenant_reward_test';
+
 const originalMode = process.env.OPENPARTNER_MODE;
 const originalTenancy = process.env.OPENPARTNER_TENANCY;
 
@@ -58,6 +62,7 @@ afterAll(() => {
 describe('provisionCustomerReward', () => {
   it('percent_off + repeating maps to Stripe percent_off + duration_in_months', async () => {
     await provisionCustomerReward(
+      TENANT,
       { type: 'percent_off', value: 25, duration: 'repeating', durationInMonths: 6 },
       'KEITH15A2X',
       'Default',
@@ -73,6 +78,7 @@ describe('provisionCustomerReward', () => {
 
   it('amount_off lowercases currency and converts dollars to cents', async () => {
     await provisionCustomerReward(
+      TENANT,
       { type: 'amount_off', value: 20, currency: 'USD', duration: 'forever' },
       'CODE',
       'Campaign',
@@ -87,6 +93,7 @@ describe('provisionCustomerReward', () => {
 
   it('free_months delivers as 100% repeating coupon', async () => {
     await provisionCustomerReward(
+      TENANT,
       { type: 'free_months', value: 2, duration: 'repeating' },
       'CODE',
       'Campaign',
@@ -101,6 +108,7 @@ describe('provisionCustomerReward', () => {
 
   it('amount_off without currency returns null (no Stripe call)', async () => {
     const result = await provisionCustomerReward(
+      TENANT,
       { type: 'amount_off', value: 10, duration: 'once' },
       'CODE',
       'Campaign',
@@ -111,6 +119,7 @@ describe('provisionCustomerReward', () => {
 
   it('returns provisioned IDs on success', async () => {
     const result = await provisionCustomerReward(
+      TENANT,
       { type: 'percent_off', value: 10, duration: 'once' },
       'CODE',
       'Campaign',
@@ -123,6 +132,7 @@ describe('provisionCustomerReward', () => {
 
   it('promotion code is created against the new coupon with the OpenPartner code', async () => {
     await provisionCustomerReward(
+      TENANT,
       { type: 'percent_off', value: 10, duration: 'once' },
       'KEITH15A2X',
       'Default',
@@ -151,6 +161,7 @@ describe.each([
 
   it('provisionCustomerReward skips, even for a 100% free_months reward', async () => {
     const result = await provisionCustomerReward(
+      TENANT,
       { type: 'free_months', value: 12, duration: 'repeating' },
       'FREEYEAR',
       'Campaign',
@@ -161,12 +172,12 @@ describe.each([
   });
 
   it('deactivateCustomerReward is a no-op', async () => {
-    await deactivateCustomerReward('promo_platform_legacy');
+    await deactivateCustomerReward(TENANT, 'promo_platform_legacy');
     expect(promotionCodeUpdate).not.toHaveBeenCalled();
   });
 
   it('codeExistsInStripe has nothing to look in', async () => {
-    await expect(codeExistsInStripe('WELCOME10')).resolves.toBe(false);
+    await expect(codeExistsInStripe(TENANT, 'WELCOME10')).resolves.toBe(false);
     expect(promotionCodeList).not.toHaveBeenCalled();
     expect(couponRetrieve).not.toHaveBeenCalled();
   });
@@ -175,7 +186,7 @@ describe.each([
 describe('codeExistsInStripe (single-tenant self-host)', () => {
   it('true when a promotion code with that string exists, active or not', async () => {
     promotionCodeList.mockResolvedValueOnce({ data: [{ id: 'promo_brand', code: 'WELCOME10', active: false }] });
-    await expect(codeExistsInStripe('WELCOME10')).resolves.toBe(true);
+    await expect(codeExistsInStripe(TENANT, 'WELCOME10')).resolves.toBe(true);
     // No `active` filter: an inactive promo still rides on live
     // subscriptions' invoices, which the webhook auto-redeems by code.
     expect(promotionCodeList).toHaveBeenCalledWith({ code: 'WELCOME10', limit: 1 });
@@ -187,7 +198,7 @@ describe('codeExistsInStripe (single-tenant self-host)', () => {
       throw Object.assign(new Error('missing'), { code: 'resource_missing' });
     });
     try {
-      await expect(codeExistsInStripe('SPRING25')).resolves.toBe(true);
+      await expect(codeExistsInStripe(TENANT, 'SPRING25')).resolves.toBe(true);
       expect(couponRetrieve.mock.calls.map((c) => c[0])).toEqual(['SPRING25', 'spring25']);
     } finally {
       couponRetrieve.mockReset();
@@ -198,11 +209,11 @@ describe('codeExistsInStripe (single-tenant self-host)', () => {
   });
 
   it('false when neither a promotion code nor a coupon id matches', async () => {
-    await expect(codeExistsInStripe('KEITH15A2X')).resolves.toBe(false);
+    await expect(codeExistsInStripe(TENANT, 'KEITH15A2X')).resolves.toBe(false);
   });
 
   it('propagates Stripe errors other than resource_missing', async () => {
     couponRetrieve.mockRejectedValueOnce(Object.assign(new Error('rate limited'), { code: 'rate_limit' }));
-    await expect(codeExistsInStripe('KEITH15A2X')).rejects.toThrow('rate limited');
+    await expect(codeExistsInStripe(TENANT, 'KEITH15A2X')).rejects.toThrow('rate limited');
   });
 });

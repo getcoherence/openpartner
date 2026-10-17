@@ -7,8 +7,9 @@
  * the brand's checkout.
  *
  * Rewards are only ever provisioned in the BRAND's own Stripe account —
- * see rewardStripe(). On hosted deployments there is no such account to
- * reach, so provisioning is skipped and the stripe ids stay null.
+ * see rewardStripe(). On hosted deployments that's the account the brand
+ * connected through the OpenPartner Stripe App; without one, provisioning
+ * is skipped and the stripe ids stay null.
  *
  * Failures are non-fatal: if Stripe isn't configured, or the API call
  * fails, the Coupon row is still written and stripeCouponId stays null.
@@ -20,6 +21,7 @@
 import type Stripe from 'stripe';
 import type { CustomerReward } from '@openpartner/db';
 import { getMode, stripe } from './stripe.js';
+import { brandStripeForRewards, stripeAppRewardsAvailable } from './stripe-app.js';
 import { getTenancyMode } from './tenancy.js';
 
 export interface ProvisionedReward {
@@ -28,24 +30,26 @@ export interface ProvisionedReward {
 }
 
 /**
- * The Stripe client customer rewards are provisioned in: the brand's own
- * account, or null when this deployment has no way to reach it.
+ * The Stripe client a tenant's customer rewards are provisioned in: the
+ * brand's own account, or null when this deployment has no way to reach it.
  *
- * Only a single-tenant self-host qualifies — there STRIPE_SECRET_KEY IS
- * the brand's key. On hosted deployments (flat / revshare) it's
- * OpenPartner's own billing account, whose plan Checkout runs with
- * allow_promotion_codes: a reward minted there would be redeemable
- * against OpenPartner's plans, would never exist at the brand's
- * checkout, and would share one code namespace across every tenant. A
- * multi-tenant self-host has the same shape (one key, many brands).
+ *   - Single-tenant self-host: STRIPE_SECRET_KEY IS the brand's key.
+ *   - Hosted (flat / revshare): the account the brand connected through
+ *     the OpenPartner Stripe App, when the connection is healthy and grants
+ *     coupon + promotion-code writes (stripe-app.ts brandStripeForRewards).
+ *     NEVER STRIPE_SECRET_KEY there: that's OpenPartner's own billing
+ *     account, whose plan Checkout runs with allow_promotion_codes — a
+ *     reward minted there would be redeemable against OpenPartner's plans,
+ *     would never exist at the brand's checkout, and would share one code
+ *     namespace across every tenant.
+ *   - Multi-tenant self-host: one key, many brands — nothing to reach.
  *
- * There is no per-tenant brand Stripe connection today (Partner
- * .stripeConnectAccountId is a payout destination, not the brand). If
- * one is added, resolve it here and pass { stripeAccount } on each call.
+ * Partner.stripeConnectAccountId is a payout destination, not the brand,
+ * and is never used here.
  */
-export function rewardStripe(): Stripe | null {
-  if (getMode() !== 'selfhost' || getTenancyMode() !== 'single') return null;
-  return stripe;
+export async function rewardStripe(tenantId: string): Promise<Stripe | null> {
+  if (getMode() === 'selfhost') return getTenancyMode() === 'single' ? stripe : null;
+  return brandStripeForRewards(tenantId);
 }
 
 /**
@@ -66,8 +70,8 @@ export function rewardStripe(): Stripe | null {
  * Returns false when there's no Stripe target (nothing to collide with).
  * Throws on Stripe errors — the caller picks fail-open or fail-closed.
  */
-export async function codeExistsInStripe(code: string): Promise<boolean> {
-  const client = rewardStripe();
+export async function codeExistsInStripe(tenantId: string, code: string): Promise<boolean> {
+  const client = await rewardStripe(tenantId);
   if (!client) return false;
 
   const promos = await client.promotionCodes.list({ code, limit: 1 });
@@ -96,17 +100,19 @@ export async function codeExistsInStripe(code: string): Promise<boolean> {
  * without cross-referencing IDs.
  */
 export async function provisionCustomerReward(
+  tenantId: string,
   reward: CustomerReward,
   code: string,
   campaignName: string,
 ): Promise<ProvisionedReward | null> {
-  const client = rewardStripe();
-  if (!client) return null;
-
   const couponParams = toStripeCouponParams(reward, `OpenPartner — ${campaignName} (${code})`);
   if (!couponParams) return null;
 
   try {
+    // Inside the try: on hosted, reaching the brand's account can need a
+    // token refresh, and a failed one must not fail the mint.
+    const client = await rewardStripe(tenantId);
+    if (!client) return null;
     const coupon = await client.coupons.create(couponParams);
     const promo = await client.promotionCodes.create({
       promotion: { type: 'coupon', coupon: coupon.id },
@@ -138,10 +144,10 @@ export async function provisionCustomerReward(
  * means the customer gets the discount but the redemption doesn't
  * attribute (the OpenPartner Coupon lookup excludes deactivated rows).
  */
-export async function deactivateCustomerReward(stripePromotionCodeId: string): Promise<void> {
-  const client = rewardStripe();
-  if (!client) return;
+export async function deactivateCustomerReward(tenantId: string, stripePromotionCodeId: string): Promise<void> {
   try {
+    const client = await rewardStripe(tenantId);
+    if (!client) return;
     await client.promotionCodes.update(stripePromotionCodeId, { active: false });
   } catch (err) {
     console.error('[customer-rewards] deactivate promo failed', { stripePromotionCodeId, err });
@@ -212,21 +218,27 @@ function durationParams(
  * deployment. The admin Programs page words the reward editor from it,
  * so keep it in step with the provisioning gate in this file.
  *
- *   stripe        single-tenant self-host with STRIPE_SECRET_KEY set:
- *                 that key IS the brand's, so each partner code gets its
- *                 own Stripe Coupon + PromotionCode.
+ *   stripe        each partner code gets its own Stripe Coupon +
+ *                 PromotionCode in the brand's account: a single-tenant
+ *                 self-host with STRIPE_SECRET_KEY set (that key IS the
+ *                 brand's), or a hosted brand whose Stripe App connection
+ *                 is healthy and grants the writes.
  *   unconfigured  single-tenant self-host without a Stripe key: nothing
  *                 is provisioned until one is set.
- *   brand         hosted (flat / revshare) or multi-tenant: our key isn't
- *                 the brand's, so the brand creates the matching discount
- *                 in its own Stripe or checkout.
+ *   brand         hosted without a usable connection, or multi-tenant
+ *                 self-host: our key isn't the brand's, so the brand
+ *                 creates the matching discount in its own Stripe or
+ *                 checkout.
  *
  * Attribution doesn't depend on this — POST /coupons/redeem matches on
  * the code string alone.
  */
 export type CustomerRewardDelivery = 'stripe' | 'unconfigured' | 'brand';
 
-export function customerRewardDelivery(): CustomerRewardDelivery {
-  if (getMode() !== 'selfhost' || getTenancyMode() !== 'single') return 'brand';
-  return stripe ? 'stripe' : 'unconfigured';
+export async function customerRewardDelivery(tenantId: string): Promise<CustomerRewardDelivery> {
+  if (getMode() === 'selfhost') {
+    if (getTenancyMode() !== 'single') return 'brand';
+    return stripe ? 'stripe' : 'unconfigured';
+  }
+  return (await stripeAppRewardsAvailable(tenantId)) ? 'stripe' : 'brand';
 }

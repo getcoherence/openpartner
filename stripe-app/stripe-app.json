@@ -1,0 +1,71 @@
+{
+  "id": "dev.openpartner.attribution",
+  "version": "0.1.0",
+  "name": "OpenPartner",
+  "icon": "./openpartner_icon.png",
+  "permissions": [
+    {
+      "permission": "event_read",
+      "purpose": "Receive the checkout, invoice, refund and dispute events that credit your partners."
+    },
+    {
+      "permission": "checkout_session_read",
+      "purpose": "Read completed Checkout Sessions and Payment Link purchases to match them to the partner link the buyer clicked."
+    },
+    {
+      "permission": "customer_read",
+      "purpose": "Read a customer’s metadata to match their payments to the user your app identified."
+    },
+    {
+      "permission": "subscription_read",
+      "purpose": "Record new subscriptions for referred customers."
+    },
+    {
+      "permission": "invoice_read",
+      "purpose": "Record paid invoices for referred customers so partners earn commission on them, including the promo code used."
+    },
+    {
+      "permission": "charge_read",
+      "purpose": "Read refunds and disputed charges so commissions on refunded revenue are reversed or flagged."
+    },
+    {
+      "permission": "dispute_read",
+      "purpose": "Flag commissions on disputed payments for your review."
+    },
+    {
+      "permission": "promotion_code_read",
+      "purpose": "Match promotion codes used at checkout to your partners’ codes."
+    },
+    {
+      "permission": "promotion_code_write",
+      "purpose": "Create each partner’s customer-discount promotion code in your account, and deactivate it when the code is retired."
+    },
+    {
+      "permission": "coupon_read",
+      "purpose": "Check that a new partner code doesn’t collide with one of your own coupons."
+    },
+    {
+      "permission": "coupon_write",
+      "purpose": "Create the coupon behind each partner’s customer discount."
+    }
+  ],
+  "stripe_api_access_type": "oauth",
+  "distribution_type": "public",
+  "allowed_redirect_uris": [
+    "https://app.openpartner.dev/api/stripe-app/oauth/callback",
+    "http://localhost:5673/api/stripe-app/oauth/callback"
+  ],
+  "ui_extension": {
+    "views": [
+      {
+        "viewport": "settings",
+        "component": "AppSettings"
+      }
+    ],
+    "content_security_policy": {
+      "connect-src": null,
+      "image-src": null,
+      "purpose": ""
+    }
+  }
+}

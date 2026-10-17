@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { TABLES } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import { recordClickConversion, type ClickConversionResult } from '../conversion-ingest.js';
+import { RECORDED_FROM_STRIPE_DETAIL } from '../stripe-app.js';
 import {
   MAX_IP_ALLOWLIST,
   invalidAllowlistEntries,
@@ -86,6 +87,8 @@ function errorBody(result: Extract<ClickConversionResult, { ok: false }>) {
         eventId: result.eventId,
         detail: 'externalEventId was already used for a different click, userId, type, value or currency',
       };
+    case 'recorded_from_stripe':
+      return { error: result.error, detail: RECORDED_FROM_STRIPE_DETAIL };
   }
 }
 

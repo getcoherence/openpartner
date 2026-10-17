@@ -449,11 +449,13 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
 
 **Idempotency.** Always send \`externalEventId\`: your system's stable id for this one event (invoice id, order id, deal id + stage). A retry with the same key returns \`200\` with \`replayed: true\` and the original result, writing nothing. Reusing a key for a different userId, type, value or currency returns \`409 external_event_id_conflict\`. Keys are per tenant, up to 120 characters, and shared with \`POST /coupons/redeem\`.
 
-**Don't report a payment twice.** If your Stripe account also sends webhooks to this deployment (\`/webhooks/stripe\`, self-host), those payments are already recorded, keyed by the Stripe event id. Reporting the same payment here under your own invoice id records it a second time.`,
+**Don't report a payment twice.** If your Stripe account also sends webhooks to this deployment (\`/webhooks/stripe\`, self-host), those payments are already recorded, keyed by the Stripe event id. Reporting the same payment here under your own invoice id records it a second time.
+
+**Stripe connected (OpenPartner Cloud).** Once your Stripe account is connected through the OpenPartner Stripe App, Stripe invoices and Checkout payments are recorded from Stripe itself, keyed by the invoice or Checkout Session id. An \`externalEventId\` that is one of those ids (\`in_…\`, \`cs_live_…\`, \`cs_test_…\`) returns \`409 recorded_from_stripe\`: Stripe's record of the payment wins.`,
     access: { kind: 'admin', scope: 'events:write' },
     body: events.schema.openapi('RecordEventRequest'),
     responses: { 200: { description: 'Recorded (or replayed).', schema: S.EventResult } },
-    errors: { 409: ['external_event_id_conflict'] },
+    errors: { 409: ['external_event_id_conflict', 'recorded_from_stripe'] },
   });
 
   r.operation({
@@ -467,13 +469,13 @@ For senders that hold a click id but never saw an identify: a lender reporting a
 
 Send \`userId\` when you have your own id for the user: attribution then follows the program's model across every click that user is stitched to, as on \`POST /attribution/events\`. Without it the click's own synthetic user is used, and this click alone is credited. Events recorded for the user before this stitch are not backfilled; \`POST /attribution/identify\` does that.
 
-**Idempotency.** \`externalEventId\` is required. A retry with the same key returns \`200\` with \`replayed: true\` and the original result, even if the click has been flagged since. Reusing a key for a different click, userId, type, value or currency returns \`409 external_event_id_conflict\`. Keys share one namespace with \`POST /attribution/events\`, \`GET /postback\` and \`POST /coupons/redeem\`.
+**Idempotency.** \`externalEventId\` is required. A retry with the same key returns \`200\` with \`replayed: true\` and the original result, even if the click has been flagged since. Reusing a key for a different click, userId, type, value or currency returns \`409 external_event_id_conflict\`. Keys share one namespace with \`POST /attribution/events\`, \`GET /postback\` and \`POST /coupons/redeem\`. With your Stripe account connected, a Stripe invoice or Checkout Session id as the key returns \`409 recorded_from_stripe\`, as on \`POST /attribution/events\`.
 
 A click flagged by velocity limits or a revoked partner earns nothing: \`422 click_flagged\`.`,
     access: { kind: 'admin', scope: 'events:write' },
     body: conversions.conversionSchema.openapi('RecordConversionRequest'),
     responses: { 200: { description: 'Recorded (or replayed).', schema: S.ConversionResult } },
-    errors: { 404: ['click_not_found'], 409: ['external_event_id_conflict'], 422: ['click_flagged'] },
+    errors: { 404: ['click_not_found'], 409: ['external_event_id_conflict', 'recorded_from_stripe'], 422: ['click_flagged'] },
   });
 
   r.operation({
@@ -555,14 +557,14 @@ A click flagged by velocity limits or a revoked partner earns nothing: \`422 cli
     operationId: 'redeemCoupon',
     summary: 'Record a coupon redemption',
     description:
-      'Call from your checkout when a customer uses a partner code. Records the conversion and stitches the user to the partner, so their later events attribute too. `externalEventId` is required and works as on `POST /attribution/events` (same namespace).',
+      'Call from your checkout when a customer uses a partner code. Records the conversion and stitches the user to the partner, so their later events attribute too. `externalEventId` is required and works as on `POST /attribution/events` (same namespace). With your Stripe account connected, codes entered at Stripe Checkout are redeemed from Stripe, and a Stripe invoice or Checkout Session id as the key returns `409 recorded_from_stripe`.',
     access: { kind: 'admin', scope: 'events:write' },
     body: coupons.redeemSchema.openapi('RedeemCouponRequest'),
     responses: {
       201: { description: 'Recorded.', schema: S.CouponRedeemResult },
       200: { description: 'Replayed (`replayed: true`).', schema: S.CouponRedeemResult },
     },
-    errors: { 404: ['coupon_not_found'], 409: ['external_event_id_conflict'] },
+    errors: { 404: ['coupon_not_found'], 409: ['external_event_id_conflict', 'recorded_from_stripe'] },
   });
 
   // ------------------------------------------------------------- Commissions

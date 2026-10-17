@@ -5,6 +5,7 @@ import { TABLES, type EventRow } from '@openpartner/db';
 import { attributeEvent } from '../attribution.js';
 import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import { sameConversion, storedAttribution } from '../conversion-ingest.js';
+import { RECORDED_FROM_STRIPE_DETAIL, recordedFromStripe } from '../stripe-app.js';
 import { tenantOf } from '../tenancy.js';
 
 export const schema = z.object({
@@ -47,6 +48,11 @@ eventsRouter.post('/attribution/events', requireAuth, grantScope('events:write')
 
   const eventId = ulid();
   const { userId, type, value, currency, metadata, ts, externalEventId } = body.data;
+  // A Stripe invoice / Checkout Session the brand's connected Stripe account
+  // reports itself: Stripe's record of that payment wins (stripe-app.ts).
+  if (await recordedFromStripe(db, tenantId, externalEventId)) {
+    return res.status(409).json({ error: 'recorded_from_stripe', detail: RECORDED_FROM_STRIPE_DETAIL });
+  }
   const row = {
     id: eventId,
     tenantId,

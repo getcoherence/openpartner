@@ -1057,6 +1057,36 @@ export interface HostedBillingStateRow {
   updatedAt: Date;
 }
 
+/** Which OpenPartner Stripe App developer key issued a connection's tokens.
+ *  A refresh must use the same one. */
+export type StripeAppKeyMode = 'live' | 'test' | 'sandbox';
+
+/** Hosted-only sidecar: a brand's own Stripe account, connected through the
+ *  OpenPartner Stripe App (migration 20261017000000). Credentials — never
+ *  exported. At most one live row per tenant and per Stripe account. */
+export interface TenantStripeConnectionRow {
+  id: string;
+  tenantId: string;
+  stripeAccountId: string;
+  livemode: boolean;
+  keyMode: StripeAppKeyMode;
+  /** AES-GCM envelope (crypto.ts). Null once disconnected. */
+  refreshTokenEnc: string | null;
+  accessTokenEnc: string | null;
+  accessTokenExpiresAt: Date | null;
+  permissionsVersion: number;
+  permissionsGranted: string[] | null;
+  connectedByAdminId: string | null;
+  connectedAt: Date;
+  lastRefreshedAt: Date | null;
+  refreshFailedAt: Date | null;
+  refreshError: string | null;
+  lastEventAt: Date | null;
+  disconnectedAt: Date | null;
+  disconnectReason: 'admin' | 'deauthorized' | 'replaced' | null;
+  updatedAt: Date;
+}
+
 export interface StripeWebhookInboxRow {
   stripeEventId: string;
   type: string;

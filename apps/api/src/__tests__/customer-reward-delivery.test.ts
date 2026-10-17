@@ -13,7 +13,13 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db.js', () => ({ db: {}, appDb: {} }));
 
-const ENV_KEYS = ['OPENPARTNER_MODE', 'OPENPARTNER_TENANCY', 'STRIPE_SECRET_KEY'] as const;
+const ENV_KEYS = [
+  'OPENPARTNER_MODE',
+  'OPENPARTNER_TENANCY',
+  'STRIPE_SECRET_KEY',
+  'STRIPE_APP_CLIENT_ID',
+  'STRIPE_APP_SECRET_KEY',
+] as const;
 const saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 
 function setEnv(name: string, value: string | undefined) {
@@ -26,9 +32,13 @@ async function deliveryFor(mode: string, tenancy: string, stripeKey: string) {
   setEnv('OPENPARTNER_TENANCY', tenancy);
   // '' rather than unset: a developer's .env can't backfill an empty var.
   setEnv('STRIPE_SECRET_KEY', stripeKey);
+  // No Stripe App keys: a hosted tenant then has no connection to look up
+  // (stripe-app.test.ts covers a connected one against the database).
+  setEnv('STRIPE_APP_CLIENT_ID', '');
+  setEnv('STRIPE_APP_SECRET_KEY', '');
   vi.resetModules();
   const { customerRewardDelivery } = await import('../customer-rewards.js');
-  return customerRewardDelivery();
+  return customerRewardDelivery('tenant_delivery_test');
 }
 
 afterAll(() => {

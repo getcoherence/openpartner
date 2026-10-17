@@ -128,6 +128,7 @@ export const TABLES = {
   HostedFundingTransfer: 'HostedFundingTransfer',
   HostedFundingAuthorization: 'HostedFundingAuthorization',
   HostedBillingState: 'HostedBillingState',
+  TenantStripeConnection: 'TenantStripeConnection',
   StripeWebhookInbox: 'StripeWebhookInbox',
   PayoutReversal: 'PayoutReversal',
   CommissionAdjustment: 'CommissionAdjustment',

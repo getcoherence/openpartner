@@ -117,7 +117,7 @@ partnerCampaignsRouter.post('/partners/:id/programs', requireAuth, requireAdmin,
 });
 
 partnerCampaignsRouter.delete('/partners/:id/programs/:programId', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const deleted = await db(TABLES.PartnerProgram)
     .where({ partnerId: req.params.id, programId: req.params.programId })
     .del();
@@ -131,7 +131,7 @@ partnerCampaignsRouter.delete('/partners/:id/programs/:programId', requireAuth, 
     .whereNull('deactivatedAt')
     .select('id', 'code', 'stripePromotionCodeId');
   for (const c of coupons) {
-    if (c.stripePromotionCodeId) await deactivateCustomerReward(c.stripePromotionCodeId);
+    if (c.stripePromotionCodeId) await deactivateCustomerReward(tenantId, c.stripePromotionCodeId);
   }
   if (coupons.length > 0) {
     await db<CouponRow>(TABLES.Coupon)

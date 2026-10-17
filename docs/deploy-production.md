@@ -181,6 +181,12 @@ STRIPE_WEBHOOK_SECRET_CONNECT=whsec_BBB...    # Destination B
 
 Re-deploy via the DO UI ("Force Rebuild and Deploy").
 
+> **Brand Stripe accounts (optional, hosted).** Brands connecting their *own*
+> Stripe through the OpenPartner Stripe App use a third, separate endpoint
+> (`/api/webhooks/stripe-app`) in the app's **own developer account**, with
+> its own `STRIPE_APP_*` vars. Never add those events to Destinations A or B.
+> Setup: [stripe-app.md](stripe-app.md).
+
 ## 7. First-run install wizard
 
 Visit `https://app.openpartner.dev`. The portal will redirect to `/install`

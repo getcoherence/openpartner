@@ -7,6 +7,7 @@
 
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import { DEFAULT_TENANT_ID } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApp } from '../app.js';
 import { customerRewardDelivery } from '../customer-rewards.js';
@@ -31,7 +32,7 @@ describe.skipIf(skipIntegration)('GET /programs customerRewardDelivery', () => {
     const res = await request(app).get('/programs').set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.programs)).toBe(true);
-    expect(res.body.customerRewardDelivery).toBe(customerRewardDelivery());
+    expect(res.body.customerRewardDelivery).toBe(await customerRewardDelivery(DEFAULT_TENANT_ID));
     expect(res.body.customerRewardDelivery).not.toBe('brand');
   });
 
