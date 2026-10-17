@@ -30,8 +30,17 @@ export interface EventAttribution {
   /**
    * 'not_attributed' only appears on a replay (`replayed: true`) of an event
    * that didn't attribute the first time; which miss it was isn't stored.
+   * 'corrective': refund / chargeback / dispute_created / invoice_payment_failed —
+   * recorded, never attributed.
    */
-  status: 'attributed' | 'no_identity' | 'no_click' | 'outside_window' | 'already_attributed' | 'not_attributed';
+  status:
+    | 'attributed'
+    | 'no_identity'
+    | 'no_click'
+    | 'outside_window'
+    | 'already_attributed'
+    | 'not_attributed'
+    | 'corrective';
   model?: 'last_click' | 'first_click' | 'linear' | 'position';
   touches?: Array<{
     clickId: string;

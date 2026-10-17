@@ -23,6 +23,7 @@
 
 import type { Knex } from 'knex';
 import { TABLES, type EventRow } from '@openpartner/db';
+import { CORRECTIVE_EVENT_TYPES } from './attribution.js';
 import { CONFIG_KEYS, deleteConfig, getConfig, setConfig } from './config.js';
 import { requireStripe } from './stripe.js';
 import { getTenantBillingState } from './billing-plan.js';
@@ -123,6 +124,7 @@ export async function aggregateAttributedGmv(
 ): Promise<number> {
   const q = db<EventRow>(TABLES.Event)
     .whereIn('type', eventTypes)
+    .whereNotIn('type', [...CORRECTIVE_EVENT_TYPES])
     .where('ts', '<=', until)
     .whereExists((qb) => {
       qb.select(db.raw('1')).from(TABLES.Attribution).whereRaw('"Attribution"."eventId" = "Event"."id"');

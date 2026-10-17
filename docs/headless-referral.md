@@ -20,6 +20,7 @@ The same API also lets you run OpenPartner from your own admin dashboard or stor
  your signup page: SDK captures cref ── POST /attribution/identify ────▶ click ↔ user
                                    POST /attribution/events (signup)  ─▶
  friend pays        ──────────────▶ POST /attribution/events (invoice_paid) ▶ commission
+ friend is refunded ──────────────▶ POST /attribution/refunds         ──────▶ commission reversed / reduced
 ```
 
 ## 0. Before you start
@@ -61,7 +62,7 @@ curl -s -X POST $OP/api-keys/scoped -H "Authorization: Bearer $ADMIN" -H 'conten
 | `links:write` / `links:read` | `POST` / `GET /partners/{id}/links` |
 | `commissions:read` | `GET /partners/{id}/commissions` |
 | `payouts:read` | `GET /partners/{id}/payouts` |
-| `events:write` | `POST /attribution/events`, `POST /attribution/conversions`, `POST /coupons/redeem` |
+| `events:write` | `POST /attribution/events`, `POST /attribution/conversions`, `POST /attribution/refunds`, `POST /coupons/redeem` |
 
 The full table, generated from the routes, is in the API reference under **Authentication**. A scoped key acts on every partner in your tenant, so **your backend must decide which partner a request is for from its own session, never from a parameter the browser sends.**
 
@@ -109,7 +110,7 @@ curl -s -X POST $OP/programs -H "Authorization: Bearer $ADMIN" -H 'content-type:
 
 - **`shareOnNetwork: false`** keeps the program off the public marketplace. When the tenant is on the Network it defaults to `true`, and then a `marketplaceDescription` is required.
 - **`destinationUrl`** is where share links land. The router appends `?cref=<click id>`.
-- **`holdbackDays`** above 0 means a commission is **approved automatically** once it's that many days old, and paid by the next payout run. Set it to your refund window so refunds land before approval. With `0` or no holdback, nothing is approved until you call `POST /commissions/{id}/approve`. Use that if you want to review every commission.
+- **`holdbackDays`** above 0 means a commission is **approved automatically** once it's that many days old, and paid by the next payout run. Set it to your refund window so refunds land before approval (step 8). With `0` or no holdback, nothing is approved until you call `POST /commissions/{id}/approve`. Use that if you want to review every commission.
 - **Rules** are an array of sub-rules, each with `trigger` (`every` / `first` / `subsequent`), an optional `eventType`, and a `percent` or `fixed` amount. Scope each rule to an event type: a `fixed` rule with no `eventType` pays on every event, signups included.
 
 - **Slabs.** A sub-rule can pay more on bigger orders (`bands`: thresholds on the event's value) or as the partner grows (`tiers`: thresholds on their own revenue or conversions over a window). See `CommissionBands` and `CommissionTiers` in the API reference.
@@ -202,14 +203,12 @@ await op.identify(user.id);
 
 `identify()` calls `POST /attribution/identify`, which needs no API key and accepts any origin, so the SDK can call it from your site. It links the click to your user id, and attributes any events you already recorded for that user. Repeat calls for the same pair do nothing. Use the same `userId` everywhere: your stable internal id, not an email address.
 
-Calling it after login as well as signup stitches a customer who clicked on one device and signed up on another.
+Calling it after login as well as signup stitches a customer who clicked on one device and signed up on another. A later stitch only attributes events that haven't attributed yet: an event that already credited a partner keeps that credit, so calling `identify()` on every login can't pay twice.
 
 Where capture can lose a referral:
 - **`localStorage` is per origin.** If the link lands on `www.example.com` and signup happens on `app.example.com`, the signup page can't see the stored `cref`. Point `destinationUrl` at the origin where signup happens, or pass the `cref` along yourself.
 - **The router's `_cref` cookie isn't yours.** On OpenPartner Cloud it's set on the router's domain, so your site can't read it. The `?cref=` parameter on the landing URL is what counts.
 - **Safari may clear storage** that scripts wrote, after about seven days without a visit. For long gaps between click and signup, also save the `cref` on your side when you first see it, in a first-party cookie your server sets or on an anonymous visitor record.
-
-> **TODO (fix not merged as of 2026-10-16):** today, stitching a *second* click to a user whose events are already attributed can credit those events again, a duplicate commission. Until that fix ships, call `identify()` at signup only. Remember that a holdback **auto-approves** (step 2). To catch a doubled commission before it's paid, either review the accrued queue (`GET /commissions?status=accrued`) within the holdback, or set `holdbackDays: 0` and approve by hand. Update this section when the fix merges.
 
 If you'd rather keep all OpenPartner calls on your server, read `op.getReferral()` in the browser, send it with your signup form, and call identify from your backend instead. Two cautions. From your server, every stitch counts against your backend IP's identify limit (120 per minute). And a failed stitch must never fail the signup: log it and move on.
 
@@ -252,9 +251,47 @@ For example, if you track clicks, signups, leads, demos and paid customers: clic
 - A `ts` you send must be UTC and end in `Z` (`2026-10-16T10:00:00Z`). An offset like `+00:00`, the default from Python's `isoformat()`, gets `400 invalid_body`. Omit `ts` to use the time OpenPartner receives the event.
 - Send events from a job queue, not inline in your request handler. On `429`, or on a network error, retry later with the same `externalEventId`.
 - An event for a user with no stitched click returns `"status": "no_identity"` and is kept. If the user is stitched later, earlier events are attributed then (`backfilledAttributions` on the identify response).
-- **Refunds.** This endpoint doesn't take negative values. Reverse the commission with `POST /commissions/{id}/reverse` (admin key). A holdback as long as your refund window means most refunds land before anything is approved.
+- **Refunds** go to `POST /attribution/refunds` (step 8). This endpoint doesn't take negative values, and a `refund` or `chargeback` event sent here is recorded but reverses nothing (`"status": "corrective"`).
 
-## 8. Get webhooks in your backend
+## 8. Report refunds and chargebacks
+
+When you refund a payment, in full or in part, or lose a chargeback, report it with `POST /attribution/refunds` and the same scoped key (`events:write`). Point at the conversion by the `externalEventId` you reported it with:
+
+```bash
+# Part of a payment (amount in major units):
+curl -s -X POST $OP/attribution/refunds -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
+  -d '{"conversionExternalEventId":"in_1001","amount":19.00,"reason":"downgraded","externalEventId":"re_2001"}'
+# → { "ok": true, "fullRefund": false, "refundedAmount": "19.00", "actionRequired": false,
+#     "commissions": [ { "commissionId": "...", "originalAmount": "9.80", "keptAmount": "6.00",
+#                        "status": "reduced", "currentCommissionId": "...", ... } ] }
+
+# All of it, or whatever is left (no amount). A lost chargeback is "kind": "chargeback":
+curl -s -X POST $OP/attribution/refunds -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
+  -d '{"conversionExternalEventId":"in_1001","kind":"chargeback","externalEventId":"dp_3001"}'
+```
+
+Or send `conversionEventId`, the `eventId` OpenPartner returned for the conversion. Exactly one of the two. The refund is recorded as its own event, with a negative value. It's never attributed, and it never counts as GMV.
+
+What happens to the conversion's commissions. Each one ends up worth its original amount times the share of the payment the customer kept:
+
+| Commission was | What happens | `status` in the response |
+| --- | --- | --- |
+| `accrued` or `approved` | Reversed (`commission.reversed`, `reason: "refund"` or `"chargeback"`, plus the partner's postback). On a partial refund, a replacement commission for the kept amount follows (`commission.accrued` with `replacesCommissionId`). It keeps the original's status and accrual date, so its holdback doesn't restart. | `reversed`, or `reduced` with `currentCommissionId` |
+| `paid` | Stays paid: the partner has the money. A negative adjustment records what they hold for refunded revenue. **OpenPartner doesn't deduct it from later payouts.** Recover it with the customer yourself, for example by reducing their next manual payout. | `clawback_recorded`, with `clawbackAmount` |
+| In a payout right now | Nothing changes. Retry the same request, with the same `externalEventId`, once the payout settles. | `held_in_transfer` |
+
+`actionRequired: true` means at least one commission is `clawback_recorded` or `held_in_transfer`.
+
+- **Partial refunds add up.** Refunds of 30 and then 20 on a 100 payment leave each commission at 50% of its original amount. A refund larger than what's left gets `422 refund_exceeds_remaining`, with `remaining`. Once nothing is left, `422 nothing_to_refund`.
+- The share applies to every commission on the conversion, a `fixed` bounty included: refunding 30% of an order takes 30% of its bounty.
+- A conversion with no `value` (a signup) can only be refunded in full. Sending an `amount` gets `422 partial_refund_needs_value`.
+- **Idempotency.** `externalEventId` is required: your refund or credit-note id. A retry with the same key returns `200` with `"replayed": true` and records nothing new. Reusing it for a different conversion, kind or amount gets `409 external_event_id_conflict`. Keys share the namespace of step 7.
+- **Report a chargeback once it's final**, not when the dispute opens: it reverses commissions just as a refund does.
+- Refunds of payments the self-host Stripe webhook recorded are handled from Stripe's `charge.refunded` already. Don't report those here too.
+- If the refund arrives before the customer's click is stitched, it's kept. When identify later attributes the payment, its new commissions are cut by the refund straight away.
+- A holdback as long as your refund window (step 2) still helps: refunds inside it reverse unpaid commissions, rather than leaving a clawback to collect.
+
+## 9. Get webhooks in your backend
 
 Subscribe an endpoint (admin key, or a scoped key with `webhooks:write`, which can only subscribe and unsubscribe; listing, testing and redelivering need the admin key):
 
@@ -286,8 +323,9 @@ function verifyOpenPartner(rawBody, headers, secret) {
 - **No automatic retries.** A non-2xx answer, a redirect, or no answer within 10 seconds marks a delivery failed. Find failures with `GET /webhooks/{id}/deliveries` and resend with `POST /webhooks/{id}/deliveries/{deliveryId}/retry`.
 - Treat webhooks as a nudge to refresh. The API is the record: on `commission.*`, re-read the partner's dashboard rather than adding the webhook's amount to a running total.
 - `POST /webhooks/{id}/test?event=commission.accrued` sends a signed sample with the real payload shape.
+- A partial refund (step 8) arrives as `commission.reversed` with `replacementCommissionId`, then `commission.accrued` for that replacement with `replacesCommissionId`. Re-reading the dashboard handles it: the reversed original drops out and the replacement counts.
 
-## 9. CRM recipe: Zoho CRM or HubSpot
+## 10. CRM recipe: Zoho CRM or HubSpot
 
 ### Deal stage → conversion event
 
@@ -340,9 +378,63 @@ Content-Type: application/json
 
 CRM workflows retry, and a deal can be moved back and forth. Because the `externalEventId` is the deal id plus the stage, each paid stage is counted once.
 
+### Deal refunded → refund
+
+When the CRM records a refund, a credit note or a lost deal after payment, send it to `POST /attribution/refunds` with the same `events:write` key. Reference the conversion by the `externalEventId` you sent from the deal-stage workflow above, so build it the same way:
+
+```http
+POST https://app.openpartner.dev/api/t/acme/attribution/refunds
+Authorization: Bearer op_<events:write key>
+Content-Type: application/json
+
+{ "conversionExternalEventId": "crm:<deal id>:closed_won", "amount": <Refunded amount>,
+  "reason": "<Refund reason>", "externalEventId": "crm:<deal id>:refund:<refund or credit note id>" }
+```
+
+Leave `amount` out to refund the whole deal. Send `"kind": "chargeback"` for a lost chargeback.
+
+- **Zoho CRM:** a second Workflow Rule, for example on Deals when Stage changes to Refunded, or on Credit Notes if you use Zoho Books, with a Deluge function like the one above:
+
+  ```
+  deal = zoho.crm.getRecordById("Deals", dealId);
+  payload = Map();
+  payload.put("conversionExternalEventId", "zoho:" + deal.get("id") + ":closed_won");
+  payload.put("amount", deal.get("Refunded_Amount"));
+  payload.put("reason", deal.get("Refund_Reason"));
+  payload.put("externalEventId", "zoho:" + deal.get("id") + ":refund:" + deal.get("Refund_ID"));
+  response = invokeurl
+  [
+    url: "https://app.openpartner.dev/api/t/acme/attribution/refunds"
+    type: POST
+    parameters: payload.toString()
+    headers: {"Authorization": "Bearer " + openpartnerKey, "Content-Type": "application/json"}
+  ];
+  ```
+
+- **HubSpot:** a workflow on the deal's refund property (or a deal stage such as Refunded) with a custom code action:
+
+  ```js
+  exports.main = async (event, callback) => {
+    const { hs_object_id, refund_amount, refund_id } = event.inputFields;
+    const res = await fetch('https://app.openpartner.dev/api/t/acme/attribution/refunds', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.OPENPARTNER_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conversionExternalEventId: `hubspot:${hs_object_id}:closedwon`,
+        ...(refund_amount ? { amount: Number(refund_amount) } : {}),
+        externalEventId: `hubspot:${hs_object_id}:refund:${refund_id}`,
+      }),
+    });
+    const body = await res.json();
+    callback({ outputFields: { openpartnerStatus: res.status, openpartnerActionRequired: String(body.actionRequired ?? '') } });
+  };
+  ```
+
+Key the refund on its own id (refund or credit note), not only on the deal. Two refunds of one deal are then two refunds, while the workflow's own retries of one refund are replays. If `actionRequired` comes back `true`, flag the deal for someone: the partner was already paid (`clawback_recorded`), or a payout was in flight (`held_in_transfer`; re-run the workflow later).
+
 ### Webhooks → CRM fields
 
-CRMs can't check an HMAC signature themselves, so put a small relay in between. It verifies the signature (section 8), maps `data.partnerId` to the CRM record, and writes absolute values read back from the API:
+CRMs can't check an HMAC signature themselves, so put a small relay in between. It verifies the signature (section 9), maps `data.partnerId` to the CRM record, and writes absolute values read back from the API:
 
 ```js
 // On any commission.* or payout.created webhook (signature verified):
@@ -382,6 +474,7 @@ For an operator dashboard or storefront, the same API covers the admin side (adm
 | Find partners | `GET /partners?q=` (name/email search), `?email=` (exact), cursor-paginated (`partners:read`) |
 | Bulk-load partners | `POST /import/partners-csv` (`partners:write`) |
 | Review commissions | `GET /commissions?status=accrued` (`commissions:read`), `POST /commissions/{id}/approve`, `.../reverse` |
+| Refunds and chargebacks | `POST /attribution/refunds` (`events:write`) |
 | Pay partners | `POST /payouts/run`, `POST /payouts/{id}/confirm` (manual rail) |
 | Coupon-code attribution | `GET/POST /partners/{id}/coupons`, `POST /coupons/redeem` (`events:write`) |
 | Conversions reported by a click id (a lender, CRM or affiliate network) | `POST /attribution/conversions` (`events:write`), or the `GET /postback` URL on Admin → Integrations |
@@ -396,3 +489,5 @@ These are tracked as follow-ups. None of them is available today:
 - **Per-key rate limits.** Today the limit is per client IP (step 5).
 - **Turning off portal sign-in for headless partners.** Today any active partner can request a sign-in link (step 3).
 - **Read helpers in the server SDK** (dashboard, commissions, payouts). Today the SDK covers `trackEvent` and `identify`; use plain HTTP for reads, as the sample does.
+- **Netting refund clawbacks off later payouts.** A refund of an already-paid commission is recorded (`clawback_recorded`, step 8) but not deducted automatically.
+- **A refund helper in the server SDK.** Use plain HTTP for `POST /attribution/refunds`.

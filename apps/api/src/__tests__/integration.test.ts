@@ -728,6 +728,297 @@ describe.skipIf(skipIntegration)('audit safe-fixes', () => {
   });
 });
 
+describe.skipIf(skipIntegration)('backlog replay never double-attributes an event', () => {
+  // Regression: a new stitch (identify) or an unflag replays the user's
+  // backlog through attributeEvent. Attribution is unique on
+  // (eventId, model, clickId), so an event that was ALREADY attributed
+  // gained a second last_click row at weight 1 — plus a full commission —
+  // whenever the replay picked a different winning click. One conversion
+  // paid two partners 100% each.
+  const DAY = 24 * 60 * 60 * 1000;
+
+  async function setup(clickBFlag: string | null = null) {
+    const mkPartner = async (name: string) =>
+      (await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email: `${name}-${ulid()}@x.com`, name })).body.id as string;
+    const partnerA = await mkPartner('Desktop');
+    const partnerB = await mkPartner('Phone');
+    const programId = (
+      await request(app).post('/programs').set('Authorization', `Bearer ${ADMIN_KEY}`).send({
+        name: 'Backlog', commissionRule: { type: 'percent', value: 20 }, destinationUrl: 'https://example.com/signup',
+      })
+    ).body.id as string;
+    const mkClick = async (partnerId: string, ts: Date, fraudFlag: string | null) => {
+      const linkId = (
+        await request(app).post(`/partners/${partnerId}/links`).set('Authorization', `Bearer ${ADMIN_KEY}`).send({ linkKey: `bl_${ulid()}`, programId })
+      ).body.id as string;
+      const id = ulid();
+      await db(TABLES.Click).insert({
+        id, tenantId: DEFAULT_TENANT_ID, linkId, partnerId, programId,
+        landingUrl: 'https://example.com/signup', ipHash: 'h', userAgent: 't', referer: null, fraudFlag, ts,
+      });
+      return id;
+    };
+    // Desktop click (A) three days ago; phone click (B) two days ago — B is
+    // the true last click before a conversion one day ago.
+    const clickA = await mkClick(partnerA, new Date(Date.now() - 3 * DAY), null);
+    const clickB = await mkClick(partnerB, new Date(Date.now() - 2 * DAY), clickBFlag);
+    return { partnerA, partnerB, clickA, clickB };
+  }
+
+  async function convert(userId: string) {
+    const res = await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId, type: 'invoice_paid', value: 100, currency: 'USD', ts: new Date(Date.now() - DAY).toISOString() });
+    expect(res.status).toBe(200);
+    return res.body as { eventId: string; attribution: { status: string } };
+  }
+
+  it('identify: a cross-device click stitched after the conversion does not add a second 100% attribution', async () => {
+    const { partnerA, partnerB, clickA, clickB } = await setup();
+    const userId = `xdev_${ulid()}`;
+
+    // Desktop session: stitch A, convert → A earns 20% of 100.
+    await request(app).post('/attribution/identify').send({ cref: clickA, userId });
+    const event = await convert(userId);
+    expect(event.attribution.status).toBe('attributed');
+
+    // The paid ledger must survive the replay untouched.
+    await db(TABLES.Commission).where({ partnerId: partnerA }).update({ status: 'paid', paidAt: new Date() });
+
+    // Later the user logs in on the phone: B is a NEW stitch, and its click
+    // sits inside the window, before the conversion.
+    const stitch = await request(app).post('/attribution/identify').send({ cref: clickB, userId });
+    expect(stitch.status).toBe(200);
+    expect(stitch.body.firstStitch).toBe(true);
+    expect(stitch.body.backfilledAttributions).toBe(0);
+
+    const attributions = await db(TABLES.Attribution).where({ eventId: event.eventId });
+    expect(attributions).toHaveLength(1);
+    expect(attributions[0]!.partnerId).toBe(partnerA);
+    expect(await db(TABLES.Commission).where({ partnerId: partnerB })).toHaveLength(0);
+    const paid = await db(TABLES.Commission).where({ partnerId: partnerA });
+    expect(paid).toHaveLength(1);
+    expect(paid[0]!.status).toBe('paid');
+    expect(Number(paid[0]!.amount)).toBe(20);
+  });
+
+  it('identify: an event that arrived before any stitch is still backfilled', async () => {
+    // The replay exists for this case — the guard must not block it.
+    const { partnerB, clickB } = await setup();
+    const userId = `late_${ulid()}`;
+    const event = await convert(userId);
+    expect(event.attribution.status).toBe('no_identity');
+
+    const stitch = await request(app).post('/attribution/identify').send({ cref: clickB, userId });
+    expect(stitch.body.backfilledAttributions).toBe(1);
+    const attributions = await db(TABLES.Attribution).where({ eventId: event.eventId });
+    expect(attributions).toHaveLength(1);
+    expect(attributions[0]!.partnerId).toBe(partnerB);
+  });
+
+  it('unflag: an event whose commission is already paid is not re-attributed to the unflagged click', async () => {
+    // fraud-review drops only ACCRUED attributions before replaying, so a
+    // paid one stays — and the replay used to add the unflagged click
+    // beside it at weight 1.
+    const { partnerA, partnerB, clickA, clickB } = await setup('velocity');
+    const userId = `unflag_${ulid()}`;
+    await request(app).post('/attribution/identify').send({ cref: clickA, userId });
+    await request(app).post('/attribution/identify').send({ cref: clickB, userId });
+    const event = await convert(userId);
+    expect(event.attribution.status).toBe('attributed'); // B is flagged → A wins
+    await db(TABLES.Commission).where({ partnerId: partnerA }).update({ status: 'paid', paidAt: new Date() });
+
+    const unflag = await request(app).post(`/clicks/${clickB}/unflag`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(unflag.status).toBe(200);
+    expect(unflag.body.reattributedEvents).toBe(0);
+
+    const attributions = await db(TABLES.Attribution).where({ eventId: event.eventId });
+    expect(attributions).toHaveLength(1);
+    expect(attributions[0]!.partnerId).toBe(partnerA);
+    expect(await db(TABLES.Commission).where({ partnerId: partnerB })).toHaveLength(0);
+  });
+
+  it('two concurrent stitches for one user attribute an unattributed event once', async () => {
+    // Two devices log in at once. Each replay runs in its own request
+    // transaction and, unserialised, sees the event unattributed (the other's
+    // Identity and Attribution are uncommitted) and inserts its own winner.
+    const { attributeBacklogForUser } = await import('../attribution.js');
+    const { clickA, clickB } = await setup();
+    const userId = `race_${ulid()}`;
+    const event = await convert(userId);
+    expect(event.attribution.status).toBe('no_identity');
+
+    const first = await db.transaction();
+    const second = await db.transaction();
+    try {
+      await first(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId: clickA, userId });
+      await second(TABLES.Identity).insert({ id: ulid(), tenantId: DEFAULT_TENANT_ID, clickId: clickB, userId });
+      expect(await attributeBacklogForUser(first, userId)).toBe(1);
+
+      let settled = false;
+      const inFlight = attributeBacklogForUser(second, userId).then((n) => {
+        settled = true;
+        return n;
+      });
+      // Room to either block on the event lock (fixed) or race past it.
+      await new Promise((r) => setTimeout(r, 300));
+      expect(settled).toBe(false);
+
+      await first.commit();
+      expect(await inFlight).toBe(0);
+      await second.commit();
+    } finally {
+      if (!first.isCompleted()) await first.rollback();
+      if (!second.isCompleted()) await second.rollback();
+    }
+
+    expect(await db(TABLES.Attribution).where({ eventId: event.eventId })).toHaveLength(1);
+  });
+});
+
+describe.skipIf(skipIntegration)('corrective events are never attributed', () => {
+  // Regression: the Stripe webhook records refunds / disputes / failed
+  // payments with a NEGATIVE value and deliberately never attributes them,
+  // so they have no Attribution row — which is exactly what the backlog
+  // replay selects. A later stitch (identify) or unflag then ran them
+  // through attributeEvent: a percent rule accrued a negative commission (a
+  // second clawback on top of the refund's reversal) and a fixed rule paid a
+  // full bounty on a refund.
+  const DAY = 24 * 60 * 60 * 1000;
+  const RULES = [
+    { label: 'percent', rule: { type: 'percent', value: 20 }, invoiceCommission: 20 },
+    { label: 'fixed', rule: { type: 'fixed', value: 50 }, invoiceCommission: 50 },
+  ] as const;
+
+  async function setup(commissionRule: (typeof RULES)[number]['rule'], clickBFlag: string | null = null) {
+    const mkPartner = async (name: string) =>
+      (await request(app).post('/partners').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ email: `${name}-${ulid()}@x.com`, name })).body.id as string;
+    const partnerA = await mkPartner('Original');
+    const partnerB = await mkPartner('Later');
+    const programId = (
+      await request(app).post('/programs').set('Authorization', `Bearer ${ADMIN_KEY}`).send({
+        name: 'Corrective', commissionRule, destinationUrl: 'https://example.com/signup',
+      })
+    ).body.id as string;
+    const mkClick = async (partnerId: string, ts: Date, fraudFlag: string | null) => {
+      const linkId = (
+        await request(app).post(`/partners/${partnerId}/links`).set('Authorization', `Bearer ${ADMIN_KEY}`).send({ linkKey: `ce_${ulid()}`, programId })
+      ).body.id as string;
+      const id = ulid();
+      await db(TABLES.Click).insert({
+        id, tenantId: DEFAULT_TENANT_ID, linkId, partnerId, programId,
+        landingUrl: 'https://example.com/signup', ipHash: 'h', userAgent: 't', referer: null, fraudFlag, ts,
+      });
+      return id;
+    };
+    const clickA = await mkClick(partnerA, new Date(Date.now() - 4 * DAY), null);
+    const clickB = await mkClick(partnerB, new Date(Date.now() - 3 * DAY), clickBFlag);
+    return { partnerA, partnerB, clickA, clickB };
+  }
+
+  // Written the way the webhook writes it: a raw Event row, no attributeEvent.
+  async function insertEvent(userId: string, type: string, value: number, ts: Date) {
+    const id = ulid();
+    await db(TABLES.Event).insert({
+      id, tenantId: DEFAULT_TENANT_ID, userId, type, value: value.toFixed(2), currency: 'USD',
+      externalEventId: null, metadata: {}, ts,
+    });
+    return id;
+  }
+
+  it.each(RULES)('identify: a refund recorded before the stitch is not backfilled ($label rule)', async ({ rule, invoiceCommission }) => {
+    const { partnerA, clickA } = await setup(rule);
+    const userId = `refund_${ulid()}`;
+    const invoiceId = await insertEvent(userId, 'invoice_paid', 100, new Date(Date.now() - 2 * DAY));
+    const refundId = await insertEvent(userId, 'refund', -100, new Date(Date.now() - DAY));
+
+    const stitch = await request(app).post('/attribution/identify').send({ cref: clickA, userId });
+    expect(stitch.status).toBe(200);
+    expect(stitch.body.firstStitch).toBe(true);
+    // The real conversion still backfills — the guard only skips corrective types.
+    expect(stitch.body.backfilledAttributions).toBe(1);
+    expect(await db(TABLES.Attribution).where({ eventId: invoiceId })).toHaveLength(1);
+
+    expect(await db(TABLES.Attribution).where({ eventId: refundId })).toHaveLength(0);
+    const commissions = await db(TABLES.Commission).where({ partnerId: partnerA });
+    expect(commissions).toHaveLength(1);
+    expect(Number(commissions[0]!.amount)).toBe(invoiceCommission);
+  });
+
+  it.each(RULES)('identify: a new device stitched after a refund does not claw back or pay again ($label rule)', async ({ rule, invoiceCommission }) => {
+    const { partnerA, partnerB, clickA, clickB } = await setup(rule);
+    const userId = `xdev_refund_${ulid()}`;
+
+    // Desktop: stitch A, convert (attributed live), then a full refund
+    // reverses that commission and records the refund Event unattributed.
+    await request(app).post('/attribution/identify').send({ cref: clickA, userId });
+    const convert = await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId, type: 'invoice_paid', value: 100, currency: 'USD', ts: new Date(Date.now() - 2 * DAY).toISOString() });
+    expect(convert.body.attribution.status).toBe('attributed');
+    await db(TABLES.Commission).where({ partnerId: partnerA }).update({ status: 'reversed' });
+    const refundId = await insertEvent(userId, 'refund', -100, new Date(Date.now() - DAY));
+
+    // Phone login stitches B — the first stitch for that click replays the backlog.
+    const stitch = await request(app).post('/attribution/identify').send({ cref: clickB, userId });
+    expect(stitch.body.firstStitch).toBe(true);
+    expect(stitch.body.backfilledAttributions).toBe(0);
+
+    expect(await db(TABLES.Attribution).where({ eventId: refundId })).toHaveLength(0);
+    expect(await db(TABLES.Commission).where({ partnerId: partnerB })).toHaveLength(0);
+    const original = await db(TABLES.Commission).where({ partnerId: partnerA });
+    expect(original).toHaveLength(1);
+    expect(original[0]!.status).toBe('reversed');
+    expect(Number(original[0]!.amount)).toBe(invoiceCommission);
+  });
+
+  it('identify: disputes and failed payments are skipped as well', async () => {
+    const { clickA } = await setup(RULES[1].rule);
+    const userId = `corrective_${ulid()}`;
+    const ids = [
+      await insertEvent(userId, 'refund', -100, new Date(Date.now() - DAY)),
+      await insertEvent(userId, 'dispute_created', -100, new Date(Date.now() - DAY)),
+      await insertEvent(userId, 'invoice_payment_failed', -100, new Date(Date.now() - DAY)),
+    ];
+
+    const stitch = await request(app).post('/attribution/identify').send({ cref: clickA, userId });
+    expect(stitch.body.backfilledAttributions).toBe(0);
+    expect(await db(TABLES.Attribution).whereIn('eventId', ids)).toHaveLength(0);
+    expect(await db(TABLES.Commission)).toHaveLength(0);
+  });
+
+  it('unflag: replaying the backlog skips a refund', async () => {
+    const { partnerB, clickB } = await setup(RULES[0].rule, 'velocity');
+    const userId = `unflag_refund_${ulid()}`;
+    await request(app).post('/attribution/identify').send({ cref: clickB, userId });
+    const refundId = await insertEvent(userId, 'refund', -100, new Date(Date.now() - DAY));
+
+    const unflag = await request(app).post(`/clicks/${clickB}/unflag`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(unflag.status).toBe(200);
+    expect(unflag.body.reattributedEvents).toBe(0);
+    expect(await db(TABLES.Attribution).where({ eventId: refundId })).toHaveLength(0);
+    expect(await db(TABLES.Commission).where({ partnerId: partnerB })).toHaveLength(0);
+  });
+
+  it('POST /attribution/events records a merchant-sent refund without attributing it', async () => {
+    const { partnerA, clickA } = await setup(RULES[1].rule);
+    const userId = `api_refund_${ulid()}`;
+    await request(app).post('/attribution/identify').send({ cref: clickA, userId });
+
+    const res = await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId, type: 'refund', value: 100, currency: 'USD', ts: new Date(Date.now() - DAY).toISOString() });
+    expect(res.status).toBe(200);
+    expect(res.body.attribution.status).toBe('corrective');
+    expect(await db(TABLES.Event).where({ id: res.body.eventId })).toHaveLength(1);
+    expect(await db(TABLES.Attribution).where({ eventId: res.body.eventId })).toHaveLength(0);
+    expect(await db(TABLES.Commission).where({ partnerId: partnerA })).toHaveLength(0);
+  });
+});
+
 describe.skipIf(skipIntegration)('server-to-server ingest routes reject partner principals', () => {
   // Regression: /coupons/redeem and /clicks are admin-or-scoped-key ingest
   // routes (grantScope + requireAdmin, same as /attribution/events). A

@@ -5,9 +5,7 @@ import { ulid } from 'ulid';
 import {
   DEFAULT_TENANT_ID,
   TABLES,
-  type AttributionRow,
   type ClickRow,
-  type CommissionRow,
   type CouponRow,
   type EventRow,
   type IdentityRow,
@@ -16,7 +14,7 @@ import {
   type TenantRow,
 } from '@openpartner/db';
 import { appDb, db } from '../db.js';
-import { attributeEvent } from '../attribution.js';
+import { attributeEvent, CORRECTIVE_EVENT_TYPES } from '../attribution.js';
 import { clickUserId } from '../conversion-ingest.js';
 import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFromStripeSub } from './billing.js';
 import {
@@ -29,10 +27,17 @@ import { applyWhiteLabelFromSubscription, subscriptionHasWhiteLabel, whiteLabelP
 import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
 import { handleFundingEvent, InboxEventHeldError } from '../funding/webhook.js';
 import { mirrorHostedBillingState, type MirroredSubscriptionStatus } from '../billing-plan.js';
-import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
 import { getMode } from '../stripe.js';
 import { getTenancyMode } from '../tenancy.js';
-import { dispatchCommissionEvents } from '../commission-events.js';
+import {
+  announceRefund,
+  applyRefund,
+  lockConversions,
+  reapplyRecordedRefunds,
+  refundCounts,
+  type RefundAnnouncements,
+  type RefundedShare,
+} from '../refunds.js';
 
 const stripeKey = process.env.STRIPE_SECRET_KEY;
 
@@ -232,10 +237,10 @@ stripeWebhookRouter.post(
       return res.json({ ok: true, skipped: event.type, reason: 'unresolved_tenant' });
     }
 
-    // Commissions a full refund reversed inside the transaction below.
-    // commission.reversed fires only once runInTenant has committed, so a
+    // What a refund did to commissions inside the transaction below. The
+    // commission.* webhooks fire only once runInTenant has committed, so a
     // rollback never announces a reversal that didn't happen.
-    let reversedCommissions: CommissionRow[] = [];
+    let refunds: NonNullable<MappedEvent['refund']>[] = [];
     const result = await runInTenant(tenantId, async (trx) => {
       const connectResult = await handleConnectEvent(trx, event!, tenantId);
       if (connectResult) return { connect: connectResult };
@@ -256,19 +261,17 @@ stripeWebhookRouter.post(
       // two: the signup, then its revenue.
       const conversions = mapped === null ? [] : Array.isArray(mapped) ? mapped : [mapped];
       if (conversions.length === 0) return { skipped: event!.type };
-      reversedCommissions = conversions.flatMap((m) => m.reversedCommissions ?? []);
+      refunds = conversions.flatMap((m) => (m.refund ? [m.refund] : []));
 
       const results = [];
       for (const m of conversions) results.push(await recordMappedEvent(trx, tenantId, event!, m));
       return results.length === 1 ? results[0]! : { ...results[0]!, events: results };
     });
 
-    void dispatchCommissionEvents(tenantId, 'commission.reversed', reversedCommissions, { reason: 'refund' });
+    for (const r of refunds) void announceRefund(tenantId, r.announce, { kind: 'refund', refundEventId: r.refundEventId });
     res.json({ ok: true, ...result });
   },
 );
-
-const CORRECTIVE_EVENT_TYPES = new Set(['refund', 'dispute_created', 'invoice_payment_failed']);
 
 /**
  * Insert one mapped Event and attribute it.
@@ -285,7 +288,7 @@ async function recordMappedEvent(
   event: Stripe.Event,
   mapped: MappedEvent,
 ): Promise<Record<string, unknown>> {
-  const eventId = ulid();
+  const eventId = mapped.id ?? ulid();
   const externalEventId = mapped.externalEventId ?? event.id;
   const inserted = await trx<EventRow>(TABLES.Event)
     .insert({
@@ -311,9 +314,8 @@ async function recordMappedEvent(
   }
 
   // Corrective events (refund, dispute, payment_failed) are recorded for
-  // the audit trail but don't drive new attribution rows — handling those
-  // is done in mapStripeEvent before insertion (e.g. flipping the source
-  // commissions to 'reversed').
+  // the audit trail but don't drive new attribution rows — a refund's
+  // commissions were already handled in mapStripeEvent (applyRefund).
   if (CORRECTIVE_EVENT_TYPES.has(mapped.type)) {
     return { eventId, corrective: mapped.type };
   }
@@ -925,10 +927,12 @@ interface MappedEvent {
   metadata?: Record<string, unknown>;
   /** Idempotency key. Defaults to the Stripe event id. */
   externalEventId?: string;
-  /** Rows a full refund flipped to 'reversed'. Not persisted on the
-   *  Event; the webhook handler fires commission.reversed for them
-   *  after commit. */
-  reversedCommissions?: CommissionRow[];
+  /** The Event's id, when it had to be known before insertion (a refund's
+   *  clawbacks and replacement commissions name it). Defaults to a new one. */
+  id?: string;
+  /** What a refund did to commissions. Not persisted on the Event; the
+   *  webhook handler announces it after commit. */
+  refund?: { refundEventId: string; announce: RefundAnnouncements };
 }
 
 // invoice.billing_reason values for invoices after a subscription's first.
@@ -1117,14 +1121,6 @@ async function mapStripeEvent(
       const rawInvoice = (charge as unknown as { invoice?: string | { id: string } | null }).invoice;
       const invoiceId = typeof rawInvoice === 'string' ? rawInvoice : rawInvoice?.id ?? null;
 
-      // Stopgap for partial-refund over-clawback: the old path reversed 100%
-      // of an invoice's commissions on ANY refund, and charge.amount_refunded
-      // is cumulative — so a $1 refund on a $100 order wiped the whole
-      // commission, and successive partials mis-stated. Only auto-reverse on
-      // a FULL refund; partials are recorded for the audit trail and left for
-      // manual handling (proportional clawback is a separate ledger change).
-      // Commissions already 'paid' are flagged, not clawed back.
-      //
       // "Full" is measured against what was actually COLLECTED
       // (charge.amount_captured), NOT the intended charge.amount: a $100 auth
       // captured for $60 and then fully refunded ($60) is a full refund even
@@ -1133,16 +1129,41 @@ async function mapStripeEvent(
       const captured = typeof charge.amount_captured === 'number' ? charge.amount_captured : null;
       const collected = captured ?? (typeof charge.amount === 'number' ? charge.amount : null);
       const isFullRefund = collected != null && collected > 0 && charge.amount_refunded >= collected;
+      // A partial refund keeps the share of the collected amount the
+      // customer kept. charge.amount_refunded is cumulative, so a $30 then a
+      // $20 refund of a $100 charge leave each commission at 50%: applyRefund
+      // works from the cumulative share, never the increment. With nothing
+      // to measure against, nothing is applied.
+      const refunded: RefundedShare | null = isFullRefund
+        ? { full: true }
+        : collected != null && collected > 0
+          ? { full: false, refundedMinor: charge.amount_refunded, ofMinor: collected }
+          : null;
+
       // The refunded revenue is the invoice's (a subscription charge) or the
       // PaymentIntent's (a one-time Checkout).
-      const reversal =
-        (invoiceId || paymentIntentId) && isFullRefund
-          ? await reverseCommissionsForPayment(trx, { invoiceId, paymentIntentId })
-          : { reversed: 0, reversedRows: [], alreadyPaid: 0, heldInTransfer: 0 };
+      const conversions = await conversionsForPayment(trx, { invoiceId, paymentIntentId });
+      // Every refund of a conversion takes this lock first (refunds.ts), so
+      // a redelivery of this Stripe event waits for the first delivery and
+      // then finds its refund Event: the same id, and commissions that
+      // converge on the same target instead of being reduced twice.
+      await lockConversions(trx, conversions.map((e) => e.id));
+      const recorded = await trx<EventRow>(TABLES.Event).where({ tenantId, externalEventId: event.id }).first('id');
+      const refundEventId = recorded?.id ?? ulid();
+      const applied =
+        refunded && conversions.length > 0 ? await applyRefund(trx, { conversions, refunded, refundEventId }) : null;
+      const counts = refundCounts(applied?.commissions ?? []);
+      if (counts.heldInTransfer > 0) {
+        console.error(
+          `[funding] ${invoiceId ? `invoice ${invoiceId}` : `payment ${paymentIntentId}`} refund: ${counts.heldInTransfer} commission(s) mid-transfer — held; a later refund of this charge or an admin must finish them`,
+        );
+      }
 
       return {
+        id: refundEventId,
         userId,
         type: 'refund',
+        // Cumulative, as Stripe reports it: the charge's total refunded.
         value: -(charge.amount_refunded / 100),
         currency: charge.currency?.toUpperCase() ?? 'USD',
         metadata: {
@@ -1152,13 +1173,16 @@ async function mapStripeEvent(
           amountRefunded: charge.amount_refunded,
           ...(collected != null ? { chargeCollected: collected } : {}),
           fullRefund: isFullRefund,
-          // Surfaces a partial refund that needs manual commission handling.
-          ...((invoiceId || paymentIntentId) && !isFullRefund ? { partialRefundReversalSkipped: true } : {}),
-          reversedCommissions: reversal.reversed,
-          alreadyPaidCommissions: reversal.alreadyPaid,
-          ...(reversal.heldInTransfer > 0 ? { heldInTransferCommissions: reversal.heldInTransfer } : {}),
+          ...(conversions.length > 0 && !refunded ? { partialRefundReversalSkipped: true } : {}),
+          reversedCommissions: counts.reversed,
+          ...(counts.reduced > 0 ? { reducedCommissions: counts.reduced } : {}),
+          // Paid commissions stay paid; each gets a refund_clawback
+          // CommissionAdjustment for the refunded revenue the partner holds.
+          alreadyPaidCommissions: counts.paid,
+          ...(counts.clawbackRecorded > 0 ? { clawbackCommissions: counts.clawbackRecorded } : {}),
+          ...(counts.heldInTransfer > 0 ? { heldInTransferCommissions: counts.heldInTransfer } : {}),
         },
-        reversedCommissions: reversal.reversedRows,
+        ...(applied ? { refund: { refundEventId, announce: applied.announce } } : {}),
       };
     }
     case 'charge.dispute.created': {
@@ -1218,129 +1242,24 @@ async function mapStripeEvent(
 }
 
 /**
- * Mark Commissions linked to a refunded payment as 'reversed'. Walks
- * Event → Attribution → Commission from the invoice_paid Event that
- * recorded the payment: an invoice's (metadata.stripeInvoiceId) or a
- * one-time Checkout's PaymentIntent (metadata.stripePaymentIntentId).
- * Only flips Commissions in 'accrued' or 'approved' status; 'paid'
- * Commissions stay paid (the partner has the money) and the count is
- * returned so the refund Event can record that admin attention is needed.
- * The flipped rows are returned too, for the caller's post-commit
- * commission.reversed dispatch.
+ * The invoice_paid Events that recorded a refunded payment: an invoice's
+ * (metadata.stripeInvoiceId) or a one-time Checkout's PaymentIntent
+ * (metadata.stripePaymentIntentId). applyRefund walks Event → Attribution →
+ * Commission from these.
  */
-async function reverseCommissionsForPayment(
+async function conversionsForPayment(
   trx: Knex.Transaction,
   payment: { invoiceId: string | null; paymentIntentId: string | null },
-): Promise<{ reversed: number; reversedRows: CommissionRow[]; alreadyPaid: number; heldInTransfer: number }> {
-  const none = { reversed: 0, reversedRows: [], alreadyPaid: 0, heldInTransfer: 0 };
-  if (!payment.invoiceId && !payment.paymentIntentId) return none;
-  // For the operator alerts below.
-  const label = payment.invoiceId ? `invoice ${payment.invoiceId}` : `payment ${payment.paymentIntentId}`;
-  const sourceEvents = await trx<EventRow>(TABLES.Event)
+): Promise<EventRow[]> {
+  if (!payment.invoiceId && !payment.paymentIntentId) return [];
+  return (await trx<EventRow>(TABLES.Event)
     .where('type', 'invoice_paid')
     .where((q) => {
       if (payment.invoiceId) q.orWhereRaw(`"metadata"->>'stripeInvoiceId' = ?`, [payment.invoiceId]);
       if (payment.paymentIntentId) {
         q.orWhereRaw(`"metadata"->>'stripePaymentIntentId' = ?`, [payment.paymentIntentId]);
       }
-    });
-  if (sourceEvents.length === 0) return none;
-
-  const eventIds = sourceEvents.map((e) => e.id);
-  const attributions = await trx<AttributionRow>(TABLES.Attribution).whereIn('eventId', eventIds);
-  if (attributions.length === 0) return none;
-  const attributionIds = attributions.map((a) => a.id);
-
-  // Funding interlock (spec §8): commissions in a live allocation can't be
-  // silently flipped — reserved allocations are canceled first (no charge
-  // fires for them), mid-transfer ones are held and surfaced like
-  // already-paid rows (the money is moving; claw back via adjustment).
-  const candidates = (await trx<CommissionRow>(TABLES.Commission)
-    .whereIn('attributionId', attributionIds)
-    .whereIn('status', ['accrued', 'approved'])
-    .select('id')) as Array<{ id: string }>;
-  const interlock = await interlockCommissionReversal(trx, candidates.map((c) => c.id));
-  if (interlock.held.length > 0) {
-    console.error(
-      `[funding] ${label} refund: ${interlock.held.length} commission(s) mid-transfer — held for post-settlement adjustment`,
-    );
-  }
-
-  // Same check/use gap as the admin route: the interlock read and this
-  // flip are separate statements, so re-assert the direct-rail guard
-  // inside the UPDATE (a payout intent can claim a commission in between).
-  const reversedRows = interlock.flippable.length === 0
-    ? []
-    : ((await whereNotClaimedByOpenIntent(
-        trx,
-        trx<CommissionRow>(TABLES.Commission)
-          .whereIn(`${TABLES.Commission}.id`, interlock.flippable)
-          .whereIn('status', ['accrued', 'approved']),
-      )
-        .update({ status: 'reversed' })
-        .returning('*')) as CommissionRow[]);
-  const reversed = reversedRows.length;
-
-  const alreadyPaidRow = (await trx<CommissionRow>(TABLES.Commission)
-    .whereIn('attributionId', attributionIds)
-    .where('status', 'paid')
-    .count('id as c')
-    .first()) as { c: string | number } | undefined;
-  const alreadyPaid = Number(alreadyPaidRow?.c ?? 0);
-
-  // Commissions the guarded UPDATE refused because a payout intent
-  // claimed them AFTER the interlock read. They are neither reversed nor
-  // counted as held by the interlock, so without this they vanished from
-  // the report entirely: the refund looked fully handled while a
-  // commission for refunded revenue stayed payable.
-  // Anything in `flippable` the UPDATE didn't take. Do NOT assume why:
-  // a concurrent actor may have paid it, another refund may have already
-  // reversed it, or a payout intent may have claimed it. Counting them
-  // all as "held" produced false alerts and double-counted rows that were
-  // also reported as alreadyPaid.
-  const reversedIds = new Set(reversedRows.map((r) => r.id));
-  const missedIds = interlock.flippable.filter((id) => !reversedIds.has(id));
-  let lateHeld = 0;
-  let lateNewlyPaid = 0;
-  if (missedIds.length > 0) {
-    const missed = (await trx<CommissionRow>(TABLES.Commission)
-      .whereIn('id', missedIds)
-      .select('id', 'status', 'payoutId')) as Array<Pick<CommissionRow, 'id' | 'status' | 'payoutId'>>;
-    const stillPayable = missed.filter((c) => ['accrued', 'approved'].includes(c.status));
-    lateHeld = stillPayable.length;
-    if (lateHeld > 0) {
-      console.error(
-        `[funding] ALERT: ${label} refund: ${lateHeld} commission(s) were claimed by a payout intent or a funding allocation while the reversal was in flight (${stillPayable
-          .map((c) => c.id)
-          .join(', ')}) — refunded revenue may still be paid out; operator action required`,
-      );
-    }
-    // A row that became `paid` between the alreadyPaid count and this
-    // read is in NEITHER total — it would vanish from the report while
-    // refunded revenue had just been paid out. Count it explicitly.
-    const paidLate = missed.filter((c) => c.status === 'paid').length;
-    if (paidLate > 0) {
-      lateNewlyPaid = paidLate;
-      console.error(
-        `[funding] ALERT: ${label} refund: ${paidLate} commission(s) were PAID while the reversal was in flight — refunded revenue has left the platform; operator action required`,
-      );
-    }
-    const otherwiseMoved = missed.length - lateHeld - paidLate;
-    if (otherwiseMoved > 0) {
-      console.warn(
-        `[funding] ${label} refund: ${otherwiseMoved} commission(s) were already reversed concurrently — not counted as held`,
-      );
-    }
-  }
-
-  return {
-    reversed,
-    reversedRows,
-    // Includes rows that became paid between the two reads; leaving them
-    // out reported a cleanly-handled refund when money had just moved.
-    alreadyPaid: alreadyPaid + lateNewlyPaid,
-    heldInTransfer: interlock.held.length + lateHeld,
-  };
+    })) as EventRow[];
 }
 
 async function resolveUserIdFromCustomer(
@@ -1455,7 +1374,7 @@ function checkoutPaymentRevenue(session: Stripe.Checkout.Session, userId: string
     metadata: {
       stripeCheckoutSessionId: session.id,
       checkoutMode: 'payment',
-      // charge.refunded finds the purchase by it (reverseCommissionsForPayment).
+      // charge.refunded finds the purchase by it (conversionsForPayment).
       ...(paymentIntentId ? { stripePaymentIntentId: paymentIntentId } : {}),
     },
   };
@@ -1520,7 +1439,8 @@ async function signupRecorded(trx: Knex.Transaction, tenantId: string, userId: s
  * stitch gave the user a click. The same backlog pass identify() runs on a
  * first stitch, minus events that are already attributed (re-running one
  * against the new click could credit a second partner) and corrective
- * events, which never attribute.
+ * events, which never attribute. A refund recorded before the event
+ * attributed applies to its new commissions.
  */
 async function attributeUnattributedEvents(trx: Knex.Transaction, tenantId: string, userId: string): Promise<void> {
   const events = await trx<EventRow>(TABLES.Event)
@@ -1532,7 +1452,10 @@ async function attributeUnattributedEvents(trx: Knex.Transaction, tenantId: stri
         .whereRaw(`"${TABLES.Attribution}"."eventId" = "${TABLES.Event}"."id"`);
     })
     .orderBy('ts', 'asc');
-  for (const event of events) await attributeEvent(trx, event as EventRow);
+  for (const event of events) {
+    const result = await attributeEvent(trx, event as EventRow);
+    if (result.status === 'attributed') await reapplyRecordedRefunds(trx, event as EventRow);
+  }
 }
 
 /**
