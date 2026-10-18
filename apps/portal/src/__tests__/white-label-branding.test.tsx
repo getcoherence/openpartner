@@ -41,7 +41,7 @@ function makeClient(whiteLabel: boolean): QueryClient {
 
 function renderWithProviders(ui: React.ReactElement, whiteLabel: boolean) {
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={makeClient(whiteLabel)}>{ui}</QueryClientProvider>
     </MemoryRouter>,
   );
@@ -113,10 +113,10 @@ describe('partner Network visibility preference', () => {
   it('hides partner Network navigation while preserving admin Network access', () => {
     const client = makeClient(false);
     client.setQueryData(['program-settings'], { ...BRAND, whiteLabel: false, partnerNetworkVisible: false });
-    const partner = render(<MemoryRouter><QueryClientProvider client={client}><Sidebar principal={partnerPrincipal} /></QueryClientProvider></MemoryRouter>);
+    const partner = render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><QueryClientProvider client={client}><Sidebar principal={partnerPrincipal} /></QueryClientProvider></MemoryRouter>);
     expect(partner.container.textContent).not.toMatch(/network/i);
     partner.unmount();
-    const admin = render(<MemoryRouter><QueryClientProvider client={client}><Sidebar principal={adminPrincipal} /></QueryClientProvider></MemoryRouter>);
+    const admin = render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><QueryClientProvider client={client}><Sidebar principal={adminPrincipal} /></QueryClientProvider></MemoryRouter>);
     expect(admin.container.textContent).toMatch(/network/i);
   });
 });

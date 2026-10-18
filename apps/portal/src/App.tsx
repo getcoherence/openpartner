@@ -139,7 +139,7 @@ export function App() {
   const hostTenantSlug = isMultiTenant ? (hostBrand.data?.tenantSlug ?? null) : null;
 
   return (
-    <BrowserRouter>
+    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <BrandDocument />
       <Routes>
         {isMultiTenant && hostTenantSlug ? (

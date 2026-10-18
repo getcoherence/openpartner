@@ -35,7 +35,7 @@ function client(seed: Array<[unknown[], unknown]>) {
 
 function renderWith(qc: QueryClient, page: React.ReactElement) {
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={qc}>{page}</QueryClientProvider>
     </MemoryRouter>,
   );

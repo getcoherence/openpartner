@@ -51,7 +51,7 @@ function show(rules: CommissionSubRule[]) {
     },
   });
   return render(
-    <MemoryRouter initialEntries={['/admin/partners/p1/commission']}>
+    <MemoryRouter initialEntries={['/admin/partners/p1/commission']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={client}>
         <Routes>
           <Route path="/admin/partners/:id/commission" element={<AdminPartnerCommission />} />

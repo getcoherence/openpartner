@@ -11,7 +11,7 @@ function show(canEdit: boolean, customerReward?: CustomerReward | null, stripePr
   client.setQueryData(['partner', 'p1'], { id: 'p1', name: 'Partner' });
   client.setQueryData(['partner-coupons', 'p1'], { coupons: [{ id: 'c1', code: 'MYCODE', programId: 'pr1', canEdit, stripePromotionCodeId }] });
   client.setQueryData(['me-campaigns'], { programs: [{ id: 'pr1', name: 'Brand', partnersMayCustomizeCode: canEdit, customerReward }] });
-  return render(<MemoryRouter><QueryClientProvider client={client}><AdminPartnerCoupons ownPartnerId="p1" /></QueryClientProvider></MemoryRouter>);
+  return render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><QueryClientProvider client={client}><AdminPartnerCoupons ownPartnerId="p1" /></QueryClientProvider></MemoryRouter>);
 }
 describe('local partner coupon page', () => {
   it('offers another code for an editable assigned program while preserving existing codes', () => {

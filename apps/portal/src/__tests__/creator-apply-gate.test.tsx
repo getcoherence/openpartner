@@ -51,7 +51,7 @@ function renderPage(profile: Record<string, unknown>) {
   qc.setQueryData(['creator-whoami'], { creator: { id: 'crt_1', handle: 'ada' } });
   qc.setQueryData(['creator-my-profile'], profile);
   return render(
-    <MemoryRouter initialEntries={['/creator/offerings/off_1']}>
+    <MemoryRouter initialEntries={['/creator/offerings/off_1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={qc}>
         <Routes>
           <Route path="/creator/offerings/:id" element={<CreatorOfferingDetailPage />} />

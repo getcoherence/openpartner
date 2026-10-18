@@ -50,7 +50,7 @@ function renderPage() {
     pageParams: [null],
   });
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={qc}>
         <AdminPartners />
       </QueryClientProvider>

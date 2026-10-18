@@ -70,7 +70,7 @@ afterEach(cleanup);
 function renderShell(path: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={[path]}>
+    <MemoryRouter initialEntries={[path]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={qc}>
         <Routes>
           <Route path="/creator/*" element={<CreatorShell />} />

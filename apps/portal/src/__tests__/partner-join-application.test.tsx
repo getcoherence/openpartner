@@ -92,7 +92,7 @@ function renderJoin(status: { open: boolean; reviewRequired: boolean } | null = 
     whiteLabel: false,
   });
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={qc}>
         <PartnerJoinPage />
       </QueryClientProvider>

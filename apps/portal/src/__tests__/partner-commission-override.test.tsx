@@ -40,7 +40,7 @@ function show(snapshot: Record<string, unknown> | null, programs?: Array<Record<
   });
   if (programs) client.setQueryData(['partner-campaigns', 'p1'], { programs });
   return render(
-    <MemoryRouter initialEntries={['/admin/partners/p1/commission']}>
+    <MemoryRouter initialEntries={['/admin/partners/p1/commission']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={client}>
         <Routes>
           <Route path="/admin/partners/:id/commission" element={<AdminPartnerCommission />} />

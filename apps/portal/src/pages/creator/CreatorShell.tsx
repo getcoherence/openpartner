@@ -59,8 +59,12 @@ export function CreatorShell() {
       <main style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
         {isMobile && <CreatorMobileTopBar onMenu={() => setDrawerOpen(true)} />}
         {!location.pathname.startsWith('/creator/profile') && <ProfileIncompleteBanner isMobile={isMobile} />}
+        {/* Redirects are absolute on purpose: this shell sits on a splat
+            route (/creator/*), where React Router 7 resolves a relative
+            "discover" against the whole URL — /creator/a/b → /creator/a/b/discover,
+            which hits the catch-all again and loops forever. */}
         <Routes>
-          <Route index element={<Navigate to="discover" replace />} />
+          <Route index element={<Navigate to="/creator/discover" replace />} />
           <Route path="discover" element={<CreatorDiscoverPage />} />
           <Route path="offerings/:id" element={<CreatorOfferingDetailPage />} />
           <Route path="vendors/:id" element={<CreatorVendorDetailPage />} />
@@ -70,7 +74,7 @@ export function CreatorShell() {
           <Route path="domains" element={<CreatorDomainsPage />} />
           <Route path="requests" element={<CreatorMyRequestsPage />} />
           <Route path="profile" element={<CreatorMyProfilePage />} />
-          <Route path="*" element={<Navigate to="discover" replace />} />
+          <Route path="*" element={<Navigate to="/creator/discover" replace />} />
         </Routes>
       </main>
     </div>

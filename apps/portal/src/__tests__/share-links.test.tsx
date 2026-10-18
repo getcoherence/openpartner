@@ -13,7 +13,7 @@ function show(routerUrl: string | null, slug: string | null = null) {
   client.setQueryData(['public-branding', slug], { tenantSlug: slug ?? 'default', whiteLabel: false });
   client.setQueryData(['links', 'p1'], { links: [{ id: 'l1', linkKey: 'rene', programId: 'pr1', destinationUrl: null, createdAt: new Date().toISOString() }] });
   client.setQueryData(['me-campaigns'], { programs: [{ id: 'pr1', name: 'Brand', destinationUrl: 'https://brand.example', deepLinkAllowedDomains: null }] });
-  return render(<MemoryRouter><QueryClientProvider client={client}><LinksPage principal={{ role: 'partner', partnerId: 'p1' }} /></QueryClientProvider></MemoryRouter>);
+  return render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><QueryClientProvider client={client}><LinksPage principal={{ role: 'partner', partnerId: 'p1' }} /></QueryClientProvider></MemoryRouter>);
 }
 describe('complete share URLs', () => {
   it('shows, copies and previews the configured self-host router URL', async () => {

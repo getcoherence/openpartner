@@ -81,7 +81,7 @@ function client(consent?: NetworkConsentState): QueryClient {
 
 function renderIn(ui: React.ReactElement, qc: QueryClient) {
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={qc}>{ui}</QueryClientProvider>
     </MemoryRouter>,
   );

@@ -56,7 +56,7 @@ function renderPrograms(program: Record<string, unknown>) {
     whiteLabel: false,
   });
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={qc}>
         <AdminPrograms />
       </QueryClientProvider>

@@ -72,7 +72,7 @@ function renderWith(ui: React.ReactElement, key: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   qc.setQueryData([key], PROFILE);
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={qc}>{ui}</QueryClientProvider>
     </MemoryRouter>,
   );
@@ -116,7 +116,7 @@ describe('partner Network profile page', () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     qc.setQueryData(['network-my-profile'], { notFederated: true });
     const page = render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <QueryClientProvider client={qc}>
           <MyProfilePage />
         </QueryClientProvider>
