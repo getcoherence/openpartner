@@ -96,7 +96,9 @@ export type ConversionOutcome =
  * are the JSON route's `outcome`/`reason` and the postback's text body.
  *   attributed                 a partner was credited and earned commission
  *   attributed no_commission   credited, but nothing accrued (program ended,
- *                              a `first` rule already paid, a cap, zero value)
+ *                              a `first` rule already paid, a cap, zero value,
+ *                              a renewal past the window with no `recurring`
+ *                              rule)
  *   no_matching_rule           credited, but no commission rule takes this
  *                              event type: usually a typo'd stage name
  *   not_attributed <reason>    no partner credited: outside_window (the click
