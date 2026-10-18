@@ -100,12 +100,14 @@ importPartnersRouter.post(
     const { uninvitedPortalAccess: portalAccess } = await readPartnerAccessSettings(db, tenantId);
 
     // Every email the file names that is already taken, looked up a chunk
-    // at a time and by tenantId. Under RLS each query also carries the
-    // policy's `tenantId = <setting> OR platform_admin`, and that OR keeps
-    // Postgres off the (tenantId, email) index unless the query names
-    // tenantId itself — so the old per-row `where({ email })` scanned the
-    // whole roster for every row (a 3,000-row batch went from 14 s to 35 s
-    // as a roster grew to 30,000).
+    // at a time and by tenantId. Until migration
+    // 20261017100000_rls_plain_tenant_policies, each query under RLS also
+    // carried the policy's `tenantId = <setting> OR platform_admin`, and that
+    // OR kept Postgres off the (tenantId, email) index unless the query
+    // named tenantId itself — so the old per-row `where({ email })` scanned
+    // the whole roster for every row (a 3,000-row batch went from 14 s to
+    // 35 s as a roster grew to 30,000). Naming tenantId keeps the lookup on
+    // the index on a pool that bypasses RLS too.
     const taken = new Map<string, string>(); // email → partnerId
     const fileEmails = [...new Set(rows.map((r) => (r.email ?? '').trim().toLowerCase()).filter(Boolean))];
     for (const chunk of chunks(fileEmails, LOOKUP_CHUNK)) {

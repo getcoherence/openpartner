@@ -11,7 +11,8 @@
  *   1. Tenant A's GUC sees only A's rows
  *   2. Tenant B's GUC sees only B's rows
  *   3. With no GUC set, FORCE RLS hides everything (default deny)
- *   4. The platform_admin GUC override sees both
+ *   4. The retired platform_admin GUC widens nothing; a platform admin's
+ *      request reaches both tenants through the privileged pool instead
  *   5. WITH CHECK rejects writes that mismatch the GUC
  *   6. Sessions stamped to tenant A are invisible under tenant B
  *
@@ -22,6 +23,8 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import express from 'express';
+import request from 'supertest';
 import { ulid } from 'ulid';
 import { TABLES, type TenantRow } from '@openpartner/db';
 
@@ -146,14 +149,34 @@ describe.skipIf(skipIntegration)('multi-tenant RLS isolation', () => {
     expect(rows).toHaveLength(0);
   });
 
-  it('platform_admin override sees both tenants', async () => {
+  it('the retired platform_admin GUC widens nothing, even when set from inside a query', async () => {
     if (!appRoleAvailable) return;
-    const rows = await asAppRole({ platformAdmin: true }, (trx) =>
-      trx(TABLES.Partner)
-        .whereIn('tenantId', [TENANT_A, TENANT_B])
-        .select('tenantId'),
+    expect(await asAppRole({ platformAdmin: true }, (trx) => trx(TABLES.Partner).select('id'))).toHaveLength(0);
+    const viaSet = await asAppRole({ tenantId: TENANT_A, platformAdmin: true }, (trx) =>
+      trx(TABLES.Partner).whereIn('tenantId', [TENANT_A, TENANT_B]).select('tenantId'),
     );
-    const counts = rows.reduce<Record<string, number>>((acc, r) => {
+    expect(viaSet.map((r) => r.tenantId)).toEqual([TENANT_A, TENANT_A]);
+    // What injected SQL could do: set_config is callable from any SELECT.
+    const viaSetConfig = await asAppRole({ tenantId: TENANT_A }, async (trx) => {
+      await trx.raw(`select set_config('app.platform_admin', 'on', true)`);
+      return trx(TABLES.Partner).whereIn('tenantId', [TENANT_A, TENANT_B]).select('tenantId');
+    });
+    expect(viaSetConfig.map((r) => r.tenantId)).toEqual([TENANT_A, TENANT_A]);
+  });
+
+  it("a platform admin's tenant request runs on the privileged pool and sees every tenant", async () => {
+    const { tenantMiddleware } = await import('../tenancy.js');
+    const app = express();
+    app.use((req, _res, next) => {
+      req.platformAdmin = true;
+      next();
+    });
+    app.use(tenantMiddleware);
+    app.get('/partners-in-both', async (req, res) => {
+      res.json(await req.db!(TABLES.Partner).whereIn('tenantId', [TENANT_A, TENANT_B]).select('tenantId'));
+    });
+    const res = await request(app).get('/t/acme-test/partners-in-both').expect(200);
+    const counts = (res.body as Array<{ tenantId: string }>).reduce<Record<string, number>>((acc, r) => {
       acc[r.tenantId] = (acc[r.tenantId] ?? 0) + 1;
       return acc;
     }, {});
