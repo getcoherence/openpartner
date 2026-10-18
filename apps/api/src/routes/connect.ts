@@ -37,7 +37,7 @@ connectRouter.post(
     if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
     const stripe = requireStripe();
-    const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+    const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
     if (!partner) return res.status(404).json({ error: 'partner_not_found' });
 
     let accountId = partner.stripeConnectAccountId;
@@ -72,8 +72,8 @@ connectRouter.get(
   requireAuth,
   requirePartnerOrAdmin('id'),
   async (req, res) => {
-    const { db } = tenantOf(req);
-    const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+    const { db, tenantId } = tenantOf(req);
+    const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
     if (!partner) return res.status(404).json({ error: 'partner_not_found' });
 
     if (!partner.stripeConnectAccountId) {

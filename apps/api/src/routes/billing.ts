@@ -83,7 +83,7 @@ billingRouter.get('/billing/status', requireAuth, requireAdmin, async (req, res)
 
   // revshare: sum of platform fees retained on paid payouts, by currency.
   const fees = (await db(TABLES.Payout)
-    .where({ status: 'paid' })
+    .where({ tenantId, status: 'paid' })
     .select('currency')
     .select(db.raw("COALESCE(SUM((metadata->>'platformFee')::numeric), 0) as fee"))
     .groupBy('currency')) as Array<{ currency: string; fee: string }>;

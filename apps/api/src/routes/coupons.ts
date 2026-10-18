@@ -55,9 +55,9 @@ export const couponsRouter = Router();
 // ---------- List + create per partner ----------
 
 couponsRouter.get('/partners/:id/coupons', requireAuth, requirePartnerOrAdmin('id'), async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const rows = await db<CouponRow>(TABLES.Coupon)
-    .where({ partnerId: req.params.id })
+    .where({ tenantId, partnerId: req.params.id })
     .orderBy('createdAt', 'asc');
   if (rows.length === 0) return res.json({ coupons: [] });
 
@@ -67,6 +67,7 @@ couponsRouter.get('/partners/:id/coupons', requireAuth, requirePartnerOrAdmin('i
   // without making a second round-trip per coupon.
   const programIds = Array.from(new Set(rows.map((r) => r.programId)));
   const programs = (await db<ProgramRow>(TABLES.Program)
+    .where({ tenantId })
     .whereIn('id', programIds)
     .select('id', 'partnersMayCustomizeCode')) as Array<Pick<ProgramRow, 'id' | 'partnersMayCustomizeCode'>>;
   const canEditByProgram = new Map(programs.map((p) => [p.id, p.partnersMayCustomizeCode]));
@@ -79,7 +80,7 @@ couponsRouter.get('/partners/:id/coupons', requireAuth, requirePartnerOrAdmin('i
   const landingUrls = rows.map((r) => `coupon://${r.code}`);
 
   const clickCounts = (await db(TABLES.Click)
-    .where({ partnerId: req.params.id })
+    .where({ tenantId, partnerId: req.params.id })
     .whereIn('landingUrl', landingUrls)
     .andWhere('ts', '>=', since)
     .groupBy('landingUrl')
@@ -89,6 +90,7 @@ couponsRouter.get('/partners/:id/coupons', requireAuth, requirePartnerOrAdmin('i
   const revenue = (await db(TABLES.Click)
     .join(TABLES.Attribution, `${TABLES.Attribution}.clickId`, `${TABLES.Click}.id`)
     .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
+    .where(`${TABLES.Click}.tenantId`, tenantId)
     .where(`${TABLES.Click}.partnerId`, req.params.id)
     .whereIn(`${TABLES.Click}.landingUrl`, landingUrls)
     .andWhere(`${TABLES.Attribution}.computedAt`, '>=', since)
@@ -175,10 +177,10 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
   const body = createSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
 
-  const program = await db<ProgramRow>(TABLES.Program).where({ id: body.data.programId }).first();
+  const program = await db<ProgramRow>(TABLES.Program).where({ id: body.data.programId, tenantId }).first();
   if (!program) return res.status(404).json({ error: 'program_not_found' });
 
   // Federated callers must clear the program-level toggle. Admin
@@ -189,7 +191,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
   }
 
   if (isPartner) {
-    const grant = await db(TABLES.PartnerProgram).where({ partnerId: partner.id, programId: program.id }).first();
+    const grant = await db(TABLES.PartnerProgram).where({ tenantId, partnerId: partner.id, programId: program.id }).first();
     if (!grant) return res.status(403).json({ error: 'campaign_not_granted' });
     const { campaignAcceptsNewActivity } = await import('../campaign-lifecycle.js');
     if (!campaignAcceptsNewActivity(program)) return res.status(409).json({ error: 'campaign_not_active' });
@@ -206,7 +208,9 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
     | { couponIntegrationVerifiedAt: Date | null }
     | undefined;
   if (!tenant?.couponIntegrationVerifiedAt) {
-    const countRow = (await db(TABLES.Coupon).count<{ count: string }[]>({ count: '*' })) as Array<{ count: string }>;
+    const countRow = (await db(TABLES.Coupon)
+      .where({ tenantId })
+      .count<{ count: string }[]>({ count: '*' })) as Array<{ count: string }>;
     const existing = Number(countRow[0]?.count ?? 0);
     if (existing >= COUPON_VERIFICATION_THRESHOLD) {
       if (!isAdmin) {
@@ -231,7 +235,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
   // above is a separate, system-wide guard.)
   if (!isAdmin) {
     const activeCount = (await db(TABLES.Coupon)
-      .where({ partnerId: partner.id, programId: program.id })
+      .where({ tenantId, partnerId: partner.id, programId: program.id })
       .whereNull('deactivatedAt')
       .count<{ count: string }[]>({ count: '*' })) as Array<{ count: string }>;
     if (Number(activeCount[0]?.count ?? 0) >= ACTIVE_CODES_PER_PROGRAM_CAP) {
@@ -242,7 +246,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
       });
     }
     const createdToday = (await db(TABLES.Coupon)
-      .where({ partnerId: partner.id, programId: program.id })
+      .where({ tenantId, partnerId: partner.id, programId: program.id })
       .where('createdAt', '>', new Date(Date.now() - 24 * 60 * 60 * 1000))
       .count<{ count: string }[]>({ count: '*' })) as Array<{ count: string }>;
     if (Number(createdToday[0]?.count ?? 0) >= CREATIONS_PER_DAY_CAP) {
@@ -299,7 +303,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
       stripeCouponId: provisioned?.stripeCouponId ?? null,
       stripePromotionCodeId: provisioned?.stripePromotionCodeId ?? null,
     });
-    const row = await db<CouponRow>(TABLES.Coupon).where({ id }).first();
+    const row = await db<CouponRow>(TABLES.Coupon).where({ id, tenantId }).first();
     return res.status(201).json({ ...row, canEdit: program.partnersMayCustomizeCode });
   } catch (err) {
     // No row owns the promo we just provisioned — release it so the code
@@ -332,13 +336,13 @@ couponsRouter.delete('/partners/:id/coupons/:couponId', requireAuth, async (req,
   const isPartner = principal?.role === 'partner' && principal.partnerId === req.params.id;
   if (!isAdmin && !isFederated && !isPartner) return res.status(403).json({ error: 'forbidden' });
 
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const coupon = await db<CouponRow>(TABLES.Coupon)
-    .where({ id: req.params.couponId, partnerId: req.params.id })
+    .where({ id: req.params.couponId, tenantId, partnerId: req.params.id })
     .first();
   if (!coupon) return res.status(404).json({ error: 'coupon_not_found' });
 
-  const program = await db<ProgramRow>(TABLES.Program).where({ id: coupon.programId }).first();
+  const program = await db<ProgramRow>(TABLES.Program).where({ id: coupon.programId, tenantId }).first();
   if (!program) return res.status(404).json({ error: 'program_not_found' });
 
   if (!isAdmin && !program.partnersMayCustomizeCode) {
@@ -346,7 +350,7 @@ couponsRouter.delete('/partners/:id/coupons/:couponId', requireAuth, async (req,
   }
 
   if (isPartner) {
-    const grant = await db(TABLES.PartnerProgram).where({ partnerId: req.params.id, programId: program.id }).first();
+    const grant = await db(TABLES.PartnerProgram).where({ tenantId, partnerId: req.params.id, programId: program.id }).first();
     if (!grant) return res.status(403).json({ error: 'campaign_not_granted' });
   }
 
@@ -367,10 +371,10 @@ couponsRouter.delete('/partners/:id/coupons/:couponId', requireAuth, async (req,
   }
 
   await db<CouponRow>(TABLES.Coupon)
-    .where({ id: coupon.id })
+    .where({ id: coupon.id, tenantId })
     .update({ deactivatedAt: new Date() });
 
-  const updated = await db<CouponRow>(TABLES.Coupon).where({ id: coupon.id }).first();
+  const updated = await db<CouponRow>(TABLES.Coupon).where({ id: coupon.id, tenantId }).first();
   return res.json({ ...updated, canEdit: program.partnersMayCustomizeCode });
 });
 
@@ -419,7 +423,7 @@ couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), r
   const body = redeemSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const coupon = await findCouponByCode(db, body.data.code);
+  const coupon = await findCouponByCode(db, tenantId, body.data.code);
   if (!coupon) return res.status(404).json({ error: 'coupon_not_found' });
 
   const { userId, eventType, value, currency, externalEventId } = body.data;
@@ -493,9 +497,14 @@ function isRedemptionOf(event: EventRow, coupon: CouponRow): boolean {
  */
 export async function findCouponByCode(
   db: import('knex').Knex,
+  tenantId: string,
   code: string,
 ): Promise<CouponRow | null> {
+  // Codes are unique per tenant only. Named explicitly: Coupon has RLS but
+  // not FORCE, and a pool that bypasses RLS would credit another brand's
+  // partner holding the same code.
   const row = await db<CouponRow>(TABLES.Coupon)
+    .where({ tenantId })
     .whereRaw('lower("code") = ?', [code.toLowerCase()])
     .whereNull('deactivatedAt')
     .first();
@@ -527,6 +536,7 @@ export async function ensureCouponClickAndIdentity(
   // synthetic click would shift multi-touch weights unfairly.
   const existing = await trx<IdentityRow>(TABLES.Identity)
     .join(TABLES.Click, `${TABLES.Click}.id`, `${TABLES.Identity}.clickId`)
+    .where(`${TABLES.Identity}.tenantId`, tenantId)
     .where(`${TABLES.Identity}.userId`, userId)
     .andWhere(`${TABLES.Click}.partnerId`, coupon.partnerId)
     .first(`${TABLES.Identity}.clickId as clickId`) as { clickId: string } | undefined;
@@ -610,6 +620,7 @@ export async function autoMintCouponsForGrants(
   // Pre-load campaigns so we know which need a Stripe-side reward without
   // a SELECT per code-collision retry.
   const campaigns = (await db<ProgramRow>(TABLES.Program)
+    .where({ tenantId })
     .whereIn('id', programIds)
     .select('id', 'name', 'customerReward')) as Array<{
       id: string;

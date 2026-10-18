@@ -62,7 +62,9 @@ clicksRouter.post('/clicks', requireAuth, grantScope('clicks:write'), requireAdm
 
   // Look up the Link by linkKey within this tenant. Don't trust the
   // caller's claimed partnerId/programId — derive from the Link row.
-  const link = await db<LinkRow>(TABLES.Link).where({ linkKey: body.data.linkKey }).first();
+  // linkKey is unique per tenant; name the tenant so a pool that bypasses
+  // RLS can't credit another brand's partner through the same key.
+  const link = await db<LinkRow>(TABLES.Link).where({ tenantId, linkKey: body.data.linkKey }).first();
   if (!link) return res.status(404).json({ error: 'link_not_found' });
 
   try {
