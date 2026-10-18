@@ -1161,9 +1161,10 @@ async function mapStripeEvent(
       // `charge` was moved off the Invoice type in recent SDK versions, but the
       // webhook payload still carries it on API versions before
       // 2025-03-31.basil and is useful for refund lookups. Read it tolerantly.
-      // A basil or later payload has neither this nor payment_intent:
+      // A basil or later payload has neither this nor payment_intent.
       // charge.refunded then finds the invoice through its InvoicePayment
-      // (invoicePaidBy), so nothing extra is read here, on every invoice.
+      // (invoicePaidBy), once per refund, rather than a read here on every
+      // invoice.
       const rawCharge = (invoice as unknown as { charge?: string | { id: string } | null }).charge;
       const chargeId = typeof rawCharge === 'string' ? rawCharge : rawCharge?.id ?? null;
       // Same story for payment_intent. A one-time Checkout's post-payment
