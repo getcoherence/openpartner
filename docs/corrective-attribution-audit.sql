@@ -18,13 +18,17 @@
 -- been attributed by a backlog replay; API / coupon ones may have been
 -- attributed live by the merchant's own call.
 --
--- RLS is FORCED on these tables (owner included), so the session must set
--- app.platform_admin to see every tenant. Running inside a READ ONLY
+-- RLS is FORCED on these tables (owner included), so the session turns
+-- row security off to see every tenant: run it as the privileged role
+-- the API's cross-tenant pool uses (BYPASSRLS or superuser). Any other role
+-- gets an error instead of a silently empty result. (The app.platform_admin
+-- override these files used to set no longer widens any policy, since
+-- 20261017100000_rls_plain_tenant_policies.) Running inside a READ ONLY
 -- transaction guarantees nothing is written. Run with psql:
 --   psql "$DATABASE_URL" -f docs/corrective-attribution-audit.sql
 
 BEGIN TRANSACTION READ ONLY;
-SET LOCAL app.platform_admin = 'on';
+SET LOCAL row_security = off;
 
 -- 1. Money per tenant: commissions on corrective events by event type,
 -- origin, sign and ledger status. A paid/approved negative row has already
