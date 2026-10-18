@@ -2935,6 +2935,6 @@ describe.skipIf(skipIntegration)('stripe webhook — one-time (mode=payment) Che
     expect(funnel.body.revenue).toBe(129);
 
     const { aggregateAttributedGmv } = await import('../usage-billing.js');
-    expect(await aggregateAttributedGmv(db, null, new Date(Date.now() + 60_000))).toBe(129);
+    expect(await aggregateAttributedGmv(db, DEFAULT_TENANT_ID, null, new Date(Date.now() + 60_000))).toBe(129);
   });
 });

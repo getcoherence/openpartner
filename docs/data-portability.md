@@ -220,8 +220,9 @@ It was not.
 **Scoping does not rely on RLS alone.** `exportTable` takes an explicit
 `tenantId` and filters on it. RLS is still the outer guarantee, but `appDb`
 falls back to the privileged `DATABASE_URL` when `DATABASE_URL_APP` is unset
-— a supported self-host configuration — and an unfiltered `select *` on that
-pool would return every tenant's rows. Every exportable table carries
+— supported for single-tenant self-host; a multi-tenant API refuses to boot
+that way — and an unfiltered `select *` on that pool would return every
+tenant's rows. Every exportable table carries
 `tenantId`, so the filter is complete rather than best-effort.
 
 ## What is deliberately NOT in the bundle

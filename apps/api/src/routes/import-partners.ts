@@ -88,8 +88,9 @@ importPartnersRouter.post(
     // Pull the campaign list once — every newly-created partner gets
     // access to all current campaigns (the same default as POST /partners
     // when programIds is omitted). Done outside the loop so we don't
-    // re-query per row.
-    const allCampaigns = (await db(TABLES.Program).select('id')) as Array<{ id: string }>;
+    // re-query per row. Filtered on tenantId explicitly, not just by RLS:
+    // on a pool that bypasses RLS this granted every tenant's programs.
+    const allCampaigns = (await db(TABLES.Program).where({ tenantId }).select('id')) as Array<{ id: string }>;
     const allCampaignIds = allCampaigns.map((c) => c.id);
 
     const report: RowReport[] = [];
@@ -109,7 +110,8 @@ importPartnersRouter.post(
         continue;
       }
 
-      const existing = await db<PartnerRow>(TABLES.Partner).where({ email }).first();
+      // Email is unique per tenant, so another tenant's partner is no collision.
+      const existing = await db<PartnerRow>(TABLES.Partner).where({ email, tenantId }).first();
       if (existing) {
         report.push({ row: rowNum, email, status: 'skipped_email_taken', partnerId: existing.id });
         continue;

@@ -1080,7 +1080,7 @@ export async function reportNetworkPayoutsToNetwork(
 
   const lastIso = await getConfig<string>(db, tenantId, CONFIG_KEYS.LastNetworkPayoutsReportedAt);
   const rangeStart = lastIso ? new Date(lastIso) : null;
-  const amountUsd = await aggregateNetworkOriginatedPayouts(db, rangeStart, rangeEnd);
+  const amountUsd = await aggregateNetworkOriginatedPayouts(db, tenantId, rangeStart, rangeEnd);
 
   if (amountUsd <= 0) {
     // Advance the high-water mark anyway so we don't re-scan the

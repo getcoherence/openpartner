@@ -103,7 +103,7 @@ Set each value with **Encrypt** checked:
 | `PORTAL_URL` | `https://app.openpartner.dev` (or your chosen domain) |
 | `METRICS_TOKEN` | random token if you want to gate /metrics; otherwise generate one |
 | `OPENPARTNER_APP_DB_PASSWORD` | random 32+ char string — provisions the openpartner_app role |
-| `DATABASE_URL_APP` | same host/db as DATABASE_URL but `user=openpartner_app` and `password=` the value above |
+| `DATABASE_URL_APP` | same host/db as DATABASE_URL but `user=openpartner_app` and `password=` the value above. **Required** with `OPENPARTNER_TENANCY=multi`: the API refuses to boot without it ([tenant isolation](#tenant-isolation-the-app-role)) |
 
 For the **router** component, set:
 
@@ -227,9 +227,9 @@ self-host mode to hosted multi-tenant mode:
   openpartner_app role, every tenant-scoped request runs in a
   transaction with `app.tenant_id` pinned, and Row-Level Security
   policies (see migration `20260507010000_rls_policies.ts`) drop any
-  query that crosses tenants. Without `DATABASE_URL_APP`, tenant
-  isolation falls back to app-level filtering only — fine for
-  bootstrap, not safe for production multi-tenant.
+  query that crosses tenants. RLS is the tenant boundary, so a
+  multi-tenant API won't start without it. See
+  [Tenant isolation: the app role](#tenant-isolation-the-app-role).
 - **Stripe webhooks.** A single `/webhooks/stripe` endpoint covers all
   tenants. Each event resolves its tenant from `metadata.openpartner_tenant_id`
   (every Stripe object we create is stamped with this); the handler
@@ -250,9 +250,44 @@ To migrate an existing single-tenant deploy to multi:
 1. Run the multi-tenant migrations (already part of `pnpm migrate` —
    they backfill every existing row to `tenantId='default'`).
 2. Set `OPENPARTNER_APP_DB_PASSWORD`, `DATABASE_URL_APP`, and flip
-   `OPENPARTNER_TENANCY=multi`.
+   `OPENPARTNER_TENANCY=multi`. All three go in together: with `multi`
+   and no app role, the API refuses to boot.
 3. Redeploy. The default tenant remains accessible at `/t/default/`;
    new tenants come in via `/signup`.
+
+### Tenant isolation: the app role
+
+In multi-tenant mode, Postgres row-level security is what keeps tenants
+apart. The app's own `tenantId` filters are defence in depth and do not
+cover every query. An October 2026 verification ran multi-tenant without
+`DATABASE_URL_APP`. One tenant's API key then read another tenant's partners
+(emails and CRM metadata), the CSV import granted every tenant's programs,
+and usage billing summed every tenant's GMV. None of it reproduced with RLS
+enforced.
+
+So with `OPENPARTNER_TENANCY=multi` the API checks its app connection at
+startup and exits unless that connection:
+
+- is not a superuser and has no `BYPASSRLS` (both skip every policy), and
+- is subject to RLS on every table that enables it. A role that **owns**
+  the tables, such as the managed cluster's admin user, fails this check:
+  owners skip the policies of any table without `FORCE ROW LEVEL SECURITY`.
+
+The failure is one log line starting
+`[tenant-isolation] Refusing to start`, naming the role and the reason.
+To fix it:
+
+1. Set `OPENPARTNER_APP_DB_PASSWORD`. On the next boot the entrypoint
+   provisions or rotates the `openpartner_app` role and grants it DML on
+   every table.
+2. Set `DATABASE_URL_APP` to the same host and database as `DATABASE_URL`,
+   with `user=openpartner_app` and that password. `sslmode` carries over
+   from `DATABASE_URL` if you leave it off.
+3. Redeploy.
+
+Single-tenant self-host (`OPENPARTNER_TENANCY=single`, the default) skips
+the check. With one tenant there is nothing to isolate, so it can run
+entirely as the migration role.
 
 ### Scheduled jobs
 
@@ -321,6 +356,11 @@ Scales to ~3-5x at meaningful traffic.
 The migration script uses an advisory lock. If a previous deploy crashed
 mid-migration, the lock can persist. SSH in via `doctl apps console`, run
 `SELECT pg_advisory_unlock_all();` from psql.
+
+**`[tenant-isolation] Refusing to start` on boot.**
+`OPENPARTNER_TENANCY=multi` is set, but the app connection bypasses RLS:
+`DATABASE_URL_APP` is unset, or it points at a superuser, `BYPASSRLS` or
+table-owner role. See [Tenant isolation: the app role](#tenant-isolation-the-app-role).
 
 **"Customer Portal is not configured."**
 Stripe → Settings → Billing → Customer portal → **Activate test link** in test
