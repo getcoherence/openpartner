@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { CreatorOfferingDetailPage } from '../pages/creator/CreatorOfferingDetail.js';
 
@@ -51,7 +51,7 @@ function renderPage(profile: Record<string, unknown>) {
   qc.setQueryData(['creator-whoami'], { creator: { id: 'crt_1', handle: 'ada' } });
   qc.setQueryData(['creator-my-profile'], profile);
   return render(
-    <MemoryRouter initialEntries={['/creator/offerings/off_1']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter initialEntries={['/creator/offerings/off_1']}>
       <QueryClientProvider client={qc}>
         <Routes>
           <Route path="/creator/offerings/:id" element={<CreatorOfferingDetailPage />} />

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router';
 import { ApiError } from '../api.js';
 import { alpha, softText, theme } from '../theme.js';
 import { AuthFrame, SignupTabs } from './auth/Shared.js';

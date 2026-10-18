@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router';
 import { api } from '../api.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
 import { ruleEventTypeMissing } from '../lib/CompoundRuleEditor.js';
@@ -40,7 +40,7 @@ function show(snapshot: Record<string, unknown> | null, programs?: Array<Record<
   });
   if (programs) client.setQueryData(['partner-campaigns', 'p1'], { programs });
   return render(
-    <MemoryRouter initialEntries={['/admin/partners/p1/commission']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter initialEntries={['/admin/partners/p1/commission']}>
       <QueryClientProvider client={client}>
         <Routes>
           <Route path="/admin/partners/:id/commission" element={<AdminPartnerCommission />} />

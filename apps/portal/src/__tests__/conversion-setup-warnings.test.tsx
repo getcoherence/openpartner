@@ -12,7 +12,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AdminPrograms } from '../pages/AdminPrograms.js';
 import { AdminIntegrations } from '../pages/admin/Integrations.js';
@@ -35,7 +35,7 @@ function client(seed: Array<[unknown[], unknown]>) {
 
 function renderWith(qc: QueryClient, page: React.ReactElement) {
   return render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter>
       <QueryClientProvider client={qc}>{page}</QueryClientProvider>
     </MemoryRouter>,
   );

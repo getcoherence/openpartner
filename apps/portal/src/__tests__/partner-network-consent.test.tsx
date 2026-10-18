@@ -11,7 +11,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Sidebar } from '../App.js';
 import { PartnerJoinPage } from '../pages/PartnerJoin.js';
@@ -81,7 +81,7 @@ function client(consent?: NetworkConsentState): QueryClient {
 
 function renderIn(ui: React.ReactElement, qc: QueryClient) {
   return render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter>
       <QueryClientProvider client={qc}>{ui}</QueryClientProvider>
     </MemoryRouter>,
   );

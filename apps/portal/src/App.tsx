@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router';
 import {
   LayoutDashboard,
   Link2,
@@ -139,7 +139,7 @@ export function App() {
   const hostTenantSlug = isMultiTenant ? (hostBrand.data?.tenantSlug ?? null) : null;
 
   return (
-    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <BrowserRouter>
       <BrandDocument />
       <Routes>
         {isMultiTenant && hostTenantSlug ? (

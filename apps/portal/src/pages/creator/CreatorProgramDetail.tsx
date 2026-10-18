@@ -16,7 +16,7 @@
 
 import { useMemo, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link, NavLink, Outlet, Route, Routes, useNavigate, useOutletContext, useParams } from 'react-router-dom';
+import { Link, NavLink, Outlet, Route, Routes, useNavigate, useOutletContext, useParams } from 'react-router';
 import { ArrowLeft, ArrowUpRight } from 'lucide-react';
 import { Card, EmptyState, ErrorBanner, Page, formatDate, money, shortId } from '../../ui.js';
 import { theme } from '../../theme.js';

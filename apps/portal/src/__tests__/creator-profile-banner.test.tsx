@@ -7,7 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { CreatorShell } from '../pages/creator/CreatorShell.js';
 import { missingFromProfile, profileIncompleteFrom } from '../lib/profile-incomplete.js';
@@ -70,7 +70,7 @@ afterEach(cleanup);
 function renderShell(path: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={[path]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={qc}>
         <Routes>
           <Route path="/creator/*" element={<CreatorShell />} />
