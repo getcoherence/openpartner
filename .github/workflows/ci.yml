@@ -70,6 +70,15 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # npm-publish.yml builds the SDK, but nothing else did, so a broken
+      # tsup DTS step sat on main until release time. Build it here and
+      # check the declaration files package.json "types" points at exist.
+      - name: Build @openpartner/sdk
+        run: |
+          pnpm --filter @openpartner/sdk build
+          test -f packages/sdk/dist/browser.d.ts
+          test -f packages/sdk/dist/server.d.ts
+
       - name: Test
         run: pnpm test
 
