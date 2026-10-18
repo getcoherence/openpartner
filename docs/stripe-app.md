@@ -371,6 +371,7 @@ installed.
 | `STRIPE_APP_SECRET_KEY_SANDBOX` / `STRIPE_APP_CLIENT_ID_SANDBOX` | Optional: the app's managed-sandbox key and link |
 | `STRIPE_APP_WEBHOOK_SECRET` | The endpoint signing secrets from step 3, comma-separated |
 | `STRIPE_APP_REDIRECT_URI` | Optional. Defaults to `${PORTAL_URL}/api/stripe-app/oauth/callback`, and must exactly match a manifest URI |
+| `STRIPE_APP_AUTHORIZE_URL` | **Until the app is published.** Paste the External test tab's live-mode link whole (`https://marketplace.stripe.com/oauth/v2/chnlink_…/authorize?…`). Only its origin and path are used; `client_id` still comes from the vars above. It applies to every mode unless `_TEST` / `_SANDBOX` overrides it, since the live and test links have shared one channel so far. Unset = the public link, which works only after publishing. |
 
 Each mode is offered in the portal only when both its key and client id are set:
 
@@ -382,9 +383,24 @@ With nothing set, the card is hidden. Set these on the DO app's `api` component.
 
 ### 5. External test
 
-1. App details → **External test** → Get started.
-2. Set `STRIPE_APP_CLIENT_ID` (and `_TEST`) to the client ids in that tab's
-   **Test OAuth** links. Public links don't work until the app is published.
+1. App details → **External test** → Get started, picking the uploaded version.
+2. Under **Test OAuth**, copy the **Live mode link** and the **Test mode link**.
+   They look like
+   `https://marketplace.stripe.com/oauth/v2/chnlink_…/authorize?client_id=ca_…`.
+   The channel (`chnlink_…`) is in the path, and each mode has its own
+   `client_id`. Set:
+   - `STRIPE_APP_CLIENT_ID`: the live link's `client_id`;
+   - `STRIPE_APP_CLIENT_ID_TEST`: the test link's `client_id`, plus
+     `STRIPE_APP_SECRET_KEY_TEST`, if you want the test-mode button;
+   - `STRIPE_APP_AUTHORIZE_URL`: the live link, pasted whole.
+
+   Without the channel, an install shows "The provided OAuth link is invalid":
+   public links don't work until the app is published.
+
+   As of Oct 18 2026 (version 0.1.0): live `client_id`
+   `ca_VSz5Gbxypnv9PUB5PlSbh4PVs0oKrdvI`, test `client_id`
+   `ca_VSz5qyW7JXnLY6PUvfnEfvGXS8aIPmaT`, channel
+   `chnlink_61VbRZD7GqfQXOlfu41LKsWusNm7ZOpU`.
 3. In OpenPartner Cloud, as an approved test brand: Admin → Integrations →
    Connect Stripe (or Connect a test-mode account).
 4. Make a test purchase on a Payment Link with
@@ -411,9 +427,11 @@ For example, a public page at `https://openpartner.dev/integrations/stripe`
 pre-approved demo brand. New brands queue for platform approval (`/platform`),
 so approve it first. Once published:
 
-1. Switch `STRIPE_APP_CLIENT_ID` to the **public** link's client id, from the
-   Settings tab.
-2. Redeploy.
+1. Switch `STRIPE_APP_CLIENT_ID` (and `_TEST`) to the **public** links' client
+   ids, from the Settings tab, if they differ.
+2. Remove `STRIPE_APP_AUTHORIZE_URL` (and any `_TEST` / `_SANDBOX`), so installs
+   use the public link.
+3. Redeploy.
 
 ---
 
