@@ -95,7 +95,7 @@ describe.skipIf(skipIntegration)('POST /attribution/refunds — full refunds', (
       { trigger: 'every', type: 'fixed', value: 5 },
     ]);
     const eventId = await convert(clickId, { value: 100, externalEventId: 'order-1' });
-    const [percent, fixed] = await commissionsOf(eventId);
+    const [percent, fixed] = largestFirst(await commissionsOf(eventId), (c) => c.amount);
     expect([percent!.amount, fixed!.amount]).toEqual(['10.00', '5.00']);
     await db(TABLES.Commission).where({ id: fixed!.id }).update({ status: 'approved' });
     vi.mocked(dispatchEvent).mockClear();
@@ -115,7 +115,8 @@ describe.skipIf(skipIntegration)('POST /attribution/refunds — full refunds', (
       actionRequired: false,
     });
     expect(res.body.replayed).toBeUndefined();
-    expect(res.body.commissions.map((c: Record<string, unknown>) => [c.commissionId, c.status, c.keptAmount, c.currentCommissionId])).toEqual([
+    const reversed = largestFirst(res.body.commissions as Array<Record<string, unknown>>, (c) => c.originalAmount);
+    expect(reversed.map((c) => [c.commissionId, c.status, c.keptAmount, c.currentCommissionId])).toEqual([
       [percent!.id, 'reversed', '0.00', null],
       [fixed!.id, 'reversed', '0.00', null],
     ]);
@@ -187,7 +188,8 @@ describe.skipIf(skipIntegration)('POST /attribution/refunds — partial refunds'
       { trigger: 'every', type: 'fixed', value: 5 },
     ]);
     const eventId = await convert(clickId, { value: 100, externalEventId: 'order-2' });
-    const [percent] = await commissionsOf(eventId);
+    const [percent] = largestFirst(await commissionsOf(eventId), (c) => c.amount);
+    expect(percent!.amount).toBe('20.00');
     await db(TABLES.Commission).where({ id: percent!.id }).update({ status: 'approved' });
     vi.mocked(dispatchEvent).mockClear();
 
@@ -195,15 +197,15 @@ describe.skipIf(skipIntegration)('POST /attribution/refunds — partial refunds'
     const first = await refund({ conversionExternalEventId: 'order-2', amount: 30, externalEventId: 'rf-2a' });
     expect(first.status).toBe(200);
     expect(first.body).toMatchObject({ amount: '30.00', refundedAmount: '30.00', fullRefund: false, actionRequired: false });
-    const [p1, f1] = first.body.commissions as Array<Record<string, string>>;
+    const [p1, f1] = largestFirst(first.body.commissions as Array<Record<string, string>>, (c) => c.originalAmount);
     expect([p1!.status, p1!.originalAmount, p1!.keptAmount, p1!.currentStatus]).toEqual(['reduced', '20.00', '14.00', 'approved']);
     expect([f1!.status, f1!.originalAmount, f1!.keptAmount, f1!.currentStatus]).toEqual(['reduced', '5.00', '3.50', 'accrued']);
 
     const rows = await commissionsOf(eventId);
-    expect(rows.map((c) => [c.status, c.amount])).toEqual([
+    expect(largestFirst(rows, (c) => c.amount).map((c) => [c.status, c.amount])).toEqual([
       ['reversed', '20.00'],
-      ['reversed', '5.00'],
       ['approved', '14.00'],
+      ['reversed', '5.00'],
       ['accrued', '3.50'],
     ]);
     const replacement = rows.find((c) => c.id === p1!.currentCommissionId)!;
@@ -230,7 +232,7 @@ describe.skipIf(skipIntegration)('POST /attribution/refunds — partial refunds'
     // 20 more: 50 refunded in all keeps 50% of the ORIGINAL amounts.
     const second = await refund({ conversionEventId: eventId, amount: 20, externalEventId: 'rf-2b' });
     expect(second.body.refundedAmount).toBe('50.00');
-    expect(second.body.commissions.map((c: Record<string, string>) => c.keptAmount)).toEqual(['10.00', '2.50']);
+    expect(largestFirst(second.body.commissions as Array<Record<string, string>>, (c) => c.keptAmount).map((c) => c.keptAmount)).toEqual(['10.00', '2.50']);
     expect(await liveAmounts(eventId)).toEqual(['10.00', '2.50']);
 
     // More than is left is refused; the rest (no amount) is a full refund.
@@ -631,14 +633,20 @@ async function commissionsOf(eventId: string) {
   return db(TABLES.Commission).whereIn('attributionId', attributionIds).orderBy('id');
 }
 
-/** Live commission amounts, largest first. Not in id order: replacement
- *  commissions written in the same millisecond get ULIDs whose order is
- *  random, so id order made multi-commission assertions flaky. */
+/** Rows sorted largest amount first. Sibling commissions (two sub-rules on
+ *  one conversion, or the replacements a partial refund writes) are created
+ *  in the same millisecond, and their ULIDs then sort in random order, so
+ *  neither `commissionsOf`'s id order nor the API's response order can tell
+ *  them apart. Their amounts can. */
+function largestFirst<T>(rows: readonly T[], amount: (row: T) => unknown): T[] {
+  return [...rows].sort((a, b) => Number(amount(b)) - Number(amount(a)));
+}
+
+/** Live commission amounts, largest first. */
 async function liveAmounts(eventId: string): Promise<string[]> {
-  return (await commissionsOf(eventId))
+  return largestFirst(await commissionsOf(eventId), (c) => c.amount)
     .filter((c) => c.status !== 'reversed')
-    .map((c) => c.amount as string)
-    .sort((a, b) => Number(b) - Number(a));
+    .map((c) => c.amount as string);
 }
 
 /** Put commissions in a manual payout, as the planner does. */
