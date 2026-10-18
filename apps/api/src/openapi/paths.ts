@@ -445,7 +445,7 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
 - \`signup\` is the funnel's *signups* stage (\`signup\` and \`trial_started\` are *leads* in the timeseries).
 - \`invoice_paid\` is the funnel's *paid* stage, and on OpenPartner Cloud it is billable GMV, as is \`subscription_created\`. Report payments as \`invoice_paid\`. Other types with a value still accrue commission but are not counted as GMV.
 
-\`value\` is in major units (\`49.99\`), defaulting to no value; \`currency\` defaults to USD.
+\`value\` is a JSON number in major units (\`49.99\`), not a string. Omit it for an event with no value; \`null\` is refused. \`currency\` is an ISO 4217 code in any case, stored upper case (\`inr\` is \`INR\`). Without one the event is stored in the brand's default currency (Settings → Program; USD unless changed), so send it whenever the brand takes more than one currency.
 
 **Idempotency.** Always send \`externalEventId\`: your system's stable id for this one event (invoice id, order id, deal id + stage). A retry with the same key returns \`200\` with \`replayed: true\` and the original result, writing nothing. Reusing a key for a different userId, type, value or currency returns \`409 external_event_id_conflict\`. Keys are per tenant, up to 120 characters, and shared with \`POST /coupons/redeem\`.
 
@@ -466,6 +466,8 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
 For senders that hold a click id but never saw an identify: a lender reporting a funded loan, a CRM, an affiliate network. The click id reaches them through the destination URL's \`{click_id}\` macro, or the \`cref\` the router appends. One call stitches the click to a user and records the event, in one transaction.
 
 Send \`userId\` when you have your own id for the user: attribution then follows the program's model across every click that user is stitched to, as on \`POST /attribution/events\`. Without it the click's own synthetic user is used, and this click alone is credited. Events recorded for the user before this stitch are not backfilled; \`POST /attribution/identify\` does that.
+
+\`value\` and \`currency\` work as on \`POST /attribution/events\`: without a currency the event is stored in the brand's default currency.
 
 **Idempotency.** \`externalEventId\` is required. A retry with the same key returns \`200\` with \`replayed: true\` and the original result, even if the click has been flagged since. Reusing a key for a different click, userId, type, value or currency returns \`409 external_event_id_conflict\`. Keys share one namespace with \`POST /attribution/events\`, \`GET /postback\` and \`POST /coupons/redeem\`.
 
@@ -555,7 +557,7 @@ A click flagged by velocity limits or a revoked partner earns nothing: \`422 cli
     operationId: 'redeemCoupon',
     summary: 'Record a coupon redemption',
     description:
-      'Call from your checkout when a customer uses a partner code. Records the conversion and stitches the user to the partner, so their later events attribute too. `externalEventId` is required and works as on `POST /attribution/events` (same namespace).',
+      "Call from your checkout when a customer uses a partner code. Records the conversion and stitches the user to the partner, so their later events attribute too. `externalEventId` is required and works as on `POST /attribution/events` (same namespace), as do `value` and `currency`: without a currency the redemption is stored in the brand's default currency.",
     access: { kind: 'admin', scope: 'events:write' },
     body: coupons.redeemSchema.openapi('RedeemCouponRequest'),
     responses: {
@@ -661,7 +663,8 @@ A click flagged by velocity limits or a revoked partner earns nothing: \`422 cli
     tag: 'Partner reporting',
     operationId: 'getPartnerDashboard',
     summary: 'Headline stats for a partner',
-    description: 'Clicks, attributed events and revenue, and commission totals by status, since `since`.',
+    description:
+      'Clicks, attributed events and revenue, and commission totals by status, since `since`. Amounts in different currencies are never added together: `attributedRevenue` and `commissionByStatus` are in `currency` (the brand\'s default currency), and the `…ByCurrency` fields hold every currency.',
     access: { kind: 'partnerOrAdmin', scope: 'partners:read' },
     query: sinceQuery.extend({
       includeLinks: z.enum(['true', '1', 'false', '0']).optional().openapi({ description: 'Add a per-link breakdown.' }),

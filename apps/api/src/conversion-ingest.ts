@@ -24,13 +24,15 @@ import {
   type IdentityRow,
 } from '@openpartner/db';
 import { attributeEvent, type AttributeResult } from './attribution.js';
+import { ingestCurrency, rowCurrency } from './currency.js';
 
 /**
  * A replay must describe the same conversion. Reusing a key for a different
  * one is a caller bug, and replaying would silently drop the new event, so it
  * 409s instead. metadata and ts aren't compared: a retry that omits ts gets a
- * fresh server timestamp. Currency null ≡ USD, as the attribution engine
- * treats it (coupon redemptions store null).
+ * fresh server timestamp. Currencies compare upper-cased, and a stored null
+ * (coupon redemptions before currencies were stored) ≡ USD, as the
+ * attribution engine treats it.
  */
 export function sameConversion(
   existing: EventRow,
@@ -44,7 +46,7 @@ export function sameConversion(
     existing.userId === incoming.userId &&
     existing.type === incoming.type &&
     sameValue &&
-    (existing.currency ?? 'USD') === (incoming.currency ?? 'USD')
+    rowCurrency(existing.currency) === rowCurrency(incoming.currency)
   );
 }
 
@@ -159,7 +161,7 @@ export async function recordClickConversion(
     userId,
     type: input.type,
     value: input.value != null ? input.value.toFixed(2) : null,
-    currency: input.currency?.toUpperCase() ?? 'USD',
+    currency: await ingestCurrency(db, tenantId, input.currency),
     externalEventId: input.externalEventId,
     metadata: input.metadata ?? {},
     ts: input.ts ?? new Date(),

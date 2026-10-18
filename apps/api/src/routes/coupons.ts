@@ -48,6 +48,7 @@ import { getTenancyMode, tenantOf } from '../tenancy.js';
 import { getMode } from '../stripe.js';
 import { attributeEvent } from '../attribution.js';
 import { sameConversion } from '../conversion-ingest.js';
+import { currencyInputSchema, ingestCurrency } from '../currency.js';
 import { codeExistsInStripe, deactivateCustomerReward, provisionCustomerReward } from '../customer-rewards.js';
 
 export const couponsRouter = Router();
@@ -401,7 +402,8 @@ export const redeemSchema = z.object({
    *  subscription_created, invoice_paid, etc. */
   eventType: z.string().min(1).max(80),
   value: z.number().nonnegative().optional(),
-  currency: z.string().length(3).optional(),
+  /** Any case; stored upper case. Omitted → the tenant's default currency. */
+  currency: currencyInputSchema.optional(),
   /** Required so we can dedup retries. Use the brand's checkout-session
    *  ID, order ID, or whatever's stable. */
   externalEventId: z.string().min(1).max(120),
@@ -434,7 +436,7 @@ couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), r
     userId,
     type: eventType,
     value: value != null ? value.toFixed(2) : null,
-    currency: currency ?? null,
+    currency: await ingestCurrency(db, tenantId, currency),
     externalEventId,
     metadata: { source: 'coupon', code: coupon.code },
     ts,

@@ -160,8 +160,11 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
   const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first();
   const railPreference: PayoutRailPreference = tenant?.payoutRailPreference ?? 'auto';
   // null / 0 / negative all collapse to "no threshold" — keeps the legacy
-  // behavior intact for tenants who haven't touched the setting.
+  // behavior intact for tenants who haven't touched the setting. The
+  // minimum is in the tenant's default currency; without FX it says
+  // nothing about a balance in any other, so those pay at any amount.
   const thresholdCents = Math.max(0, tenant?.payoutThresholdCents ?? 0);
+  const thresholdCurrency = (tenant?.defaultCurrency ?? 'USD').toUpperCase();
 
   // `payoutId is null` is the un-claimed filter: a commission already
   // frozen onto an open transfer intent must NOT be regrouped, or the
@@ -173,11 +176,15 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
   // multi-tenant pool that bypasses RLS (no app role) would otherwise plan
   // payouts for every tenant's partners in this run. The reads below are
   // keyed on a partnerId from these groups, so they stay in the tenant.
+  //
+  // Grouped on the upper-cased code: commissions booked before ingest
+  // normalised currencies can say "inr", and they are the same rupees as
+  // "INR" — one balance, one payout.
   const groups = (await db(TABLES.Commission)
     .where({ tenantId, status: 'approved' })
     .whereNull('payoutId')
-    .groupBy('partnerId', 'currency')
-    .select('partnerId', 'currency')) as Array<{ partnerId: string; currency: string }>;
+    .groupByRaw('"partnerId", upper("currency")')
+    .select('partnerId', db.raw('upper("currency") as currency'))) as Array<{ partnerId: string; currency: string }>;
 
   const results: PayoutRunResult['payouts'] = [];
   const skipped: PayoutRunResult['skippedBelowThreshold'] = [];
@@ -195,16 +202,17 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     // amount must equal the sum of the commissions we actually claim —
     // never a stale aggregate.
     const commissions = await db<CommissionRow>(TABLES.Commission)
-      .where({ partnerId: group.partnerId, currency: group.currency, status: 'approved' })
+      .where({ partnerId: group.partnerId, status: 'approved' })
+      .whereRaw('upper("currency") = ?', [group.currency])
       .whereNull('payoutId');
     if (commissions.length === 0) continue;
     const amountMinor = commissions.reduce((s, c) => s + Math.round(Number(c.amount) * 100), 0);
     const amount = amountMinor / 100;
 
     // Threshold gate: balances below the tenant minimum stay 'approved'
-    // and roll over to the next run. Cents are the storage unit on the
-    // tenant column, so the comparison happens in minor units.
-    if (thresholdCents > 0 && amountMinor < thresholdCents) {
+    // and roll over to the next run. Hundredths are the storage unit on
+    // the tenant column, so the comparison happens in them.
+    if (thresholdCents > 0 && group.currency === thresholdCurrency && amountMinor < thresholdCents) {
       skipped.push({ partnerId: partner.id, currency: group.currency, amount });
       continue;
     }

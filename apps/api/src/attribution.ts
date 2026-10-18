@@ -37,6 +37,7 @@ import {
 import { dispatchEvent } from './webhook-dispatcher.js';
 import type { WebhookPayload } from './openapi/webhook-events.js';
 import { accrueSlabRule, commissionMetadata, type SubRuleAccrual } from './commission-slabs.js';
+import { rowCurrency } from './currency.js';
 
 // Average month length used by the recurringMonths cap. We use 30.4375 days
 // (365.25 / 12) so a "12 months" cap doesn't drift by an extra day every
@@ -181,12 +182,14 @@ export async function attributeEvent(
     // and a recurring rule). Each sub-rule's eligibility is evaluated
     // independently against the same Event + Attribution.
     let firstCommissionId: string | undefined;
+    let firstCommissionCurrency: string | undefined;
     for (const [ruleIndex, subRule] of rules.entries()) {
       const accrual = await evaluateSubRule(db, subRule, event, click.partnerId, click.programId);
       if (accrual === null) continue; // not eligible (filter / first / cap miss)
       const amount = accrual.amount * weight;
       if (amount === 0) continue;
 
+      const currency = commissionCurrency(subRule, event);
       const commissionId = ulid();
       await db(TABLES.Commission).insert({
         id: commissionId,
@@ -194,11 +197,14 @@ export async function attributeEvent(
         attributionId,
         partnerId: click.partnerId,
         amount: amount.toFixed(2),
-        currency: event.currency ?? 'USD',
+        currency,
         status: 'accrued',
         metadata: commissionMetadata(accrual, ruleIndex, subRule.type),
       });
-      if (!firstCommissionId) firstCommissionId = commissionId;
+      if (!firstCommissionId) {
+        firstCommissionId = commissionId;
+        firstCommissionCurrency = currency;
+      }
 
       dispatchEvent(event.tenantId, 'commission.accrued', {
         commissionId,
@@ -211,7 +217,7 @@ export async function attributeEvent(
         eventId: event.id,
         programId: click.programId,
         amount: amount.toFixed(2),
-        currency: event.currency ?? 'USD',
+        currency,
         eventType: event.type,
         eventValue: event.value,
       } satisfies WebhookPayload<'commission.accrued'>);
@@ -234,7 +240,7 @@ export async function attributeEvent(
       eventType: event.type,
       eventValue: event.value,
       commissionId: firstCommissionId,
-      commissionCurrency: event.currency ?? 'USD',
+      commissionCurrency: firstCommissionCurrency ?? rowCurrency(event.currency),
     } satisfies WebhookPayload<'attribution.created'>);
   }
 
@@ -410,9 +416,25 @@ async function evaluateSubRule(
   return { amount: computeSubRuleAmount(subRule, event) };
 }
 
-/** Pure dollar amount for one sub-rule against one event. No trigger
- *  evaluation — caller is responsible for that. Exported so tests can
- *  exercise the math without a database. */
+/**
+ * The currency a sub-rule's commission is booked in. A fixed amount is in
+ * the rule's own currency when it names one: "₹100 per lead" pays ₹100
+ * whatever currency the event is in, including a lead sent with none. A
+ * percent is a share of the event's value, so it is in the event's
+ * currency. Nothing is converted; the engine has no FX. A partner earning
+ * in two currencies gets one payout per currency.
+ */
+export function commissionCurrency(
+  subRule: Pick<CommissionSubRule, 'type' | 'currency'>,
+  event: Pick<EventRow, 'currency'>,
+): string {
+  if (subRule.type === 'fixed' && subRule.currency) return subRule.currency.toUpperCase();
+  return rowCurrency(event.currency);
+}
+
+/** Pre-weight amount for one sub-rule against one event, in
+ *  commissionCurrency(). No trigger evaluation — caller is responsible for
+ *  that. Exported so tests can exercise the math without a database. */
 export function computeSubRuleAmount(
   subRule: CommissionSubRule,
   event: Pick<EventRow, 'value'>,

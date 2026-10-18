@@ -4,6 +4,7 @@ import { TABLES, type ClickRow, type LinkRow } from '@openpartner/db';
 import { grantScope, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { parseUserAgent } from '../ua-parse.js';
+import { byCurrency, byCurrencyAndStatus, currencySql, tenantDefaultCurrency } from '../currency.js';
 
 export const dashboardRouter = Router();
 
@@ -25,7 +26,7 @@ export const dashboardRouter = Router();
 // creator portal can show channel-level performance ("newsletter converted
 // at 8%, TikTok bio at 0.3% — focus on the newsletter").
 dashboardRouter.get('/partners/:id/dashboard', requireAuth, grantScope('partners:read'), requirePartnerOrAdmin('id'), async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const partnerId = req.params.id;
   const since = req.query.since
     ? new Date(String(req.query.since))
@@ -37,32 +38,50 @@ dashboardRouter.get('/partners/:id/dashboard', requireAuth, grantScope('partners
     .andWhere('ts', '>=', since)
     .count<{ count: string }[]>({ count: '*' });
 
+  // Amounts are never added across currencies. The scalar fields are in
+  // the brand's default currency; the ByCurrency maps hold every currency.
+  const currency = await tenantDefaultCurrency(db, tenantId);
+  const eventCurrency = currencySql('"Event"."currency"');
+
   // Multi-touch: an event may produce N attribution rows with fractional
   // weights. The partner's share of revenue is Σ(value × weight), and
   // the event count is distinct eventIds (one partner can't "earn" an
   // event twice within the same model).
-  const attributedRow = await db(TABLES.Attribution)
-    .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
-    .where(`${TABLES.Attribution}.partnerId`, partnerId)
-    .andWhere(`${TABLES.Attribution}.computedAt`, '>=', since)
-    .select(
-      db.raw(`COUNT(DISTINCT "Attribution"."eventId") as events`),
-      db.raw(`COALESCE(SUM("Event".value * "Attribution".weight), 0) as revenue`),
-    )
-    .first<{ events: string; revenue: string }>();
+  const attributed = () =>
+    db(TABLES.Attribution)
+      .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
+      .where(`${TABLES.Attribution}.partnerId`, partnerId)
+      .andWhere(`${TABLES.Attribution}.computedAt`, '>=', since);
+  const eventsRow = await attributed()
+    .select(db.raw(`COUNT(DISTINCT "Attribution"."eventId") as events`))
+    .first<{ events: string }>();
+  const revenueByCurrency = byCurrency(
+    (await attributed()
+      .groupByRaw(eventCurrency)
+      .select(db.raw(`${eventCurrency} as currency`), db.raw(`SUM("Event".value * "Attribution".weight) as amount`))) as Array<{
+      currency: string;
+      amount: string | null;
+    }>,
+  );
 
-  const commissionByStatus = (await db(TABLES.Commission)
-    .where({ partnerId })
-    .andWhere('accruedAt', '>=', since)
-    .groupBy('status')
-    .select('status')
-    .sum({ amount: 'amount' })) as Array<{ status: string; amount: string | null }>;
+  const commissionByCurrency = byCurrencyAndStatus(
+    (await db(TABLES.Commission)
+      .where({ partnerId })
+      .andWhere('accruedAt', '>=', since)
+      .groupByRaw(`"status", ${currencySql('"currency"')}`)
+      .select('status', db.raw(`${currencySql('"currency"')} as currency`), db.raw('SUM("amount") as amount'))) as Array<{
+      status: string;
+      currency: string;
+      amount: string | null;
+    }>,
+  );
 
   let links: Array<{
     linkKey: string;
     clicks: number;
     attributedEvents: number;
     attributedRevenue: number;
+    attributedRevenueByCurrency: Record<string, number>;
   }> | undefined;
 
   if (includeLinks) {
@@ -86,28 +105,39 @@ dashboardRouter.get('/partners/:id/dashboard', requireAuth, grantScope('partners
 
       // Attribution rows don't carry linkId directly — they reference clickId.
       // Join through Click + Event to get per-link conversion + revenue.
-      const eventsByLink = (await db(TABLES.Attribution)
-        .join(TABLES.Click, `${TABLES.Click}.id`, `${TABLES.Attribution}.clickId`)
-        .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
-        .where(`${TABLES.Attribution}.partnerId`, partnerId)
-        .andWhere(`${TABLES.Attribution}.computedAt`, '>=', since)
-        .whereIn(`${TABLES.Click}.linkId`, linkIds)
+      const byLink = () =>
+        db(TABLES.Attribution)
+          .join(TABLES.Click, `${TABLES.Click}.id`, `${TABLES.Attribution}.clickId`)
+          .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
+          .where(`${TABLES.Attribution}.partnerId`, partnerId)
+          .andWhere(`${TABLES.Attribution}.computedAt`, '>=', since)
+          .whereIn(`${TABLES.Click}.linkId`, linkIds);
+      const eventsByLink = (await byLink()
         .groupBy(`${TABLES.Click}.linkId`)
         .select(`${TABLES.Click}.linkId as linkId`)
+        .select(db.raw(`COUNT(DISTINCT "Attribution"."eventId") as events`))) as Array<{ linkId: string; events: string }>;
+      const revenueByLink = (await byLink()
+        .groupByRaw(`"Click"."linkId", ${eventCurrency}`)
         .select(
-          db.raw(`COUNT(DISTINCT "Attribution"."eventId") as events`),
-          db.raw(`COALESCE(SUM("Event".value * "Attribution".weight), 0) as revenue`),
-        )) as Array<{ linkId: string; events: string; revenue: string }>;
+          `${TABLES.Click}.linkId as linkId`,
+          db.raw(`${eventCurrency} as currency`),
+          db.raw(`SUM("Event".value * "Attribution".weight) as amount`),
+        )) as Array<{ linkId: string; currency: string; amount: string | null }>;
 
       const clicksMap = new Map(clicksByLink.map((c) => [c.linkId, Number(c.count)]));
-      const eventsMap = new Map(eventsByLink.map((e) => [e.linkId, { events: Number(e.events), revenue: Number(e.revenue) }]));
+      const eventsMap = new Map(eventsByLink.map((e) => [e.linkId, Number(e.events)]));
+      const revenueMap = new Map<string, Record<string, number>>();
+      for (const linkId of new Set(revenueByLink.map((r) => r.linkId))) {
+        revenueMap.set(linkId, byCurrency(revenueByLink.filter((r) => r.linkId === linkId)));
+      }
 
       links = partnerLinks
         .map((l) => ({
           linkKey: l.linkKey,
           clicks: clicksMap.get(l.id) ?? 0,
-          attributedEvents: eventsMap.get(l.id)?.events ?? 0,
-          attributedRevenue: eventsMap.get(l.id)?.revenue ?? 0,
+          attributedEvents: eventsMap.get(l.id) ?? 0,
+          attributedRevenue: revenueMap.get(l.id)?.[currency] ?? 0,
+          attributedRevenueByCurrency: revenueMap.get(l.id) ?? {},
         }))
         // Sort by attributed revenue desc, then clicks desc — most useful
         // surface for "what's working" comparisons.
@@ -120,12 +150,13 @@ dashboardRouter.get('/partners/:id/dashboard', requireAuth, grantScope('partners
   res.json({
     partnerId,
     since: since.toISOString(),
+    currency,
     clicks: Number(clicksRow?.count ?? 0),
-    attributedEvents: Number(attributedRow?.events ?? 0),
-    attributedRevenue: Number(attributedRow?.revenue ?? 0),
-    commissionByStatus: Object.fromEntries(
-      commissionByStatus.map((r) => [r.status, Number(r.amount ?? 0)]),
-    ),
+    attributedEvents: Number(eventsRow?.events ?? 0),
+    attributedRevenue: revenueByCurrency[currency] ?? 0,
+    attributedRevenueByCurrency: revenueByCurrency,
+    commissionByStatus: commissionByCurrency[currency] ?? {},
+    commissionByCurrency,
     ...(links !== undefined ? { links } : {}),
   });
 });

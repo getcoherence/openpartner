@@ -70,9 +70,14 @@ export interface TenantRow {
   /** Payout rail preference. Null = 'auto' (legacy: pick per-partner at
    *  payout time). See migration 20260622000000_tenant_payout_settings. */
   payoutRailPreference: PayoutRailPreference | null;
-  /** Minimum (partner, currency) balance to issue a payout, in cents.
-   *  Null or 0 = no threshold (legacy: pay any amount). */
+  /** Minimum (partner, currency) balance to issue a payout, in hundredths
+   *  of a unit of `defaultCurrency`. Balances in other currencies have no
+   *  minimum. Null or 0 = no threshold (legacy: pay any amount). */
   payoutThresholdCents: number | null;
+  /** The brand's own currency, ISO 4217 upper case. Conversions that
+   *  arrive without a currency are stored in it, and the portal formats
+   *  currency-less amounts in it. Defaults to USD. */
+  defaultCurrency: string;
   /** How often payouts run for this tenant. Null = 'weekly' (legacy:
    *  every Monday). */
   payoutCadence: PayoutCadence | null;
@@ -253,12 +258,16 @@ export interface CommissionSubRule {
   /** Event-type filter. Required for `first`, optional for `every` (omit = all events). */
   eventType?: string;
   type: 'percent' | 'fixed';
-  /** Percent: 20 means 20%. Fixed: dollar amount. With bands or tiers,
-   *  the base rate (below the first threshold). */
+  /** Percent: 20 means 20%. Fixed: an amount in `currency` (else the
+   *  event's currency). With bands or tiers, the base rate (below the
+   *  first threshold). */
   value: number;
   /** Currency of the rule's money amounts: a fixed value, and the
    *  thresholds of bands / revenue tiers. Unset = the event's currency.
-   *  (The accrued Commission is always in the event's currency.) */
+   *  A fixed rule's Commission is booked in this currency (₹100 per lead
+   *  is ₹100 whatever the event's currency); a percent rule's Commission
+   *  is a share of the event's value, so it is in the event's currency.
+   *  Nothing is converted. See docs/commission-slabs.md. */
   currency?: string;
   /** When true, the rule keeps firing on subsequent matching events
    *  (renewals). Combined with recurringMonths to cap duration. */
