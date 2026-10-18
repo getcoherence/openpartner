@@ -27,15 +27,26 @@
  *                adjustments. Through Attribution, so a bonus's commission
  *                never counts: a bounty can't feed itself.
  *
- * `netOfRefunds` (bounties; tiers have never netted) takes refund and
- * chargeback Events into account, linked to their conversion through
- * metadata.conversionEventId: a conversion refunded in full stops counting,
- * and value counts net of what was refunded. Commissions already net
- * themselves: a refund reverses or replaces them, or claws back a paid one.
+ * `netOfRefunds` (bounties; tiers have never netted) takes refunds into
+ * account: a conversion refunded in full stops counting, and value counts
+ * net of what was refunded. Refunds are read from the raw Events, as the
+ * fee meter reads them (usage-ledger.ts):
+ *   * POST /attribution/refunds records `refund` / `chargeback` Events
+ *     naming the conversion in metadata.conversionEventId, each with its
+ *     own negative amount as value (null = a full refund). They add up.
+ *   * The Stripe webhook (self-host, or the Stripe App) records
+ *     `charge.refunded` as a `refund` Event matched to the invoice_paid
+ *     conversion by metadata.stripeInvoiceId / stripePaymentIntentId,
+ *     carrying the charge's cumulative share refunded (STRIPE_SHARE). The
+ *     largest share reported wins.
+ * When both report a refund of one conversion, the larger share wins.
+ * Commissions already net themselves: a refund reverses or replaces them,
+ * or claws back a paid one.
  */
 
 import type { Knex } from 'knex';
 import { TABLES } from '@openpartner/db';
+import { STRIPE_SHARE } from './usage-ledger.js';
 
 /** Event types that correct a conversion rather than being one
  *  (usage-ledger.ts CORRECTIVE_TYPES). */
@@ -124,12 +135,27 @@ export async function performanceByPartner(db: Knex, q: PerformanceQuery): Promi
       'rf.eventId',
       'e.id',
     );
+    // Stripe refunds of the conversion's invoice or PaymentIntent, which
+    // only an invoice_paid conversion has.
+    for (const [key, alias] of [
+      ['stripeInvoiceId', 'rsi'],
+      ['stripePaymentIntentId', 'rspi'],
+    ] as const) {
+      query.leftJoin(stripeRefundShares(db, q.tenantId, key).as(alias), (on) =>
+        on.on(`${alias}.k`, '=', db.raw(`"e"."metadata"->>'${key}'`)).andOnVal('e.type', '=', 'invoice_paid'),
+      );
+    }
   }
 
   const share = `"a"."weight" / nullif((select sum("w"."weight") from "${TABLES.Attribution}" as "w" where "w"."eventId" = "a"."eventId" and "w"."model" = "a"."model"), 0)`;
-  // Refunded in full: a value-less refund, a refund of a value-less
-  // conversion, or refunds adding up to its whole value.
-  const refundedOut = `(coalesce("rf"."nullRefund", false) or ("rf"."eventId" is not null and coalesce("e"."value", 0) <= "rf"."refunded"))`;
+  const stripeShare = `greatest(coalesce("rsi"."share", 0), coalesce("rspi"."share", 0))`;
+  // The value a conversion keeps: none after a value-less refund, else the
+  // smaller of what the API refunds and the Stripe share leave.
+  const kept = `case when coalesce("rf"."nullRefund", false) then 0 else greatest(0, least(coalesce("e"."value", 0) - coalesce("rf"."refunded", 0), coalesce("e"."value", 0) * (1 - ${stripeShare}))) end`;
+  // Refunded in full: a refund left it nothing. A value-less refund, a
+  // refund of a value-less conversion, refunds adding up to its whole
+  // value, or a full Stripe refund.
+  const refundedOut = `(("rf"."eventId" is not null or ${stripeShare} > 0) and ${kept} <= 0)`;
 
   let total: string;
   if (q.measure === 'count') {
@@ -139,9 +165,7 @@ export async function performanceByPartner(db: Knex, q: PerformanceQuery): Promi
   } else if (q.measure === 'value') {
     // Revenue in other currencies can't be added to this one without FX.
     query.andWhereRaw(`upper(coalesce("e"."currency", 'USD')) = ?`, [q.currency!]);
-    const value = q.netOfRefunds
-      ? `case when coalesce("rf"."nullRefund", false) then 0 else greatest(coalesce("e"."value", 0) - coalesce("rf"."refunded", 0), 0) end`
-      : `coalesce("e"."value", 0)`;
+    const value = q.netOfRefunds ? kept : `coalesce("e"."value", 0)`;
     total = `coalesce(sum(${value} * ${share}), 0)`;
   } else {
     query
@@ -167,4 +191,19 @@ export async function performanceByPartner(db: Knex, q: PerformanceQuery): Promi
   const out = new Map<string, number>();
   for (const r of rows) out.set(r.partnerId, Number(r.total));
   return out;
+}
+
+/** The largest share any Stripe `charge.refunded` refund reported, per
+ *  value of its metadata[key] (usage-ledger.ts stripeShareBy). An API
+ *  refund names its conversion and is counted on its own. */
+function stripeRefundShares(db: Knex, tenantId: string | null, key: 'stripeInvoiceId' | 'stripePaymentIntentId') {
+  return db(`${TABLES.Event} as r`)
+    .where('r.type', 'refund')
+    .whereRaw(`r.metadata->>'conversionEventId' is null`)
+    .whereRaw(`r.metadata->>'${key}' is not null`)
+    .modify((s) => {
+      if (tenantId) s.andWhere('r.tenantId', tenantId);
+    })
+    .groupByRaw('1')
+    .select(db.raw(`r.metadata->>'${key}' as k`), db.raw(`max(${STRIPE_SHARE}) as share`));
 }

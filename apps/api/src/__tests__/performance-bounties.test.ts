@@ -29,7 +29,8 @@ const { createApiKeyRow } = await import('../auth.js');
 const { dispatchEvent } = await import('../webhook-dispatcher.js');
 const { awardBonus } = await import('../bonuses.js');
 const { __setMailerForTests } = await import('../mailer.js');
-const { sendBountyEmails, sweepTenantBounties } = await import('../performance-bounties.js');
+const { bountyMetricQuery, bountyProgress, sendBountyEmails, sweepTenantBounties } = await import('../performance-bounties.js');
+const { performanceByPartner } = await import('../performance-metric.js');
 const { runCommissionAutoApproveJob, runPerformanceBountiesJob } = await import('../scheduler.js');
 import type { Mailer, Message } from '../mailer.js';
 
@@ -127,6 +128,7 @@ async function convert(
     fraud?: boolean;
     commission?: number | null;
     commissionStatus?: 'accrued' | 'approved' | 'paid' | 'reversed';
+    metadata?: Record<string, unknown>;
   } = {},
 ): Promise<{ eventId: string; commissionId: string | null }> {
   const clickId = ulid();
@@ -150,7 +152,7 @@ async function convert(
     type: opts.type ?? 'invoice_paid',
     value: opts.value === null ? null : (opts.value ?? 100).toFixed(2),
     currency: opts.currency ?? 'USD',
-    metadata: {},
+    metadata: opts.metadata ?? {},
     ts,
   });
   const attributionId = ulid();
@@ -208,6 +210,32 @@ async function refund(eventId: string, amount: number | null, type: 'refund' | '
   });
 }
 
+/** A refund of a Stripe charge, as the self-host webhook records
+ *  charge.refunded: matched by the invoice or PaymentIntent, no
+ *  conversionEventId, the charge's CUMULATIVE amounts in minor units. */
+async function stripeRefund(
+  match: { stripeInvoiceId?: string; stripePaymentIntentId?: string },
+  amountRefunded: number,
+  chargeCollected: number,
+): Promise<void> {
+  await db(TABLES.Event).insert({
+    id: ulid(),
+    tenantId: T,
+    userId: 'u-stripe',
+    type: 'refund',
+    value: (-amountRefunded / 100).toFixed(2),
+    currency: 'USD',
+    metadata: {
+      stripeChargeId: `ch_${ulid()}`,
+      ...match,
+      amountRefunded,
+      chargeCollected,
+      fullRefund: amountRefunded >= chargeCollected,
+    },
+    ts: new Date(),
+  });
+}
+
 async function seedBounty(programId: string, opts: Record<string, unknown> = {}): Promise<string> {
   const id = ulid();
   await db(TABLES.Bounty).insert({
@@ -230,6 +258,12 @@ async function seedBounty(programId: string, opts: Record<string, unknown> = {})
     ...(Array.isArray(opts.partnerIds) ? { partnerIds: JSON.stringify(opts.partnerIds) } : {}),
   });
   return id;
+}
+
+/** What the sweep measures `p` at against the bounty. */
+async function progress(bountyId: string, partnerId: string): Promise<number> {
+  const b = await db(TABLES.Bounty).where({ id: bountyId }).first();
+  return (await bountyProgress(db, b, [partnerId])).get(partnerId) ?? 0;
 }
 
 async function sweep(now?: Date) {
@@ -334,6 +368,63 @@ describe.skipIf(skipIntegration)('what a bounty counts', () => {
     await sweep();
     expect(await bonusesFor(at1000)).toHaveLength(1);
     expect(await bonusesFor(at1001)).toHaveLength(0);
+  });
+
+  it('a Stripe refund of the invoice or PaymentIntent: in full, out; in part, still a sale, net', async () => {
+    const programId = await seedProgram();
+    const p = await seedPartner(programId);
+    await convert(p, programId, { metadata: { stripeInvoiceId: 'in_full' } });
+    // amountRefunded is cumulative: $40, then the rest.
+    await stripeRefund({ stripeInvoiceId: 'in_full' }, 4000, 10000);
+    await stripeRefund({ stripeInvoiceId: 'in_full' }, 10000, 10000);
+    await convert(p, programId, { metadata: { stripePaymentIntentId: 'pi_part' } });
+    await stripeRefund({ stripePaymentIntentId: 'pi_part' }, 2500, 10000); // 75 kept
+    await convert(p, programId); // untouched
+    const conversions = await seedBounty(programId, { threshold: 2 });
+    const at175 = await seedBounty(programId, { metric: 'revenue', threshold: 175 });
+    const at176 = await seedBounty(programId, { metric: 'revenue', threshold: 176 });
+
+    expect(await progress(conversions, p.id)).toBe(2);
+    expect(await progress(at175, p.id)).toBe(175);
+    await sweep();
+    expect(await bonusesFor(conversions)).toHaveLength(1);
+    expect(await bonusesFor(at175)).toHaveLength(1);
+    expect(await bonusesFor(at176)).toHaveLength(0);
+  });
+
+  it('when the API and Stripe both refund a conversion, the larger share wins', async () => {
+    const programId = await seedProgram();
+    const p = await seedPartner(programId);
+    const a = await convert(p, programId, { value: 200, metadata: { stripeInvoiceId: 'in_a' } });
+    await refund(a.eventId, 20); // 180 left
+    await stripeRefund({ stripeInvoiceId: 'in_a' }, 5000, 10000); // half: 100 left
+    const b = await convert(p, programId, { value: 200, metadata: { stripeInvoiceId: 'in_b' } });
+    await refund(b.eventId, 150); // 50 left
+    await stripeRefund({ stripeInvoiceId: 'in_b' }, 2500, 10000); // a quarter: 150 left
+    const c = await convert(p, programId, { value: 200, metadata: { stripeInvoiceId: 'in_c' } });
+    await refund(c.eventId, 50);
+    await stripeRefund({ stripeInvoiceId: 'in_c' }, 10000, 10000); // in full: out
+    const revenue = await seedBounty(programId, { metric: 'revenue', threshold: 1 });
+    const conversions = await seedBounty(programId, { threshold: 1 });
+
+    expect(await progress(revenue, p.id)).toBe(150);
+    expect(await progress(conversions, p.id)).toBe(2);
+  });
+
+  it('only an invoice_paid conversion takes a Stripe refund, and tiers never net one', async () => {
+    const programId = await seedProgram();
+    const p = await seedPartner(programId);
+    await convert(p, programId, { type: 'subscription_created', metadata: { stripeInvoiceId: 'in_sub' } });
+    await convert(p, programId, { metadata: { stripeInvoiceId: 'in_paid' } });
+    await stripeRefund({ stripeInvoiceId: 'in_sub' }, 10000, 10000);
+    await stripeRefund({ stripeInvoiceId: 'in_paid' }, 10000, 10000);
+    const bountyId = await seedBounty(programId, { threshold: 1 });
+
+    expect(await progress(bountyId, p.id)).toBe(1); // the subscription_created
+    // Tiers call the same query without netOfRefunds.
+    const b = await db(TABLES.Bounty).where({ id: bountyId }).first();
+    const tierShaped = { ...bountyMetricQuery(b, [p.id]), netOfRefunds: false };
+    expect((await performanceByPartner(db, tierShaped)).get(p.id)).toBe(2);
   });
 
   it('commissions: live attribution commissions, net of clawbacks; a bonus never counts', async () => {
@@ -512,7 +603,8 @@ describe.skipIf(skipIntegration)('the re-check at approval', () => {
     const programId = await seedProgram({ holdbackDays: 7 });
     const p = await seedPartner(programId);
     const conversions = [];
-    for (let i = 0; i < 3; i += 1) conversions.push(await convert(p, programId));
+    // Stripe invoices in_0..in_2, for the charge.refunded re-check.
+    for (let i = 0; i < 3; i += 1) conversions.push(await convert(p, programId, { metadata: { stripeInvoiceId: `in_${i}` } }));
     const bountyId = await seedBounty(programId, { threshold: 3 });
     await sweep();
     const [bonus] = await bonusesFor(bountyId);
@@ -553,6 +645,19 @@ describe.skipIf(skipIntegration)('the re-check at approval', () => {
     await convert(p, programId);
     await sweep();
     expect(await bonusesFor(bountyId)).toHaveLength(1);
+  });
+
+  it("reverses it when Stripe's charge.refunded refunds an invoice in full, not in part", async () => {
+    const { commissionId, bountyId, p } = await awardedBounty();
+    await stripeRefund({ stripeInvoiceId: 'in_1' }, 9900, 10000);
+    expect(await progress(bountyId, p.id)).toBe(3); // still a sale
+
+    await stripeRefund({ stripeInvoiceId: 'in_2' }, 10000, 10000);
+    const result = await runCommissionAutoApproveJob();
+    expect(result.find((r) => r.tenantId === T)).toMatchObject({ approvedCount: 0, requalifiedCount: 1 });
+    expect((await db(TABLES.Commission).where({ id: commissionId }).first()).status).toBe('reversed');
+    await vi.waitFor(() => expect(dispatched('bonus.reversed')).toHaveLength(1));
+    expect(dispatched('bonus.reversed')[0]).toMatchObject({ commissionId, bountyId, reason: 'bounty_requalification' });
   });
 });
 

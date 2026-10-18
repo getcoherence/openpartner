@@ -146,7 +146,7 @@ These reuse the dashboard's definitions (`routes/dashboard.ts`) and the filters 
 - **`conversions`:** events with value > 0, or of `eventType`.
 - **`revenue`:** Σ value × share, in the bounty currency only (the same rule as tiers; no FX).
 - **`commissions`:** Σ the partner's **attribution** commissions in the program, not reversed. Bonus commissions are excluded, so a bounty can't feed itself.
-- **Refunds:** a refunded conversion stops counting. Revenue and commissions count net of `refund` and `chargeback` (the corrective events link to their conversion through `metadata.conversionEventId`).
+- **Refunds:** a refunded conversion stops counting. Revenue and commissions count net of `refund` and `chargeback` (the corrective events link to their conversion through `metadata.conversionEventId`, or, for Stripe's `charge.refunded`, through the invoice or PaymentIntent; see §12).
 
 Factor the shared query out of `tierMetric` rather than copying it. It takes a [start, end) window instead of "strictly before this event".
 
@@ -235,7 +235,11 @@ Where building PR A met the code, the code won. These are the differences from �
 
 - **Export is schemaVersion 7, not 6.** PR A bumped to 6 for `Bonus`. PR B adds `Bounty`, and `export.ts` bumps the version whenever the table set changes, because A and B can deploy apart: a v6 instance would accept a bundle with bounties and silently drop them.
 - **The shared metric query** is `performance-metric.ts`. `tierMetric` now calls it with its window ending at the accrued event (same-instant ties broken by id, as before), so tiers are unchanged: same filters, same share ratio, no refund netting. Bounties pass [startsAt, endsAt) and `netOfRefunds`. Events are a type list, `sales` (non-corrective with a value above 0), or `all` (non-corrective; the `commissions` metric uses it). The query groups by partner, so the sweep measures a program's partners in one statement per 1,000.
-- **Refunds** come off through `metadata.conversionEventId`, as §7 says. A refund recorded only from Stripe's `charge.refunded` on self-host carries an invoice id instead, so it doesn't reduce a `conversions` or `revenue` bounty. It does reduce `commissions` (the refund reverses or claws back the commission). Matching those refunds the way the fee meter does (`usage-ledger.ts` STRIPE_SHARE) is a possible follow-up.
+- **Refunds** are read from the raw refund Events the way the fee meter reads them (`usage-ledger.ts`), so `conversions` and `revenue` net both kinds:
+  - `POST /attribution/refunds` names the conversion in `metadata.conversionEventId`, and its amounts add up.
+  - Stripe's `charge.refunded` (the self-host webhook, or the Stripe App) names no conversion. It carries `metadata.stripeInvoiceId` / `stripePaymentIntentId` and the charge's cumulative `amountRefunded` / `chargeCollected` / `fullRefund`. It is matched to the `invoice_paid` conversion with the same invoice or PaymentIntent, as `charge.refunded` itself matches it. The largest share reported wins (the shared `STRIPE_SHARE` SQL).
+  - When both kinds refund one conversion, the larger share wins. A conversion stops counting once a refund leaves it nothing; a partial refund keeps it a conversion and takes revenue net.
+  - The approval re-check reverses on either kind. `commissions` needed no change: the refund itself reverses or claws back the commission. Tiers don't pass `netOfRefunds`, so they still never net refunds.
 - **The `commissions` window** is the conversion's event time, like every other metric, not the commission's accrual time.
 - **Eligibility** is a `PartnerProgram` grant for the bounty's program, not revoked, and the allowlist when there is one.
 - **Status transitions:** draft → active or archived, active → ended or archived, and ended → active only once its end date is later than now.
