@@ -3,8 +3,8 @@
  *
  * Request schemas are imported from the route modules that validate with
  * them. The few query parameters a route reads without a zod schema
- * (dashboard/funnel `since`, webhook `hard`, export `tenantId`) are
- * described here and marked as such.
+ * (dashboard/funnel `since`, webhook `hard`, export `tenantId`, every
+ * `GET /postback` parameter) are described here and marked as such.
  *
  * Adding a route to one of the documented routers fails
  * __tests__/openapi.test.ts until it is registered here or listed in
@@ -71,8 +71,6 @@ export const UNDOCUMENTED_ROUTES: Record<string, string> = {
   'POST /partners/backfill-commission-snapshots': 'One-shot maintenance job for pre-snapshot partners, not an integration surface.',
   'GET /openapi.json': 'The spec itself.',
   'GET /docs': 'The rendered reference page.',
-  'GET /postback':
-    'Query-string pixel for senders that can only fire a URL. Authenticated by the conversion postback token, not an API key, and answers plain text; documented on the admin Integrations page and in docs/quickstart.md.',
   'GET /conversion-postback': 'Portal settings for the conversion postback token.',
   'POST /conversion-postback/token': 'Portal settings for the conversion postback token.',
   'PATCH /conversion-postback': 'Portal settings for the conversion postback token.',
@@ -176,7 +174,7 @@ Unlike \`POST /partners\`, an import:
 - gives every partner the tenant's default portal access for partners added without an invite (\`GET /config/partner-access\`),
 - shares nothing with the OpenPartner Network: as with \`POST /partners\`, only a partner's own opt-in does.
 
-Rows whose email already exists are reported as \`skipped_email_taken\` with the existing \`partnerId\`, so re-running an import is safe. \`?dryRun=true\` validates and reports without writing. Rows are processed one by one in a single transaction; send large rosters in batches of a few thousand rows.`,
+Rows whose email already exists are reported as \`skipped_email_taken\` with the existing \`partnerId\`, so re-running an import is safe. \`?dryRun=true\` validates and reports without writing. The file is written in one transaction, so a failed import writes nothing. A repeated email later in the same file is skipped like one already on the roster. Send very large rosters in batches of a few thousand rows.`,
     access: { kind: 'admin', scope: 'partners:write' },
     query: z.object({
       dryRun: z.enum(['true', '1', 'false', '0']).optional().openapi({ description: 'Validate and report without writing. Not validated by the route: only `true` and `1` switch it on.' }),
@@ -511,6 +509,59 @@ A click flagged by velocity limits or a revoked partner earns nothing: \`422 cli
   });
 
   r.operation({
+    method: 'get',
+    path: '/postback',
+    tag: 'Attribution',
+    operationId: 'conversionPostback',
+    summary: 'Record a conversion from a postback URL',
+    description: `
+\`POST /attribution/conversions\` for senders that can only fire a URL: affiliate networks, many lenders, tracking pixels. Same result: the click is stitched to a user and the event recorded, in one transaction.
+
+\`\`\`
+GET /postback?click_id={click_id}&type=sale&amount=49.00&currency=USD&txn_id={transaction_id}&token=opcp_…
+\`\`\`
+
+**The token is in the URL.** Proxies, browser history and the sender's own logs keep query strings, so treat a postback URL as leaked from the day you hand it out, and use \`POST /attribution/conversions\` with a Bearer key whenever the sender can set a header. The postback token is built for this: it records conversions and nothing else, is never accepted as a Bearer key (and an API key is never accepted as \`token\`), can be pinned to the sender's IPs (\`ipAllowlist\`), and rotating it on the Integrations page stops the old URL at once. OpenPartner's own request log redacts it. Always use \`https://\`.
+
+**Idempotency.** \`txn_id\` is the \`externalEventId\`: a network re-firing the postback records once. Keys share one namespace with \`POST /attribution/conversions\`, \`POST /attribution/events\` and \`POST /coupons/redeem\`, and reusing one for a different conversion is \`409 external_event_id_conflict\`.
+
+**Responses are plain text**, not JSON: \`ok\`, or the error code (\`invalid_parameters\` is followed by the offending names, e.g. \`invalid_parameters: click_id, txn_id\`). Every response is \`Cache-Control: no-store\`. \`HEAD\` answers \`405\` and records nothing, so a link checker can't create a conversion.
+
+The token is checked before anything else, so a caller without one learns nothing about the parameters or clicks. Mint it under **Admin → Integrations** (or \`POST /conversion-postback/token\`).`,
+    access: { kind: 'postbackToken' },
+    // Read by the handler without a zod schema of this shape (it has
+    // aliases and treats '' as an unfilled network macro).
+    query: z.object({
+      token: z.string().openapi({ description: 'The conversion postback token, `opcp_…`. Required.' }),
+      click_id: z.string().max(64).openapi({ description: 'The click id, from the destination URL\'s `{click_id}` macro. Alias: `cref`. Required.' }),
+      type: z.string().max(255).openapi({ description: 'Event type, e.g. `sale`, `loan_funded`. Required.' }),
+      txn_id: z.string().max(120).openapi({ description: 'The sender\'s transaction id: the idempotency key (`externalEventId`). Alias: `transaction_id`. Required.' }),
+      amount: z.string().optional().openapi({ description: 'Decimal value, e.g. `49.00`. Alias: `value`. Empty (an unfilled macro) means no amount.' }),
+      currency: z.string().length(3).optional().openapi({ description: 'ISO 4217 code.' }),
+      user_id: z.string().max(255).optional().openapi({ description: 'Your own id for the user, as on `POST /attribution/conversions`.' }),
+      pixel: z.enum(['1']).optional().openapi({ description: '`1` answers a 1×1 transparent GIF instead of `ok`, for senders that fire the postback as an image.' }),
+    }),
+    textErrors: true,
+    responses: {
+      200: {
+        description: 'Recorded (or replayed): `ok`, or a 1×1 GIF with `pixel=1`.',
+        content: {
+          'text/plain': { schema: z.literal('ok') },
+          'image/gif': { schema: z.string().openapi({ format: 'binary' }) },
+        },
+      },
+    },
+    errors: {
+      400: ['repeated_parameter', 'invalid_parameters'],
+      401: ['missing_token', 'invalid_token'],
+      403: ['ip_not_allowed'],
+      404: ['click_not_found'],
+      409: ['external_event_id_conflict'],
+      422: ['click_flagged'],
+    },
+  });
+
+  r.operation({
     method: 'post',
     path: '/attribution/refunds',
     tag: 'Attribution',
@@ -800,12 +851,13 @@ The refund is recorded as a corrective event (type \`refund\` or \`chargeback\`,
     operationId: 'createWebhookEndpoint',
     summary: 'Subscribe a webhook endpoint',
     description:
-      'Returns the signing `secret` once. The URL must be publicly reachable over HTTP(S); private and loopback addresses are refused at delivery time. See **Webhook events** for the catalogue.',
+      'Returns the signing `secret` once. The URL must be publicly reachable over HTTP(S): a URL that resolves to a private, loopback or link-local address, `localhost`, or (hosted) a port other than 80/443 is refused with `400 destination_not_allowed`, whose `reason` names the rule (`destination_not_public`, `blocked_hostname`, `port_not_allowed`, …). Every delivery checks again, so a DNS change made later still cannot reach a private address. See **Webhook events** for the catalogue.',
     access: { kind: 'admin', scope: 'webhooks:write' },
     body: webhooks.createSchema.openapi('CreateWebhookRequest'),
     responses: {
       201: { description: 'Subscribed.', schema: z.object({ endpoint: S.WebhookEndpoint, secret: z.string().openapi({ description: '`whsec_…`. Shown once.' }) }) },
     },
+    errors: { 400: ['destination_not_allowed'] },
   });
 
   r.operation({
@@ -835,10 +887,11 @@ The refund is recorded as a corrective event (type \`refund\` or \`chargeback\`,
     tag: 'Webhooks',
     operationId: 'updateWebhookEndpoint',
     summary: 'Update a webhook endpoint',
+    description: 'A new `url` gets the same check as `createWebhookEndpoint`.',
     access: { kind: 'admin' },
     body: webhooks.updateSchema.openapi('UpdateWebhookRequest'),
     responses: { 200: { description: 'The updated endpoint.', schema: z.object({ endpoint: S.WebhookEndpoint }) } },
-    errors: { 404: ['not_found'] },
+    errors: { 400: ['destination_not_allowed'], 404: ['not_found'] },
   });
 
   r.operation({
@@ -1043,7 +1096,8 @@ The refund is recorded as a corrective event (type \`refund\` or \`chargeback\`,
     tag: 'Export',
     operationId: 'importBundle',
     summary: 'Import an export bundle (self-host only)',
-    description: 'Idempotent: rows whose primary key exists are skipped. Accepts bundles up to 256 MB on single-tenant installs (1 MB under a `/t/<slug>` path).',
+    description:
+      'Idempotent: rows whose primary key exists are skipped. Accepts bundles up to 256 MB on single-tenant installs (1 MB under a `/t/<slug>` path). Credentials are never in a bundle: restored webhook endpoints get a fresh signing secret and come back paused, and `report.credentials` shows those secrets once. See docs/data-portability.md.',
     access: { kind: 'admin' },
     body: exportRoutes.importSchema.openapi('ImportRequest'),
     responses: { 200: { description: 'Rows inserted and skipped per table.', schema: S.ImportResult } },

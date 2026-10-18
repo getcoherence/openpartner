@@ -8,6 +8,7 @@ import {
 } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import { makeSecret, redeliver } from '../webhook-dispatcher.js';
+import { checkOutboundDestination } from '../outbound-guard.js';
 import { tenantOf } from '../tenancy.js';
 
 export const webhooksRouter = Router();
@@ -44,6 +45,8 @@ webhooksRouter.post('/webhooks', requireAuth, grantScope('webhooks:write'), requ
   const { db, tenantId } = tenantOf(req);
   const body = createSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const refused = await checkOutboundDestination(body.data.url, 'admin');
+  if (refused) return res.status(400).json({ error: 'destination_not_allowed', ...refused });
 
   const secret = makeSecret();
   const id = ulid();
@@ -80,6 +83,10 @@ webhooksRouter.patch('/webhooks/:id', requireAuth, requireAdmin, async (req, res
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
   const existing = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: req.params.id, tenantId }).first();
   if (!existing) return res.status(404).json({ error: 'not_found' });
+  if (body.data.url !== undefined) {
+    const refused = await checkOutboundDestination(body.data.url, 'admin');
+    if (refused) return res.status(400).json({ error: 'destination_not_allowed', ...refused });
+  }
 
   const patch: Record<string, unknown> = {};
   if (body.data.url !== undefined) patch.url = body.data.url;

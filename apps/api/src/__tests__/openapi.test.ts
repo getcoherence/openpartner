@@ -132,7 +132,9 @@ describe('OpenAPI spec ↔ routes', () => {
       };
       const ext = accessExtension(op.access);
       const expected = {
-        auth: op.access.kind !== 'public',
+        // A postback-token route checks its token in the handler, not
+        // through requireAuth: API keys must not reach it.
+        auth: op.access.kind !== 'public' && op.access.kind !== 'postbackToken',
         admin: op.access.kind === 'admin',
         partnerParam: op.access.kind === 'partnerOrAdmin' ? 'id' : null,
         // 'handler' operations check their scopes inline, not via grantScope.

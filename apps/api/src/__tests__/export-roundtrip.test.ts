@@ -17,7 +17,8 @@ import { ulid } from 'ulid';
 import { TABLES, DEFAULT_TENANT_ID } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApp } from '../app.js';
-import { generateApiKey } from '../auth.js';
+import { generateApiKey, hashKey } from '../auth.js';
+import { verifyPostbackToken } from '../conversion-postback.js';
 import { createSession } from '../auth-sessions.js';
 import {
   EXPORT_TABLES,
@@ -29,6 +30,7 @@ import {
   importBundle,
   isSafeTenantId,
   legacyPartnerCommissionId,
+  PORTABLE_CONFIG_KEYS,
   primaryKeyOf,
   upgradeBundle,
 } from '../export.js';
@@ -36,7 +38,14 @@ import {
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const TENANT = DEFAULT_TENANT_ID;
 
+/** The source instance's credentials. None of them may appear in a
+ *  bundle, and none of them may work after a restore. */
+const SOURCE_WEBHOOK_SECRET = 'whsec_source_secret_never_exported_0001';
+const SOURCE_POSTBACK_TOKEN = `opcp_${'ab'.repeat(24)}`;
+
 interface Seeded {
+  webhookEndpointId: string;
+  postbackTokenId: string;
   partnerId: string;
   programId: string;
   linkId: string;
@@ -196,8 +205,52 @@ async function seedEverything(): Promise<Seeded> {
     reason: 'admin_correction',
     metadata: {},
   });
+  await db(TABLES.BrandAsset).insert({
+    id: ulid(),
+    tenantId: TENANT,
+    kind: 'image',
+    label: 'Logo, dark',
+    description: "Use on light backgrounds — don't recolour",
+    url: 'https://cdn.x.test/tenants/t/brand-assets/0123abcd.png',
+    sortOrder: 0,
+  });
+  const webhookEndpointId = ulid();
+  await db(TABLES.WebhookEndpoint).insert({
+    id: webhookEndpointId,
+    tenantId: TENANT,
+    url: 'https://hooks.x.test/openpartner',
+    secretPrefix: SOURCE_WEBHOOK_SECRET.slice(0, 12),
+    secret: SOURCE_WEBHOOK_SECRET,
+    events: JSON.stringify(['commission.paid', 'partner.created']),
+    label: 'CRM sync',
+    active: true,
+  });
+  await db(TABLES.PartnerPostback).insert({
+    id: ulid(),
+    tenantId: TENANT,
+    partnerId,
+    url: 'https://tracker.x.test/pb?cid={click_id}&amt={commission_amount}',
+    events: JSON.stringify(['commission.accrued']),
+    enabled: true,
+  });
+  const postbackTokenId = ulid();
+  await db(TABLES.ConversionPostbackToken).insert({
+    id: postbackTokenId,
+    tenantId: TENANT,
+    prefix: SOURCE_POSTBACK_TOKEN.slice(0, 13),
+    tokenHash: hashKey(SOURCE_POSTBACK_TOKEN),
+    ipAllowlist: JSON.stringify(['203.0.113.0/24']),
+  });
+  await db(TABLES.Config).insert({
+    tenantId: TENANT,
+    key: 'program_settings',
+    value: { programName: "O'Hara Partners", supportEmail: 'partners@x.test', routerUrl: null, partnerNetworkVisible: true },
+    updatedAt: new Date(),
+  });
 
   return {
+    webhookEndpointId,
+    postbackTokenId,
     partnerId,
     programId,
     linkId,
@@ -350,6 +403,146 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     // A headless partner stays locked out of the portal on the new instance.
     const partner = await db(TABLES.Partner).where({ id: seeded.partnerId }).first();
     expect(partner.portalAccess).toBe(false);
+    // Settings, the asset library and integrations (schemaVersion 5).
+    const settings = await db(TABLES.Config).where({ key: 'program_settings' }).first();
+    expect(settings.value).toMatchObject({ programName: "O'Hara Partners", supportEmail: 'partners@x.test' });
+    const asset = await db(TABLES.BrandAsset).first();
+    expect(asset.url).toBe('https://cdn.x.test/tenants/t/brand-assets/0123abcd.png');
+    const postback = await db(TABLES.PartnerPostback).first();
+    expect(postback.url).toBe('https://tracker.x.test/pb?cid={click_id}&amt={commission_amount}');
+    expect(postback.events).toEqual(['commission.accrued']);
+  }, 30_000);
+
+  it('credentials never leave: the bundle has none, and the restore gets fresh ones', async () => {
+    const seeded = await seedEverything();
+    const bundle = await exportAll(db, TENANT);
+    const text = JSON.stringify(bundle);
+    expect(text).not.toContain(SOURCE_WEBHOOK_SECRET);
+    expect(text).not.toContain(SOURCE_WEBHOOK_SECRET.slice(0, 12));
+    expect(text).not.toContain(hashKey(SOURCE_POSTBACK_TOKEN));
+    expect(bundle[TABLES.WebhookEndpoint]![0]).not.toHaveProperty('secret');
+    expect(bundle[TABLES.ConversionPostbackToken]![0]).not.toHaveProperty('tokenHash');
+
+    await wipe();
+    const report = await importBundle(db, TENANT, bundle);
+
+    // The endpoint is back with a new secret, paused until its receiver
+    // has that secret — which the report shows, once.
+    const endpoint = await db(TABLES.WebhookEndpoint).where({ id: seeded.webhookEndpointId }).first();
+    expect(endpoint).toMatchObject({ url: 'https://hooks.x.test/openpartner', label: 'CRM sync', active: false });
+    expect(endpoint.events).toEqual(['commission.paid', 'partner.created']);
+    expect(endpoint.secret).toMatch(/^whsec_/);
+    expect(endpoint.secret).not.toBe(SOURCE_WEBHOOK_SECRET);
+    expect(endpoint.secretPrefix).toBe(endpoint.secret.slice(0, 12));
+    expect(report.credentials[TABLES.WebhookEndpoint]).toEqual([
+      { id: seeded.webhookEndpointId, url: 'https://hooks.x.test/openpartner', secret: endpoint.secret },
+    ]);
+
+    // The postback token keeps its allowlist and history, but no URL works
+    // until it is rotated — not even the source's own.
+    const token = await db(TABLES.ConversionPostbackToken).where({ id: seeded.postbackTokenId }).first();
+    expect(token.ipAllowlist).toEqual(['203.0.113.0/24']);
+    expect(token.revokedAt).toBeNull();
+    expect(token.tokenHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(await verifyPostbackToken(db, TENANT, SOURCE_POSTBACK_TOKEN)).toBeNull();
+    expect(report.credentials[TABLES.ConversionPostbackToken]).toBeUndefined();
+
+    // Re-importing shows nothing: no row landed, so no new credential.
+    const again = await importBundle(db, TENANT, bundle);
+    expect(again.credentials).toEqual({});
+  }, 30_000);
+
+  it('per-table downloads and the SQL dump leave credentials out too', async () => {
+    await seedEverything();
+    const app = createApp();
+    const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+    for (const path of [
+      `/export/${TABLES.WebhookEndpoint}.json`,
+      `/export/${TABLES.WebhookEndpoint}.csv`,
+      `/export/${TABLES.ConversionPostbackToken}.csv`,
+      '/export.json',
+      '/export.sql',
+    ]) {
+      const res = await request(app).get(path).set('Authorization', `Bearer ${ADMIN_KEY}`);
+      expect(res.status, path).toBe(200);
+      expect(res.text, path).not.toContain(SOURCE_WEBHOOK_SECRET.slice(0, 12));
+      expect(res.text, path).not.toContain(hashKey(SOURCE_POSTBACK_TOKEN));
+    }
+    const csv = await request(app).get(`/export/${TABLES.WebhookEndpoint}.csv`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(csv.text.split('\n')[0]).not.toMatch(/secret/i);
+  }, 30_000);
+
+  it('Config: only program settings travel — never credentials or hosted bookkeeping', async () => {
+    await seedEverything();
+    const others = {
+      network_membership: { enabled: true, networkUrl: 'https://n.test', vendorTokenCiphertext: 'ct:vendor-token', scopedKeyId: null, autoEnroll: true },
+      mail_settings: { kind: 'smtp', from: 'a@x.test', smtp: { host: 'smtp.x.test', port: 587, secure: false, user: 'u', passwordCiphertext: 'ct:smtp-password' } },
+      'stripe.merchant.lastUsageReportedAt': '2026-10-01T00:00:00.000Z',
+    };
+    for (const [key, value] of Object.entries(others)) {
+      await db(TABLES.Config).insert({ tenantId: TENANT, key, value: JSON.stringify(value), updatedAt: new Date() });
+    }
+    await db(TABLES.Config).insert({
+      tenantId: TENANT,
+      key: 'partner_signup',
+      value: { policy: 'require_review', disabled: false },
+      updatedAt: new Date(),
+    });
+    // A headless program's portal-access default travels with it.
+    await db(TABLES.Config).insert({
+      tenantId: TENANT,
+      key: 'partner_access',
+      value: { uninvitedPortalAccess: false },
+      updatedAt: new Date(),
+    });
+
+    const bundle = await exportAll(db, TENANT);
+    const keys = (bundle[TABLES.Config] as Array<{ key: string }>).map((r) => r.key).sort();
+    expect(keys).toEqual([...PORTABLE_CONFIG_KEYS].sort());
+    expect(JSON.stringify(bundle)).not.toContain('ct:');
+
+    // A hand-made bundle that smuggles one in doesn't get it imported.
+    await wipe();
+    const smuggled = {
+      ...bundle,
+      [TABLES.Config]: [...bundle[TABLES.Config]!, { tenantId: 'x', key: 'network_membership', value: others.network_membership }],
+    };
+    const report = await importBundle(db, TENANT, smuggled);
+    expect(report.inserted[TABLES.Config]).toBe(3);
+    expect((await db(TABLES.Config).where({ key: 'partner_access' }).first()).value).toEqual({ uninvitedPortalAccess: false });
+    expect(report.skipped[TABLES.Config]).toBe(1);
+    expect(await db(TABLES.Config).where({ key: 'network_membership' })).toHaveLength(0);
+    expect((await db(TABLES.Config).where({ key: 'partner_signup' }).first()).value).toEqual({
+      policy: 'require_review',
+      disabled: false,
+    });
+  }, 30_000);
+
+  it('a setting or live postback token the destination already has is kept, not overwritten', async () => {
+    await seedEverything();
+    const bundle = await exportAll(db, TENANT);
+    await wipe();
+    await db(TABLES.Config).insert({
+      tenantId: TENANT,
+      key: 'program_settings',
+      value: { programName: 'Destination', supportEmail: null, routerUrl: null, partnerNetworkVisible: true },
+      updatedAt: new Date(),
+    });
+    const destinationToken = ulid();
+    await db(TABLES.ConversionPostbackToken).insert({
+      id: destinationToken,
+      tenantId: TENANT,
+      prefix: 'opcp_11111111',
+      tokenHash: hashKey('opcp_destination'),
+      ipAllowlist: JSON.stringify([]),
+    });
+
+    const report = await importBundle(db, TENANT, bundle);
+    expect(report.skipped[TABLES.Config]).toBe(1);
+    expect(report.skipped[TABLES.ConversionPostbackToken]).toBe(1);
+    expect((await db(TABLES.Config).where({ key: 'program_settings' }).first()).value.programName).toBe('Destination');
+    const live = await db(TABLES.ConversionPostbackToken).whereNull('revokedAt');
+    expect(live.map((t: { id: string }) => t.id)).toEqual([destinationToken]);
   }, 30_000);
 
   it('is idempotent — importing the same bundle twice inserts nothing new', async () => {
@@ -449,9 +642,10 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(after[TABLES.PartnerNetworkConsent]).toBe(0);
   }, 30_000);
 
-  it('accepts a v4 bundle — programs take the renewals default, partners keep portal access', async () => {
+  it('accepts a v4 bundle — no settings, assets or integrations; programs and partners take the new defaults', async () => {
     const seeded = await seedEverything();
     const full = await exportAll(db, TENANT);
+    // A v4 bundle: no v5 tables, and no v5 columns on Program and Partner.
     const v4: Record<string, unknown[]> = {
       ...full,
       [TABLES.Program]: (full[TABLES.Program] ?? []).map((r) => {
@@ -460,6 +654,9 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
       }),
       [TABLES.Partner]: (full[TABLES.Partner] as Record<string, unknown>[]).map(({ portalAccess: _dropped, ...row }) => row),
     };
+    for (const t of [TABLES.BrandAsset, TABLES.WebhookEndpoint, TABLES.PartnerPostback, TABLES.ConversionPostbackToken, TABLES.Config]) {
+      delete v4[t];
+    }
     await wipe();
 
     const app = createApp();
@@ -475,6 +672,27 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     // Every partner could use the portal before the column existed.
     const partner = await db(TABLES.Partner).where({ id: seeded.partnerId }).first();
     expect(partner.portalAccess).toBe(true);
+    expect(viaRoute.body.report.credentials).toEqual({});
+    const after = await counts();
+    expect(after[TABLES.PartnerNetworkConsent]).toBe(1);
+    expect(after[TABLES.WebhookEndpoint]).toBe(0);
+    expect(after[TABLES.Config]).toBe(0);
+  }, 30_000);
+
+  it('the import route hands back the restored webhook secrets', async () => {
+    await seedEverything();
+    const full = await exportAll(db, TENANT);
+    await wipe();
+    const app = createApp();
+    const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+    const res = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: SCHEMA_VERSION, tables: full });
+    expect(res.status).toBe(200);
+    const shown = res.body.report.credentials[TABLES.WebhookEndpoint] as Array<{ secret: string }>;
+    expect(shown).toHaveLength(1);
+    expect((await db(TABLES.WebhookEndpoint).first()).secret).toBe(shown[0]!.secret);
   }, 30_000);
 
   it('exports at schemaVersion 5', () => {
@@ -652,6 +870,41 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
     expect(program.commissionRule).toEqual([{ trigger: 'every', type: 'percent', value: 20 }]);
     expect(program.categories).toEqual(['saas', 'devtools']);
     expect(program.renewalsStayWithPartner).toBe(false);
+  }, 30_000);
+
+  it('generates fresh credentials on restore, and the file carries none', async () => {
+    const seeded = await seedEverything();
+    const dump = buildSqlDump(await exportAll(db, TENANT), { columnTypes: await exportColumnTypes(db) });
+    expect(dump).not.toContain(SOURCE_WEBHOOK_SECRET.slice(0, 12));
+    expect(dump).not.toContain(hashKey(SOURCE_POSTBACK_TOKEN));
+    expect(dump).toContain('-- Not exported: secret, secretPrefix.');
+
+    await wipe();
+    await runSql(asPsqlWould(dump, TENANT));
+
+    const endpoint = await db(TABLES.WebhookEndpoint).where({ id: seeded.webhookEndpointId }).first();
+    expect(endpoint.active).toBe(false);
+    expect(endpoint.secret).toMatch(/^whsec_[0-9a-f]{64}$/);
+    expect(endpoint.secretPrefix).toBe(endpoint.secret.slice(0, 12));
+    const token = await db(TABLES.ConversionPostbackToken).where({ id: seeded.postbackTokenId }).first();
+    expect(token.tokenHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(token.ipAllowlist).toEqual(['203.0.113.0/24']);
+    expect(await verifyPostbackToken(db, TENANT, SOURCE_POSTBACK_TOKEN)).toBeNull();
+
+    // Two endpoints never share a generated secret.
+    await db(TABLES.WebhookEndpoint).del();
+    const two = buildSqlDump(
+      {
+        [TABLES.WebhookEndpoint]: [
+          { id: ulid(), tenantId: 'source', url: 'https://a.x.test', events: ['*'], active: true, label: null, createdAt: new Date() },
+          { id: ulid(), tenantId: 'source', url: 'https://b.x.test', events: ['*'], active: true, label: null, createdAt: new Date() },
+        ],
+      },
+      { tenantId: TENANT, columnTypes: await exportColumnTypes(db) },
+    );
+    await runSql(two);
+    const secrets = (await db(TABLES.WebhookEndpoint).pluck('secret')) as string[];
+    expect(new Set(secrets).size).toBe(2);
   }, 30_000);
 
   it('the portable form restores under whatever tenant psql is given', async () => {

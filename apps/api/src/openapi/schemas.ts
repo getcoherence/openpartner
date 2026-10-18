@@ -663,7 +663,14 @@ export const ExportBundle = z
 export const ImportResult = z
   .object({
     ok: z.literal(true),
-    report: z.object({ inserted: z.record(z.number().int()), skipped: z.record(z.number().int()) }),
+    report: z.object({
+      inserted: z.record(z.number().int()),
+      skipped: z.record(z.number().int()),
+      credentials: z.record(z.array(z.record(z.unknown()))).openapi({
+        description:
+          'Fresh credentials for restored rows, per table, shown once. `WebhookEndpoint`: `{ id, url, secret }` for each endpoint restored (paused until you turn it back on).',
+      }),
+    }),
   })
   .openapi('ImportResult');
 

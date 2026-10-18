@@ -68,7 +68,7 @@ import {
 import { getPortalBaseUrl, linkTenantOf } from '../portal-url.js';
 import type { PartnerReview } from '../partner-review.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
-import { tenantOf } from '../tenancy.js';
+import { afterCommit, tenantOf } from '../tenancy.js';
 import { grantNetworkConsent, isNetworkOfferedToPartners, syncPartnerToNetwork } from '../network-consent.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
 import type { WebhookPayload } from '../openapi/webhook-events.js';
@@ -268,11 +268,13 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
   }
 
   // Network: only if the applicant ticked the join page's opt-in AND the
-  // brand offers the Network. Fire-and-forget on the request hot path: a
-  // Network outage must not fail the signup (it queues in NetworkOutbox).
+  // brand offers the Network. Pushed once the signup has committed, so a
+  // failure later in this request can't leave the Network holding someone
+  // with no Partner row here. A Network outage must not fail the signup
+  // (it queues in NetworkOutbox).
   if (body.data.networkOptIn === true && (await isNetworkOfferedToPartners(db, tenantId))) {
     await grantNetworkConsent(db, tenantId, partner.id, 'join_page');
-    await syncPartnerToNetwork(db, tenantId, partner, { profile });
+    afterCommit(req, 'network signup push', (trx) => syncPartnerToNetwork(trx, tenantId, partner, { profile }));
   }
 
   // Webhooks, as POST /partners fires them, so a CRM or Zapier relay sees

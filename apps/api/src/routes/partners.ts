@@ -9,7 +9,7 @@ import { getMailer } from '../mailer.js';
 import { buildMagicLinkUrl, partnerInviteEmail, partnerRevokedEmail } from '../email-templates.js';
 import { cursorTimestamp, decodeCursor, takePage, whereAfterCursor } from '../pagination.js';
 import { linkTenantOf } from '../portal-url.js';
-import { tenantOf } from '../tenancy.js';
+import { afterCommit, tenantOf } from '../tenancy.js';
 import {
   grantNetworkConsent,
   isNetworkFederationCall,
@@ -394,11 +394,11 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write', 'part
   // headless program's partners may never see it. Only a partner the
   // Network itself provisioned (its approve federation, on the brand's
   // registered federation key) is already a member, so it counts as
-  // consented and syncs back. Fire-and-forget: a Network outage queues
-  // the push in NetworkOutbox.
+  // consented and syncs back — once this request has committed. A Network
+  // outage queues the push in NetworkOutbox.
   if (fromNetwork) {
     await grantNetworkConsent(db, tenantId, id, 'network_offering');
-    await syncPartnerToNetwork(db, tenantId, partner as PartnerRow);
+    afterCommit(req, 'network federation push', (trx) => syncPartnerToNetwork(trx, tenantId, partner as PartnerRow));
   }
 
   // Webhook fan-out. partner.created always; partnership.approved
@@ -587,8 +587,8 @@ partnersRouter.post('/partners/:id/revoke', requireAuth, grantScope('partners:wr
   // consented. Not gated on the brand offering the Network: a creator the
   // Network thinks is active shouldn't keep getting matched after the
   // vendor cuts them off. A partner who never opted in is never sent,
-  // revoke included.
-  await syncPartnerRevokeToNetwork(db, tenantId, partner);
+  // revoke included. Sent once the revoke has committed.
+  afterCommit(req, 'network revoke push', (trx) => syncPartnerRevokeToNetwork(trx, tenantId, partner));
 
   res.json({ ok: true, revokedAt: now, notified, notifyError });
 });
@@ -639,6 +639,8 @@ partnersRouter.get('/partners', requireAuth, grantScope('partners:read'), requir
   const q = listQuerySchema.safeParse(req.query);
   if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
   const { db, tenantId } = tenantOf(req);
+  // tenantId spelled out, not left to RLS: the policy's platform-admin OR
+  // keeps Postgres off the (tenantId, email) index otherwise.
   const query = db<PartnerRow>(TABLES.Partner)
     .where({ tenantId })
     .select('*', cursorTimestamp(db, 'createdAt'))

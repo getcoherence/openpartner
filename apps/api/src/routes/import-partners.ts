@@ -99,7 +99,27 @@ importPartnersRouter.post(
     // tenant's default portal access (partner-portal-access.ts).
     const { uninvitedPortalAccess: portalAccess } = await readPartnerAccessSettings(db, tenantId);
 
+    // Every email the file names that is already taken, looked up a chunk
+    // at a time and by tenantId. Under RLS each query also carries the
+    // policy's `tenantId = <setting> OR platform_admin`, and that OR keeps
+    // Postgres off the (tenantId, email) index unless the query names
+    // tenantId itself — so the old per-row `where({ email })` scanned the
+    // whole roster for every row (a 3,000-row batch went from 14 s to 35 s
+    // as a roster grew to 30,000).
+    const taken = new Map<string, string>(); // email → partnerId
+    const fileEmails = [...new Set(rows.map((r) => (r.email ?? '').trim().toLowerCase()).filter(Boolean))];
+    for (const chunk of chunks(fileEmails, LOOKUP_CHUNK)) {
+      const found = (await db<PartnerRow>(TABLES.Partner)
+        .where({ tenantId })
+        .whereIn('email', chunk)
+        .select('id', 'email')) as Array<{ id: string; email: string }>;
+      for (const p of found) taken.set(p.email, p.id);
+    }
+
     const report: RowReport[] = [];
+    const toCreate: Array<
+      Pick<PartnerRow, 'id' | 'tenantId' | 'email' | 'name' | 'metadata' | 'activatedAt' | 'portalAccess'>
+    > = [];
 
     for (let i = 0; i < rows.length; i += 1) {
       const r = rows[i]!;
@@ -116,10 +136,9 @@ importPartnersRouter.post(
         continue;
       }
 
-      // Email is unique per tenant, so another tenant's partner is no collision.
-      const existing = await db<PartnerRow>(TABLES.Partner).where({ email, tenantId }).first();
-      if (existing) {
-        report.push({ row: rowNum, email, status: 'skipped_email_taken', partnerId: existing.id });
+      const existingId = taken.get(email);
+      if (existingId) {
+        report.push({ row: rowNum, email, status: 'skipped_email_taken', partnerId: existingId });
         continue;
       }
 
@@ -141,32 +160,37 @@ importPartnersRouter.post(
       }
 
       const id = ulid();
-      if (!dryRun) {
-        await db<PartnerRow>(TABLES.Partner).insert({
-          id,
-          tenantId,
-          email,
-          name,
-          metadata,
-          activatedAt,
-          portalAccess,
-        });
-        if (allCampaignIds.length > 0) {
+      // A repeat of this email later in the file is skipped, like one
+      // already on the roster — in a dry run too, so the preview matches.
+      taken.set(email, id);
+      toCreate.push({ id, tenantId, email, name, metadata, activatedAt, portalAccess });
+      report.push({ row: rowNum, email, status: 'created', partnerId: id });
+    }
+
+    // Batched writes: a handful of statements for the whole file instead of
+    // two per row. Still the request's one transaction, so a failure
+    // writes nothing.
+    if (!dryRun) {
+      for (const chunk of chunks(toCreate, INSERT_CHUNK)) {
+        await db<PartnerRow>(TABLES.Partner).insert(chunk);
+      }
+      if (allCampaignIds.length > 0) {
+        const grants = toCreate.flatMap((p) =>
+          allCampaignIds.map((cid) => ({
+            id: `pc_${ulid()}`,
+            tenantId,
+            partnerId: p.id,
+            programId: cid,
+            source: 'admin',
+          })),
+        );
+        for (const chunk of chunks(grants, INSERT_CHUNK)) {
           await db(TABLES.PartnerProgram)
-            .insert(
-              allCampaignIds.map((cid) => ({
-                id: `pc_${ulid()}`,
-                tenantId,
-                partnerId: id,
-                programId: cid,
-                source: 'admin',
-              })),
-            )
+            .insert(chunk)
             .onConflict(['tenantId', 'partnerId', 'programId'])
             .ignore();
         }
       }
-      report.push({ row: rowNum, email, status: 'created', partnerId: id });
     }
 
     const summary = {
@@ -178,6 +202,17 @@ importPartnersRouter.post(
     res.json({ dryRun, summary, report });
   },
 );
+
+/** Emails per existence lookup, and rows per INSERT: both well under
+ *  Postgres's 65,535 bind parameters (a grant row has 5 columns). */
+const LOOKUP_CHUNK = 1000;
+const INSERT_CHUNK = 1000;
+
+function chunks<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
 
 /**
  * Minimal CSV parser. Handles the canonical case (no quoted fields with

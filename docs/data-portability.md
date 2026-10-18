@@ -21,7 +21,10 @@ that overstates itself is worse than one with a documented hole.
 
 Rows are raw DB rows — the same shape `select *` returns, no reshaping,
 no derived fields. Anything derived (attribution, commissions) is present
-as its own table *and* re-derivable from the raw layers.
+as its own table *and* re-derivable from the raw layers. Two exceptions,
+both deliberate: credential columns are dropped (see
+[Credentials](#credentials)), and `Config` carries only the brand's own
+settings (see [Settings](#settings-config)).
 
 To re-derive `Attribution`, replay each customer's events in `ts` order. A
 renewal takes the attribution of the customer's first attributed event of
@@ -50,6 +53,11 @@ appears after everything it references.
 | 13 | `Payout` | `id` | payout ledger |
 | 14 | `PortalCustomDomain` | `id` | white-label domain history (inert on self-host) |
 | 15 | `CommissionAdjustment` | `id` | clawbacks / corrections |
+| 16 | `BrandAsset` | `id` | **the marketing-asset library** (image URLs, text snippets) |
+| 17 | `WebhookEndpoint` | `id` | **your outbound webhook endpoints** (not the signing secret) |
+| 18 | `PartnerPostback` | `id` | **each partner's own tracker callbacks** |
+| 19 | `ConversionPostbackToken` | `id` | **the GET /postback allowlist and rotation history** (not the token) |
+| 20 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy and the portal-access default** |
 
 Rows 3, 4 and 6 were added in schemaVersion 2 (Aug 2026). Without them a
 restored instance had the roster but no grants, no coupon attribution, and
@@ -64,14 +72,18 @@ v2 or v3 bundle restores with no consent rows, so every restored partner
 starts undecided and nobody is sent to the Network until they opt in on
 the new instance.
 
+Rows 16 to 20 were added in schemaVersion 5 (Oct 2026). Before that a
+restored instance had the attribution and money ledger but none of the
+brand's configuration: no program name or support email, no join-page
+policy, no asset library, no webhooks, and no partner postbacks.
+
 `Partner` rows carry `portalAccess` (schemaVersion 5, Oct 2026): whether
 the partner may sign in to the partner portal. A headless program turns it
 off so its customers can't, and a restored instance keeps them out too. A
 v1–v4 bundle has no such column, and its partners restore with the column
 default, `true`, which is what every partner had when it was exported. The
-tenant-wide default for new partners (`GET /config/partner-access`) lives
-in `Config`, which isn't exported yet (see below), so set it again on the
-new instance.
+tenant-wide default for new partners (`GET /config/partner-access`) is the
+`partner_access` `Config` key, which travels with the bundle from v5 on.
 
 `PartnerCommission` rows carry a nullable `programId`. Null means the
 partner's partner-wide terms; a value means their terms for that one
@@ -82,7 +94,90 @@ a `PartnerCommission` row that collides on **any** unique key, using a bare
 `ON CONFLICT DO NOTHING`, not just one that collides on `id`. Every other
 table conflicts on its primary key; `PartnerNetworkConsent` is keyed on
 **`partnerId`**, one row per partner. The importer looks the key up per
-table rather than assuming `id`.
+table rather than assuming `id`. `Config` (primary key `tenantId, key`) and
+`ConversionPostbackToken` (at most one live token per tenant, a partial
+unique index) skip on any unique collision too, so a setting or live token
+the destination already has is kept and the bundle's copy is skipped.
+
+### Credentials
+
+A bundle never contains a credential: anyone holding the file must not be
+able to sign a webhook or record a conversion with it. The exporter drops
+these columns from every format (JSON, CSV and SQL), and the importer
+ignores them if a hand-made bundle has them:
+
+| Table | Not exported | On restore |
+|---|---|---|
+| `WebhookEndpoint` | `secret`, `secretPrefix` | A fresh signing secret is generated, and the endpoint comes back **paused** (`active = false`), because its receiver doesn't know the new secret yet. |
+| `ConversionPostbackToken` | `tokenHash` | Replaced by a hash nothing matches. The live token keeps its IP allowlist and history, but no postback URL works, the source's included, until you **rotate** it on the Integrations page. Rotating keeps the allowlist. |
+
+To finish a restore:
+
+- **Webhooks.** `POST /import` returns each restored endpoint's new secret
+  once, in `report.credentials.WebhookEndpoint` as `{ id, url, secret }`.
+  After a SQL restore, read them from the database:
+  `SELECT "id", "url", "secret" FROM "WebhookEndpoint";`. Give each
+  receiver its new secret, then turn the endpoint back on (admin
+  Webhooks page, or `PATCH /webhooks/{id}` with `{"active": true}`).
+  Endpoints that already existed on the destination are skipped and keep
+  their own secret.
+- **Conversion postbacks.** Rotate the token, then update the URL at every
+  network or lender that fires it. The host changes on a hosted to
+  self-host move anyway.
+
+Partner postback URLs (`PartnerPostback.url`) travel as the partner entered
+them. They hold no OpenPartner credential, but a partner's tracker may put
+its own token in the URL, so treat an export file as you would the
+partner list itself.
+
+### Settings (`Config`)
+
+Only these keys are exported, and only these are imported:
+
+| Key | What it holds |
+|---|---|
+| `program_settings` | program name, support email, router URL, whether partners see the Network |
+| `partner_signup` | the join page: auto-approve or review, or closed |
+| `partner_access` | whether partners created without an invite may sign in to the partner portal (a headless program turns it off) |
+
+Every other key stays out, on purpose:
+
+- `mail_settings` holds the SMTP password or Postmark server token,
+  encrypted under the source deployment's `SECRETS_ENCRYPTION_KEY`, so it
+  could not be decrypted anywhere else. Set up mail again on the
+  destination.
+- `network_membership` holds the Network vendor token (also encrypted) and
+  points at the federation `ApiKey`, which is never exported. Reconnect to
+  the Network on the destination.
+- `billing_cancel_scheduled_notice`, `billing_dunning_notice`, the
+  `stripe.merchant.*` keys and `network.lastPayoutsReportedAt` are hosted
+  billing bookkeeping: Stripe ids and report cursors that mean nothing on
+  another instance.
+
+### Brand asset files
+
+`BrandAsset` rows are exported, but the image files are not: an image row
+carries the public URL of its file, not its bytes. Three reasons:
+
+- the bundle is row data in three text formats, and image bytes don't fit
+  CSV or a SQL dump;
+- the files are already public. Each URL is absolute, on the hosted
+  instance's object storage or a self-host's `/uploads`, and OpenPartner
+  never rewrites a stored URL, so a restored row keeps showing the same
+  image;
+- uploads are capped at 2 MB and are images only, so fetching them takes
+  one command.
+
+The catch: a URL only works while its storage does. If you are leaving an
+instance for good, download the files before you close it:
+
+```bash
+jq -r '.tables.BrandAsset[] | select(.url) | .url' openpartner-export.json | xargs -n 1 curl -fsSO
+```
+
+Then upload them on the destination, or serve them from your own storage
+and update each row's `url`. Text snippets (`kind = 'snippet'`) are in the
+row's `body` and need nothing extra.
 
 Commission slabs (value bands and performance tiers,
 [commission-slabs.md](commission-slabs.md)) need nothing extra: they are
@@ -116,7 +211,8 @@ the same refund history and the same derived amounts.
 `SCHEMA_VERSION` is the current bundle version; `SUPPORTED_IMPORT_VERSIONS`
 is what `POST /import` accepts. **That list only ever grows.** A v1 bundle
 sitting on someone's disk keeps importing — it is simply a v5 bundle
-without the four tables and two columns added later.
+without the tables and columns added later. A v4 bundle restores with no
+settings, assets, webhooks or postbacks; configure those on the destination.
 
 **Importing a v1–v4 bundle's programs.** Their `Program` rows have no
 `renewalsStayWithPartner`, so the column default applies: `true`, the same
@@ -130,7 +226,7 @@ that should attribute every event against the window alone.
 | 2 (Aug 2026) | added `PartnerProgram`, `PartnerCommission`, `Coupon`; per-table primary keys |
 | 3 (Oct 2026) | `PartnerCommission` gains `id` (the new primary key; was `partnerId`) and `programId` |
 | 4 (Oct 2026) | added `PartnerNetworkConsent` |
-| 5 (Oct 2026) | `Program` rows carry `renewalsStayWithPartner`; `Partner` gains `portalAccess` (older bundles restore both as `true`) |
+| 5 (Oct 2026) | added `BrandAsset`, `WebhookEndpoint`, `PartnerPostback`, `ConversionPostbackToken` (credentials excluded) and `Config` (portable keys only); `Program` rows carry `renewalsStayWithPartner` and `Partner` gains `portalAccess` (older bundles restore both as `true`) |
 
 **Importing a v1 or v2 bundle.** `POST /import` upgrades older rows before
 inserting them (`upgradeBundle` in `apps/api/src/export.ts`). A v2
@@ -168,8 +264,12 @@ curl -X POST "$API/import" \
 Every row's `tenantId` is rewritten to the importing tenant — that's what
 lets an `acme` export land in a self-host `default` tenant. Inserts are
 `ON CONFLICT (pk) DO NOTHING` (a bare `ON CONFLICT DO NOTHING` for
-`PartnerCommission`, as described above), so re-running is safe and a
-partial import can be resumed.
+`PartnerCommission`, `ConversionPostbackToken` and `Config`, as described
+above), so re-running is safe and a partial import can be resumed.
+
+The response reports rows inserted and skipped per table, plus
+`credentials`: the new signing secret of each webhook endpoint it restored.
+It is shown once. See [Credentials](#credentials).
 
 ### SQL — `GET /export.sql`
 
@@ -191,6 +291,9 @@ The file opens a transaction, pins `standard_conforming_strings` (the
 string-literal mode its escaping assumes), sets `app.tenant_id` so it
 works on the RLS-scoped app role as well as the privileged role, and
 inserts every table in the order above with `ON CONFLICT DO NOTHING`.
+
+Credentials are generated by the restoring server (`gen_random_uuid()`,
+so **Postgres 13 or newer**). The file contains none.
 
 **Requires psql 10 or newer.** The `-v`-or-default behaviour uses `\if`,
 which older clients don't understand — they'd skip the conditional and
@@ -271,14 +374,16 @@ doesn't keep is worse than a documented gap.
 
 **Never exported** (credentials, platform-operational state, or delivery
 logs — not customer data):
-`Session`, `MagicLinkToken`, `ApiKey`, `ConversionPostbackToken`, `Admin`, `PlatformSession`,
+`Session`, `MagicLinkToken`, `ApiKey`, `Admin`, `PlatformSession`,
 `PlatformSessionBundle`, `PlatformAdmin`, `PlatformAdminSession`,
 `PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
 `StripeWebhookInbox`.
 
 `Admin` is the consequential one: it is authentication data, so it stays
 out — which is exactly why `HostedFundingAuthorization` (whose `adminId`
-is an FK to it) can't simply be added to the bundle.
+is an FK to it) can't simply be added to the bundle. Credential *columns*
+of exported tables, and the `Config` keys that aren't settings, are listed
+under [Credentials](#credentials) and [Settings](#settings-config).
 
 **Not exported yet — known gaps, not decisions:**
 
@@ -287,13 +392,6 @@ is an FK to it) can't simply be added to the bundle.
   raw layers don't depend on the default currency.) The destination
   tenant row has to exist before an import can run, so restoring one needs
   a merge strategy rather than an insert.
-- `Config` — program name, support email, the partner portal-access default
-  and other UI-managed settings.
-- `PartnerPostback`, `BrandAsset` — customer-configured integration and
-  content.
-- `WebhookEndpoint` — the customer's own outbound webhook configuration
-  (the *delivery log* is deliberately excluded, but the endpoints are
-  customer data and belong in the bundle).
 - The hosted funding sidecars (`HostedFundingBatch`, `HostedFundingAllocation`,
   `HostedFundingTransfer`, `HostedFundingAuthorization`, `HostedBillingState`)
   and `PayoutReversal`. `docs/payout-funding.md` §4 says these are
@@ -333,6 +431,9 @@ didn't come with it. Nor is it a record of hosted billing operations.
 
 1. Add `{ table, primaryKey }` to `EXPORT_TABLES` in
    `apps/api/src/export.ts`, positioned after everything it references.
+   A column that holds a credential goes in the spec's `credentials`, with
+   the fresh value the JSON and SQL restores put in its place. Never
+   export one.
 2. Bump `SCHEMA_VERSION` and add the new version to
    `SUPPORTED_IMPORT_VERSIONS` (never remove an old one).
 3. Add it to the `TABLES` list in `apps/portal/src/pages/AdminExport.tsx`.
