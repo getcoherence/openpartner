@@ -188,7 +188,7 @@ A partner **with** portal access and `sendInvite: false` is active, so anyone wh
 - `POST /partners/{id}/revoke` notifies them only with `"notify": true`. (A partner with portal access is notified unless you pass `"notify": false`.)
 - The "program ending soon" email, sent seven days before a program's `endsAt`, links into the portal, so it skips them. Partners with portal access get it: leave `endsAt` unset on an evergreen referral program.
 
-**Webhooks.** Creating a partner fires `partner.created` and then, because a `sendInvite: false` partner is active at once, `partner.activated` with `"invited": false`. An invited partner fires `partner.activated` with `"invited": true` when they accept. If a Zapier flow or CRM workflow greets new partners on `partner.activated`, filter on `invited` so your in-app customers don't get a partner-program welcome.
+**Webhooks.** Creating a partner fires `partner.created` and then, because a `sendInvite: false` partner is active at once, `partner.activated` with `"invited": false`. Both carry `"source": "api"`. An invited partner fires `partner.activated` with `"invited": true` when they accept. Partners who apply on your join page fire the same events with `"source": "join_page"`. If you approve applicants automatically, they are active at once too, so they also arrive with `"invited": false`. If a Zapier flow or CRM workflow greets new partners on `partner.activated`, skip events with `"source": "api"` and `"invited": false` so your in-app customers don't get a partner-program welcome. A headless program that doesn't want applicants can turn off **Accept public applications** on Admin → Settings.
 
 **Privacy.** OpenPartner stores the name and email you send, and nothing else about the customer. If you'd rather not share real addresses, any unique address works for a headless partner, for example `user_123@referrals.yourapp.invalid`. Such an address can never receive OpenPartner email, whatever the partner's settings. Then the `metadata.appUserId` check above is how you match records; the email no longer does it.
 
@@ -346,7 +346,7 @@ curl -s -X POST $OP/webhooks -H "Authorization: Bearer $ADMIN" -H 'content-type:
 # → { "endpoint": {...}, "secret": "whsec_..." }   the secret is shown once
 ```
 
-Events: `attribution.created`, `commission.accrued`, `commission.approved`, `commission.paid`, `commission.reversed`, `partner.created`, `partner.activated`, `partnership.approved`, `payout.created`, or `*` for all. Payload schemas are under **Webhook events** in the API reference. Every `POST /partners` with `sendInvite: false` fires both `partner.created` and `partner.activated` (`"invited": false`); see step 3.
+Events: `attribution.created`, `commission.accrued`, `commission.approved`, `commission.paid`, `commission.reversed`, `partner.created`, `partner.activated`, `partnership.approved`, `payout.created`, or `*` for all. Payload schemas are under **Webhook events** in the API reference. Every `POST /partners` with `sendInvite: false` fires both `partner.created` and `partner.activated` (`"invited": false`, `"source": "api"`); see step 3.
 
 Each delivery is `POST {id, event, created, data}`, signed with HMAC-SHA256 over `<X-OpenPartner-Timestamp>.<raw body>`, keyed with the whole `whsec_…` secret:
 

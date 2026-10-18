@@ -699,10 +699,12 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
 
   it('delivers every documented webhook, signed and shaped as documented', async () => {
     // A fresh endpoint (the first was unsubscribed above), then an invited
-    // partner accepting their magic link, for partner.activated.
+    // partner accepting their magic link, for partner.activated, and a
+    // join-page applicant approved automatically, for the join_page shape
+    // of both partner events.
     const hook = check<{ secret: string }>(
       'createWebhookEndpoint',
-      await admin.post('/webhooks', { url: `${receiverBase}/hook/second`, events: ['partner.activated'] }),
+      await admin.post('/webhooks', { url: `${receiverBase}/hook/second`, events: ['partner.created', 'partner.activated'] }),
     );
     secrets['/hook/second'] = hook.secret;
     const id = ulid();
@@ -715,8 +717,28 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       principalId: id,
     });
     expect((await request(app).post('/auth/magic/verify').send({ token: link.plaintext })).status).toBe(200);
+    const joined = await request(app)
+      .post('/partner-signup')
+      .send({
+        email: 'applicant@example.com',
+        name: 'Applicant',
+        application: {
+          websiteUrl: 'https://applicant.example',
+          socialUrls: ['https://instagram.com/applicant'],
+          audienceSize: '1k_10k',
+          pitch: 'I run a weekly newsletter for designers and would feature the product in a deep-dive issue.',
+        },
+      });
+    expect(joined.status).toBe(201);
 
     await waitForEvents(Object.keys(WEBHOOK_PAYLOADS));
+    // Those types already arrived on the first endpoint, so wait for the
+    // join-page deliveries themselves.
+    const deadline = Date.now() + 8000;
+    const joinPage = () =>
+      received.filter((r) => r.path === '/hook/second' && (JSON.parse(r.raw) as { data: { source?: string } }).data.source === 'join_page');
+    while (joinPage().length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    expect(joinPage().map((r) => (JSON.parse(r.raw) as { event: string }).event).sort()).toEqual(['partner.activated', 'partner.created']);
     for (const r of received) {
       const secret = secrets[r.path];
       expect(secret, `delivery to ${r.path}`).toBeDefined();

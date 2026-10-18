@@ -416,6 +416,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write', 'part
     invited: sendInvite,
     portalAccess,
     programIds,
+    source: 'api',
   } satisfies WebhookPayload<'partner.created'>);
   // A partner created without an invite is active now, so this is their
   // activation; an invited partner's comes from magic-link verify when
@@ -428,6 +429,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write', 'part
       name: body.data.name,
       activatedAt: partnerRow.activatedAt.toISOString(),
       invited: false,
+      source: 'api',
     } satisfies WebhookPayload<'partner.activated'>);
   }
   if ((body.data.metadata as Record<string, unknown> | undefined)?.source === 'openpartner_network') {
