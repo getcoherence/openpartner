@@ -79,6 +79,14 @@ bump — a bundle from before it imports with `metadata = {}`. The reverse
 (a newer bundle into an instance that hasn't run the migration) fails on
 the unknown column; migrate first.
 
+`Program.revenueEventTypes` (Oct 2026) is the same kind of addition: the
+event types a brand declares are sales in a program, beyond `invoice_paid`
+and `subscription_created` ([platform-fee.md](platform-fee.md)). A brand
+fact about its own events, so it is core and travels with the program. A
+bundle from before it imports with `{}`. Since then each accrued
+commission also records `metadata.rateType` (`percent` | `fixed`); older
+rows don't have it, and nothing on import needs it.
+
 ### Versioning
 
 `SCHEMA_VERSION` is the current bundle version; `SUPPORTED_IMPORT_VERSIONS`
@@ -266,7 +274,14 @@ is an FK to it) can't simply be added to the bundle.
   basis for the brand, not the brand's attribution data, and it means
   nothing on a self-hosted instance, which isn't metered. Anything that
   needs it can re-derive the billable value from the exported Event,
-  Attribution and Commission rows.
+  Attribution and Commission rows. Its `terms` column freezes the fee
+  terms each conversion was first billed under.
+- `HostedFeeTerms` and `UsageFeeShadow` — which platform-fee rule a tenant
+  is on (plan start, pricing-notice date, effective date, contract rates
+  and minimum) and the old-vs-new shadow comparison
+  ([platform-fee.md](platform-fee.md)). Hosted billing sidecars in the
+  same category as `UsageLedger`: the hosted contract, not attribution
+  data, and meaningless on an unmetered self-hosted instance.
 - `OperatorRecoveryRequest` — the operator-recovery decision ledger
   (apps/api/src/operator-recovery.ts). Operational sidecar in the same
   category: an auditable record of hosted/self-host *operations*, not of

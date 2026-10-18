@@ -2,8 +2,9 @@
  * The platform fee honours refunds ("Refunded transactions don't count").
  *
  * The billable basis is attributed revenue less refunds (partial refunds in
- * proportion), and nothing for a conversion whose commissions were all
- * reversed. Each report diffs that basis against the UsageLedger: a refund
+ * proportion, and only as far as the partner gave the commission back too —
+ * followRefund models what refunds.ts does to it), and nothing for a
+ * conversion whose commissions were all reversed. Each report diffs that basis against the UsageLedger: a refund
  * in the same window is never billed, and one recorded after its revenue
  * was reported is credited against the next report, carried forward when
  * the credit is larger than that report's new GMV.
@@ -151,6 +152,30 @@ async function reverse(c: Conversion): Promise<void> {
   await db(TABLES.Commission).where({ id: c.commissionId! }).update({ status: 'reversed' });
 }
 
+/** What refunds.ts does to the conversion's commission once `keptShare` of
+ *  its value is all the customer kept: an unpaid commission is reversed and
+ *  a replacement accrued for the kept share; a paid one stays paid with a
+ *  refund_clawback for the rest. The fee only drops as far as this. */
+async function followRefund(c: Conversion, keptShare = 0): Promise<void> {
+  const root = await db(TABLES.Commission).where({ id: c.commissionId! }).first();
+  const kept = Math.round(Number(root.amount) * keptShare * 100) / 100;
+  if (root.status === 'paid') {
+    await db(TABLES.CommissionAdjustment).insert({
+      id: ulid(), tenantId: T, commissionId: root.id, amount: (kept - Number(root.amount)).toFixed(2), currency: root.currency,
+      reason: 'refund_clawback', metadata: {}, createdAt: new Date(),
+    });
+    return;
+  }
+  await reverse(c);
+  if (kept > 0) {
+    await db(TABLES.Commission).insert({
+      id: ulid(), tenantId: T, attributionId: root.attributionId, partnerId: root.partnerId, amount: kept.toFixed(2),
+      currency: root.currency, status: root.status, accruedAt: root.accruedAt,
+      metadata: { refund: { rootCommissionId: root.id, replacesCommissionId: root.id, refundEventId: 'rf' } },
+    });
+  }
+}
+
 async function ledger(eventId?: string) {
   const q = db(TABLES.UsageLedger).where({ tenantId: T }).orderBy('createdAt').orderBy('id');
   if (eventId) q.where({ eventId });
@@ -197,6 +222,7 @@ describe.skipIf(skipIntegration)('refunds in the same billing period', () => {
     const refunded = await seedConversion(100);
     await seedConversion(50);
     await apiRefund(refunded, 100);
+    await followRefund(refunded);
 
     const res = await report();
     expect(res.reported).toBe(true);
@@ -210,6 +236,7 @@ describe.skipIf(skipIntegration)('refunds in the same billing period', () => {
     const c = await seedConversion(200);
     await apiRefund(c, 30);
     await apiRefund(c, 20);
+    await followRefund(c, 0.75);
 
     const res = await report();
     expect(h.calls.map((x) => x.value)).toEqual(['150.00']);
@@ -223,6 +250,7 @@ describe.skipIf(skipIntegration)('refunds in the same billing period', () => {
     const c = await seedConversion(100, { metadata: { stripeInvoiceId: 'in_cum' } });
     await stripeRefund(c, 'in_cum', 3000, 10000);
     await stripeRefund(c, 'in_cum', 5000, 10000);
+    await followRefund(c, 0.5);
 
     await report();
     expect(h.calls.map((x) => x.value)).toEqual(['50.00']);
@@ -232,6 +260,7 @@ describe.skipIf(skipIntegration)('refunds in the same billing period', () => {
     const c = await seedConversion(100, { metadata: { stripeInvoiceId: 'in_both' } });
     await stripeRefund(c, 'in_both', 2500, 10000);
     await apiRefund(c, 40);
+    await followRefund(c, 0.6);
     await report();
     expect(h.calls.map((x) => x.value)).toEqual(['60.00']);
   });
@@ -239,13 +268,16 @@ describe.skipIf(skipIntegration)('refunds in the same billing period', () => {
   it('nets refunds and reversals out of aggregateAttributedGmv, per currency', async () => {
     const partial = await seedConversion(100);
     await apiRefund(partial, 25);
+    await followRefund(partial, 0.75);
     const full = await seedConversion(80);
     await apiRefund(full, 80);
+    await followRefund(full);
     const reversed = await seedConversion(60);
     await reverse(reversed);
     await seedConversion(40, { commission: null });
     const inr = await seedConversion(1000, { currency: 'INR' });
     await apiRefund(inr, 400);
+    await followRefund(inr, 0.6);
 
     expect(await aggregateAttributedGmv(db, T, null, new Date())).toEqual({ USD: 115, INR: 600 });
   });
@@ -258,6 +290,7 @@ describe.skipIf(skipIntegration)('refunds after the period was reported', () => 
     expect(h.calls.map((x) => x.value)).toEqual(['100.00']);
 
     await apiRefund(c, 40);
+    await followRefund(c, 0.6);
     await seedConversion(70);
     const res = await report();
     expect(h.calls.map((x) => x.value)).toEqual(['100.00', '30.00']);
@@ -275,6 +308,7 @@ describe.skipIf(skipIntegration)('refunds after the period was reported', () => 
     const c = await seedConversion(100);
     await report();
     await apiRefund(c, 100);
+    await followRefund(c);
 
     // Nothing new: the meter gets nothing (it rejects negatives) and the
     // whole credit waits.
@@ -309,6 +343,7 @@ describe.skipIf(skipIntegration)('refunds after the period was reported', () => 
     expect(h.calls.map((x) => x.value)).toEqual(['180.00']);
 
     await apiRefund(charged, 100, 'chargeback');
+    await followRefund(charged);
     // A dispute can be won: on its own it changes nothing.
     await db(TABLES.Event).insert({
       id: ulid(), tenantId: T, userId: disputed.userId, type: 'dispute_created', value: '-80.00', currency: 'USD',
@@ -393,6 +428,7 @@ describe.skipIf(skipIntegration)('idempotency', () => {
     const c = await seedConversion(100);
     await report();
     await apiRefund(c, 100);
+    await followRefund(c);
     await report();
     const rows = (await ledger()).length;
     const carried = await carry();
@@ -411,6 +447,7 @@ describe.skipIf(skipIntegration)('idempotency', () => {
     const c = await seedConversion(100);
     await report();
     await apiRefund(c, 100);
+    await followRefund(c);
     await report(); // carry -100
     await seedConversion(130);
 
@@ -443,6 +480,7 @@ describe.skipIf(skipIntegration)('currencies', () => {
     ecb.restore();
     ecb = stubEcbFetch('down');
     await apiRefund(inr, 4000);
+    await followRefund(inr, 0.5);
     await seedConversion(80);
     const res = await report();
     // Credit at the billed 0.0125, not whatever the rate is today.
@@ -459,6 +497,7 @@ describe.skipIf(skipIntegration)('currencies', () => {
     ecb.restore();
     ecb = stubEcbInrAt110();
     await apiRefund(inr, 8000);
+    await followRefund(inr);
     await seedConversion(8000, { currency: 'INR' }); // new GMV at today's 0.01
     const res = await report();
     expect(res.creditUsd).toBe(-100);
@@ -478,6 +517,7 @@ describe.skipIf(skipIntegration)('cutover and late attribution', () => {
     const billed = await seedConversion(100, { ts: before });
     const refundedBefore = await seedConversion(60, { ts: before });
     await apiRefund(refundedBefore, 60);
+    await followRefund(refundedBefore);
     // Recorded before the last report but attributed after it: the old
     // window reporter never billed it.
     const lateAttributed = await seedConversion(40, { ts: before, attributedAt: new Date(Date.now() - 10 * 60 * 1000) });
@@ -496,6 +536,7 @@ describe.skipIf(skipIntegration)('cutover and late attribution', () => {
 
     // From here on a refund of a pre-cutover conversion is credited.
     await apiRefund(billed, 100);
+    await followRefund(billed);
     const after = await report();
     expect(after.creditsByCurrency).toEqual({ USD: -100 });
     expect((await ledger()).filter((r) => r.reason === 'opening')).toHaveLength(1);

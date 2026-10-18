@@ -399,12 +399,12 @@ describe.skipIf(skipIntegration)('performance tiers', () => {
 });
 
 describe.skipIf(skipIntegration)('ledger metadata + overrides', () => {
-  it('a slab-less rule writes {} metadata', async () => {
+  it('a slab-less rule writes only its rate type', async () => {
     const { userId } = await setup([{ trigger: 'every', type: 'percent', value: 10 }]);
     await accrue(userId, 'invoice_paid', '100.00', '2026-01-01');
     const [row] = await commissions();
     expect(row!.amount).toBe('10.00');
-    expect(row!.metadata).toEqual({});
+    expect(row!.metadata).toEqual({ rateType: 'percent' });
   });
 
   it('a per-partner override with tiers is what accrues', async () => {

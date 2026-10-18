@@ -290,9 +290,16 @@ function roundMetric(n: number): number {
   return Math.round(n * 10000) / 10000;
 }
 
-/** `Commission.metadata` for one accrual. */
-export function commissionMetadata(accrual: SubRuleAccrual, ruleIndex: number): Record<string, unknown> {
-  return accrual.slab ? { slab: { ruleIndex, ...accrual.slab } } : {};
+/** `Commission.metadata` for one accrual. `rateType` is what the hosted
+ *  platform fee reads to tell a sale from a bounty: a percent commission is
+ *  a share of an amount, so its event is revenue whatever it's called
+ *  (docs/platform-fee.md). */
+export function commissionMetadata(
+  accrual: SubRuleAccrual,
+  ruleIndex: number,
+  rateType: CommissionSubRule['type'],
+): Record<string, unknown> {
+  return accrual.slab ? { rateType, slab: { ruleIndex, ...accrual.slab } } : { rateType };
 }
 
 /** True when a stored rule array has any banded or tiered sub-rule. */

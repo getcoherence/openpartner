@@ -10,14 +10,20 @@
  * has a different metered price. The reporter is mode-aware and picks the
  * correct meter event_name for each tier.
  *
- * What is billed: attributed revenue less refunds, per conversion
- * (usage-ledger.ts has the exact definition). Each report diffs every
- * conversion's billable value against what the UsageLedger says was already
- * billed for it, and records the difference: new revenue is billed,
- * revenue refunded, charged back or reversed after it was billed is
- * credited. Stripe meters reject negative usage, so the report sends the
- * net, and a net credit is carried forward (Config UsageCarryUsd) and
- * netted against the next report. A refund in the same window as its
+ * What is billed, per attributed conversion (usage-ledger.ts has the exact
+ * definition, docs/platform-fee.md the reasoning): on the old rule, its
+ * revenue less refunds; on the commission-floor rule, which a tenant moves
+ * to at its effective date (fee-terms.ts),
+ *
+ *   max(revenueRate × revenue, commissionRate × commissions) / meterRate
+ *
+ * — the fee in revenue-equivalent units, so the one meter and its existing
+ * prices still bill exactly the fee. Each report diffs every conversion's
+ * billable value against what the UsageLedger says was already billed for
+ * it, and records the difference: new usage is billed, usage refunded,
+ * charged back or reversed after it was billed is credited. Stripe meters
+ * reject negative usage, so the report sends the net, and a net credit is
+ * carried forward (Config UsageCarryUsd) and netted against the next report. A refund in the same window as its
  * conversion just never gets billed.
  *
  * Idempotency: Stripe's Meter Event API accepts an optional `identifier` so
@@ -41,15 +47,18 @@
  */
 
 import type { Knex } from 'knex';
+import { ulid } from 'ulid';
 import { TABLES } from '@openpartner/db';
 import { CONFIG_KEYS, deleteConfig, getConfig, setConfig } from './config.js';
 import { requireStripe } from './stripe.js';
 import { getTenantBillingState } from './billing-plan.js';
-import { FxUnavailableError, type FxSnapshot } from './fx.js';
+import { convertToUsd, FxUnavailableError, type FxSnapshot } from './fx.js';
 import {
+  compareRules,
   deltaTotals,
   insertLedgerEntries,
   ledgerDeltas,
+  OLD_RULE,
   openLedger,
   priceDeltas,
   round6,
@@ -57,23 +66,15 @@ import {
   type LedgerDelta,
   type PricedRun,
 } from './usage-ledger.js';
+import { resolveTenantFee, type TenantFee } from './fee-terms.js';
+import { db as platformDb } from './db.js';
+import { getFeeRuleSettings } from './platform-settings.js';
 
-// The explicit billable-GMV semantic: event types whose Event.value counts
-// toward attributed GMV (summed over events that have an Attribution — i.e.
-// credit actually went to a partner). Defaults to Stripe-native revenue
-// events; extend via OPENPARTNER_BILLABLE_EVENT_TYPES_EXTRA (comma-separated)
-// when a merchant reports revenue under CUSTOM type names (e.g. order_paid) —
-// otherwise those conversions accrue partner commissions but escape the
-// platform %. Set to the exact custom types you consider revenue; do NOT add
-// non-revenue events, whose value would be billed as GMV.
-const DEFAULT_REVENUE_EVENT_TYPES = ['invoice_paid', 'subscription_created'];
-const REVENUE_EVENT_TYPES: string[] = (() => {
-  const extra = (process.env.OPENPARTNER_BILLABLE_EVENT_TYPES_EXTRA ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return [...new Set([...DEFAULT_REVENUE_EVENT_TYPES, ...extra])];
-})();
+// Revenue event types are invoice_paid / subscription_created plus what each
+// program declares (Program.revenueEventTypes). The platform-wide
+// OPENPARTNER_BILLABLE_EVENT_TYPES_EXTRA env var this replaced was copied
+// onto every program by migration 20261017020000_platform_fee_rule, and is
+// no longer read (server.ts warns while it is still set).
 
 // Mode → meter event_name. Network access uses a separate meter for
 // Network-originated payouts; that's reported by the payout runner, not here.
@@ -109,6 +110,8 @@ export interface UsageReportResult {
   /** What's left to net against the next report: negative is credit still
    *  owed to the brand, positive is a fraction of a cent still to bill. */
   carriedForwardUsd?: number;
+  /** The fee terms new conversions were billed under. */
+  feeRule?: FeeRuleAudit;
   rangeStart: Date | null;
   rangeEnd: Date;
   reported: boolean;
@@ -169,12 +172,15 @@ export async function aggregateNetworkOriginatedPayouts(
 }
 
 /**
- * Billable attributed GMV, per currency, for conversions with `ts > since`
- * and `ts <= until`, as of now: the value of revenue events that have at
- * least one Attribution row (a partner was credited), less what has been
- * refunded or charged back, and nothing for a conversion whose commissions
- * were all reversed (see usage-ledger.ts). Refund, chargeback and dispute
- * events never count themselves. Currencies are never added together:
+ * Billable attributed GMV on the old rule, per currency, for conversions with
+ * `ts > since` and `ts <= until`, as of now: the value of revenue events
+ * (invoice_paid, subscription_created, and the types their program
+ * declares) that have at least one Attribution row (a partner was
+ * credited), less what has been refunded or charged back where the partner
+ * gave the commission back too, and nothing for a conversion whose
+ * commissions were all reversed (see usage-ledger.ts). Refund, chargeback
+ * and dispute events never count themselves. Currencies are never added
+ * together:
  * 963,377 INR and 85,000 USD are two amounts, not 1,048,377 of anything.
  *
  * The reporter doesn't use this window sum — it diffs against the
@@ -190,9 +196,8 @@ export async function aggregateAttributedGmv(
   tenantId: string,
   since: Date | null,
   until: Date,
-  eventTypes: string[] = REVENUE_EVENT_TYPES,
 ): Promise<AmountsByCurrency> {
-  return sumBillableBasis(db, tenantId, since, until, eventTypes);
+  return sumBillableBasis(db, tenantId, since, until);
 }
 
 /**
@@ -319,11 +324,13 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
   // can't collide with an earlier report's rows and wedge the tenant.
   const reportKey = `${identifier}@${rangeEnd.toISOString()}`;
 
+  const feeSettings = await getFeeRuleSettings(platformDb);
+  const fee = await resolveTenantFee(db, tenantId, state, { settings: feeSettings });
   let deltas: LedgerDelta[] = [];
   let run: PricedRun;
   try {
-    await openLedger(db, tenantId, rangeStart, REVENUE_EVENT_TYPES);
-    deltas = await ledgerDeltas(db, tenantId, rangeEnd, REVENUE_EVENT_TYPES);
+    await openLedger(db, tenantId, rangeStart);
+    deltas = await ledgerDeltas(db, tenantId, rangeEnd, fee ?? OLD_RULE, rangeStart);
     run = await priceDeltas(deltas);
   } catch (err) {
     if (!(err instanceof FxUnavailableError)) throw err;
@@ -362,7 +369,14 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
     ...(credited ? { creditsByCurrency: run.creditsByCurrency, creditUsd: run.creditUsd } : {}),
     ...(carriedInUsd !== 0 ? { carriedInUsd } : {}),
     ...(carryOutUsd !== 0 ? { carriedForwardUsd: carryOutUsd } : {}),
+    ...(fee ? { feeRule: feeRuleAudit(fee, run) } : {}),
   };
+  // Shadow: what the new rule would have billed, for a tenant still on the
+  // old one. Never blocks or changes the report.
+  const shadow =
+    feeSettings.shadow && fee && (fee.effectiveAt === null || fee.effectiveAt > rangeEnd)
+      ? await shadowComparison(db, tenantId, fee, rangeStart, rangeEnd)
+      : null;
   if (heldOut) {
     // The window still advances (a currency the ECB doesn't publish would
     // wedge the tenant forever otherwise), so this line is the record:
@@ -386,6 +400,7 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
     // call, so no exactly-once concern here.
     await db.transaction(async (trx) => {
       await insertLedgerEntries(trx, tenantId, reportKey, run.entries);
+      if (shadow) await insertShadow(trx, tenantId, fee!.mode, reportKey, rangeStart, rangeEnd, shadow);
       await setCarry(trx, tenantId, carryOutUsd);
       await setConfig(trx, tenantId, CONFIG_KEYS.LastUsageReportedAt, rangeEnd.toISOString());
     });
@@ -423,6 +438,7 @@ export async function reportUsageToStripe(db: Knex, tenantId: string): Promise<U
   };
   await db.transaction(async (trx) => {
     await insertLedgerEntries(trx, tenantId, reportKey, run.entries);
+    if (shadow) await insertShadow(trx, tenantId, fee!.mode, reportKey, rangeStart, rangeEnd, shadow);
     await setConfig(trx, tenantId, CONFIG_KEYS.PendingUsageReport, frozen);
   });
 
@@ -474,6 +490,7 @@ function pendingResult(p: PendingUsageReport): Omit<UsageReportResult, 'mode' | 
     creditUsd: p.creditUsd,
     carriedInUsd: p.carriedInUsd,
     carriedForwardUsd: p.carriedForwardUsd,
+    feeRule: p.feeRule,
     rangeStart: p.rangeStartIso ? new Date(p.rangeStartIso) : null,
     rangeEnd: new Date(p.rangeEndIso),
   };
@@ -489,6 +506,129 @@ interface ReportAudit {
   creditUsd?: number;
   carriedInUsd?: number;
   carriedForwardUsd?: number;
+  feeRule?: FeeRuleAudit;
+}
+
+/** The fee terms of a report's new conversions. */
+export interface FeeRuleAudit {
+  /** Conversions first attributed at or after this are on the new rule. */
+  effectiveAt: string | null;
+  revenueRate: number;
+  commissionRate: number;
+  meterRate: number;
+  contract: boolean;
+  /** The part of the report's USD from conversions on the new rule. */
+  newRuleUsd: number;
+}
+
+function feeRuleAudit(fee: TenantFee, run: PricedRun): FeeRuleAudit {
+  return {
+    effectiveAt: fee.effectiveAt ? fee.effectiveAt.toISOString() : null,
+    revenueRate: fee.revenueRate,
+    commissionRate: fee.commissionRate,
+    meterRate: fee.meterRate,
+    contract: fee.contract,
+    newRuleUsd: run.newRuleUsd,
+  };
+}
+
+/** Old rule vs new rule for the conversions first attributed in a window,
+ *  in USD. */
+export interface ShadowComparison {
+  conversions: number;
+  oldBasisUsd: number;
+  newBasisUsd: number;
+  oldFeeUsd: number;
+  newFeeUsd: number;
+  floorConversions: number;
+  renamedSaleConversions: number;
+  heldOut: AmountsByCurrency | null;
+}
+
+/**
+ * What the new rule would bill for the conversions first attributed in
+ * (rangeStart, rangeEnd], next to what the old rule bills, at the tenant's
+ * rates. Null when the rate feed is down: a shadow row is never worth
+ * failing a report for.
+ */
+export async function shadowComparison(
+  db: Knex,
+  tenantId: string | null,
+  fee: Pick<TenantFee, 'revenueRate' | 'commissionRate' | 'meterRate'>,
+  rangeStart: Date | null,
+  rangeEnd: Date,
+): Promise<ShadowComparison | null> {
+  const rows = await compareRules(db, {
+    tenantId,
+    attributedAfter: rangeStart,
+    attributedBy: rangeEnd,
+    revenueRate: fee.revenueRate,
+    commissionRate: fee.commissionRate,
+  });
+  const oldByCurrency: AmountsByCurrency = {};
+  const newByCurrency: AmountsByCurrency = {};
+  let conversions = 0;
+  let floorConversions = 0;
+  let renamedSaleConversions = 0;
+  for (const r of rows) {
+    if (r.oldBasis) oldByCurrency[r.currency] = r.oldBasis;
+    if (r.newFee) newByCurrency[r.currency] = r.newFee;
+    conversions += r.conversions;
+    floorConversions += r.floorConversions;
+    renamedSaleConversions += r.renamedSaleConversions;
+  }
+  try {
+    const oldUsd = await convertToUsd(oldByCurrency);
+    const newUsd = await convertToUsd(newByCurrency);
+    const heldOut: AmountsByCurrency = {};
+    for (const [c, a] of Object.entries(oldUsd.heldOut)) heldOut[`${c}:oldBasis`] = a;
+    for (const [c, a] of Object.entries(newUsd.heldOut)) heldOut[`${c}:newFee`] = a;
+    return {
+      conversions,
+      oldBasisUsd: oldUsd.amountUsd,
+      oldFeeUsd: round6(oldUsd.amountUsd * fee.meterRate),
+      newFeeUsd: newUsd.amountUsd,
+      newBasisUsd: fee.meterRate > 0 ? round6(newUsd.amountUsd / fee.meterRate) : 0,
+      floorConversions,
+      renamedSaleConversions,
+      heldOut: Object.keys(heldOut).length > 0 ? heldOut : null,
+    };
+  } catch (err) {
+    if (!(err instanceof FxUnavailableError)) throw err;
+    console.warn(`[usage] shadow comparison skipped, no FX rates tenant=${tenantId}: ${err.message}`);
+    return null;
+  }
+}
+
+async function insertShadow(
+  db: Knex,
+  tenantId: string,
+  mode: string,
+  reportKey: string,
+  rangeStart: Date | null,
+  rangeEnd: Date,
+  s: ShadowComparison,
+): Promise<void> {
+  await db(TABLES.UsageFeeShadow)
+    .insert({
+      id: ulid(),
+      tenantId,
+      reportKey,
+      rangeStart,
+      rangeEnd,
+      mode,
+      conversions: s.conversions,
+      oldBasisUsd: s.oldBasisUsd.toFixed(6),
+      newBasisUsd: s.newBasisUsd.toFixed(6),
+      oldFeeUsd: s.oldFeeUsd.toFixed(6),
+      newFeeUsd: s.newFeeUsd.toFixed(6),
+      floorConversions: s.floorConversions,
+      renamedSaleConversions: s.renamedSaleConversions,
+      heldOut: s.heldOut ? JSON.stringify(s.heldOut) : null,
+      createdAt: new Date(),
+    })
+    .onConflict(['tenantId', 'reportKey'])
+    .ignore();
 }
 
 interface PendingUsageReport extends ReportAudit {

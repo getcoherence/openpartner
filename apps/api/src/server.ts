@@ -41,6 +41,16 @@ console.log(JSON.stringify({
   doAppIdLen: (process.env.DO_APP_ID ?? '').length,
 }));
 
+// Retired: revenue types are declared per program now
+// (Program.revenueEventTypes). Migration 20261017020000_platform_fee_rule
+// copied the value onto every program that existed when it ran.
+if ((process.env.OPENPARTNER_BILLABLE_EVENT_TYPES_EXTRA ?? '').trim()) {
+  console.warn(
+    '[api] OPENPARTNER_BILLABLE_EVENT_TYPES_EXTRA is no longer read: declare revenue event types on each program ' +
+      '(Programs → Revenue event types). Programs created after the migration need them set there. Remove the variable.',
+  );
+}
+
 // Validate the outbound (SSRF) guard config now so a bad
 // OPENPARTNER_OUTBOUND_* value fails startup rather than every delivery.
 outboundPolicy();

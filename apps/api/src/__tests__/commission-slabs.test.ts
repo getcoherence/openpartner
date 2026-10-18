@@ -148,10 +148,10 @@ describe('tier windows', () => {
 });
 
 describe('audit metadata', () => {
-  it('records the slab with the rule position; plain rules stay {}', () => {
+  it('records the rate type, and the slab with the rule position', () => {
     const banded = bandAccrual(tenToFifteen, 60000, 'USD');
-    expect(commissionMetadata(banded, 2)).toEqual({ slab: { ruleIndex: 2, ...banded.slab } });
-    expect(commissionMetadata({ amount: 10 }, 0)).toEqual({});
+    expect(commissionMetadata(banded, 2, 'percent')).toEqual({ rateType: 'percent', slab: { ruleIndex: 2, ...banded.slab } });
+    expect(commissionMetadata({ amount: 10 }, 0, 'fixed')).toEqual({ rateType: 'fixed' });
   });
 
   it('rulesHaveSlabs spots bands or tiers anywhere in the array', () => {
