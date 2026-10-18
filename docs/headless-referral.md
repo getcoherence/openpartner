@@ -339,7 +339,7 @@ What happens to the conversion's commissions. Each one ends up worth its origina
 - A conversion with no `value` (a signup) can only be refunded in full. Sending an `amount` gets `422 partial_refund_needs_value`.
 - **Idempotency.** `externalEventId` is required: your refund or credit-note id. A retry with the same key returns `200` with `"replayed": true` and records nothing new. Reusing it for a different conversion, kind or amount gets `409 external_event_id_conflict`. Keys share the namespace of step 7.
 - **Report a chargeback once it's final**, not when the dispute opens: it reverses commissions just as a refund does.
-- Refunds of payments the self-host Stripe webhook recorded are handled from Stripe's `charge.refunded` already. Don't report those here too.
+- Refunds of payments recorded from Stripe (the self-host Stripe webhook, or the Stripe App on OpenPartner Cloud) are handled from Stripe's `charge.refunded` already. Don't report those here too. A dispute from Stripe is recorded but reverses nothing, and OpenPartner doesn't read its outcome, so report a lost one here as a chargeback.
 - If the refund arrives before the customer's click is stitched, it's kept. When identify later attributes the payment, its new commissions are cut by the refund straight away.
 - A holdback as long as your refund window (step 2) still helps: refunds inside it reverse unpaid commissions, rather than leaving a clawback to collect.
 
@@ -559,7 +559,7 @@ curl -s -X POST $OP/attribution/conversions -H "Authorization: Bearer $KEY" -H '
 # → { "ok": true, "outcome": "attributed", "attribution": { "status": "attributed", "commission": "accrued", ... } }
 ```
 
-- `value` is `amount_total` in major units: divide by 100, except zero-decimal currencies such as JPY and KRW, where the amount is already whole units (and three-decimal ones such as KWD, divided by 1000). `currency` is Stripe's, upper-cased.
+- `value` is `amount_total` in major units: divide by 100, except zero-decimal currencies such as JPY and KRW, where the amount is already whole units (and three-decimal ones such as KWD, divided by 1000). UGX and ISK are on Stripe's special-cases list: whole units, but sent with two decimals, so divide them by 100 too (5 UGX is `500`). `currency` is Stripe's, upper-cased.
 - `externalEventId` is the session id (`cs_…`). Both checkout events and every Stripe retry then record the purchase once.
 - The key needs only `events:write`.
 
@@ -574,7 +574,7 @@ curl -s -X POST $OP/attribution/conversions -H "Authorization: Bearer $KEY" -H '
 - At checkout, store `session.customer` against the click id (`client_reference_id`) on your side.
 - On later `invoice.paid` events for that customer (`billing_reason` is `subscription_cycle`, or `subscription_update` for a mid-cycle change), report `{clickId, type: "invoice_paid", value: amount_paid / 100, currency, externalEventId: invoice.id}`.
 - A checkout with a free trial is `payment_status: "no_payment_required"`, so step 2 skips it. Store the customer anyway: the first charge after the trial is a `subscription_cycle` invoice.
-- A renewal is credited only inside the program's attribution window, counted from the click. After that the response says `not_attributed` / `outside_window`.
+- Renewals stay with the partner who won the customer for as long as they pay, past the program's attribution window (`renewalsStayWithPartner`, on by default). Report every renewal under the same click id: that's how OpenPartner knows it's the same customer. Once the click is older than the window, only `recurring` commission rules pay, so under a one-off rule a renewal answers `attributed` / `no_commission`. With `renewalsStayWithPartner` off, a renewal outside the window is `not_attributed` / `outside_window`. See [renewal-attribution.md](renewal-attribution.md).
 
 **Refunds.** If your deployment's API reference lists `POST /attribution/refunds`, report each Stripe refund there with the same key: `conversionExternalEventId` is the session id you sent as `externalEventId` (find the session from the refund's `payment_intent` with Stripe's `GET /v1/checkout/sessions?payment_intent=pi_…`), `amount` the refunded amount in major units (leave it out for a full refund), and `externalEventId` the Stripe refund id (`re_…`). Otherwise, reverse the commission with `POST /commissions/{id}/reverse` (admin key), or from the **Review queue** in the portal. A holdback as long as your refund window means most refunds land before anything is approved.
 

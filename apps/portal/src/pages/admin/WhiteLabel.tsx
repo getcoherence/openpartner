@@ -98,6 +98,12 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
         // Shouldn't happen (the button routes unsubscribed tenants through
         // Checkout instead) — but a race with a just-cancelled sub can.
         setError('Your plan subscription is inactive — use the subscribe button to restart it with white-label included.');
+      } else if (err instanceof ApiError && String(err.message).startsWith('payment_failed')) {
+        // Declined: the server attached nothing, so there's nothing to undo.
+        const detail = (err.detail as { detail?: unknown } | null)?.detail;
+        setError(
+          `${typeof detail === 'string' ? detail : 'The add-on charge didn’t go through.'} Update your payment method on the Billing page and try again.`,
+        );
       } else {
         setError(err instanceof ApiError ? err.message : 'Could not enable the add-on.');
       }
@@ -152,7 +158,7 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
                   window.confirm(
                     selfhost
                       ? 'Disable white-label? OpenPartner branding returns to your portal and emails, and the Network becomes available again.'
-                      : 'Disable white-label? Your custom domain will stop resolving and platform branding returns. The add-on is removed from your subscription with a prorated credit.',
+                      : 'Disable white-label? Your custom domain will stop resolving and platform branding returns. The add-on is removed from your subscription, and the unused time is credited on your next invoice.',
                   )
                 ) {
                   disable.mutate();
@@ -177,6 +183,15 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
                   billing.networkConnected &&
                   !window.confirm(
                     'Enable white-label? This install is connected to the OpenPartner Network. White-label hides all Network pages, including Network billing, but does not cancel your Network subscription. Cancel it under Network → Billing first if you no longer need it.',
+                  )
+                ) {
+                  return;
+                }
+                if (
+                  !selfhost &&
+                  billing.plan !== 'enterprise' &&
+                  !window.confirm(
+                    'Enable the white-label add-on? Your payment method is charged now for the rest of this billing period, then monthly with your plan.',
                   )
                 ) {
                   return;
@@ -235,6 +250,9 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
             Removes OpenPartner branding from your partner portal and emails, hides the shared Network, and
             serves everything from your own domain (e.g. <code>partners.yourbrand.com</code>). Billed monthly as
             an add-on to your plan subscription{billing.priceConfigured ? '' : ' — pricing not yet configured on this deployment; contact support'}.
+            {billing.priceConfigured && !needsCheckout && billing.plan !== 'enterprise' && (
+              <> Turning it on charges the rest of the current billing period right away.</>
+            )}
             {needsCheckout && billing.priceConfigured && (
               <>
                 {' '}Your plan subscription isn&rsquo;t active yet — one checkout starts it with the add-on

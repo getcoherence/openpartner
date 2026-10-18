@@ -384,7 +384,8 @@ Stripe runs async verification. Wait 30–120 seconds, then re-check
 check Stripe → Connect → that account → Requirements for missing fields.
 
 **Refunded transactions still showing accrued commissions.**
-Refunds reach commissions from Stripe's `charge.refunded` (self-host) or from
+Refunds reach commissions from Stripe's `charge.refunded` (self-host, or a
+brand's Stripe App connection on Cloud) or from
 `POST /attribution/refunds` (any deployment). Both use the same code
 (`apps/api/src/refunds.ts`). A full refund reverses non-paid commissions; a
 partial one reverses each and accrues a replacement for the kept share

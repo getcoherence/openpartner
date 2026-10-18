@@ -84,7 +84,7 @@ export const WEBHOOK_PAYLOADS = {
   'commission.reversed': lifecycleBase.extend({
     reason: z.enum(['manual', 'refund', 'chargeback']).openapi({
       description:
-        '`manual` = an admin reversed it; `refund` = a refund (`POST /attribution/refunds`, or a Stripe refund on self-host); `chargeback` = a chargeback reported to `POST /attribution/refunds`.',
+        "`manual` = an admin reversed it; `refund` = a refund (`POST /attribution/refunds`, or Stripe's `charge.refunded` from the self-host Stripe webhook or, on OpenPartner Cloud, the OpenPartner Stripe App); `chargeback` = a chargeback reported to `POST /attribution/refunds`.",
     }),
     refundEventId: id.optional().openapi({ description: 'The refund or chargeback event behind a `refund` / `chargeback` reversal.' }),
     replacementCommissionId: id.optional().openapi({
@@ -158,7 +158,8 @@ const WEBHOOK_DESCRIPTIONS: Record<WebhookEventName, string> = {
   'commission.approved': 'A commission was approved, by an admin or by the holdback auto-approve job.',
   'commission.paid':
     'A commission was included in a payout. For a `manual` payout this fires when the payout is planned, before you have sent the money; `POST /payouts/{id}/confirm` records that you did.',
-  'commission.reversed': 'A commission was reversed: by an admin, or by a Stripe refund or dispute.',
+  'commission.reversed':
+    "A commission was reversed: by an admin, or by a refund or chargeback, reported to `POST /attribution/refunds` or from Stripe's `charge.refunded`. A Stripe dispute reverses nothing until you report the chargeback.",
   'partner.created':
     'A partner was created: through `POST /partners` (admin, integration or Network approval; `source: "api"`), or by applying on the public join page (`source: "join_page"`). A join-page applicant held for review arrives with `activatedAt: null`; `POST /partners/{id}/invite` approves them. Not sent for partners imported with `POST /import/partners-csv`.',
   'partner.activated':

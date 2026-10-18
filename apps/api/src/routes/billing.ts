@@ -175,9 +175,10 @@ billingRouter.get('/billing/white-label', requireAuth, requireAdmin, async (req,
 
 /**
  * Enable the add-on. Hosted flex/revshare: attaches the add-on price to
- * the tenant's ACTIVE subscription as a prorated line item, then mirrors
- * the flag locally (the webhook re-confirms). Enterprise: flag only —
- * sales-led, no Stripe item. Self-host: flag only and free — entitled
+ * the tenant's ACTIVE subscription and charges the prorated rest of the
+ * current period immediately (a declined charge → 402, nothing attached),
+ * then mirrors the flag locally (the webhook re-confirms). Enterprise:
+ * flag only — sales-led, no Stripe item. Self-host: flag only and free — entitled
  * without billing, but still the admin's choice rather than a default,
  * because white-label isolates the tenant from the Network and a self-host
  * install on the Network plan must be able to stay connected. No
@@ -214,12 +215,29 @@ billingRouter.post('/billing/white-label', requireAuth, requireAdmin, async (req
   const sub = await stripe.subscriptions.retrieve(state.stripeSubscriptionId);
   const already = sub.items.data.find((it) => it.price.id === price);
   if (!already) {
-    await stripe.subscriptionItems.create({
-      subscription: sub.id,
-      price,
-      quantity: 1,
-      proration_behavior: 'create_prorations',
-    });
+    try {
+      // always_invoice: bill the rest of this period now. create_prorations
+      // parked it on the next renewal invoice, so the first partial month
+      // was charged a month late alongside the next month in advance, and
+      // never at all if the subscription ended first. error_if_incomplete:
+      // a declined charge leaves the subscription untouched instead of
+      // attaching the item and pushing the whole plan into dunning.
+      await stripe.subscriptionItems.create({
+        subscription: sub.id,
+        price,
+        quantity: 1,
+        proration_behavior: 'always_invoice',
+        payment_behavior: 'error_if_incomplete',
+      });
+    } catch (err) {
+      if ((err as { statusCode?: number }).statusCode !== 402) throw err;
+      return res.status(402).json({
+        error: 'payment_failed',
+        detail: `The add-on charge didn't go through, so white-label wasn't enabled. ${
+          err instanceof Error ? err.message : ''
+        }`.trim(),
+      });
+    }
   }
   // Optimistic local mirror — the subscription.updated webhook is the
   // authoritative confirmation and is idempotent with this.
@@ -228,8 +246,10 @@ billingRouter.post('/billing/white-label', requireAuth, requireAdmin, async (req
 });
 
 /**
- * Disable the add-on: remove the subscription item (prorated credit) and
- * mirror locally — which also revokes custom-domain routing + the DO edge.
+ * Disable the add-on: remove the subscription item and mirror locally —
+ * which also revokes custom-domain routing + the DO edge. The prorated
+ * credit stays pending and comes off a later invoice rather than being
+ * refunded to the card.
  */
 billingRouter.delete('/billing/white-label', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
