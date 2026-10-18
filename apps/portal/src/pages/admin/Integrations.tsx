@@ -88,6 +88,7 @@ export function AdminIntegrations() {
       title="Integrations"
       subtitle={`Pipe conversions from your CRM, lender systems or affiliate networks into ${programName} so partners get attributed for full-funnel deals, not just self-serve signups.`}
     >
+      <UnmatchedEventTypes />
       <WhyCard />
       <div style={{ height: 18 }} />
       <KeysPanel />
@@ -98,6 +99,64 @@ export function AdminIntegrations() {
       <div style={{ height: 18 }} />
       <PostbackPanel />
     </Page>
+  );
+}
+
+interface UnmatchedEventType {
+  type: string;
+  events: number;
+  lastSeenAt: string;
+  programs: Array<{ id: string; name: string }>;
+}
+
+const STRIPE_GUIDE_URL =
+  'https://github.com/getcoherence/openpartner/blob/main/docs/headless-referral.md#stripe-payment-links-on-openpartner-cloud';
+
+/** Conversions a sender reported under a type no commission rule takes,
+ *  e.g. `funded` for `loan_funded`. They're recorded and credited, and pay
+ *  nothing, so the sender never hears an error. Renders nothing when the
+ *  list is empty (or the API predates it). */
+function UnmatchedEventTypes() {
+  const list = useQuery({
+    queryKey: ['unmatched-event-types'],
+    queryFn: () => api<{ since: string; eventTypes: UnmatchedEventType[] }>('/attribution/unmatched-event-types'),
+  });
+  const types = list.data?.eventTypes ?? [];
+  if (types.length === 0) return null;
+  return (
+    <>
+      <div
+        role="alert"
+        style={{
+          background: theme.warnSoft,
+          border: `1px solid ${alpha(theme.warn, 0.4)}`,
+          borderRadius: theme.radiusMd,
+          padding: 16,
+        }}
+      >
+        <div style={{ fontSize: 14, fontWeight: 500, color: theme.warn, marginBottom: 6 }}>
+          {types.length === 1 ? 'An event type' : `${types.length} event types`} matched no commission rule
+        </div>
+        <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.55 }}>
+          In the last 30 days, these conversions were credited to a partner but paid nothing,
+          because no rule on the partner&rsquo;s terms takes their type. A typo in a stage name
+          (<code>funded</code> for <code>loan_funded</code>) lands here. Fix the sender, or add a
+          rule for the type on the program.
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {types.map((t) => (
+            <div key={t.type} style={{ fontSize: 13, lineHeight: 1.45 }}>
+              <code style={codeInline}>{t.type}</code>{' '}
+              <span style={{ color: theme.textMuted }}>
+                {t.events} {t.events === 1 ? 'conversion' : 'conversions'} · last {new Date(t.lastSeenAt).toLocaleString()} ·{' '}
+                {t.programs.map((p) => p.name).join(', ')}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div style={{ height: 18 }} />
+    </>
   );
 }
 
@@ -547,9 +606,22 @@ function ClickIdGuide() {
       </p>
       <pre style={{ ...preBlock, marginBottom: 10 }}>{'https://buy.stripe.com/abc123?client_reference_id={click_id}'}</pre>
       <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.55 }}>
+        Write the macro exactly like that: single braces, lower case. Stripe drops a{' '}
+        <code>client_reference_id</code> it can&rsquo;t read without telling anyone, so{' '}
+        <code>{'{{click_id}}'}</code> (Zapier and Make syntax) is refused when you save.
+      </p>
+      <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.55 }}>
         On a self-hosted install whose Stripe webhook points at {programName}, that purchase is
-        then recorded automatically: a signup, plus its amount as <code>invoice_paid</code>.
-        Anywhere else, whatever holds the click id (your lender system, your CRM) reports the
+        then recorded automatically: a signup, plus its amount as <code>invoice_paid</code>. On
+        OpenPartner Cloud, forward Stripe&rsquo;s checkout events to the call below from a small
+        handler of your own:{' '}
+        <a href={STRIPE_GUIDE_URL} target="_blank" rel="noreferrer" style={{ color: theme.accentText }}>
+          Stripe Payment Links on OpenPartner Cloud <ExternalLink size={11} style={{ verticalAlign: 'middle' }} />
+        </a>
+        .
+      </p>
+      <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.55 }}>
+        Whatever holds the click id (your lender system, your CRM, that handler) reports the
         conversion in one call. No <code>identify()</code> or <code>userId</code> needed. It needs
         a key with <code>events:write</code>:
       </p>
@@ -565,9 +637,13 @@ function ClickIdGuide() {
   }'`}</pre>
       <p style={{ fontSize: 12, color: theme.textMuted, margin: '12px 0 0', lineHeight: 1.55 }}>
         <code>externalEventId</code> is required: a retry returns the original result with{' '}
-        <code>&quot;replayed&quot;: true</code>. Add <code>userId</code> if you also identify this
-        user elsewhere. Unknown clicks return <code>404</code>, and clicks flagged as fraud
-        return <code>422</code>.
+        <code>&quot;replayed&quot;: true</code>. It must be unique across your whole account and
+        differ per stage (<code>loan-881:approved</code>, <code>loan-881:funded</code>): a reused id
+        returns <code>409</code> and that conversion is lost. Add <code>userId</code> if you also
+        identify this user elsewhere. A click from any of your programs is accepted; unknown
+        clicks return <code>404</code>, and clicks flagged as fraud return <code>422</code>. The
+        response&rsquo;s <code>outcome</code> says whether a partner was credited and paid:{' '}
+        <code>attributed</code>, <code>no_matching_rule</code> or <code>not_attributed</code>.
       </p>
     </Card>
   );
@@ -642,8 +718,15 @@ function PostbackPanel() {
       <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 12px', lineHeight: 1.55 }}>
         For affiliate networks and lenders that can only fire a URL when a conversion happens.
         The URL carries its own token, which can record conversions and nothing else. It
-        isn&rsquo;t an API key and doesn&rsquo;t work as one. It answers <code>ok</code> (or a 1×1
-        GIF with <code>&amp;pixel=1</code>).
+        isn&rsquo;t an API key and doesn&rsquo;t work as one. It answers <code>ok</code> and what the
+        conversion came to: <code>ok attributed</code>, <code>ok no_matching_rule</code> (no
+        commission rule takes that <code>type</code>), or <code>ok not_attributed outside_window</code>.
+        With <code>&amp;pixel=1</code> it answers a 1×1 GIF.
+      </p>
+      <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 12px', lineHeight: 1.55 }}>
+        One token covers every program, so any sender holding it can report any click. Give each
+        sender its own <code>txn_id</code> prefix (<code>acme:loan-881:funded</code>), and limit the
+        token to your senders&rsquo; IPs below.
       </p>
       <ErrorBanner error={current.error ?? mint.error ?? turnOff.error ?? saveAllowlist.error} />
 

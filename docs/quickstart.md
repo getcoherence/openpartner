@@ -97,7 +97,9 @@ curl -s -X PATCH http://localhost:4601/programs/$PROGRAM \
   -d '{"destinationUrl":"https://buy.stripe.com/abc123?client_reference_id={click_id}"}'
 ```
 
-The macro may go in the path, query or fragment, not the host. A misspelling such as `{clickid}` or `{cref}` is rejected. Click ids are ULIDs (26 letters and digits), so they fit Stripe's `client_reference_id`. On a single-tenant self-host whose Stripe webhook points here, a Payment Link purchase is then recorded automatically: a `signup`, plus the paid amount as `invoice_paid`. A refund of the whole purchase reverses its commission; a partial refund cuts it to the share the customer kept. Subscribe the webhook to `checkout.session.async_payment_succeeded` too, so purchases paid by SEPA, ACH or Bacs are counted when they clear.
+Write the macro exactly as `{click_id}` (`%7Bclick_id%7D` also works). It may go in the path, query or fragment, not the host. Any other brace text is rejected, because the router would send it through as text: `{{click_id}}`, `{ click_id }`, `{clickid}`, `{cref}`, `{subid}`. Click ids are ULIDs (26 letters and digits), so they fit Stripe's `client_reference_id`, which silently drops anything but letters, digits, `-` and `_`. A `buy.stripe.com` destination without the macro still saves, with a `warnings` entry in the response.
+
+On a single-tenant self-host whose Stripe webhook points here, a Payment Link purchase is then recorded automatically: a `signup`, plus the paid amount as `invoice_paid`. A refund of the whole purchase reverses its commission; a partial refund cuts it to the share the customer kept. Subscribe the webhook to `checkout.session.async_payment_succeeded` too, so purchases paid by SEPA, ACH or Bacs are counted when they clear. On OpenPartner Cloud, Stripe's webhooks go to your own account: forward the paid checkout to the call below, as in [Stripe Payment Links on OpenPartner Cloud](./headless-referral.md#stripe-payment-links-on-openpartner-cloud).
 
 **Report it in one call.** Whatever holds the click id posts the conversion with a key that has `events:write`. No identify step:
 
@@ -109,8 +111,9 @@ curl -s -X POST http://localhost:4601/attribution/conversions \
 ```
 
 - OpenPartner stitches the click and records the event in one transaction. Without a `userId` the click gets its own user (`click:<clickId>`), so every conversion reported for that click is credited to it. Pass `userId` if you also identify the user elsewhere.
-- `externalEventId` is required and shares the idempotency rules below. A retry replays, and reusing a key for a different click or conversion returns `409`.
-- An unknown click, or one from another program, returns `404 click_not_found`. A click flagged as fraud (velocity, revoked partner) returns `422 click_flagged`. Neither records anything.
+- `externalEventId` is required and shares the idempotency rules below. A retry replays, and reusing a key for a different click or conversion returns `409`. Use one key per stage (`loan-881:approved`, `loan-881:funded`).
+- Conversions are scoped to your tenant, not to a program: the click id already names its program, so there's no `programId` to send, and a click from any of your programs is accepted. An unknown click returns `404 click_not_found`. A click flagged as fraud (velocity, revoked partner) returns `422 click_flagged`. Neither records anything.
+- `outcome` says what the conversion came to: `attributed`, `no_matching_rule` (credited, but no commission rule takes this `type`, so nothing is paid: check the stage name), or `not_attributed` with a `reason` such as `outside_window`. It's recorded either way, so don't retry it. More for lenders and other senders: [Lenders, suppliers and affiliate networks](./headless-referral.md#lenders-suppliers-and-affiliate-networks).
 
 **Or as a postback URL.** Affiliate networks and many lenders can only fire a URL. Mint a postback token under **Admin → Integrations**, or via the API:
 
@@ -119,13 +122,13 @@ TOKEN=$(curl -s -X POST http://localhost:4601/conversion-postback/token \
   -H "Authorization: Bearer $ADMIN" | jq -r .plaintext)
 
 curl -s "http://localhost:4601/postback?click_id=$CLICK&type=sale&amount=49.00&currency=USD&txn_id=T-1001&token=$TOKEN"
-# ok
+# ok attributed
 ```
 
 - The token (`opcp_…`) records conversions and nothing else, and isn't accepted as an API key. The API's request log redacts it.
 - `txn_id` is the idempotency key, so a network re-firing the postback records once. `cref`, `transaction_id` and `value` work as aliases for `click_id`, `txn_id` and `amount`.
-- The response is `ok`, or a 1×1 GIF with `&pixel=1`. Errors are plain-text codes with a 4xx status (`invalid_token`, `ip_not_allowed`, `click_not_found`, …).
-- Pin it to the network's IPs with `PATCH /conversion-postback {"ipAllowlist":["203.0.113.0/24"]}`. The check uses the client address the API sees through one trusted proxy hop, so point networks at the API host directly.
+- A recorded conversion answers `200` with `ok` and what it came to: `ok attributed`, `ok attributed no_commission`, `ok no_matching_rule` or `ok not_attributed outside_window`. With `&pixel=1` it answers a 1×1 GIF. Errors are plain-text codes with a 4xx status (`invalid_token`, `ip_not_allowed`, `click_not_found`, …).
+- One token covers every program in the tenant, so any sender holding it can report any click. Pin it to your senders' IPs with `PATCH /conversion-postback {"ipAllowlist":["203.0.113.0/24"]}`. The check uses the client address the API sees through one trusted proxy hop, so point networks at the API host directly.
 - `POST /conversion-postback/token` again rotates it, and the old URL stops working at once. `DELETE /conversion-postback/token` turns postbacks off.
 
 ## 5. Review + payout
@@ -136,7 +139,7 @@ With a key, a retry returns `200` with `"replayed": true` and the original `even
 
 - **One key per event, not per order.** An order's `subscription_created` and its `invoice_paid` need different keys, for example `sub_123:created` and `in_456`.
 - **Reusing a key for a different event** (another `userId`, `type`, `value` or `currency`) returns `409 external_event_id_conflict`. Nothing is recorded.
-- **Keys are scoped to your program** and can be up to 120 characters. They share one namespace with `/attribution/conversions`, `/postback` and `/coupons/redeem`, so don't reuse a key across them for different events.
+- **Keys are unique across your whole tenant**, not per program, and can be up to 120 characters. They share one namespace with `/attribution/conversions`, `/postback`, `/coupons/redeem` and the Stripe webhook, so don't reuse a key across them for different events. When several systems send events, prefix each one's keys (`acme:loan-881:funded`).
 
 ```bash
 # The commission is 'accrued'; approve it.

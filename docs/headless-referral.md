@@ -6,6 +6,7 @@ The same API also lets you run OpenPartner from your own admin dashboard or stor
 
 - **API reference:** `GET /openapi.json` and the rendered `/docs` on every deployment, e.g. `https://app.openpartner.dev/api/docs`. A copy lives in [`docs/openapi.json`](./openapi.json).
 - **Runnable sample:** [`examples/in-app-referral`](../examples/in-app-referral) is a dependency-free Node server plus one HTML page that does everything below.
+- **Selling through Stripe Payment Links?** See [Stripe Payment Links on OpenPartner Cloud](#stripe-payment-links-on-openpartner-cloud). Lenders and other senders that report by click id: [Lenders, suppliers and affiliate networks](#lenders-suppliers-and-affiliate-networks).
 
 ```
  customer's browser                your backend                         OpenPartner
@@ -523,6 +524,66 @@ await crm.updateContact(partner.metadata.crmContactId, {
 "Paid" comes from **payouts** with status `paid`, not from commissions with status `paid`. On the manual rail, a commission turns `paid` when its payout is planned, before you've sent anything (see [How headless partners get paid](#how-headless-partners-get-paid)). The payout turns `paid` only when you confirm it, and no webhook fires for that, so refresh the record from the code that confirms. `/payouts` returns the 200 most recent, which is plenty for one customer's referral earnings. If a partner can earn in more than one currency, write one field per currency, or one line per currency, from `commissionByCurrency` and each payout's `currency`.
 
 Writing totals rather than adding each webhook's amount means a duplicate, missed or out-of-order delivery can't skew the field. The next event corrects it. Store the CRM record id in the partner's `metadata` when you create it (step 3); metadata stays in your tenant, even for a partner who joins the Network. For HubSpot, the update is `PATCH /crm/v3/objects/contacts/{id}`; for Zoho, `PUT /crm/v6/Contacts/{id}` or an upsert. See their API docs for auth.
+
+## Stripe Payment Links on OpenPartner Cloud
+
+A Stripe Payment Link takes the buyer straight to Stripe, so no page of yours runs the SDK, and on OpenPartner Cloud Stripe's webhooks go to your Stripe account, not to OpenPartner. The click id reaches Stripe in the link, comes back to you in Stripe's webhook, and you report it with one call. (A single-tenant self-host whose Stripe webhook points at `/webhooks/stripe` does this itself.)
+
+A runnable version of steps 2 and 3 is [`examples/stripe-payment-link-forwarder`](../examples/stripe-payment-link-forwarder): about 50 lines of Node, no dependencies.
+
+> If **Admin → Integrations** offers **Connect Stripe**, use that instead of steps 2 and 3. OpenPartner then reads the checkout from your Stripe account itself. While the connection is healthy, a forwarded session id answers `409 recorded_from_stripe`, so a forwarder left running records nothing twice. Step 1 is still needed.
+
+**1. Send the click id to Stripe.** Set the program's destination to the Payment Link with the `{click_id}` macro in `client_reference_id`, written exactly like this:
+
+```
+https://buy.stripe.com/<link>?client_reference_id={click_id}
+```
+
+The router replaces `{click_id}` with the click id (26 letters and digits) and appends no `cref`. Stripe reads the referral only from `client_reference_id`, and silently drops a value with anything but letters, digits, `-` and `_`. So OpenPartner refuses any other brace text when you save: `{{click_id}}` (Zapier and Make syntax), `{ click_id }`, `{CLICK_ID}`, `{subid}`. A `buy.stripe.com` destination without the macro saves, with a warning (`warnings` in the API response, a note under the field in the portal), because no purchase through it can be credited.
+
+**2. Forward the paid checkout.** In Stripe, add a webhook endpoint on your server, subscribed to `checkout.session.completed` and `checkout.session.async_payment_succeeded`. For each event:
+
+1. Verify Stripe's signature on the raw request body (`Stripe-Signature`, your endpoint's `whsec_` secret) before you trust anything in it.
+2. Skip the session unless it has a `client_reference_id` (it came through a partner link) and `payment_status` is `"paid"`. A bank debit is `unpaid` at `checkout.session.completed`; `checkout.session.async_payment_succeeded` reports it when it clears.
+3. Report it:
+
+```bash
+curl -s -X POST $OP/attribution/conversions -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
+  -d '{"clickId":"<session.client_reference_id>","type":"invoice_paid","value":49.00,"currency":"USD","externalEventId":"<session.id>"}'
+# → { "ok": true, "outcome": "attributed", "attribution": { "status": "attributed", "commission": "accrued", ... } }
+```
+
+- `value` is `amount_total` in major units: divide by 100, except zero-decimal currencies such as JPY and KRW, where the amount is already whole units (and three-decimal ones such as KWD, divided by 1000). `currency` is Stripe's, upper-cased.
+- `externalEventId` is the session id (`cs_…`). Both checkout events and every Stripe retry then record the purchase once.
+- The key needs only `events:write`.
+
+**3. Answer Stripe.** Stripe retries anything but a `2xx` for up to three days.
+- `200`: recorded. A `200` with `"replayed": true` is a retry of one you already sent. Answer `2xx`.
+- `404 click_not_found`, `409 external_event_id_conflict`, `422 click_flagged`: no retry changes these. Log them and answer `2xx`.
+- `429`, `5xx` or a network error: answer `5xx`, so Stripe tries again later. Do the same on `401`/`403` if you'd rather Stripe kept retrying while you fix the key.
+
+**4. Check what it came to.** A `200` means recorded, not paid. `outcome` says whether a partner was credited: `attributed`; `no_matching_rule` (the program has no rule for `invoice_paid`); `not_attributed` with `reason: "outside_window"` (the click is older than the program's attribution window). Log anything but `attributed`. Types that matched no rule also show on **Admin → Integrations**.
+
+**Subscriptions.** A subscription checkout's `amount_total` is its first invoice, and Stripe also sends `invoice.paid` for that invoice (`billing_reason: "subscription_create"`). Don't forward that one too: it's the same payment, and it would count twice. To credit renewals:
+- At checkout, store `session.customer` against the click id (`client_reference_id`) on your side.
+- On later `invoice.paid` events for that customer (`billing_reason` is `subscription_cycle`, or `subscription_update` for a mid-cycle change), report `{clickId, type: "invoice_paid", value: amount_paid / 100, currency, externalEventId: invoice.id}`.
+- A checkout with a free trial is `payment_status: "no_payment_required"`, so step 2 skips it. Store the customer anyway: the first charge after the trial is a `subscription_cycle` invoice.
+- A renewal is credited only inside the program's attribution window, counted from the click. After that the response says `not_attributed` / `outside_window`.
+
+**Refunds.** If your deployment's API reference lists `POST /attribution/refunds`, report each Stripe refund there with the same key: `conversionExternalEventId` is the session id you sent as `externalEventId` (find the session from the refund's `payment_intent` with Stripe's `GET /v1/checkout/sessions?payment_intent=pi_…`), `amount` the refunded amount in major units (leave it out for a full refund), and `externalEventId` the Stripe refund id (`re_…`). Otherwise, reverse the commission with `POST /commissions/{id}/reverse` (admin key), or from the **Review queue** in the portal. A holdback as long as your refund window means most refunds land before anything is approved.
+
+## Lenders, suppliers and affiliate networks
+
+A sender that holds the click id (a lender's system, a supplier's order pipeline, an affiliate network) reports with `POST /attribution/conversions` and an `events:write` key, or fires `GET /postback` with the postback token from **Admin → Integrations**. Both are in the API reference. What trips senders up:
+
+- **`externalEventId` (`txn_id` on the postback) is unique across your whole tenant**, shared with `/attribution/events`, `/coupons/redeem` and the Stripe webhook. A reused id is `409 external_event_id_conflict`, and that conversion is lost, not recorded.
+- **Use one id per stage**, not per deal: `loan-881:approved`, then `loan-881:funded`. Reporting the second stage under the first stage's id is a `409`.
+- **Prefix ids per sender.** Two suppliers can both have an order `881`: `acme:loan-881:funded`, `zenlend:loan-881:funded`.
+- **Conversions are scoped to the tenant, not a program.** The click id already names its program, so there's no `programId` to send, and a click from any program in your tenant is accepted. An unknown click is `404 click_not_found`.
+- **The postback token and `events:write` keys are tenant-wide.** A sender holding one can report a conversion for any click in any of your programs. Give each sender its own key where it can send a header, and pin the postback token to your senders' addresses with its IP allowlist (`PATCH /conversion-postback {"ipAllowlist":["203.0.113.0/24"]}`). Rotate the token when a sender leaves: the old URL stops working at once.
+- **Stage names must match the rule exactly.** A conversion whose `type` no commission rule takes is recorded and credited, and pays nothing: `outcome: "no_matching_rule"`, or `ok no_matching_rule` on the postback. These types are listed on **Admin → Integrations**.
+- **Read the answer.** Every recorded conversion is a `200`, so a sender doesn't retry it: `ok attributed`, `ok attributed no_commission`, `ok no_matching_rule`, `ok not_attributed outside_window`. Errors are `4xx` codes.
+- **Partner terms replace program rules.** Custom terms for a partner (`PUT /partners/{id}/programs/{programId}/commission`) replace the program's whole rule set for that partner. A program paying $25 on `approved` and $400 on `loan_funded`, overridden with only a `loan_funded` rule, pays that partner nothing on `approved`. Send every stage you want paid.
 
 ## Security checklist
 

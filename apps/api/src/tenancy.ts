@@ -26,6 +26,7 @@ import type { Knex } from 'knex';
 import type { NextFunction, Request, Response } from 'express';
 import { DEFAULT_TENANT_ID, TABLES, type TenantRow } from '@openpartner/db';
 import { appDb } from './db.js';
+import { trackCommitJobs } from './on-commit.js';
 
 export type TenancyMode = 'single' | 'multi';
 
@@ -348,6 +349,10 @@ export async function tenantMiddleware(
     return next(err);
   }
   req.db = trx;
+  // One queue for both afterCommit(req) and onCommit(req.db): run by
+  // finalize() after COMMIT, never on rollback.
+  req.afterCommitJobs = [];
+  trackCommitJobs(trx, req.afterCommitJobs);
 
   // Patch res.send/json/end so they commit (or rollback on 5xx) before
   // any byte goes to the client. If commit fails the request becomes a

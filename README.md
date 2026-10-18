@@ -122,6 +122,7 @@ v1. End-to-end attribution, payouts, and export are working; API surface is stab
 - Scoped API keys (`partners:write`, `links:write`, `commissions:read`, …) — the federation contract that lets an external creator-network service provision Partner + Link rows on this instance over REST
 - OpenAPI 3.1 spec (`GET /openapi.json`, rendered at `/docs`) generated from the API's own request validators, with a test that fails when a route or its auth drifts from the spec
 - Headless in-app referral guide ([docs/headless-referral.md](./docs/headless-referral.md)) and sample ([examples/in-app-referral](./examples/in-app-referral))
+- Conversions by click id for Stripe Payment Links, lenders and affiliate networks (`POST /attribution/conversions`, `GET /postback`), with a Stripe webhook forwarder sample ([examples/stripe-payment-link-forwarder](./examples/stripe-payment-link-forwarder))
 - `@openpartner/sdk` on npm with browser and server entries
 - Portable JSON + CSV + SQL export per table; full bundle round-trippable via `POST /import`, or restore the SQL dump straight into a self-hosted instance with `psql -v tenant_id=<destination tenant id> -f openpartner-export.sql`
 

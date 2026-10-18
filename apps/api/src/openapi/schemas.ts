@@ -179,6 +179,21 @@ export const Program = z
   })
   .openapi('Program');
 
+/** Saved anyway, but probably not what the caller meant. */
+export const SaveWarnings = z
+  .array(
+    z.object({
+      field: z.literal('destinationUrl'),
+      message: z.string(),
+    }),
+  )
+  .openapi('SaveWarnings', {
+    description:
+      'Present only when there is something to fix. Today: a Stripe Payment Link (`buy.stripe.com`, `checkout.stripe.com`) without `client_reference_id={click_id}`. Stripe reads the referral only from that parameter, so without it no purchase through the link can be credited to the partner.',
+  });
+
+export const ProgramSaved = Program.extend({ warnings: SaveWarnings.optional() }).openapi('ProgramSaved');
+
 export const ProgramList = z
   .object({
     programs: z.array(Program),
@@ -236,6 +251,8 @@ export const Link = z
       'A partner share link. The public URL is built from the router base, not stored: `https://app.openpartner.dev/r/<tenantSlug>/<linkKey>` on OpenPartner Cloud, `https://<custom-domain>/r/<linkKey>` on a white-label domain, `<router-origin>/r/<linkKey>` self-hosted.',
   });
 
+export const LinkSaved = Link.extend({ warnings: SaveWarnings.optional() }).openapi('LinkSaved');
+
 // ---------- Attribution ----------
 
 export const IdentifyResult = z
@@ -269,6 +286,13 @@ export const Attribution = z
         }),
       )
       .optional(),
+    commission: z
+      .enum(['accrued', 'no_matching_rule', 'none'])
+      .optional()
+      .openapi({
+        description:
+          "Present when `status` is `attributed`. `accrued`: at least one commission was written. `no_matching_rule`: no commission rule on the partner's terms takes this event type, so nothing is paid. Usually a typo'd stage name (`funded` for `loan_funded`); such types are listed under `GET /attribution/unmatched-event-types`. `none`: a rule takes the type but nothing accrued (the program has ended, a `first` rule already paid, a cap was reached, or the amount came to zero). On a replay with no commission, checked against the rules as they are now.",
+      }),
   })
   .openapi('AttributionResult');
 
@@ -288,6 +312,14 @@ export const ConversionResult = z
     ok: z.literal(true),
     eventId: id,
     userId: z.string().openapi({ description: "The user the click was stitched to: your `userId`, or the click's own synthetic user when you sent none." }),
+    outcome: z.enum(['attributed', 'no_matching_rule', 'not_attributed']).openapi({
+      description:
+        "What the conversion came to. `attributed`: a partner was credited (check `reason` and `attribution.commission`). `no_matching_rule`: a partner was credited, but no commission rule takes this `type`, so nothing is paid: check the stage name. `not_attributed`: no partner was credited (see `reason`). The conversion is recorded either way, so don't retry it. `GET /postback` answers the same words as text.",
+    }),
+    reason: z.enum(['no_commission', 'outside_window', 'no_click', 'no_identity', 'corrective']).optional().openapi({
+      description:
+        "With `attributed`: `no_commission` when a rule takes the type but nothing accrued. With `not_attributed`: `outside_window` (the click is older than the program's attribution window, or newer than the conversion's `ts`), `no_click` (the partner was revoked), `corrective` (a `refund`, `chargeback`, `dispute_created` or `invoice_payment_failed` type, which is recorded but never attributed; report refunds to `POST /attribution/refunds`). A replay of a miss carries no reason, because which miss it was isn't stored.",
+    }),
     attribution: Attribution,
     replayed: z.literal(true).optional().openapi({
       description: "Present when an earlier call with the same `externalEventId` already recorded this conversion. `eventId` and `attribution` are that call's.",
@@ -340,6 +372,28 @@ export const RefundResult = z
     }),
   })
   .openapi('RefundResult');
+export const UnmatchedEventTypes = z
+  .object({
+    since: ts,
+    eventTypes: z.array(
+      z.object({
+        type: z.string(),
+        events: z.number().int().openapi({ description: 'Attributed events of this type since `since` that no rule took.' }),
+        lastSeenAt: ts,
+        programs: z.array(z.object({ id, name: z.string() })),
+      }),
+    ),
+  })
+  .openapi('UnmatchedEventTypes');
+
+export const PostbackToken = z
+  .object({
+    prefix: z.string().openapi({ description: 'The start of the token, `opcp_…`, to tell tokens apart. The full token is shown only once.' }),
+    ipAllowlist: z.array(z.string()).openapi({ description: 'IP addresses or CIDR ranges `GET /postback` accepts calls from. Empty: any address.' }),
+    createdAt: ts,
+    lastUsedAt: tsNullable,
+  })
+  .openapi('PostbackToken');
 
 export const ClickIngestResult = z.object({ ok: z.literal(true), id, replayed: z.literal(true).optional() }).openapi('ClickIngestResult');
 

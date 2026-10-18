@@ -571,13 +571,19 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     expect(rest).toMatchObject({ fullRefund: true, kind: 'chargeback' });
     check('recordRefund', await admin.post('/attribution/refunds', { conversionExternalEventId: 'loan_1', externalEventId: 'refund_3' }));
     // The same, as a postback URL: token in the query, plain-text answers.
-    const minted = await admin.post('/conversion-postback/token', {});
-    expect(minted.status).toBe(201);
+    check('getConversionPostbackToken', await admin.get('/conversion-postback')); // none yet
+    check('updateConversionPostbackAllowlist', await admin.patch('/conversion-postback', { ipAllowlist: [] })); // 404
+    const minted = check<{ plaintext: string }>(
+      'rotateConversionPostbackToken',
+      await admin.post('/conversion-postback/token', { ipAllowlist: ['203.0.113.0/24'] }),
+    );
+    check('updateConversionPostbackAllowlist', await admin.patch('/conversion-postback', { ipAllowlist: [] }));
+    check('getConversionPostbackToken', await admin.get('/conversion-postback'));
     const postback = (query: Record<string, string>) => anon.get('/postback').query(query);
-    const pb = { click_id: loanClick, type: 'loan_funded', amount: '120.00', currency: 'USD', txn_id: 'pb_1', token: minted.body.plaintext as string };
+    const pb = { click_id: loanClick, type: 'loan_funded', amount: '120.00', currency: 'USD', txn_id: 'pb_1', token: minted.plaintext };
     const recorded = await postback(pb);
     check('conversionPostback', recorded);
-    expect(recorded.text).toBe('ok');
+    expect(recorded.text).toBe('ok attributed');
     check('conversionPostback', await postback(pb)); // replay
     const pixel = await postback({ ...pb, txn_id: 'pb_2', pixel: '1', amount: '' });
     check('conversionPostback', pixel);
@@ -589,6 +595,9 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     const { token: _token, ...noToken } = pb;
     check('conversionPostback', await postback(noToken)); // 401
     check('conversionPostback', await postback({ ...pb, token: ADMIN_KEY })); // an API key is no postback token
+    check('listUnmatchedEventTypes', await admin.get('/attribution/unmatched-event-types'));
+    check('revokeConversionPostbackToken', await admin.delete('/conversion-postback/token'));
+    check('revokeConversionPostbackToken', await admin.delete('/conversion-postback/token')); // nothing live
 
     // Revoke / reinstate.
     check('revokePartner', await admin.post(`/partners/${other.id}/revoke`, { notify: false }));

@@ -71,6 +71,7 @@ import { ipRateLimit } from '../middleware/rate-limit.js';
 import { afterCommit, tenantOf } from '../tenancy.js';
 import { grantNetworkConsent, isNetworkOfferedToPartners, syncPartnerToNetwork } from '../network-consent.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
+import { onCommit } from '../on-commit.js';
 import type { WebhookPayload } from '../openapi/webhook-events.js';
 
 export const partnerSignupRouter = Router();
@@ -278,13 +279,16 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
   }
 
   // Webhooks, as POST /partners fires them, so a CRM or Zapier relay sees
-  // join-page partners too. Sent before the email: a mail failure still
-  // leaves a partner the subscriber should know about. `invited` is the
-  // sign-in link below, which only an auto-approved applicant gets; they
-  // are active now, so this is also their activation (verify only fires it
-  // for a partner who isn't active yet). Applicants start with no program
-  // grants: an admin grants them.
-  dispatchEvent(tenantId, 'partner.created', {
+  // join-page partners too. Queued before the email, so a mail failure
+  // the request survives still leaves a partner the subscriber should
+  // know about, and sent after COMMIT like POST /partners' (on-commit.ts):
+  // a receiver may fetch the partner straight away, and a rolled-back
+  // signup announces nothing. `invited` is the sign-in link below, which
+  // only an auto-approved applicant gets; they are active now, so this is
+  // also their activation (verify only fires it for a partner who isn't
+  // active yet). Applicants start with no program grants: an admin grants
+  // them.
+  const createdPayload = {
     partnerId: partner.id,
     email,
     name: partner.name,
@@ -293,16 +297,18 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
     portalAccess: partner.portalAccess,
     programIds: [],
     source: 'join_page',
-  } satisfies WebhookPayload<'partner.created'>);
+  } satisfies WebhookPayload<'partner.created'>;
+  onCommit(db, 'partner.created webhook', () => dispatchEvent(tenantId, 'partner.created', createdPayload));
   if (partner.activatedAt) {
-    dispatchEvent(tenantId, 'partner.activated', {
+    const activatedPayload = {
       partnerId: partner.id,
       email,
       name: partner.name,
       activatedAt: partner.activatedAt.toISOString(),
       invited: false,
       source: 'join_page',
-    } satisfies WebhookPayload<'partner.activated'>);
+    } satisfies WebhookPayload<'partner.activated'>;
+    onCommit(db, 'partner.activated webhook', () => dispatchEvent(tenantId, 'partner.activated', activatedPayload));
   }
 
   const { resolveBrandName } = await import('../brand-name.js');

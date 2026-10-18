@@ -7,7 +7,7 @@ import { useBrand } from '../lib/useBrand.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
 import { CompoundRuleEditor, ruleEventTypeMissing, ruleSlabProblem, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
-import { PROGRAM_CATEGORIES, clickDestinationProblem, parseVideoUrl } from '@openpartner/db';
+import { PROGRAM_CATEGORIES, clickDestinationProblem, clickDestinationWarning, parseVideoUrl } from '@openpartner/db';
 
 interface CustomerReward {
   type: 'percent_off' | 'amount_off' | 'free_months';
@@ -492,6 +492,10 @@ function CreateProgram({
     urlProblem && /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(destinationUrl.trim())
       ? `https://${destinationUrl.trim()}`
       : null;
+  // Saveable, but a Stripe Payment Link without client_reference_id={click_id}
+  // never hands Stripe the click. Same check the API answers with `warnings`.
+  const urlWarning = !urlProblem && destinationUrl.trim() ? clickDestinationWarning(destinationUrl.trim()) : null;
+  const stripeFix = urlWarning ? withClientReferenceMacro(destinationUrl.trim()) : null;
 
   const mut = useMutation({
     mutationFn: () =>
@@ -556,6 +560,22 @@ function CreateProgram({
                   style={{ background: 'none', border: 'none', color: theme.accentText, cursor: 'pointer', padding: 0, fontSize: 12, textDecoration: 'underline' }}
                 >
                   Use {schemeFix}
+                </button>
+              </>
+            )}
+          </div>
+        ) : urlWarning ? (
+          <div style={{ fontSize: 12, color: theme.warn, marginTop: 4 }}>
+            {urlWarning}
+            {stripeFix && (
+              <>
+                {' '}
+                <button
+                  type="button"
+                  onClick={() => setDestinationUrl(stripeFix)}
+                  style={{ background: 'none', border: 'none', color: theme.accentText, cursor: 'pointer', padding: 0, fontSize: 12, textDecoration: 'underline' }}
+                >
+                  Add it
                 </button>
               </>
             )}
@@ -1241,6 +1261,15 @@ function destinationUrlProblem(value: string): string | null {
   } catch {
     return 'Must be a full URL starting with https:// — e.g. https://yourbrand.com/landing.';
   }
+}
+
+/** The one-click fix for a Stripe Payment Link with no client_reference_id:
+ *  the macro appended as typed, braces unencoded. Null when the link already
+ *  has the parameter (with the wrong value) or a fragment, where appending
+ *  would land in the wrong place; the warning text says what to change. */
+function withClientReferenceMacro(value: string): string | null {
+  if (value.includes('#') || /[?&]client_reference_id=/.test(value)) return null;
+  return `${value}${value.includes('?') ? '&' : '?'}client_reference_id={click_id}`;
 }
 
 function LabelWithHelp({ label, help }: { label: string; help: string }) {

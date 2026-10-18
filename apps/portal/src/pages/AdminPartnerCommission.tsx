@@ -8,6 +8,7 @@ import { TenantLink } from '../tenant-link.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, SectionHeading } from '../ui.js';
 import { CompoundRuleEditor, ruleEventTypeMissing, ruleSlabProblem, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
+import { rulesLeftUnpaid, sharedRules } from '../lib/commission-override.js';
 import { useIsMobile } from '../lib/useMediaQuery.js';
 
 interface Partner {
@@ -98,6 +99,12 @@ export function AdminPartnerCommission() {
 
   const partnerName = partner.data?.name ?? '…';
   const partnerWide = snapshot.data?.snapshot ?? null;
+  // A partner-wide override replaces the rules of every granted program that
+  // has no terms of its own. Start a new one from those rules when they're
+  // all the same, so saving untouched changes nothing.
+  const unscoped = (programs.data?.programs ?? []).filter((p) => p.granted && !p.commission);
+  const replacedByPartnerWide = unscoped.map((p) => ({ label: p.name, rules: p.commissionRule ?? [] }));
+  const partnerWideStart = sharedRules(replacedByPartnerWide.map((r) => r.rules)) ?? DEFAULT_RULES;
 
   return (
     <Page
@@ -118,10 +125,14 @@ export function AdminPartnerCommission() {
           <CurrentSnapshotCard snapshot={partnerWide} />
           <div style={{ height: 14 }} />
           <EditCard
+            // With no override yet, the editor starts from the programs'
+            // rules: start again once they've loaded.
+            key={partnerWide ? 'override' : JSON.stringify(partnerWideStart)}
             scope="partner"
             endpoint={`/partners/${partnerId}/commission-snapshot`}
             current={partnerWide}
-            fallbackRules={DEFAULT_RULES}
+            fallbackRules={partnerWideStart}
+            replaces={replacedByPartnerWide}
             onSaved={() => {
               qc.invalidateQueries({ queryKey: ['partner-commission-snapshot', partnerId] });
             }}
@@ -292,6 +303,11 @@ function ProgramTermsList({
                     current={p.commission}
                     fallbackRules={eff.rules.length > 0 ? eff.rules : DEFAULT_RULES}
                     fallbackHoldback={eff.holdbackDays}
+                    replaces={[
+                      partnerWide
+                        ? { label: 'the partner-wide default', rules: snapshotRules(partnerWide) }
+                        : { label: p.name, rules: p.commissionRule ?? [] },
+                    ]}
                     onSaved={() => {
                       setEditing(null);
                       onSaved();
@@ -307,6 +323,50 @@ function ProgramTermsList({
   );
 }
 
+/** Live warning: the stages the replaced rules pay on that the terms being
+ *  edited don't, e.g. the program's `approved` stage when the override
+ *  names only `loan_funded`. */
+function UnpaidStages({
+  replaces,
+  rules,
+}: {
+  replaces: Array<{ label: string; rules: CommissionSubRule[] }>;
+  rules: CommissionSubRule[];
+}) {
+  const lines = replaces.flatMap(({ label, rules: replaced }) =>
+    rulesLeftUnpaid(replaced, rules).map((rule) => ({
+      key: `${label}:${rule.eventType ?? '*'}:${rule.trigger}`,
+      stage: rule.eventType ?? 'any other event',
+      label,
+      summary: renderCommissionSummary([rule]),
+    })),
+  );
+  if (lines.length === 0) return null;
+  return (
+    <div
+      role="alert"
+      style={{
+        background: theme.warnSoft,
+        border: `1px solid ${alpha(theme.warn, 0.4)}`,
+        borderRadius: theme.radiusSm,
+        padding: '10px 12px',
+        marginBottom: 14,
+        fontSize: 12,
+        lineHeight: 1.5,
+      }}
+    >
+      <div style={{ color: theme.warn, fontWeight: 500, marginBottom: 4 }}>
+        Saved like this, the partner earns nothing on:
+      </div>
+      {lines.map((l) => (
+        <div key={l.key} style={{ color: theme.textMuted }}>
+          <code>{l.stage}</code>, which {l.label} pays ({l.summary})
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const SCOPE_COPY = {
   partner: {
     title: (hasCurrent: boolean) => (hasCurrent ? 'Edit override' : 'Set override'),
@@ -316,6 +376,7 @@ const SCOPE_COPY = {
     confirm: 'Clear this partner’s partner-wide override? Programs without their own terms fall back to the live program rule.',
     holdback: "Holdback (days, blank = program's)",
     applies: 'this partner’s commissions on every program without its own terms accrue on the terms below',
+    replaces: 'the rules of every program without its own terms below',
   },
   program: {
     title: (hasCurrent: boolean) => (hasCurrent ? 'Edit program terms' : 'Set program terms'),
@@ -325,6 +386,7 @@ const SCOPE_COPY = {
     confirm: 'Clear this program’s terms? Its commissions fall back to the partner-wide default, or the program rule.',
     holdback: "Holdback (days, blank = program's)",
     applies: 'this partner’s commissions on this program accrue on the terms below, whatever the partner-wide default or program rule says',
+    replaces: 'this program’s rules (or the partner-wide default) for this partner',
   },
 } as const;
 
@@ -334,6 +396,7 @@ function EditCard({
   current,
   fallbackRules,
   fallbackHoldback = null,
+  replaces,
   onSaved,
 }: {
   scope: 'partner' | 'program';
@@ -341,6 +404,9 @@ function EditCard({
   current: Snapshot | null;
   /** Editor's starting rules when there's no row yet. */
   fallbackRules: CommissionSubRule[];
+  /** The rule sets these terms replace for this partner, to warn about any
+   *  stage the edited terms leave unpaid. */
+  replaces: Array<{ label: string; rules: CommissionSubRule[] }>;
   /** Editor's starting holdback when there's no row yet. Program terms
    *  start from the holdback the program gets today, so saving them
    *  doesn't silently drop a longer partner-wide holdback: a blank one
@@ -409,6 +475,11 @@ function EditCard({
         <code>source = &lsquo;amendment&rsquo;</code>. From the next conversion onward, {copy.applies}.
         Past commissions aren&rsquo;t recomputed — only future events.
       </p>
+      <p style={{ fontSize: 12, color: theme.text, margin: '0 0 14px', lineHeight: 1.5 }}>
+        <strong>These terms replace {copy.replaces}; they don&rsquo;t add to them.</strong> Any stage
+        you leave out pays this partner nothing. To change one stage, keep the others below.
+      </p>
+      <UnpaidStages replaces={replaces} rules={rules} />
       <ErrorBanner error={save.error ?? clear.error} />
       <CompoundRuleEditor rules={rules} onChange={setRules} />
       <div style={{ marginBottom: 14, maxWidth: 220 }}>

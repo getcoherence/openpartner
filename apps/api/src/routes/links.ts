@@ -4,7 +4,7 @@ import { ulid } from 'ulid';
 import { TABLES, type ProgramRow, type LinkRow } from '@openpartner/db';
 import { grantScope, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
-import { destinationUrlSchema } from '../destination-url.js';
+import { destinationUrlSchema, destinationWarnings } from '../destination-url.js';
 
 export const createSchema = z.object({
   linkKey: z
@@ -99,7 +99,7 @@ linksRouter.post('/partners/:id/links', requireAuth, grantScope('links:write'), 
         destinationUrl: destinationOverride,
       })
       .returning('*');
-    res.status(201).json(link);
+    res.status(201).json({ ...link, ...destinationWarnings(destinationOverride) });
   } catch (err: unknown) {
     if (isUniqueViolation(err)) {
       return res.status(409).json({ error: 'linkKey_taken' });
