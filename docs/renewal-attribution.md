@@ -142,11 +142,13 @@ live one. A re-run with `modelOverride` uses only rows of that model.
 
 ### Corrective events
 
-`refund`, `dispute_created` and `invoice_payment_failed` never take a
-renewal's attribution and never anchor one. Otherwise a refund dated after
-the window would inherit the partner and, under a percent rule, accrue a
-negative commission. The Stripe webhook already handles clawbacks for these
-events itself.
+`refund`, `chargeback`, `dispute_created` and `invoice_payment_failed` never
+take a renewal's attribution and never anchor one. Otherwise a refund dated
+after the window would inherit the partner and, under a percent rule, accrue
+a negative commission. Refunds and chargebacks correct the refunded
+conversion's commissions themselves (`apps/api/src/refunds.ts`, from
+`POST /attribution/refunds` or Stripe's `charge.refunded`). A dispute or a
+failed payment is recorded and corrects nothing.
 
 ## Derived, not stored
 

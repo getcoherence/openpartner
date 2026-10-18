@@ -631,8 +631,14 @@ async function commissionsOf(eventId: string) {
   return db(TABLES.Commission).whereIn('attributionId', attributionIds).orderBy('id');
 }
 
+/** Live commission amounts, largest first. Not in id order: replacement
+ *  commissions written in the same millisecond get ULIDs whose order is
+ *  random, so id order made multi-commission assertions flaky. */
 async function liveAmounts(eventId: string): Promise<string[]> {
-  return (await commissionsOf(eventId)).filter((c) => c.status !== 'reversed').map((c) => c.amount);
+  return (await commissionsOf(eventId))
+    .filter((c) => c.status !== 'reversed')
+    .map((c) => c.amount as string)
+    .sort((a, b) => Number(b) - Number(a));
 }
 
 /** Put commissions in a manual payout, as the planner does. */
