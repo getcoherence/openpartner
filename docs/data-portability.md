@@ -374,7 +374,7 @@ doesn't keep is worse than a documented gap.
 
 **Never exported** (credentials, platform-operational state, or delivery
 logs — not customer data):
-`Session`, `MagicLinkToken`, `ApiKey`, `Admin`, `PlatformSession`,
+`Session`, `MagicLinkToken`, `ApiKey`, `ConversionPostbackToken`, `TenantStripeConnection`, `Admin`, `PlatformSession`,
 `PlatformSessionBundle`, `PlatformAdmin`, `PlatformAdminSession`,
 `PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
 `StripeWebhookInbox`.
@@ -384,6 +384,16 @@ out — which is exactly why `HostedFundingAuthorization` (whose `adminId`
 is an FK to it) can't simply be added to the bundle. Credential *columns*
 of exported tables, and the `Config` keys that aren't settings, are listed
 under [Credentials](#credentials) and [Settings](#settings-config).
+
+`TenantStripeConnection` (hosted only, Oct 2026) is in the same category:
+the OAuth tokens a hosted brand granted OpenPartner by installing the Stripe
+App on its own Stripe account ([stripe-app.md](stripe-app.md)), plus that
+account's id and connection timestamps. It's credentials for one deployment,
+so it's never exported, and a self-host has no use for it: there the brand's
+own `STRIPE_SECRET_KEY` is the connection. What the connection *recorded* is
+in the bundle as ordinary raw `Event` rows (tagged `metadata.via =
+'stripe_app'`, with the Stripe account id), and those re-derive on any
+instance like every other Event.
 
 **Not exported yet — known gaps, not decisions:**
 

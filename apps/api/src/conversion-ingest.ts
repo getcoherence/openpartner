@@ -26,6 +26,7 @@ import {
 } from '@openpartner/db';
 import { attributeEvent, resolveCommissionRule, ruleTakesEventType, type AttributeResult } from './attribution.js';
 import { ingestCurrency, rowCurrency } from './currency.js';
+import { recordedFromStripe } from './stripe-app.js';
 
 /**
  * A replay must describe the same conversion. Reusing a key for a different
@@ -147,7 +148,8 @@ export type ClickConversionResult =
   | { ok: true; replayed: true; eventId: string; userId: string; attribution: ReplayedAttribution }
   | { ok: false; status: 404; error: 'click_not_found' }
   | { ok: false; status: 422; error: 'click_flagged'; fraudFlag: string }
-  | { ok: false; status: 409; error: 'external_event_id_conflict'; eventId: string };
+  | { ok: false; status: 409; error: 'external_event_id_conflict'; eventId: string }
+  | { ok: false; status: 409; error: 'recorded_from_stripe' };
 
 /**
  * Record a conversion against a click in one step: stitch the click to the
@@ -164,7 +166,9 @@ export type ClickConversionResult =
  *
  * A retry with the same externalEventId replays the original result, even if
  * the click has been flagged since. Reusing the key for a different click or
- * conversion is a 409.
+ * conversion is a 409, and so is a Stripe invoice or Checkout Session id while
+ * the brand's Stripe account is connected (recorded_from_stripe): that payment
+ * is recorded from Stripe itself.
  */
 export async function recordClickConversion(
   db: Knex,
@@ -175,6 +179,9 @@ export async function recordClickConversion(
   // the privileged role when DATABASE_URL_APP is unset (see auth.ts).
   const click = await db<ClickRow>(TABLES.Click).where({ id: input.clickId, tenantId }).first();
   if (!click) return { ok: false, status: 404, error: 'click_not_found' };
+  if (await recordedFromStripe(db, tenantId, input.externalEventId)) {
+    return { ok: false, status: 409, error: 'recorded_from_stripe' };
+  }
 
   const userId = input.userId ?? clickUserId(click.id);
   const row = {

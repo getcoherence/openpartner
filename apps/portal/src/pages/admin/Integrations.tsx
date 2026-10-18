@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink } from 'lucide-react';
 import { api, currentTenantSlug } from '../../api.js';
@@ -89,6 +89,7 @@ export function AdminIntegrations() {
       subtitle={`Pipe conversions from your CRM, lender systems or affiliate networks into ${programName} so partners get attributed for full-funnel deals, not just self-serve signups.`}
     >
       <UnmatchedEventTypes />
+      <StripeAppCard />
       <WhyCard />
       <div style={{ height: 18 }} />
       <KeysPanel />
@@ -179,6 +180,239 @@ const preBlock = {
   overflow: 'auto',
   margin: 0,
 } as const;
+
+type StripeAppMode = 'live' | 'test' | 'sandbox';
+
+interface StripeAppStatus {
+  available: boolean;
+  reason?: 'selfhost' | 'not_configured';
+  modes: StripeAppMode[];
+  connection: {
+    stripeAccountId: string;
+    livemode: boolean;
+    connectedAt: string;
+    lastEventAt: string | null;
+    needsReconnect: boolean;
+    refreshError: string | null;
+    permissionsOutdated: boolean;
+    rewards: boolean;
+  } | null;
+}
+
+/**
+ * Connect Stripe — hosted brands install the OpenPartner Stripe App on
+ * their own Stripe account, and its checkouts, invoices, refunds and promo
+ * codes then attribute with no forwarding from their server. Hidden on a
+ * self-host (its own Stripe webhook already does this) and on hosted
+ * deployments where the app isn't configured yet.
+ *
+ * The install leaves for Stripe and comes back here with
+ * ?stripe_app_grant=… (encrypted code + state) or ?stripe_app_error=…;
+ * the grant is POSTed under this admin's session and stripped from the URL.
+ */
+function StripeAppCard() {
+  const qc = useQueryClient();
+  const { programName } = useBrand();
+  const status = useQuery({
+    queryKey: ['stripe-app'],
+    queryFn: () => api<StripeAppStatus>('/stripe-app/connection'),
+  });
+  const [notice, setNotice] = useState<string | null>(null);
+  const refresh = () => qc.invalidateQueries({ queryKey: ['stripe-app'] });
+
+  const complete = useMutation({
+    mutationFn: (grant: string) =>
+      api<{ replaced: boolean }>('/stripe-app/connection/complete', { method: 'POST', body: { grant } }),
+    onSuccess: (res) => {
+      setNotice(
+        res.replaced
+          ? 'Stripe connected. The account connected before it was disconnected.'
+          : 'Stripe connected. New checkouts, invoices and refunds now reach your program automatically.',
+      );
+      refresh();
+    },
+  });
+  const start = useMutation({
+    mutationFn: (mode: StripeAppMode) =>
+      api<{ url: string }>('/stripe-app/connection/start', {
+        method: 'POST',
+        body: { mode, returnUrl: `${window.location.origin}${window.location.pathname}` },
+      }),
+    onSuccess: (res) => {
+      window.location.href = res.url;
+    },
+  });
+  const disconnect = useMutation({
+    mutationFn: () => api<{ detail: string }>('/stripe-app/connection', { method: 'DELETE' }),
+    onSuccess: (res) => {
+      setNotice(res.detail);
+      refresh();
+    },
+  });
+
+  // Return leg of the Stripe install.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const grant = params.get('stripe_app_grant');
+    const error = params.get('stripe_app_error');
+    if (!grant && !error) return;
+    params.delete('stripe_app_grant');
+    params.delete('stripe_app_error');
+    const qs = params.toString();
+    window.history.replaceState({}, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`);
+    if (grant) complete.mutate(grant);
+    else setNotice(error === 'access_denied' ? 'Stripe connection cancelled.' : `Stripe didn’t finish the install (${error}).`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (!status.data?.available && !complete.isPending && !notice) return null;
+  const conn = status.data?.connection ?? null;
+  const modes = status.data?.modes ?? [];
+  const busy = start.isPending || complete.isPending || disconnect.isPending;
+  const mutedButton = {
+    background: 'transparent',
+    border: `1px solid ${theme.borderSubtle}`,
+    borderRadius: 6,
+    padding: '5px 10px',
+    fontSize: 12,
+    color: theme.textMuted,
+    cursor: 'pointer',
+  } as const;
+
+  return (
+    <>
+      <Card>
+        <h3 style={{ marginTop: 0, marginBottom: 4, fontSize: 15, fontWeight: 500 }}>Stripe</h3>
+        <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 12px', lineHeight: 1.55 }}>
+          Bill with Stripe? Connect your Stripe account and {programName} reads it directly: Checkout and
+          Payment Link purchases, invoices, refunds and disputes credit the partner who referred the customer,
+          with nothing forwarded from your server. Partner codes with a customer discount get their promotion
+          code created in your Stripe. {programName} can read your payments but never move money.
+        </p>
+        <ErrorBanner error={status.error ?? complete.error ?? start.error ?? disconnect.error} />
+        {notice && (
+          <div
+            style={{
+              background: alpha(theme.success, 0.063),
+              border: `1px solid ${alpha(theme.success, 0.333)}`,
+              borderRadius: theme.radiusSm,
+              padding: '8px 12px',
+              marginBottom: 12,
+              fontSize: 13,
+              color: theme.text,
+            }}
+          >
+            {notice}
+          </div>
+        )}
+
+        {complete.isPending ? (
+          <p style={{ fontSize: 13, color: theme.textMuted, margin: 0 }}>Finishing the connection…</p>
+        ) : status.isLoading ? (
+          <p style={{ fontSize: 13, color: theme.textMuted, margin: 0 }}>Loading…</p>
+        ) : !conn ? (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            {modes.includes('live') && (
+              <Button onClick={() => start.mutate('live')} disabled={busy}>
+                {start.isPending ? 'Opening Stripe…' : 'Connect Stripe'}
+              </Button>
+            )}
+            {modes.includes('test') && (
+              <button type="button" style={mutedButton} disabled={busy} onClick={() => start.mutate('test')}>
+                Connect a test-mode account
+              </button>
+            )}
+          </div>
+        ) : (
+          <>
+            {conn.needsReconnect && (
+              <div
+                style={{
+                  background: alpha(theme.danger, 0.063),
+                  border: `1px solid ${alpha(theme.danger, 0.333)}`,
+                  borderRadius: theme.radiusSm,
+                  padding: '8px 12px',
+                  marginBottom: 12,
+                  fontSize: 13,
+                  color: theme.text,
+                  lineHeight: 1.5,
+                }}
+              >
+                <strong>Reconnect needed.</strong> Stripe stopped accepting {programName}&rsquo;s access
+                {conn.refreshError ? <> ({conn.refreshError})</> : null}, so new Stripe payments aren&rsquo;t
+                being recorded. Reconnect to pick up from here.
+              </div>
+            )}
+            {!conn.needsReconnect && conn.permissionsOutdated && (
+              <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 12 }}>
+                The app asks for a little more access than when you connected. Reconnect to grant it.
+              </div>
+            )}
+            <div
+              style={{
+                display: 'flex',
+                gap: 12,
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                padding: '10px 12px',
+                background: theme.surface2,
+                border: `1px solid ${theme.borderSubtle}`,
+                borderRadius: theme.radiusSm,
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 200, fontSize: 12, color: theme.textMuted, lineHeight: 1.6 }}>
+                <div style={{ fontSize: 14, color: theme.text }}>
+                  <code>{conn.stripeAccountId}</code>{' '}
+                  <span
+                    style={{
+                      fontSize: 11,
+                      padding: '1px 6px',
+                      borderRadius: 4,
+                      background: conn.livemode ? alpha(theme.success, 0.12) : alpha(theme.warn, 0.15),
+                      color: conn.livemode ? theme.success : theme.warn,
+                    }}
+                  >
+                    {conn.livemode ? 'Live' : 'Test mode'}
+                  </span>
+                </div>
+                Connected {new Date(conn.connectedAt).toLocaleDateString()}
+                {' · '}
+                {conn.lastEventAt ? `last event ${new Date(conn.lastEventAt).toLocaleString()}` : 'no events yet'}
+                {' · '}
+                {conn.rewards ? 'customer discounts created in Stripe' : 'customer discounts set up by you'}
+              </div>
+              {(conn.needsReconnect || conn.permissionsOutdated) && (
+                <Button onClick={() => start.mutate(conn.livemode ? 'live' : 'test')} disabled={busy}>
+                  Reconnect
+                </Button>
+              )}
+              <button
+                type="button"
+                style={{ ...mutedButton, border: `1px solid ${alpha(theme.danger, 0.333)}`, color: theme.danger }}
+                disabled={busy}
+                onClick={() => {
+                  if (confirm(`Disconnect Stripe? ${programName} stops reading your Stripe account. Payments already recorded stay.`)) {
+                    disconnect.mutate();
+                  }
+                }}
+              >
+                Disconnect
+              </button>
+            </div>
+            <p style={{ fontSize: 12, color: theme.textMuted, margin: '12px 0 0', lineHeight: 1.55 }}>
+              Stop forwarding Stripe payments to <code>/attribution/events</code>,{' '}
+              <code>/attribution/conversions</code> or <code>/coupons/redeem</code>: one keyed on a Stripe invoice
+              or Checkout Session id now returns <code>409 recorded_from_stripe</code>. To credit a customer,
+              pass the click id as <code>client_reference_id</code> at Checkout, or set{' '}
+              <code>metadata.openpartner_user_id</code> on the Stripe Customer to the user id you identify.
+            </p>
+          </>
+        )}
+      </Card>
+      <div style={{ height: 18 }} />
+    </>
+  );
+}
 
 function WhyCard() {
   const { programName } = useBrand();
@@ -611,19 +845,21 @@ function ClickIdGuide() {
         <code>{'{{click_id}}'}</code> (Zapier and Make syntax) is refused when you save.
       </p>
       <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.55 }}>
-        On a self-hosted install whose Stripe webhook points at {programName}, that purchase is
-        then recorded automatically: a signup, plus its amount as <code>invoice_paid</code>. On
-        OpenPartner Cloud, forward Stripe&rsquo;s checkout events to the call below from a small
-        handler of your own:{' '}
+        With your Stripe account connected (above), or on a self-hosted install whose Stripe
+        webhook points at {programName}, that purchase is then recorded automatically: a signup,
+        plus its amount as <code>invoice_paid</code>. Don&rsquo;t also report it here. Without a
+        connection, forward Stripe&rsquo;s checkout events to the call below from a small handler of
+        your own:{' '}
         <a href={STRIPE_GUIDE_URL} target="_blank" rel="noreferrer" style={{ color: theme.accentText }}>
           Stripe Payment Links on OpenPartner Cloud <ExternalLink size={11} style={{ verticalAlign: 'middle' }} />
         </a>
         .
       </p>
       <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.55 }}>
-        Whatever holds the click id (your lender system, your CRM, that handler) reports the
-        conversion in one call. No <code>identify()</code> or <code>userId</code> needed. It needs
-        a key with <code>events:write</code>:
+        For anything that isn&rsquo;t a Stripe payment, whatever holds the click id (your lender
+        system, your CRM, that handler) reports the conversion in one call. No{' '}
+        <code>identify()</code> or <code>userId</code> needed. It needs a key with{' '}
+        <code>events:write</code>:
       </p>
       <pre style={preBlock}>{`curl -X POST ${apiBase}/attribution/conversions \\
   -H "Authorization: Bearer <your-key>" \\

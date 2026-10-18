@@ -1,0 +1,395 @@
+# The OpenPartner Stripe App — hosted brands connect their own Stripe
+
+OpenPartner Cloud brands install the **OpenPartner Stripe App** on their own
+Stripe account (an OAuth install). From then on, the brand's own Stripe events
+drive attribution, the way a single-tenant self-host's do through its own
+`STRIPE_SECRET_KEY` and `/webhooks/stripe`:
+
+| Before (hosted) | With the app connected |
+| --- | --- |
+| Payment Link buyers needed the brand's server to forward each checkout to `POST /attribution/conversions` | `checkout.session.completed` with `client_reference_id = <click id>` is attributed directly |
+| Stripe-billed SaaS brands reported every invoice from their server | `invoice.paid` is recorded directly, for any customer linked to a click |
+| A refund needed an admin to reverse the commission | `charge.refunded` reverses the commissions on a full refund; partials are recorded and flagged, exactly as on self-host |
+| Disputes were invisible | `charge.dispute.created` is recorded and flagged for review |
+| Customer-reward promo codes were created by hand in the brand's Stripe | They're created in the brand's account automatically, and redemptions at Stripe Checkout attribute with no `POST /coupons/redeem` call |
+| The platform fee was computed from self-reported amounts | Stripe-sourced amounts win over self-reported ones for the same transaction (see *Stripe wins*) |
+
+Self-host is unchanged: it never connects anything, and `/webhooks/stripe`
+keeps handling the brand's own account.
+
+Code: `apps/api/src/stripe-app.ts` (tokens, rules), `routes/stripe-app.ts`
+(install + admin API), `routes/stripe-app-webhook.ts` (events),
+`routes/stripe-webhook.ts` (`processBrandStripeEvent`, the mapping both
+routes share). Manifest: `stripe-app/`. Table: `TenantStripeConnection`
+(migration `20261017000000`).
+
+---
+
+## How it works
+
+### Install (OAuth)
+
+1. **Admin → Integrations → Connect Stripe** calls
+   `POST /stripe-app/connection/start`. The API signs a `state` that binds the
+   tenant, the signed-in admin, the link type (live / test / sandbox) and the
+   portal page to return to. It expires after 30 minutes. The admin is sent to
+   `https://marketplace.stripe.com/oauth/v2/authorize?client_id=…&redirect_uri=…&state=…`.
+2. The admin picks an account and accepts the permissions. Stripe redirects to
+   the **one** redirect URI the manifest allows, on the platform origin:
+   `https://app.openpartner.dev/api/stripe-app/oauth/callback`.
+3. The callback checks the state's signature, wraps `{code, state}` in an
+   encrypted grant, and sends the admin back to the page they started on with
+   `?stripe_app_grant=…`. It exchanges nothing itself. The request carries no
+   tenant, and a white-label admin's session cookie lives on the brand's custom
+   domain, not the platform origin.
+4. The Integrations page POSTs the grant to `/stripe-app/connection/complete`
+   under the admin's session. The API exchanges the code at
+   `POST https://api.stripe.com/v1/oauth/token`, using the developer key for the
+   link's mode, **only if** the state names this tenant and this admin.
+
+Step 4 makes the state worth having. Suppose an attacker hands a victim an
+install link carrying the attacker's own state. The victim has no admin session
+on the attacker's tenant, so the code is never exchanged, and it expires after 5
+minutes. The grant is encrypted so the one-time code never sits readable in a
+portal URL, where page analytics and browser history would keep it.
+
+The connection is stored in `TenantStripeConnection`:
+
+- the Stripe account id;
+- `livemode`;
+- which developer key issued the tokens;
+- the refresh and access tokens, AES-GCM encrypted (`crypto.ts`);
+- the permission-set version the brand accepted.
+
+Reconnect and conflicts:
+
+- Reconnecting the same account refreshes that row.
+- Connecting a different account, or switching live and test, closes the old
+  row as `replaced`.
+- **An account that's live on another tenant is refused** with
+  `409 stripe_account_connected_elsewhere`. Two partial unique indexes enforce
+  this: one live connection per tenant, and one per Stripe account.
+
+### Tokens
+
+- Access tokens last an hour. Refresh tokens last a year and **rotate on every
+  refresh**: the old one dies the moment a new one is issued.
+- Refreshes are single-flight per connection. An in-process promise covers
+  concurrent callers in one process. A `SELECT … FOR UPDATE` on the connection
+  row covers concurrent processes: whoever holds the lock either finds a token
+  someone else just stored, or refreshes and stores the new refresh token
+  before releasing the lock.
+- The access token is cached, encrypted, on the row (and in memory), so
+  processes don't each refresh and rotate.
+- `invalid_grant` from Stripe means the grant was revoked, expired or already
+  used. The connection is marked **reconnect needed** (`refreshFailedAt`). The
+  portal shows a banner, ops gets an email (`PLATFORM_OPS_EMAIL`) and a
+  `[stripe-app] ALERT` log line, and that connection's events are acknowledged
+  and skipped until the brand reconnects.
+- Any other refusal (wrong developer key, `invalid_client`) is our
+  misconfiguration. Reconnecting wouldn't fix it, so it's thrown and logged as
+  an ALERT, and nothing is marked.
+- Residual risk: if Stripe rotates the token and our database commit then
+  fails, the new refresh token is lost. The brand sees "reconnect needed" on
+  the next refresh.
+
+### Events — `POST /webhooks/stripe-app`
+
+The app's developer account has Connect webhook endpoints ("Listen to events on
+Connected accounts") pointing here. For each event, the route:
+
+1. Verifies the signature against `STRIPE_APP_WEBHOOK_SECRET`, its own secrets.
+   Neither Stripe route accepts the other's deliveries.
+2. Takes the tenant **only** from `event.account`, through
+   `TenantStripeConnection`, never from object metadata, which the brand
+   controls. Events with no account, for an account no live connection
+   names, or for a tenant inside its deletion grace window, are acknowledged
+   and skipped.
+3. Skips the event unless `livemode` matches the connection. A live Connect
+   endpoint also receives test-mode events from an account that installed the
+   app in both modes.
+4. Runs only the brand-attribution event types (`STRIPE_APP_ATTRIBUTION_EVENT_TYPES`)
+   through `processBrandStripeEvent`, the same coupon redemption + `mapStripeEvent`
+   + record-and-attribute pipeline single-tenant self-host runs. The funding
+   pipeline and the billing / payout handlers (`handleConnectEvent`) never see
+   these events: they concern OpenPartner's own account, not a brand's.
+5. Makes every Stripe read with the brand's access token, never
+   `STRIPE_SECRET_KEY`.
+
+**Dedupe.** Every recorded Event is idempotent on `(tenantId, externalEventId)`,
+as on self-host:
+
+- An invoice's revenue is keyed on the **invoice id**, not the event id, so a
+  conversion the brand also forwarded under that invoice id is the same Event.
+- A one-time Checkout's revenue is keyed on the Checkout Session id.
+- Refunds, disputes and failed payments are keyed on the Stripe event id.
+
+A redelivery records nothing new.
+
+Two deliberate differences from self-host:
+
+- The app can't write customers. The checkout's `openpartner_user_id` metadata
+  backfill is skipped, and resolution falls back to the stitched Identity row,
+  which the self-host path already does whenever that write fails.
+- Every Event carries `metadata.via = 'stripe_app'` and
+  `metadata.stripeAccountId`.
+
+**Retries.** A transient failure (the database, a Stripe read, a token refresh
+that couldn't reach Stripe) answers `500`, so Stripe redelivers. A connection
+that's gone or waiting for a reconnect answers `2xx` with a skip reason, so one
+brand's revoked grant doesn't keep the shared endpoint failing for days.
+
+**Uninstall.** `account.application.deauthorized` (or `apps.install.deleted`)
+closes the connection in that event's mode: uninstalling from the test-mode
+sandbox leaves a live connection running. The tokens are wiped. Events already
+recorded stay (CLAUDE.md principle 5).
+
+**Disconnect from the portal.** Disconnecting wipes the tokens and stops all
+processing. Stripe has no API for an app to uninstall itself, so the admin is
+told to uninstall it under Settings → Installed apps to remove it from Stripe
+too.
+
+### Stripe wins — forwarded conversions vs. Stripe-sourced revenue
+
+While a tenant's connection is healthy, a forwarded conversion whose
+`externalEventId` is a Stripe invoice or Checkout Session id (`in_…`,
+`cs_live_…`, `cs_test_…`) is refused with **`409 recorded_from_stripe`**. This
+applies on `POST /attribution/events`, `POST /attribution/conversions`,
+`GET /postback` and `POST /coupons/redeem`.
+
+The order of arrival doesn't matter:
+
+- The Stripe-sourced Event (Stripe's amount, Stripe's customer) is the single
+  record of that payment.
+- A forwarded copy can't pay the partner twice, or understate the amount the
+  platform fee is billed on.
+- A `/coupons/redeem` keyed on a Checkout Session can't claim the key first and
+  turn the checkout's revenue into a dropped "replay".
+
+Two limits:
+
+- A connection waiting for a reconnect records nothing, so forwarding works
+  again until it's fixed.
+- A conversion forwarded under the brand's **own** order id can't be matched to
+  a Stripe payment.
+
+So once a brand connects, they should stop forwarding Stripe-billed revenue, and
+link the Stripe customer to their user instead: `client_reference_id = <click id>`
+at Checkout, or `metadata.openpartner_user_id` on the Customer. The Integrations
+page and the 409's `detail` say so.
+
+### Customer rewards
+
+`customer-rewards.ts rewardStripe(tenantId)` returns the brand's own client on
+hosted when the connection is healthy and grants `coupon_write` and
+`promotion_code_write`. It **never** returns `STRIPE_SECRET_KEY`, which is
+OpenPartner's billing account. Reward promos were once wrongly minted there
+(PR #97). Programs then report `customerRewardDelivery: 'stripe'`, and each
+partner code gets its Coupon + PromotionCode in the brand's account. Deactivating
+a code deactivates its promo there. That's best-effort, and a promo minted under
+a previously connected account is out of reach.
+
+---
+
+## Permissions (version 1)
+
+Least privilege: read-only except coupons and promotion codes. Nothing moves
+money (CLAUDE.md principle 4), and nothing edits customers.
+
+| Permission | Shown at install | Code that needs it |
+| --- | --- | --- |
+| `event_read` | Receive the checkout, invoice, refund and dispute events that credit your partners. | Any event delivery at all |
+| `checkout_session_read` | Read completed Checkout Sessions and Payment Link purchases to match them to the partner link the buyer clicked. | `checkout.session.*` events; `checkout.sessions.list` (`stitchFromCompletedCheckouts`); `checkout.sessions.retrieve` with `total_details.breakdown` (`collectDiscounts`) |
+| `customer_read` | Read a customer's metadata to match their payments to the user your app identified. | `customer.created`; `customers.retrieve` (`resolveUserIdFromCustomer`, `couponUserId`, the checkout's merchant-userId check) |
+| `subscription_read` | Record new subscriptions for referred customers. | `customer.subscription.created` |
+| `invoice_read` | Record paid invoices for referred customers so partners earn commission on them, including the promo code used. | `invoice.paid`, `invoice.payment_failed`; `invoices.retrieve` with expanded discounts (`collectDiscounts`) |
+| `charge_read` | Read refunds and disputed charges so commissions on refunded revenue are reversed or flagged. | `charge.refunded`; `charges.retrieve` (a dispute's customer) |
+| `dispute_read` | Flag commissions on disputed payments for your review. | `charge.dispute.created` |
+| `promotion_code_read` | Match promotion codes used at checkout to your partners' codes. | `promotionCodes.retrieve` (`resolveDiscountCode`); `promotionCodes.list` (`codeExistsInStripe`); expanding a discount's promotion code |
+| `promotion_code_write` | Create each partner's customer-discount promotion code in your account, and deactivate it when the code is retired. | `provisionCustomerReward`, `deactivateCustomerReward` |
+| `coupon_read` | Check that a new partner code doesn't collide with one of your own coupons. | `coupons.retrieve` (`codeExistsInStripe`) |
+| `coupon_write` | Create the coupon behind each partner's customer discount. | `provisionCustomerReward` |
+
+`STRIPE_APP_PERMISSIONS` in `stripe-app.ts` is the source of truth, and a test
+holds the manifest to it. Changing the list:
+
+1. Edit both files.
+2. Bump `STRIPE_APP_PERMISSIONS_VERSION`. Connections on an older version show
+   "reconnect to grant" in the portal.
+3. Upload a new app version (Stripe asks existing installs to accept the new
+   permissions).
+
+---
+
+## Setting it up (Keith — Stripe Dashboard steps)
+
+### 1. A separate developer account (required)
+
+Create a **new** Stripe account, e.g. "OpenPartner Apps", under the same
+organization. Do **not** use OpenPartner's billing / Connect platform account.
+
+- **Events stay apart.** That account's Connect webhook endpoint only ever
+  receives events from brands that installed the app. The platform account
+  already has Connect accounts of its own (partner payouts, `routes/connect.ts`),
+  whose events belong on Destination B. On a shared account, a brand-install
+  `account.application.deauthorized` and a partner's Standard-account
+  disconnect would be the same event type on the same endpoint, and couldn't be
+  told apart reliably.
+- **Key blast radius.** The OAuth token exchange needs the developer account's
+  full secret key (Stripe rejects restricted keys there). On a separate account
+  that key can reach nothing: no customers, no balance, no payouts.
+- **Webhooks stay untouched.** Destinations A and B (docs/deploy-production.md
+  §6), and the Network's own endpoint, are left alone.
+
+Activate the account (business details). Stripe requires it to publish a public
+app.
+
+### 2. Upload the app
+
+```bash
+stripe login                     # log in to the NEW developer account
+stripe plugin install apps
+cd stripe-app
+npm install
+stripe apps upload
+```
+
+The first upload creates the app from `stripe-app.json`: id
+`dev.openpartner.attribution`, name, permissions and redirect URIs. If Stripe
+says the id is taken, change `id` and upload again. Before App Review, replace
+the placeholder `openpartner_icon.png` (a 300×300 PNG) with the real mark.
+
+Redirect URIs in the manifest:
+
+- `https://app.openpartner.dev/api/stripe-app/oauth/callback`: production.
+  Live-mode links require HTTPS.
+- `http://localhost:5673/api/stripe-app/oauth/callback`: local dev, test mode
+  only, through the portal's `/api` proxy.
+
+Add a staging URI here if staging should connect too, then upload again.
+
+### 3. Webhook endpoints (one per environment)
+
+In the developer account, create an event destination for each environment. Use
+**Connected accounts** (the "Listen to events on Connected accounts" option):
+
+| Environment | Where | URL |
+| --- | --- | --- |
+| Live | Live mode → Developers → Webhooks | `https://app.openpartner.dev/api/webhooks/stripe-app` |
+| Test-mode sandbox | Test mode → Developers → Webhooks | same URL |
+| General sandboxes (optional) | The app's managed sandbox | same URL |
+
+Events to select:
+
+- `checkout.session.completed`, `checkout.session.async_payment_succeeded`
+- `customer.created`, `customer.subscription.created`
+- `invoice.paid`, `invoice.payment_failed`
+- `charge.refunded`, `charge.dispute.created`
+- `account.application.deauthorized`
+- `apps.install.created`, `apps.install.updated`, `apps.install.deleted`.
+  These are named `app.install.*` on API versions before 2026-09-30: pick the
+  names for the endpoint's API version.
+
+Give each endpoint the same API version as the platform's Destination A, so
+payloads match what `/webhooks/stripe` is tested against. Copy each endpoint's
+signing secret into `STRIPE_APP_WEBHOOK_SECRET`, comma-separated.
+
+### 4. Keys and client ids
+
+| Env var (api component) | Value |
+| --- | --- |
+| `STRIPE_APP_SECRET_KEY` | Developer account **live** secret key (`sk_live_…`) |
+| `STRIPE_APP_CLIENT_ID` | `client_id` from the app's **live** install link (Settings → public OAuth links, or External test → live link before publishing) |
+| `STRIPE_APP_SECRET_KEY_TEST` | Developer account **test** secret key (`sk_test_…`) |
+| `STRIPE_APP_CLIENT_ID_TEST` | `client_id` from the **test-mode** install link |
+| `STRIPE_APP_SECRET_KEY_SANDBOX` / `STRIPE_APP_CLIENT_ID_SANDBOX` | Optional: the app's managed-sandbox key and link |
+| `STRIPE_APP_WEBHOOK_SECRET` | The endpoint signing secrets from step 3, comma-separated |
+| `STRIPE_APP_REDIRECT_URI` | Optional. Defaults to `${PORTAL_URL}/api/stripe-app/oauth/callback`, and must exactly match a manifest URI |
+
+Each mode is offered in the portal only when both its key and client id are set:
+
+- **Connect Stripe**: live.
+- **Connect a test-mode account**: test.
+
+With nothing set, the card is hidden. Set these on the DO app's `api` component.
+`SECRETS_ENCRYPTION_KEY` (already set) encrypts the stored tokens.
+
+### 5. External test
+
+1. App details → **External test** → Get started.
+2. Set `STRIPE_APP_CLIENT_ID` (and `_TEST`) to the client ids in that tab's
+   **Test OAuth** links. Public links don't work until the app is published.
+3. In OpenPartner Cloud, as an approved test brand: Admin → Integrations →
+   Connect Stripe (or Connect a test-mode account).
+4. Make a test purchase on a Payment Link with
+   `?client_reference_id=<a click id>`: the click id from a partner link
+   destination with `{click_id}`. Check that the conversion and commission
+   appear, and that Integrations shows "last event".
+5. Refund it in the Stripe Dashboard: the commission flips to `reversed`.
+6. Uninstall the app in Stripe: Integrations shows Stripe as disconnected.
+
+### 6. App Review
+
+Submit from the app's page in the developer account. Stripe asks for a
+**Marketplace install URL**: a page that starts the OAuth install with clear
+instructions. Our installs have to start inside OpenPartner, because the signed
+state needs a signed-in admin. So the page explains that and links to sign-in:
+
+> Sign in to OpenPartner (or create a brand), open **Admin → Integrations**,
+> and click **Connect Stripe**.
+
+For example, a public page at `https://openpartner.dev/integrations/stripe`
+(openpartner-marketing repo), with a button to
+`https://app.openpartner.dev/login`. Give the reviewers credentials for a
+pre-approved demo brand. New brands queue for platform approval (`/platform`),
+so approve it first. Once published:
+
+1. Switch `STRIPE_APP_CLIENT_ID` to the **public** link's client id, from the
+   Settings tab.
+2. Redeploy.
+
+---
+
+## Operations
+
+- **Reconnect needed.** The ops email names the brand and account. The brand
+  reconnects from Integrations, and the same row is refreshed. Events delivered
+  while the connection was broken were skipped (see follow-ups).
+- **Rotating a webhook secret.** Add the new secret to
+  `STRIPE_APP_WEBHOOK_SECRET` (comma-separated) before rolling it in Stripe, and
+  remove the old one after.
+- **Rotating a developer key.** Swap `STRIPE_APP_SECRET_KEY[_TEST]`. Refresh
+  tokens are issued to the app, not to one key value, so they should keep
+  working. Confirm with a test-mode connection's next refresh after rolling.
+- **What's stored.** The account id, livemode, encrypted tokens, permission
+  version, timestamps, and the admin who connected. `TenantStripeConnection` is
+  **never exported** (credentials, `docs/data-portability.md`). The Events the
+  app recorded are ordinary raw Event rows, and they export like any other.
+
+## Coordination with other work
+
+- **Refunds API + refund-aware billing** (`feat/refunds-api`, #136): the app path
+  runs `mapStripeEvent`, so prorated partial refunds apply to app events as soon
+  as that work merges. Nothing to change here.
+- **Fee rule "bill every paid commission"**: app-sourced revenue is ordinary
+  `invoice_paid` Events tagged `metadata.via = 'stripe_app'`. *Stripe wins*
+  guarantees one Event per Stripe transaction, so the rule sees no duplicate to
+  dedupe.
+- **Multi-currency** (#133, #135): the mapping already records the payment's
+  currency. Same mapping, same fixes.
+- **Renewals past the window** (`feat/renewals-follow-acquisition`): `invoice.paid`
+  renewals go through `attributeEvent`, so they pick up that behaviour
+  unchanged.
+
+## Follow-ups (not built)
+
+- **Stripe Dashboard UI extension**: show the referring partner on a customer's
+  page in the brand's Stripe Dashboard.
+- **Backfill after a reconnect**: replay the events skipped while a connection
+  needed reconnecting, through the Events API (`event_read` allows 30 days).
+- **Per-account Coupon provenance**: deactivating a promo minted under a
+  previously connected account. Needs a hosted sidecar, because Coupon is a core
+  table.
+- **The same `/coupons/redeem` key collision on self-host**: a redemption keyed
+  on a Checkout Session id can take the key before `/webhooks/stripe` records
+  that checkout's revenue.

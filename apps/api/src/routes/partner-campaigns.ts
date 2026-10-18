@@ -133,7 +133,7 @@ partnerCampaignsRouter.delete('/partners/:id/programs/:programId', requireAuth, 
     .whereNull('deactivatedAt')
     .select('id', 'code', 'stripePromotionCodeId');
   for (const c of coupons) {
-    if (c.stripePromotionCodeId) await deactivateCustomerReward(c.stripePromotionCodeId);
+    if (c.stripePromotionCodeId) await deactivateCustomerReward(tenantId, c.stripePromotionCodeId);
   }
   if (coupons.length > 0) {
     await db<CouponRow>(TABLES.Coupon)

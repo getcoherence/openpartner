@@ -49,8 +49,9 @@ interface Program {
 
 /** Mirror of the API's customerRewardDelivery(): who puts the customer
  *  discount into checkout on this deployment. 'stripe' = we mint it in
- *  the brand's Stripe (single-tenant self-host with a key). 'brand' =
- *  hosted / multi-tenant, the brand sets it up in its own Stripe.
+ *  the brand's Stripe (single-tenant self-host with a key, or a hosted
+ *  brand that connected Stripe). 'brand' = hosted without a connection /
+ *  multi-tenant, the brand sets it up in its own Stripe.
  *  'unconfigured' = self-host with no Stripe key yet. Undefined while
  *  the program list loads (or from an API that predates the field). */
 type CustomerRewardDelivery = 'stripe' | 'unconfigured' | 'brand';
@@ -1097,6 +1098,9 @@ function rewardDeliveryHint(delivery: CustomerRewardDelivery | undefined): React
           the same string as each partner&rsquo;s code and the terms set here (or
           apply the discount in your own checkout). OpenPartner attributes the
           redemption when your checkout sends the code to <code>POST /coupons/redeem</code>.
+          On OpenPartner Cloud, connect your Stripe account under Integrations instead: each
+          code then gets its Stripe promotion code automatically, and redemptions attribute
+          without that call.
         </>
       );
     case 'unconfigured':

@@ -137,6 +137,24 @@ services:
       - key: STRIPE_NETWORK_USAGE_PRICE_ID
         type: SECRET
         scope: RUN_TIME
+      # OpenPartner Stripe App (brands connect their own Stripe) — keys of
+      # the app's OWN developer account, never the billing account above.
+      # Optional: unset hides "Connect Stripe". docs/stripe-app.md.
+      - key: STRIPE_APP_SECRET_KEY
+        type: SECRET
+        scope: RUN_TIME
+      - key: STRIPE_APP_CLIENT_ID
+        type: SECRET
+        scope: RUN_TIME
+      - key: STRIPE_APP_SECRET_KEY_TEST
+        type: SECRET
+        scope: RUN_TIME
+      - key: STRIPE_APP_CLIENT_ID_TEST
+        type: SECRET
+        scope: RUN_TIME
+      - key: STRIPE_APP_WEBHOOK_SECRET
+        type: SECRET
+        scope: RUN_TIME
       - key: METRICS_TOKEN
         type: SECRET
         scope: RUN_TIME

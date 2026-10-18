@@ -264,6 +264,12 @@ curl -s -X POST $OP/attribution/identify -H 'content-type: application/json' \
 
 ## 7. Report conversions from your server
 
+> **Bill with Stripe? Connect it instead.** On OpenPartner Cloud, **Admin → Integrations → Connect Stripe** installs the OpenPartner Stripe App on your own Stripe account ([stripe-app.md](stripe-app.md)). Your Checkout and Payment Link purchases, invoices, refunds and disputes are then recorded from Stripe directly: no forwarding conversions, no reporting invoices. Link each Stripe customer to your user instead:
+> - **Checkout or a Payment Link:** pass the click id as `client_reference_id` (`https://buy.stripe.com/…?client_reference_id={click_id}` in the destination URL, or set it when you create the Checkout Session).
+> - **Stripe Billing customers you create yourself:** set `metadata.openpartner_user_id` on the Customer to the same `userId` you pass to `identify()`.
+>
+> Partner codes with a customer discount get their Stripe promotion code created for you, and a code entered at Stripe Checkout attributes without `POST /coupons/redeem`. Once connected, a conversion forwarded under a Stripe invoice or Checkout Session id (`in_…`, `cs_…`) returns `409 recorded_from_stripe`: Stripe's record of the payment wins. Keep using the calls below for anything that isn't a Stripe payment: signups, CRM stages, payments taken elsewhere.
+
 Report each conversion with `POST /attribution/events` and the scoped key:
 
 ```bash
@@ -279,7 +285,7 @@ curl -s -X POST $OP/attribution/events -H "Authorization: Bearer $KEY" -H 'conte
 
 Or use the server SDK, `@openpartner/sdk/server`: `await op.trackEvent({ userId, type: 'invoice_paid', value: 49, currency: 'USD', externalEventId: invoice.id })`.
 
-**Report payments as `invoice_paid`.** It's the only "paid" stage in the funnel, and on OpenPartner Cloud it counts toward billable GMV, as does `subscription_created`. Report each payment once: sending both `subscription_created` and `invoice_paid` with a value for the same charge counts it twice. Likewise, on a self-host whose Stripe account already sends webhooks to `/webhooks/stripe`, those payments are recorded automatically, keyed by the Stripe event id. Reporting them here too, under your invoice id, pays twice.
+**Report payments as `invoice_paid`.** It's the only "paid" stage in the funnel, and on OpenPartner Cloud it counts toward billable GMV, as does `subscription_created`. Report each payment once: sending both `subscription_created` and `invoice_paid` with a value for the same charge counts it twice. Likewise, on a self-host whose Stripe account already sends webhooks to `/webhooks/stripe`, those payments are recorded automatically, keyed by the Stripe event id. Reporting them here too, under your invoice id, pays twice. (On Cloud with Stripe connected, that same report is refused with `409 recorded_from_stripe` instead.)
 
 | Type | Meaning in OpenPartner |
 | --- | --- |
@@ -297,7 +303,7 @@ For example, if you track clicks, signups, leads, demos and paid customers: clic
 - A `ts` you send must be UTC and end in `Z` (`2026-10-16T10:00:00Z`). An offset like `+00:00`, the default from Python's `isoformat()`, gets `400 invalid_body`. Omit `ts` to use the time OpenPartner receives the event.
 - Send events from a job queue, not inline in your request handler. On `429`, or on a network error, retry later with the same `externalEventId`.
 - An event for a user with no stitched click returns `"status": "no_identity"` and is kept. If the user is stitched later, earlier events are attributed then (`backfilledAttributions` on the identify response).
-- **Refunds** go to `POST /attribution/refunds` (step 8). This endpoint doesn't take negative values, and a `refund` or `chargeback` event sent here is recorded but reverses nothing (`"status": "corrective"`).
+- **Refunds** go to `POST /attribution/refunds` (step 8). This endpoint doesn't take negative values, and a `refund` or `chargeback` event sent here is recorded but reverses nothing (`"status": "corrective"`). With Stripe connected, a refund in Stripe is applied for you. A holdback as long as your refund window means most refunds land before anything is approved.
 
 ## 8. Report refunds and chargebacks
 

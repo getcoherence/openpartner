@@ -5,6 +5,7 @@ import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import type { AttributeResult } from '../attribution.js';
 import { recordClickConversion, type ClickConversionResult, type ReplayedAttribution } from '../conversion-ingest.js';
 import { currencyInputSchema } from '../currency.js';
+import { RECORDED_FROM_STRIPE_DETAIL } from '../stripe-app.js';
 import {
   MAX_IP_ALLOWLIST,
   invalidAllowlistEntries,
@@ -153,6 +154,8 @@ function errorBody(result: Extract<ClickConversionResult, { ok: false }>) {
         eventId: result.eventId,
         detail: 'externalEventId was already used for a different click, userId, type, value or currency',
       };
+    case 'recorded_from_stripe':
+      return { error: result.error, detail: RECORDED_FROM_STRIPE_DETAIL };
   }
 }
 

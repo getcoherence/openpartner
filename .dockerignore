@@ -19,3 +19,4 @@ docker-compose*.yml
 Dockerfile*
 fly.*.toml
 docs
+stripe-app
