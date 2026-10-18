@@ -646,8 +646,9 @@ partnersRouter.get('/partners', requireAuth, grantScope('partners:read'), requir
   const q = listQuerySchema.safeParse(req.query);
   if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
   const { db, tenantId } = tenantOf(req);
-  // tenantId spelled out, not left to RLS: the policy's platform-admin OR
-  // keeps Postgres off the (tenantId, email) index otherwise.
+  // tenantId spelled out, not left to RLS: it keeps the (tenantId, email)
+  // index on a pool that bypasses RLS, and it did under the policy's old
+  // platform-admin OR (dropped by 20261017100000_rls_plain_tenant_policies).
   const query = db<PartnerRow>(TABLES.Partner)
     .where({ tenantId })
     .select('*', cursorTimestamp(db, 'createdAt'))

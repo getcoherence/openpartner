@@ -9,8 +9,8 @@ drive attribution, the way a single-tenant self-host's do through its own
 | --- | --- |
 | Payment Link buyers needed the brand's server to forward each checkout to `POST /attribution/conversions` | `checkout.session.completed` with `client_reference_id = <click id>` is attributed directly |
 | Stripe-billed SaaS brands reported every invoice from their server | `invoice.paid` is recorded directly, for any customer linked to a click |
-| A refund needed an admin to reverse the commission | `charge.refunded` reverses the commissions on a full refund; partials are recorded and flagged, exactly as on self-host |
-| Disputes were invisible | `charge.dispute.created` is recorded and flagged for review |
+| A refund needed an admin to reverse the commission | `charge.refunded` reverses the commissions on a full refund and prorates them on a partial one, exactly as on self-host (see *Refunds and disputes*) |
+| Disputes were invisible | `charge.dispute.created` is recorded. It reverses nothing until the brand reports a lost dispute as a chargeback |
 | Customer-reward promo codes were created by hand in the brand's Stripe | They're created in the brand's account automatically, and redemptions at Stripe Checkout attribute with no `POST /coupons/redeem` call |
 | The platform fee was computed from self-reported amounts | Stripe-sourced amounts win over self-reported ones for the same transaction (see *Stripe wins*) |
 
@@ -133,6 +133,27 @@ Two deliberate differences from self-host:
   which the self-host path already does whenever that write fails.
 - Every Event carries `metadata.via = 'stripe_app'` and
   `metadata.stripeAccountId`.
+
+**Refunds and disputes.** `charge.refunded` applies the refund with the same
+code as `POST /attribution/refunds` (`apps/api/src/refunds.ts`). Each of the
+payment's commissions ends up worth its original amount times the share of the
+collected amount the customer kept. The share comes from the charge's
+cumulative `amount_refunded`, so two partial refunds add up.
+
+- **Accrued or approved:** reversed. On a partial refund, a replacement for the
+  kept share is accrued on the same attribution, with the same status and
+  accrual date, so its holdback doesn't restart.
+- **Paid:** stays paid. A negative `refund_clawback` CommissionAdjustment
+  records what the partner holds for refunded revenue. Nothing deducts it from
+  later payouts.
+- **In a payout in flight:** held (`heldInTransferCommissions` on the refund
+  Event). The next refund of the same charge finishes it.
+
+`charge.dispute.created` is recorded as a `dispute_created` Event and reverses
+nothing, because a dispute can be won. OpenPartner doesn't read the dispute's
+outcome. The brand reports a lost one with `POST /attribution/refunds` and
+`"kind": "chargeback"`, against the invoice id or Checkout Session id the
+revenue was keyed on.
 
 **Retries.** A transient failure (the database, a Stripe read, a token refresh
 that couldn't reach Stripe) answers `500`, so Stripe redelivers. A connection
@@ -325,7 +346,8 @@ With nothing set, the card is hidden. Set these on the DO app's `api` component.
    `?client_reference_id=<a click id>`: the click id from a partner link
    destination with `{click_id}`. Check that the conversion and commission
    appear, and that Integrations shows "last event".
-5. Refund it in the Stripe Dashboard: the commission flips to `reversed`.
+5. Refund it in full in the Stripe Dashboard: the commission flips to
+   `reversed`. (A partial refund reverses it and accrues a smaller replacement.)
 6. Uninstall the app in Stripe: Integrations shows Stripe as disconnected.
 
 ### 6. App Review
@@ -368,18 +390,19 @@ so approve it first. Once published:
 
 ## Coordination with other work
 
-- **Refunds API + refund-aware billing** (`feat/refunds-api`, #136): the app path
-  runs `mapStripeEvent`, so prorated partial refunds apply to app events as soon
-  as that work merges. Nothing to change here.
-- **Fee rule "bill every paid commission"**: app-sourced revenue is ordinary
+- **Refunds API + refund-aware billing** (#138, #136, merged): the app path
+  runs `mapStripeEvent`, so prorated partial refunds apply to app events too
+  (see *Refunds and disputes*).
+- **Commission-floor platform fee** (#139, merged; applies from the cutover,
+  [platform-fee.md](platform-fee.md)): app-sourced revenue is ordinary
   `invoice_paid` Events tagged `metadata.via = 'stripe_app'`. *Stripe wins*
   guarantees one Event per Stripe transaction, so the rule sees no duplicate to
   dedupe.
 - **Multi-currency** (#133, #135): the mapping already records the payment's
   currency. Same mapping, same fixes.
-- **Renewals past the window** (`feat/renewals-follow-acquisition`): `invoice.paid`
-  renewals go through `attributeEvent`, so they pick up that behaviour
-  unchanged.
+- **Renewals past the window** (#141, merged): `invoice.paid` renewals go
+  through `attributeEvent`, so they stay with the partner who won the customer,
+  as on self-host ([renewal-attribution.md](renewal-attribution.md)).
 
 ## Follow-ups (not built)
 

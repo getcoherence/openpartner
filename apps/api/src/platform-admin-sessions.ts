@@ -9,10 +9,10 @@
  * privileged `db` pool.
  *
  * These sessions authorize cross-tenant reads/writes via `req.platformAdmin
- * = true` (see requirePlatformAdmin in routes/platform-admin.ts); the RLS
- * escape hatch (`app.platform_admin = 'on'`) is set by tenantMiddleware for
- * any request that reaches it with that flag, but the review routes run on
- * the privileged pool BEFORE tenantMiddleware, so they bypass RLS directly.
+ * = true` (see requirePlatformAdmin in routes/platform-admin.ts). The review
+ * routes run on the privileged pool BEFORE tenantMiddleware, so they bypass
+ * RLS directly; a flagged request that does reach tenantMiddleware gets its
+ * transaction on the privileged pool too.
  */
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';

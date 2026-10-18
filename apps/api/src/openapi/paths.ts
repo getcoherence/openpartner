@@ -551,7 +551,7 @@ GET /postback?click_id={click_id}&type=sale&amount=49.00&currency=USD&txn_id={tr
 | Body | Meaning |
 | --- | --- |
 | \`ok attributed\` | A partner was credited and earned commission. |
-| \`ok attributed no_commission\` | Credited, but nothing accrued: the program has ended, a \`first\` rule already paid, a cap was reached, or the amount was zero. |
+| \`ok attributed no_commission\` | Credited, but nothing accrued: the program has ended, a \`first\` rule already paid, a cap was reached, the amount was zero, or it's a renewal past the attribution window, which only \`recurring\` rules pay. |
 | \`ok no_matching_rule\` | Credited, but no commission rule takes this \`type\`. Usually a typo'd stage name. Admin → Integrations lists these types. |
 | \`ok not_attributed outside_window\` | No partner credited: the click is older than the program's attribution window. |
 | \`ok not_attributed no_click\` | No partner credited: the partner was revoked. |
@@ -684,11 +684,11 @@ Checked against the rules as they are now: adding a rule for the type, or fixing
     operationId: 'recordRefund',
     summary: 'Report a refund or chargeback',
     description: `
-Reports that a conversion was refunded, in full or in part, or charged back. Reference the conversion by the \`externalEventId\` you sent with it (\`conversionExternalEventId\`, preferred) or by the \`eventId\` OpenPartner returned (\`conversionEventId\`): exactly one. Conversions the self-host Stripe webhook recorded can be referenced too, but their Stripe refunds are already handled there; don't report those twice.
+Reports that a conversion was refunded, in full or in part, or charged back. Reference the conversion by the \`externalEventId\` you sent with it (\`conversionExternalEventId\`, preferred) or by the \`eventId\` OpenPartner returned (\`conversionEventId\`): exactly one. Conversions recorded from Stripe, by the self-host Stripe webhook or, on OpenPartner Cloud, the OpenPartner Stripe App, can be referenced too, but their Stripe refunds are already handled there; don't report those twice.
 
 The refund is recorded as a corrective event (type \`refund\` or \`chargeback\`, a negative \`value\`) that is never attributed, and the conversion's commissions follow it. Each commission ends up worth its original amount times the share of the conversion the customer kept:
 - **Not yet paid** (\`accrued\`, \`approved\`): reversed, firing \`commission.reversed\` (reason \`refund\` or \`chargeback\`) and the partner's postback. On a partial refund a replacement commission for the kept amount follows (\`commission.accrued\` with \`replacesCommissionId\`), keeping the original's status and accrual date, so its holdback doesn't restart.
-- **Already paid**: it stays paid. A negative adjustment records the refunded revenue the partner holds (\`clawback_recorded\`). OpenPartner doesn't deduct it from later payouts; recover it with the partner.
+- **Already paid**: it stays paid. A negative adjustment records the refunded revenue the partner holds (\`clawback_recorded\`). OpenPartner deducts it from the partner's next manual or self-hosted Stripe Connect payout; a partner who owes more than they are due is not paid until enough accrues. Funded Stripe Connect payouts on hosted OpenPartner don't deduct it: recover those with the partner.
 - **In a payout right now**: left alone (\`held_in_transfer\`). Retry the same request once the payout settles.
 
 \`amount\` is in major units and defaults to everything not yet refunded. Partial refunds add up: two refunds of 30 and 20 on a 100 conversion leave each commission at 50%. A conversion with no \`value\` can only be refunded in full. A \`chargeback\` reverses commissions like a refund, so report it once it is final, not when a dispute opens.

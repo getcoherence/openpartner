@@ -691,7 +691,7 @@ Branch `feat/white-label-phase0` (7 commits on top of Phase 0). **Verified: API 
 
 **Phase 3 — self-serve slice (§8.2 + wizard):**
 - `STRIPE_WHITELABEL_ADD_ON_PRICE_ID` (+ boot probe). `priceIdsForPlan(plan, {whiteLabel})` bundles the add-on into plan Checkout; `/billing/checkout` accepts `whiteLabel: true`.
-- `GET/POST/DELETE /billing/white-label`: status; enable = add-on Stripe subscription item with proration (enterprise = flag only, sales-led; no subscription = 409 `subscription_required`); disable = item removed + custom-domain routing/DO edge revoked.
+- `GET/POST/DELETE /billing/white-label`: status; enable = add-on Stripe subscription item, prorated rest of the period charged immediately (`always_invoice` + `error_if_incomplete`; declined = 402 `payment_failed`, nothing attached) (enterprise = flag only, sales-led; no subscription = 409 `subscription_required`); disable = item removed + custom-domain routing/DO edge revoked.
 - Webhook: `customer.subscription.updated` mirrors add-on presence onto `Tenant.whiteLabel` (no-op when the price env is unset — protects manually-provisioned deployments); `customer.subscription.deleted` disables + revokes. Shared `applyWhiteLabelFromSubscription` / `revokeTenantCustomDomainRouting` keep webhook, sweeps, and admin-disable on one code path.
 - Portal: **admin → White label** wizard (`pages/admin/WhiteLabel.tsx`) — add-on enable/disable, domain register, CNAME+TXT records with copy buttons, verify (surfaces the DO `edge` result), delete, and TXT-rotation guidance on failed verification.
 - Runbook updated: self-serve is the primary onboarding path; curl equivalents kept for concierge/debugging.

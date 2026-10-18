@@ -340,7 +340,7 @@ export const RefundCommission = z
       description: [
         '`reversed`: unpaid, and nothing is kept (a full refund), so it was reversed.',
         '`reduced`: unpaid; reversed and replaced by `currentCommissionId` for the kept amount (a partial refund).',
-        '`clawback_recorded`: already paid. It stays paid, and a negative adjustment of `clawbackAmount` records the refunded revenue the partner holds. OpenPartner does not net it off later payouts; recover it with the partner.',
+        "`clawback_recorded`: already paid. It stays paid, and a negative adjustment of `clawbackAmount` records the refunded revenue the partner holds. OpenPartner deducts it from the partner's next manual or self-hosted Stripe Connect payout; funded Stripe Connect payouts on hosted OpenPartner don't, so recover those with the partner.",
         '`held_in_transfer`: a payout for it is in flight, so nothing changed. Retry this request (same `externalEventId`) once the payout settles.',
         '`unchanged`: nothing to take back.',
       ].join(' '),
@@ -363,7 +363,8 @@ export const RefundResult = z
     currency: z.string(),
     fullRefund: z.boolean().openapi({ description: 'Nothing of the conversion is left.' }),
     actionRequired: z.boolean().openapi({
-      description: 'Some commission is `held_in_transfer` (retry later) or `clawback_recorded` (the partner was already paid).',
+      description:
+        'Some commission is `held_in_transfer` (retry later) or `clawback_recorded` (the partner was already paid; usually deducted from their next payout, see `clawback_recorded`).',
     }),
     commissions: z.array(RefundCommission).openapi({ description: 'One entry per commission the conversion accrued; empty when no partner was credited.' }),
     replayed: z.literal(true).optional().openapi({
@@ -490,6 +491,10 @@ export const PayoutRunResult = z
     mode: z.enum(['selfhost', 'flat', 'revshare']),
     skippedBelowThreshold: z.array(moneyGroup),
     skippedUnfunded: z.array(moneyGroup),
+    heldForClawback: z.array(moneyGroup.extend({ clawbackAmount: z.number() })).openapi({
+      description:
+        'Partners not paid this run because their outstanding refund clawbacks are at least what they are owed (`amount`, before clawbacks). Their commissions stay approved and are paid, net, once enough accrues.',
+    }),
     payouts: z.array(
       z.object({
         payoutId: id,
@@ -499,6 +504,9 @@ export const PayoutRunResult = z
         method: z.enum(PAYOUT_METHODS),
         status: z.enum(['pending', 'paid', 'failed']),
         platformFee: z.number().optional(),
+        clawbackAmount: z.number().optional().openapi({
+          description: 'Refund clawbacks netted off this payout. `amount` is already net of them.',
+        }),
         error: z.string().optional(),
       }),
     ),

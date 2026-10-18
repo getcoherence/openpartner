@@ -39,6 +39,12 @@
  *                         (usage-billing.ts). Payout.metadata.platformFee
  *                         records 3% of the payout as a ledger note only.
  *
+ * Refund clawbacks (clawback-netting.ts): a manual or direct-Connect
+ * payout is the partner's commissions less their outstanding
+ * `refund_clawback` adjustments, which are stamped with the payout in the
+ * same transaction. A partner who owes at least what they're due is held
+ * (`heldForClawback`) instead of paid. Funding-rail groups never net.
+ *
  * Multi-tenant: takes (db, tenantId), where `db` is a transaction with
  * app.tenant_id pinned. Open it with `withTenantTransaction` (the
  * scheduler's forEachActiveTenant does) and dispatch the result's
@@ -67,6 +73,13 @@ import type { WebhookPayload } from './openapi/webhook-events.js';
 import { dispatchCommissionEvents } from './commission-events.js';
 import { fundingEnabled, tryTenantPayoutLock } from './funding/state.js';
 import {
+  NO_NETTING,
+  nettingPayloadFields,
+  outstandingClawbacks,
+  stampClawbacks,
+  type PayoutNettingMeta,
+} from './clawback-netting.js';
+import {
   getFundingAuthorization,
   reserveFundingBatch,
   type ReservationCandidate,
@@ -85,6 +98,11 @@ export interface PayoutRunResult {
    *  (audit 2026-07-10). Commissions stay 'approved'; no Payout row is
    *  written so retries don't accumulate failure rows. */
   skippedUnfunded: Array<{ partnerId: string; currency: string; amount: number }>;
+  /** Groups not paid because the partner's outstanding refund clawbacks
+   *  are at least what they're owed (`amount`, before clawbacks). Nothing
+   *  is written: the commissions stay 'approved' and the clawbacks
+   *  outstanding, and a later run nets them once enough has accrued. */
+  heldForClawback: Array<{ partnerId: string; currency: string; amount: number; clawbackAmount: number }>;
   /** Connect-rail rows come back 'pending': the Payout intent is written
    *  and its commissions are frozen, but the transfer is posted later by
    *  `executePayoutTransfers`. Manual-rail rows are 'pending' too (the
@@ -97,6 +115,9 @@ export interface PayoutRunResult {
     method: PayoutMethod;
     status: 'pending' | 'paid' | 'failed';
     platformFee?: number;
+    /** Refund clawbacks netted off this payout; `amount` is already net
+     *  of them. Absent when nothing was netted. */
+    clawbackAmount?: number;
     error?: string;
   }>;
   /** Manual-rail announcements this run owes. NOT dispatched yet — the
@@ -146,6 +167,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
       payouts: [],
       skippedBelowThreshold: [],
       skippedUnfunded: [],
+      heldForClawback: [],
       pendingNotifications: [],
     };
   }
@@ -190,6 +212,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
   const results: PayoutRunResult['payouts'] = [];
   const skipped: PayoutRunResult['skippedBelowThreshold'] = [];
   const skippedUnfunded: PayoutRunResult['skippedUnfunded'] = [];
+  const heldForClawback: PayoutRunResult['heldForClawback'] = [];
   const pendingNotifications: PendingPayoutNotification[] = [];
   const fundingCandidates: Array<{ currency: string; candidate: ReservationCandidate }> = [];
 
@@ -208,28 +231,8 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
       .whereNull('payoutId');
     if (commissions.length === 0) continue;
     // Summed in hundredths, the storage precision, so the total is exact.
-    // `amountMinor` is that total in Stripe's integer form for this
-    // currency (¥1,000 is 1000, KWD 1.23 is 1230; stripe-amounts.ts) and
-    // is what a transfer sends. `amount` is the same figure in major
-    // units, so the Payout row records what is paid: it differs from the
-    // commission sum only where Stripe has no fractions (¥100.50 → ¥101).
-    const amountCents = commissions.reduce((s, c) => s + majorToCents(c.amount), 0);
-    const amountMinor = centsToStripeMinor(amountCents, group.currency);
-    const amount = fromStripeMinor(amountMinor, group.currency);
+    const grossCents = commissions.reduce((s, c) => s + majorToCents(c.amount), 0);
 
-    // Threshold gate: balances below the tenant minimum stay 'approved'
-    // and roll over to the next run. The minimum is in the tenant's default
-    // currency, and hundredths are the storage unit on the tenant column, so
-    // the comparison happens in them (amountCents, not the exponent-aware
-    // amountMinor).
-    if (thresholdCents > 0 && group.currency === thresholdCurrency && amountCents < thresholdCents) {
-      skipped.push({ partnerId: partner.id, currency: group.currency, amount });
-      continue;
-    }
-
-    const platformFee = mode === 'revshare' ? Math.round(amount * REVSHARE_FEE_BPS) / 10000 : 0;
-
-    const payoutId = ulid();
     // Rail preference resolves to a concrete method per partner:
     //   auto            (legacy) stripe_connect if Connect account exists, else manual
     //   stripe_connect  always stripe_connect — partners without a Connect
@@ -241,42 +244,11 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
       if (railPreference === 'stripe_connect') return 'stripe_connect';
       return partner.stripeConnectAccountId ? 'stripe_connect' : 'manual';
     })();
-
-    // HOSTED CONNECT = FUNDED FLOW OR NOTHING. On hosted tenants a Connect
-    // transfer spends the PLATFORM's Stripe balance, so it only happens
-    // through the funding pipeline (reserve → charge the brand → transfer
-    // after settlement; docs/payout-funding.md). Eligible groups are
-    // handed to reservation below; tenants without funding enabled +
-    // authorized stay on the fail-closed guard (commissions 'approved',
-    // no Payout row). Self-host is unaffected: the platform account IS
-    // the brand's own Stripe. Escape hatch = deliberate operator override.
-    if (
+    // Hosted Connect goes through the funding pipeline (below) or nowhere.
+    const fundedRail =
       method === 'stripe_connect' &&
       mode !== 'selfhost' &&
-      process.env.OPENPARTNER_ALLOW_UNFUNDED_CONNECT_PAYOUTS !== '1'
-    ) {
-      // Connect-readiness preflight applies to funding too — a partner
-      // who can't receive transfers shouldn't have money collected for
-      // them (it would strand as a residual, spec §7).
-      const meta = (partner.metadata as { stripe?: { payoutsEnabled?: boolean } }).stripe;
-      const transferReady = !!partner.stripeConnectAccountId && meta?.payoutsEnabled === true;
-      if (fundingEnabled() && transferReady) {
-        fundingCandidates.push({
-          currency: group.currency,
-          candidate: {
-            partnerId: partner.id,
-            commissionIds: commissions.map((c) => c.id),
-            amountMinor,
-          },
-        });
-        continue;
-      }
-      console.error(
-        `[payouts] REFUSED unfunded Connect payout: tenant=${tenantId} partner=${partner.id} ${group.currency} ${amount.toFixed(2)} — funding ${fundingEnabled() ? 'not available for this partner' : 'disabled'}; commissions remain approved`,
-      );
-      skippedUnfunded.push({ partnerId: partner.id, currency: group.currency, amount });
-      continue;
-    }
+      process.env.OPENPARTNER_ALLOW_UNFUNDED_CONNECT_PAYOUTS !== '1';
 
     // Preflight: a linked Connect account that hasn't finished onboarding
     // will 400 on transfers.create. Decide up front and take a path that
@@ -299,6 +271,85 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
       : onboardingIncomplete
         ? 'stripe_onboarding_incomplete'
         : null;
+
+    // Refund clawbacks the partner owes come off this payout — on the rails
+    // that pay it now: manual, and a direct-Connect intent. Never on the
+    // hosted funding rail, whose batch has no row for a deduction
+    // (docs/refund-clawback-netting.md §4), and not on a connect-blocked
+    // failure row, which pays nothing.
+    const netting =
+      !fundedRail && (method === 'manual' || canTransfer)
+        ? await outstandingClawbacks(db, tenantId, partner.id, group.currency)
+        : NO_NETTING;
+    // What would actually be paid, after clawbacks, in hundredths.
+    // `amountMinor` is that total in Stripe's integer form for this
+    // currency (¥1,000 is 1000, KWD 1.23 is 1230; stripe-amounts.ts) and
+    // is what a transfer sends. `amount` is the same figure in major
+    // units, so the Payout row records what is paid: it differs from the
+    // net sum only where Stripe has no fractions (¥100.50 → ¥101).
+    const amountCents = grossCents - netting.clawbackCents;
+    const amountMinor = centsToStripeMinor(amountCents, group.currency);
+    const amount = fromStripeMinor(amountMinor, group.currency);
+    // Owing at least what's due carries over: no payout at all, so no
+    // transfer is ever zero or negative (measured in the currency's own
+    // smallest unit, so ¥0.40 net is ¥0 and is held too). The commissions
+    // stay 'approved' and the clawbacks outstanding, and the next run nets
+    // them once enough has accrued.
+    if (netting.clawbackCents > 0 && amountMinor <= 0) {
+      heldForClawback.push({
+        partnerId: partner.id,
+        currency: group.currency,
+        amount: grossCents / 100,
+        clawbackAmount: netting.clawbackCents / 100,
+      });
+      continue;
+    }
+
+    // Threshold gate: balances below the tenant minimum stay 'approved'
+    // and roll over to the next run. The minimum is in the tenant's default
+    // currency, and hundredths are the storage unit on the tenant column, so
+    // the comparison happens in them (amountCents, not the exponent-aware
+    // amountMinor) — on what would actually be paid, after clawbacks.
+    if (thresholdCents > 0 && group.currency === thresholdCurrency && amountCents < thresholdCents) {
+      skipped.push({ partnerId: partner.id, currency: group.currency, amount });
+      continue;
+    }
+
+    const platformFee = mode === 'revshare' ? Math.round(amount * REVSHARE_FEE_BPS) / 10000 : 0;
+
+    const payoutId = ulid();
+
+    // HOSTED CONNECT = FUNDED FLOW OR NOTHING. On hosted tenants a Connect
+    // transfer spends the PLATFORM's Stripe balance, so it only happens
+    // through the funding pipeline (reserve → charge the brand → transfer
+    // after settlement; docs/payout-funding.md). Eligible groups are
+    // handed to reservation below; tenants without funding enabled +
+    // authorized stay on the fail-closed guard (commissions 'approved',
+    // no Payout row). Self-host is unaffected: the platform account IS
+    // the brand's own Stripe. Escape hatch = deliberate operator override.
+    if (fundedRail) {
+      // Connect-readiness preflight applies to funding too — a partner
+      // who can't receive transfers shouldn't have money collected for
+      // them (it would strand as a residual, spec §7).
+      const meta = (partner.metadata as { stripe?: { payoutsEnabled?: boolean } }).stripe;
+      const transferReady = !!partner.stripeConnectAccountId && meta?.payoutsEnabled === true;
+      if (fundingEnabled() && transferReady) {
+        fundingCandidates.push({
+          currency: group.currency,
+          candidate: {
+            partnerId: partner.id,
+            commissionIds: commissions.map((c) => c.id),
+            amountMinor,
+          },
+        });
+        continue;
+      }
+      console.error(
+        `[payouts] REFUSED unfunded Connect payout: tenant=${tenantId} partner=${partner.id} ${group.currency} ${amount.toFixed(2)} — funding ${fundingEnabled() ? 'not available for this partner' : 'disabled'}; commissions remain approved`,
+      );
+      skippedUnfunded.push({ partnerId: partner.id, currency: group.currency, amount });
+      continue;
+    }
 
     // Commissions move to 'paid' ONLY when we have a terminal success
     // signal: either Stripe transfer succeeded, or method=manual (the
@@ -323,6 +374,17 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
         platformFee,
         commissionCount: commissions.length,
         ...(blockReason ? { error: blockReason } : {}),
+        // Audit copy of what was netted. The source of truth is
+        // CommissionAdjustment.appliedPayoutId, stamped below.
+        ...(netting.clawbackCents > 0
+          ? {
+              netting: {
+                grossCents,
+                clawbackCents: netting.clawbackCents,
+                adjustmentIds: netting.adjustmentIds,
+              } satisfies PayoutNettingMeta,
+            }
+          : {}),
         // The transfer intent (audit #10). Everything the executor needs
         // to post the transfer is frozen here, so the amount and the
         // destination can't drift between planning and execution.
@@ -356,6 +418,8 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
           `manual payout ${payoutId}: marked ${marked}/${commissions.length} commissions paid for partner ${partner.id} — a commission was reversed or claimed concurrently; aborting`,
         );
       }
+      // Planning is terminal on this rail, so the deduction is final too.
+      await stampClawbacks(db, payoutId, netting.adjustmentIds);
     }
 
     if (connectBlocked) {
@@ -391,6 +455,10 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
           `payout intent ${payoutId}: claimed ${claimed}/${commissions.length} commissions for partner ${partner.id} — concurrent payout run; aborting`,
         );
       }
+      // Frozen with the commissions: the executor's preflight checks
+      // amountMinor against both, and releases both if it abandons the
+      // intent (payout-transfers.ts releaseClaims).
+      await stampClawbacks(db, payoutId, netting.adjustmentIds);
       // No webhook here — the money hasn't moved. payout.created and
       // commission.paid fire from the executor once the transfer lands.
       results.push({
@@ -401,6 +469,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
         method,
         status: 'pending',
         platformFee: platformFee || undefined,
+        clawbackAmount: netting.clawbackCents > 0 ? netting.clawbackCents / 100 : undefined,
       });
     } else {
       // Manual path: commissions are already marked paid in the tx above
@@ -416,6 +485,11 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
           method,
           commissionIds: commissions.map((c) => c.id),
           platformFee: platformFee || undefined,
+          ...nettingPayloadFields(
+            netting.clawbackCents > 0
+              ? { grossCents, clawbackCents: netting.clawbackCents, adjustmentIds: netting.adjustmentIds }
+              : undefined,
+          ),
         },
         commissions: commissions.map((c) => ({
           id: c.id,
@@ -433,6 +507,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
         method,
         status: 'pending',
         platformFee: platformFee || undefined,
+        clawbackAmount: netting.clawbackCents > 0 ? netting.clawbackCents / 100 : undefined,
       });
     }
   }
@@ -498,6 +573,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     payouts: results,
     skippedBelowThreshold: skipped,
     skippedUnfunded,
+    heldForClawback,
     pendingNotifications,
   };
 }

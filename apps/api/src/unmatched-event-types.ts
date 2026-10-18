@@ -45,8 +45,9 @@ export interface UnmatchedEventType {
 }
 
 export async function unmatchedEventTypes(db: Knex, tenantId: string, since: Date): Promise<UnmatchedEventType[]> {
-  // tenantId named on both tables: under RLS alone, the policy's OR keeps
-  // the planner off the tenant indexes.
+  // tenantId named on both tables, so the tenant indexes apply whatever the
+  // pool: RLS alone used to keep the planner off them (the policy's old
+  // platform-admin OR, dropped by 20261017100000_rls_plain_tenant_policies).
   const groups = (await db(`${TABLES.Event} as e`)
     .join(`${TABLES.Attribution} as a`, 'a.eventId', 'e.id')
     .where('e.tenantId', tenantId)

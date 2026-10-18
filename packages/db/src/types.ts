@@ -516,8 +516,8 @@ export interface AdminRow {
 /**
  * Platform admins are Coherence support staff who can read across all
  * tenants for triage / debugging. Stored separately from tenant-scoped
- * Admins. Their requests set `app.platform_admin = 'on'`, which RLS
- * policies treat as a wildcard match.
+ * Admins. Their requests run on the privileged pool, which bypasses RLS;
+ * tenant policies themselves have no platform-admin override.
  */
 export interface PlatformAdminRow {
   id: string;
@@ -1149,6 +1149,9 @@ export interface CommissionAdjustmentRow {
   currency: string;
   reason: 'transfer_reversed' | 'funding_disputed' | 'admin_correction' | 'refund_clawback';
   actorAdminId: string | null;
+  /** refund_clawback only: the payout that netted it off the partner.
+   *  Null = outstanding. Cleared when that payout is abandoned. */
+  appliedPayoutId: string | null;
   metadata: Record<string, unknown>;
   createdAt: Date;
 }

@@ -2,8 +2,9 @@
  * POST /import/partners-csv — what it writes, and the shape that keeps a
  * large roster fast under RLS: one tenant-scoped email lookup per chunk of
  * the file and batched inserts, instead of an email-only lookup per row
- * (which the RLS policy's platform-admin OR turned into a scan of the
- * whole roster, once per row).
+ * (which the RLS policy's old platform-admin OR turned into a scan of the
+ * whole roster, once per row; 20261017100000_rls_plain_tenant_policies
+ * dropped the OR).
  *
  * Skipped if DATABASE_URL isn't set.
  */
@@ -156,8 +157,9 @@ describe.skipIf(skipIntegration)('POST /import/partners-csv', () => {
     expect(statements.length).toBeLessThan(20);
 
     // And under the RLS role that lookup gets an index condition on
-    // tenantId. The email-only lookup it replaced could not use any index:
-    // the policy's platform-admin OR hides tenantId from the planner.
+    // tenantId. So does the email-only lookup it replaced, now that the
+    // policy is plain `tenantId` equality: the policy's old platform-admin
+    // OR hid tenantId from the planner (tenant-policy-shape.test.ts).
     const role = (await db.raw(`select 1 from pg_roles where rolname = 'openpartner_app'`)) as { rows: unknown[] };
     if (role.rows.length === 0) return;
     const plan = async (sql: string, bindings: unknown[]) =>
@@ -170,7 +172,6 @@ describe.skipIf(skipIntegration)('POST /import/partners-csv', () => {
         return out.rows.map((r) => r['QUERY PLAN']).filter((l) => l.includes('Index Cond')).join('\n');
       });
     expect(await plan(lookups[0]!.sql, lookups[0]!.bindings)).toMatch(/"tenantId"/);
-    // At best it walks the whole (tenantId, email) index for the email.
-    expect(await plan('select "id" from "Partner" where "email" = ?', ['counted1@example.test'])).not.toMatch(/"tenantId"/);
+    expect(await plan('select "id" from "Partner" where "email" = ?', ['counted1@example.test'])).toMatch(/"tenantId"/);
   }, 60_000);
 });

@@ -1262,9 +1262,11 @@ async function mapStripeEvent(
       };
     }
     case 'charge.dispute.created': {
-      // Disputes are flagged for admin review rather than auto-reversed —
-      // disputes can be won, and clawing back commissions on every chargeback
-      // would create a worse experience than the rare manual reversal.
+      // A dispute is recorded (`dispute_created`) and reverses nothing:
+      // disputes can be won, and clawing back commissions on every one
+      // would create a worse experience than the rare lost one. A lost
+      // dispute is reported to POST /attribution/refunds as a `chargeback`,
+      // or an admin reverses the commissions.
       const dispute = event.data.object as Stripe.Dispute;
       const chargeId = typeof dispute.charge === 'string' ? dispute.charge : dispute.charge?.id;
       const paymentIntentId =

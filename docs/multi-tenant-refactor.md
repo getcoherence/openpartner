@@ -17,8 +17,10 @@ H (env + ops). Verify tests pass against a real DB first.
   - `OPENPARTNER_TENANCY=single` — self-host. tenantId always `'default'`.
   - `OPENPARTNER_TENANCY=multi` — hosted. tenantId resolved from URL path.
 - Database has `tenantId` on every data table.
-- RLS enforced via `app.tenant_id` GUC + `app.platform_admin` override,
-  with FORCE so even the table owner is subject to policies.
+- RLS enforced via `app.tenant_id` GUC, with FORCE so even the table
+  owner is subject to policies. (The `app.platform_admin` override was
+  retired by `20261017100000_rls_plain_tenant_policies`; platform admins
+  use the privileged pool.)
 - Two DB roles: privileged (migrations, signup, platform tooling) and
   `openpartner_app` (subject to RLS at runtime).
 - Per-request transaction wraps every tenant-scoped request, sets the
@@ -77,8 +79,8 @@ Two layers of defense:
    `app.tenant_id` set; handlers either filter explicitly or rely on
    the GUC. Primary defense.
 2. **Row-Level Security** — every tenanted table has FORCE RLS with a
-   policy matching `tenantId` to the GUC, plus a `platform_admin = 'on'`
-   override for cross-tenant tooling. Secondary defense — catches
+   policy matching `tenantId` to the GUC by plain equality, so tenant
+   indexes apply (cross-tenant tooling uses the privileged pool). Secondary defense — catches
    missed `where()` clauses, SQL injection, compromised API keys.
 
 For RLS to actually engage, the runtime DB role must not be a superuser
@@ -112,8 +114,8 @@ request in a knex transaction:
 
 1. Resolve tenantId (single → `default`, multi → `/t/<slug>/...`).
 2. `appDb.transaction(...)`.
-3. `SET LOCAL app.tenant_id = '<id>'` (and `app.platform_admin = 'on'`
-   if applicable).
+3. `SET LOCAL app.tenant_id = '<id>'` (a platform admin's transaction
+   opens on the privileged pool instead of `appDb`).
 4. Stash trx as `req.db`.
 5. Handler runs, writes response.
 6. Transaction commits on `res.finish` / `close`, rolls back on error.
@@ -156,7 +158,8 @@ new top-level URL spaces.
 ### `packages/db/migrations/20260507010000_rls_policies.ts`
 - `PlatformAdmin` table (cross-tenant Coherence support staff).
 - FORCE RLS on every tenanted table.
-- Policies match on `app.tenant_id` GUC OR `app.platform_admin = 'on'`.
+- Policies match on `app.tenant_id` GUC OR `app.platform_admin = 'on'`
+  (the OR is dropped by `20261017100000_rls_plain_tenant_policies`).
 - Self-policy on `Tenant` and `PlatformAdmin` tables.
 
 ### `packages/db/migrations/20260507020000_app_role.ts`
@@ -364,7 +367,8 @@ Original spec preserved below for reference:
   acme: cannot read globex Partner rows.
 - Verify, with `app.tenant_id` unset: cannot read any Partner rows
   (default deny).
-- Verify, with `app.platform_admin = 'on'`: can read both tenants.
+- Verify, with `app.platform_admin = 'on'`: still scoped to one tenant
+  (the override is retired; the privileged pool reads both).
 - Verify FORCE RLS: even table owner (privileged role) is subject to
   policies when the GUC is set.
 - Verify the WITH CHECK clause: insert with mismatched tenantId fails.

@@ -319,7 +319,7 @@ describe.skipIf(skipIntegration)('manual-rail payout webhooks fire only after th
       vi.mocked(dispatchEvent).mock.calls.filter((c) => c[1] === 'payout.created').map((c) => c[0]);
     const emptyRun = (): PayoutRunResult => ({
       runId: ulid(), mode: 'selfhost', payouts: [], skippedBelowThreshold: [], skippedUnfunded: [],
-      pendingNotifications: [],
+      heldForClawback: [], pendingNotifications: [],
     });
     const runs: Array<{ tenantId: string; announcedBefore: string[] }> = [];
     vi.mocked(runPayouts).mockImplementation(async (trx, tenantId) => {
