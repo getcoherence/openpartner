@@ -32,6 +32,7 @@ import { handleFundingEvent, InboxEventHeldError } from '../funding/webhook.js';
 import { mirrorHostedBillingState, type MirroredSubscriptionStatus } from '../billing-plan.js';
 import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
 import { getMode } from '../stripe.js';
+import { fromStripeMinor } from '../stripe-amounts.js';
 import { getTenancyMode } from '../tenancy.js';
 import { dispatchCommissionEvents } from '../commission-events.js';
 
@@ -1095,8 +1096,8 @@ async function mapStripeEvent(
       return {
         userId,
         type: 'invoice_paid',
-        value: invoice.amount_paid / 100,
-        currency: invoice.currency ?? undefined,
+        value: fromStripeMinor(invoice.amount_paid, invoice.currency),
+        currency: invoice.currency?.toUpperCase() ?? undefined,
         // Captured for refund/dispute lookup. Without these, charge.refunded
         // can't find the original Event to walk back to its Commissions.
         metadata: {
@@ -1145,8 +1146,8 @@ async function mapStripeEvent(
       return {
         userId,
         type: 'refund',
-        value: -(charge.amount_refunded / 100),
-        currency: charge.currency ?? undefined,
+        value: -fromStripeMinor(charge.amount_refunded, charge.currency),
+        currency: charge.currency?.toUpperCase() ?? undefined,
         metadata: {
           stripeChargeId: charge.id,
           ...(invoiceId ? { stripeInvoiceId: invoiceId } : {}),
@@ -1185,8 +1186,8 @@ async function mapStripeEvent(
       return {
         userId,
         type: 'dispute_created',
-        value: -(dispute.amount / 100),
-        currency: dispute.currency ?? undefined,
+        value: -fromStripeMinor(dispute.amount, dispute.currency),
+        currency: dispute.currency?.toUpperCase() ?? undefined,
         metadata: {
           stripeDisputeId: dispute.id,
           ...(chargeId ? { stripeChargeId: chargeId } : {}),
@@ -1206,8 +1207,8 @@ async function mapStripeEvent(
       return {
         userId,
         type: 'invoice_payment_failed',
-        value: -(invoice.amount_due / 100),
-        currency: invoice.currency ?? undefined,
+        value: -fromStripeMinor(invoice.amount_due, invoice.currency),
+        currency: invoice.currency?.toUpperCase() ?? undefined,
         metadata: {
           stripeInvoiceId: invoice.id,
           attemptCount: invoice.attempt_count,
@@ -1459,8 +1460,8 @@ function checkoutPaymentRevenue(session: Stripe.Checkout.Session, userId: string
   return {
     userId,
     type: 'invoice_paid',
-    value: amount / 100,
-    currency: session.currency ?? undefined,
+    value: fromStripeMinor(amount, session.currency),
+    currency: session.currency?.toUpperCase() ?? undefined,
     externalEventId: session.id,
     metadata: {
       stripeCheckoutSessionId: session.id,

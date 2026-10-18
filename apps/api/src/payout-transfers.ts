@@ -41,6 +41,7 @@ import type Stripe from 'stripe';
 import type { Knex } from 'knex';
 import { TABLES, type CommissionRow, type PartnerRow, type PayoutRow } from '@openpartner/db';
 import { requireStripe } from './stripe.js';
+import { centsToStripeMinor, majorToCents, toStripeMinor } from './stripe-amounts.js';
 import { dispatchEvent } from './webhook-dispatcher.js';
 import type { WebhookPayload } from './openapi/webhook-events.js';
 import { dispatchCommissionEvents } from './commission-events.js';
@@ -105,7 +106,13 @@ export interface PayoutTransferMeta {
   keyGeneration?: number;
   /** Frozen at plan time — the destination can't drift mid-flight. */
   destinationAccountId: string;
-  /** Frozen at plan time; equals the sum of the claimed commissions. */
+  /** Frozen at plan time; equals the sum of the claimed commissions, in
+   *  Stripe's integer form for the payout currency (¥1,000 is 1000, KWD
+   *  1.23 is 1230; stripe-amounts.ts). It is posted as-is and is what
+   *  reconciliation matches a found transfer against. Intents frozen
+   *  before the form was currency-aware hold hundredths; that is the same
+   *  number for two-decimal currencies, and preflight abandons any other
+   *  before it is posted. */
   amountMinor: number;
   mode: string;
   attempts: number;
@@ -394,8 +401,14 @@ async function preflight(
   // changes what we owe. The frozen amount is now wrong, so drop the
   // intent and let the next planning run regroup what's still approved.
   if (claimed.some((c) => c.status !== 'approved')) return 'commission_set_changed';
-  const total = claimed.reduce((s, c) => s + Math.round(Number(c.amount) * 100), 0);
-  if (total !== Number(meta.amountMinor)) return 'commission_amount_changed';
+  // Compared in the unit the planner froze. A legacy intent that froze
+  // hundredths for a zero- or three-decimal currency can't match the
+  // converted total (¥2 is 2, not 200), so it is abandoned here, before
+  // anything reaches Stripe, and the next run replans it correctly.
+  const totalCents = claimed.reduce((s, c) => s + majorToCents(c.amount), 0);
+  if (centsToStripeMinor(totalCents, payout.currency) !== Number(meta.amountMinor)) {
+    return 'commission_amount_changed';
+  }
 
   const partner = (await db<PartnerRow>(TABLES.Partner)
     .where({ id: payout.partnerId })
@@ -1039,7 +1052,8 @@ export async function listTransferGroup(
 }
 
 /**
- * The amount this intent froze at plan time, in minor units — or null when
+ * The amount this intent froze at plan time, in Stripe's integer form for
+ * the payout currency (the unit it was posted in) — or null when
  * nothing trustworthy exists. `metadata` is unconstrained jsonb, and
  * Number() coercion accepted booleans: `amountMinor: true` became 1, and a
  * one-cent transfer then validated against a $50 payout (round 10). Only
@@ -1050,8 +1064,8 @@ function frozenAmountMinor(meta: PayoutTransferMeta, row: PayoutRow): number | n
   if (typeof meta.amountMinor === 'number' && Number.isFinite(meta.amountMinor)) {
     return meta.amountMinor;
   }
-  const fromRow = Math.round(Number(row.amount) * 100);
-  return Number.isFinite(fromRow) ? fromRow : null;
+  const fromRow = Number(row.amount);
+  return Number.isFinite(fromRow) ? toStripeMinor(fromRow, row.currency) : null;
 }
 
 /**

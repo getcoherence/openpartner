@@ -126,7 +126,7 @@ describe.skipIf(skipIntegration)('funding reservation', () => {
     const result = await db.transaction(async (trx) => {
       expect(await tryTenantPayoutLock(trx, TENANT)).toBe(true);
       return reserveFundingBatch(trx, TENANT, 'usd', [
-        { partnerId, commissionIds: ids, amountMinor: toMinor('120.00') },
+        { partnerId, commissionIds: ids, amountMinor: toMinor('120.00', 'usd') },
       ]);
     });
     expect(result.skipped).toBeNull();

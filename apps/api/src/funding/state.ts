@@ -9,11 +9,13 @@
 
 import type { Knex } from 'knex';
 import { TABLES, type FundingBatchStatus, type HostedFundingBatchRow } from '@openpartner/db';
+import { stripeMinorToMajorString, toStripeMinor } from '../stripe-amounts.js';
 
 export const FUNDING_TIMEOUT_DAYS = 10;
 export const TRANSFER_DEADLINE_DAYS = 14;
 /** Platform floor per batch (founder decision) — below this, commissions
- *  roll forward instead of generating a paperwork-sized bank debit. */
+ *  roll forward instead of generating a paperwork-sized bank debit.
+ *  Minor units of LAUNCH_CURRENCY; a new currency needs its own floor. */
 export const BATCH_FLOOR_MINOR = 2_500; // $25.00
 /** Launch is USD + ACH only (spec §12). */
 export const LAUNCH_CURRENCY = 'usd';
@@ -26,17 +28,17 @@ export function fundingEnabled(): boolean {
   return process.env.HOSTED_FUNDING_ENABLED === '1';
 }
 
-/** Major-unit decimal string/number → integer minor units (USD/GBP: ×100).
- *  Throws on NaN — money math never guesses. */
-export function toMinor(amount: string | number): number {
-  const n = typeof amount === 'number' ? amount : Number(amount);
-  if (!Number.isFinite(n)) throw new Error(`non-numeric amount: ${amount}`);
-  return Math.round(n * 100);
+/** Major-unit decimal string/number → Stripe's integer amount for the
+ *  currency (USD/GBP ×100, JPY ×1, KWD ×1000; stripe-amounts.ts). Every
+ *  *Minor column in the funding tables is in this form, because each one
+ *  is charged, transferred or matched against Stripe as-is. Throws on
+ *  NaN — money math never guesses. */
+export function toMinor(amount: string | number, currency: string): number {
+  return toStripeMinor(amount, currency);
 }
 
-export function minorToMajorString(minor: number | string): string {
-  const n = typeof minor === 'string' ? Number(minor) : minor;
-  return (n / 100).toFixed(2);
+export function minorToMajorString(minor: number | string, currency: string): string {
+  return stripeMinorToMajorString(minor, currency);
 }
 
 /**

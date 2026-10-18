@@ -677,9 +677,10 @@ These are decisions, not oversights — each is documented where it lives.
   `duplicate_review` payout. Releasing automatically could permit a second
   debit, so manual is the safe default — but the only tool today is SQL.
   This is the most valuable follow-up.
-- **Zero-decimal currencies**: `amount * 100` is wrong for JPY. Pre-existing
-  and platform-wide (`payouts.ts` and `funding/state.ts:toMinor`), so it
-  wants its own PR.
+- ~~**Zero-decimal currencies**: `amount * 100` is wrong for JPY.~~ Fixed
+  (Oct 2026): `apps/api/src/stripe-amounts.ts` converts at every Stripe
+  boundary (webhook ingest, payout intents and transfers, funding, coupon
+  `amount_off`) for zero-, two- and three-decimal currencies.
 - **`transfer.updated` ignores `amount_reversed`**, so a partial reversal can
   flip a payout back to `paid`. Pre-existing.
 - **Export gaps**: `Tenant`, `Config`, `PartnerPostback`, `BrandAsset`,
