@@ -95,8 +95,12 @@ describe.skipIf(skipIntegration)('POST /attribution/refunds — full refunds', (
       { trigger: 'every', type: 'fixed', value: 5 },
     ]);
     const eventId = await convert(clickId, { value: 100, externalEventId: 'order-1' });
-    const [percent, fixed] = await commissionsOf(eventId);
-    expect([percent!.amount, fixed!.amount]).toEqual(['10.00', '5.00']);
+    // By amount, not position: both commissions are written in the same
+    // millisecond, so their ULID order is random.
+    const accrued = await commissionsOf(eventId);
+    expect(accrued.map((c) => c.amount).sort()).toEqual(['10.00', '5.00']);
+    const percent = accrued.find((c) => c.amount === '10.00');
+    const fixed = accrued.find((c) => c.amount === '5.00');
     await db(TABLES.Commission).where({ id: fixed!.id }).update({ status: 'approved' });
     vi.mocked(dispatchEvent).mockClear();
 
@@ -115,10 +119,9 @@ describe.skipIf(skipIntegration)('POST /attribution/refunds — full refunds', (
       actionRequired: false,
     });
     expect(res.body.replayed).toBeUndefined();
-    expect(res.body.commissions.map((c: Record<string, unknown>) => [c.commissionId, c.status, c.keptAmount, c.currentCommissionId])).toEqual([
-      [percent!.id, 'reversed', '0.00', null],
-      [fixed!.id, 'reversed', '0.00', null],
-    ]);
+    expect(res.body.commissions.map((c: Record<string, unknown>) => [c.commissionId, c.status, c.keptAmount, c.currentCommissionId])).toEqual(
+      accrued.map((c) => [c.id, 'reversed', '0.00', null]),
+    );
     expect((await commissionsOf(eventId)).map((c) => c.status)).toEqual(['reversed', 'reversed']);
 
     // The raw corrective event: negative, linked to its conversion, never attributed.
@@ -187,7 +190,9 @@ describe.skipIf(skipIntegration)('POST /attribution/refunds — partial refunds'
       { trigger: 'every', type: 'fixed', value: 5 },
     ]);
     const eventId = await convert(clickId, { value: 100, externalEventId: 'order-2' });
-    const [percent] = await commissionsOf(eventId);
+    // By amount, not position: both commissions are written in the same
+    // millisecond, so their ULID order (and the response's) is random.
+    const percent = (await commissionsOf(eventId)).find((c) => c.amount === '20.00');
     await db(TABLES.Commission).where({ id: percent!.id }).update({ status: 'approved' });
     vi.mocked(dispatchEvent).mockClear();
 
@@ -195,15 +200,15 @@ describe.skipIf(skipIntegration)('POST /attribution/refunds — partial refunds'
     const first = await refund({ conversionExternalEventId: 'order-2', amount: 30, externalEventId: 'rf-2a' });
     expect(first.status).toBe(200);
     expect(first.body).toMatchObject({ amount: '30.00', refundedAmount: '30.00', fullRefund: false, actionRequired: false });
-    const [p1, f1] = first.body.commissions as Array<Record<string, string>>;
+    const [p1, f1] = byOriginalAmount(first.body.commissions);
     expect([p1!.status, p1!.originalAmount, p1!.keptAmount, p1!.currentStatus]).toEqual(['reduced', '20.00', '14.00', 'approved']);
     expect([f1!.status, f1!.originalAmount, f1!.keptAmount, f1!.currentStatus]).toEqual(['reduced', '5.00', '3.50', 'accrued']);
 
     const rows = await commissionsOf(eventId);
-    expect(rows.map((c) => [c.status, c.amount])).toEqual([
+    expect(rows.map((c) => [c.status, c.amount]).sort((a, b) => Number(b[1]) - Number(a[1]))).toEqual([
       ['reversed', '20.00'],
-      ['reversed', '5.00'],
       ['approved', '14.00'],
+      ['reversed', '5.00'],
       ['accrued', '3.50'],
     ]);
     const replacement = rows.find((c) => c.id === p1!.currentCommissionId)!;
@@ -230,7 +235,7 @@ describe.skipIf(skipIntegration)('POST /attribution/refunds — partial refunds'
     // 20 more: 50 refunded in all keeps 50% of the ORIGINAL amounts.
     const second = await refund({ conversionEventId: eventId, amount: 20, externalEventId: 'rf-2b' });
     expect(second.body.refundedAmount).toBe('50.00');
-    expect(second.body.commissions.map((c: Record<string, string>) => c.keptAmount)).toEqual(['10.00', '2.50']);
+    expect(byOriginalAmount(second.body.commissions).map((c) => c.keptAmount)).toEqual(['10.00', '2.50']);
     expect(await liveAmounts(eventId)).toEqual(['10.00', '2.50']);
 
     // More than is left is refused; the rest (no amount) is a full refund.
@@ -639,6 +644,13 @@ async function liveAmounts(eventId: string): Promise<string[]> {
     .filter((c) => c.status !== 'reversed')
     .map((c) => c.amount as string)
     .sort((a, b) => Number(b) - Number(a));
+}
+
+/** A refund response's commissions, largest original amount first. The
+ *  response lists them in id order, which is random for commissions
+ *  written in the same millisecond (see liveAmounts). */
+function byOriginalAmount(commissions: Array<Record<string, string>>): Array<Record<string, string>> {
+  return [...commissions].sort((a, b) => Number(b.originalAmount) - Number(a.originalAmount));
 }
 
 /** Put commissions in a manual payout, as the planner does. */
