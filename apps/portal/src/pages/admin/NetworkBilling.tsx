@@ -75,8 +75,8 @@ function BundledPanel() {
       <h3 style={{ marginTop: 0 }}>Bundled with your main plan ✓</h3>
       <p>
         You're on a hosted plan (Flex or Revshare) on app.openpartner.dev. Network access is included
-        — no separate Network billing. The 3% on Network-originated payouts is folded into your main-plan
-        invoice.
+        at no extra cost: partners who found you through the marketplace are billed exactly like
+        partners you invited, with no separate Network fee.
       </p>
       <p style={{ color: theme.textMuted, fontSize: 13 }}>
         Switching to self-hosted later? Re-connect to the Network from your new instance and you'll get

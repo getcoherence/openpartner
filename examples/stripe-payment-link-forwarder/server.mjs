@@ -5,11 +5,10 @@
 // Guide: docs/headless-referral.md#stripe-payment-links-on-openpartner-cloud
 import { createServer } from 'node:http';
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { fromStripeAmount } from './stripe-amount.mjs';
 
 const { STRIPE_WEBHOOK_SECRET, OPENPARTNER_API_URL, OPENPARTNER_API_KEY, PORT = '3001' } = process.env;
 if (!STRIPE_WEBHOOK_SECRET || !OPENPARTNER_API_URL || !OPENPARTNER_API_KEY) throw new Error('Set STRIPE_WEBHOOK_SECRET, OPENPARTNER_API_URL and OPENPARTNER_API_KEY');
-const ZERO_DECIMAL = new Set(['BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF']);
-const THREE_DECIMAL = new Set(['BHD', 'JOD', 'KWD', 'OMR', 'TND']);
 const reply = (res, status, text) => res.writeHead(status, { 'content-type': 'text/plain' }).end(text);
 
 // Stripe-Signature: t=<unix>,v1=<hex HMAC-SHA256 of "<t>.<raw body>">, keyed with the whsec_ secret.
@@ -33,8 +32,7 @@ createServer(async (req, res) => {
   if (!wanted || !session.client_reference_id || session.payment_status !== 'paid') return reply(res, 200, 'ignored');
 
   const currency = session.currency.toUpperCase();
-  const minorUnits = ZERO_DECIMAL.has(currency) ? 1 : THREE_DECIMAL.has(currency) ? 1000 : 100;
-  const conversion = { clickId: session.client_reference_id, type: 'invoice_paid', value: session.amount_total / minorUnits, currency, externalEventId: session.id };
+  const conversion = { clickId: session.client_reference_id, type: 'invoice_paid', value: fromStripeAmount(session.amount_total, currency), currency, externalEventId: session.id };
   let answer;
   try {
     answer = await fetch(`${OPENPARTNER_API_URL}/attribution/conversions`, {
