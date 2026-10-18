@@ -261,6 +261,12 @@ is an FK to it) can't simply be added to the bundle.
   Exporting them needs an FK decision first:
   `HostedFundingAuthorization.adminId` references `Admin`, which is
   deliberately never exported.
+- `UsageLedger` — what the hosted platform fee billed or credited for each
+  conversion (apps/api/src/usage-ledger.ts). It's OpenPartner's invoice
+  basis for the brand, not the brand's attribution data, and it means
+  nothing on a self-hosted instance, which isn't metered. Anything that
+  needs it can re-derive the billable value from the exported Event,
+  Attribution and Commission rows.
 - `OperatorRecoveryRequest` — the operator-recovery decision ledger
   (apps/api/src/operator-recovery.ts). Operational sidecar in the same
   category: an auditable record of hosted/self-host *operations*, not of
