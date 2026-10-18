@@ -267,27 +267,46 @@ app.
 
 ### 2. Upload the app
 
+Done Oct 18 2026: version 0.1.0 is uploaded to the **OpenPartner Apps** account
+(`acct_1URepJLKsWusNm7Z`). For later versions, bump `version` in
+`stripe-app.json` and repeat the last command.
+
 ```bash
-stripe login                     # log in to the NEW developer account
+stripe login --interactive --project-name openpartner-apps   # paste the live secret key
 stripe plugin install apps
 cd stripe-app
 npm install
-stripe apps upload
+stripe apps upload --live --project-name openpartner-apps
 ```
 
-The first upload creates the app from `stripe-app.json`: id
-`dev.openpartner.attribution`, name, permissions and redirect URIs. If Stripe
-says the id is taken, change `id` and upload again. Before App Review, replace
-the placeholder `openpartner_icon.png` (a 300×300 PNG) with the real mark.
+Things that tripped the first upload:
 
-Redirect URIs in the manifest:
+- **CLI version.** CLI 1.40 can't install plugins: its plugin index is gone.
+  Use 1.54 or later.
+- **`--live` is required.** Without it, uploads go to test mode. A live upload
+  records this account as the app's developer account, which a public app
+  needs.
+- **Log in with a key, not the browser flow.** Since 1.54, the browser login
+  saves an OAuth session that the apps plugin can't read yet ("your live mode
+  API key needs to be re-configured"). `stripe login --interactive` with the
+  account's live secret key works. That's the same key as
+  `STRIPE_APP_SECRET_KEY`.
+- **The Stripe Apps Agreement.** The account must accept it in the Dashboard
+  first. The CLI prints the link.
+- **Redirect URIs must be HTTPS**, in test mode too. A `localhost` URI is
+  rejected.
+- **The CLI rewrites the manifest** into its canonical layout (`$schema`, key
+  order). Commit that.
 
-- `https://app.openpartner.dev/api/stripe-app/oauth/callback`: production.
-  Live-mode links require HTTPS.
-- `http://localhost:5673/api/stripe-app/oauth/callback`: local dev, test mode
-  only, through the portal's `/api` proxy.
+The first upload created the app from `stripe-app.json`: id
+`dev.openpartner.attribution`, name, permissions and redirect URIs. The id can't
+change now. Before App Review, replace the placeholder `openpartner_icon.png`
+(a 300×300 PNG) with the real mark.
 
-Add a staging URI here if staging should connect too, then upload again.
+The only redirect URI in the manifest is
+`https://app.openpartner.dev/api/stripe-app/oauth/callback` (production). To
+connect from local dev or staging, add that host's HTTPS callback, e.g. through
+a tunnel, set `STRIPE_APP_REDIRECT_URI` to match, and upload a new version.
 
 ### 3. Webhook endpoints (one per environment)
 
