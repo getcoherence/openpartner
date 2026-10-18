@@ -3,7 +3,7 @@ import type { Knex } from 'knex';
 import { z } from 'zod';
 import { ulid } from 'ulid';
 import { TABLES, type ApiKeyRow, type CommissionSubRule, type PartnerRow, type SessionRow } from '@openpartner/db';
-import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
+import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin, scopedKeyLacks } from '../auth.js';
 import { issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
 import { buildMagicLinkUrl, partnerInviteEmail, partnerRevokedEmail } from '../email-templates.js';
@@ -23,6 +23,7 @@ import { commissionSlabFields, currencyCodeSchema, refineCommissionSubRule } fro
 import { vetApprovalSnapshot } from '../commission-slabs.js';
 import { isPendingReview } from '../partner-review.js';
 import { findPartnerCommission, legacyRuleColumns, upsertPartnerCommission } from '../partner-commission.js';
+import { endPortalAccess, readPartnerAccessSettings } from '../partner-portal-access.js';
 
 // Admin-set commission terms for a partner: the body of both override
 // PUTs (partner-wide and program-scoped) and of each POST /partners
@@ -69,6 +70,13 @@ export const createSchema = z.object({
   // Partner row on behalf of an external creator network). Default is
   // "invite them" since that's the intent of the admin UI.
   sendInvite: z.boolean().optional(),
+  /** May the partner sign in to the partner portal? false = no magic
+   *  links, no sessions, no portal email (partner-portal-access.ts), for a
+   *  headless program whose own app is the partner's only view. An invite
+   *  needs it, so `false` requires `sendInvite: false`. Omitted: true for
+   *  an invited partner (and one the OpenPartner Network provisions), the
+   *  tenant's default (`GET /config/partner-access`) for anyone else. */
+  portalAccess: z.boolean().optional(),
   /** Programs (campaigns) this partner can create share-links for.
    *  Omitted = grant access to ALL current campaigns (preserves the
    *  pre-PartnerCampaign behavior). Empty array = grant nothing
@@ -144,18 +152,42 @@ export const createSchema = z.object({
 
 export const partnersRouter = Router();
 
+/** What `partners:create` may not do on POST /partners, which needs
+ *  `partners:write`: send the invite (the default!) or set commission
+ *  terms. That's what makes it safe as an in-app integration's runtime
+ *  key: it can't email anyone, and a leak can't mint a 100% partner. */
+function beyondCreateScope(body: z.infer<typeof createSchema>): string | null {
+  if (body.sendInvite !== false) return 'A partners:create key creates partners without an invite: send "sendInvite": false.';
+  if (body.commissionSnapshot || body.programCommissions) {
+    return 'A partners:create key cannot set commission terms (commissionSnapshot, programCommissions).';
+  }
+  return null;
+}
+
 /**
  * Create a partner and, by default, send them an invite magic link. The
  * partner starts with `activatedAt = null`; when they click the link,
  * verify flips that to now() and issues a session. Admin never sees a
  * partner-facing credential.
+ *
+ * `partners:create` reaches this too, limited by beyondCreateScope.
  */
-partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requireAdmin, async (req, res) => {
+partnersRouter.post('/partners', requireAuth, grantScope('partners:write', 'partners:create'), requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = createSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
+  if (scopedKeyLacks(req, 'partners:write')) {
+    const detail = beyondCreateScope(body.data);
+    if (detail) return res.status(403).json({ error: 'forbidden_scope', required: 'partners:write', detail });
+  }
+
   const sendInvite = body.data.sendInvite !== false;
+  // The invite is a sign-in link, so it can't go to a partner who may not
+  // sign in.
+  if (sendInvite && body.data.portalAccess === false) {
+    return res.status(400).json({ error: 'invite_requires_portal_access' });
+  }
   const email = body.data.email.toLowerCase();
   const id = ulid();
 
@@ -221,6 +253,15 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
     termed.add(t.programId);
   }
 
+  // Portal access when the caller didn't say. An invited partner is going
+  // to sign in. So is a creator the Network provisions: they're a Network
+  // member, not a brand's in-app customer. Anyone else created without an
+  // invite gets the tenant's default (partner-portal-access.ts).
+  const fromNetwork = await isNetworkFederationCall(db, tenantId, req.principal, body.data.metadata);
+  const portalAccess =
+    body.data.portalAccess ??
+    (sendInvite || fromNetwork ? true : (await readPartnerAccessSettings(db, tenantId)).uninvitedPortalAccess);
+
   let partner;
   try {
     [partner] = await db<PartnerRow>(TABLES.Partner)
@@ -233,6 +274,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
         // sendInvite=false means the caller is responsible for activating
         // (federation client, admin seeding, etc); skip the pending state.
         activatedAt: sendInvite ? null : new Date(),
+        portalAccess,
       })
       .returning('*');
   } catch (err) {
@@ -354,7 +396,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
   // registered federation key) is already a member, so it counts as
   // consented and syncs back. Fire-and-forget: a Network outage queues
   // the push in NetworkOutbox.
-  if (await isNetworkFederationCall(db, tenantId, req.principal, body.data.metadata)) {
+  if (fromNetwork) {
     await grantNetworkConsent(db, tenantId, id, 'network_offering');
     await syncPartnerToNetwork(db, tenantId, partner as PartnerRow);
   }
@@ -372,8 +414,22 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
     name: body.data.name,
     activatedAt: partnerRow.activatedAt ? partnerRow.activatedAt.toISOString() : null,
     invited: sendInvite,
+    portalAccess,
     programIds,
   } satisfies WebhookPayload<'partner.created'>);
+  // A partner created without an invite is active now, so this is their
+  // activation; an invited partner's comes from magic-link verify when
+  // they accept. Either way it fires once. Subscribers that greet new
+  // partners can tell the two apart by `invited`.
+  if (partnerRow.activatedAt) {
+    dispatchEvent(tenantId, 'partner.activated', {
+      partnerId: id,
+      email,
+      name: body.data.name,
+      activatedAt: partnerRow.activatedAt.toISOString(),
+      invited: false,
+    } satisfies WebhookPayload<'partner.activated'>);
+  }
   if ((body.data.metadata as Record<string, unknown> | undefined)?.source === 'openpartner_network') {
     dispatchEvent(tenantId, 'partnership.approved', {
       partnerId: id,
@@ -402,6 +458,10 @@ partnersRouter.post('/partners/:id/invite', requireAuth, grantScope('partners:wr
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });
   if (partner.activatedAt) return res.status(409).json({ error: 'already_activated' });
+  // The invite is a sign-in link: turn portal access on first
+  // (PATCH /partners/:id). Checked before the approval below, so a refused
+  // call approves nobody.
+  if (!partner.portalAccess) return res.status(409).json({ error: 'portal_access_disabled' });
 
   const approved = isPendingReview(partner);
   if (approved) {
@@ -449,17 +509,21 @@ partnersRouter.post('/partners/:id/invite', requireAuth, grantScope('partners:wr
 
 export const revokeSchema = z.object({
   reason: z.string().max(500).optional(),
-  // Default true: industry-standard partner-program norm is to notify.
-  // Admin unchecks for fraud cases where tipping the partner off is
-  // counterproductive.
-  notify: z.boolean().optional().default(true),
+  // Default: notify a partner who has portal access (the industry-standard
+  // partner-program norm); admin unchecks for fraud cases where tipping
+  // the partner off is counterproductive. A partner without portal access
+  // is a headless program's customer who has never heard from OpenPartner,
+  // so a suspension email from us would come out of nowhere: they're only
+  // told when the caller asks for it.
+  notify: z.boolean().optional(),
 });
 
 /**
  * Suspend a partner. Flips revokedAt, revokes all of their sessions so
  * they're kicked out mid-request, leaves historical commissions
  * untouched. Future attribution skips them; router flags clicks on their
- * links as 'revoked'. Sends a notification email unless notify=false.
+ * links as 'revoked'. Sends a notification email unless notify=false (or,
+ * for a partner without portal access, unless notify=true).
  */
 partnersRouter.post('/partners/:id/revoke', requireAuth, grantScope('partners:write'), requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
@@ -499,7 +563,7 @@ partnersRouter.post('/partners/:id/revoke', requireAuth, grantScope('partners:wr
   // admin if they care.
   let notified = false;
   let notifyError: string | null = null;
-  if (body.data.notify) {
+  if (body.data.notify ?? partner.portalAccess) {
     try {
       const tmpl = partnerRevokedEmail(partner.name, reason);
       await getMailer().send({ db, tenantId }, {
@@ -605,6 +669,39 @@ partnersRouter.get('/partners/:id', requireAuth, grantScope('partners:read'), re
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });
   res.json(partner);
+});
+
+/** Fields an admin can change on an existing partner. Strict, so a field
+ *  that isn't editable here is a 400 rather than silently ignored. */
+export const updateSchema = z
+  .object({
+    /** See createSchema.portalAccess. Turning it off ends the partner's
+     *  sessions and unused sign-in links at once; turning it on sends
+     *  nothing (an active partner can then request a link at sign-in, a
+     *  pending one needs POST /partners/:id/invite). */
+    portalAccess: z.boolean().optional(),
+  })
+  .strict();
+
+partnersRouter.patch('/partners/:id', requireAuth, grantScope('partners:write'), requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = updateSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  if (!partner) return res.status(404).json({ error: 'not_found' });
+
+  let updated = partner;
+  if (body.data.portalAccess !== undefined && body.data.portalAccess !== partner.portalAccess) {
+    const rows = (await db<PartnerRow>(TABLES.Partner)
+      .where({ id: partner.id })
+      .update({ portalAccess: body.data.portalAccess, updatedAt: new Date() })
+      .returning('*')) as PartnerRow[];
+    updated = rows[0] ?? partner;
+  }
+  // Also when it was already off: whatever slipped in since (a link sent
+  // a moment before, a session from a direct DB edit) ends here too.
+  if (body.data.portalAccess === false) await endPortalAccess(db, tenantId, partner.id);
+  res.json(updated);
 });
 
 // Per-partner commission snapshot: the PARTNER-WIDE PartnerCommission row

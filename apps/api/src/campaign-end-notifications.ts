@@ -114,13 +114,16 @@ async function notifyOne(campaign: ProgramRow): Promise<void> {
     // Partners with at least one Link in this campaign. Joining
     // through Link rather than PartnerCampaign on purpose — only
     // partners who actually promoted should get the email; passive
-    // grants without any posted Link are noise.
+    // grants without any posted Link are noise. Not partners without
+    // portal access: the email's link points into the portal, and a
+    // headless program tells its own customers (partner-portal-access.ts).
     const linkPartners = (await trx
       .from(TABLES.Link)
       .join(TABLES.Partner, `${TABLES.Partner}.id`, `${TABLES.Link}.partnerId`)
       .where(`${TABLES.Link}.programId`, campaign.id)
       .whereNull(`${TABLES.Partner}.revokedAt`)
       .whereNotNull(`${TABLES.Partner}.activatedAt`)
+      .where(`${TABLES.Partner}.portalAccess`, true)
       .distinct(
         `${TABLES.Partner}.id`,
         `${TABLES.Partner}.email`,

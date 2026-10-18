@@ -161,11 +161,14 @@ export async function resolveSession(
   // slipped through, reject here too.
   // Scoped to the session's own tenant as well: on the privileged pool a
   // bare principalId lookup would happily match another tenant's row.
+  // A partner whose portal access is off has no session either, whatever
+  // turned it off (partner-portal-access.ts): this check is what holds even
+  // for a session that outlived the switch.
   if (row.principalKind === 'partner') {
     const partner = (await db('Partner')
       .where({ id: row.principalId, tenantId: row.tenantId })
-      .first()) as { revokedAt: Date | null } | undefined;
-    if (!partner || partner.revokedAt) return null;
+      .first()) as { revokedAt: Date | null; portalAccess: boolean } | undefined;
+    if (!partner || partner.revokedAt || partner.portalAccess === false) return null;
   } else if (row.principalKind === 'admin') {
     const admin = (await db('Admin')
       .where({ id: row.principalId, tenantId: row.tenantId })

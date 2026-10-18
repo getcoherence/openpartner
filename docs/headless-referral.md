@@ -51,24 +51,55 @@ Use two keys, both server-side only:
 
 ```bash
 curl -s -X POST $OP/api-keys/scoped -H "Authorization: Bearer $ADMIN" -H 'content-type: application/json' \
-  -d '{"label":"in-app referral","scopes":["partners:write","partners:read","links:write","links:read","commissions:read","payouts:read","events:write"]}'
+  -d '{"label":"in-app referral","scopes":["partners:create","partners:read","links:write","links:read","commissions:read","payouts:read","events:write"]}'
 # → { "id": "...", "plaintext": "op_...", "scopes": [...] }   plaintext is shown once
 ```
 
 | Scope | Used for |
 | --- | --- |
-| `partners:write` | `POST /partners`, `POST /import/partners-csv` |
+| `partners:create` | `POST /partners` with `sendInvite: false`, and nothing else. It can't send an invite, set commission terms, change, revoke or import partners. |
 | `partners:read` | `GET /partners`, `GET /partners/{id}`, `/dashboard`, `/timeseries`, `/events`, `/customers`, `/breakdowns` |
 | `links:write` / `links:read` | `POST` / `GET /partners/{id}/links` |
 | `commissions:read` | `GET /partners/{id}/commissions` |
 | `payouts:read` | `GET /partners/{id}/payouts` |
 | `events:write` | `POST /attribution/events`, `POST /attribution/conversions`, `POST /attribution/refunds`, `POST /coupons/redeem` |
 
+**Give the runtime key `partners:create`, not `partners:write`.** `partners:write` is the broad partner scope, meant for admin tools and Zapier-style integrations. Besides creating partners it unlocks:
+
+| With `partners:write` a key can also | Endpoint | Emails the partner? |
+| --- | --- | --- |
+| Create a partner **with an invite** (the default when `sendInvite` is omitted) | `POST /partners` | Yes, a sign-in link |
+| Set a partner's commission terms at creation | `POST /partners` (`commissionSnapshot`, `programCommissions`) | No |
+| Send or resend an invite | `POST /partners/{id}/invite` | Yes, a sign-in link |
+| Suspend a partner | `POST /partners/{id}/revoke` | Yes, unless `"notify": false` (partners without portal access: only with `"notify": true`) |
+| Turn a partner's portal access on or off | `PATCH /partners/{id}` | No |
+| Bulk-create partners | `POST /import/partners-csv` | No |
+| Mint and retire coupon codes, on programs with `partnersMayCustomizeCode` | `POST` / `DELETE /partners/{id}/coupons` | No |
+
+A `partners:create` key that asks for any of these gets `403 forbidden_scope` with `"required": "partners:write"`. Omitting `sendInvite` counts as asking for an invite, so a forgotten field fails loudly instead of emailing your customers. If your backend needs any of these (say, revoking a customer who closes their account), give that job its own `partners:write` key rather than widening the one your referral page uses.
+
 The full table, generated from the routes, is in the API reference under **Authentication**. A scoped key acts on every partner in your tenant, so **your backend must decide which partner a request is for from its own session, never from a parameter the browser sends.**
 
-## 1. Decide whether partners are offered the Network
+## 1. Decide what partners see of OpenPartner
 
-Do this before you create the first partner.
+Do both of these before you create the first partner, with the admin key. Each setting is per tenant.
+
+### The partner portal
+
+Every tenant has a hosted partner portal with a sign-in page. A customer who can sign in there sees their dashboard, commissions and links, and a prompt to connect Stripe. In an in-app program your page is their only view, so keep them out:
+
+```bash
+curl -s $OP/config/partner-access -H "Authorization: Bearer $ADMIN"
+# { "uninvitedPortalAccess": true }
+
+curl -s -X POST $OP/config/partner-access -H "Authorization: Bearer $ADMIN" \
+  -H 'content-type: application/json' -d '{"uninvitedPortalAccess": false}'
+# { "uninvitedPortalAccess": false }
+```
+
+Or use **Admin → Settings → Partner portal access**. From then on, a partner created with `sendInvite: false` and no `portalAccess`, or imported from CSV, has no portal access (step 3 says what that means). Invited partners, and creators the OpenPartner Network provisions, still get the portal. Partners that already exist keep what they have: change them one at a time with `PATCH /partners/{id}`, or on the Partners page. Also send `"portalAccess": false` on each create (step 3), so the setting is a safety net rather than the only guard.
+
+### The OpenPartner Network
 
 **What happens:** a partner's name and email reach the OpenPartner Network only if the partner opts in themselves. `POST /partners` never shares anyone, with or without an invite, and a brand can't opt in for a partner. Your own `metadata` on a partner is never sent. While your tenant offers the Network (`autoEnroll` on: the stored name for "offer the Network to my partners"), partners are asked: a checkbox on the join page, a one-time prompt on their first portal sign-in, and a setting in the portal. Hosted brands start with `autoEnroll: true`.
 
@@ -83,7 +114,7 @@ curl -s -X POST $OP/config/network -H "Authorization: Bearer $ADMIN" \
 # { "enabled": true, "autoEnroll": false, ... }
 ```
 
-Or use **Admin → Network** in the portal and switch off **Offer the Network to your partners**. The setting is per tenant.
+Or use **Admin → Network** in the portal and switch off **Offer the Network to your partners**.
 
 - With offering off, partners aren't asked and nothing is sent for anyone, whatever they chose earlier. Partners already on the Network stay there: turning it off doesn't unlink them.
 - **Reconnecting to the Network** (the Connect or one-click enroll buttons on Admin → Network) sets `autoEnroll` back to `true`. Check `GET /config/network` after any reconnect.
@@ -126,28 +157,40 @@ curl -s -X POST $OP/partners -H "Authorization: Bearer $KEY" -H 'content-type: a
   "email": "ada@example.com",
   "name": "Ada Lovelace",
   "sendInvite": false,
+  "portalAccess": false,
   "programIds": ["'$PROGRAM_ID'"],
   "metadata": { "appUserId": "user_123" }
 }'
-# 201 → { "id": "01J...", "activatedAt": "2026-10-16T...", "invited": false, ... }
+# 201 → { "id": "01J...", "activatedAt": "2026-10-16T...", "invited": false, "portalAccess": false, ... }
 ```
 
-- **`sendInvite: false`** makes the partner active immediately, and OpenPartner sends no email.
+- **`sendInvite: false`** makes the partner active immediately, and OpenPartner sends no email. A `partners:create` key must send it: leave it out and the call answers `403 forbidden_scope`.
+- **`portalAccess: false`** keeps the customer out of the hosted partner portal (see **Portal access** below). Omitted, it follows the tenant setting from step 1.
 - **Always pass `programIds`.** If you omit it, the partner is granted every program in the tenant. A coupon code is auto-minted for each granted program.
 - **Store the returned `id` on your user record.** On later page views, use it directly.
 - **`email` is unique per tenant.** A second create answers `409 email_taken`. Look the partner up with `GET /partners?email=ada@example.com` and **check its `metadata.appUserId` is this user before linking it**. If it isn't, the address belongs to someone else (another user, or a partner in another program), so don't link it. Only use email addresses your app has verified. The same lookup covers two first visits racing each other.
 - `metadata` is free-form JSON, returned on reads. Put your own ids there: your user id, your CRM record id.
 - On OpenPartner Cloud, creating partners needs an active plan (`402 plan_required`) and an approved brand (`403 brand_pending_review`).
 
-**Existing customers in bulk.** To give every current customer a referral account up front, use `POST /import/partners-csv` instead of one call per customer: `text/csv` with `email,name,metadata` columns, `?dryRun=true` first. It sends no email, never pushes to the Network, and skips emails that already exist, so re-running it is safe. Unlike `POST /partners` it grants **every** program in the tenant and mints no coupons, so run it while the referral program is your only program. Send large rosters in batches of a few thousand rows. You can also skip the import and create partners lazily on first visit, as above.
+**Existing customers in bulk.** To give every current customer a referral account up front, use `POST /import/partners-csv` with the admin key instead of one call per customer: `text/csv` with `email,name,metadata` columns, `?dryRun=true` first. It sends no email, fires no webhooks, never pushes to the Network, gives every partner the tenant's portal-access setting from step 1 (so turn that off first), and skips emails that already exist, so re-running it is safe. Unlike `POST /partners` it grants **every** program in the tenant and mints no coupons, so run it while the referral program is your only program. Send large rosters in batches of a few thousand rows. You can also skip the import and create partners lazily on first visit, as above.
 
-**Email and portal sign-in.** OpenPartner emails a headless partner in these cases:
-- `POST /partners/{id}/invite`, which sends a sign-in link.
-- `POST /partners/{id}/revoke`, which notifies by default. Pass `"notify": false`.
-- A program with an `endsAt`: seven days before the end, partners with a link on it get an "ending soon" email. Leave `endsAt` unset for an evergreen referral program.
-- **Anyone asks for a sign-in link.** A `sendInvite: false` partner is active, and the hosted portal's sign-in form (`POST /auth/signin`) emails a magic link to any active partner's address. Anyone who knows a customer's email can trigger that email, and the customer can then sign in to the hosted partner portal. There is no per-partner setting to turn this off yet. If it matters, use the non-deliverable addresses described under Privacy.
+**Portal access.** A partner without portal access (`portalAccess: false`) can't use the hosted partner portal at all:
+- The portal's sign-in form (`POST /auth/signin`) sends them nothing. It answers `{"ok": true}`, exactly as it does for an address it doesn't know, so it can't be used to find out who your customers are.
+- Sign-in links don't work for them, and any portal session they had ends.
+- OpenPartner can't invite them: `POST /partners/{id}/invite` answers `409 portal_access_disabled`.
+- Partner API keys (`POST /partners/{id}/api-keys`) keep working: they're API credentials, not portal access. That includes any key the partner minted in the portal while they had access, so revoke those with `DELETE /api-keys/{id}` when you turn access off.
 
-**Privacy.** OpenPartner stores the name and email you send, and nothing else about the customer. If you'd rather not share real addresses, any unique address works for a headless partner, for example `user_123@referrals.yourapp.invalid`. Such a partner can never receive OpenPartner email or sign in to the hosted partner portal. Then the `metadata.appUserId` check above is how you match records; the email no longer does it.
+Turn it on or off for one partner with `PATCH /partners/{id}` and `{"portalAccess": false}` (admin key or `partners:write`), or with the Portal column on Admin → Partners. Turning it off signs them out at once. Turning it on sends nothing; they can then request a link on the sign-in page.
+
+A partner **with** portal access and `sendInvite: false` is active, so anyone who knows their email can make the sign-in form email them a link, and they can then use the portal. Before `portalAccess` existed that was the only behaviour, and it's still the default for a tenant that hasn't changed the setting in step 1.
+
+**Email.** OpenPartner emails a partner without portal access only when you ask it to:
+- `POST /partners/{id}/revoke` notifies them only with `"notify": true`. (A partner with portal access is notified unless you pass `"notify": false`.)
+- The "program ending soon" email, sent seven days before a program's `endsAt`, links into the portal, so it skips them. Partners with portal access get it: leave `endsAt` unset on an evergreen referral program.
+
+**Webhooks.** Creating a partner fires `partner.created` and then, because a `sendInvite: false` partner is active at once, `partner.activated` with `"invited": false`. An invited partner fires `partner.activated` with `"invited": true` when they accept. If a Zapier flow or CRM workflow greets new partners on `partner.activated`, filter on `invited` so your in-app customers don't get a partner-program welcome.
+
+**Privacy.** OpenPartner stores the name and email you send, and nothing else about the customer. If you'd rather not share real addresses, any unique address works for a headless partner, for example `user_123@referrals.yourapp.invalid`. Such an address can never receive OpenPartner email, whatever the partner's settings. Then the `metadata.appUserId` check above is how you match records; the email no longer does it.
 
 ## 4. Create their share link
 
@@ -303,7 +346,7 @@ curl -s -X POST $OP/webhooks -H "Authorization: Bearer $ADMIN" -H 'content-type:
 # → { "endpoint": {...}, "secret": "whsec_..." }   the secret is shown once
 ```
 
-Events: `attribution.created`, `commission.accrued`, `commission.approved`, `commission.paid`, `commission.reversed`, `partner.created`, `partner.activated`, `partnership.approved`, `payout.created`, or `*` for all. Payload schemas are under **Webhook events** in the API reference.
+Events: `attribution.created`, `commission.accrued`, `commission.approved`, `commission.paid`, `commission.reversed`, `partner.created`, `partner.activated`, `partnership.approved`, `payout.created`, or `*` for all. Payload schemas are under **Webhook events** in the API reference. Every `POST /partners` with `sendInvite: false` fires both `partner.created` and `partner.activated` (`"invited": false`); see step 3.
 
 Each delivery is `POST {id, event, created, data}`, signed with HMAC-SHA256 over `<X-OpenPartner-Timestamp>.<raw body>`, keyed with the whole `whsec_…` secret:
 
@@ -484,7 +527,8 @@ Writing totals rather than adding each webhook's amount means a duplicate, misse
 ## Security checklist
 
 - [ ] OpenPartner API keys live only on your server: never in the browser, a mobile app, or front-end env vars. Partner keys (`POST /partners/{id}/api-keys`) are credentials too.
-- [ ] The runtime key is scoped, and the admin key isn't deployed.
+- [ ] The runtime key is scoped, with `partners:create` rather than `partners:write` (step 0), and the admin key isn't deployed.
+- [ ] Customers can't sign in to the hosted portal: `GET /config/partner-access` says `"uninvitedPortalAccess": false` (step 1), and each create sends `"portalAccess": false` (step 3).
 - [ ] Your backend takes the partner id from its own session, never from a request parameter. A scoped key can read every partner.
 - [ ] A partner found by email is linked to a user only when its `metadata.appUserId` matches (step 3), and only verified emails are used.
 - [ ] If customers shouldn't be asked to join the Network, offering is off (step 1), and you re-check it after any Network reconnect.
@@ -504,6 +548,7 @@ For an operator dashboard or storefront, the same API covers the admin side (adm
 | Who may promote what | `GET/POST /partners/{id}/programs`, `DELETE /partners/{id}/programs/{programId}` |
 | Find partners | `GET /partners?q=` (name/email search), `?email=` (exact), cursor-paginated (`partners:read`) |
 | Bulk-load partners | `POST /import/partners-csv` (`partners:write`) |
+| Who may sign in to the hosted partner portal | `PATCH /partners/{id}` `{"portalAccess": …}` (`partners:write`); the default for partners added without an invite: `GET/POST /config/partner-access` |
 | Review commissions | `GET /commissions?status=accrued` (`commissions:read`), `POST /commissions/{id}/approve`, `.../reverse` |
 | Refunds and chargebacks | `POST /attribution/refunds` (`events:write`) |
 | Pay partners | `POST /payouts/run`, `POST /payouts/{id}/confirm` (manual rail) |
@@ -518,7 +563,7 @@ These are tracked as follow-ups. None of them is available today:
 - **Embedding the hosted partner portal without a separate login** (a signed embed/SSO token from your backend). Today, either build your own page (this guide) or have partners sign in to the portal with a magic link.
 - **Scoped reads** for `/partners/{id}/funnel`, `/coupons` and `/commission-snapshot`.
 - **Per-key rate limits.** Today the limit is per client IP (step 5).
-- **Turning off portal sign-in for headless partners.** Today any active partner can request a sign-in link (step 3).
+- **A create-only scope for CSV import.** `POST /import/partners-csv` needs `partners:write` or the admin key; `partners:create` covers `POST /partners` only.
 - **Read helpers in the server SDK** (dashboard, commissions, payouts). Today the SDK covers `trackEvent` and `identify`; use plain HTTP for reads, as the sample does.
 - **Netting refund clawbacks off later payouts.** A refund of an already-paid commission is recorded (`clawback_recorded`, step 8) but not deducted automatically.
 - **A refund helper in the server SDK.** Use plain HTTP for `POST /attribution/refunds`.

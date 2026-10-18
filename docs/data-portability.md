@@ -64,6 +64,15 @@ v2 or v3 bundle restores with no consent rows, so every restored partner
 starts undecided and nobody is sent to the Network until they opt in on
 the new instance.
 
+`Partner` rows carry `portalAccess` (schemaVersion 5, Oct 2026): whether
+the partner may sign in to the partner portal. A headless program turns it
+off so its customers can't, and a restored instance keeps them out too. A
+v1–v4 bundle has no such column, and its partners restore with the column
+default, `true`, which is what every partner had when it was exported. The
+tenant-wide default for new partners (`GET /config/partner-access`) lives
+in `Config`, which isn't exported yet (see below), so set it again on the
+new instance.
+
 `PartnerCommission` rows carry a nullable `programId`. Null means the
 partner's partner-wide terms; a value means their terms for that one
 program (schemaVersion 3, Oct 2026). The table's natural key is one
@@ -91,6 +100,7 @@ fact about its own events, so it is core and travels with the program. A
 bundle from before it imports with `{}`. Since then each accrued
 commission also records `metadata.rateType` (`percent` | `fixed`); older
 rows don't have it, and nothing on import needs it.
+
 Refunds and chargebacks (Oct 2026) need nothing extra either, and no
 version bump. The refund itself is an `Event` (`type` `refund` or
 `chargeback`, negative `value`; an API refund names its conversion in
@@ -106,7 +116,7 @@ the same refund history and the same derived amounts.
 `SCHEMA_VERSION` is the current bundle version; `SUPPORTED_IMPORT_VERSIONS`
 is what `POST /import` accepts. **That list only ever grows.** A v1 bundle
 sitting on someone's disk keeps importing — it is simply a v5 bundle
-without the four tables added later.
+without the four tables and two columns added later.
 
 **Importing a v1–v4 bundle's programs.** Their `Program` rows have no
 `renewalsStayWithPartner`, so the column default applies: `true`, the same
@@ -120,7 +130,7 @@ that should attribute every event against the window alone.
 | 2 (Aug 2026) | added `PartnerProgram`, `PartnerCommission`, `Coupon`; per-table primary keys |
 | 3 (Oct 2026) | `PartnerCommission` gains `id` (the new primary key; was `partnerId`) and `programId` |
 | 4 (Oct 2026) | added `PartnerNetworkConsent` |
-| 5 (Oct 2026) | `Program` rows carry `renewalsStayWithPartner` |
+| 5 (Oct 2026) | `Program` rows carry `renewalsStayWithPartner`; `Partner` gains `portalAccess` (older bundles restore both as `true`) |
 
 **Importing a v1 or v2 bundle.** `POST /import` upgrades older rows before
 inserting them (`upgradeBundle` in `apps/api/src/export.ts`). A v2
@@ -277,7 +287,8 @@ is an FK to it) can't simply be added to the bundle.
   raw layers don't depend on the default currency.) The destination
   tenant row has to exist before an import can run, so restoring one needs
   a merge strategy rather than an insert.
-- `Config` — program name, support email and other UI-managed settings.
+- `Config` — program name, support email, the partner portal-access default
+  and other UI-managed settings.
 - `PartnerPostback`, `BrandAsset` — customer-configured integration and
   content.
 - `WebhookEndpoint` — the customer's own outbound webhook configuration

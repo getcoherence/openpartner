@@ -67,6 +67,8 @@ async function seedEverything(): Promise<Seeded> {
     email: `p${partnerId}@x.test`,
     name: "O'Hara & Co", // apostrophe + ampersand: exercises SQL escaping
     metadata: { source: 'seed', note: 'has "double" quotes' },
+    // Not the column default, so a restore that dropped it would show.
+    portalAccess: false,
   });
   await db(TABLES.Program).insert({
     id: programId,
@@ -345,6 +347,9 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     const commission = await db(TABLES.Commission).where({ id: seeded.commissionId }).first();
     expect(commission.amount).toBe('40.00');
     expect(commission.status).toBe('approved');
+    // A headless partner stays locked out of the portal on the new instance.
+    const partner = await db(TABLES.Partner).where({ id: seeded.partnerId }).first();
+    expect(partner.portalAccess).toBe(false);
   }, 30_000);
 
   it('is idempotent — importing the same bundle twice inserts nothing new', async () => {
@@ -444,7 +449,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(after[TABLES.PartnerNetworkConsent]).toBe(0);
   }, 30_000);
 
-  it('accepts a v4 bundle — its programs take the renewals default', async () => {
+  it('accepts a v4 bundle — programs take the renewals default, partners keep portal access', async () => {
     const seeded = await seedEverything();
     const full = await exportAll(db, TENANT);
     const v4: Record<string, unknown[]> = {
@@ -453,6 +458,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
         const { renewalsStayWithPartner: _dropped, ...row } = r as Record<string, unknown>;
         return row;
       }),
+      [TABLES.Partner]: (full[TABLES.Partner] as Record<string, unknown>[]).map(({ portalAccess: _dropped, ...row }) => row),
     };
     await wipe();
 
@@ -466,6 +472,9 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     // The same value the migration gave every program that existed before it.
     const program = await db(TABLES.Program).where({ id: seeded.programId }).first();
     expect(program.renewalsStayWithPartner).toBe(true);
+    // Every partner could use the portal before the column existed.
+    const partner = await db(TABLES.Partner).where({ id: seeded.partnerId }).first();
+    expect(partner.portalAccess).toBe(true);
   }, 30_000);
 
   it('exports at schemaVersion 5', () => {

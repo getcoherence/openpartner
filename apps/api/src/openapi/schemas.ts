@@ -50,8 +50,21 @@ export const Partner = z
     activatedAt: tsNullable.openapi({ description: 'Null until the partner accepts their invite. `sendInvite: false` sets it at creation.' }),
     revokedAt: tsNullable,
     revokeReason: z.string().nullable(),
+    portalAccess: z.boolean().openapi({
+      description:
+        'May the partner sign in to the partner portal? `false`: `POST /auth/signin` sends them nothing (answering as it does for an unknown email), their sessions end, and no invite or portal email goes to them. For headless programs. Set it on `POST /partners` or `PATCH /partners/{id}`.',
+    }),
   })
   .openapi('Partner');
+
+export const PartnerAccessSettings = z
+  .object({
+    uninvitedPortalAccess: z.boolean().openapi({
+      description:
+        'Portal access for partners added without an invite: `POST /partners` with `sendInvite: false` and no `portalAccess` (except partners the OpenPartner Network provisions), and every `POST /import/partners-csv` row. Default `true`. Turn it off before creating a headless program\'s partners.',
+    }),
+  })
+  .openapi('PartnerAccessSettings');
 
 export const PartnerCreated = Partner.extend({ invited: z.boolean() }).openapi('PartnerCreated');
 

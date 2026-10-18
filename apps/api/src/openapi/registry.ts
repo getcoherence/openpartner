@@ -26,6 +26,7 @@ extendZodWithOpenApi(z);
  *   public          no credential (the browser SDK's identify call)
  *   admin           an unscoped admin key, ADMIN_API_KEY, or an admin
  *                   portal session; plus a scoped key holding `scope`
+ *                   (any one of them, when it's a list)
  *   partnerOrAdmin  as admin, plus the partner named by `:id` (partner key
  *                   or partner portal session)
  *   handler         any authenticated caller reaches the handler, which
@@ -33,8 +34,8 @@ extendZodWithOpenApi(z);
  */
 export type Access =
   | { kind: 'public' }
-  | { kind: 'admin'; scope?: string }
-  | { kind: 'partnerOrAdmin'; scope?: string }
+  | { kind: 'admin'; scope?: string | string[] }
+  | { kind: 'partnerOrAdmin'; scope?: string | string[] }
   | { kind: 'handler'; rule: string; scopes?: string[]; partner?: boolean };
 
 export const SECURITY_SCHEMES = {
@@ -97,15 +98,27 @@ function pathParamNames(path: string): string[] {
   return [...path.matchAll(/:([A-Za-z0-9_]+)/g)].map((m) => m[1]!);
 }
 
+function scopeList(scope: string | string[] | undefined): string[] {
+  if (scope === undefined) return [];
+  return Array.isArray(scope) ? scope : [scope];
+}
+
+/** `a`, or `a` or `b`, for the access sentence. */
+function scopeWords(scope: string | string[]): string {
+  return scopeList(scope)
+    .map((s) => `\`${s}\``)
+    .join(' or ');
+}
+
 /** The access extension the drift test reads, and the scopes it grants. */
 export function accessExtension(access: Access): { kind: Access['kind']; scopes: string[]; partner: boolean } {
   switch (access.kind) {
     case 'public':
       return { kind: 'public', scopes: [], partner: false };
     case 'admin':
-      return { kind: 'admin', scopes: access.scope ? [access.scope] : [], partner: false };
+      return { kind: 'admin', scopes: scopeList(access.scope), partner: false };
     case 'partnerOrAdmin':
-      return { kind: 'partnerOrAdmin', scopes: access.scope ? [access.scope] : [], partner: true };
+      return { kind: 'partnerOrAdmin', scopes: scopeList(access.scope), partner: true };
     case 'handler':
       return { kind: 'handler', scopes: access.scopes ?? [], partner: access.partner ?? false };
   }
@@ -127,11 +140,11 @@ function accessSentence(access: Access): string {
       return '**Access:** public, no API key. Rate-limited per client IP.';
     case 'admin':
       return access.scope
-        ? `**Access:** admin key, or a scoped key with \`${access.scope}\`.`
+        ? `**Access:** admin key, or a scoped key with ${scopeWords(access.scope)}.`
         : '**Access:** admin key only. Scoped keys get `403 forbidden`.';
     case 'partnerOrAdmin':
       return access.scope
-        ? `**Access:** admin key, a scoped key with \`${access.scope}\`, or the partner's own key (\`:id\` must be that partner).`
+        ? `**Access:** admin key, a scoped key with ${scopeWords(access.scope)}, or the partner's own key (\`:id\` must be that partner).`
         : "**Access:** admin key, or the partner's own key (`:id` must be that partner). Scoped keys get `403 forbidden`.";
     case 'handler':
       return `**Access:** ${access.rule}`;

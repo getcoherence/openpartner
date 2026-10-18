@@ -64,7 +64,7 @@ const DOCUMENTED_ROUTERS: Record<string, Router> = {
 
 // Guards are recognised by the tags auth.ts puts on them: express-async-errors
 // wraps every route handler, so identity comparison doesn't work.
-type Handler = RequestHandler & { guard?: string; grantsScope?: string; partnerParam?: string };
+type Handler = RequestHandler & { guard?: string; grantsScopes?: string[]; partnerParam?: string };
 
 interface RouteInfo {
   key: string;
@@ -128,7 +128,7 @@ describe('OpenAPI spec ↔ routes', () => {
         auth: route.handlers.some((h) => h.guard === 'requireAuth'),
         admin: route.handlers.some((h) => h.guard === 'requireAdmin'),
         partnerParam: route.handlers.find((h) => h.partnerParam !== undefined)?.partnerParam ?? null,
-        scopes: route.handlers.flatMap((h) => (h.grantsScope ? [h.grantsScope] : [])),
+        scopes: route.handlers.flatMap((h) => h.grantsScopes ?? []),
       };
       const ext = accessExtension(op.access);
       const expected = {
@@ -147,7 +147,7 @@ describe('OpenAPI spec ↔ routes', () => {
 
   it('documents every route that grants a scope (or names it)', () => {
     const scopedOutside = [...appRoutes.values()]
-      .filter((r) => r.handlers.some((h) => h.grantsScope) && !documented.has(r.key))
+      .filter((r) => r.handlers.some((h) => h.grantsScopes) && !documented.has(r.key))
       .map((r) => r.key)
       .sort();
     expect(scopedOutside, 'document these, or list them in SCOPED_ROUTES_OUTSIDE_SPEC').toEqual(
@@ -163,7 +163,7 @@ describe('OpenAPI spec ↔ routes', () => {
       .filter(
         (r) =>
           r.handlers.some((h) => h.guard === 'requireAuth') &&
-          !r.handlers.some((h) => h.guard === 'requireAdmin' || h.partnerParam !== undefined || h.grantsScope) &&
+          !r.handlers.some((h) => h.guard === 'requireAdmin' || h.partnerParam !== undefined || h.grantsScopes) &&
           !documented.has(r.key),
       )
       .map((r) => r.key)
@@ -179,7 +179,7 @@ describe('OpenAPI spec ↔ routes', () => {
   // requireAdmin / requirePartnerOrAdmin → handler.
   it('orders guards correctly on every route', () => {
     const rank = (h: Handler): number | null =>
-      h.guard === 'requireAuth' ? 0 : h.grantsScope ? 1 : h.guard === 'requireAdmin' || h.partnerParam !== undefined ? 2 : null;
+      h.guard === 'requireAuth' ? 0 : h.grantsScopes ? 1 : h.guard === 'requireAdmin' || h.partnerParam !== undefined ? 2 : null;
     const misordered: string[] = [];
     for (const r of appRoutes.values()) {
       const ranks = r.handlers.map(rank);

@@ -81,7 +81,10 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
   // attempt turns /auth/signin into a harassment vector: anyone can
   // cause arbitrary emails to the victim by POSTing their address
   // here repeatedly.
-  if (partner?.activatedAt && !partner.revokedAt) {
+  // So do partners without portal access (partner-portal-access.ts): a
+  // headless program's customers, who never learn OpenPartner exists.
+  // Same 200 as an unknown email, so the form can't tell who's a partner.
+  if (partner?.activatedAt && !partner.revokedAt && partner.portalAccess) {
     const issued = await issueMagicLink(db, {
       tenantId,
       email,
@@ -101,7 +104,7 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
       metadata: { purpose: 'partner_signin', partnerId: partner.id },
     });
   }
-  // Unknown / pending / revoked → silent 200. No email sent.
+  // Unknown / pending / revoked / no portal access → silent 200. No email sent.
   res.json({ ok: true });
 });
 
@@ -148,6 +151,11 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
   // An applicant held for review can't sign in, or activate themselves,
   // until an admin approves (POST /partners/:id/invite records that).
   if (isPendingReview(partner)) return res.status(403).json({ error: 'pending_review' });
+  // Turning access off spends the partner's unused links, so this only
+  // catches a link that predates a change made some other way. The link
+  // was mailed to the partner, so naming the reason tells nobody else
+  // anything.
+  if (!partner.portalAccess) return res.status(403).json({ error: 'portal_access_disabled' });
 
   if (token.purpose === 'partner_invite' && !partner.activatedAt) {
     await db<PartnerRow>(TABLES.Partner)
@@ -156,13 +164,15 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
     // Fire once, on the actual activation. partner.created already
     // fired at invite time; this is the "they accepted + are now
     // promoting" signal Zapier subscribers want for welcome
-    // sequences, Slack pings, etc.
+    // sequences, Slack pings, etc. (A partner created active, with
+    // sendInvite:false, gets theirs from POST /partners instead.)
     const { dispatchEvent } = await import('../webhook-dispatcher.js');
     dispatchEvent(tenantId, 'partner.activated', {
       partnerId: partner.id,
       email: partner.email,
       name: partner.name,
       activatedAt: new Date().toISOString(),
+      invited: true,
     } satisfies WebhookPayload<'partner.activated'>);
   }
 

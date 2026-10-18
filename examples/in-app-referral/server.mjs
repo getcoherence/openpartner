@@ -114,6 +114,7 @@ async function ensurePartner(user) {
       email: user.email, // use addresses your app has verified
       name: user.name,
       sendInvite: false, // active immediately, no OpenPartner email
+      portalAccess: false, // can't sign in to the hosted partner portal
       programIds: [PROGRAM_ID], // grant only the referral program
       metadata: { appUserId: user.id },
     });

@@ -58,6 +58,17 @@ if (network.autoEnroll) {
   console.log('✓ Network already not offered to partners');
 }
 
+// 1b. Keep customers out of the hosted partner portal: partners created
+//     without an invite can't request a sign-in link. Also before the first
+//     partner exists; existing partners keep what they have.
+const access = await op('GET', '/config/partner-access');
+if (access.uninvitedPortalAccess) {
+  await op('POST', '/config/partner-access', { uninvitedPortalAccess: false });
+  console.log('✓ Partners added without an invite can no longer sign in to the portal');
+} else {
+  console.log('✓ Partners added without an invite already have no portal access');
+}
+
 // 2. A private program: 20% of every payment for the first 12 months.
 // holdbackDays: commissions auto-approve 30 days after accruing (your refund
 // window), then the next payout run pays them. Use 0 to approve by hand.
@@ -80,9 +91,11 @@ if (program) {
 }
 
 // 3. A scoped key: create partners + links, read stats/earnings, report events.
+// partners:create, not partners:write: it can't invite, revoke or set
+// commission terms, so neither a bug nor a leak can email your customers.
 const key = await op('POST', '/api-keys/scoped', {
   label: 'in-app referral sample',
-  scopes: ['partners:write', 'partners:read', 'links:write', 'links:read', 'commissions:read', 'payouts:read', 'events:write'],
+  scopes: ['partners:create', 'partners:read', 'links:write', 'links:read', 'commissions:read', 'payouts:read', 'events:write'],
 });
 console.log(`✓ Scoped key ${key.id} minted`);
 
