@@ -30,15 +30,19 @@
  *
  * Unknown and missing codes are two-decimal, which is Stripe's default and
  * what a legacy null currency (USD) needs.
+ *
+ * The Payment Link forwarder sample (examples/stripe-payment-link-forwarder)
+ * keeps its own copy of these lists, because it runs with no dependencies.
+ * stripe-amounts-forwarder-sample.test.ts fails when the two disagree.
  */
 
-const ZERO_DECIMAL = new Set([
+export const ZERO_DECIMAL: ReadonlySet<string> = new Set([
   'BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA',
   'PYG', 'RWF', 'VND', 'VUV', 'XAF', 'XOF', 'XPF',
 ]);
-const THREE_DECIMAL = new Set(['BHD', 'JOD', 'KWD', 'OMR', 'TND']);
+export const THREE_DECIMAL: ReadonlySet<string> = new Set(['BHD', 'JOD', 'KWD', 'OMR', 'TND']);
 /** Two-decimal in Stripe's API, whole units in practice. */
-const WHOLE_UNITS_TWO_DECIMAL = new Set(['ISK', 'UGX']);
+export const WHOLE_UNITS_TWO_DECIMAL: ReadonlySet<string> = new Set(['ISK', 'UGX']);
 
 /** Digits after the point in Stripe's integer form of `currency`. */
 export function stripeExponent(currency: string | null | undefined): 0 | 2 | 3 {
