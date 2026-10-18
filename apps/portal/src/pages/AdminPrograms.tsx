@@ -26,6 +26,8 @@ interface Program {
   commissionRule: CommissionSubRule[] | { type: 'percent' | 'fixed'; value: number; recurring?: boolean };
   attributionWindowDays: number;
   attributionModel: string;
+  /** Older API responses during a deploy gap omit it; treat as on. */
+  renewalsStayWithPartner?: boolean;
   destinationUrl: string;
   deepLinkAllowedDomains: string | null;
   holdbackDays: number | null;
@@ -242,6 +244,9 @@ function EditProgramDates({
     campaign.holdbackDays != null ? String(campaign.holdbackDays) : '0',
   );
   const [revenueEventTypes, setRevenueEventTypes] = useState((campaign.revenueEventTypes ?? []).join(', '));
+  const [renewalsStayWithPartner, setRenewalsStayWithPartner] = useState(
+    campaign.renewalsStayWithPartner ?? true,
+  );
 
   const save = useMutation({
     mutationFn: () =>
@@ -260,6 +265,7 @@ function EditProgramDates({
           partnersMayCustomizeCode,
           holdbackDays: Number(holdbackDays) || 0,
           revenueEventTypes: parseEventTypes(revenueEventTypes),
+          renewalsStayWithPartner,
         },
       }),
     onSuccess: onSaved,
@@ -349,6 +355,11 @@ function EditProgramDates({
         </Select>
       </div>
       <RevenueEventTypesField value={revenueEventTypes} onChange={setRevenueEventTypes} />
+      <RenewalsField
+        enabled={renewalsStayWithPartner}
+        windowDays={campaign.attributionWindowDays}
+        onChange={setRenewalsStayWithPartner}
+      />
 
       <div style={{ display: 'flex', gap: 8 }}>
         <Button
@@ -467,6 +478,7 @@ function CreateProgram({
   const [partnersMayCustomizeCode, setPartnersMayCustomizeCode] = useState(false);
   const [windowDays, setWindowDays] = useState('60');
   const [model, setModel] = useState<'last_click' | 'first_click' | 'linear' | 'position'>('last_click');
+  const [renewalsStayWithPartner, setRenewalsStayWithPartner] = useState(true);
   const [holdbackDays, setHoldbackDays] = useState('0');
   const [startsAt, setStartsAt] = useState('');
   const [endsAt, setEndsAt] = useState('');
@@ -492,6 +504,7 @@ function CreateProgram({
           commissionRule: rules,
           attributionWindowDays: Number(windowDays),
           attributionModel: model,
+          renewalsStayWithPartner,
           holdbackDays: Number(holdbackDays) || undefined,
           startsAt: startsAt ? new Date(startsAt).toISOString() : null,
           endsAt: endsAt ? new Date(endsAt).toISOString() : null,
@@ -613,6 +626,11 @@ function CreateProgram({
           </Select>
         </div>
       </div>
+      <RenewalsField
+        enabled={renewalsStayWithPartner}
+        windowDays={Number(windowDays) || 60}
+        onChange={setRenewalsStayWithPartner}
+      />
       <div style={{ marginBottom: 16 }}>
         <LabelWithHelp
           label="Payout holdback (days)"
@@ -727,6 +745,46 @@ function PartnerCodeCustomizationField({
             {' '}Your checkout isn&rsquo;t updated for you: add each new code
             there, and retire deactivated ones there too — OpenPartner stops
             crediting a deactivated code, but it keeps discounting until you do.
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Program.renewalsStayWithPartner. On: the window picks who wins a
+ * customer, and that partner keeps the customer's renewals — the
+ * click-to-renewal promise. Spec: docs/renewal-attribution.md.
+ */
+function RenewalsField({
+  enabled,
+  windowDays,
+  onChange,
+}: {
+  enabled: boolean;
+  windowDays: number;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text, marginBottom: 6 }}>
+        <input type="checkbox" checked={enabled} onChange={(e) => onChange(e.target.checked)} />
+        Renewals stay with the partner who earned the customer
+      </label>
+      <div style={{ fontSize: 12, color: theme.textDim, marginLeft: 24 }}>
+        {enabled ? (
+          <>
+            On (default): the {windowDays}-day window decides which partner wins a customer&rsquo;s
+            first payment. Every renewal after it stays with that partner for as long as the
+            customer pays, even if they click another partner&rsquo;s link later. Past the window,
+            only rules marked <strong>Recurring</strong> pay, up to their month cap.
+          </>
+        ) : (
+          <>
+            Off: every payment is credited to whoever has the latest click in the {windowDays}-day
+            window (or as your model splits it). A customer who renews {windowDays} days after
+            their last partner click earns nobody a commission.
           </>
         )}
       </div>

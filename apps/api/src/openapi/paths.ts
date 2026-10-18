@@ -327,7 +327,7 @@ Rows whose email already exists are reported as \`skipped_email_taken\` with the
     operationId: 'createProgram',
     summary: 'Create a program',
     description:
-      "A program is one set of terms: commission rule, attribution window and model, destination URL.\n\n`shareOnNetwork` defaults to **true** when the tenant is on the OpenPartner Network, which lists the program on the public marketplace and makes `marketplaceDescription` required. Pass `shareOnNetwork: false` for a private program such as customer referral.\n\n`holdbackDays` above 0 means commissions are **approved automatically** that many days after they accrue (by the scheduled jobs), and then paid by the next payout run. 0 or omitted means every commission waits for `POST /commissions/{id}/approve`.",
+      "A program is one set of terms: commission rule, attribution window and model, destination URL.\n\n`shareOnNetwork` defaults to **true** when the tenant is on the OpenPartner Network, which lists the program on the public marketplace and makes `marketplaceDescription` required. Pass `shareOnNetwork: false` for a private program such as customer referral.\n\n`holdbackDays` above 0 means commissions are **approved automatically** that many days after they accrue (by the scheduled jobs), and then paid by the next payout run. 0 or omitted means every commission waits for `POST /commissions/{id}/approve`.\n\n`attributionWindowDays` decides which click wins a customer's first conversion of each event type. With `renewalsStayWithPartner` (default true), repeats of that event type, such as monthly `invoice_paid` renewals, keep the same partners and weights for as long as the customer pays, even when another partner's link is clicked later. Past the window, only sub-rules with `recurring: true` pay on them, up to `recurringMonths`.",
     access: { kind: 'admin' },
     body: programs.createSchema.openapi('CreateProgramRequest'),
     responses: { 201: { description: 'Created.', schema: S.Program } },
@@ -340,7 +340,8 @@ Rows whose email already exists are reported as \`skipped_email_taken\` with the
     tag: 'Programs',
     operationId: 'updateProgram',
     summary: 'Update a program',
-    description: 'Changes apply to future commissions. Partners with a commission override keep it.',
+    description:
+      'Changes apply to future commissions. Partners with a commission override keep it. Changing `attributionWindowDays` or `renewalsStayWithPartner` decides events attributed from then on; renewals of customers already won keep their partner whatever the new window.',
     access: { kind: 'admin' },
     body: programs.updateSchema.openapi('UpdateProgramRequest'),
     responses: { 200: { description: 'The updated program.', schema: S.Program } },
@@ -441,6 +442,8 @@ Unauthenticated by design. It accepts any origin (CORS) and is limited to 120 re
     summary: 'Record a conversion event',
     description: `
 Server-to-server conversion ingest. The event is attributed to the partner whose click the user was stitched to (within the program's window and model) and commissions accrue.
+
+**Renewals.** Send each renewal as its own event with the same \`userId\` and \`type\` (one \`invoice_paid\` per payment). Once the customer has an attributed event of that type, each later one keeps that event's partners and weights, however old the click, while the program has \`renewalsStayWithPartner\` on (the default).
 
 **Event types.** Any string is accepted. Two have built-in meaning:
 - \`signup\` is the funnel's *signups* stage (\`signup\` and \`trial_started\` are *leads* in the timeseries).

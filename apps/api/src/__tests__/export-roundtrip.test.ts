@@ -80,6 +80,8 @@ async function seedEverything(): Promise<Seeded> {
     destinationUrl: 'https://x.test/landing',
     attributionWindowDays: 60,
     attributionModel: 'last_click',
+    // Not the column default, so a restore that dropped it would show.
+    renewalsStayWithPartner: false,
   });
   await db(TABLES.PartnerProgram).insert({
     id: ulid(),
@@ -338,6 +340,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     const program = await db(TABLES.Program).where({ id: seeded.programId }).first();
     expect(program.commissionRule).toEqual([{ trigger: 'every', type: 'percent', value: 20 }]);
     expect(program.categories).toEqual(['saas', 'devtools']);
+    expect(program.renewalsStayWithPartner).toBe(false);
     // …and that the money ledger survived with its shape intact.
     const commission = await db(TABLES.Commission).where({ id: seeded.commissionId }).first();
     expect(commission.amount).toBe('40.00');
@@ -441,8 +444,32 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(after[TABLES.PartnerNetworkConsent]).toBe(0);
   }, 30_000);
 
-  it('exports at schemaVersion 4', () => {
-    expect(SCHEMA_VERSION).toBe(4);
+  it('accepts a v4 bundle — its programs take the renewals default', async () => {
+    const seeded = await seedEverything();
+    const full = await exportAll(db, TENANT);
+    const v4: Record<string, unknown[]> = {
+      ...full,
+      [TABLES.Program]: (full[TABLES.Program] ?? []).map((r) => {
+        const { renewalsStayWithPartner: _dropped, ...row } = r as Record<string, unknown>;
+        return row;
+      }),
+    };
+    await wipe();
+
+    const app = createApp();
+    const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+    const viaRoute = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: 4, tables: v4 });
+    expect(viaRoute.status).toBe(200);
+    // The same value the migration gave every program that existed before it.
+    const program = await db(TABLES.Program).where({ id: seeded.programId }).first();
+    expect(program.renewalsStayWithPartner).toBe(true);
+  }, 30_000);
+
+  it('exports at schemaVersion 5', () => {
+    expect(SCHEMA_VERSION).toBe(5);
   });
 });
 
@@ -615,6 +642,7 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
     const program = await db(TABLES.Program).first();
     expect(program.commissionRule).toEqual([{ trigger: 'every', type: 'percent', value: 20 }]);
     expect(program.categories).toEqual(['saas', 'devtools']);
+    expect(program.renewalsStayWithPartner).toBe(false);
   }, 30_000);
 
   it('the portable form restores under whatever tenant psql is given', async () => {

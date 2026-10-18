@@ -18,6 +18,14 @@
  * per touch, proportional to the weight, using each click's own campaign's
  * commissionRule — partners don't subsidize each other.
  *
+ * Renewals (Program.renewalsStayWithPartner, on by default): the window
+ * decides ACQUISITION only. An event of a type the customer has already
+ * converted on reuses the touches (click, partner, weight, model) of the
+ * customer's first attributed event of that type, however old the click.
+ * Nothing is stored to make that happen: the earlier conversion is read
+ * back from the Attribution × Event rows, so a re-run derives the same
+ * answer. Full rules and edge cases: docs/renewal-attribution.md.
+ *
  * Idempotent: unique (eventId, model, clickId) blocks dup rows on retry.
  */
 
@@ -51,6 +59,8 @@ const MONTH_MS = 30.4375 * 24 * 60 * 60 * 1000;
 // click and whoever stamped the event. See the age check in attributeEvent().
 const CLICK_AFTER_EVENT_GRACE_MS = 5 * 60 * 1000;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 /**
  * Event types that correct an earlier conversion rather than being one.
  * They're recorded for the audit trail with a NEGATIVE value (the Stripe
@@ -59,6 +69,9 @@ const CLICK_AFTER_EVENT_GRACE_MS = 5 * 60 * 1000;
  * a negative commission — a second clawback — and a fixed rule would pay a
  * bounty on a refund. Every path into attributeEvent, including the backlog
  * replay, goes through this one definition.
+ *
+ * They also never inherit a renewal attribution and never anchor one
+ * (priorConversions).
  */
 export const CORRECTIVE_EVENT_TYPES: ReadonlySet<string> = new Set([
   'refund',
@@ -75,6 +88,53 @@ export interface AttributeResult {
 
 interface ClickWithCampaign extends ClickRow {
   campaign: ProgramRow;
+}
+
+interface Touch {
+  click: ClickWithCampaign;
+  weight: number;
+  /** The click is older than its program's window: the touch reached this
+   *  event through an earlier conversion, not through the window. Only
+   *  `recurring` sub-rules pay on it. */
+  pastWindow: boolean;
+}
+
+/** Who gets credit for one event, and under which model. */
+interface AttributionDecision {
+  model: AttributionModel;
+  touches: Touch[];
+}
+
+/** Signed age of the click at the event: negative when the click came after. */
+function clickAgeMs(click: ClickRow, event: EventRow): number {
+  return new Date(event.ts).getTime() - new Date(click.ts).getTime();
+}
+
+// Every weight applyModel produces for up to 32 touches. Stored to 4
+// decimals they stay unambiguous (each is within rounding of only itself)
+// up to 40.
+const MODEL_WEIGHTS: number[] = (() => {
+  const out: number[] = [];
+  for (const model of ['linear', 'position'] as const) {
+    for (let n = 1; n <= 32; n += 1) {
+      for (const w of applyModel(model, n)) if (!out.some((x) => Math.abs(x - w) < 1e-12)) out.push(w);
+    }
+  }
+  return out;
+})();
+
+/**
+ * A weight read back from Attribution, where it is stored to 4 decimals.
+ * A renewal pays on its first conversion's weights, and 0.3333 for a
+ * three-way linear split would pay a cent-level drift on every renewal
+ * (20% of a 10,000 invoice: 666.60 instead of 666.67). Snap it back to
+ * the model weight it was rounded from; anything that isn't one is used
+ * as stored.
+ */
+function storedWeight(raw: string): number {
+  const stored = Number(raw);
+  const near = MODEL_WEIGHTS.filter((w) => Math.abs(w - stored) <= 0.00005);
+  return near.length === 1 ? near[0]! : stored;
 }
 
 export async function attributeEvent(
@@ -119,13 +179,21 @@ export async function attributeEvent(
   const campaigns = await db<ProgramRow>(TABLES.Program).whereIn('id', programIds);
   const campaignsById = new Map(campaigns.map((c) => [c.id, c]));
 
-  // Clicks in-window relative to this event, with their campaign attached.
-  const eligible: ClickWithCampaign[] = [];
+  // Every click that may still earn, with its campaign attached. A renewal
+  // can only reuse a touch whose click is in here, so a click flagged as
+  // fraud or a partner revoked since the first conversion drops out of the
+  // renewals too.
+  const usable = new Map<string, ClickWithCampaign>();
   for (const click of eligibleByPartner) {
     const campaign = campaignsById.get(click.programId);
-    if (!campaign) continue;
-    const windowMs = campaign.attributionWindowDays * 24 * 60 * 60 * 1000;
-    const ageMs = new Date(event.ts).getTime() - new Date(click.ts).getTime();
+    if (campaign) usable.set(click.id, { ...click, campaign });
+  }
+
+  // Clicks in-window relative to this event.
+  const eligible: ClickWithCampaign[] = [];
+  for (const click of usable.values()) {
+    const windowMs = click.campaign.attributionWindowDays * DAY_MS;
+    const ageMs = clickAgeMs(click, event);
     // Outside the window OR a click that happened meaningfully AFTER the
     // event: a later click must never attribute an earlier conversion
     // (backlog / backdated events made negative ages pass the old one-sided
@@ -139,23 +207,35 @@ export async function attributeEvent(
     // silently dropped both. What this rejects — a backdated backlog event
     // replayed against a newer click — is hours or months off, never minutes.
     if (ageMs < -CLICK_AFTER_EVENT_GRACE_MS || ageMs > windowMs) continue;
-    eligible.push({ ...click, campaign });
+    eligible.push(click);
   }
-  if (eligible.length === 0) return { status: 'outside_window' };
 
-  eligible.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+  // A repeat of a conversion the customer already made keeps that
+  // conversion's attribution; a first-of-its-type event is decided by the
+  // window, falling back to the customer's latest conversion only when no
+  // click is in the window any more.
+  const prior = CORRECTIVE_EVENT_TYPES.has(event.type) ? null : await priorConversions(db, event, usable, modelOverride);
+  let decision: AttributionDecision | null = prior?.sameType ?? null;
 
-  // Pick the model. Override wins; else use the most-recent click's campaign's model.
-  const lastClick = eligible[eligible.length - 1]!;
-  const model: AttributionModel = modelOverride ?? lastClick.campaign.attributionModel;
+  if (!decision && eligible.length > 0) {
+    eligible.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
 
-  const weights = applyModel(model, eligible.length);
-  const touches = eligible.map((click, i) => ({ click, weight: weights[i]! }));
+    // Pick the model. Override wins; else use the most-recent click's campaign's model.
+    const lastClick = eligible[eligible.length - 1]!;
+    const model: AttributionModel = modelOverride ?? lastClick.campaign.attributionModel;
+
+    const weights = applyModel(model, eligible.length);
+    decision = { model, touches: eligible.map((click, i) => ({ click, weight: weights[i]!, pastWindow: false })) };
+  }
+
+  decision ??= prior?.latest ?? null;
+  if (!decision) return { status: 'outside_window' };
+  const { model, touches } = decision;
 
   const results: NonNullable<AttributeResult['touches']> = [];
   let allDup = true;
 
-  for (const { click, weight } of touches) {
+  for (const { click, weight, pastWindow } of touches) {
     if (weight === 0) continue;
     const attributionId = ulid();
     const insertRes = await db<AttributionRow>(TABLES.Attribution)
@@ -202,6 +282,10 @@ export async function attributeEvent(
     let firstCommissionId: string | undefined;
     let firstCommissionCurrency: string | undefined;
     for (const [ruleIndex, subRule] of rules.entries()) {
+      // Past the window the touch earns only on rules the brand marked as
+      // recurring; a one-off or non-recurring rule stays window-bound, as
+      // it was before renewals outlived the window.
+      if (pastWindow && !subRule.recurring) continue;
       const accrual = await evaluateSubRule(db, subRule, event, click.partnerId, click.programId);
       if (accrual === null) continue; // not eligible (filter / first / cap miss)
       const amount = accrual.amount * weight;
@@ -264,6 +348,100 @@ export async function attributeEvent(
 
   if (allDup) return { status: 'already_attributed', model };
   return { status: 'attributed', touches: results, model };
+}
+
+/**
+ * The customer's earlier conversions that can carry `event`, derived from
+ * the raw Attribution × Event rows — nothing is cached, so a replay or a
+ * re-import reaches the same answer.
+ *
+ *   sameType — the customer's FIRST attributed event of this event's type.
+ *              Set means `event` is a renewal: it keeps that conversion's
+ *              touches instead of being re-decided against the window, so
+ *              a later click from another partner doesn't take it.
+ *   latest   — the customer's most recent attributed event of any type.
+ *              Used only for a first-of-its-type event that has no click
+ *              left in the window: the customer was already won.
+ *
+ * Each candidate keeps its own clicks, weights and model; weights are NOT
+ * re-normalised. A touch survives only while its click is still usable
+ * (not fraud-flagged, partner not revoked); a conversion with no surviving
+ * touch is skipped, so once every partner on it is revoked the next
+ * repeat is decided by the window again, and whoever wins it carries the
+ * renewals after it. When the conversion has rows under several models
+ * (a modelOverride re-run), the first-computed model is the live one;
+ * with an override only rows of that model count.
+ *
+ * Either is null when the program in control of the conversion — the one
+ * behind its most recent surviving click, the same rule that picks the
+ * model — has renewalsStayWithPartner off.
+ */
+async function priorConversions(
+  db: Knex,
+  event: EventRow,
+  usable: ReadonlyMap<string, ClickWithCampaign>,
+  modelOverride: AttributionModel | undefined,
+): Promise<{ sameType: AttributionDecision | null; latest: AttributionDecision | null }> {
+  const A = TABLES.Attribution;
+  const E = TABLES.Event;
+  const rows = (await db(A)
+    .join(E, `${E}.id`, `${A}.eventId`)
+    .where(`${E}.tenantId`, event.tenantId)
+    .andWhere(`${E}.userId`, event.userId)
+    .andWhere(`${E}.ts`, '<', event.ts)
+    .andWhereNot(`${E}.id`, event.id)
+    .whereNotIn(`${E}.type`, [...CORRECTIVE_EVENT_TYPES])
+    .modify((q) => {
+      if (modelOverride) q.andWhere(`${A}.model`, modelOverride);
+    })
+    .orderBy([
+      { column: `${E}.ts`, order: 'asc' },
+      { column: `${E}.id`, order: 'asc' },
+      { column: `${A}.computedAt`, order: 'asc' },
+      { column: `${A}.id`, order: 'asc' },
+    ])
+    .select(
+      `${A}.eventId as eventId`,
+      `${E}.type as eventType`,
+      `${A}.clickId as clickId`,
+      `${A}.model as model`,
+      `${A}.weight as weight`,
+    )) as Array<{ eventId: string; eventType: string; clickId: string; model: AttributionModel; weight: string }>;
+
+  const byEvent = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const group = byEvent.get(row.eventId);
+    if (group) group.push(row);
+    else byEvent.set(row.eventId, [row]);
+  }
+
+  let sameType: AttributionDecision | null | undefined;
+  let latest: AttributionDecision | null = null;
+  for (const group of byEvent.values()) {
+    const model = group[0]!.model;
+    const touches: Touch[] = [];
+    for (const row of group) {
+      if (row.model !== model) continue;
+      const click = usable.get(row.clickId);
+      if (!click) continue;
+      const ageMs = clickAgeMs(click, event);
+      // Never let a renewal credit a click that came after it (see the
+      // grace note in attributeEvent).
+      if (ageMs < -CLICK_AFTER_EVENT_GRACE_MS) continue;
+      touches.push({ click, weight: storedWeight(row.weight), pastWindow: ageMs > click.campaign.attributionWindowDays * DAY_MS });
+    }
+    if (touches.length === 0) continue;
+
+    const control = touches.reduce((a, b) => (new Date(b.click.ts).getTime() > new Date(a.click.ts).getTime() ? b : a));
+    const carried = control.click.campaign.renewalsStayWithPartner ? { model, touches } : null;
+    if (sameType === undefined && group[0]!.eventType === event.type) sameType = carried;
+    latest = carried;
+  }
+  // A repeat whose first conversion's program has the setting off is
+  // decided by the window alone, like every event before the setting
+  // existed; it doesn't fall back to some other conversion.
+  if (sameType !== undefined) return { sameType, latest: null };
+  return { sameType: null, latest };
 }
 
 /**
