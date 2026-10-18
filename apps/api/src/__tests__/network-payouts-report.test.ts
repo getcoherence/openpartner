@@ -12,7 +12,7 @@
 
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ulid } from 'ulid';
 import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 import { db } from '../db.js';
@@ -20,6 +20,7 @@ import { aggregateNetworkOriginatedPayouts } from '../usage-billing.js';
 import { reportNetworkPayoutsToNetwork } from '../network-client.js';
 import { encryptSecret } from '../crypto.js';
 import { CONFIG_KEYS, getConfig } from '../config.js';
+import { ECB_DATE, stubEcbFetch, type EcbStub } from './ecb-fixture.js';
 
 process.env.OPENPARTNER_MODE = process.env.OPENPARTNER_MODE ?? 'selfhost';
 process.env.OPENPARTNER_TENANCY = process.env.OPENPARTNER_TENANCY ?? 'single';
@@ -161,13 +162,14 @@ async function seedPayout(opts: {
   amount: number;
   status: 'paid' | 'pending' | 'failed';
   completedAt?: Date | null;
+  currency?: string;
 }): Promise<void> {
   await db(TABLES.Payout).insert({
     id: ulid(),
     tenantId: DEFAULT_TENANT_ID,
     partnerId: opts.partnerId,
     amount: opts.amount.toFixed(2),
-    currency: 'USD',
+    currency: opts.currency ?? 'USD',
     method: 'manual',
     status: opts.status,
     metadata: {} as unknown as never,
@@ -187,7 +189,7 @@ describe.skipIf(skipIntegration)('aggregateNetworkOriginatedPayouts', () => {
     await seedPayout({ partnerId: directPartner, amount: 500, status: 'paid' });
 
     const total = await aggregateNetworkOriginatedPayouts(db, DEFAULT_TENANT_ID, null, new Date());
-    expect(total).toBe(350);
+    expect(total).toEqual({ USD: 350 });
   });
 
   it('excludes direct recruits that auto-enroll / backfill synced to the Network', async () => {
@@ -198,7 +200,7 @@ describe.skipIf(skipIntegration)('aggregateNetworkOriginatedPayouts', () => {
     await seedPayout({ partnerId: synced, amount: 800, status: 'paid' });
 
     const total = await aggregateNetworkOriginatedPayouts(db, DEFAULT_TENANT_ID, null, new Date());
-    expect(total).toBe(0);
+    expect(total).toEqual({});
   });
 
   it('includes Network-originated partners even without the sync stamp (auto-enroll off)', async () => {
@@ -206,7 +208,7 @@ describe.skipIf(skipIntegration)('aggregateNetworkOriginatedPayouts', () => {
     await seedPayout({ partnerId: unsynced, amount: 120, status: 'paid' });
 
     const total = await aggregateNetworkOriginatedPayouts(db, DEFAULT_TENANT_ID, null, new Date());
-    expect(total).toBe(120);
+    expect(total).toEqual({ USD: 120 });
   });
 
   it('respects since (exclusive) + until (inclusive) bounds', async () => {
@@ -218,12 +220,12 @@ describe.skipIf(skipIntegration)('aggregateNetworkOriginatedPayouts', () => {
 
     // Window: (earlier, later] — first payout is excluded by since.
     const total = await aggregateNetworkOriginatedPayouts(db, DEFAULT_TENANT_ID, earlier, later);
-    expect(total).toBe(75);
+    expect(total).toEqual({ USD: 75 });
   });
 
   it('returns 0 when no payouts in range', async () => {
     const total = await aggregateNetworkOriginatedPayouts(db, DEFAULT_TENANT_ID, null, new Date());
-    expect(total).toBe(0);
+    expect(total).toEqual({});
   });
 });
 
@@ -290,5 +292,61 @@ describe.skipIf(skipIntegration)('reportNetworkPayoutsToNetwork', () => {
     await seedPayout({ partnerId: p, amount: 25, status: 'paid' });
     const r2 = await reportNetworkPayoutsToNetwork(db, DEFAULT_TENANT_ID);
     expect(r2.amountUsd).toBe(25);
+  });
+});
+
+describe.skipIf(skipIntegration)('Network-originated payouts in other currencies', () => {
+  let ecb: EcbStub | null = null;
+  afterEach(() => {
+    ecb?.restore();
+    ecb = null;
+  });
+
+  it('sums per currency, treating "inr" and "INR" as one', async () => {
+    const p = await seedPartner({ origin: 'network' });
+    await seedPayout({ partnerId: p, amount: 800, status: 'paid', currency: 'INR' });
+    await seedPayout({ partnerId: p, amount: 80, status: 'paid', currency: 'inr' });
+    await seedPayout({ partnerId: p, amount: 5, status: 'paid' });
+    expect(await aggregateNetworkOriginatedPayouts(db, DEFAULT_TENANT_ID, null, new Date())).toEqual({ INR: 880, USD: 5 });
+  });
+
+  it('reports INR payouts converted at the ECB rate, not as dollars', async () => {
+    ecb = stubEcbFetch('ok');
+    await configureNetwork({ enabled: true });
+    const p = await seedPartner({ origin: 'network' });
+    await seedPayout({ partnerId: p, amount: 8000, status: 'paid', currency: 'INR' });
+    await seedPayout({ partnerId: p, amount: 25, status: 'paid' });
+
+    const r = await reportNetworkPayoutsToNetwork(db, DEFAULT_TENANT_ID);
+    expect(r.reported).toBe(true);
+    // 8,000 × 0.0125 + 25
+    expect(received[0]!.amountUsd).toBe(125);
+    expect(r.payoutsByCurrency).toEqual({ INR: 8000, USD: 25 });
+    expect(r.fx).toMatchObject({ source: 'ecb', date: ECB_DATE });
+  });
+
+  it('does not report or advance the mark when the rate feed is down', async () => {
+    ecb = stubEcbFetch('down');
+    await configureNetwork({ enabled: true });
+    const p = await seedPartner({ origin: 'network' });
+    await seedPayout({ partnerId: p, amount: 8000, status: 'paid', currency: 'INR' });
+
+    const r = await reportNetworkPayoutsToNetwork(db, DEFAULT_TENANT_ID);
+    expect(r.reported).toBe(false);
+    expect(r.reason).toBe('fx_rates_unavailable');
+    expect(received).toHaveLength(0);
+    expect(await getConfig<string>(db, DEFAULT_TENANT_ID, CONFIG_KEYS.LastNetworkPayoutsReportedAt)).toBeNull();
+  });
+
+  it('holds out a currency with no reference rate', async () => {
+    ecb = stubEcbFetch('ok');
+    await configureNetwork({ enabled: true });
+    const p = await seedPartner({ origin: 'network' });
+    await seedPayout({ partnerId: p, amount: 300, status: 'paid', currency: 'AED' });
+    await seedPayout({ partnerId: p, amount: 10, status: 'paid' });
+
+    const r = await reportNetworkPayoutsToNetwork(db, DEFAULT_TENANT_ID);
+    expect(received[0]!.amountUsd).toBe(10);
+    expect(r.heldOut).toEqual({ AED: 300 });
   });
 });

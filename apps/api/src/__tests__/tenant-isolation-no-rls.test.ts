@@ -292,13 +292,13 @@ describe.skipIf(skipIntegration)('usage-billing aggregates without RLS', () => {
     await seedAttributedEvent(A.id, aPrograms[0]!, 1000);
     await seedAttributedEvent(B.id, bPrograms[0]!, 25);
     // appDb here is the privileged role, as in the verification run.
-    expect(await aggregateAttributedGmv(appDb, B.id, null, new Date(Date.now() + 60_000))).toBe(25);
-    expect(await aggregateAttributedGmv(appDb, A.id, null, new Date(Date.now() + 60_000))).toBe(1000);
+    expect(await aggregateAttributedGmv(appDb, B.id, null, new Date(Date.now() + 60_000))).toEqual({ USD: 25 });
+    expect(await aggregateAttributedGmv(appDb, A.id, null, new Date(Date.now() + 60_000))).toEqual({ USD: 1000 });
   });
 
   it("aggregateNetworkOriginatedPayouts sums only the given tenant's payouts", async () => {
     await seedNetworkPayout(A.id, '500.00');
     await seedNetworkPayout(B.id, '40.00');
-    expect(await aggregateNetworkOriginatedPayouts(appDb, B.id, null, new Date(Date.now() + 60_000))).toBe(40);
+    expect(await aggregateNetworkOriginatedPayouts(appDb, B.id, null, new Date(Date.now() + 60_000))).toEqual({ USD: 40 });
   });
 });
