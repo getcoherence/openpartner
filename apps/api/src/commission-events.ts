@@ -31,7 +31,7 @@ export type CommissionLifecycleEvent = 'commission.approved' | 'commission.rever
 
 type CommissionLike = Pick<CommissionRow, 'id' | 'partnerId' | 'attributionId' | 'amount' | 'currency'>;
 
-interface CommissionOrigin {
+export interface CommissionOrigin {
   clickId: string;
   eventId: string;
   eventType: string | null;
@@ -42,17 +42,24 @@ interface CommissionOrigin {
  *  rows at once, and Postgres caps a statement at 65535 parameters. */
 const LOOKUP_CHUNK = 1000;
 
+/**
+ * `known` origins, keyed by attributionId, skip the lookup for those rows.
+ * A caller that holds them already passes them when its rows may not be
+ * committed yet (the lookup reads committed data only).
+ */
 export async function dispatchCommissionEvents(
   tenantId: string,
   event: CommissionLifecycleEvent,
   commissions: readonly CommissionLike[],
   extra: Record<string, unknown> = {},
+  known?: ReadonlyMap<string, CommissionOrigin>,
 ): Promise<void> {
   if (commissions.length === 0) return;
 
-  let origins = new Map<string, CommissionOrigin>();
+  const origins = new Map<string, CommissionOrigin>(known ?? []);
   try {
-    origins = await loadOrigins(tenantId, commissions.map((c) => c.attributionId));
+    const missing = commissions.map((c) => c.attributionId).filter((id) => !origins.has(id));
+    if (missing.length > 0) for (const [id, o] of await loadOrigins(tenantId, missing)) origins.set(id, o);
   } catch (err) {
     console.error(
       `[webhook] ${event}: origin lookup failed, dispatching without click/event fields: ${err instanceof Error ? err.message : String(err)}`,

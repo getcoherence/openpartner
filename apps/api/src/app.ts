@@ -13,6 +13,7 @@ import { stripeWebhookRouter } from './routes/stripe-webhook.js';
 import { identifyRouter } from './routes/identify.js';
 import { eventsRouter } from './routes/events.js';
 import { conversionsRouter } from './routes/conversions.js';
+import { refundsRouter } from './routes/refunds.js';
 import { partnersRouter } from './routes/partners.js';
 import { programsRouter } from './routes/programs.js';
 import { linksRouter } from './routes/links.js';
@@ -272,6 +273,7 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(identifyRouter);
   app.use(eventsRouter);
   app.use(conversionsRouter);
+  app.use(refundsRouter);
   app.use(partnersRouter);
   app.use(programsRouter);
   app.use(linksRouter);

@@ -226,10 +226,12 @@ export const IdentifyResult = z
 
 export const Attribution = z
   .object({
-    status: z.enum(['attributed', 'no_identity', 'no_click', 'outside_window', 'already_attributed', 'not_attributed']).openapi({
-      description:
-        '`not_attributed` appears only on a replay of an event that did not attribute the first time; which miss it was is not stored.',
-    }),
+    status: z
+      .enum(['attributed', 'no_identity', 'no_click', 'outside_window', 'already_attributed', 'not_attributed', 'corrective'])
+      .openapi({
+        description:
+          '`not_attributed` appears only on a replay of an event that did not attribute the first time; which miss it was is not stored. `corrective`: a `refund`, `chargeback`, `dispute_created` or `invoice_payment_failed` event, recorded but never attributed. It reverses nothing; report refunds to `POST /attribution/refunds`.',
+      }),
     model: z.enum(ATTRIBUTION_MODELS).optional(),
     touches: z
       .array(
@@ -267,6 +269,52 @@ export const ConversionResult = z
     }),
   })
   .openapi('ConversionResult');
+
+export const RefundCommission = z
+  .object({
+    commissionId: id.openapi({ description: 'The commission the conversion originally accrued.' }),
+    partnerId: id,
+    currency: z.string(),
+    originalAmount: Decimal,
+    keptAmount: Decimal.openapi({
+      description: "What the partner keeps for this conversion now: the live commission's amount, or a paid one's amount net of adjustments.",
+    }),
+    status: z.enum(['reversed', 'reduced', 'clawback_recorded', 'held_in_transfer', 'unchanged']).openapi({
+      description: [
+        '`reversed`: unpaid, and nothing is kept (a full refund), so it was reversed.',
+        '`reduced`: unpaid; reversed and replaced by `currentCommissionId` for the kept amount (a partial refund).',
+        '`clawback_recorded`: already paid. It stays paid, and a negative adjustment of `clawbackAmount` records the refunded revenue the partner holds. OpenPartner does not net it off later payouts; recover it with the partner.',
+        '`held_in_transfer`: a payout for it is in flight, so nothing changed. Retry this request (same `externalEventId`) once the payout settles.',
+        '`unchanged`: nothing to take back.',
+      ].join(' '),
+    }),
+    currentCommissionId: id.nullable().openapi({ description: 'The live commission row: the original, its replacement, or null once reversed.' }),
+    currentStatus: z.enum(['accrued', 'approved', 'paid']).nullable(),
+    clawbackAmount: orNull(Decimal).openapi({ description: 'Paid commissions only: the refund clawbacks recorded against it, negative. Null when none.' }),
+  })
+  .openapi('RefundCommission');
+
+export const RefundResult = z
+  .object({
+    ok: z.literal(true),
+    refundEventId: id.openapi({ description: 'The corrective event recorded for this refund.' }),
+    conversionEventId: id,
+    kind: z.enum(['refund', 'chargeback']),
+    amount: orNull(Decimal).openapi({ description: "This refund's amount, positive. Null for a refund of a conversion with no value." }),
+    refundedAmount: orNull(Decimal).openapi({ description: 'Everything refunded on this conversion so far, this refund included. Null when the conversion has no value.' }),
+    conversionValue: orNull(Decimal),
+    currency: z.string(),
+    fullRefund: z.boolean().openapi({ description: 'Nothing of the conversion is left.' }),
+    actionRequired: z.boolean().openapi({
+      description: 'Some commission is `held_in_transfer` (retry later) or `clawback_recorded` (the partner was already paid).',
+    }),
+    commissions: z.array(RefundCommission).openapi({ description: 'One entry per commission the conversion accrued; empty when no partner was credited.' }),
+    replayed: z.literal(true).optional().openapi({
+      description:
+        "Present when an earlier call with the same `externalEventId` recorded this refund. Nothing new is recorded; the refund is re-applied, which finishes any commission that was held in transfer, and `commissions` shows where they stand now.",
+    }),
+  })
+  .openapi('RefundResult');
 
 export const ClickIngestResult = z.object({ ok: z.literal(true), id, replayed: z.literal(true).optional() }).openapi('ClickIngestResult');
 

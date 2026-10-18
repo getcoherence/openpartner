@@ -51,8 +51,24 @@ const MONTH_MS = 30.4375 * 24 * 60 * 60 * 1000;
 // click and whoever stamped the event. See the age check in attributeEvent().
 const CLICK_AFTER_EVENT_GRACE_MS = 5 * 60 * 1000;
 
+/**
+ * Event types that correct an earlier conversion rather than being one.
+ * They're recorded for the audit trail with a NEGATIVE value (the Stripe
+ * webhook and POST /attribution/refunds handle any clawback themselves,
+ * through refunds.ts) and are never attributed: a percent rule would accrue
+ * a negative commission — a second clawback — and a fixed rule would pay a
+ * bounty on a refund. Every path into attributeEvent, including the backlog
+ * replay, goes through this one definition.
+ */
+export const CORRECTIVE_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'refund',
+  'chargeback',
+  'dispute_created',
+  'invoice_payment_failed',
+]);
+
 export interface AttributeResult {
-  status: 'attributed' | 'no_identity' | 'no_click' | 'outside_window' | 'already_attributed';
+  status: 'attributed' | 'no_identity' | 'no_click' | 'outside_window' | 'already_attributed' | 'corrective';
   touches?: Array<{ clickId: string; partnerId: string; weight: number; attributionId: string; commissionId?: string }>;
   model?: AttributionModel;
 }
@@ -66,6 +82,8 @@ export async function attributeEvent(
   event: EventRow,
   modelOverride?: AttributionModel,
 ): Promise<AttributeResult> {
+  if (CORRECTIVE_EVENT_TYPES.has(event.type)) return { status: 'corrective' };
+
   // userId is the BRAND's user ID, unique only within a tenant. RLS
   // scopes `db`, but a multi-tenant pool that bypasses RLS (no app role)
   // would otherwise match another brand's identity for the same userId
@@ -248,13 +266,50 @@ export async function attributeEvent(
   return { status: 'attributed', touches: results, model };
 }
 
+/**
+ * Replay attribution over a user's events after something new made them
+ * attributable — a fresh Identity stitch (identify) or an unflagged click
+ * (fraud review).
+ *
+ * Only events with NO Attribution row (under any model) are replayed. An
+ * attributed event is decided: the unique key is (eventId, model, clickId),
+ * so re-running attributeEvent with a different click-set — e.g. a
+ * cross-device click stitched after the conversion but timestamped before
+ * it — inserted a second last_click row at weight 1 beside the first, and a
+ * second full commission. Re-deciding an event means removing its old rows
+ * first, which only the caller can judge (fraud-review drops accrued rows;
+ * approved/paid ledger rows are never rewritten).
+ *
+ * Corrective events (CORRECTIVE_EVENT_TYPES) never have an Attribution row
+ * by design, so the filter above would select every one of them; they're
+ * excluded here rather than locked and handed to attributeEvent. An event
+ * that was refunded before it attributed has those refunds applied to its
+ * new commissions straight away (reapplyRecordedRefunds).
+ *
+ * The Event row lock serialises concurrent replays for the same user (two
+ * devices logging in at once): each would otherwise see the event
+ * unattributed and insert its own winner. The re-check after the lock reads
+ * a fresh snapshot, so the second replay sees the first one's rows.
+ */
 export async function attributeBacklogForUser(db: Knex, tenantId: string, userId: string): Promise<number> {
   // userId is unique per tenant only; see attributeEvent.
-  const events = await db<EventRow>(TABLES.Event).where({ tenantId, userId }).orderBy('ts', 'asc');
+  const events = await db<EventRow>(TABLES.Event)
+    .where({ tenantId, userId })
+    .whereNotIn('type', [...CORRECTIVE_EVENT_TYPES])
+    .whereNotExists(
+      db(TABLES.Attribution).select(db.raw('1')).whereRaw('?? = ??', [`${TABLES.Attribution}.eventId`, `${TABLES.Event}.id`]),
+    )
+    .orderBy('ts', 'asc');
   let attributed = 0;
   for (const event of events) {
+    await db(TABLES.Event).where({ id: event.id }).forUpdate().first('id');
+    const already = await db(TABLES.Attribution).where({ eventId: event.id }).first('id');
+    if (already) continue;
     const result = await attributeEvent(db, event);
-    if (result.status === 'attributed') attributed += 1;
+    if (result.status !== 'attributed') continue;
+    attributed += 1;
+    const { reapplyRecordedRefunds } = await import('./refunds.js');
+    await reapplyRecordedRefunds(db, event);
   }
   return attributed;
 }

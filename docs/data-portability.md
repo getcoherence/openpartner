@@ -86,6 +86,15 @@ fact about its own events, so it is core and travels with the program. A
 bundle from before it imports with `{}`. Since then each accrued
 commission also records `metadata.rateType` (`percent` | `fixed`); older
 rows don't have it, and nothing on import needs it.
+Refunds and chargebacks (Oct 2026) need nothing extra either, and no
+version bump. The refund itself is an `Event` (`type` `refund` or
+`chargeback`, negative `value`; an API refund names its conversion in
+`metadata.conversionEventId`). A partial refund's replacement commission
+is an ordinary `Commission` row whose `metadata.refund` names the
+commission it replaced and the refund behind it. A clawback on a paid
+commission is a `CommissionAdjustment` with `reason = 'refund_clawback'`.
+All three tables are already in the bundle, so a restored instance has
+the same refund history and the same derived amounts.
 
 ### Versioning
 

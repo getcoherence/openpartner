@@ -111,6 +111,25 @@ function applyOverrides(document: OpenApiDocument): void {
     anyOf: [{ type: 'string', minLength: 1, maxLength: 120 }, { type: 'number' }],
     description: 'Idempotency key: your stable id for this one conversion (a loan or transaction id), up to 120 characters. A number is used as its string.',
   });
+  // routes/refunds.ts: same preprocess on both ids.
+  set('RecordRefundRequest', 'externalEventId', {
+    anyOf: [{ type: 'string', minLength: 1, maxLength: 120 }, { type: 'number' }],
+    description: 'Idempotency key: your stable id for this one refund (a refund or credit-note id), up to 120 characters. A number is used as its string.',
+  });
+  set('RecordRefundRequest', 'conversionExternalEventId', {
+    anyOf: [{ type: 'string', minLength: 1, maxLength: 120 }, { type: 'number' }],
+    description:
+      'The `externalEventId` you sent with the conversion being refunded. Send this or `conversionEventId`, not both. A number is used as its string.',
+  });
+  // Its two .refine() checks, which the generator drops.
+  set('RecordRefundRequest', 'amount', {
+    type: 'number',
+    minimum: 0.01,
+    description: 'Major units. Omit to refund everything not yet refunded.',
+  });
+  const refund = schemas?.RecordRefundRequest as Record<string, unknown> | undefined;
+  if (!refund) throw new Error('openapi override target missing: RecordRefundRequest');
+  refund.oneOf = [{ required: ['conversionExternalEventId'] }, { required: ['conversionEventId'] }];
 }
 
 function build() {

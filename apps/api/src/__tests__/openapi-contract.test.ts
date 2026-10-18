@@ -516,13 +516,34 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       await admin.post('/clicks', { id: loanClick, linkKey: otherLink.linkKey, landingUrl: 'https://app.example.com/signup', fraudFlag: null, ts: new Date().toISOString() }),
     );
     const loan = { clickId: loanClick, type: 'invoice_paid', value: 80, currency: 'USD', externalEventId: 'loan_1' };
-    const converted = check<{ attribution: { status: string } }>('recordConversion', await admin.post('/attribution/conversions', loan));
+    const converted = check<{ eventId: string; attribution: { status: string } }>('recordConversion', await admin.post('/attribution/conversions', loan));
     expect(converted.attribution.status).toBe('attributed');
     const replayedLoan = check<{ replayed?: boolean }>('recordConversion', await admin.post('/attribution/conversions', loan));
     expect(replayedLoan.replayed).toBe(true);
     check('recordConversion', await admin.post('/attribution/conversions', { ...loan, value: 81 }));
     check('recordConversion', await admin.post('/attribution/conversions', { ...loan, clickId: 'nope', externalEventId: 'loan_2' }));
     check('recordConversion', await admin.post('/attribution/conversions', { clickId: loanClick, type: 'signup', externalEventId: 4242, userId: 'borrower_1' }));
+
+    // Refunds of that conversion (a $5 fixed commission on 80.00): part of
+    // it, a replay, the misuses, then a chargeback of the rest.
+    const part = { conversionExternalEventId: 'loan_1', amount: 20, reason: 'partial refund', externalEventId: 'refund_1' };
+    const reduced = check<{ fullRefund: boolean; commissions: Array<{ status: string; keptAmount: string }> }>(
+      'recordRefund',
+      await admin.post('/attribution/refunds', part),
+    );
+    expect(reduced.fullRefund).toBe(false);
+    expect(reduced.commissions.map((c) => [c.status, c.keptAmount])).toEqual([['reduced', '3.75']]);
+    expect(check<{ replayed?: boolean }>('recordRefund', await admin.post('/attribution/refunds', part)).replayed).toBe(true);
+    check('recordRefund', await admin.post('/attribution/refunds', { ...part, amount: 21 }));
+    check('recordRefund', await admin.post('/attribution/refunds', { ...part, amount: 61, externalEventId: 'refund_2' }));
+    check('recordRefund', await admin.post('/attribution/refunds', { conversionExternalEventId: 'nope', externalEventId: 'refund_2' }));
+    check('recordRefund', await admin.post('/attribution/refunds', { conversionExternalEventId: 'loan_1', conversionEventId: converted.eventId, externalEventId: 'refund_2' }));
+    const rest = check<{ fullRefund: boolean; kind: string }>(
+      'recordRefund',
+      await admin.post('/attribution/refunds', { conversionEventId: converted.eventId, kind: 'chargeback', externalEventId: 9001 }),
+    );
+    expect(rest).toMatchObject({ fullRefund: true, kind: 'chargeback' });
+    check('recordRefund', await admin.post('/attribution/refunds', { conversionExternalEventId: 'loan_1', externalEventId: 'refund_3' }));
 
     // Revoke / reinstate.
     check('revokePartner', await admin.post(`/partners/${other.id}/revoke`, { notify: false }));
