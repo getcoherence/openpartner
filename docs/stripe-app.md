@@ -313,26 +313,52 @@ a tunnel, set `STRIPE_APP_REDIRECT_URI` to match, and upload a new version.
 In the developer account, create an event destination for each environment. Use
 **Connected accounts** (the "Listen to events on Connected accounts" option):
 
-| Environment | Where | URL |
-| --- | --- | --- |
-| Live | Live mode → Developers → Webhooks | `https://app.openpartner.dev/api/webhooks/stripe-app` |
-| Test-mode sandbox | Test mode → Developers → Webhooks | same URL |
-| General sandboxes (optional) | The app's managed sandbox | same URL |
+| Environment | Where | URL | Status |
+| --- | --- | --- | --- |
+| Live | Live mode → Developers → Webhooks | `https://app.openpartner.dev/api/webhooks/stripe-app` | **Created Oct 18 2026**: `we_1US3LILKsWusNm7ZId7KuPr8` |
+| Test-mode sandbox | Test mode → Developers → Webhooks | same URL | to do |
+| General sandboxes (optional) | The app's managed sandbox | same URL | optional |
 
-Events to select:
+**API version: `2025-02-24.acacia`, on every endpoint.** Don't take the account
+default or the latest version. Version `2025-03-31.basil` removed
+`Invoice.charge`, `Invoice.payment_intent` and `Charge.invoice`, the fields the
+shared mapping uses to tie a refund to the payment it refunds (`invoice.paid`
+records them on the Event, and `charge.refunded` looks them up). On a basil or
+later endpoint, a subscription refund is recorded but reverses nothing. Moving
+past acacia needs the mapping to read `invoice.payments` (InvoicePayment) first.
+
+Events to select (names as of acacia):
 
 - `checkout.session.completed`, `checkout.session.async_payment_succeeded`
 - `customer.created`, `customer.subscription.created`
 - `invoice.paid`, `invoice.payment_failed`
 - `charge.refunded`, `charge.dispute.created`
 - `account.application.deauthorized`
-- `apps.install.created`, `apps.install.updated`, `apps.install.deleted`.
-  These are named `app.install.*` on API versions before 2026-09-30: pick the
-  names for the endpoint's API version.
+- `app.install.created`, `app.install.updated`, `app.install.deleted`. API
+  versions from 2026-09-30 call these `apps.install.*`. The route accepts both.
 
-Give each endpoint the same API version as the platform's Destination A, so
-payloads match what `/webhooks/stripe` is tested against. Copy each endpoint's
-signing secret into `STRIPE_APP_WEBHOOK_SECRET`, comma-separated.
+From the CLI, logged in to the developer account as in step 2 (this is how the
+live one was created):
+
+```bash
+stripe webhook_endpoints create --live --project-name openpartner-apps \
+  --url https://app.openpartner.dev/api/webhooks/stripe-app \
+  --api-version 2025-02-24.acacia -d connect=true \
+  --enabled-events checkout.session.completed --enabled-events checkout.session.async_payment_succeeded \
+  --enabled-events customer.created --enabled-events customer.subscription.created \
+  --enabled-events invoice.paid --enabled-events invoice.payment_failed \
+  --enabled-events charge.refunded --enabled-events charge.dispute.created \
+  --enabled-events account.application.deauthorized \
+  --enabled-events app.install.created --enabled-events app.install.updated --enabled-events app.install.deleted
+```
+
+Drop `--live` for the test-mode endpoint (that needs the test secret key in the
+CLI profile). The response includes the endpoint's signing secret, and only that
+once; it can be revealed again in the Dashboard (Developers → Webhooks → the
+endpoint → Signing secret). Put each endpoint's secret into
+`STRIPE_APP_WEBHOOK_SECRET`, comma-separated. Until that var is set, the route
+answers `503` and Stripe retries, which does no harm before any brand has
+installed.
 
 ### 4. Keys and client ids
 
