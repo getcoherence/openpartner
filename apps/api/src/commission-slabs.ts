@@ -21,6 +21,7 @@ import type { Knex } from 'knex';
 import { TABLES, type CommissionRule, type CommissionSubRule, type CommissionTiers, type EventRow } from '@openpartner/db';
 import { approvalSnapshotSlabRuleSchema } from './commission-rule-schema.js';
 import { rowCurrency } from './currency.js';
+import { performanceByPartner } from './performance-metric.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -223,16 +224,10 @@ export function tierWindowStart(tiers: Pick<CommissionTiers, 'window' | 'windowD
  * The partner's metric in this program before `event`: attributed events of
  * `eventType` with ts in [windowStart, event.ts), plus same-instant events
  * with a lower id so two events stamped the same millisecond still order
- * deterministically. Clicks flagged as fraud don't count — a partner can't
- * climb a tier on traffic the program has rejected.
- *
- * Each touch counts as its SHARE of its event: its weight over the sum of
- * that event's weights under the same model. Attribution.weight is stored
- * to 4 decimals, so a conversion a partner owns outright through three
- * linear touches is stored as 3 × 0.3333 = 0.9999 — ten of them never reach
- * "at least 10" — and six touches as 1.0002, which tips a partner over a
- * threshold early. The ratio restores the share the commission itself was
- * paid on (attributeEvent multiplies by the unrounded weight).
+ * deterministically. Clicks flagged as fraud don't count, and each touch
+ * counts as its share of its event (performance-metric.ts, the query
+ * performance bounties share). Refunds don't come off: tiers have never
+ * netted them.
  */
 async function tierMetric(
   db: Knex,
@@ -243,31 +238,16 @@ async function tierMetric(
   ctx: { partnerId: string; programId: string },
   currency: string,
 ): Promise<number> {
-  const eventTs = new Date(event.ts);
-  const q = db(`${TABLES.Attribution} as a`)
-    .join(`${TABLES.Event} as e`, 'e.id', 'a.eventId')
-    .join(`${TABLES.Click} as c`, 'c.id', 'a.clickId')
-    .where('a.partnerId', ctx.partnerId)
-    .andWhere('a.programId', ctx.programId)
-    .andWhere('e.type', eventType)
-    .whereNull('c.fraudFlag')
-    .andWhere((qb) =>
-      qb.where('e.ts', '<', eventTs).orWhere((same) => same.where('e.ts', eventTs).andWhere('e.id', '<', event.id)),
-    );
-  if (windowStart) q.andWhere('e.ts', '>=', windowStart);
-  if (metric === 'revenue') {
-    // Revenue in other currencies can't be added to this one without FX.
-    q.andWhereRaw(`upper(coalesce("e"."currency", 'USD')) = ?`, [currency]);
-  }
-  const share = `"a"."weight" / nullif((select sum("w"."weight") from "${TABLES.Attribution}" as "w" where "w"."eventId" = "a"."eventId" and "w"."model" = "a"."model"), 0)`;
-  const row = (await q.first(
-    db.raw(
-      metric === 'revenue'
-        ? `coalesce(sum(coalesce("e"."value", 0) * ${share}), 0) as total`
-        : `coalesce(sum(${share}), 0) as total`,
-    ),
-  )) as { total: string | number } | undefined;
-  return Number(row?.total ?? 0);
+  const byPartner = await performanceByPartner(db, {
+    tenantId: null,
+    programId: ctx.programId,
+    partnerIds: [ctx.partnerId],
+    events: [eventType],
+    measure: metric === 'revenue' ? 'value' : 'count',
+    ...(metric === 'revenue' ? { currency } : {}),
+    window: { start: windowStart, end: new Date(event.ts), tieBreakId: event.id },
+  });
+  return byPartner.get(ctx.partnerId) ?? 0;
 }
 
 /** Percent of the event's value, rounded to the cent, or the fixed amount.

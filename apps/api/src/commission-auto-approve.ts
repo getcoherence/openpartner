@@ -18,6 +18,11 @@
  * takes the partner-wide holdback, or waits for an admin like any
  * commission with none.
  *
+ * A performance bounty's bonus is re-checked first (docs/bounties.md §7):
+ * if refunds have taken the partner back under the bounty's goal since it
+ * was awarded, the commission is reversed instead of approved, and comes
+ * back in `requalified` for bonus.reversed (reason bounty_requalification).
+ *
  * Returns the approved rows so the caller can fire commission.approved
  * once the sweep's transaction has committed — this runs inside the
  * scheduler's per-tenant transaction, so dispatching from here would
@@ -27,38 +32,31 @@
 import type { Knex } from 'knex';
 import { TABLES, type CommissionRow } from '@openpartner/db';
 import { EFFECTIVE_HOLDBACK_SQL } from './partner-commission.js';
+import { bountyStillMet } from './performance-bounties.js';
 
 export interface AutoApproveResult {
   approvedCount: number;
   approved: CommissionRow[];
+  /** Performance-bounty bonuses reversed because the goal is no longer met. */
+  requalified: CommissionRow[];
 }
 
-export async function autoApproveMatureCommissions(
-  db: Knex,
-  tenantId: string,
-): Promise<AutoApproveResult> {
-  // Find every accrued commission whose effective holdback has
-  // elapsed. Effective holdback (EFFECTIVE_HOLDBACK_SQL): the partner's
-  // snapshot scoped to this commission's program (pcp) if one exists —
-  // falling back to the program's own value when it leaves holdback
-  // unset — else their partner-wide snapshot (pcw, programId null), else
-  // the program's value. Same expression as routes/commissions.ts
-  // listQueryBase, which the review queue and manual approve read through.
-  //
-  // Single statement so two scheduler ticks racing don't double-
-  // process the same row: the second UPDATE re-checks `status =
-  // 'accrued'` on the row the first committed, and skips it. Each join
-  // matches at most one row (partial unique indexes on PartnerCommission;
-  // a commission has one attribution or one bonus), so `due` can't fan out.
-  //
-  // The candidates are picked in a CTE rather than the UPDATE's FROM list
-  // because a bonus's commission has no Attribution to inner-join, and
-  // Postgres forbids referencing the UPDATE target inside FROM-clause join
-  // conditions, which the left joins below need.
-  const result = (await db.raw(
-    `
-    with due as (
-      select c.id
+/**
+ * Accrued commissions whose effective holdback has elapsed. Effective
+ * holdback (EFFECTIVE_HOLDBACK_SQL): the partner's snapshot scoped to this
+ * commission's program (pcp) if one exists — falling back to the program's
+ * own value when it leaves holdback unset — else their partner-wide
+ * snapshot (pcw, programId null), else the program's value. Same expression
+ * as routes/commissions.ts listQueryBase, which the review queue and manual
+ * approve read through.
+ *
+ * Each join matches at most one row (partial unique indexes on
+ * PartnerCommission; a commission has one attribution or one bonus), so
+ * this can't fan out. Binds the tenant once.
+ */
+function matureSql(columns: string, extraWhere = ''): string {
+  return `
+      select ${columns}
         from "${TABLES.Commission}" c
         left join "${TABLES.Attribution}" a on a.id = c."attributionId" and a."partnerId" = c."partnerId"
         left join "${TABLES.Bonus}" b on b.id = c."bonusId"
@@ -75,7 +73,41 @@ export async function autoApproveMatureCommissions(
          and ${EFFECTIVE_HOLDBACK_SQL} is not null
          and ${EFFECTIVE_HOLDBACK_SQL} > 0
          and c."accruedAt" + (${EFFECTIVE_HOLDBACK_SQL} * interval '1 day') <= now()
-    )
+         ${extraWhere}`;
+}
+
+export async function autoApproveMatureCommissions(
+  db: Knex,
+  tenantId: string,
+): Promise<AutoApproveResult> {
+  // Matured performance-bounty bonuses first: the goal must still be met.
+  // Locked, so a concurrent sweep re-checks after this one has decided.
+  const bounties = (await db.raw(
+    `${matureSql('c.id, c."partnerId", b."bountyId"', `and b.source = 'performance_bounty' and b."bountyId" is not null`)}
+     for update of c`,
+    [tenantId],
+  )) as { rows: Array<{ id: string; partnerId: string; bountyId: string }> };
+  const requalified: CommissionRow[] = [];
+  for (const row of bounties.rows) {
+    if (await bountyStillMet(db, tenantId, row.bountyId, row.partnerId)) continue;
+    const [reversed] = (await db(TABLES.Commission)
+      .where({ id: row.id, tenantId, status: 'accrued' })
+      .update({ status: 'reversed' })
+      .returning('*')) as CommissionRow[];
+    if (reversed) requalified.push(reversed);
+  }
+
+  // Single statement so two scheduler ticks racing don't double-
+  // process the same row: the second UPDATE re-checks `status =
+  // 'accrued'` on the row the first committed, and skips it.
+  //
+  // The candidates are picked in a CTE rather than the UPDATE's FROM list
+  // because a bonus's commission has no Attribution to inner-join, and
+  // Postgres forbids referencing the UPDATE target inside FROM-clause join
+  // conditions, which the left joins need.
+  const result = (await db.raw(
+    `
+    with due as (${matureSql('c.id')})
     update "${TABLES.Commission}" c
        set status = 'approved'
       from due
@@ -87,5 +119,5 @@ export async function autoApproveMatureCommissions(
     [tenantId, tenantId],
   )) as { rows: CommissionRow[] };
 
-  return { approvedCount: result.rows.length, approved: result.rows };
+  return { approvedCount: result.rows.length, approved: result.rows, requalified };
 }

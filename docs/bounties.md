@@ -1,6 +1,6 @@
 # Bonuses and performance bounties: design
 
-**Status (Oct 18 2026): PR A (bonuses) built; PR B (performance bounties) next. See §11 for where the build differs from this design.** Two PRs in this repo:
+**Status (Oct 18 2026): PR A (bonuses) and PR B (performance bounties) built. §11 and §12 record where the build differs from this design.** Two PRs in this repo:
 
 - **PR A, bonuses.** A way to pay a partner a reward that isn't tied to an attributed sale. Includes a manual "Pay a bonus" action for admins.
 - **PR B, performance bounties.** A goal on a program ("10 sales between Nov 1 and Dec 31 earns $500"), checked by a sweep and paid as a bonus.
@@ -230,3 +230,23 @@ Where building PR A met the code, the code won. These are the differences from �
 - **Database.** `Commission_bonusId_unique` (partial) keeps it one commission per bonus. `UsageLedger` gets the same last-line unique per report, (`tenantId`, `reportKey`, `bonusId`, `currency`), as it has for `eventId`.
 
 §10, as decided for PR A: a manual bonus defaults to **approved, paid next run** (`hold: true` opts into the holdback), and **paid bonuses are not clawed back automatically**.
+
+## 12. Implementation notes (PR B)
+
+- **Export is schemaVersion 7, not 6.** PR A bumped to 6 for `Bonus`. PR B adds `Bounty`, and `export.ts` bumps the version whenever the table set changes, because A and B can deploy apart: a v6 instance would accept a bundle with bounties and silently drop them.
+- **The shared metric query** is `performance-metric.ts`. `tierMetric` now calls it with its window ending at the accrued event (same-instant ties broken by id, as before), so tiers are unchanged: same filters, same share ratio, no refund netting. Bounties pass [startsAt, endsAt) and `netOfRefunds`. Events are a type list, `sales` (non-corrective with a value above 0), or `all` (non-corrective; the `commissions` metric uses it). The query groups by partner, so the sweep measures a program's partners in one statement per 1,000.
+- **Refunds** come off through `metadata.conversionEventId`, as §7 says. A refund recorded only from Stripe's `charge.refunded` on self-host carries an invoice id instead, so it doesn't reduce a `conversions` or `revenue` bounty. It does reduce `commissions` (the refund reverses or claws back the commission). Matching those refunds the way the fee meter does (`usage-ledger.ts` STRIPE_SHARE) is a possible follow-up.
+- **The `commissions` window** is the conversion's event time, like every other metric, not the commission's accrual time.
+- **Eligibility** is a `PartnerProgram` grant for the bounty's program, not revoked, and the allowlist when there is one.
+- **Status transitions:** draft → active or archived, active → ended or archived, and ended → active only once its end date is later than now.
+- **What locks.** After the first award, `startsAt` and `partnerIds` lock along with the goal fields, which leaves only name, description, endsAt (later only) and status editable, as §7 says. A changed end date re-arms the "ending soon" email.
+- **Emails.** The one opt-out scope that exists, `brand_setup`, covers platform mail. Brand-to-partner mail follows the campaign-ending rules instead: activated partners with portal access, not revoked.
+  - "Started" goes out on the first sweep that sees the bounty active and started, so up to an hour after launch.
+  - "Ending soon" goes out 7 days before the end, only for bounties that run longer than 7 days (otherwise the start email already says when it ends).
+  - Both are stamped on the bounty and sent after the sweep's transaction commits.
+- **The re-check at approval** happens in the auto-approve job, as §7 says. An admin's manual approve doesn't re-check: the admin decides.
+- **Database.** `Bonus.bountyId` gets its FK, a CHECK that it is set exactly when `source = 'performance_bounty'`, and a unique (`bountyId`, `partnerId`).
+- **Marketplace.** Bounties aren't pushed to Network offerings yet. When they are, `renderBountySummary` (packages/db) is the structured text to show. The portal and the emails already use it.
+- **API surface.** The bounty routes are admin and portal routes, outside the published OpenAPI document, like the other admin-only screens. `GET /me/bounties` is listed in `HANDLER_GUARDED_ROUTES_OUTSIDE_SPEC`.
+
+§10, as decided for PR B: a bounty's description is **plain text** (at most 5,000 characters, line breaks kept, no formatting).

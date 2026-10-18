@@ -15,6 +15,14 @@ import { sslFromConnectionString } from './ssl.js';
 export * from './types.js';
 export { sslFromConnectionString } from './ssl.js';
 export { renderCommissionSummary } from './commission-summary.js';
+export {
+  bountyMetricIsMoney,
+  formatBountyAmount,
+  formatBountyValue,
+  renderBountyGoal,
+  renderBountySummary,
+} from './bounty-summary.js';
+export type { BountyLike, BountyMetricLike } from './bounty-summary.js';
 export type {
   CommissionSubRuleLike,
   CustomerRewardLike,
@@ -107,6 +115,7 @@ export const TABLES = {
   Attribution: 'Attribution',
   Commission: 'Commission',
   Bonus: 'Bonus',
+  Bounty: 'Bounty',
   Payout: 'Payout',
   ApiKey: 'ApiKey',
   ConversionPostbackToken: 'ConversionPostbackToken',
