@@ -34,8 +34,10 @@ import { makeSecret } from './webhook-dispatcher.js';
  *  ConversionPostbackToken and Config — the last three tables' credentials
  *  stay out (see CredentialSpec), and Config only for PORTABLE_CONFIG_KEYS.
  *  Program rows carry `renewalsStayWithPartner`, and Partner rows carry
- *  `portalAccess`. */
-export const SCHEMA_VERSION = 5;
+ *  `portalAccess`.
+ *  v5 → v6 (Oct 2026): added Bonus. Commission rows carry `bonusId` (set on
+ *  a bonus's commission, whose `attributionId` is then null). */
+export const SCHEMA_VERSION = 6;
 /** Older bundles still import — a v1 bundle is a v2 bundle minus three
  *  tables, a v2 bundle's PartnerCommission rows are partner-wide v3 rows
  *  (see upgradeBundle), a v3 bundle is a v4 bundle minus
@@ -44,9 +46,11 @@ export const SCHEMA_VERSION = 5;
  *  row without `renewalsStayWithPartner` gets true (the value the migration
  *  gave every existing program), and a Partner row without `portalAccess`
  *  gets true (every partner had portal access before the column existed).
+ *  A v5 bundle is a v6 bundle with no bonuses: its Commission rows all have
+ *  an attributionId, and `bonusId` takes its default (null).
  *  Dropping support for a version people hold on disk would break the
  *  portability promise, so this list only ever grows. */
-export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4, 5] as const;
+export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4, 5, 6] as const;
 
 /**
  * The Config keys that travel: the brand's own program and portal settings.
@@ -145,6 +149,9 @@ export const EXPORT_TABLES = [
   { table: TABLES.Identity, primaryKey: 'id' },
   { table: TABLES.Event, primaryKey: 'id' },
   { table: TABLES.Attribution, primaryKey: 'id' },
+  // Rewards not tied to a sale (manual, performance bounty, Network). Each
+  // has one Commission (Commission.bonusId), so it goes first.
+  { table: TABLES.Bonus, primaryKey: 'id' },
   { table: TABLES.Commission, primaryKey: 'id' },
   { table: TABLES.Payout, primaryKey: 'id' },
   // Sidecar (hosted white-label custom domains). Exported losslessly;

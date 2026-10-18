@@ -21,6 +21,7 @@ import * as events from '../routes/events.js';
 import * as clicks from '../routes/clicks.js';
 import * as coupons from '../routes/coupons.js';
 import * as commissions from '../routes/commissions.js';
+import * as bonuses from '../routes/bonuses.js';
 import * as conversions from '../routes/conversions.js';
 import * as refunds from '../routes/refunds.js';
 import * as dashboard from '../routes/dashboard.js';
@@ -847,6 +848,62 @@ The refund is recorded as a corrective event (type \`refund\` or \`chargeback\`,
     errors: { 409: ['commission_in_transfer', 'not_reversible'] },
   });
 
+  // ----------------------------------------------------------------- Bonuses
+  r.operation({
+    method: 'post',
+    path: '/bonuses',
+    tag: 'Bonuses',
+    operationId: 'awardBonus',
+    summary: 'Pay a partner a bonus',
+    description: `
+A reward that isn't tied to a sale: a launch bonus, a contest prize, a thank-you. It is written as a bonus and one commission (\`source: "bonus"\` in commission lists, \`bonusId\` set, no \`attributionId\`), so it is approved, paid and reversed like any commission, but it never counts as a sale, a lead or toward a tier.
+
+- \`amount\` is in major units with at most two decimals (\`400 invalid_amount\` otherwise).
+- Approved at once and paid in the next payout run. \`hold: true\` holds it for the program's holdback first (\`programId\`), or the partner's own.
+- \`externalRef\` makes a retry safe: the same value returns the original (\`200\`, \`replayed: true\`). The same \`externalRef\` with a different partner, program, amount or currency is \`409 external_ref_conflict\`.
+- Fires \`bonus.awarded\`, then \`bonus.approved\` unless held. Never \`commission.*\`.
+- On OpenPartner Cloud's commission-floor fee terms a bonus is billed at the commission rate, like a fixed commission with no sale amount.
+
+Called with the brand's OpenPartner Network federation key, the bonus is recorded as \`source: "network"\`; every other caller pays \`manual\` bonuses. On OpenPartner Cloud the brand needs an active plan (\`402 plan_required\`) and an approved account (\`403 brand_pending_review\`).`,
+    access: { kind: 'admin', scope: 'bonuses:write' },
+    body: bonuses.createBonusSchema.openapi('AwardBonusRequest'),
+    responses: {
+      201: { description: 'Awarded.', schema: S.BonusAwarded },
+      200: { description: 'Replayed (`replayed: true`).', schema: S.BonusAwarded },
+    },
+    errors: {
+      400: ['invalid_amount'],
+      402: ['plan_required'],
+      403: ['brand_pending_review'],
+      404: ['partner_not_found', 'program_not_found'],
+      409: ['partner_revoked', 'external_ref_conflict'],
+    },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/bonuses',
+    tag: 'Bonuses',
+    operationId: 'listBonuses',
+    summary: 'List bonuses',
+    description: 'Newest first, keyset-paginated: pass `nextCursor` back as `cursor`. Each carries its commission\'s id and status.',
+    access: { kind: 'admin', scope: ['commissions:read', 'bonuses:write'] },
+    query: bonuses.listBonusesQuerySchema,
+    responses: { 200: { description: 'One page.', schema: S.BonusPage } },
+    errors: { 400: ['invalid_cursor'] },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/bonuses/:id',
+    tag: 'Bonuses',
+    operationId: 'getBonus',
+    summary: 'Get a bonus',
+    access: { kind: 'admin', scope: ['commissions:read', 'bonuses:write'] },
+    responses: { 200: { description: 'The bonus.', schema: z.object({ bonus: S.BonusListItem }) } },
+    errors: { 404: ['not_found'] },
+  });
+
   // ----------------------------------------------------------------- Payouts
   r.operation({
     method: 'post',
@@ -1245,6 +1302,19 @@ The refund is recorded as a corrective event (type \`refund\` or \`chargeback\`,
     body: settings.networkMembershipSchema.openapi('UpdateNetworkMembershipRequest'),
     responses: { 200: { description: 'The saved membership.', schema: S.NetworkMembership } },
     errors: { 403: ['brand_pending_review'], 409: ['white_label_network_conflict'] },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/config/network/authorize-bonuses',
+    tag: 'Network settings',
+    operationId: 'authorizeNetworkBonuses',
+    summary: 'Let the OpenPartner Network pay bonuses',
+    description:
+      "Adds `bonuses:write` to the Network's existing federation key, so OpenPartner Network bounties can pay your partners through `POST /bonuses`. Keys issued since Network bounties launched already hold it (`bonusesAuthorized` on `GET /config/network`). An admin key or portal session only: a scoped key can't widen a key.",
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'The membership, now with `bonusesAuthorized: true`.', schema: S.NetworkMembership } },
+    errors: { 409: ['network_not_connected'] },
   });
 
   // ------------------------------------------------ Partner portal access

@@ -15,6 +15,11 @@
  * it an approval or reversal can't be matched to the conversion it
  * updates.
  *
+ * A bonus's commission (bonusId set, no attribution) fires the matching
+ * bonus.* event instead (bonus.approved / .paid / .reversed, see
+ * bonuses.ts), never commission.*: those payloads promise an attributionId,
+ * a click and an event, and integrations rely on that.
+ *
  * Like dispatchEvent this is fire-and-forget: the returned promise never
  * rejects, and a failed origin lookup still dispatches the bare payload
  * (a missing macro beats a missing event). Callers invoke it AFTER the
@@ -23,13 +28,22 @@
  * dispatcher does — the caller's transaction may already be gone.
  */
 
-import { TABLES, type CommissionRow } from '@openpartner/db';
+import { TABLES, type BonusRow, type CommissionRow, type WebhookEventType } from '@openpartner/db';
+import { bonusPayload } from './bonuses.js';
 import { db } from './db.js';
 import { dispatchEvent } from './webhook-dispatcher.js';
 
 export type CommissionLifecycleEvent = 'commission.approved' | 'commission.reversed' | 'commission.paid';
 
-type CommissionLike = Pick<CommissionRow, 'id' | 'partnerId' | 'attributionId' | 'amount' | 'currency'>;
+/** `bonusId` is required so no caller can forget it and announce a bonus
+ *  as an attributed commission. */
+type CommissionLike = Pick<CommissionRow, 'id' | 'partnerId' | 'attributionId' | 'bonusId' | 'amount' | 'currency'>;
+
+const BONUS_EVENT: Record<CommissionLifecycleEvent, WebhookEventType> = {
+  'commission.approved': 'bonus.approved',
+  'commission.paid': 'bonus.paid',
+  'commission.reversed': 'bonus.reversed',
+};
 
 export interface CommissionOrigin {
   clickId: string;
@@ -54,11 +68,16 @@ export async function dispatchCommissionEvents(
   extra: Record<string, unknown> = {},
   known?: ReadonlyMap<string, CommissionOrigin>,
 ): Promise<void> {
-  if (commissions.length === 0) return;
+  const bonuses = commissions.filter((c) => c.bonusId);
+  if (bonuses.length > 0) await dispatchBonusEvents(tenantId, BONUS_EVENT[event], bonuses, extra);
+  const attributed = commissions.filter(
+    (c): c is CommissionLike & { attributionId: string } => !c.bonusId && !!c.attributionId,
+  );
+  if (attributed.length === 0) return;
 
   const origins = new Map<string, CommissionOrigin>(known ?? []);
   try {
-    const missing = commissions.map((c) => c.attributionId).filter((id) => !origins.has(id));
+    const missing = attributed.map((c) => c.attributionId).filter((id) => !origins.has(id));
     if (missing.length > 0) for (const [id, o] of await loadOrigins(tenantId, missing)) origins.set(id, o);
   } catch (err) {
     console.error(
@@ -66,7 +85,7 @@ export async function dispatchCommissionEvents(
     );
   }
 
-  for (const c of commissions) {
+  for (const c of attributed) {
     const origin = origins.get(c.attributionId);
     dispatchEvent(tenantId, event, {
       commissionId: c.id,
@@ -103,4 +122,40 @@ async function loadOrigins(tenantId: string, attributionIds: string[]): Promise<
     }
   }
   return out;
+}
+
+/**
+ * bonus.approved / .paid / .reversed for bonus commissions. The bonus row
+ * supplies programId, bountyId, source and note; if that lookup fails the
+ * bare payload still goes out, as for a commission's origin.
+ */
+async function dispatchBonusEvents(
+  tenantId: string,
+  event: WebhookEventType,
+  commissions: readonly CommissionLike[],
+  extra: Record<string, unknown>,
+): Promise<void> {
+  const bonuses = new Map<string, BonusRow>();
+  try {
+    const ids = [...new Set(commissions.map((c) => c.bonusId!))];
+    for (let i = 0; i < ids.length; i += LOOKUP_CHUNK) {
+      const rows = (await db(TABLES.Bonus)
+        .where({ tenantId })
+        .whereIn('id', ids.slice(i, i + LOOKUP_CHUNK))) as BonusRow[];
+      for (const b of rows) bonuses.set(b.id, b);
+    }
+  } catch (err) {
+    console.error(
+      `[webhook] ${event}: bonus lookup failed, dispatching without bonus fields: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  for (const c of commissions) {
+    const bonus = bonuses.get(c.bonusId!);
+    dispatchEvent(tenantId, event, {
+      ...(bonus
+        ? bonusPayload(bonus, c.id)
+        : { bonusId: c.bonusId, commissionId: c.id, partnerId: c.partnerId, amount: c.amount, currency: c.currency }),
+      ...extra,
+    });
+  }
 }

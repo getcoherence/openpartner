@@ -106,6 +106,7 @@ export const TABLES = {
   Event: 'Event',
   Attribution: 'Attribution',
   Commission: 'Commission',
+  Bonus: 'Bonus',
   Payout: 'Payout',
   ApiKey: 'ApiKey',
   ConversionPostbackToken: 'ConversionPostbackToken',

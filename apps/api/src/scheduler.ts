@@ -353,8 +353,8 @@ async function hardDeleteExpiredTenants(): Promise<{ purged: number; tenantIds: 
     .where('pendingDeletionAt', '<', cutoff)
     .select('id');
   const tenantIds: string[] = [];
-  // Tenanted tables to wipe — order doesn't matter because they're
-  // all tagged with tenantId. Tenant row is dropped last.
+  // Tenanted tables to wipe, all tagged with tenantId. Children before the
+  // parents they reference without a cascade. Tenant row is dropped last.
   const TENANTED_TABLES = [
     TABLES.NetworkOutbox,
     TABLES.WebhookDelivery,
@@ -365,6 +365,9 @@ async function hardDeleteExpiredTenants(): Promise<{ purged: number; tenantIds: 
     TABLES.Config,
     TABLES.Payout,
     TABLES.Commission,
+    // After its Commission (Commission.bonusId), before Partner and
+    // Program, which it references without a cascade.
+    TABLES.Bonus,
     TABLES.Attribution,
     TABLES.Event,
     TABLES.Identity,

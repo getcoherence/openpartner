@@ -19,6 +19,7 @@ const TABLES = [
   'Identity',
   'Event',
   'Attribution',
+  'Bonus',
   'Commission',
   'Payout',
   'PortalCustomDomain',

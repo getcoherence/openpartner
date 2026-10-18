@@ -1,7 +1,7 @@
 /**
  * Outbound webhook catalogue — one schema per event type, matching the
  * payloads the `dispatchEvent` call sites build (attribution.ts,
- * commission-events.ts, payouts.ts, payout-transfers.ts,
+ * commission-events.ts, bonuses.ts, payouts.ts, payout-transfers.ts,
  * funding/executor.ts, routes/partners.ts, routes/partner-signup.ts,
  * routes/partner-auth.ts).
  *
@@ -14,7 +14,7 @@
 import { z } from 'zod';
 import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
 import { KNOWN_EVENTS } from '../routes/webhooks.js';
-import { ATTRIBUTION_MODELS, PAYOUT_METHODS } from './enums.js';
+import { ATTRIBUTION_MODELS, BONUS_SOURCES, PAYOUT_METHODS } from './enums.js';
 import { Decimal, orNull } from './schemas.js';
 
 const id = z.string();
@@ -45,6 +45,35 @@ const lifecycleBase = z.object({
   amount: Decimal,
   currency: z.string(),
   ...commissionOrigin,
+});
+
+/** Bonus fields that come from the Bonus row. On approved / paid /
+ *  reversed they are omitted only if that lookup failed, as a commission's
+ *  origin is; bonus.awarded always carries them. */
+const bonusDetail = {
+  programId: id.nullable().openapi({ description: 'The program the bonus was paid under; its holdback applies. Null: none.' }),
+  bountyId: id.nullable().openapi({ description: 'The performance bounty that awarded it, when `source` is `performance_bounty`.' }),
+  source: z.enum(BONUS_SOURCES).openapi({
+    description:
+      "`manual`: an admin or an integration paid it (`POST /bonuses`). `performance_bounty`: the partner reached a bounty's goal. `network`: an OpenPartner Network bounty. New values may be added.",
+  }),
+  note: z.string().nullable().openapi({ description: 'The note shown to the partner.' }),
+};
+
+const bonusIdentity = {
+  bonusId: id,
+  commissionId: id.openapi({ description: "The bonus's commission: the row payouts, approval and reversal act on. It has no `attributionId`." }),
+  partnerId: id,
+  amount: Decimal,
+  currency: z.string(),
+};
+
+const bonusLifecycle = z.object({
+  ...bonusIdentity,
+  programId: bonusDetail.programId.optional(),
+  bountyId: bonusDetail.bountyId.optional(),
+  source: bonusDetail.source.optional(),
+  note: bonusDetail.note.optional(),
 });
 
 export const WEBHOOK_PAYLOADS = {
@@ -89,6 +118,22 @@ export const WEBHOOK_PAYLOADS = {
     refundEventId: id.optional().openapi({ description: 'The refund or chargeback event behind a `refund` / `chargeback` reversal.' }),
     replacementCommissionId: id.optional().openapi({
       description: 'Partial refunds only: the commission accrued for the amount the partner keeps (sent next as `commission.accrued`).',
+    }),
+  }),
+  'bonus.awarded': z.object({
+    ...bonusIdentity,
+    ...bonusDetail,
+    status: z.enum(['accrued', 'approved']).openapi({
+      description:
+        "`approved`: it is paid in the next payout run (and `bonus.approved` follows). `accrued`: held for the program's holdback first.",
+    }),
+  }),
+  'bonus.approved': bonusLifecycle,
+  'bonus.paid': bonusLifecycle.extend({ payoutId: id }),
+  'bonus.reversed': bonusLifecycle.extend({
+    reason: z.enum(['manual', 'bounty_requalification']).openapi({
+      description:
+        "`manual` = an admin reversed it; `bounty_requalification` = a performance bounty's goal was no longer met when its holdback ended (refunds took the partner back under it).",
     }),
   }),
   'partner.created': z.object({
@@ -160,6 +205,13 @@ const WEBHOOK_DESCRIPTIONS: Record<WebhookEventName, string> = {
     'A commission was included in a payout. For a `manual` payout this fires when the payout is planned, before you have sent the money; `POST /payouts/{id}/confirm` records that you did.',
   'commission.reversed':
     "A commission was reversed: by an admin, or by a refund or chargeback, reported to `POST /attribution/refunds` or from Stripe's `charge.refunded`. A Stripe dispute reverses nothing until you report the chargeback.",
+  'bonus.awarded':
+    'A bonus was awarded to a partner: a reward not tied to a sale, paid by an admin or integration (`POST /bonuses`), a performance bounty, or an OpenPartner Network bounty. Bonuses never fire `commission.*` events.',
+  'bonus.approved':
+    "A bonus was approved for the next payout run: on award (`POST /bonuses` without `hold`, or a Network bonus), by an admin, or by the holdback auto-approve job.",
+  'bonus.paid':
+    'A bonus was included in a payout. For a `manual` payout this fires when the payout is planned, before you have sent the money, as for `commission.paid`.',
+  'bonus.reversed': 'A bonus was reversed before it was paid. Paid bonuses are not clawed back.',
   'partner.created':
     'A partner was created: through `POST /partners` (admin, integration or Network approval; `source: "api"`), or by applying on the public join page (`source: "join_page"`). A join-page applicant held for review arrives with `activatedAt: null`; `POST /partners/{id}/invite` approves them. Not sent for partners imported with `POST /import/partners-csv`.',
   'partner.activated':

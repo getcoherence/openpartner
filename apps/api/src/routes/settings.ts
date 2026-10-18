@@ -33,6 +33,8 @@ import { getMailer } from '../mailer.js';
 import {
   completeNetworkConnect,
   getPublicNetworkMembership,
+  grantFederationScope,
+  NETWORK_BONUS_SCOPE,
   NetworkProxyError,
   networkProxy,
   saveNetworkMembership,
@@ -547,6 +549,24 @@ settingsRouter.post('/config/network/backfill', requireAuth, requireAdmin, async
     });
   }
   res.json(await resyncConsentedPartners(db, tenantId));
+});
+
+/**
+ * Let the Network pay bonuses: add `bonuses:write` to the brand's existing
+ * federation key (keys issued before Network bounties lack it). The admin
+ * portal's Network page offers it as "Re-authorize to enable Network
+ * bounties". An unscoped key can't use it: only a full admin decides what
+ * the Network may do.
+ */
+settingsRouter.post('/config/network/authorize-bonuses', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  if (!(await grantFederationScope(db, tenantId, NETWORK_BONUS_SCOPE))) {
+    return res.status(409).json({
+      error: 'network_not_connected',
+      detail: 'Connect to the OpenPartner Network first: there is no federation key to authorize.',
+    });
+  }
+  res.json(await getPublicNetworkMembership(db, tenantId));
 });
 
 /** How many partners have opted in / out — for the admin Network page. */

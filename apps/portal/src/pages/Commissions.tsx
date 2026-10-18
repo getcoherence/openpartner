@@ -1,12 +1,13 @@
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { Receipt } from 'lucide-react';
 import { api, type Principal } from '../api.js';
+import { commissionSourceLabel, isBonusCommission, type CommissionSourceFields } from '../lib/commission-source.js';
 import { theme } from '../theme.js';
 import { Button, Card, EmptyState, ErrorBanner, Page, StatusPill, Table, formatDate, money, shortId } from '../ui.js';
 
 export { StatusPill };
 
-interface Commission {
+interface Commission extends CommissionSourceFields {
   id: string;
   partnerId: string;
   amount: string;
@@ -14,9 +15,24 @@ interface Commission {
   status: string;
   accruedAt: string;
   paidAt: string | null;
+  campaignName?: string | null;
 }
 
 const PAGE_SIZE = 200;
+
+/** What it was earned on, with the program underneath. A bonus's note is
+ *  the brand's own words to the partner, so it wraps rather than truncates. */
+function SourceCell({ c }: { c: Commission }) {
+  const bonus = isBonusCommission(c);
+  return (
+    <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 2, maxWidth: 320, whiteSpace: 'normal' }}>
+      <span style={{ color: bonus ? theme.accentText : theme.text, fontWeight: bonus ? 500 : 400, overflowWrap: 'anywhere' }}>
+        {commissionSourceLabel(c)}
+      </span>
+      {c.campaignName && <span style={{ fontSize: 12, color: theme.textDim }}>{c.campaignName}</span>}
+    </span>
+  );
+}
 
 export function CommissionsPage({ principal }: { principal: Principal }) {
   const queryPartnerId = new URLSearchParams(window.location.search).get('partnerId');
@@ -36,13 +52,14 @@ export function CommissionsPage({ principal }: { principal: Principal }) {
 
   const isAdminView = principal.role === 'admin' && !partnerId;
   const columns = isAdminView
-    ? ['ID', 'Partner', { label: 'Amount', align: 'right' as const }, 'Status', 'Accrued', 'Paid']
-    : ['ID', { label: 'Amount', align: 'right' as const }, 'Status', 'Accrued', 'Paid'];
+    ? ['ID', 'Partner', 'Source', { label: 'Amount', align: 'right' as const }, 'Status', 'Accrued', 'Paid']
+    : ['ID', 'Source', { label: 'Amount', align: 'right' as const }, 'Status', 'Accrued', 'Paid'];
 
   const rows = (data?.pages.flatMap((p) => p.commissions) ?? []).map((c) => {
     const base = [
       <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(c.id)}</code>,
       isAdminView ? <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(c.partnerId)}</code> : null,
+      <SourceCell c={c} />,
       <span style={{ fontWeight: 500 }}>{money(c.amount, c.currency)}</span>,
       <StatusPill status={c.status} />,
       <span style={{ color: theme.textMuted }}>{formatDate(c.accruedAt, { relative: true })}</span>,
@@ -52,14 +69,14 @@ export function CommissionsPage({ principal }: { principal: Principal }) {
   });
 
   return (
-    <Page title="Commissions" subtitle={partnerId ? 'Earnings on attributed events.' : 'Every partner, every commission.'}>
+    <Page title="Commissions" subtitle={partnerId ? 'Earnings on attributed sales, and bonuses.' : 'Every partner, every commission.'}>
       <ErrorBanner error={error} />
       {isLoading ? (
         <Card>Loading…</Card>
       ) : rows.length === 0 ? (
         <EmptyState
           title="No commissions yet"
-          hint="Commissions accrue when an attributed event is ingested."
+          hint="Commissions accrue when an attributed event is ingested, or when a bonus is paid."
           icon={<Receipt size={28} strokeWidth={1.25} />}
         />
       ) : (

@@ -1,6 +1,6 @@
 # Bonuses and performance bounties: design
 
-**Status (Oct 18 2026): design, not built.** Two PRs in this repo:
+**Status (Oct 18 2026): PR A (bonuses) built; PR B (performance bounties) next. See §11 for where the build differs from this design.** Two PRs in this repo:
 
 - **PR A, bonuses.** A way to pay a partner a reward that isn't tied to an attributed sale. Includes a manual "Pay a bonus" action for admins.
 - **PR B, performance bounties.** A goal on a program ("10 sales between Nov 1 and Dec 31 earns $500"), checked by a sweep and paid as a bonus.
@@ -213,3 +213,20 @@ The Network handles submission bounties, social-metrics bounties, verified socia
 - Should manual bonuses default to "pay next run" or to the program holdback? This doc proposes next run.
 - Should paid performance-bounty bonuses ever be clawed back automatically? This doc proposes no for v1.
 - Should a bounty's description allow light formatting (bold, links)? This doc proposes plain text for v1.
+
+## 11. Implementation notes (PR A)
+
+Where building PR A met the code, the code won. These are the differences from §2–§6:
+
+- **Gates.** §5 says "the same as payouts", but no payout route is in either gate. `POST /bonuses` joins `GO_LIVE_ROUTES` (a brand pending review can't pay) and the trial gate's **plan-required** list, so it needs an active plan even during the trial. A bonus is billed through the plan's meter, so a brand without a plan has nothing to bill it against. Self-host is exempt, as with onboarding.
+- **Re-authorizing the Network.** Nothing on this side can hand the Network a re-issued key: rotation is the Network's `POST /vendors/me/rotate-callback-key`. So `POST /config/network/authorize-bonuses` (admin only) adds `bonuses:write` to the federation key the Network already holds. The Network page shows "Re-authorize to enable Network bounties" while `GET /config/network` says `bonusesAuthorized: false`. New connections get the scope from `NETWORK_FEDERATION_SCOPES`.
+- **Source comes from the caller, never the body.** The brand's federation key (`membership.scopedKeyId`) pays `network` bonuses. Every other caller pays `manual` ones, and only the bounty sweep pays `performance_bounty` ones. `externalRef` is unique per (tenant, source), so the same ref from an admin and from the Network is two bonuses.
+- **Webhooks.** `bonus.awarded` carries `status` (`approved` or `accrued`). When a bonus is approved on award, `bonus.approved` follows at once, so a subscriber to approvals sees every bonus that will be paid. `bonus.approved`, `.paid` and `.reversed` go through `dispatchCommissionEvents`, which sends a bonus's commission down the `bonus.*` path. The bonus fields on those three are optional in the catalogue, as a commission's origin is: they're omitted only if the bonus lookup fails.
+- **Postbacks.** A bonus has no click or event, so `{click_id}`, `{event_id}` and `{transaction_id}` stay literal on its postbacks, like any macro with no value. `{commission_id}` and `{commission_amount}` resolve too, since a bonus is paid through a commission.
+- **Validation.** A revoked partner is `409 partner_revoked`: reinstate them first. An amount with more than two decimals is `400 invalid_amount`, checked outside zod because JSON Schema's `multipleOf: 0.01` rejects binary floats such as 0.07, so the published spec couldn't state the rule.
+- **Holdback without a program.** A held bonus with no `programId` takes the partner-wide holdback (`PartnerCommission` with `programId` null). With none, it waits for an admin, like any commission with no holdback.
+- **`Bonus.bountyId`** is a plain column in PR A. Its foreign key arrives with the `Bounty` table in PR B.
+- **Fee estimates.** The ops console's fee estimate skipped a tenant with no conversions. It now keeps one whose bonuses carry a new-rule fee.
+- **Database.** `Commission_bonusId_unique` (partial) keeps it one commission per bonus. `UsageLedger` gets the same last-line unique per report, (`tenantId`, `reportKey`, `bonusId`, `currency`), as it has for `eventId`.
+
+§10, as decided for PR A: a manual bonus defaults to **approved, paid next run** (`hold: true` opts into the holdback), and **paid bonuses are not clawed back automatically**.

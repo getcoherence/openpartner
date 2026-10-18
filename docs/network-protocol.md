@@ -51,7 +51,13 @@ Two credential pairs:
 2. **Network → Vendor** (for matchmaking write-backs).
    - Vendor mints a scoped key with `NETWORK_FEDERATION_SCOPES`
      (`partners:write`, `partners:read`, `links:write`,
-     `commissions:read`) and hands it to the Network at registration.
+     `commissions:read`, `clicks:write`, `bonuses:write`) and hands it to
+     the Network at registration. Keys minted before Network bounties lack
+     `bonuses:write`; the brand adds it to the same key from the admin
+     Network page ("Re-authorize to enable Network bounties", `POST
+     /config/network/authorize-bonuses`). The Network keeps the key it has,
+     so nothing needs to be rotated. `GET /config/network` says
+     `bonusesAuthorized`.
    - Network sends it as `Authorization: Bearer <scopedKey>` when calling
      vendor endpoints (POST /partners, etc).
 
@@ -261,7 +267,35 @@ These already exist in this repo, gated by `grantScope(...)`:
 | Onboard a creator the Network matched | `POST /partners` | `partners:write` |
 | Mint a referral link for that creator | `POST /partners/:id/links` | `links:write` |
 | Show a creator their accrued earnings | `GET /partners/:id/commissions` | `commissions:read` |
+| Chart a creator's activity and earnings | `GET /partners/:id/timeseries` | `partners:read` |
+| Pay a creator a Network bounty | `POST /bonuses` | `bonuses:write` |
+| Read the bonuses it paid | `GET /bonuses`, `GET /bonuses/:id` | `commissions:read` |
 | Verify the scoped key still works | `GET /auth/introspect` | (any) |
+
+### Bonuses (Network bounties)
+
+A Network bounty (a submission or social-metrics bounty the Network
+reviewed) pays the creator through `POST /bonuses` on the brand's instance
+([bounties.md](bounties.md) §8), with the creator's partner id, the
+offering's `programId`, the amount and currency, a `note` the creator
+sees, and `externalRef` = the Network's submission id. Called with the
+federation key, the bonus is recorded as `source: "network"` and approved
+at once (the Network already reviewed it). A retry with the same
+`externalRef` returns the original bonus (`200`, `replayed: true`); the
+same ref with a different partner, program, amount or currency is `409
+external_ref_conflict`. A brand that hasn't re-authorized its key answers
+`403 forbidden_scope` with `required: "bonuses:write"`. The brand's
+`bonus.*` webhooks fire, never `commission.*`.
+
+**Commission lists and the timeseries include bonuses (Oct 2026).** A
+bonus is paid through one commission, so `GET /partners/:id/commissions`
+returns it alongside sale commissions, with `source: "bonus"`, a `bonus`
+object (`id`, `source`, `note`, `bountyId`), `bonusId` set and
+`attributionId` null: there is no event or click behind it. Sale
+commissions say `source: "attribution"` and `bonus: null`. The timeseries
+`earnings` include bonus commissions (filtered by the bonus's program when
+`programId` is given); `leads`, `sales` and `revenue` stay event-based, so
+a bonus never counts as a sale.
 
 `POST /partners` scopes the new Partner's grants with `programIds`
 (`[offering.vendorProgramId]` on approve). **Omitting it grants every

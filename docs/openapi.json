@@ -3,7 +3,7 @@
   "info": {
     "title": "OpenPartner API",
     "version": "1.0.0",
-    "description": "The OpenPartner tenant API: partners, programs, links, attribution, commissions, payouts, reporting, webhooks and export. Use it to run a referral or affiliate program from your own backend, for example an in-app \"Refer & earn\" page with no separate OpenPartner login. Walkthrough: [Build an in-app referral page](https://github.com/getcoherence/openpartner/blob/main/docs/headless-referral.md).\n\nThis document is generated from the API's own request validators. It is served at `/openapi.json`, and the rendered reference at `/docs`, on every deployment. White-label custom domains don't serve them; use the platform host, e.g. `https://app.openpartner.dev/api/docs`.\n\n## Base URL and tenancy\n\nEvery path below is relative to your tenant's API base:\n\n| Deployment | API base | Share links |\n| --- | --- | --- |\n| OpenPartner Cloud | `https://app.openpartner.dev/api/t/<tenant-slug>` | `https://app.openpartner.dev/r/<tenant-slug>/<linkKey>` |\n| Cloud with a white-label domain | `https://<your-domain>/api` | `https://<your-domain>/r/<linkKey>` |\n| Self-hosted, single tenant | your API origin, e.g. `https://api.example.com` (or `<portal>/api` behind the bundled proxy) | `<router origin>/r/<linkKey>` |\n| Self-hosted, multi-tenant | `<api origin>/t/<tenant-slug>` (or `<portal>/api/t/<tenant-slug>`) | `<router origin>/r/<tenant-slug>/<linkKey>` |\n\nThe slug comes **after** `/api`. `https://app.openpartner.dev/t/<slug>/api/...` reaches the portal's static site, not the API, and returns HTML. On a multi-tenant deployment a request with no `/t/<slug>` prefix fails with `400 tenant_slug_missing`, and an unknown slug gets a plain `404`. Your slug is the `/t/<slug>/` segment in your admin portal's address.\n\nKeys minted through the API are bound to their tenant. A key sent to another tenant's path is `401 unauthorized`.\n\n## Authentication\n\nSend a key as a bearer token: `Authorization: Bearer op_…`. Keys are server-side credentials: never ship one to a browser or mobile app. There are three kinds:\n\n- **Admin key.** Unscoped, full access to the tenant. Minted with `POST /api-keys`, or the deployment's `ADMIN_API_KEY` (self-host). The admin portal's session cookie is accepted wherever an admin key is.\n- **Scoped key.** Minted with `POST /api-keys/scoped` and a list of scopes. It can call only the operations its scopes unlock, and it acts on any partner in the tenant. Calling something it lacks the scope for returns `403 forbidden_scope` with the `required` scope; calling an operation with no scope returns `403 forbidden`. Use one for every integration so a leaked key can't do everything.\n- **Partner key.** Minted with `POST /partners/{id}/api-keys` by an admin or the partner. It acts as that one partner and can only reach that partner's own resources (`/partners/{its id}/…`). Revoking the partner revokes its keys.\n\nEach operation says which of these it accepts. Scopes:\n\n| Scope | Unlocks |\n| --- | --- |\n| `clicks:write` | `POST /clicks` |\n| `commissions:read` | `GET /partners/{id}/commissions`<br>`GET /commissions` |\n| `events:write` | `POST /attribution/events`<br>`POST /attribution/conversions`<br>`POST /attribution/refunds`<br>`POST /coupons/redeem` |\n| `links:read` | `GET /partners/{id}/links` |\n| `links:write` | `POST /partners/{id}/links` |\n| `partners:create` | `POST /partners` |\n| `partners:read` | `GET /partners`<br>`GET /partners/{id}`<br>`GET /partners/{id}/dashboard`<br>`GET /partners/{id}/timeseries`<br>`GET /partners/{id}/events`<br>`GET /partners/{id}/customers`<br>`GET /partners/{id}/breakdowns` |\n| `partners:write` | `POST /partners`<br>`PATCH /partners/{id}`<br>`POST /import/partners-csv`<br>`POST /partners/{id}/invite`<br>`POST /partners/{id}/revoke`<br>`POST /partners/{id}/coupons`<br>`DELETE /partners/{id}/coupons/{couponId}` |\n| `payouts:read` | `GET /partners/{id}/payouts` |\n| `webhooks:write` | `POST /webhooks`<br>`DELETE /webhooks/{id}` |\n\n`partners:read` also unlocks `GET /brand-resources` (brand logo, colours and shareable assets), which this reference doesn't cover yet. The OpenPartner Network federation key holds `partners:write`, `partners:read`, `links:write`, `commissions:read`, `clicks:write`.\n\n**Scoped reads that don't exist yet:** `GET /partners/{id}/funnel`, `/coupons` and `/commission-snapshot` accept no scope. Read them with an admin key from your server, or use `/timeseries` (which has `partners:read`) for funnel-like counts.\n\n## Requests and responses\n\n- JSON bodies (`content-type: application/json`), up to 1 MB. `POST /import` takes up to 256 MB on single-tenant installs.\n- Errors are `{ \"error\": \"<code>\", \"detail\": … }`. Branch on `error`; `detail` is for humans.\n- **Timestamps are ISO-8601 in UTC and must end in `Z`**: `2026-10-16T10:00:00Z`. An offset such as `+00:00` (Python's `isoformat()` default) is rejected with `400 invalid_body` / `invalid_query`.\n- Money in major units. Commission and payout amounts, and `eventValue` in webhook payloads, are decimal **strings** such as `\"12.50\"`. Report endpoints (dashboard, timeseries, a partner's events list) return JSON numbers.\n- Fields may be added to any response at any time. Ignore fields you don't know.\n- Send `X-Request-Id` to correlate a call; every response echoes one back (generated if you didn't send it). Quote it in support requests.\n\n## Idempotency\n\n`POST /attribution/events`, `POST /attribution/conversions`, `POST /attribution/refunds` and `POST /coupons/redeem` take an `externalEventId`: your stable id for that one event (required on conversions and refunds). A retry with the same key replays the original result (`replayed: true`) and records nothing, even when the duplicates arrive at the same moment. A key reused for a different event is `409 external_event_id_conflict`. `POST /clicks` is idempotent on the click `id`. Other writes are not idempotent: `POST /partners` answers a duplicate email with `409 email_taken`, so look the partner up with `GET /partners?email=`.\n\n## Pagination\n\n`GET /partners` and the commission lists are keyset-paginated: pass the response's `nextCursor` as `cursor` until it is `null`. Cursors are opaque. `GET /partners/{id}/events` and `/customers` use `limit` + `offset`. `GET /partners/{id}/payouts` returns the 200 most recent, and `GET /webhooks/{id}/deliveries` the 100 most recent.\n\n## Rate limits\n\nThe API shares one limit of **600 requests per 5 minutes per client IP** across its routes (a few infrastructure paths are exempt). A backend calls from one IP, so that is your whole integration's budget, event ingest included: at four calls per page view, about 150 uncached page views per 5 minutes. Cache partner stats for a few minutes, don't let users force a refresh, and report events from a queue that backs off on `429`. Over the limit you get `429 rate_limited` with the IETF `RateLimit` and `RateLimit-Policy` headers.\n\n`POST /attribution/identify` has its own limit of 120 per minute per IP, answered with `429 rate_limited` and `Retry-After`. When the browser SDK calls it, that is each visitor's IP; when your backend calls it, every stitch counts against your backend's IP, so prefer the browser for identify at volume.\n\n## Webhooks\n\nSubscribe with `POST /webhooks`; the event catalogue is under **Webhook events**. Each delivery is a JSON `POST` of an envelope `{ id, event, created, data }` with:\n\n| Header | Value |\n| --- | --- |\n| `X-OpenPartner-Signature` | hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint's secret (the whole `whsec_…` string) |\n| `X-OpenPartner-Timestamp` | Unix seconds when the attempt was signed |\n| `X-OpenPartner-Event` | the event type |\n| `X-OpenPartner-Delivery` | the envelope `id` |\n\nTo verify a delivery, recompute the HMAC over the **raw** request body, before any JSON parsing, and compare it in constant time. Reject timestamps more than 5 minutes from now. Then dedupe on `id`:\n\n```js\nimport { createHmac, timingSafeEqual } from 'node:crypto';\n\nfunction verify(rawBody, headers, secret) {\n  const ts = headers['x-openpartner-timestamp'];\n  const sig = headers['x-openpartner-signature'] ?? '';\n  if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;\n  const expected = Buffer.from(createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex'));\n  const given = Buffer.from(sig);\n  return given.length === expected.length && timingSafeEqual(given, expected);\n}\n```\n\nDelivery is at most once per trigger: a non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed, and **failed deliveries are not retried automatically**. Find them with `GET /webhooks/{id}/deliveries` and resend with `POST /webhooks/{id}/deliveries/{deliveryId}/retry`. A resend carries the same `id` and a fresh signature. Treat webhooks as notifications and the list endpoints as the record: reconcile from `GET /commissions` if you can't afford to miss one.\n\nEndpoints must be publicly reachable. Private, loopback and link-local destinations are refused at delivery time, and OpenPartner Cloud delivers only to ports 80 and 443. A single-tenant self-host can allow specific private ranges with `OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS`.",
+    "description": "The OpenPartner tenant API: partners, programs, links, attribution, commissions, payouts, reporting, webhooks and export. Use it to run a referral or affiliate program from your own backend, for example an in-app \"Refer & earn\" page with no separate OpenPartner login. Walkthrough: [Build an in-app referral page](https://github.com/getcoherence/openpartner/blob/main/docs/headless-referral.md).\n\nThis document is generated from the API's own request validators. It is served at `/openapi.json`, and the rendered reference at `/docs`, on every deployment. White-label custom domains don't serve them; use the platform host, e.g. `https://app.openpartner.dev/api/docs`.\n\n## Base URL and tenancy\n\nEvery path below is relative to your tenant's API base:\n\n| Deployment | API base | Share links |\n| --- | --- | --- |\n| OpenPartner Cloud | `https://app.openpartner.dev/api/t/<tenant-slug>` | `https://app.openpartner.dev/r/<tenant-slug>/<linkKey>` |\n| Cloud with a white-label domain | `https://<your-domain>/api` | `https://<your-domain>/r/<linkKey>` |\n| Self-hosted, single tenant | your API origin, e.g. `https://api.example.com` (or `<portal>/api` behind the bundled proxy) | `<router origin>/r/<linkKey>` |\n| Self-hosted, multi-tenant | `<api origin>/t/<tenant-slug>` (or `<portal>/api/t/<tenant-slug>`) | `<router origin>/r/<tenant-slug>/<linkKey>` |\n\nThe slug comes **after** `/api`. `https://app.openpartner.dev/t/<slug>/api/...` reaches the portal's static site, not the API, and returns HTML. On a multi-tenant deployment a request with no `/t/<slug>` prefix fails with `400 tenant_slug_missing`, and an unknown slug gets a plain `404`. Your slug is the `/t/<slug>/` segment in your admin portal's address.\n\nKeys minted through the API are bound to their tenant. A key sent to another tenant's path is `401 unauthorized`.\n\n## Authentication\n\nSend a key as a bearer token: `Authorization: Bearer op_…`. Keys are server-side credentials: never ship one to a browser or mobile app. There are three kinds:\n\n- **Admin key.** Unscoped, full access to the tenant. Minted with `POST /api-keys`, or the deployment's `ADMIN_API_KEY` (self-host). The admin portal's session cookie is accepted wherever an admin key is.\n- **Scoped key.** Minted with `POST /api-keys/scoped` and a list of scopes. It can call only the operations its scopes unlock, and it acts on any partner in the tenant. Calling something it lacks the scope for returns `403 forbidden_scope` with the `required` scope; calling an operation with no scope returns `403 forbidden`. Use one for every integration so a leaked key can't do everything.\n- **Partner key.** Minted with `POST /partners/{id}/api-keys` by an admin or the partner. It acts as that one partner and can only reach that partner's own resources (`/partners/{its id}/…`). Revoking the partner revokes its keys.\n\nEach operation says which of these it accepts. Scopes:\n\n| Scope | Unlocks |\n| --- | --- |\n| `bonuses:write` | `POST /bonuses`<br>`GET /bonuses`<br>`GET /bonuses/{id}` |\n| `clicks:write` | `POST /clicks` |\n| `commissions:read` | `GET /partners/{id}/commissions`<br>`GET /commissions`<br>`GET /bonuses`<br>`GET /bonuses/{id}` |\n| `events:write` | `POST /attribution/events`<br>`POST /attribution/conversions`<br>`POST /attribution/refunds`<br>`POST /coupons/redeem` |\n| `links:read` | `GET /partners/{id}/links` |\n| `links:write` | `POST /partners/{id}/links` |\n| `partners:create` | `POST /partners` |\n| `partners:read` | `GET /partners`<br>`GET /partners/{id}`<br>`GET /partners/{id}/dashboard`<br>`GET /partners/{id}/timeseries`<br>`GET /partners/{id}/events`<br>`GET /partners/{id}/customers`<br>`GET /partners/{id}/breakdowns` |\n| `partners:write` | `POST /partners`<br>`PATCH /partners/{id}`<br>`POST /import/partners-csv`<br>`POST /partners/{id}/invite`<br>`POST /partners/{id}/revoke`<br>`POST /partners/{id}/coupons`<br>`DELETE /partners/{id}/coupons/{couponId}` |\n| `payouts:read` | `GET /partners/{id}/payouts` |\n| `webhooks:write` | `POST /webhooks`<br>`DELETE /webhooks/{id}` |\n\n`partners:read` also unlocks `GET /brand-resources` (brand logo, colours and shareable assets), which this reference doesn't cover yet. The OpenPartner Network federation key holds `partners:write`, `partners:read`, `links:write`, `commissions:read`, `clicks:write`, `bonuses:write`.\n\n**Scoped reads that don't exist yet:** `GET /partners/{id}/funnel`, `/coupons` and `/commission-snapshot` accept no scope. Read them with an admin key from your server, or use `/timeseries` (which has `partners:read`) for funnel-like counts.\n\n## Requests and responses\n\n- JSON bodies (`content-type: application/json`), up to 1 MB. `POST /import` takes up to 256 MB on single-tenant installs.\n- Errors are `{ \"error\": \"<code>\", \"detail\": … }`. Branch on `error`; `detail` is for humans.\n- **Timestamps are ISO-8601 in UTC and must end in `Z`**: `2026-10-16T10:00:00Z`. An offset such as `+00:00` (Python's `isoformat()` default) is rejected with `400 invalid_body` / `invalid_query`.\n- Money in major units. Commission and payout amounts, and `eventValue` in webhook payloads, are decimal **strings** such as `\"12.50\"`. Report endpoints (dashboard, timeseries, a partner's events list) return JSON numbers.\n- Fields may be added to any response at any time. Ignore fields you don't know.\n- Send `X-Request-Id` to correlate a call; every response echoes one back (generated if you didn't send it). Quote it in support requests.\n\n## Idempotency\n\n`POST /attribution/events`, `POST /attribution/conversions`, `POST /attribution/refunds` and `POST /coupons/redeem` take an `externalEventId`: your stable id for that one event (required on conversions and refunds). A retry with the same key replays the original result (`replayed: true`) and records nothing, even when the duplicates arrive at the same moment. A key reused for a different event is `409 external_event_id_conflict`. `POST /clicks` is idempotent on the click `id`, and `POST /bonuses` on its optional `externalRef` (reused for a different partner, program, amount or currency: `409 external_ref_conflict`). Other writes are not idempotent: `POST /partners` answers a duplicate email with `409 email_taken`, so look the partner up with `GET /partners?email=`.\n\n## Pagination\n\n`GET /partners` and the commission lists are keyset-paginated: pass the response's `nextCursor` as `cursor` until it is `null`. Cursors are opaque. `GET /partners/{id}/events` and `/customers` use `limit` + `offset`. `GET /partners/{id}/payouts` returns the 200 most recent, and `GET /webhooks/{id}/deliveries` the 100 most recent.\n\n## Rate limits\n\nThe API shares one limit of **600 requests per 5 minutes per client IP** across its routes (a few infrastructure paths are exempt). A backend calls from one IP, so that is your whole integration's budget, event ingest included: at four calls per page view, about 150 uncached page views per 5 minutes. Cache partner stats for a few minutes, don't let users force a refresh, and report events from a queue that backs off on `429`. Over the limit you get `429 rate_limited` with the IETF `RateLimit` and `RateLimit-Policy` headers.\n\n`POST /attribution/identify` has its own limit of 120 per minute per IP, answered with `429 rate_limited` and `Retry-After`. When the browser SDK calls it, that is each visitor's IP; when your backend calls it, every stitch counts against your backend's IP, so prefer the browser for identify at volume.\n\n## Webhooks\n\nSubscribe with `POST /webhooks`; the event catalogue is under **Webhook events**. Each delivery is a JSON `POST` of an envelope `{ id, event, created, data }` with:\n\n| Header | Value |\n| --- | --- |\n| `X-OpenPartner-Signature` | hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint's secret (the whole `whsec_…` string) |\n| `X-OpenPartner-Timestamp` | Unix seconds when the attempt was signed |\n| `X-OpenPartner-Event` | the event type |\n| `X-OpenPartner-Delivery` | the envelope `id` |\n\nTo verify a delivery, recompute the HMAC over the **raw** request body, before any JSON parsing, and compare it in constant time. Reject timestamps more than 5 minutes from now. Then dedupe on `id`:\n\n```js\nimport { createHmac, timingSafeEqual } from 'node:crypto';\n\nfunction verify(rawBody, headers, secret) {\n  const ts = headers['x-openpartner-timestamp'];\n  const sig = headers['x-openpartner-signature'] ?? '';\n  if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;\n  const expected = Buffer.from(createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex'));\n  const given = Buffer.from(sig);\n  return given.length === expected.length && timingSafeEqual(given, expected);\n}\n```\n\nDelivery is at most once per trigger: a non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed, and **failed deliveries are not retried automatically**. Find them with `GET /webhooks/{id}/deliveries` and resend with `POST /webhooks/{id}/deliveries/{deliveryId}/retry`. A resend carries the same `id` and a fresh signature. Treat webhooks as notifications and the list endpoints as the record: reconcile from `GET /commissions` if you can't afford to miss one.\n\nEndpoints must be publicly reachable. Private, loopback and link-local destinations are refused at delivery time, and OpenPartner Cloud delivers only to ports 80 and 443. A single-tenant self-host can allow specific private ranges with `OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS`.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -67,6 +67,10 @@
     {
       "name": "Commissions",
       "description": "The commission ledger: accrued → approved → paid, or reversed."
+    },
+    {
+      "name": "Bonuses",
+      "description": "Rewards not tied to a sale. Each is paid through one commission."
     },
     {
       "name": "Payouts",
@@ -2947,7 +2951,18 @@
             "type": "string"
           },
           "attributionId": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The attributed sale this commission was earned on. Null on a bonus's commission (`bonusId` is set instead)."
+          },
+          "bonusId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The bonus this commission pays (`POST /bonuses`). Null on a sale's commission."
           },
           "partnerId": {
             "type": "string"
@@ -3019,12 +3034,60 @@
             "format": "date-time",
             "description": "When the holdback ends and the commission becomes approvable. Null = no holdback.",
             "pattern": "Z$"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "attribution",
+              "bonus"
+            ],
+            "description": "`attribution`: earned on an attributed sale. `bonus`: pays a bonus, with no event or click behind it."
+          },
+          "bonus": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "manual",
+                  "performance_bounty",
+                  "network"
+                ]
+              },
+              "note": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Shown to the partner."
+              },
+              "bountyId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "source",
+              "note",
+              "bountyId"
+            ],
+            "description": "The bonus behind a `source: \"bonus\"` commission; null otherwise."
           }
         },
         "required": [
           "id",
           "tenantId",
           "attributionId",
+          "bonusId",
           "partnerId",
           "amount",
           "currency",
@@ -3036,7 +3099,9 @@
           "holdbackDays",
           "programId",
           "campaignName",
-          "matureAt"
+          "matureAt",
+          "source",
+          "bonus"
         ]
       },
       "CommissionPage": {
@@ -3070,7 +3135,18 @@
             "type": "string"
           },
           "attributionId": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The attributed sale this commission was earned on. Null on a bonus's commission (`bonusId` is set instead)."
+          },
+          "bonusId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The bonus this commission pays (`POST /bonuses`). Null on a sale's commission."
           },
           "partnerId": {
             "type": "string"
@@ -3120,6 +3196,7 @@
           "id",
           "tenantId",
           "attributionId",
+          "bonusId",
           "partnerId",
           "amount",
           "currency",
@@ -3128,6 +3205,222 @@
           "paidAt",
           "payoutId",
           "metadata"
+        ]
+      },
+      "Bonus": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "tenantId": {
+            "type": "string"
+          },
+          "partnerId": {
+            "type": "string"
+          },
+          "programId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "amount": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "performance_bounty",
+              "network"
+            ],
+            "description": "`manual`: paid with `POST /bonuses` (an admin or your integration). `network`: an OpenPartner Network bounty, paid with the Network's federation key. `performance_bounty`: the partner reached a bounty's goal. New values may be added."
+          },
+          "bountyId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "externalRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The admin or API key that paid it; null for a performance bounty."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          }
+        },
+        "required": [
+          "id",
+          "tenantId",
+          "partnerId",
+          "programId",
+          "amount",
+          "currency",
+          "source",
+          "bountyId",
+          "externalRef",
+          "note",
+          "createdBy",
+          "createdAt"
+        ]
+      },
+      "BonusAwarded": {
+        "type": "object",
+        "properties": {
+          "replayed": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "Set on a replay of an `externalRef` already used: the original bonus."
+          },
+          "bonus": {
+            "$ref": "#/components/schemas/Bonus"
+          },
+          "commission": {
+            "$ref": "#/components/schemas/Commission"
+          }
+        },
+        "required": [
+          "bonus",
+          "commission"
+        ]
+      },
+      "AwardBonusRequest": {
+        "type": "object",
+        "properties": {
+          "partnerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "programId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "amount": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 999999999.99
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Za-z]{3}$"
+          },
+          "note": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "externalRef": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "hold": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "partnerId",
+          "amount",
+          "currency"
+        ]
+      },
+      "BonusListItem": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Bonus"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "commission": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "accrued",
+                      "approved",
+                      "paid",
+                      "reversed"
+                    ]
+                  },
+                  "payoutId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "paidAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time",
+                    "pattern": "Z$"
+                  }
+                },
+                "required": [
+                  "id",
+                  "status",
+                  "payoutId",
+                  "paidAt"
+                ]
+              }
+            },
+            "required": [
+              "commission"
+            ]
+          }
+        ]
+      },
+      "BonusPage": {
+        "type": "object",
+        "properties": {
+          "bonuses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BonusListItem"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "bonuses",
+          "nextCursor"
         ]
       },
       "PayoutRunResult": {
@@ -3998,6 +4291,10 @@
                 "commission.approved",
                 "commission.paid",
                 "commission.reversed",
+                "bonus.awarded",
+                "bonus.approved",
+                "bonus.paid",
+                "bonus.reversed",
                 "partner.created",
                 "partner.activated",
                 "partnership.approved",
@@ -4034,6 +4331,10 @@
                 "commission.approved",
                 "commission.paid",
                 "commission.reversed",
+                "bonus.awarded",
+                "bonus.approved",
+                "bonus.paid",
+                "bonus.reversed",
                 "partner.created",
                 "partner.activated",
                 "partnership.approved",
@@ -4353,6 +4654,10 @@
           "autoEnroll": {
             "type": "boolean",
             "description": "Stored name for \"offer the Network to my partners\". When `enabled && autoEnroll`, partners are asked whether to join, and only those who opt in are shared (name and email; never `metadata`)."
+          },
+          "bonusesAuthorized": {
+            "type": "boolean",
+            "description": "The Network's federation key holds `bonuses:write`, so OpenPartner Network bounties can pay your partners through `POST /bonuses`. Keys from before Network bounties don't: `POST /config/network/authorize-bonuses` adds it."
           }
         },
         "required": [
@@ -4360,7 +4665,8 @@
           "networkUrl",
           "hasVendorToken",
           "scopedKeyId",
-          "autoEnroll"
+          "autoEnroll",
+          "bonusesAuthorized"
         ]
       },
       "UpdateNetworkMembershipRequest": {
@@ -8674,6 +8980,363 @@
         }
       }
     },
+    "/bonuses": {
+      "post": {
+        "operationId": "awardBonus",
+        "tags": [
+          "Bonuses"
+        ],
+        "summary": "Pay a partner a bonus",
+        "description": "A reward that isn't tied to a sale: a launch bonus, a contest prize, a thank-you. It is written as a bonus and one commission (`source: \"bonus\"` in commission lists, `bonusId` set, no `attributionId`), so it is approved, paid and reversed like any commission, but it never counts as a sale, a lead or toward a tier.\n\n- `amount` is in major units with at most two decimals (`400 invalid_amount` otherwise).\n- Approved at once and paid in the next payout run. `hold: true` holds it for the program's holdback first (`programId`), or the partner's own.\n- `externalRef` makes a retry safe: the same value returns the original (`200`, `replayed: true`). The same `externalRef` with a different partner, program, amount or currency is `409 external_ref_conflict`.\n- Fires `bonus.awarded`, then `bonus.approved` unless held. Never `commission.*`.\n- On OpenPartner Cloud's commission-floor fee terms a bonus is billed at the commission rate, like a fixed commission with no sale amount.\n\nCalled with the brand's OpenPartner Network federation key, the bonus is recorded as `source: \"network\"`; every other caller pays `manual` bonuses. On OpenPartner Cloud the brand needs an active plan (`402 plan_required`) and an approved account (`403 brand_pending_review`).\n\n**Access:** admin key, or a scoped key with `bonuses:write`.",
+        "security": [
+          {
+            "adminKey": []
+          },
+          {
+            "scopedKey": [
+              "bonuses:write"
+            ]
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [
+            "bonuses:write"
+          ],
+          "partner": false
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AwardBonusRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Replayed (`replayed: true`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BonusAwarded"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Awarded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BonusAwarded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`, `invalid_amount`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_required`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`, `brand_pending_review`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`partner_not_found`, `program_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`partner_revoked`, `external_ref_conflict`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listBonuses",
+        "tags": [
+          "Bonuses"
+        ],
+        "summary": "List bonuses",
+        "description": "Newest first, keyset-paginated: pass `nextCursor` back as `cursor`. Each carries its commission's id and status.\n\n**Access:** admin key, or a scoped key with `commissions:read` or `bonuses:write`.",
+        "security": [
+          {
+            "adminKey": []
+          },
+          {
+            "scopedKey": [
+              "commissions:read"
+            ]
+          },
+          {
+            "scopedKey": [
+              "bonuses:write"
+            ]
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [
+            "commissions:read",
+            "bonuses:write"
+          ],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "partnerId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "programId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "bountyId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "manual",
+                "performance_bounty",
+                "network"
+              ]
+            },
+            "required": false,
+            "name": "source",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BonusPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_query`, `tenant_slug_missing`, `invalid_cursor`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bonuses/{id}": {
+      "get": {
+        "operationId": "getBonus",
+        "tags": [
+          "Bonuses"
+        ],
+        "summary": "Get a bonus",
+        "description": "**Access:** admin key, or a scoped key with `commissions:read` or `bonuses:write`.",
+        "security": [
+          {
+            "adminKey": []
+          },
+          {
+            "scopedKey": [
+              "commissions:read"
+            ]
+          },
+          {
+            "scopedKey": [
+              "bonuses:write"
+            ]
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [
+            "commissions:read",
+            "bonuses:write"
+          ],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The bonus.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "bonus": {
+                      "$ref": "#/components/schemas/BonusListItem"
+                    }
+                  },
+                  "required": [
+                    "bonus"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/payouts/run": {
       "post": {
         "operationId": "runPayouts",
@@ -10213,6 +10876,10 @@
                 "commission.approved",
                 "commission.paid",
                 "commission.reversed",
+                "bonus.awarded",
+                "bonus.approved",
+                "bonus.paid",
+                "bonus.reversed",
                 "partner.created",
                 "partner.activated",
                 "partnership.approved",
@@ -11080,6 +11747,7 @@
                 "Identity",
                 "Event",
                 "Attribution",
+                "Bonus",
                 "Commission",
                 "Payout",
                 "PortalCustomDomain",
@@ -11525,6 +12193,78 @@
           },
           "409": {
             "description": "`white_label_network_conflict`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config/network/authorize-bonuses": {
+      "post": {
+        "operationId": "authorizeNetworkBonuses",
+        "tags": [
+          "Network settings"
+        ],
+        "summary": "Let the OpenPartner Network pay bonuses",
+        "description": "Adds `bonuses:write` to the Network's existing federation key, so OpenPartner Network bounties can pay your partners through `POST /bonuses`. Keys issued since Network bounties launched already hold it (`bonusesAuthorized` on `GET /config/network`). An admin key or portal session only: a scoped key can't widen a key.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "responses": {
+          "200": {
+            "description": "The membership, now with `bonusesAuthorized: true`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkMembership"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`network_not_connected`",
             "content": {
               "application/json": {
                 "schema": {
@@ -12349,6 +13089,612 @@
                       "commissionId",
                       "partnerId",
                       "attributionId",
+                      "amount",
+                      "currency",
+                      "reason"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "event",
+                  "created",
+                  "data"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges. A non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed. Failed deliveries are not retried automatically."
+          }
+        }
+      }
+    },
+    "bonus.awarded": {
+      "post": {
+        "operationId": "webhook_bonus_awarded",
+        "tags": [
+          "Webhook events"
+        ],
+        "summary": "bonus.awarded",
+        "description": "A bonus was awarded to a partner: a reward not tied to a sale, paid by an admin or integration (`POST /bonuses`), a performance bounty, or an OpenPartner Network bounty. Bonuses never fire `commission.*` events.\n\nSubscribe with `events: [\"bonus.awarded\"]` (or `\"*\"`). Delivered as a signed JSON POST; see **Webhooks** in the introduction for verification.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
+            },
+            "required": true,
+            "name": "x-openpartner-signature",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
+            },
+            "required": true,
+            "name": "x-openpartner-timestamp",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The event type, e.g. `commission.accrued`."
+            },
+            "required": true,
+            "name": "x-openpartner-event",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The envelope `id`."
+            },
+            "required": true,
+            "name": "x-openpartner-delivery",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Unique per event (`evt_…`). A manual redelivery reuses it, so dedupe on this.",
+                    "example": "evt_01JABCDEF0123456789ABCDEFG"
+                  },
+                  "event": {
+                    "type": "string",
+                    "enum": [
+                      "bonus.awarded"
+                    ]
+                  },
+                  "created": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "Z$"
+                  },
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "bonusId": {
+                        "type": "string"
+                      },
+                      "commissionId": {
+                        "type": "string",
+                        "description": "The bonus's commission: the row payouts, approval and reversal act on. It has no `attributionId`."
+                      },
+                      "partnerId": {
+                        "type": "string"
+                      },
+                      "amount": {
+                        "$ref": "#/components/schemas/Decimal"
+                      },
+                      "currency": {
+                        "type": "string"
+                      },
+                      "programId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The program the bonus was paid under; its holdback applies. Null: none."
+                      },
+                      "bountyId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The performance bounty that awarded it, when `source` is `performance_bounty`."
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "manual",
+                          "performance_bounty",
+                          "network"
+                        ],
+                        "description": "`manual`: an admin or an integration paid it (`POST /bonuses`). `performance_bounty`: the partner reached a bounty's goal. `network`: an OpenPartner Network bounty. New values may be added."
+                      },
+                      "note": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The note shown to the partner."
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "accrued",
+                          "approved"
+                        ],
+                        "description": "`approved`: it is paid in the next payout run (and `bonus.approved` follows). `accrued`: held for the program's holdback first."
+                      }
+                    },
+                    "required": [
+                      "bonusId",
+                      "commissionId",
+                      "partnerId",
+                      "amount",
+                      "currency",
+                      "programId",
+                      "bountyId",
+                      "source",
+                      "note",
+                      "status"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "event",
+                  "created",
+                  "data"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges. A non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed. Failed deliveries are not retried automatically."
+          }
+        }
+      }
+    },
+    "bonus.approved": {
+      "post": {
+        "operationId": "webhook_bonus_approved",
+        "tags": [
+          "Webhook events"
+        ],
+        "summary": "bonus.approved",
+        "description": "A bonus was approved for the next payout run: on award (`POST /bonuses` without `hold`, or a Network bonus), by an admin, or by the holdback auto-approve job.\n\nSubscribe with `events: [\"bonus.approved\"]` (or `\"*\"`). Delivered as a signed JSON POST; see **Webhooks** in the introduction for verification.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
+            },
+            "required": true,
+            "name": "x-openpartner-signature",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
+            },
+            "required": true,
+            "name": "x-openpartner-timestamp",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The event type, e.g. `commission.accrued`."
+            },
+            "required": true,
+            "name": "x-openpartner-event",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The envelope `id`."
+            },
+            "required": true,
+            "name": "x-openpartner-delivery",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Unique per event (`evt_…`). A manual redelivery reuses it, so dedupe on this.",
+                    "example": "evt_01JABCDEF0123456789ABCDEFG"
+                  },
+                  "event": {
+                    "type": "string",
+                    "enum": [
+                      "bonus.approved"
+                    ]
+                  },
+                  "created": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "Z$"
+                  },
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "bonusId": {
+                        "type": "string"
+                      },
+                      "commissionId": {
+                        "type": "string",
+                        "description": "The bonus's commission: the row payouts, approval and reversal act on. It has no `attributionId`."
+                      },
+                      "partnerId": {
+                        "type": "string"
+                      },
+                      "amount": {
+                        "$ref": "#/components/schemas/Decimal"
+                      },
+                      "currency": {
+                        "type": "string"
+                      },
+                      "programId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The program the bonus was paid under; its holdback applies. Null: none."
+                      },
+                      "bountyId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The performance bounty that awarded it, when `source` is `performance_bounty`."
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "manual",
+                          "performance_bounty",
+                          "network"
+                        ],
+                        "description": "`manual`: an admin or an integration paid it (`POST /bonuses`). `performance_bounty`: the partner reached a bounty's goal. `network`: an OpenPartner Network bounty. New values may be added."
+                      },
+                      "note": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The note shown to the partner."
+                      }
+                    },
+                    "required": [
+                      "bonusId",
+                      "commissionId",
+                      "partnerId",
+                      "amount",
+                      "currency"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "event",
+                  "created",
+                  "data"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges. A non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed. Failed deliveries are not retried automatically."
+          }
+        }
+      }
+    },
+    "bonus.paid": {
+      "post": {
+        "operationId": "webhook_bonus_paid",
+        "tags": [
+          "Webhook events"
+        ],
+        "summary": "bonus.paid",
+        "description": "A bonus was included in a payout. For a `manual` payout this fires when the payout is planned, before you have sent the money, as for `commission.paid`.\n\nSubscribe with `events: [\"bonus.paid\"]` (or `\"*\"`). Delivered as a signed JSON POST; see **Webhooks** in the introduction for verification.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
+            },
+            "required": true,
+            "name": "x-openpartner-signature",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
+            },
+            "required": true,
+            "name": "x-openpartner-timestamp",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The event type, e.g. `commission.accrued`."
+            },
+            "required": true,
+            "name": "x-openpartner-event",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The envelope `id`."
+            },
+            "required": true,
+            "name": "x-openpartner-delivery",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Unique per event (`evt_…`). A manual redelivery reuses it, so dedupe on this.",
+                    "example": "evt_01JABCDEF0123456789ABCDEFG"
+                  },
+                  "event": {
+                    "type": "string",
+                    "enum": [
+                      "bonus.paid"
+                    ]
+                  },
+                  "created": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "Z$"
+                  },
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "bonusId": {
+                        "type": "string"
+                      },
+                      "commissionId": {
+                        "type": "string",
+                        "description": "The bonus's commission: the row payouts, approval and reversal act on. It has no `attributionId`."
+                      },
+                      "partnerId": {
+                        "type": "string"
+                      },
+                      "amount": {
+                        "$ref": "#/components/schemas/Decimal"
+                      },
+                      "currency": {
+                        "type": "string"
+                      },
+                      "programId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The program the bonus was paid under; its holdback applies. Null: none."
+                      },
+                      "bountyId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The performance bounty that awarded it, when `source` is `performance_bounty`."
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "manual",
+                          "performance_bounty",
+                          "network"
+                        ],
+                        "description": "`manual`: an admin or an integration paid it (`POST /bonuses`). `performance_bounty`: the partner reached a bounty's goal. `network`: an OpenPartner Network bounty. New values may be added."
+                      },
+                      "note": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The note shown to the partner."
+                      },
+                      "payoutId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "bonusId",
+                      "commissionId",
+                      "partnerId",
+                      "amount",
+                      "currency",
+                      "payoutId"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "event",
+                  "created",
+                  "data"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges. A non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed. Failed deliveries are not retried automatically."
+          }
+        }
+      }
+    },
+    "bonus.reversed": {
+      "post": {
+        "operationId": "webhook_bonus_reversed",
+        "tags": [
+          "Webhook events"
+        ],
+        "summary": "bonus.reversed",
+        "description": "A bonus was reversed before it was paid. Paid bonuses are not clawed back.\n\nSubscribe with `events: [\"bonus.reversed\"]` (or `\"*\"`). Delivered as a signed JSON POST; see **Webhooks** in the introduction for verification.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
+            },
+            "required": true,
+            "name": "x-openpartner-signature",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
+            },
+            "required": true,
+            "name": "x-openpartner-timestamp",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The event type, e.g. `commission.accrued`."
+            },
+            "required": true,
+            "name": "x-openpartner-event",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The envelope `id`."
+            },
+            "required": true,
+            "name": "x-openpartner-delivery",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Unique per event (`evt_…`). A manual redelivery reuses it, so dedupe on this.",
+                    "example": "evt_01JABCDEF0123456789ABCDEFG"
+                  },
+                  "event": {
+                    "type": "string",
+                    "enum": [
+                      "bonus.reversed"
+                    ]
+                  },
+                  "created": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "Z$"
+                  },
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "bonusId": {
+                        "type": "string"
+                      },
+                      "commissionId": {
+                        "type": "string",
+                        "description": "The bonus's commission: the row payouts, approval and reversal act on. It has no `attributionId`."
+                      },
+                      "partnerId": {
+                        "type": "string"
+                      },
+                      "amount": {
+                        "$ref": "#/components/schemas/Decimal"
+                      },
+                      "currency": {
+                        "type": "string"
+                      },
+                      "programId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The program the bonus was paid under; its holdback applies. Null: none."
+                      },
+                      "bountyId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The performance bounty that awarded it, when `source` is `performance_bounty`."
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "manual",
+                          "performance_bounty",
+                          "network"
+                        ],
+                        "description": "`manual`: an admin or an integration paid it (`POST /bonuses`). `performance_bounty`: the partner reached a bounty's goal. `network`: an OpenPartner Network bounty. New values may be added."
+                      },
+                      "note": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The note shown to the partner."
+                      },
+                      "reason": {
+                        "type": "string",
+                        "enum": [
+                          "manual",
+                          "bounty_requalification"
+                        ],
+                        "description": "`manual` = an admin reversed it; `bounty_requalification` = a performance bounty's goal was no longer met when its holdback ended (refunds took the partner back under it)."
+                      }
+                    },
+                    "required": [
+                      "bonusId",
+                      "commissionId",
+                      "partnerId",
                       "amount",
                       "currency",
                       "reason"

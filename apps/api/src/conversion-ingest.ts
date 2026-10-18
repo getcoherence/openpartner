@@ -86,7 +86,7 @@ export async function storedAttribution(db: Knex, eventId: string): Promise<Repl
   // One commission per touch in the response, as attributeEvent reports it.
   const commissionByAttribution = new Map<string, string>();
   for (const c of commissions) {
-    if (!commissionByAttribution.has(c.attributionId)) commissionByAttribution.set(c.attributionId, c.id);
+    if (c.attributionId && !commissionByAttribution.has(c.attributionId)) commissionByAttribution.set(c.attributionId, c.id);
   }
 
   return {

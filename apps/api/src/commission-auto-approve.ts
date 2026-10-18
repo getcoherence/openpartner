@@ -13,6 +13,11 @@
  * brands). The job is safe to re-run; the WHERE clause is the source
  * of truth and a no-op once everything's been swept.
  *
+ * A bonus's commission (bonuses.ts) has no Attribution: its program, and
+ * so its holdback, comes through Bonus.programId. A bonus with no program
+ * takes the partner-wide holdback, or waits for an admin like any
+ * commission with none.
+ *
  * Returns the approved rows so the caller can fire commission.approved
  * once the sweep's transaction has committed — this runs inside the
  * scheduler's per-tenant transaction, so dispatching from here would
@@ -41,36 +46,45 @@ export async function autoApproveMatureCommissions(
   // listQueryBase, which the review queue and manual approve read through.
   //
   // Single statement so two scheduler ticks racing don't double-
-  // process the same row. Each join matches at most one row (partial
-  // unique indexes on PartnerCommission), so the FROM list can't fan out.
+  // process the same row: the second UPDATE re-checks `status =
+  // 'accrued'` on the row the first committed, and skips it. Each join
+  // matches at most one row (partial unique indexes on PartnerCommission;
+  // a commission has one attribution or one bonus), so `due` can't fan out.
   //
-  // PartnerCommission is keyed on the partner via the Attribution row
-  // (a."partnerId"), NOT the UPDATE target c."partnerId": Postgres forbids
-  // referencing an UPDATE's target table inside its FROM-clause join
-  // conditions ("invalid reference to FROM-clause entry for table c").
-  // c."attributionId" = a.id already pairs them, and a commission's
-  // partnerId equals its attribution's partnerId by construction, so the
-  // two are equivalent — but only the a. form is legal here.
+  // The candidates are picked in a CTE rather than the UPDATE's FROM list
+  // because a bonus's commission has no Attribution to inner-join, and
+  // Postgres forbids referencing the UPDATE target inside FROM-clause join
+  // conditions, which the left joins below need.
   const result = (await db.raw(
     `
+    with due as (
+      select c.id
+        from "${TABLES.Commission}" c
+        left join "${TABLES.Attribution}" a on a.id = c."attributionId" and a."partnerId" = c."partnerId"
+        left join "${TABLES.Bonus}" b on b.id = c."bonusId"
+        -- Every attribution has its program; a bonus may have none, and
+        -- then (no cp, so no pcp) the partner-wide holdback applies.
+        left join "${TABLES.Program}" cp on cp.id = coalesce(a."programId", b."programId")
+        left join "${TABLES.PartnerCommission}" pcp
+               on pcp."partnerId" = c."partnerId" and pcp."programId" = cp.id
+        left join "${TABLES.PartnerCommission}" pcw
+               on pcw."partnerId" = c."partnerId" and pcw."programId" is null
+       where c."tenantId" = ?
+         and c.status = 'accrued'
+         and (a.id is not null or b.id is not null)
+         and ${EFFECTIVE_HOLDBACK_SQL} is not null
+         and ${EFFECTIVE_HOLDBACK_SQL} > 0
+         and c."accruedAt" + (${EFFECTIVE_HOLDBACK_SQL} * interval '1 day') <= now()
+    )
     update "${TABLES.Commission}" c
        set status = 'approved'
-      from "${TABLES.Attribution}" a
-      join "${TABLES.Program}" cp on a."programId" = cp.id
-      left join "${TABLES.PartnerCommission}" pcp
-             on pcp."partnerId" = a."partnerId" and pcp."programId" = a."programId"
-      left join "${TABLES.PartnerCommission}" pcw
-             on pcw."partnerId" = a."partnerId" and pcw."programId" is null
-     where c."tenantId" = ?
+      from due
+     where c.id = due.id
+       and c."tenantId" = ?
        and c.status = 'accrued'
-       and c."attributionId" = a.id
-       and c."partnerId" = a."partnerId"
-       and ${EFFECTIVE_HOLDBACK_SQL} is not null
-       and ${EFFECTIVE_HOLDBACK_SQL} > 0
-       and c."accruedAt" + (${EFFECTIVE_HOLDBACK_SQL} * interval '1 day') <= now()
     returning c.*
     `,
-    [tenantId],
+    [tenantId, tenantId],
   )) as { rows: CommissionRow[] };
 
   return { approvedCount: result.rows.length, approved: result.rows };
