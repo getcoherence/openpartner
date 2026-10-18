@@ -26,6 +26,7 @@ import type { Knex } from 'knex';
 import type { NextFunction, Request, Response } from 'express';
 import { DEFAULT_TENANT_ID, TABLES, type TenantRow } from '@openpartner/db';
 import { appDb } from './db.js';
+import { trackCommitJobs } from './on-commit.js';
 
 export type TenancyMode = 'single' | 'multi';
 
@@ -93,6 +94,8 @@ declare global {
        *  hiding key on this; host resolution itself does NOT (graceful
        *  degradation on cancellation, spec §8.1). */
       tenantWhiteLabelEffective?: boolean;
+      /** Jobs queued with afterCommit(); run once `db` has committed. */
+      afterCommitJobs?: Array<() => Promise<void>>;
     }
   }
 }
@@ -240,6 +243,29 @@ export async function withTenantTransaction<T>(
 }
 
 /**
+ * Run `fn` once the request's transaction has COMMITTED, in a tenant
+ * transaction of its own. For calls to the outside world that must only
+ * ever describe durable state: a Network push sent from inside `req.db`
+ * reached the Network even when the request then rolled back (a 500 after
+ * the push used to undo the partner's consent while the Network kept them).
+ *
+ * Jobs run in order after the commit and before the response is sent, so
+ * the client still sees their effects. A rolled-back request runs none. A
+ * job that throws is logged, not surfaced: the request's own writes
+ * already stand, and the response says so.
+ */
+export function afterCommit(req: Request, label: string, fn: (trx: Knex.Transaction) => Promise<unknown>): void {
+  const { tenantId } = tenantOf(req);
+  (req.afterCommitJobs ??= []).push(async () => {
+    try {
+      await withTenantTransaction(tenantId, fn);
+    } catch (err) {
+      console.error(`[tenancy] after-commit job failed: ${label}`, err);
+    }
+  });
+}
+
+/**
  * Express middleware that:
  *   1. Resolves the tenantId for the request
  *   2. Opens a transaction on the appDb pool
@@ -323,6 +349,10 @@ export async function tenantMiddleware(
     return next(err);
   }
   req.db = trx;
+  // One queue for both afterCommit(req) and onCommit(req.db): run by
+  // finalize() after COMMIT, never on rollback.
+  req.afterCommitJobs = [];
+  trackCommitJobs(trx, req.afterCommitJobs);
 
   // Patch res.send/json/end so they commit (or rollback on 5xx) before
   // any byte goes to the client. If commit fails the request becomes a
@@ -347,7 +377,9 @@ export async function tenantMiddleware(
         }
         // Headers already out; nothing safe to do but log.
         console.error('[tenancy] commit failed after headers sent', err);
+        return;
       }
+      for (const job of req.afterCommitJobs ?? []) await job();
     } else {
       try {
         await trx.rollback();

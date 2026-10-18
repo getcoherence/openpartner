@@ -6,8 +6,9 @@
  *
  * Only admins can approve or reverse — partners can see their own queue but
  * not change state. Status transitions are enforced here; once paid, rows are
- * considered part of the immutable ledger (reversal should be a compensating
- * entry, not a mutation — TODO when we add refund handling).
+ * part of the immutable ledger and this route refuses them. A refund of a
+ * paid commission is a compensating CommissionAdjustment instead
+ * (refunds.ts, via POST /attribution/refunds or Stripe's charge.refunded).
  */
 
 import { Router } from 'express';
@@ -16,6 +17,7 @@ import { z } from 'zod';
 import { TABLES, type CommissionRow } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { dispatchCommissionEvents } from '../commission-events.js';
+import { onCommit } from '../on-commit.js';
 import { cursorTimestamp, decodeCursor, takePage, whereAfterCursor } from '../pagination.js';
 import { tenantOf } from '../tenancy.js';
 import { interlockCommissionReversal, whereNotClaimedByOpenIntent } from '../funding/interlocks.js';
@@ -45,30 +47,30 @@ commissionsRouter.get(
   grantScope('commissions:read'),
   requirePartnerOrAdmin('id'),
   async (req, res) => {
-    const { db } = tenantOf(req);
+    const { db, tenantId } = tenantOf(req);
     const q = listQuerySchema.safeParse(req.query);
     if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
 
-    const result = await listPage(db, q.data, req.params.id);
+    const result = await listPage(db, tenantId, q.data, req.params.id);
     if (!result) return res.status(400).json({ error: 'invalid_cursor' });
     res.json(result);
   },
 );
 
 commissionsRouter.get('/commissions', requireAuth, grantScope('commissions:read'), requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const q = listQuerySchema.safeParse(req.query);
   if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
 
-  const result = await listPage(db, q.data);
+  const result = await listPage(db, tenantId, q.data);
   if (!result) return res.status(400).json({ error: 'invalid_cursor' });
   res.json(result);
 });
 
 /** One page of commissions, optionally for a single partner. Null when
  *  the cursor doesn't decode. */
-async function listPage(db: Knex, q: z.infer<typeof listQuerySchema>, partnerId?: string) {
-  const query = listQueryBase(db).select(cursorTimestamp(db, 'c.accruedAt')).limit(q.limit + 1);
+async function listPage(db: Knex, tenantId: string, q: z.infer<typeof listQuerySchema>, partnerId?: string) {
+  const query = listQueryBase(db, tenantId).select(cursorTimestamp(db, 'c.accruedAt')).limit(q.limit + 1);
   if (partnerId) query.where('c.partnerId', partnerId);
   if (q.status) query.andWhere('c.status', q.status);
   if (q.cursor) {
@@ -88,9 +90,14 @@ async function listPage(db: Knex, q: z.infer<typeof listQuerySchema>, partnerId?
  *  partner-wide snapshot (pcw); else the program's value. Same expression
  *  as the auto-approve job (commission-auto-approve.ts). The UI uses this
  *  to show "Matures in N days" badges and to disable the approve button
- *  while holdback is active. */
-function listQueryBase(db: Knex) {
+ *  while holdback is active.
+ *
+ *  Filters on the tenant explicitly: RLS scopes `db`, but a multi-tenant
+ *  pool that bypasses RLS (no app role) would otherwise list every
+ *  tenant's commissions. */
+function listQueryBase(db: Knex, tenantId: string) {
   return db(`${TABLES.Commission} as c`)
+    .where('c.tenantId', tenantId)
     .leftJoin(`${TABLES.Attribution} as a`, 'a.id', 'c.attributionId')
     .leftJoin(`${TABLES.Program} as cp`, 'cp.id', 'a.programId')
     .leftJoin(`${TABLES.PartnerCommission} as pcp`, (j) =>
@@ -146,7 +153,7 @@ commissionsRouter.post('/commissions/:id/approve', requireAuth, requireAdmin, as
   // own terms first, then the program's), the same expression the auto-approve job
   // applies. Checking only the program's value let an admin approve a
   // commission the partner's own (longer) holdback still covered.
-  const row = await listQueryBase(db).where('c.id', req.params.id).first();
+  const row = await listQueryBase(db, tenantId).where('c.id', req.params.id).first();
   if (!row) return res.status(404).json({ error: 'not_found' });
   const { holdbackDays, matureAt } = decorateMaturity(row);
   if (matureAt && new Date(matureAt) > new Date()) {
@@ -159,14 +166,16 @@ commissionsRouter.post('/commissions/:id/approve', requireAuth, requireAdmin, as
   }
 
   const updated = await db<CommissionRow>(TABLES.Commission)
-    .where({ id: req.params.id, status: 'accrued' })
+    .where({ id: req.params.id, tenantId, status: 'accrued' })
     .update({ status: 'approved' })
     .returning('*');
   if (updated.length === 0) {
     return res.status(409).json({ error: 'not_approvable', detail: 'must be in accrued state' });
   }
   const c = updated[0]!;
-  void dispatchCommissionEvents(tenantId, 'commission.approved', [c]);
+  // After COMMIT, so a receiver reading the commission sees it approved.
+  // Not awaited: the origin lookup needn't hold up the response.
+  onCommit(db, 'commission.approved webhook', () => void dispatchCommissionEvents(tenantId, 'commission.approved', [c]));
   res.json({ commission: c });
 });
 
@@ -191,13 +200,13 @@ commissionsRouter.post('/commissions/:id/reverse', requireAuth, requireAdmin, as
   const updated = await whereNotClaimedByOpenIntent(
     db,
     db<CommissionRow>(TABLES.Commission)
-      .where({ [`${TABLES.Commission}.id`]: req.params.id })
+      .where({ [`${TABLES.Commission}.id`]: req.params.id, [`${TABLES.Commission}.tenantId`]: tenantId })
       .whereIn('status', ['accrued', 'approved']),
   )
     .update({ status: 'reversed' })
     .returning('*');
   if (updated.length === 0) {
-    const current = await db<CommissionRow>(TABLES.Commission).where({ id: req.params.id }).first();
+    const current = await db<CommissionRow>(TABLES.Commission).where({ id: req.params.id, tenantId }).first();
     if (current && ['accrued', 'approved'].includes(current.status)) {
       // Status was fine, so the guard is what refused: a payout intent
       // claimed it in the gap.
@@ -209,6 +218,8 @@ commissionsRouter.post('/commissions/:id/reverse', requireAuth, requireAdmin, as
     return res.status(409).json({ error: 'not_reversible', detail: 'only accrued or approved commissions' });
   }
   const c = updated[0]!;
-  void dispatchCommissionEvents(tenantId, 'commission.reversed', [c], { reason: 'manual' });
+  onCommit(db, 'commission.reversed webhook', () =>
+    void dispatchCommissionEvents(tenantId, 'commission.reversed', [c], { reason: 'manual' }),
+  );
   res.json({ commission: c });
 });

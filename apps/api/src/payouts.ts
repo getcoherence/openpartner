@@ -59,6 +59,7 @@ import {
   type TenantRow,
 } from '@openpartner/db';
 import { REVSHARE_FEE_BPS, type OpenPartnerMode } from './stripe.js';
+import { centsToStripeMinor, fromStripeMinor, majorToCents } from './stripe-amounts.js';
 import type { PayoutTransferMeta } from './payout-transfers.js';
 import { getTenantBillingState } from './billing-plan.js';
 import { dispatchEvent } from './webhook-dispatcher.js';
@@ -160,19 +161,31 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
   const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first();
   const railPreference: PayoutRailPreference = tenant?.payoutRailPreference ?? 'auto';
   // null / 0 / negative all collapse to "no threshold" — keeps the legacy
-  // behavior intact for tenants who haven't touched the setting.
+  // behavior intact for tenants who haven't touched the setting. The
+  // minimum is in the tenant's default currency; without FX it says
+  // nothing about a balance in any other, so those pay at any amount.
   const thresholdCents = Math.max(0, tenant?.payoutThresholdCents ?? 0);
+  const thresholdCurrency = (tenant?.defaultCurrency ?? 'USD').toUpperCase();
 
   // `payoutId is null` is the un-claimed filter: a commission already
   // frozen onto an open transfer intent must NOT be regrouped, or the
   // retry would pay it twice under a different idempotency key (audit
   // #10). Claims are stamped by this function and released by the
   // executor when an intent is abandoned.
+  //
+  // tenantId is named explicitly. RLS scopes `db` to this tenant, but a
+  // multi-tenant pool that bypasses RLS (no app role) would otherwise plan
+  // payouts for every tenant's partners in this run. The reads below are
+  // keyed on a partnerId from these groups, so they stay in the tenant.
+  //
+  // Grouped on the upper-cased code: commissions booked before ingest
+  // normalised currencies can say "inr", and they are the same rupees as
+  // "INR" — one balance, one payout.
   const groups = (await db(TABLES.Commission)
-    .where({ status: 'approved' })
+    .where({ tenantId, status: 'approved' })
     .whereNull('payoutId')
-    .groupBy('partnerId', 'currency')
-    .select('partnerId', 'currency')) as Array<{ partnerId: string; currency: string }>;
+    .groupByRaw('"partnerId", upper("currency")')
+    .select('partnerId', db.raw('upper("currency") as currency'))) as Array<{ partnerId: string; currency: string }>;
 
   const results: PayoutRunResult['payouts'] = [];
   const skipped: PayoutRunResult['skippedBelowThreshold'] = [];
@@ -184,22 +197,32 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     const partner = await db<PartnerRow>(TABLES.Partner).where({ id: group.partnerId }).first();
     if (!partner) continue;
 
-    // Read the exact rows first and derive the total from them, in minor
-    // units. The group total and a later SELECT can disagree under READ
-    // COMMITTED (each statement takes a fresh snapshot), and the transfer
-    // amount must equal the sum of the commissions we actually claim —
-    // never a stale aggregate.
+    // Read the exact rows first and derive the total from them. The group
+    // total and a later SELECT can disagree under READ COMMITTED (each
+    // statement takes a fresh snapshot), and the transfer amount must
+    // equal the sum of the commissions we actually claim — never a stale
+    // aggregate.
     const commissions = await db<CommissionRow>(TABLES.Commission)
-      .where({ partnerId: group.partnerId, currency: group.currency, status: 'approved' })
+      .where({ partnerId: group.partnerId, status: 'approved' })
+      .whereRaw('upper("currency") = ?', [group.currency])
       .whereNull('payoutId');
     if (commissions.length === 0) continue;
-    const amountMinor = commissions.reduce((s, c) => s + Math.round(Number(c.amount) * 100), 0);
-    const amount = amountMinor / 100;
+    // Summed in hundredths, the storage precision, so the total is exact.
+    // `amountMinor` is that total in Stripe's integer form for this
+    // currency (¥1,000 is 1000, KWD 1.23 is 1230; stripe-amounts.ts) and
+    // is what a transfer sends. `amount` is the same figure in major
+    // units, so the Payout row records what is paid: it differs from the
+    // commission sum only where Stripe has no fractions (¥100.50 → ¥101).
+    const amountCents = commissions.reduce((s, c) => s + majorToCents(c.amount), 0);
+    const amountMinor = centsToStripeMinor(amountCents, group.currency);
+    const amount = fromStripeMinor(amountMinor, group.currency);
 
     // Threshold gate: balances below the tenant minimum stay 'approved'
-    // and roll over to the next run. Cents are the storage unit on the
-    // tenant column, so the comparison happens in minor units.
-    if (thresholdCents > 0 && amountMinor < thresholdCents) {
+    // and roll over to the next run. The minimum is in the tenant's default
+    // currency, and hundredths are the storage unit on the tenant column, so
+    // the comparison happens in them (amountCents, not the exponent-aware
+    // amountMinor).
+    if (thresholdCents > 0 && group.currency === thresholdCurrency && amountCents < thresholdCents) {
       skipped.push({ partnerId: partner.id, currency: group.currency, amount });
       continue;
     }
@@ -317,9 +340,22 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     // Only mark commissions paid on the manual-commit path. Connect
     // path defers until after the transfer succeeds.
     if (method === 'manual') {
-      await db(TABLES.Commission)
+      // Compare-and-set, like the Connect claim below: the rows were read
+      // without a lock, and a refund or an admin reversal can flip one to
+      // 'reversed' in between. An unguarded UPDATE turned it back into
+      // 'paid', paying refunded revenue (and, after a partial refund, its
+      // replacement commission too). A short count aborts the whole run;
+      // nothing has been announced yet, so the next run starts clean.
+      const marked = await db(TABLES.Commission)
         .whereIn('id', commissions.map((c) => c.id))
+        .where({ status: 'approved' })
+        .whereNull('payoutId')
         .update({ status: 'paid', paidAt: new Date(), payoutId });
+      if (marked !== commissions.length) {
+        throw new Error(
+          `manual payout ${payoutId}: marked ${marked}/${commissions.length} commissions paid for partner ${partner.id} — a commission was reversed or claimed concurrently; aborting`,
+        );
+      }
     }
 
     if (connectBlocked) {
@@ -434,7 +470,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     for (const [currency, candidates] of byCurrency) {
       if (!auth) {
         for (const c of candidates) {
-          skippedUnfunded.push({ partnerId: c.partnerId, currency, amount: c.amountMinor / 100 });
+          skippedUnfunded.push({ partnerId: c.partnerId, currency, amount: fromStripeMinor(c.amountMinor, currency) });
         }
         console.error(
           `[payouts] funding enabled but tenant ${tenantId} has no funding authorization — ${candidates.length} group(s) held`,
@@ -448,7 +484,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
         );
       } else if (reserved.skipped && reserved.skipped !== 'open_batch_exists') {
         for (const c of candidates) {
-          skippedUnfunded.push({ partnerId: c.partnerId, currency, amount: c.amountMinor / 100 });
+          skippedUnfunded.push({ partnerId: c.partnerId, currency, amount: fromStripeMinor(c.amountMinor, currency) });
         }
       }
       // open_batch_exists: eligible commissions roll forward silently —

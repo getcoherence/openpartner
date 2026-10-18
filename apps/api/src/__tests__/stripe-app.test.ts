@@ -1,0 +1,919 @@
+/**
+ * The OpenPartner Stripe App: hosted brands connect their own Stripe
+ * account (OAuth install) and its events drive attribution.
+ *
+ *   - OAuth state: signature, expiry, the tenant + admin binding, and the
+ *     encrypted grant the callback hands the portal.
+ *   - Code exchange (Stripe's token endpoint is a fetch mock): storage,
+ *     test vs live keys, reconnect / replace, an account already connected
+ *     to another tenant.
+ *   - Refresh-token rotation, including two concurrent refreshes.
+ *   - /webhooks/stripe-app: signature, tenant by event.account, livemode,
+ *     unknown accounts, uninstall, dedupe, and the self-host mapping end to
+ *     end — Payment Link checkout, invoice.paid, a full refund, a promo
+ *     code redemption.
+ *   - A forwarded conversion for a Stripe transaction the app records.
+ *   - Customer rewards minted in the BRAND's account, never the platform's.
+ *   - Self-host keeps its own path (the stripe-webhook suites cover the
+ *     mapping itself).
+ *
+ * Stripe API reads are a recorded mock that notes the API key each call
+ * used, so "the brand's token, never STRIPE_SECRET_KEY" is checked call by
+ * call. Requires DATABASE_URL; skipped without it.
+ */
+
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import request from 'supertest';
+import { ulid } from 'ulid';
+import Stripe from 'stripe';
+
+const PLATFORM_KEY = 'sk_test_platform_billing_key';
+const PLATFORM_WEBHOOK_SECRET = 'whsec_platform_destination_a';
+const APP_WEBHOOK_SECRET = 'whsec_stripe_app_endpoint';
+const ADMIN_KEY = 'op_test_admin_key_stripe_app_0123456789';
+const BRAND_ACCOUNT = 'acct_1BrandOwnStripe';
+const BRAND_TOKEN = 'at_brand_access_token';
+const PORTAL = 'https://app.openpartner.test';
+const RETURN_URL = `${PORTAL}/admin/integrations`;
+
+process.env.OPENPARTNER_MODE = 'revshare';
+process.env.OPENPARTNER_TENANCY = 'single';
+process.env.PORTAL_URL = PORTAL;
+process.env.ADMIN_API_KEY = ADMIN_KEY;
+process.env.STRIPE_SECRET_KEY = PLATFORM_KEY;
+process.env.STRIPE_WEBHOOK_SECRET = PLATFORM_WEBHOOK_SECRET;
+process.env.STRIPE_APP_CLIENT_ID = 'ca_live_openpartner_app';
+process.env.STRIPE_APP_SECRET_KEY = 'sk_live_app_developer';
+process.env.STRIPE_APP_CLIENT_ID_TEST = 'ca_test_openpartner_app';
+process.env.STRIPE_APP_SECRET_KEY_TEST = 'sk_test_app_developer';
+process.env.STRIPE_APP_WEBHOOK_SECRET = APP_WEBHOOK_SECRET;
+delete process.env.STRIPE_APP_REDIRECT_URI;
+
+// Every Stripe API call any client makes, with the key it was made with.
+const stripeApi = vi.hoisted(() => ({
+  calls: [] as Array<{ key: string; method: string; args: unknown[] }>,
+  impl: {} as Record<string, (...args: unknown[]) => unknown>,
+}));
+
+function resetStripeApi() {
+  stripeApi.calls.length = 0;
+  const missing = (what: string) => async () => {
+    throw Object.assign(new Error(`No such ${what}`), { type: 'StripeInvalidRequestError', code: 'resource_missing' });
+  };
+  Object.assign(stripeApi.impl, {
+    'customers.retrieve': async (id: unknown) => ({ id, object: 'customer', metadata: {}, deleted: false }),
+    'customers.update': async (id: unknown) => ({ id }),
+    'checkout.sessions.list': async () => ({ object: 'list', data: [], has_more: false }),
+    'checkout.sessions.retrieve': missing('checkout session'),
+    'invoices.retrieve': missing('invoice'),
+    'charges.retrieve': missing('charge'),
+    'promotionCodes.retrieve': missing('promotion code'),
+    'promotionCodes.list': async () => ({ object: 'list', data: [] }),
+    'promotionCodes.create': async (p: unknown) => ({ id: 'promo_minted', ...(p as object) }),
+    'promotionCodes.update': async (id: unknown, p: unknown) => ({ id, ...(p as object) }),
+    'coupons.create': async (p: unknown) => ({ id: 'co_minted', ...(p as object) }),
+    'coupons.retrieve': missing('coupon'),
+  });
+}
+resetStripeApi();
+
+vi.mock('stripe', async () => {
+  const actual = await vi.importActual<typeof import('stripe')>('stripe');
+  const Real = actual.default;
+  function MockedStripe(this: unknown, key: string, opts?: Stripe.StripeConfig) {
+    const instance = new Real(key, opts) as unknown as Record<string, unknown>;
+    const call =
+      (method: string) =>
+      (...args: unknown[]) => {
+        stripeApi.calls.push({ key, method, args });
+        return stripeApi.impl[method]!(...args);
+      };
+    instance.customers = { retrieve: call('customers.retrieve'), update: call('customers.update') };
+    instance.checkout = {
+      sessions: { list: call('checkout.sessions.list'), retrieve: call('checkout.sessions.retrieve') },
+    };
+    instance.invoices = { retrieve: call('invoices.retrieve') };
+    instance.charges = { retrieve: call('charges.retrieve') };
+    instance.promotionCodes = {
+      retrieve: call('promotionCodes.retrieve'),
+      list: call('promotionCodes.list'),
+      create: call('promotionCodes.create'),
+      update: call('promotionCodes.update'),
+    };
+    instance.coupons = { create: call('coupons.create'), retrieve: call('coupons.retrieve') };
+    return instance;
+  }
+  (MockedStripe as unknown as { webhooks: unknown }).webhooks = (Real as unknown as { webhooks: unknown }).webhooks;
+  return { default: MockedStripe };
+});
+
+vi.mock('../webhook-dispatcher.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../webhook-dispatcher.js')>();
+  return { ...actual, dispatchEvent: vi.fn() };
+});
+
+// Stripe's OAuth token endpoint, as a queue of canned responses.
+const oauth = {
+  queue: [] as Array<() => Response | Promise<Response>>,
+  calls: [] as Array<{ authorization: string; body: URLSearchParams }>,
+};
+const realFetch = globalThis.fetch;
+const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+  if (url !== 'https://api.stripe.com/v1/oauth/token') return realFetch(input, init);
+  const headers = new Headers(init?.headers);
+  oauth.calls.push({ authorization: headers.get('authorization') ?? '', body: new URLSearchParams(String(init?.body ?? '')) });
+  const next = oauth.queue.shift();
+  if (!next) throw new Error('unexpected OAuth token request');
+  return next();
+});
+
+function tokenResponse(t: { access: string; refresh: string; account?: string; livemode?: boolean }) {
+  return () =>
+    new Response(
+      JSON.stringify({
+        access_token: t.access,
+        refresh_token: t.refresh,
+        stripe_user_id: t.account ?? BRAND_ACCOUNT,
+        livemode: t.livemode ?? true,
+        scope: 'stripe_apps',
+        token_type: 'bearer',
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+}
+function oauthError(status: number, error: string, description: string) {
+  return () =>
+    new Response(JSON.stringify({ error, error_description: description }), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    });
+}
+const basicAuth = (key: string) => `Basic ${Buffer.from(`${key}:`).toString('base64')}`;
+
+const { DEFAULT_TENANT_ID, TABLES } = await import('@openpartner/db');
+const { db } = await import('../db.js');
+const { createApp } = await import('../app.js');
+const { createSession } = await import('../auth-sessions.js');
+const { decryptSecret, encryptSecret } = await import('../crypto.js');
+const {
+  STRIPE_APP_PERMISSIONS,
+  STRIPE_APP_PERMISSIONS_VERSION,
+  StripeAppOAuthError,
+  __resetStripeAppTokenCacheForTests,
+  allowedReturnUrl,
+  brandStripe,
+  refreshAccessToken,
+  signOAuthState,
+  verifyOAuthState,
+} = await import('../stripe-app.js');
+const { customerRewardDelivery, provisionCustomerReward } = await import('../customer-rewards.js');
+
+const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
+const app = createApp({ enableLogger: false });
+const signer = new Stripe('sk_test_signer');
+
+const FOREIGN_TENANT = '01J0000000STRIPEAPPOTHER00';
+const createdAdmins: string[] = [];
+
+const PRODUCT_TABLES = [
+  TABLES.Commission,
+  TABLES.Attribution,
+  TABLES.Event,
+  TABLES.Identity,
+  TABLES.Click,
+  TABLES.Link,
+  TABLES.Coupon,
+  TABLES.Program,
+  TABLES.Partner,
+  TABLES.TenantStripeConnection,
+];
+
+async function cleanProductTables() {
+  for (const t of PRODUCT_TABLES) await db(t).del();
+}
+
+async function adminCookie(tenantId: string = DEFAULT_TENANT_ID): Promise<{ adminId: string; cookie: string }> {
+  const adminId = ulid();
+  createdAdmins.push(adminId);
+  await db(TABLES.Admin).insert({
+    id: adminId,
+    tenantId,
+    email: `stripe-app-${adminId}@x.test`,
+    name: 'Stripe App admin',
+    activatedAt: new Date(),
+  });
+  const { plaintext } = await createSession(db, { tenantId, principalKind: 'admin', principalId: adminId });
+  return { adminId, cookie: `op_session=${plaintext}` };
+}
+
+/** Start → Stripe → callback, returning the grant the portal would POST. */
+async function installGrant(cookie: string, mode: 'live' | 'test' = 'live'): Promise<string> {
+  const start = await request(app).post('/stripe-app/connection/start').set('Cookie', cookie).send({ mode, returnUrl: RETURN_URL });
+  expect(start.status).toBe(200);
+  const state = new URL(start.body.url).searchParams.get('state')!;
+  const cb = await request(app).get('/stripe-app/oauth/callback').query({ code: 'ac_one_time_code', state });
+  expect(cb.status).toBe(302);
+  return new URL(cb.headers.location as string).searchParams.get('stripe_app_grant')!;
+}
+
+async function connect(
+  cookie: string,
+  t: { access?: string; refresh?: string; account?: string; livemode?: boolean; mode?: 'live' | 'test' } = {},
+) {
+  const grant = await installGrant(cookie, t.mode ?? 'live');
+  oauth.queue.push(
+    tokenResponse({ access: t.access ?? BRAND_TOKEN, refresh: t.refresh ?? 'rt_initial', account: t.account, livemode: t.livemode }),
+  );
+  return request(app).post('/stripe-app/connection/complete').set('Cookie', cookie).send({ grant });
+}
+
+async function seedConnection(
+  o: {
+    tenantId?: string;
+    account?: string;
+    livemode?: boolean;
+    access?: string;
+    refresh?: string;
+    expiresInMs?: number;
+    permissionsGranted?: string[] | null;
+  } = {},
+): Promise<string> {
+  const id = `tsc_${ulid()}`;
+  const livemode = o.livemode ?? true;
+  await db(TABLES.TenantStripeConnection).insert({
+    id,
+    tenantId: o.tenantId ?? DEFAULT_TENANT_ID,
+    stripeAccountId: o.account ?? BRAND_ACCOUNT,
+    livemode,
+    keyMode: livemode ? 'live' : 'test',
+    refreshTokenEnc: encryptSecret(o.refresh ?? 'rt_seeded'),
+    accessTokenEnc: encryptSecret(o.access ?? BRAND_TOKEN),
+    accessTokenExpiresAt: new Date(Date.now() + (o.expiresInMs ?? 60 * 60 * 1000)),
+    permissionsVersion: STRIPE_APP_PERMISSIONS_VERSION,
+    permissionsGranted: o.permissionsGranted == null ? null : JSON.stringify(o.permissionsGranted),
+  });
+  return id;
+}
+
+async function connectionRow(id: string) {
+  return db(TABLES.TenantStripeConnection).where({ id }).first();
+}
+
+interface Seeded {
+  partnerId: string;
+  programId: string;
+  clickId: string;
+}
+
+async function seedClick(tenantId: string = DEFAULT_TENANT_ID): Promise<Seeded> {
+  const partnerId = ulid();
+  const programId = ulid();
+  const linkId = ulid();
+  const clickId = ulid();
+  await db(TABLES.Partner).insert({ id: partnerId, tenantId, name: 'Brand partner', email: `p-${partnerId}@x.test` });
+  await db(TABLES.Program).insert({
+    id: programId,
+    tenantId,
+    name: 'Default',
+    attributionModel: 'last_click',
+    attributionWindowDays: 60,
+    commissionRule: JSON.stringify({ type: 'percent', value: 20 }),
+    destinationUrl: 'https://brand.test/buy',
+  });
+  await db(TABLES.Link).insert({
+    id: linkId,
+    tenantId,
+    partnerId,
+    programId,
+    linkKey: `lk-${linkId}`,
+    destinationUrl: 'https://brand.test/buy',
+  });
+  await db(TABLES.Click).insert({
+    id: clickId,
+    tenantId,
+    linkId,
+    partnerId,
+    programId,
+    landingUrl: 'https://brand.test/buy',
+    ipHash: 'h',
+    ts: new Date(),
+  });
+  return { partnerId, programId, clickId };
+}
+
+function appEvent(
+  type: string,
+  object: Record<string, unknown>,
+  o: { account?: string | null; livemode?: boolean; id?: string } = {},
+) {
+  return {
+    id: o.id ?? `evt_${ulid()}`,
+    object: 'event',
+    type,
+    ...(o.account === null ? {} : { account: o.account ?? BRAND_ACCOUNT }),
+    livemode: o.livemode ?? true,
+    created: Math.floor(Date.now() / 1000),
+    api_version: '2026-09-30',
+    data: { object },
+  };
+}
+
+function postSigned(path: string, payload: object, secret: string) {
+  const body = JSON.stringify(payload);
+  const sig = signer.webhooks.generateTestHeaderString({ payload: body, secret });
+  return request(app).post(path).set('content-type', 'application/json').set('stripe-signature', sig).send(body);
+}
+const postAppEvent = (payload: object) => postSigned('/webhooks/stripe-app', payload, APP_WEBHOOK_SECRET);
+
+/** Payment Link default: mode=payment, no Customer, paid at completion. */
+function paymentLinkSession(clickId: string | null, extra: Record<string, unknown> = {}) {
+  return {
+    id: `cs_live_${ulid()}`,
+    object: 'checkout.session',
+    mode: 'payment',
+    payment_status: 'paid',
+    status: 'complete',
+    amount_total: 5000,
+    currency: 'usd',
+    client_reference_id: clickId,
+    customer: null,
+    customer_email: null,
+    payment_intent: `pi_${ulid()}`,
+    invoice: null,
+    total_details: { amount_discount: 0 },
+    metadata: {},
+    ...extra,
+  };
+}
+
+const keysUsed = () => [...new Set(stripeApi.calls.map((c) => c.key))];
+
+// A Stripe coupon redemption stamps the tenant's integration as verified;
+// put it back for later files.
+let couponVerifiedBefore: Date | null = null;
+
+beforeAll(async () => {
+  if (skipIntegration) return;
+  couponVerifiedBefore =
+    (await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first('couponIntegrationVerifiedAt'))
+      ?.couponIntegrationVerifiedAt ?? null;
+  await db(TABLES.Tenant)
+    .insert({ id: FOREIGN_TENANT, slug: 'stripe-app-other', displayName: 'Other brand', status: 'active', approvalStatus: 'approved' })
+    .onConflict('id')
+    .ignore();
+});
+
+afterAll(async () => {
+  fetchSpy.mockRestore();
+  if (!skipIntegration) {
+    await cleanProductTables();
+    if (createdAdmins.length > 0) {
+      await db(TABLES.Session).whereIn('principalId', createdAdmins).del();
+      await db(TABLES.Admin).whereIn('id', createdAdmins).del();
+    }
+    await db(TABLES.Tenant).where({ id: FOREIGN_TENANT }).del();
+    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ couponIntegrationVerifiedAt: couponVerifiedBefore });
+  }
+  process.env.OPENPARTNER_MODE = 'selfhost';
+  await db.destroy();
+});
+
+beforeEach(async () => {
+  resetStripeApi();
+  oauth.queue.length = 0;
+  oauth.calls.length = 0;
+  __resetStripeAppTokenCacheForTests();
+  process.env.OPENPARTNER_MODE = 'revshare';
+  if (skipIntegration) return;
+  await cleanProductTables();
+});
+
+// ---------------------------------------------------------------------------
+
+describe('OAuth state', () => {
+  const input = { t: DEFAULT_TENANT_ID, a: 'adm_1', m: 'live' as const, r: RETURN_URL };
+
+  it('round-trips, and refuses a tampered payload, a tampered MAC or an expired state', () => {
+    const state = signOAuthState(input);
+    expect(verifyOAuthState(state)).toMatchObject(input);
+
+    const [payload, mac] = state.split('.');
+    const forged = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(payload!, 'base64url').toString()), t: 'other' }))
+      .toString('base64url');
+    expect(verifyOAuthState(`${forged}.${mac}`)).toBeNull();
+    expect(verifyOAuthState(`${payload}.${mac!.slice(0, -2)}xx`)).toBeNull();
+    expect(verifyOAuthState(state, Date.now() + 31 * 60 * 1000)).toBeNull();
+    expect(verifyOAuthState('garbage')).toBeNull();
+  });
+
+  it('only returns to the platform origin or the tenant’s own custom domain', () => {
+    expect(allowedReturnUrl(`${PORTAL}/t/acme/admin/integrations`, { customDomain: null })).toBe(
+      `${PORTAL}/t/acme/admin/integrations`,
+    );
+    expect(allowedReturnUrl('https://partners.acme.test/admin/integrations', { customDomain: 'partners.acme.test' })).toBe(
+      'https://partners.acme.test/admin/integrations',
+    );
+    expect(allowedReturnUrl('https://evil.test/admin', { customDomain: null })).toBeNull();
+    expect(allowedReturnUrl('http://partners.acme.test/admin', { customDomain: 'partners.acme.test' })).toBeNull();
+    expect(allowedReturnUrl('javascript:alert(1)', { customDomain: null })).toBeNull();
+  });
+});
+
+describe.skipIf(skipIntegration)('connecting a Stripe account', () => {
+  it('start → Stripe → callback → complete stores an encrypted connection', async () => {
+    const { cookie } = await adminCookie();
+    const start = await request(app)
+      .post('/stripe-app/connection/start')
+      .set('Cookie', cookie)
+      .send({ returnUrl: RETURN_URL });
+    expect(start.status).toBe(200);
+    const install = new URL(start.body.url);
+    expect(install.origin + install.pathname).toBe('https://marketplace.stripe.com/oauth/v2/authorize');
+    expect(install.searchParams.get('client_id')).toBe('ca_live_openpartner_app');
+    expect(install.searchParams.get('redirect_uri')).toBe(`${PORTAL}/api/stripe-app/oauth/callback`);
+
+    const cb = await request(app)
+      .get('/stripe-app/oauth/callback')
+      .query({ code: 'ac_one_time_code', state: install.searchParams.get('state')! });
+    expect(cb.status).toBe(302);
+    const back = new URL(cb.headers.location as string);
+    expect(back.origin + back.pathname).toBe(RETURN_URL);
+    // The code only travels encrypted.
+    expect(cb.headers.location).not.toContain('ac_one_time_code');
+
+    oauth.queue.push(tokenResponse({ access: BRAND_TOKEN, refresh: 'rt_initial' }));
+    const done = await request(app)
+      .post('/stripe-app/connection/complete')
+      .set('Cookie', cookie)
+      .send({ grant: back.searchParams.get('stripe_app_grant') });
+    expect(done.status).toBe(200);
+    expect(done.body.connection).toMatchObject({ stripeAccountId: BRAND_ACCOUNT, livemode: true, needsReconnect: false, rewards: true });
+
+    expect(oauth.calls).toHaveLength(1);
+    expect(oauth.calls[0]!.authorization).toBe(basicAuth('sk_live_app_developer'));
+    expect(Object.fromEntries(oauth.calls[0]!.body)).toEqual({ grant_type: 'authorization_code', code: 'ac_one_time_code' });
+
+    const row = await db(TABLES.TenantStripeConnection).where({ tenantId: DEFAULT_TENANT_ID }).whereNull('disconnectedAt').first();
+    expect(row.refreshTokenEnc).not.toContain('rt_initial');
+    expect(decryptSecret(row.refreshTokenEnc)).toBe('rt_initial');
+    expect(decryptSecret(row.accessTokenEnc)).toBe(BRAND_TOKEN);
+    expect(row.keyMode).toBe('live');
+
+    const status = await request(app).get('/stripe-app/connection').set('Cookie', cookie);
+    expect(status.body).toMatchObject({ available: true, modes: ['live', 'test'], connection: { stripeAccountId: BRAND_ACCOUNT } });
+  });
+
+  it('only a signed-in admin may start, and only the admin who started may finish', async () => {
+    const asKey = await request(app)
+      .post('/stripe-app/connection/start')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ returnUrl: RETURN_URL });
+    expect(asKey.status).toBe(403);
+    expect(asKey.body.error).toBe('session_required');
+
+    const starter = await adminCookie();
+    const other = await adminCookie();
+    const grant = await installGrant(starter.cookie);
+    const hijack = await request(app).post('/stripe-app/connection/complete').set('Cookie', other.cookie).send({ grant });
+    expect(hijack.status).toBe(403);
+    expect(hijack.body.error).toBe('state_mismatch');
+
+    const garbage = await request(app).post('/stripe-app/connection/complete').set('Cookie', starter.cookie).send({ grant: 'bm90IGEgZ3JhbnQ=' });
+    expect(garbage.status).toBe(400);
+    expect(garbage.body.error).toBe('invalid_grant');
+    // Nothing reached Stripe's token endpoint.
+    expect(oauth.calls).toHaveLength(0);
+  });
+
+  it('refuses a bad return URL, and the callback refuses a bad state or reports a cancel', async () => {
+    const { cookie } = await adminCookie();
+    const bad = await request(app)
+      .post('/stripe-app/connection/start')
+      .set('Cookie', cookie)
+      .send({ returnUrl: 'https://evil.test/steal' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe('invalid_return_url');
+
+    const forged = await request(app).get('/stripe-app/oauth/callback').query({ code: 'ac_x', state: 'forged.state' });
+    expect(forged.status).toBe(400);
+    expect(forged.headers.location).toBeUndefined();
+
+    const start = await request(app).post('/stripe-app/connection/start').set('Cookie', cookie).send({ returnUrl: RETURN_URL });
+    const state = new URL(start.body.url).searchParams.get('state')!;
+    const cancelled = await request(app)
+      .get('/stripe-app/oauth/callback')
+      .query({ error: 'access_denied', error_description: 'The user denied your request', state });
+    expect(cancelled.status).toBe(302);
+    const back = new URL(cancelled.headers.location as string);
+    expect(back.searchParams.get('stripe_app_error')).toBe('access_denied');
+    expect(back.searchParams.get('stripe_app_grant')).toBeNull();
+  });
+
+  it('a test-mode link exchanges with the test key, and a livemode mismatch stores nothing', async () => {
+    const { cookie } = await adminCookie();
+    const ok = await connect(cookie, { mode: 'test', livemode: false });
+    expect(ok.status).toBe(200);
+    expect(ok.body.connection.livemode).toBe(false);
+    expect(oauth.calls[0]!.authorization).toBe(basicAuth('sk_test_app_developer'));
+    await db(TABLES.TenantStripeConnection).del();
+
+    const mismatch = await connect(cookie, { mode: 'test', livemode: true });
+    expect(mismatch.status).toBe(400);
+    expect(mismatch.body.error).toBe('livemode_mismatch');
+    expect(await db(TABLES.TenantStripeConnection).count({ c: '*' }).first()).toMatchObject({ c: '0' });
+  });
+
+  it('refuses an account already connected to another tenant', async () => {
+    await seedConnection({ tenantId: FOREIGN_TENANT });
+    const { cookie } = await adminCookie();
+    const res = await connect(cookie);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('stripe_account_connected_elsewhere');
+    expect(await db(TABLES.TenantStripeConnection).where({ tenantId: DEFAULT_TENANT_ID })).toHaveLength(0);
+  });
+
+  it('reconnecting refreshes the same connection; a different account replaces it', async () => {
+    const { cookie } = await adminCookie();
+    const first = await connect(cookie, { refresh: 'rt_a' });
+    expect(first.status).toBe(200);
+    const original = await db(TABLES.TenantStripeConnection).where({ tenantId: DEFAULT_TENANT_ID }).first();
+    await db(TABLES.TenantStripeConnection)
+      .where({ id: original.id })
+      .update({ refreshFailedAt: new Date(), refreshError: 'revoked', accessTokenEnc: null });
+
+    const again = await connect(cookie, { refresh: 'rt_b' });
+    expect(again.status).toBe(200);
+    expect(again.body.replaced).toBe(false);
+    const reconnected = await connectionRow(original.id);
+    expect(reconnected.refreshFailedAt).toBeNull();
+    expect(decryptSecret(reconnected.refreshTokenEnc)).toBe('rt_b');
+
+    const swapped = await connect(cookie, { account: 'acct_1OtherBrandAccount', refresh: 'rt_c' });
+    expect(swapped.status).toBe(200);
+    expect(swapped.body.replaced).toBe(true);
+    const closed = await connectionRow(original.id);
+    expect(closed).toMatchObject({ disconnectReason: 'replaced', refreshTokenEnc: null, accessTokenEnc: null });
+    expect(closed.disconnectedAt).not.toBeNull();
+    const live = await db(TABLES.TenantStripeConnection).where({ tenantId: DEFAULT_TENANT_ID }).whereNull('disconnectedAt');
+    expect(live.map((r: { stripeAccountId: string }) => r.stripeAccountId)).toEqual(['acct_1OtherBrandAccount']);
+  });
+
+  it('disconnect wipes the tokens and keeps the row as history', async () => {
+    const { cookie } = await adminCookie();
+    const id = await seedConnection();
+    const res = await request(app).delete('/stripe-app/connection').set('Cookie', cookie);
+    expect(res.status).toBe(200);
+    expect(res.body.disconnected).toBe(true);
+    expect(await connectionRow(id)).toMatchObject({ disconnectReason: 'admin', refreshTokenEnc: null, accessTokenEnc: null });
+    const status = await request(app).get('/stripe-app/connection').set('Cookie', cookie);
+    expect(status.body.connection).toBeNull();
+  });
+
+  it('is hosted-only: a self-host has nothing to connect and no app endpoint', async () => {
+    process.env.OPENPARTNER_MODE = 'selfhost';
+    const { cookie } = await adminCookie();
+    const status = await request(app).get('/stripe-app/connection').set('Cookie', cookie);
+    expect(status.body).toMatchObject({ available: false, reason: 'selfhost', connection: null });
+    const start = await request(app).post('/stripe-app/connection/start').set('Cookie', cookie).send({ returnUrl: RETURN_URL });
+    expect(start.status).toBe(404);
+    const hook = await postAppEvent(appEvent('invoice.paid', { id: 'in_x', object: 'invoice' }));
+    expect(hook.status).toBe(503);
+  });
+});
+
+describe.skipIf(skipIntegration)('access-token refresh', () => {
+  it('refreshes an expired token once, stores the rotated refresh token, and uses the new access token', async () => {
+    const id = await seedConnection({ expiresInMs: -60_000, refresh: 'rt_old' });
+    oauth.queue.push(tokenResponse({ access: 'at_fresh', refresh: 'rt_new' }));
+    // Three callers in one process share the one refresh.
+    const clients = await Promise.all([1, 2, 3].map(() => brandStripe({ id, tenantId: DEFAULT_TENANT_ID })));
+    expect(oauth.calls).toHaveLength(1);
+    expect(Object.fromEntries(oauth.calls[0]!.body)).toEqual({ grant_type: 'refresh_token', refresh_token: 'rt_old' });
+    expect(oauth.calls[0]!.authorization).toBe(basicAuth('sk_live_app_developer'));
+
+    const row = await connectionRow(id);
+    expect(decryptSecret(row.refreshTokenEnc)).toBe('rt_new');
+    expect(decryptSecret(row.accessTokenEnc)).toBe('at_fresh');
+    await clients[0]!.customers.retrieve('cus_check');
+    expect(stripeApi.calls.at(-1)).toMatchObject({ key: 'at_fresh', method: 'customers.retrieve' });
+  });
+
+  it('two processes refreshing at once burn the refresh token only once', async () => {
+    const id = await seedConnection({ expiresInMs: -60_000, refresh: 'rt_1' });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    oauth.queue.push(async () => {
+      await gate;
+      return tokenResponse({ access: 'at_2', refresh: 'rt_2' })();
+    });
+    // refreshAccessToken directly: no in-process single flight, so only
+    // the row lock stands between the two.
+    const a = refreshAccessToken(id, DEFAULT_TENANT_ID);
+    const b = refreshAccessToken(id, DEFAULT_TENANT_ID);
+    await vi.waitFor(() => expect(oauth.calls).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(oauth.calls).toHaveLength(1);
+    release();
+    expect(await Promise.all([a, b])).toEqual(['at_2', 'at_2']);
+    expect(oauth.calls).toHaveLength(1);
+    expect(decryptSecret((await connectionRow(id)).refreshTokenEnc)).toBe('rt_2');
+  });
+
+  it('invalid_grant marks the connection "reconnect needed" and stops refreshing', async () => {
+    const { cookie } = await adminCookie();
+    const id = await seedConnection({ expiresInMs: -60_000 });
+    oauth.queue.push(oauthError(400, 'invalid_grant', 'The refresh token has been revoked.'));
+    await expect(refreshAccessToken(id, DEFAULT_TENANT_ID)).rejects.toMatchObject({ reason: 'reconnect_needed' });
+    const row = await connectionRow(id);
+    expect(row.refreshFailedAt).not.toBeNull();
+    expect(row.refreshError).toContain('revoked');
+    expect(row.accessTokenEnc).toBeNull();
+
+    await expect(brandStripe({ id, tenantId: DEFAULT_TENANT_ID })).rejects.toMatchObject({ reason: 'reconnect_needed' });
+    expect(oauth.calls).toHaveLength(1);
+    const status = await request(app).get('/stripe-app/connection').set('Cookie', cookie);
+    expect(status.body.connection).toMatchObject({ needsReconnect: true, rewards: false });
+  });
+
+  it('any other refusal is our misconfiguration: thrown, connection left alone', async () => {
+    const id = await seedConnection({ expiresInMs: -60_000 });
+    oauth.queue.push(oauthError(401, 'invalid_client', 'Invalid API key provided'));
+    await expect(refreshAccessToken(id, DEFAULT_TENANT_ID)).rejects.toBeInstanceOf(StripeAppOAuthError);
+    expect((await connectionRow(id)).refreshFailedAt).toBeNull();
+  });
+});
+
+describe.skipIf(skipIntegration)('/webhooks/stripe-app', () => {
+  it('has its own signing secrets: neither Stripe endpoint accepts the other’s deliveries', async () => {
+    const event = appEvent('invoice.paid', { id: 'in_x', object: 'invoice', customer: 'cus_x' });
+    const unsigned = await request(app).post('/webhooks/stripe-app').set('content-type', 'application/json').send(JSON.stringify(event));
+    expect(unsigned.status).toBe(400);
+    const platformSigned = await postSigned('/webhooks/stripe-app', event, PLATFORM_WEBHOOK_SECRET);
+    expect(platformSigned.status).toBe(400);
+    expect(platformSigned.body.error).toBe('invalid_signature');
+    const appSignedToPlatform = await postSigned('/webhooks/stripe', event, APP_WEBHOOK_SECRET);
+    expect(appSignedToPlatform.status).toBe(400);
+  });
+
+  it('skips events with no account, an unknown account, the other mode, a tenant being deleted, or a type it doesn’t map', async () => {
+    await seedConnection();
+    await seedConnection({ tenantId: FOREIGN_TENANT, account: 'acct_1BrandBeingDeleted' });
+    await db(TABLES.Tenant).where({ id: FOREIGN_TENANT }).update({ pendingDeletionAt: new Date() });
+    const invoice = { id: 'in_skip', object: 'invoice', customer: 'cus_skip', amount_paid: 100, currency: 'usd' };
+    const cases: Array<[object, string]> = [
+      [appEvent('invoice.paid', invoice, { account: null }), 'no_account'],
+      [appEvent('invoice.paid', invoice, { account: 'acct_1NobodyConnected' }), 'unknown_account'],
+      [appEvent('invoice.paid', invoice, { livemode: false }), 'livemode_mismatch'],
+      [appEvent('invoice.paid', invoice, { account: 'acct_1BrandBeingDeleted' }), 'tenant_inactive'],
+      // Billing and payout events belong to OpenPartner's own account.
+      [appEvent('customer.subscription.updated', { id: 'sub_1', object: 'subscription' }), 'unhandled_type'],
+      [appEvent('account.updated', { id: BRAND_ACCOUNT, object: 'account' }), 'unhandled_type'],
+    ];
+    try {
+      for (const [event, reason] of cases) {
+        const res = await postAppEvent(event);
+        expect(res.status).toBe(200);
+        expect(res.body.reason).toBe(reason);
+      }
+    } finally {
+      await db(TABLES.Tenant).where({ id: FOREIGN_TENANT }).update({ pendingDeletionAt: null });
+    }
+    expect(await db(TABLES.Event)).toHaveLength(0);
+    expect(stripeApi.calls).toHaveLength(0);
+  });
+
+  it('a Payment Link checkout with client_reference_id is attributed end to end, with the brand’s token', async () => {
+    const ids = await seedClick();
+    const connId = await seedConnection();
+    const session = paymentLinkSession(ids.clickId);
+    const event = appEvent('checkout.session.completed', session);
+
+    const res = await postAppEvent(event);
+    expect(res.status).toBe(200);
+    const events = await db(TABLES.Event).orderBy('type', 'desc');
+    expect(events.map((e: { type: string }) => e.type)).toEqual(['signup', 'invoice_paid']);
+    const revenue = events.find((e: { type: string }) => e.type === 'invoice_paid');
+    expect(revenue).toMatchObject({ tenantId: DEFAULT_TENANT_ID, externalEventId: session.id, value: '50.00', currency: 'USD' });
+    expect(revenue.metadata).toMatchObject({ via: 'stripe_app', stripeAccountId: BRAND_ACCOUNT, checkoutMode: 'payment' });
+
+    const commissions = await db(TABLES.Commission);
+    expect(commissions).toHaveLength(1);
+    expect(commissions[0]).toMatchObject({ partnerId: ids.partnerId, amount: '10.00' });
+    expect((await connectionRow(connId)).lastEventAt).not.toBeNull();
+
+    // Redelivery: nothing new.
+    const again = await postAppEvent(event);
+    expect(again.status).toBe(200);
+    expect(await db(TABLES.Event)).toHaveLength(2);
+    expect(await db(TABLES.Commission)).toHaveLength(1);
+    expect(keysUsed().filter((k) => k !== BRAND_TOKEN)).toEqual([]);
+  });
+
+  it('invoice.paid and a full refund run the self-host mapping against the brand’s account', async () => {
+    const ids = await seedClick();
+    await seedConnection();
+    // A subscription checkout stitches the Customer to the click.
+    const checkout = await postAppEvent(
+      appEvent('checkout.session.completed', {
+        id: `cs_live_${ulid()}`,
+        object: 'checkout.session',
+        mode: 'subscription',
+        payment_status: 'paid',
+        client_reference_id: ids.clickId,
+        customer: 'cus_brand_1',
+        subscription: 'sub_brand_1',
+        total_details: { amount_discount: 0 },
+        metadata: {},
+      }),
+    );
+    expect(checkout.status).toBe(200);
+
+    const invoiceRes = await postAppEvent(
+      appEvent('invoice.paid', {
+        id: 'in_brand_1',
+        object: 'invoice',
+        customer: 'cus_brand_1',
+        amount_paid: 2000,
+        currency: 'usd',
+        billing_reason: 'subscription_create',
+        discounts: [],
+        total_discount_amounts: [],
+      }),
+    );
+    expect(invoiceRes.status).toBe(200);
+    const invoiceEvent = await db(TABLES.Event).where({ type: 'invoice_paid' }).first();
+    // Keyed on the invoice, so a forwarded copy under in_brand_1 is the same Event.
+    expect(invoiceEvent).toMatchObject({ userId: 'cus_brand_1', externalEventId: 'in_brand_1', value: '20.00' });
+    const [commission] = await db(TABLES.Commission);
+    expect(commission).toMatchObject({ amount: '4.00', status: 'accrued' });
+
+    const refund = await postAppEvent(
+      appEvent('charge.refunded', {
+        id: 'ch_brand_1',
+        object: 'charge',
+        customer: 'cus_brand_1',
+        invoice: 'in_brand_1',
+        amount: 2000,
+        amount_captured: 2000,
+        amount_refunded: 2000,
+        currency: 'usd',
+        payment_intent: null,
+      }),
+    );
+    expect(refund.status).toBe(200);
+    expect(refund.body.corrective).toBe('refund');
+    expect((await db(TABLES.Commission).where({ id: commission.id }).first()).status).toBe('reversed');
+
+    // Read-only on customers: the checkout's metadata backfill was skipped.
+    expect(stripeApi.calls.some((c) => c.method === 'customers.update')).toBe(false);
+    expect(keysUsed()).toEqual([BRAND_TOKEN]);
+  });
+
+  it('a partner promo code entered at the brand’s Stripe Checkout credits the partner', async () => {
+    const ids = await seedClick();
+    await db(TABLES.Click).where({ id: ids.clickId }).del();
+    await db(TABLES.Coupon).insert({
+      id: `cpn_${ulid()}`,
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId: ids.partnerId,
+      programId: ids.programId,
+      code: 'GRACIE15',
+      stripePromotionCodeId: 'promo_brand_gracie',
+    });
+    await seedConnection();
+
+    const res = await postAppEvent(
+      appEvent(
+        'checkout.session.completed',
+        paymentLinkSession(null, {
+          customer: 'cus_coupon_1',
+          amount_total: 3000,
+          discounts: [{ promotion_code: 'promo_brand_gracie' }],
+          total_details: { amount_discount: 450 },
+        }),
+      ),
+    );
+    expect(res.status).toBe(200);
+    const signup = await db(TABLES.Event).where({ type: 'signup' }).first();
+    // Both tags survive: how it was attributed, and where it came from.
+    expect(signup.metadata).toMatchObject({ source: 'coupon', code: 'GRACIE15', via: 'stripe_app' });
+    const [commission] = await db(TABLES.Commission);
+    expect(commission).toMatchObject({ partnerId: ids.partnerId, amount: '6.00' });
+  });
+
+  it('an uninstall closes the connection in that mode only, and later events are skipped', async () => {
+    const connId = await seedConnection();
+    const testUninstall = await postAppEvent(
+      appEvent('account.application.deauthorized', { id: 'ca_app', object: 'application' }, { livemode: false }),
+    );
+    expect(testUninstall.body.deauthorized).toBe(0);
+    expect((await connectionRow(connId)).disconnectedAt).toBeNull();
+
+    const liveUninstall = await postAppEvent(appEvent('apps.install.deleted', { id: 'appinst_1', object: 'apps.install', deleted: true }));
+    expect(liveUninstall.body.deauthorized).toBe(1);
+    expect(await connectionRow(connId)).toMatchObject({ disconnectReason: 'deauthorized', refreshTokenEnc: null });
+
+    const after = await postAppEvent(appEvent('invoice.paid', { id: 'in_after', object: 'invoice', customer: 'cus_after' }));
+    expect(after.body.reason).toBe('unknown_account');
+  });
+
+  it('records the permissions an install granted', async () => {
+    const connId = await seedConnection();
+    await postAppEvent(
+      appEvent('apps.install.updated', {
+        id: 'appinst_1',
+        object: 'apps.install',
+        account: BRAND_ACCOUNT,
+        livemode: true,
+        permissions_granted: ['event_read', 'invoice_read'],
+      }),
+    );
+    expect((await connectionRow(connId)).permissionsGranted).toEqual(['event_read', 'invoice_read']);
+  });
+});
+
+describe.skipIf(skipIntegration)('a forwarded conversion for a payment the app records', () => {
+  it('is refused while the connection is healthy, whichever key form, and accepted once it isn’t', async () => {
+    const ids = await seedClick();
+    const connId = await seedConnection();
+    const auth = { Authorization: `Bearer ${ADMIN_KEY}` };
+
+    for (const key of ['in_1ForwardedInvoice', 'cs_live_a1ForwardedSession', 'cs_test_a1ForwardedSession']) {
+      const res = await request(app)
+        .post('/attribution/conversions')
+        .set(auth)
+        .send({ clickId: ids.clickId, type: 'invoice_paid', value: 20, externalEventId: key });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('recorded_from_stripe');
+    }
+    const viaEvents = await request(app)
+      .post('/attribution/events')
+      .set(auth)
+      .send({ userId: 'user_1', type: 'invoice_paid', value: 20, externalEventId: 'in_1ForwardedInvoice' });
+    expect(viaEvents.status).toBe(409);
+    expect(viaEvents.body.error).toBe('recorded_from_stripe');
+
+    // The brand's own order ids can't be matched to Stripe, so they record.
+    const own = await request(app)
+      .post('/attribution/conversions')
+      .set(auth)
+      .send({ clickId: ids.clickId, type: 'loan_funded', value: 20, externalEventId: 'order-881' });
+    expect(own.status).toBe(200);
+
+    // A connection waiting for a reconnect records nothing, so forwarding is
+    // the brand's only path again.
+    await db(TABLES.TenantStripeConnection).where({ id: connId }).update({ refreshFailedAt: new Date() });
+    const fallback = await request(app)
+      .post('/attribution/conversions')
+      .set(auth)
+      .send({ clickId: ids.clickId, type: 'invoice_paid', value: 20, externalEventId: 'in_1ForwardedInvoice' });
+    expect(fallback.status).toBe(200);
+  });
+});
+
+describe.skipIf(skipIntegration)('customer rewards on hosted', () => {
+  const reward = { type: 'percent_off' as const, value: 15, duration: 'once' as const };
+
+  it('are minted in the connected brand account, never the platform account', async () => {
+    await seedConnection({ access: 'at_rewards' });
+    expect(await customerRewardDelivery(DEFAULT_TENANT_ID)).toBe('stripe');
+    const minted = await provisionCustomerReward(DEFAULT_TENANT_ID, reward, 'BRAND15', 'Spring');
+    expect(minted).toEqual({ stripeCouponId: 'co_minted', stripePromotionCodeId: 'promo_minted' });
+    expect(stripeApi.calls.map((c) => [c.method, c.key])).toEqual([
+      ['coupons.create', 'at_rewards'],
+      ['promotionCodes.create', 'at_rewards'],
+    ]);
+  });
+
+  it('are skipped without a connection, or when the install withheld the write permissions', async () => {
+    expect(await customerRewardDelivery(DEFAULT_TENANT_ID)).toBe('brand');
+    expect(await provisionCustomerReward(DEFAULT_TENANT_ID, reward, 'BRAND15', 'Spring')).toBeNull();
+
+    await seedConnection({ permissionsGranted: ['event_read', 'invoice_read'] });
+    expect(await customerRewardDelivery(DEFAULT_TENANT_ID)).toBe('brand');
+    expect(await provisionCustomerReward(DEFAULT_TENANT_ID, reward, 'BRAND15', 'Spring')).toBeNull();
+    expect(stripeApi.calls).toHaveLength(0);
+  });
+});
+
+describe('the app manifest', () => {
+  it('requests exactly the permissions the code documents, with OAuth install', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const manifest = JSON.parse(
+      await readFile(new URL('../../../../stripe-app/stripe-app.json', import.meta.url), 'utf8'),
+    ) as {
+      permissions: Array<{ permission: string; purpose: string }>;
+      stripe_api_access_type: string;
+      distribution_type: string;
+      allowed_redirect_uris: string[];
+    };
+    expect(manifest.permissions).toEqual(STRIPE_APP_PERMISSIONS);
+    expect(manifest.stripe_api_access_type).toBe('oauth');
+    expect(manifest.distribution_type).toBe('public');
+    expect(manifest.allowed_redirect_uris[0]).toBe('https://app.openpartner.dev/api/stripe-app/oauth/callback');
+    // Least privilege: nothing that moves money or edits customers.
+    const names = manifest.permissions.map((p) => p.permission);
+    expect(names.filter((n) => n.endsWith('_write')).sort()).toEqual(['coupon_write', 'promotion_code_write']);
+  });
+});

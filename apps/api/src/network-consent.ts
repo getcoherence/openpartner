@@ -34,6 +34,7 @@ import {
   pushPartnerRevoke,
   pushPartnerUnlink,
   pushPartnerUpsert,
+  stampPartnerNetworkSync,
   type BackfillPartnersResult,
   type PartnerUpsertPayload,
 } from './network-client.js';
@@ -166,29 +167,6 @@ function upsertPayloadFor(
   };
 }
 
-/** Stamp the Network identity back on the Partner (the admin UI's "already
- *  on the Network" marker). Not consent and not billing — see
- *  usage-billing.ts NETWORK_ORIGIN_SOURCE for what the Network fee keys on. */
-async function stampNetworkSync(
-  db: Knex,
-  partnerId: string,
-  result: { networkCreatorId: string; alreadyExisted: boolean; affiliations: unknown[] },
-): Promise<void> {
-  await db<PartnerRow>(TABLES.Partner)
-    .where({ id: partnerId })
-    .update({
-      metadata: db.raw(`jsonb_set(coalesce("metadata", '{}'::jsonb), '{network}', ?::jsonb, true)`, [
-        JSON.stringify({
-          creatorId: result.networkCreatorId,
-          preExisting: result.alreadyExisted,
-          affiliations: result.affiliations.length,
-          syncedAt: new Date().toISOString(),
-        }),
-      ]),
-      updatedAt: new Date(),
-    });
-}
-
 export type NetworkSyncOutcome = 'pushed' | 'queued' | 'not_offered' | 'no_consent';
 
 /**
@@ -206,7 +184,7 @@ export async function syncPartnerToNetwork(
   if (!(await hasNetworkConsent(db, partner.id))) return 'no_consent';
   const result = await pushPartnerUpsert(db, tenantId, upsertPayloadFor(partner, opts));
   if (!result) return 'queued';
-  await stampNetworkSync(db, partner.id, result);
+  await stampPartnerNetworkSync(db, partner.id, result);
   return 'pushed';
 }
 
@@ -237,7 +215,7 @@ export async function removePartnerFromNetwork(
   reason: 'consent_withdrawn' | 'consent_declined',
 ): Promise<void> {
   await db(TABLES.NetworkOutbox)
-    .where({ status: 'pending' })
+    .where({ tenantId, status: 'pending' })
     .whereIn('op', ['partner_upsert', 'backfill_partner', 'partner_revoke'])
     .whereRaw(`"payload"->>'vendorPartnerId' = ?`, [partnerId])
     .del();
@@ -252,6 +230,7 @@ export async function removePartnerFromNetwork(
 export async function resyncConsentedPartners(db: Knex, tenantId: string): Promise<BackfillPartnersResult> {
   const partners = (await db(TABLES.Partner)
     .join(TABLES.PartnerNetworkConsent, `${TABLES.PartnerNetworkConsent}.partnerId`, `${TABLES.Partner}.id`)
+    .where(`${TABLES.Partner}.tenantId`, tenantId)
     .where(`${TABLES.PartnerNetworkConsent}.status`, 'granted')
     .select(
       `${TABLES.Partner}.id`,
@@ -272,9 +251,10 @@ export interface NetworkConsentSummary {
 }
 
 /** Counts for the admin Network page. Non-revoked partners only. */
-export async function summarizeNetworkConsent(db: Knex): Promise<NetworkConsentSummary> {
+export async function summarizeNetworkConsent(db: Knex, tenantId: string): Promise<NetworkConsentSummary> {
   const rows = (await db(TABLES.Partner)
     .leftJoin(TABLES.PartnerNetworkConsent, `${TABLES.PartnerNetworkConsent}.partnerId`, `${TABLES.Partner}.id`)
+    .where(`${TABLES.Partner}.tenantId`, tenantId)
     .whereNull(`${TABLES.Partner}.revokedAt`)
     .groupBy(`${TABLES.PartnerNetworkConsent}.status`)
     .select(`${TABLES.PartnerNetworkConsent}.status as status`)

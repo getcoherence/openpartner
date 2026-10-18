@@ -26,6 +26,7 @@ import { z } from 'zod';
 import { TABLES, type BillingPlan, type TenantRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { REVSHARE_FEE_BPS, requireStripe } from '../stripe.js';
+import { describeTenantFee } from '../fee-terms.js';
 import { getTenantBillingState, priceIdsForPlan } from '../billing-plan.js';
 import { reportUsageToStripe } from '../usage-billing.js';
 import { tenantOf } from '../tenancy.js';
@@ -44,12 +45,17 @@ billingRouter.get('/billing/status', requireAuth, requireAdmin, async (req, res)
     return res.json({ mode, plan: null, billed: false });
   }
 
+  // How the platform fee is worked out for this tenant (docs/platform-fee.md).
+  const fee = await describeTenantFee(db, tenantId, state);
+
   if (state.plan === 'enterprise') {
     return res.json({
       mode,
       plan: state.plan,
       enterprise: true,
       message: 'Billed out of band — contact your account manager.',
+      // Only contract terms describe an Enterprise fee; plan rates don't apply.
+      fee: fee?.contract ? fee : null,
     });
   }
 
@@ -63,6 +69,7 @@ billingRouter.get('/billing/status', requireAuth, requireAdmin, async (req, res)
         inTrial: state.inTrial,
         hasUsedTrial: state.hasUsedTrial,
         trialExpiredWithoutSubscription: state.trialExpiredWithoutSubscription,
+        fee,
       });
     }
     const stripe = requireStripe();
@@ -78,12 +85,13 @@ billingRouter.get('/billing/status', requireAuth, requireAdmin, async (req, res)
       status: sub.status,
       currentPeriodEnd: periodEnd,
       trialEnd: sub.trial_end,
+      fee,
     });
   }
 
   // revshare: sum of platform fees retained on paid payouts, by currency.
   const fees = (await db(TABLES.Payout)
-    .where({ status: 'paid' })
+    .where({ tenantId, status: 'paid' })
     .select('currency')
     .select(db.raw("COALESCE(SUM((metadata->>'platformFee')::numeric), 0) as fee"))
     .groupBy('currency')) as Array<{ currency: string; fee: string }>;
@@ -99,6 +107,7 @@ billingRouter.get('/billing/status', requireAuth, requireAdmin, async (req, res)
     subscribed: !!state.stripeSubscriptionId,
     trialEndsAt: state.trialEndsAt,
     inTrial: state.inTrial,
+    fee,
   });
 });
 

@@ -13,6 +13,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { api } from '../api.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
 import { ruleEventTypeMissing } from '../lib/CompoundRuleEditor.js';
+import { rulesLeftUnpaid, sharedRules } from '../lib/commission-override.js';
 import { AdminPartnerCommission } from '../pages/AdminPartnerCommission.js';
 
 vi.mock('../api.js', async (importOriginal) => ({
@@ -253,5 +254,76 @@ describe('ruleEventTypeMissing (gates Save on the override and both program form
     expect(ruleEventTypeMissing({ trigger: 'first', eventType: 'subscription_created', type: 'fixed', value: 100 })).toBe(false);
     // `every` with no eventType = every event with a value (legacy shape).
     expect(ruleEventTypeMissing({ trigger: 'every', type: 'percent', value: 20 })).toBe(false);
+  });
+});
+
+// Override terms replace the rule set whole: an override naming only
+// `loan_funded` made the program's $25 `approved` stage pay $0 (Oct 17
+// e2e). The editor starts from what the partner earns now, says it
+// replaces, and names every stage the edited terms would leave unpaid.
+describe('override terms replace the rules they cover', () => {
+  const STAGES = [
+    { trigger: 'every', eventType: 'approved', type: 'fixed', value: 25 },
+    { trigger: 'first', eventType: 'loan_funded', type: 'fixed', value: 400 },
+  ];
+  const LENDER = { id: 'l', name: 'Lender A', granted: true, commissionRule: STAGES, holdbackDays: null, commission: null };
+  const warning = (page: ReturnType<typeof show>) => page.queryAllByRole('alert').map((a) => a.textContent ?? '').join(' | ');
+
+  it("program terms start from the program's stages; dropping one warns which stage stops paying", () => {
+    const page = show(null, [LENDER]);
+    fireEvent.click(page.getByText('Set terms'));
+    expect(page.getByText(/These terms replace this program’s rules/)).toBeTruthy();
+    // Both stages prefilled (2 in the partner-wide editor too: Lender A is
+    // its only program, so it starts from the same rules).
+    expect(page.getAllByLabelText('Remove rule')).toHaveLength(4);
+    expect(warning(page)).toBe('');
+
+    fireEvent.click(page.getAllByLabelText('Remove rule')[2]!); // the program editor's `approved`
+    expect(warning(page)).toMatch(/earns nothing on:.*approved.*Lender A pays/);
+    expect(warning(page)).not.toMatch(/loan_funded/);
+  });
+
+  it('a partner-wide override with no terms yet starts from the rules its programs share', async () => {
+    const page = show(null, [LENDER]);
+    expect(page.getAllByLabelText('Remove rule')).toHaveLength(2);
+    fireEvent.click(page.getByRole('button', { name: 'Set override' }));
+    const isPut = (c: unknown[]) => (c[1] as { method?: string } | undefined)?.method === 'PUT';
+    await waitFor(() => expect(vi.mocked(api).mock.calls.some(isPut)).toBe(true));
+    expect((vi.mocked(api).mock.calls.find(isPut)![1] as { body: { commissionRules: unknown } }).body.commissionRules).toEqual(STAGES);
+  });
+
+  it('programs with different rules: the partner-wide editor starts from the default, which takes every stage', async () => {
+    const page = show(null, [
+      LENDER,
+      { id: 's', name: 'Shop', granted: true, commissionRule: [{ trigger: 'every', eventType: 'invoice_paid', type: 'percent', value: 10 }], holdbackDays: null, commission: null },
+    ]);
+    // DEFAULT_RULES has no eventType, so it takes every stage: no warning.
+    expect(warning(page)).toBe('');
+    fireEvent.click(page.getByRole('button', { name: 'Set override' }));
+    const isPut = (c: unknown[]) => (c[1] as { method?: string } | undefined)?.method === 'PUT';
+    await waitFor(() => expect(vi.mocked(api).mock.calls.some(isPut)).toBe(true));
+    expect((vi.mocked(api).mock.calls.find(isPut)![1] as { body: { commissionRules: unknown } }).body.commissionRules).toEqual([
+      { trigger: 'every', type: 'percent', value: 20, recurring: true },
+    ]);
+  });
+});
+
+describe('rulesLeftUnpaid / sharedRules', () => {
+  const r = (eventType?: string) => ({ trigger: 'every' as const, type: 'fixed' as const, value: 1, ...(eventType ? { eventType } : {}) });
+
+  it('names the stages the new terms leave out', () => {
+    expect(rulesLeftUnpaid([r('approved'), r('loan_funded')], [r('loan_funded')])).toEqual([r('approved')]);
+    expect(rulesLeftUnpaid([r('approved')], [r('approved')])).toEqual([]);
+  });
+
+  it('a rule with no eventType takes every stage, and is replaced only by another', () => {
+    expect(rulesLeftUnpaid([r('approved'), r()], [r()])).toEqual([]);
+    expect(rulesLeftUnpaid([r()], [r('approved')])).toEqual([r()]);
+  });
+
+  it('shares a rule set only when every program has the same one', () => {
+    expect(sharedRules([])).toBeNull();
+    expect(sharedRules([[r('a')], [r('a')]])).toEqual([r('a')]);
+    expect(sharedRules([[r('a')], [r('b')]])).toBeNull();
   });
 });

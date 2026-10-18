@@ -24,7 +24,7 @@ import { getWhiteLabelState } from '../white-label.js';
 import { customerRewardDelivery } from '../customer-rewards.js';
 import { getStorage } from '../storage.js';
 import { commissionSlabFields, currencyCodeSchema, refineCommissionSubRule } from '../commission-rule-schema.js';
-import { destinationUrlSchema } from '../destination-url.js';
+import { destinationUrlSchema, destinationWarnings } from '../destination-url.js';
 
 /**
  * Commission rule schema. The wire format is an array of triggered sub-rules.
@@ -160,11 +160,44 @@ function coverUrlProblem(tenantId: string, url: string | null | undefined) {
   };
 }
 
+/** Event types that correct a conversion (refunds, chargebacks, disputes,
+ *  failed payments): never revenue, whatever a program declares. */
+const CORRECTIVE_TYPES = new Set(['refund', 'chargeback', 'dispute_created', 'invoice_payment_failed']);
+
+/** Event types the brand declares are sales in this program: their value is
+ *  partner-attributed revenue for the hosted platform fee
+ *  (docs/platform-fee.md). invoice_paid and subscription_created always
+ *  are, so they needn't be listed. */
+const revenueEventTypesSchema = z
+  .array(
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(80)
+      .refine((t) => !CORRECTIVE_TYPES.has(t), { message: 'a refund, chargeback, dispute or failed payment is never revenue' }),
+  )
+  .max(20);
+
+/** Stored form: unique, without the two types that are always revenue. */
+function normalizeRevenueEventTypes(types: string[]): string[] {
+  return [...new Set(types)].filter((t) => t !== 'invoice_paid' && t !== 'subscription_created');
+}
+
 export const createSchema = z.object({
   name: z.string().min(1),
   commissionRule: commissionRuleSchema,
+  /** Days a click can win a customer's first conversion of an event
+   *  type. Default 60. With renewalsStayWithPartner, it doesn't limit
+   *  renewals. */
   attributionWindowDays: z.number().int().min(1).max(365).optional(),
   attributionModel: z.enum(['last_click', 'first_click', 'linear', 'position']).optional(),
+  /** Default true: a repeat event (a type the customer already converted
+   *  on, e.g. the 13th invoice_paid) keeps that first conversion's
+   *  partners and weights, whatever the click's age; past the window only
+   *  recurring sub-rules pay on it, up to recurringMonths. False: every
+   *  event is attributed on its own within the window. */
+  renewalsStayWithPartner: z.boolean().optional(),
   /** Where partner links send visitors. May carry the {click_id} macro
    *  (e.g. a Stripe Payment Link's ?client_reference_id={click_id}); the
    *  router substitutes the click id there instead of appending cref. */
@@ -206,6 +239,11 @@ export const createSchema = z.object({
    *  creator portal (federation-allowed PATCH on the coupon row).
    *  Defaults to false — admin keeps full control of code strings. */
   partnersMayCustomizeCode: z.boolean().optional(),
+  /** Event types that are sales in this program beyond invoice_paid and
+   *  subscription_created — e.g. `order_paid` paid with fixed bounties.
+   *  Their value counts as partner-attributed revenue for the hosted
+   *  platform fee. Omitted = none. */
+  revenueEventTypes: revenueEventTypesSchema.optional(),
   /** When true, after creating the campaign, also grant every existing
    *  non-revoked partner access to it (source='admin'). Defaults to
    *  false so VIP / scoped campaigns stay private unless the brand opts
@@ -219,6 +257,8 @@ export const updateSchema = z.object({
   commissionRule: commissionRuleSchema.optional(),
   attributionWindowDays: z.number().int().min(1).max(365).optional(),
   attributionModel: z.enum(['last_click', 'first_click', 'linear', 'position']).optional(),
+  /** Not retroactive: decides events attributed from now on. */
+  renewalsStayWithPartner: z.boolean().optional(),
   destinationUrl: destinationUrlSchema.optional(),
   deepLinkAllowedDomains: z.string().max(1000).nullable().optional(),
   holdbackDays: z.number().int().min(0).max(365).nullable().optional(),
@@ -234,16 +274,18 @@ export const updateSchema = z.object({
     .max(5)
     .optional(),
   partnersMayCustomizeCode: z.boolean().optional(),
+  revenueEventTypes: revenueEventTypesSchema.optional(),
 });
 
 export const programsRouter = Router();
 
 programsRouter.get('/programs', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  const campaigns = await db<ProgramRow>(TABLES.Program).orderBy('createdAt', 'desc');
-  // Deployment-level, but the reward editor is the only reader and it
-  // already loads this list — saves the portal a round trip.
-  res.json({ programs: campaigns, customerRewardDelivery: customerRewardDelivery() });
+  const { db, tenantId } = tenantOf(req);
+  const campaigns = await db<ProgramRow>(TABLES.Program).where({ tenantId }).orderBy('createdAt', 'desc');
+  // Per deployment, and on hosted per Stripe App connection. The reward
+  // editor is the only reader and it already loads this list — saves the
+  // portal a round trip.
+  res.json({ programs: campaigns, customerRewardDelivery: await customerRewardDelivery(tenantId) });
 });
 
 /**
@@ -262,10 +304,11 @@ programsRouter.get('/me/programs', requireAuth, async (req, res) => {
   if (p.role !== 'partner' && p.role !== 'admin') {
     return res.status(403).json({ error: 'forbidden' });
   }
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
 
   if (p.role === 'admin') {
     const campaigns = (await db<ProgramRow>(TABLES.Program)
+      .where({ tenantId })
       .select('id', 'name', 'destinationUrl', 'deepLinkAllowedDomains', 'startsAt', 'endsAt', 'partnersMayCustomizeCode', 'customerReward')
       .orderBy('createdAt', 'desc')) as Array<
         Pick<ProgramRow, 'id' | 'name' | 'destinationUrl' | 'deepLinkAllowedDomains' | 'startsAt' | 'endsAt' | 'partnersMayCustomizeCode' | 'customerReward'>
@@ -279,6 +322,7 @@ programsRouter.get('/me/programs', requireAuth, async (req, res) => {
   // edit dates.
   const rows = (await db(TABLES.Program)
     .join(TABLES.PartnerProgram, `${TABLES.PartnerProgram}.programId`, `${TABLES.Program}.id`)
+    .where(`${TABLES.Program}.tenantId`, tenantId)
     .where(`${TABLES.PartnerProgram}.partnerId`, p.partnerId!)
     .select(
       `${TABLES.Program}.id`,
@@ -348,6 +392,7 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
       commissionRule: JSON.stringify(body.data.commissionRule) as unknown as CommissionRule,
       attributionWindowDays: body.data.attributionWindowDays ?? 60,
       attributionModel: body.data.attributionModel ?? 'last_click',
+      renewalsStayWithPartner: body.data.renewalsStayWithPartner ?? true,
       destinationUrl: body.data.destinationUrl,
       deepLinkAllowedDomains: body.data.deepLinkAllowedDomains ?? null,
       holdbackDays: body.data.holdbackDays ?? null,
@@ -362,6 +407,7 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
       marketplaceVideoUrl: body.data.marketplaceVideoUrl ?? null,
       categories: body.data.categories ?? [],
       partnersMayCustomizeCode: body.data.partnersMayCustomizeCode ?? false,
+      revenueEventTypes: normalizeRevenueEventTypes(body.data.revenueEventTypes ?? []),
     })
     .returning('*');
 
@@ -371,6 +417,7 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
   // gets the new program).
   if (body.data.grantToAllPartners) {
     const partners = (await db(TABLES.Partner)
+      .where({ tenantId })
       .whereNull('revokedAt')
       .select('id')) as Array<{ id: string }>;
     if (partners.length > 0) {
@@ -403,7 +450,7 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
     (campaign as ProgramRow).networkOfferingId = offeringId;
   }
 
-  res.status(201).json(campaign);
+  res.status(201).json({ ...campaign, ...destinationWarnings((campaign as ProgramRow).destinationUrl) });
 });
 
 programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res) => {
@@ -411,7 +458,7 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
   const body = updateSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const existing = await db<ProgramRow>(TABLES.Program).where({ id: req.params.id }).first();
+  const existing = await db<ProgramRow>(TABLES.Program).where({ id: req.params.id, tenantId }).first();
   if (!existing) return res.status(404).json({ error: 'not_found' });
 
   const patch: Partial<ProgramRow> = {};
@@ -421,6 +468,9 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
   }
   if (body.data.attributionWindowDays !== undefined) patch.attributionWindowDays = body.data.attributionWindowDays;
   if (body.data.attributionModel !== undefined) patch.attributionModel = body.data.attributionModel;
+  if (body.data.renewalsStayWithPartner !== undefined) {
+    patch.renewalsStayWithPartner = body.data.renewalsStayWithPartner;
+  }
   if (body.data.destinationUrl !== undefined) patch.destinationUrl = body.data.destinationUrl;
   if (body.data.deepLinkAllowedDomains !== undefined) patch.deepLinkAllowedDomains = body.data.deepLinkAllowedDomains;
   if (body.data.holdbackDays !== undefined) patch.holdbackDays = body.data.holdbackDays;
@@ -450,6 +500,9 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
   if (body.data.partnersMayCustomizeCode !== undefined) {
     patch.partnersMayCustomizeCode = body.data.partnersMayCustomizeCode;
   }
+  if (body.data.revenueEventTypes !== undefined) {
+    patch.revenueEventTypes = normalizeRevenueEventTypes(body.data.revenueEventTypes);
+  }
 
   // White-label tenants are isolated from the marketplace — pin the flag
   // false on every edit (also normalizes pre-white-label rows still
@@ -472,8 +525,8 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
     });
   }
 
-  await db<ProgramRow>(TABLES.Program).where({ id: req.params.id }).update(patch);
-  const updated = (await db<ProgramRow>(TABLES.Program).where({ id: req.params.id }).first()) as ProgramRow;
+  await db<ProgramRow>(TABLES.Program).where({ id: req.params.id, tenantId }).update(patch);
+  const updated = (await db<ProgramRow>(TABLES.Program).where({ id: req.params.id, tenantId }).first()) as ProgramRow;
 
   // Sync to the marketplace whenever the saved row could affect the
   // listing. We sync unconditionally (vs. diffing fields) — the helper
@@ -489,5 +542,5 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
     updated.networkOfferingId = offeringId;
   }
 
-  res.json(updated);
+  res.json({ ...updated, ...destinationWarnings(updated.destinationUrl) });
 });

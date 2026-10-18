@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Settings as SettingsIcon, Mail, Wallet, Palette, Image as ImageIcon, Trash2, UserPlus } from 'lucide-react';
+import { Settings as SettingsIcon, Mail, Wallet, Palette, Image as ImageIcon, Trash2, UserPlus, KeyRound } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
 import { alpha, theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
@@ -10,8 +10,35 @@ type PayoutCadence = 'weekly' | 'biweekly' | 'monthly' | 'manual';
 
 interface PayoutSettings {
   rail: PayoutRail;
+  /** Hundredths of a unit of thresholdCurrency. */
   thresholdCents: number;
+  /** The brand's default currency. Absent from an API that predates it. */
+  thresholdCurrency?: string;
   cadence: PayoutCadence;
+}
+
+/** Matches the API cap: 10,000,000 units of the default currency. */
+const MAX_THRESHOLD_UNITS = 10_000_000;
+
+/** Every ISO 4217 code the browser knows, labelled with its name. */
+function currencyOptions(current: string): Array<{ code: string; label: string }> {
+  let codes: string[] = [];
+  try {
+    codes = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf?.('currency') ?? [];
+  } catch {
+    codes = [];
+  }
+  const all = Array.from(new Set([current, 'USD', 'EUR', 'GBP', 'INR', ...codes])).sort();
+  let names: Intl.DisplayNames | null = null;
+  try {
+    names = new Intl.DisplayNames(['en'], { type: 'currency' });
+  } catch {
+    names = null;
+  }
+  return all.map((code) => {
+    const name = names?.of(code);
+    return { code, label: name && name !== code ? `${code} — ${name}` : code };
+  });
 }
 
 interface ProgramSettings {
@@ -25,6 +52,8 @@ interface ProgramSettings {
   faviconUrl: string | null;
   brandColor: string | null;
   programTermsUrl: string | null;
+  /** ISO 4217. Absent from an API that predates it. */
+  defaultCurrency?: string;
   whiteLabel: boolean;
 }
 
@@ -59,6 +88,8 @@ export function AdminSettings() {
       <BrandResourcesSection />
       <div style={{ height: 18 }} />
       <PartnerSignupSection />
+      <div style={{ height: 18 }} />
+      <PartnerPortalAccessSection />
       <div style={{ height: 18 }} />
       <PayoutSection />
       <div style={{ height: 18 }} />
@@ -156,6 +187,74 @@ function PartnerSignupSection() {
   );
 }
 
+// ---------- partner portal access ----------
+
+interface PartnerAccessSettings {
+  uninvitedPortalAccess: boolean;
+}
+
+/**
+ * The default for partners added without an invite — by an integration
+ * (POST /partners with sendInvite:false), a CSV import, or "Add partner"
+ * with the invite unticked. A headless program turns it off so its
+ * customers can't request a portal sign-in link. Per-partner overrides
+ * live on the Partners page.
+ */
+export function PartnerPortalAccessSection() {
+  const qc = useQueryClient();
+  const { data, error, isLoading } = useQuery({
+    queryKey: ['partner-access-settings'],
+    queryFn: () => api<PartnerAccessSettings>('/config/partner-access'),
+  });
+  const [saved, setSaved] = useState(false);
+  const mut = useMutation({
+    mutationFn: (patch: Partial<PartnerAccessSettings>) =>
+      api<PartnerAccessSettings>('/config/partner-access', { method: 'POST', body: patch }),
+    onSuccess: (next) => {
+      qc.setQueryData(['partner-access-settings'], next);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    },
+  });
+
+  if (isLoading) return <Card>Loading…</Card>;
+  const settings = data ?? { uninvitedPortalAccess: true };
+
+  return (
+    <Card>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+        <KeyRound size={18} style={{ color: theme.accentText }} />
+        <div style={{ fontSize: 15, fontWeight: 500 }}>Partner portal access</div>
+      </div>
+      <ErrorBanner error={error ?? mut.error} />
+      <div style={{ fontSize: 13, color: theme.textMuted, lineHeight: 1.6, marginBottom: 12, maxWidth: 560 }}>
+        Invited partners always get the portal. This is for partners added without an invite: by your integration
+        (<code>sendInvite: false</code>), a CSV import, or Add partner with the invite unticked.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 560 }}>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 13, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={settings.uninvitedPortalAccess}
+            onChange={(e) => mut.mutate({ uninvitedPortalAccess: e.target.checked })}
+            disabled={mut.isPending}
+            style={{ marginTop: 2 }}
+          />
+          <span>
+            <strong>Partners added without an invite can sign in to the portal</strong>
+            <span style={{ color: theme.textMuted, display: 'block' }}>
+              Unchecked = they can&rsquo;t request a sign-in link and we never email them about the portal. Use this
+              when your own app shows customers their referrals. Applies to partners added from now on; change
+              existing partners on the Partners page.
+            </span>
+          </span>
+        </label>
+        {saved && <div style={{ color: theme.success, fontSize: 13 }}>Saved.</div>}
+      </div>
+    </Card>
+  );
+}
+
 // ---------- program ----------
 
 function ProgramSection() {
@@ -171,10 +270,12 @@ function ProgramSection() {
   const [supportEmail, setSupportEmail] = useState('');
   const [brandColor, setBrandColor] = useState('');
   const [programTermsUrl, setProgramTermsUrl] = useState('');
+  const [defaultCurrency, setDefaultCurrency] = useState('USD');
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (!data) return;
+    setDefaultCurrency(data.defaultCurrency ?? 'USD');
     setPartnerNetworkVisible(data.partnerNetworkVisible ?? true);
     setRouterUrl(data.routerUrl ?? '');
     setProgramName(data.programName ?? '');
@@ -187,10 +288,12 @@ function ProgramSection() {
     mutationFn: () =>
       api<ProgramSettings>('/config/program', {
         method: 'POST',
-        body: { programName, supportEmail, brandColor, programTermsUrl, routerUrl, partnerNetworkVisible },
+        body: { programName, supportEmail, brandColor, programTermsUrl, routerUrl, partnerNetworkVisible, defaultCurrency },
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['program-settings'] });
+      // The minimum payout is read in the default currency.
+      qc.invalidateQueries({ queryKey: ['payout-settings'] });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     },
@@ -280,6 +383,20 @@ function ProgramSection() {
           />
           <Hint>Linked from the partner portal footer. Blank = no terms link shown.</Hint>
         </div>
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <Label>Default currency</Label>
+        <Select value={defaultCurrency} onChange={(e) => setDefaultCurrency(e.target.value)} style={{ maxWidth: 320 }}>
+          {currencyOptions(defaultCurrency).map((c) => (
+            <option key={c.code} value={c.code}>
+              {c.label}
+            </option>
+          ))}
+        </Select>
+        <Hint>
+          Events, conversions and coupon redemptions sent without a currency are recorded in it, and the minimum payout is
+          set in it. Changing it doesn&rsquo;t relabel anything already recorded: every amount keeps the currency it came in.
+        </Hint>
       </div>
       {/* Self-host only, and moot for white-label (already hidden). */}
       {data?.partnerNetworkToggleAvailable && !data.whiteLabel && (
@@ -669,8 +786,9 @@ function PayoutSection() {
   });
 
   const [rail, setRail] = useState<PayoutRail>('auto');
-  // Stored as cents on the server; rendered as dollars in the UI.
+  // Stored as hundredths of the default currency; rendered in whole units.
   const [thresholdDollars, setThresholdDollars] = useState('0');
+  const thresholdCurrency = data?.thresholdCurrency ?? 'USD';
   const [cadence, setCadence] = useState<PayoutCadence>('weekly');
   const [saved, setSaved] = useState(false);
 
@@ -726,20 +844,19 @@ function PayoutSection() {
       </div>
 
       <div style={{ marginBottom: 16 }}>
-        <Label>Minimum payout (USD)</Label>
+        <Label>Minimum payout ({thresholdCurrency})</Label>
         <Input
           type="number"
           min="0"
-          max="1000"
+          max={MAX_THRESHOLD_UNITS}
           step="1"
           value={thresholdDollars}
           onChange={(e) => setThresholdDollars(e.target.value)}
           style={{ maxWidth: 160 }}
         />
         <Hint>
-          Balances below this stay in "approved" status and roll into the next payout
-          run. 0 = no minimum. Common values: $25, $50, $100. Anything above $1000 is
-          probably a misconfiguration and won't save.
+          Balances in {thresholdCurrency}, your default currency (Brand info), below this stay in "approved" status and roll
+          into the next payout run. Balances in other currencies pay out at any amount. 0 = no minimum.
         </Hint>
       </div>
 

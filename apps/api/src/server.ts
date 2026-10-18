@@ -1,6 +1,7 @@
 import { createApp } from './app.js';
 import { startScheduler } from './scheduler.js';
 import { outboundPolicy } from './outbound-guard.js';
+import { assertAppPoolEnforcesRls } from './tenant-isolation-guard.js';
 
 const PORT = Number(process.env.API_PORT ?? 4601);
 const MODE = process.env.OPENPARTNER_MODE ?? 'selfhost';
@@ -40,9 +41,28 @@ console.log(JSON.stringify({
   doAppIdLen: (process.env.DO_APP_ID ?? '').length,
 }));
 
+// Retired: revenue types are declared per program now
+// (Program.revenueEventTypes). Migration 20261017020000_platform_fee_rule
+// copied the value onto every program that existed when it ran.
+if ((process.env.OPENPARTNER_BILLABLE_EVENT_TYPES_EXTRA ?? '').trim()) {
+  console.warn(
+    '[api] OPENPARTNER_BILLABLE_EVENT_TYPES_EXTRA is no longer read: declare revenue event types on each program ' +
+      '(Programs → Revenue event types). Programs created after the migration need them set there. Remove the variable.',
+  );
+}
+
 // Validate the outbound (SSRF) guard config now so a bad
 // OPENPARTNER_OUTBOUND_* value fails startup rather than every delivery.
 outboundPolicy();
+
+// Multi-tenant isolation rests on RLS, so a multi-tenant API whose app pool
+// bypasses it (DATABASE_URL_APP unset, or a privileged role) must not serve.
+try {
+  await assertAppPoolEnforcesRls();
+} catch (err) {
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+}
 
 const app = createApp();
 app.listen(PORT, () => {

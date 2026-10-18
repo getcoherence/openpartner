@@ -162,6 +162,8 @@ export interface PartnerUpsertCreatorProfile {
 export interface PartnerUpsertResponse {
   networkCreatorId: string;
   alreadyExisted: boolean;
+  /** Always an array here: pushPartnerUpsert reads a reply that omits it
+   *  as []. */
   affiliations: Array<{
     vendorId: string;
     vendorPartnerId: string;
@@ -286,7 +288,44 @@ export async function pushPartnerUpsert(
   tenantId: string,
   payload: PartnerUpsertPayload,
 ): Promise<PartnerUpsertResponse | null> {
-  return dispatch<PartnerUpsertResponse>(db, tenantId, 'partner_upsert', payload as unknown as Record<string, unknown>);
+  const reply = await dispatch<Partial<PartnerUpsertResponse>>(
+    db,
+    tenantId,
+    'partner_upsert',
+    payload as unknown as Record<string, unknown>,
+  );
+  if (!reply) return null;
+  // By the time the reply is read the Network already has the partner, so
+  // a field it left out must not throw here. A Network that omits
+  // `affiliations` used to 500 POST /network/me/consent on `.length`.
+  return {
+    networkCreatorId: reply.networkCreatorId as string,
+    alreadyExisted: reply.alreadyExisted === true,
+    affiliations: Array.isArray(reply.affiliations) ? reply.affiliations : [],
+  };
+}
+
+/** Stamp the Network identity back on the Partner (the admin UI's "already
+ *  on the Network" marker). Not consent and not billing — see
+ *  usage-billing.ts NETWORK_ORIGIN_SOURCE for what the Network fee keys on. */
+export async function stampPartnerNetworkSync(
+  db: Knex,
+  partnerId: string,
+  result: PartnerUpsertResponse,
+): Promise<void> {
+  await db(TABLES.Partner)
+    .where({ id: partnerId })
+    .update({
+      metadata: db.raw(`jsonb_set(coalesce("metadata", '{}'::jsonb), '{network}', ?::jsonb, true)`, [
+        JSON.stringify({
+          creatorId: result.networkCreatorId,
+          preExisting: result.alreadyExisted,
+          affiliations: result.affiliations.length,
+          syncedAt: new Date().toISOString(),
+        }),
+      ]),
+      updatedAt: new Date(),
+    });
 }
 
 /**
@@ -369,24 +408,7 @@ export async function backfillPartners(
       metadata: { source: 'backfill' },
     });
     if (result) {
-      // Stamp the canonical Network id back onto the Partner row so
-      // future admin views can show "this creator is on the Network".
-      await db(TABLES.Partner)
-        .where({ id: p.id })
-        .update({
-          metadata: db.raw(
-            `jsonb_set(coalesce("metadata", '{}'::jsonb), '{network}', ?::jsonb, true)`,
-            [
-              JSON.stringify({
-                creatorId: result.networkCreatorId,
-                preExisting: result.alreadyExisted,
-                affiliations: result.affiliations.length,
-                syncedAt: new Date().toISOString(),
-              }),
-            ],
-          ),
-          updatedAt: new Date(),
-        });
+      await stampPartnerNetworkSync(db, p.id, result);
       pushed += 1;
     } else {
       queued += 1;
@@ -1050,11 +1072,21 @@ export const partnerProxy = {
 // against a Config high-water mark. Hosted-tier vendors get 204'd by
 // the Network (their billing is bundled), so this is a no-op cost
 // from their perspective.
+//
+// Payouts are per currency. Non-USD totals are converted at the ECB
+// reference rate (fx.ts) as the GMV meter does; one with no published
+// rate is held out and alerted on, and a feed outage skips the run
+// without advancing the mark.
 
 export interface NetworkPayoutsReportResult {
   rangeStart: Date | null;
   rangeEnd: Date;
   amountUsd: number;
+  /** Network-originated payouts in the window, per currency. */
+  payoutsByCurrency?: Record<string, number>;
+  fx?: import('./fx.js').FxSnapshot;
+  /** Payouts in currencies with no published rate: not reported. */
+  heldOut?: Record<string, number>;
   reported: boolean;
   reason?: string;
 }
@@ -1077,17 +1109,43 @@ export async function reportNetworkPayoutsToNetwork(
 
   const { CONFIG_KEYS, getConfig, setConfig } = await import('./config.js');
   const { aggregateNetworkOriginatedPayouts } = await import('./usage-billing.js');
+  const { convertToUsd, FxUnavailableError } = await import('./fx.js');
 
   const lastIso = await getConfig<string>(db, tenantId, CONFIG_KEYS.LastNetworkPayoutsReportedAt);
   const rangeStart = lastIso ? new Date(lastIso) : null;
-  const amountUsd = await aggregateNetworkOriginatedPayouts(db, rangeStart, rangeEnd);
+  const payoutsByCurrency = await aggregateNetworkOriginatedPayouts(db, tenantId, rangeStart, rangeEnd);
+
+  let conversion: Awaited<ReturnType<typeof convertToUsd>>;
+  try {
+    conversion = await convertToUsd(payoutsByCurrency);
+  } catch (err) {
+    if (!(err instanceof FxUnavailableError)) throw err;
+    console.error(
+      `[network-payouts] ALERT: not reported, no FX rates tenant=${tenantId} ` +
+        `payouts=${JSON.stringify(payoutsByCurrency)}: ${err.message}`,
+    );
+    return { rangeStart, rangeEnd, amountUsd: 0, payoutsByCurrency, reported: false, reason: 'fx_rates_unavailable' };
+  }
+  const { amountUsd, fx, heldOut } = conversion;
+  const audit = {
+    payoutsByCurrency,
+    ...(fx ? { fx } : {}),
+    ...(Object.keys(heldOut).length > 0 ? { heldOut } : {}),
+  };
+  if (audit.heldOut) {
+    console.error(
+      `[network-payouts] ALERT: payouts held out, no reference rate tenant=${tenantId} ` +
+        `range=${rangeStart ? rangeStart.toISOString() : 'genesis'}..${rangeEnd.toISOString()} ` +
+        `heldOut=${JSON.stringify(audit.heldOut)}`,
+    );
+  }
 
   if (amountUsd <= 0) {
     // Advance the high-water mark anyway so we don't re-scan the
     // same window. The Network endpoint short-circuits on 0 too,
     // but skipping the round-trip is cheaper.
     await setConfig(db, tenantId, CONFIG_KEYS.LastNetworkPayoutsReportedAt, rangeEnd.toISOString());
-    return { rangeStart, rangeEnd, amountUsd: 0, reported: false, reason: 'no_network_payouts_in_range' };
+    return { rangeStart, rangeEnd, amountUsd: 0, ...audit, reported: false, reason: 'no_network_payouts_in_range' };
   }
 
   const url = `${m.networkUrl.replace(/\/$/, '')}/vendors/me/report-payouts`;
@@ -1114,12 +1172,13 @@ export async function reportNetworkPayoutsToNetwork(
       rangeStart,
       rangeEnd,
       amountUsd,
+      ...audit,
       reported: false,
       reason: `network ${res.status}: ${text.slice(0, 200)}`,
     };
   }
   await setConfig(db, tenantId, CONFIG_KEYS.LastNetworkPayoutsReportedAt, rangeEnd.toISOString());
-  return { rangeStart, rangeEnd, amountUsd, reported: true };
+  return { rangeStart, rangeEnd, amountUsd, ...audit, reported: true };
 }
 
 // ---------- Heartbeat (Network liveness probe) ----------
@@ -1169,7 +1228,10 @@ export async function sendHeartbeat(db: Knex, tenantId: string): Promise<Heartbe
   // diagnose without server log access.
   let partnerCount = 0;
   try {
+    // tenantId named explicitly: a pool that bypasses RLS would otherwise
+    // report the whole platform's partner count as this brand's.
     const partnerRows = await db(TABLES.Partner)
+      .where({ tenantId })
       .whereNull('revokedAt')
       .count<Array<{ count: string }>>({ count: '*' });
     partnerCount = Number(partnerRows[0]?.count ?? 0);
@@ -1185,6 +1247,7 @@ export async function sendHeartbeat(db: Knex, tenantId: string): Promise<Heartbe
     // insert time. Using `createdAt` here was a typo that 500'd the
     // heartbeat in prod and poisoned the request transaction.
     const lastEventRow = await db(TABLES.Event)
+      .where({ tenantId })
       .orderBy('ts', 'desc')
       .first<{ ts: Date } | undefined>('ts');
     lastEventAt = lastEventRow?.ts ? new Date(lastEventRow.ts).toISOString() : undefined;
@@ -1251,8 +1314,11 @@ export async function drainOutbox(db: Knex, tenantId: string): Promise<{ drained
     return { drained: 0, succeeded: 0, dead: 0 };
   }
 
+  // Only this tenant's rows: they go out under this tenant's Network
+  // token. Named explicitly so a pool that bypasses RLS can't send another
+  // tenant's queued partner data as this brand.
   const due = await db<NetworkOutboxRow>(TABLES.NetworkOutbox)
-    .where({ status: 'pending' })
+    .where({ tenantId, status: 'pending' })
     .andWhere('nextAttemptAt', '<=', new Date())
     .orderBy('nextAttemptAt', 'asc')
     .limit(100);
@@ -1276,7 +1342,7 @@ export async function drainOutbox(db: Knex, tenantId: string): Promise<{ drained
       ? []
       : ((await db(TABLES.PartnerNetworkConsent)
           .whereIn('partnerId', pushedPartnerIds)
-          .where({ status: 'granted' })
+          .where({ tenantId, status: 'granted' })
           .pluck('partnerId')) as string[]),
   );
 

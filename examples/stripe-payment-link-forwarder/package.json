@@ -1,0 +1,10 @@
+{
+  "name": "openpartner-stripe-payment-link-forwarder-example",
+  "private": true,
+  "description": "Forwards paid Stripe Payment Link checkouts to OpenPartner's conversions API. Not part of the pnpm workspace.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}

@@ -35,6 +35,12 @@
  * returned networkCreatorId is stamped on Partner.metadata.network.
  * Everyone else is asked once in the portal. Network failures are queued
  * in NetworkOutbox and don't fail the signup.
+ *
+ * Webhooks: every signup fires `partner.created` with `source: 'join_page'`.
+ * An auto-approved applicant is active from the moment they apply, so
+ * `partner.activated` (`invited: false`) follows straight away; one held
+ * for review fires it from magic-link verify on their first sign-in after
+ * approval.
  */
 
 import { Router } from 'express';
@@ -62,8 +68,11 @@ import {
 import { getPortalBaseUrl, linkTenantOf } from '../portal-url.js';
 import type { PartnerReview } from '../partner-review.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
-import { tenantOf } from '../tenancy.js';
+import { afterCommit, tenantOf } from '../tenancy.js';
 import { grantNetworkConsent, isNetworkOfferedToPartners, syncPartnerToNetwork } from '../network-consent.js';
+import { dispatchEvent } from '../webhook-dispatcher.js';
+import { onCommit } from '../on-commit.js';
+import type { WebhookPayload } from '../openapi/webhook-events.js';
 
 export const partnerSignupRouter = Router();
 
@@ -218,7 +227,9 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
   // taken vs not. We don't want this endpoint to leak whether an email
   // is registered with this vendor (creator-facing privacy + a minor
   // hardening against credential-stuffing reconnaissance).
-  const existing = await db<PartnerRow>(TABLES.Partner).where({ email }).first();
+  // Email is unique per tenant: another brand's partner with this
+  // address must not swallow the signup.
+  const existing = await db<PartnerRow>(TABLES.Partner).where({ tenantId, email }).first();
   if (existing) {
     return res.json({ ok: true, status: 'already_registered' });
   }
@@ -258,11 +269,46 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
   }
 
   // Network: only if the applicant ticked the join page's opt-in AND the
-  // brand offers the Network. Fire-and-forget on the request hot path: a
-  // Network outage must not fail the signup (it queues in NetworkOutbox).
+  // brand offers the Network. Pushed once the signup has committed, so a
+  // failure later in this request can't leave the Network holding someone
+  // with no Partner row here. A Network outage must not fail the signup
+  // (it queues in NetworkOutbox).
   if (body.data.networkOptIn === true && (await isNetworkOfferedToPartners(db, tenantId))) {
     await grantNetworkConsent(db, tenantId, partner.id, 'join_page');
-    await syncPartnerToNetwork(db, tenantId, partner, { profile });
+    afterCommit(req, 'network signup push', (trx) => syncPartnerToNetwork(trx, tenantId, partner, { profile }));
+  }
+
+  // Webhooks, as POST /partners fires them, so a CRM or Zapier relay sees
+  // join-page partners too. Queued before the email, so a mail failure
+  // the request survives still leaves a partner the subscriber should
+  // know about, and sent after COMMIT like POST /partners' (on-commit.ts):
+  // a receiver may fetch the partner straight away, and a rolled-back
+  // signup announces nothing. `invited` is the sign-in link below, which
+  // only an auto-approved applicant gets; they are active now, so this is
+  // also their activation (verify only fires it for a partner who isn't
+  // active yet). Applicants start with no program grants: an admin grants
+  // them.
+  const createdPayload = {
+    partnerId: partner.id,
+    email,
+    name: partner.name,
+    activatedAt: partner.activatedAt ? partner.activatedAt.toISOString() : null,
+    invited: activatedAt !== null,
+    portalAccess: partner.portalAccess,
+    programIds: [],
+    source: 'join_page',
+  } satisfies WebhookPayload<'partner.created'>;
+  onCommit(db, 'partner.created webhook', () => dispatchEvent(tenantId, 'partner.created', createdPayload));
+  if (partner.activatedAt) {
+    const activatedPayload = {
+      partnerId: partner.id,
+      email,
+      name: partner.name,
+      activatedAt: partner.activatedAt.toISOString(),
+      invited: false,
+      source: 'join_page',
+    } satisfies WebhookPayload<'partner.activated'>;
+    onCommit(db, 'partner.activated webhook', () => dispatchEvent(tenantId, 'partner.activated', activatedPayload));
   }
 
   const { resolveBrandName } = await import('../brand-name.js');

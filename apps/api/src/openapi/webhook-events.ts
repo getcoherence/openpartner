@@ -2,7 +2,8 @@
  * Outbound webhook catalogue — one schema per event type, matching the
  * payloads the `dispatchEvent` call sites build (attribution.ts,
  * commission-events.ts, payouts.ts, payout-transfers.ts,
- * funding/executor.ts, routes/partners.ts, routes/partner-auth.ts).
+ * funding/executor.ts, routes/partners.ts, routes/partner-signup.ts,
+ * routes/partner-auth.ts).
  *
  * The test-fire samples in webhook-dispatcher.ts are parsed against these
  * by __tests__/openapi.test.ts, and real deliveries by
@@ -27,6 +28,15 @@ const commissionOrigin = {
   eventType: z.string().optional(),
   programId: id.optional(),
 };
+
+/** How a partner was added, on the partner.* events. A third way in (a CSV
+ *  import) fires neither event, so it has no value. */
+export const PARTNER_SOURCES = ['api', 'join_page'] as const;
+
+const partnerSource = z.enum(PARTNER_SOURCES).openapi({
+  description:
+    'How the partner was added. `api`: `POST /partners` (the admin portal, an integration, or a Network approval, which also fires `partnership.approved`). `join_page`: they applied on the public join page. New values may be added.',
+});
 
 const lifecycleBase = z.object({
   commissionId: id,
@@ -64,25 +74,48 @@ export const WEBHOOK_PAYLOADS = {
     currency: z.string(),
     eventType: z.string(),
     eventValue,
+    replacesCommissionId: id.optional().openapi({
+      description:
+        'Set when a partial refund reduced a commission: this one carries the amount the partner keeps, and replaces the commission named here (reversed in the `commission.reversed` sent just before).',
+    }),
   }),
   'commission.approved': lifecycleBase,
   'commission.paid': lifecycleBase.extend({ payoutId: id }),
   'commission.reversed': lifecycleBase.extend({
-    reason: z.enum(['manual', 'refund']).openapi({ description: '`manual` = an admin reversed it; `refund` = a Stripe refund or dispute.' }),
+    reason: z.enum(['manual', 'refund', 'chargeback']).openapi({
+      description:
+        '`manual` = an admin reversed it; `refund` = a refund (`POST /attribution/refunds`, or a Stripe refund on self-host); `chargeback` = a chargeback reported to `POST /attribution/refunds`.',
+    }),
+    refundEventId: id.optional().openapi({ description: 'The refund or chargeback event behind a `refund` / `chargeback` reversal.' }),
+    replacementCommissionId: id.optional().openapi({
+      description: 'Partial refunds only: the commission accrued for the amount the partner keeps (sent next as `commission.accrued`).',
+    }),
   }),
   'partner.created': z.object({
     partnerId: id,
     email: z.string().email(),
     name: z.string(),
-    activatedAt: z.string().datetime().nullable(),
-    invited: z.boolean().openapi({ description: 'An invite email was sent (`sendInvite` was not false).' }),
-    programIds: z.array(id),
+    activatedAt: z.string().datetime().nullable().openapi({
+      description: 'Null until the partner is active: an invited partner who has not accepted yet, or a join-page applicant held for review.',
+    }),
+    invited: z.boolean().openapi({
+      description:
+        'An invite email with a sign-in link was sent: `POST /partners` without `sendInvite: false`, or a join-page applicant approved automatically. An applicant held for review gets theirs when an admin approves them.',
+    }),
+    portalAccess: z.boolean().openapi({ description: 'The partner may sign in to the partner portal. See `portalAccess` on `POST /partners`.' }),
+    programIds: z.array(id).openapi({ description: 'The programs the partner was granted. Join-page applicants start with none.' }),
+    source: partnerSource,
   }),
   'partner.activated': z.object({
     partnerId: id,
     email: z.string().email(),
     name: z.string(),
     activatedAt: z.string().datetime(),
+    invited: z.boolean().openapi({
+      description:
+        '`true`: the partner accepted an invite and signed in for the first time. `false`: they were active from the moment they were added and have not signed in: `POST /partners` with `sendInvite: false` (`source: "api"`; they may have no portal access), or a join-page applicant approved automatically (`source: "join_page"`; they were emailed a sign-in link).',
+    }),
+    source: partnerSource,
   }),
   'partnership.approved': z.object({
     partnerId: id,
@@ -117,8 +150,10 @@ const WEBHOOK_DESCRIPTIONS: Record<WebhookEventName, string> = {
   'commission.paid':
     'A commission was included in a payout. For a `manual` payout this fires when the payout is planned, before you have sent the money; `POST /payouts/{id}/confirm` records that you did.',
   'commission.reversed': 'A commission was reversed: by an admin, or by a Stripe refund or dispute.',
-  'partner.created': 'A partner was created through `POST /partners` (admin, integration or Network approval).',
-  'partner.activated': 'A partner accepted their invite and signed in for the first time.',
+  'partner.created':
+    'A partner was created: through `POST /partners` (admin, integration or Network approval; `source: "api"`), or by applying on the public join page (`source: "join_page"`). A join-page applicant held for review arrives with `activatedAt: null`; `POST /partners/{id}/invite` approves them. Not sent for partners imported with `POST /import/partners-csv`.',
+  'partner.activated':
+    'A partner became active. Fires once per partner: when they accept their invite and sign in for the first time (`invited: true`), or right after `partner.created` for a partner who is active from the moment they are added (`invited: false`): `POST /partners` with `sendInvite: false`, or a join-page applicant the program approves automatically. A join-page applicant held for review fires it on their first sign-in after approval. `source` says which way they came in. Not sent for partners imported with `POST /import/partners-csv`.',
   'partnership.approved': 'A partner was created from an approved OpenPartner Network application.',
   'payout.created':
     'A payout was recorded: a Stripe Connect transfer that went out, or a `manual` payout you still have to send (it stays `pending` until confirmed).',

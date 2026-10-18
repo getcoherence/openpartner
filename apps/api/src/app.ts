@@ -10,9 +10,12 @@ import rateLimit from 'express-rate-limit';
 import { ulid } from 'ulid';
 
 import { stripeWebhookRouter } from './routes/stripe-webhook.js';
+import { stripeAppWebhookRouter } from './routes/stripe-app-webhook.js';
+import { stripeAppCallbackRouter, stripeAppRouter } from './routes/stripe-app.js';
 import { identifyRouter } from './routes/identify.js';
 import { eventsRouter } from './routes/events.js';
 import { conversionsRouter } from './routes/conversions.js';
+import { refundsRouter } from './routes/refunds.js';
 import { partnersRouter } from './routes/partners.js';
 import { programsRouter } from './routes/programs.js';
 import { linksRouter } from './routes/links.js';
@@ -192,6 +195,9 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   // Stripe webhook must see the raw body for signature verification — mount it
   // BEFORE express.json() so its own raw-body parser takes effect.
   app.use(stripeWebhookRouter);
+  // Hosted brands' own Stripe accounts, via the OpenPartner Stripe App —
+  // its own route and signing secrets (stripe-app-webhook.ts). Raw body too.
+  app.use(stripeAppWebhookRouter);
 
   // /import is a full-database bundle; 1 MB caps out around a few
   // hundred Click rows. Give it its own parser before the global one
@@ -234,6 +240,9 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   // API reference (GET /openapi.json, GET /docs). The document is the same
   // for every tenant; mounted again below so /t/<slug>/docs resolves too.
   app.use(openapiRouter);
+  // Stripe App OAuth callback: Stripe redirects to one fixed URL with no
+  // tenant in it; the signed state names the tenant (routes/stripe-app.ts).
+  app.use(stripeAppCallbackRouter);
 
   // ----- Tenant scope -----
   // Everything below runs inside a per-request transaction with
@@ -272,6 +281,7 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(identifyRouter);
   app.use(eventsRouter);
   app.use(conversionsRouter);
+  app.use(refundsRouter);
   app.use(partnersRouter);
   app.use(programsRouter);
   app.use(linksRouter);
@@ -279,6 +289,7 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(dashboardRouter);
   app.use(apiKeysRouter);
   app.use(connectRouter);
+  app.use(stripeAppRouter);
   app.use(payoutsRouter);
   app.use(recoveryRouter);
   app.use(commissionsRouter);

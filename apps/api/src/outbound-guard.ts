@@ -299,6 +299,51 @@ export async function safeFetch(
   }
 }
 
+/** Why a destination was refused, in words a tenant or partner can act on. */
+function refusalDetail(code: string, policy: OutboundPolicy): string {
+  switch (code) {
+    case 'destination_not_public':
+      return 'The URL points at a private, loopback or otherwise non-public address. Deliveries only go to hosts on the public internet.';
+    case 'blocked_hostname':
+      return 'localhost, single-label names and .local, .internal or .home.arpa hosts are not reachable from OpenPartner. Use a public hostname.';
+    case 'port_not_allowed':
+      return `That port is not allowed. Use ${[...(policy.allowedPorts ?? [])].join(' or ')}.`;
+    case 'scheme_not_allowed':
+      return 'Only http and https URLs are allowed.';
+    case 'credentials_not_allowed':
+      return 'Remove the username and password from the URL.';
+    case 'url_too_long':
+      return 'The URL is too long.';
+    default:
+      return 'This URL is not an allowed destination.';
+  }
+}
+
+/**
+ * Registration-time check for a webhook or postback URL: the same URL and
+ * address validation safeFetch runs before every delivery, so a URL that
+ * every delivery would refuse (a private address, a blocked port) is
+ * rejected when it is saved instead of failing every delivery after.
+ *
+ * Advisory only — DNS can change after this, so safeFetch still validates
+ * and pins on every delivery. A name that doesn't resolve right now is
+ * accepted: it may just not be live yet.
+ */
+export async function checkOutboundDestination(
+  rawUrl: string,
+  trust: 'admin' | 'partner',
+): Promise<{ reason: string; detail: string } | null> {
+  // Same precedence as safeFetch, minus the explicit-policy argument.
+  const policy = testOverride ?? (trust === 'admin' ? outboundPolicy() : partnerStrict(outboundPolicy()));
+  try {
+    await resolveAndValidate(validateUrl(rawUrl, policy), policy);
+    return null;
+  } catch (err) {
+    if (err instanceof OutboundBlockedError) return { reason: err.message, detail: refusalDetail(err.message, policy) };
+    return null;
+  }
+}
+
 /** Test hook: run the pre-flight validation without opening a socket. */
 export async function __assertAllowedForTests(rawUrl: string, policy?: OutboundPolicy): Promise<void> {
   const p = policy ?? outboundPolicy();

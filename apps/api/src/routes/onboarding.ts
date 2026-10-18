@@ -55,16 +55,21 @@ onboardingRouter.get('/admin/onboarding-status', requireAuth, requireAdmin, asyn
   // explicitly set OR the Tenant has a displayName from signup. We
   // accept the signup value because re-typing it in Settings just to
   // satisfy a checkbox is dumb.
-  const programRow = await db(TABLES.Config).where({ key: 'program_settings' }).first();
+  // Every count names the tenant: a pool that bypasses RLS would otherwise
+  // tick these boxes from other tenants' rows.
+  const programRow = await db(TABLES.Config).where({ tenantId, key: 'program_settings' }).first();
   const programName = ((programRow?.value as { programName?: string })?.programName ?? '').trim();
   const tenant = await db('Tenant').where({ id: tenantId }).first(['displayName']);
   const displayName = ((tenant?.displayName as string | undefined) ?? '').trim();
   const brandInfoComplete = programName.length > 0 || displayName.length > 0;
 
-  const campaignRows = await db<ProgramRow>(TABLES.Program).count<Array<{ count: string }>>({ count: '*' });
+  const campaignRows = await db<ProgramRow>(TABLES.Program)
+    .where({ tenantId })
+    .count<Array<{ count: string }>>({ count: '*' });
   const campaignCount = Number(campaignRows[0]?.count ?? 0);
 
   const partnerRows = await db<PartnerRow>(TABLES.Partner)
+    .where({ tenantId })
     .whereNull('revokedAt')
     .count<Array<{ count: string }>>({ count: '*' });
   const partnerCount = Number(partnerRows[0]?.count ?? 0);

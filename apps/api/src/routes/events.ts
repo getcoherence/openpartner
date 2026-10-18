@@ -5,13 +5,18 @@ import { TABLES, type EventRow } from '@openpartner/db';
 import { attributeEvent } from '../attribution.js';
 import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import { sameConversion, storedAttribution } from '../conversion-ingest.js';
+import { currencyInputSchema, ingestCurrency } from '../currency.js';
+import { RECORDED_FROM_STRIPE_DETAIL, recordedFromStripe } from '../stripe-app.js';
 import { tenantOf } from '../tenancy.js';
 
 export const schema = z.object({
   userId: z.string().min(1),
   type: z.string().min(1),
+  /** A JSON number. Omit it for an event with no value; null is refused. */
   value: z.number().nonnegative().optional(),
-  currency: z.string().length(3).optional(),
+  /** ISO 4217, any case; stored upper case. Omitted → the tenant's
+   *  default currency (Settings → Program). */
+  currency: currencyInputSchema.optional(),
   metadata: z.record(z.unknown()).optional(),
   ts: z.string().datetime().optional(),
   /** Idempotency key — the source system's stable id for this one event
@@ -47,13 +52,18 @@ eventsRouter.post('/attribution/events', requireAuth, grantScope('events:write')
 
   const eventId = ulid();
   const { userId, type, value, currency, metadata, ts, externalEventId } = body.data;
+  // A Stripe invoice / Checkout Session the brand's connected Stripe account
+  // reports itself: Stripe's record of that payment wins (stripe-app.ts).
+  if (await recordedFromStripe(db, tenantId, externalEventId)) {
+    return res.status(409).json({ error: 'recorded_from_stripe', detail: RECORDED_FROM_STRIPE_DETAIL });
+  }
   const row = {
     id: eventId,
     tenantId,
     userId,
     type,
     value: value != null ? value.toFixed(2) : null,
-    currency: currency ?? 'USD',
+    currency: await ingestCurrency(db, tenantId, currency),
     externalEventId: externalEventId ?? null,
     metadata: metadata ?? {},
     ts: ts ? new Date(ts) : new Date(),

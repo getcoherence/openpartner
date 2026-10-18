@@ -20,6 +20,7 @@
 import type { Knex } from 'knex';
 import { TABLES, type CommissionRule, type CommissionSubRule, type CommissionTiers, type EventRow } from '@openpartner/db';
 import { approvalSnapshotSlabRuleSchema } from './commission-rule-schema.js';
+import { rowCurrency } from './currency.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -71,14 +72,16 @@ export interface SubRuleAccrual {
 
 type SlabEvent = Pick<EventRow, 'id' | 'type' | 'value' | 'currency' | 'ts'>;
 
-/** Pre-weight amount for a sub-rule that carries bands or tiers. */
+/** Pre-weight amount for a sub-rule that carries bands or tiers. A fixed
+ *  amount is in the rule's currency, and is booked in it (attribution.ts
+ *  commissionCurrency); a percent amount is in the event's currency. */
 export async function accrueSlabRule(
   db: Knex,
   subRule: CommissionSubRule,
   event: SlabEvent,
   ctx: { partnerId: string; programId: string },
 ): Promise<SubRuleAccrual> {
-  const eventCurrency = (event.currency ?? 'USD').toUpperCase();
+  const eventCurrency = rowCurrency(event.currency);
   const currency = (subRule.currency ?? eventCurrency).toUpperCase();
   const eventValue = event.value != null ? Number(event.value) : 0;
 
@@ -290,9 +293,16 @@ function roundMetric(n: number): number {
   return Math.round(n * 10000) / 10000;
 }
 
-/** `Commission.metadata` for one accrual. */
-export function commissionMetadata(accrual: SubRuleAccrual, ruleIndex: number): Record<string, unknown> {
-  return accrual.slab ? { slab: { ruleIndex, ...accrual.slab } } : {};
+/** `Commission.metadata` for one accrual. `rateType` is what the hosted
+ *  platform fee reads to tell a sale from a bounty: a percent commission is
+ *  a share of an amount, so its event is revenue whatever it's called
+ *  (docs/platform-fee.md). */
+export function commissionMetadata(
+  accrual: SubRuleAccrual,
+  ruleIndex: number,
+  rateType: CommissionSubRule['type'],
+): Record<string, unknown> {
+  return accrual.slab ? { rateType, slab: { ruleIndex, ...accrual.slab } } : { rateType };
 }
 
 /** True when a stored rule array has any banded or tiered sub-rule. */

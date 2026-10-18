@@ -11,7 +11,8 @@
 //      aren't asked to join it (nobody is shared without opting in anyway);
 //   2. creates a private referral program (not listed on the marketplace);
 //   3. mints a scoped key with only the scopes the referral page needs;
-//   4. writes .env for server.mjs (unless one exists; then it prints it).
+//   4. reads your default currency (Settings → Brand info);
+//   5. writes .env for server.mjs (unless one exists; then it prints it).
 
 import { existsSync, writeFileSync } from 'node:fs';
 
@@ -57,6 +58,17 @@ if (network.autoEnroll) {
   console.log('✓ Network already not offered to partners');
 }
 
+// 1b. Keep customers out of the hosted partner portal: partners created
+//     without an invite can't request a sign-in link. Also before the first
+//     partner exists; existing partners keep what they have.
+const access = await op('GET', '/config/partner-access');
+if (access.uninvitedPortalAccess) {
+  await op('POST', '/config/partner-access', { uninvitedPortalAccess: false });
+  console.log('✓ Partners added without an invite can no longer sign in to the portal');
+} else {
+  console.log('✓ Partners added without an invite already have no portal access');
+}
+
 // 2. A private program: 20% of every payment for the first 12 months.
 // holdbackDays: commissions auto-approve 30 days after accruing (your refund
 // window), then the next payout run pays them. Use 0 to approve by hand.
@@ -79,17 +91,26 @@ if (program) {
 }
 
 // 3. A scoped key: create partners + links, read stats/earnings, report events.
+// partners:create, not partners:write: it can't invite, revoke or set
+// commission terms, so neither a bug nor a leak can email your customers.
 const key = await op('POST', '/api-keys/scoped', {
   label: 'in-app referral sample',
-  scopes: ['partners:write', 'partners:read', 'links:write', 'links:read', 'commissions:read', 'payouts:read', 'events:write'],
+  scopes: ['partners:create', 'partners:read', 'links:write', 'links:read', 'commissions:read', 'payouts:read', 'events:write'],
 });
 console.log(`✓ Scoped key ${key.id} minted`);
+
+// 4. Your default currency: what a payment reported without one is recorded
+//    in, and what the page shows a zero balance in. Set it in Settings →
+//    Brand info before reporting any payments.
+const { defaultCurrency = 'USD' } = await op('GET', '/config/program');
+console.log(`✓ Default currency ${defaultCurrency}${defaultCurrency === 'USD' ? ' (change it in Settings → Brand info if you bill in another currency, then re-run)' : ''}`);
 
 const env = [
   `OPENPARTNER_API_URL=${API}`,
   `OPENPARTNER_API_KEY=${key.plaintext}`,
   `OPENPARTNER_PROGRAM_ID=${program.id}`,
   `OPENPARTNER_SHARE_URL_BASE=${SHARE_BASE}`,
+  `OPENPARTNER_CURRENCY=${defaultCurrency}`,
   'PORT=3000',
   '',
 ].join('\n');

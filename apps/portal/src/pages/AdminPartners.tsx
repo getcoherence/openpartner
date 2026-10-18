@@ -16,6 +16,8 @@ interface Partner {
   createdAt: string;
   activatedAt: string | null;
   revokedAt: string | null;
+  /** false = can't sign in to the partner portal (headless programs). */
+  portalAccess: boolean;
   metadata?: { review?: { status?: string }; application?: unknown } | null;
 }
 
@@ -157,7 +159,7 @@ function PartnerTable({
 }) {
   return (
     <Table
-      columns={['Partner', 'Email', 'Status', 'Stripe', 'Created', 'Actions']}
+      columns={['Partner', 'Email', 'Status', 'Portal', 'Stripe', 'Created', 'Actions']}
       rows={partners.map((p) => [
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <Avatar name={p.name} size={28} />
@@ -173,6 +175,7 @@ function PartnerTable({
             : isPendingReview(p)
               ? <StatusPill status="pending review" />
               : <StatusPill status="invited" />,
+        <PortalAccessToggle partner={p} />,
         p.stripeConnectAccountId ? <StatusPill status="connected" /> : <span style={{ color: theme.textDim }}>—</span>,
         <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
         <div style={{ display: 'flex', gap: 6 }}>
@@ -201,7 +204,9 @@ function PartnerTable({
               <span style={{ fontSize: 13, color: theme.textDim, whiteSpace: 'nowrap' }}>No application on file</span>
             </>
           ) : null}
-          {!p.activatedAt && !p.revokedAt && (
+          {/* The invite (and an approval, which sends one) is a sign-in
+              link, so it needs portal access first. */}
+          {!p.activatedAt && !p.revokedAt && p.portalAccess !== false && (
             <>
               <span style={{ color: theme.border }}>·</span>
               {isPendingReview(p) ? <ApproveApplication partner={p} /> : <ResendInvite partnerId={p.id} />}
@@ -226,6 +231,11 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
   const [email, setEmail] = useState('');
   const [grantAll, setGrantAll] = useState(true);
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  // Unchecked = add them silently (no email), e.g. a customer you'll show
+  // their referral stats to in your own app. Then portal access is a
+  // separate choice, off unless ticked.
+  const [invite, setInvite] = useState(true);
+  const [portalAccess, setPortalAccess] = useState(false);
 
   const campaigns = useQuery({
     queryKey: ['me-campaigns-for-invite'],
@@ -243,6 +253,7 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
           // it preserves the legacy "grant all current campaigns"
           // default the backend already implements.
           programIds: grantAll ? undefined : Array.from(picked),
+          ...(invite ? {} : { sendInvite: false, portalAccess }),
         },
       }),
     onSuccess: onCreated,
@@ -259,9 +270,11 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
 
   return (
     <Card style={{ marginBottom: 14 }}>
-      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>Invite a partner</div>
+      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>{invite ? 'Invite a partner' : 'Add a partner'}</div>
       <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
-        They'll get an email with a one-time link to set up their dashboard.
+        {invite
+          ? "They'll get an email with a one-time link to set up their dashboard."
+          : "They're active right away and we don't email them."}
       </div>
       <ErrorBanner error={mut.error} />
       <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
@@ -299,16 +312,74 @@ function CreatePartner({ onClose, onCreated }: { onClose: () => void; onCreated:
           </div>
         )}
       </div>
+      <div style={{ marginBottom: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text }}>
+          <input type="checkbox" checked={invite} onChange={(e) => setInvite(e.target.checked)} />
+          Email them an invite to the partner portal
+        </label>
+        {!invite && (
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, color: theme.text, marginLeft: 22 }}>
+            <input type="checkbox" checked={portalAccess} onChange={(e) => setPortalAccess(e.target.checked)} style={{ marginTop: 2 }} />
+            <span>
+              Let them sign in to the partner portal anyway
+              <span style={{ color: theme.textMuted, display: 'block' }}>
+                Unchecked = they can&rsquo;t request a sign-in link. Use this when your own app shows them their referrals.
+              </span>
+            </span>
+          </label>
+        )}
+      </div>
       <div style={{ display: 'flex', gap: 8 }}>
         <Button
           onClick={() => mut.mutate()}
           disabled={!name || !email || mut.isPending || (!grantAll && picked.size === 0)}
         >
-          {mut.isPending ? 'Sending…' : 'Send invite'}
+          {invite ? (mut.isPending ? 'Sending…' : 'Send invite') : mut.isPending ? 'Adding…' : 'Add partner'}
         </Button>
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
       </div>
     </Card>
+  );
+}
+
+/** Portal access on/off for one partner (PATCH /partners/:id). Turning it
+ *  off signs them out at once, so that direction asks first. */
+function PortalAccessToggle({ partner }: { partner: Partner }) {
+  const qc = useQueryClient();
+  const mut = useMutation({
+    mutationFn: (portalAccess: boolean) => api<Partner>(`/partners/${partner.id}`, { method: 'PATCH', body: { portalAccess } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['partners'] }),
+  });
+  const on = partner.portalAccess !== false;
+  return (
+    <button
+      onClick={() => {
+        if (
+          on &&
+          !window.confirm(
+            `Turn off portal access for ${partner.name}? They're signed out now and can't request a sign-in link until you turn it back on.`,
+          )
+        ) {
+          return;
+        }
+        mut.mutate(!on);
+      }}
+      disabled={mut.isPending}
+      title={mut.error instanceof Error ? mut.error.message : on ? 'Can sign in to the partner portal' : "Can't sign in to the partner portal"}
+      aria-label={`Portal access for ${partner.name}: ${on ? 'on' : 'off'}. Click to turn ${on ? 'off' : 'on'}.`}
+      style={{
+        background: 'none',
+        border: 'none',
+        padding: 0,
+        fontSize: 13,
+        color: on ? theme.text : theme.textDim,
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {mut.isPending ? '…' : on ? 'On' : 'Off'}
+      <span style={{ color: theme.accentText, marginLeft: 6 }}>{mut.isError ? 'retry' : on ? 'turn off' : 'turn on'}</span>
+    </button>
   );
 }
 
@@ -353,7 +424,9 @@ function RevokeDialog({
   onDone: () => void;
 }) {
   const [reason, setReason] = useState('');
-  const [notify, setNotify] = useState(true);
+  // Off by default for a partner without portal access: they've never
+  // heard from us, so a suspension email would come out of nowhere.
+  const [notify, setNotify] = useState(partner.portalAccess !== false);
   const mut = useMutation({
     mutationFn: () =>
       api(`/partners/${partner.id}/revoke`, {

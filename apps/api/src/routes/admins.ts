@@ -33,8 +33,8 @@ const revokeSchema = z.object({
   reason: z.string().max(500).optional(),
 });
 
-async function getProgramName(db: Knex): Promise<string | null> {
-  const row = await db<ConfigRow>(TABLES.Config).where({ key: 'program_settings' }).first();
+async function getProgramName(db: Knex, tenantId: string): Promise<string | null> {
+  const row = await db<ConfigRow>(TABLES.Config).where({ tenantId, key: 'program_settings' }).first();
   const value = (row?.value ?? {}) as { programName?: string };
   return value.programName ?? null;
 }
@@ -47,7 +47,7 @@ async function sendInvite(db: Knex, tenantId: string, admin: AdminRow, linkTenan
     principalKind: 'admin',
     principalId: admin.id,
   });
-  const tmpl = adminInviteEmail(admin.name, buildMagicLinkUrl(issued.plaintext, linkTenant), await getProgramName(db));
+  const tmpl = adminInviteEmail(admin.name, buildMagicLinkUrl(issued.plaintext, linkTenant), await getProgramName(db, tenantId));
   await getMailer().send({ db, tenantId }, {
     to: admin.email,
     subject: tmpl.subject,
@@ -58,11 +58,15 @@ async function sendInvite(db: Knex, tenantId: string, admin: AdminRow, linkTenan
   });
 }
 
+// Every query below names tenantId explicitly. RLS scopes req.db, but a
+// multi-tenant pool that bypasses RLS (no app role) would otherwise list,
+// count and lock every tenant's admins.
+
 // -------- List --------
 
 adminsRouter.get('/admins', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  const admins = await db<AdminRow>(TABLES.Admin).orderBy('createdAt', 'desc');
+  const { db, tenantId } = tenantOf(req);
+  const admins = await db<AdminRow>(TABLES.Admin).where({ tenantId }).orderBy('createdAt', 'desc');
   res.json({ admins });
 });
 
@@ -74,7 +78,8 @@ adminsRouter.post('/admins', requireAuth, requireAdmin, async (req, res) => {
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
   const email = body.data.email.toLowerCase();
-  const existing = await db<AdminRow>(TABLES.Admin).where({ email }).first();
+  // Admin email is unique per tenant.
+  const existing = await db<AdminRow>(TABLES.Admin).where({ tenantId, email }).first();
   if (existing) return res.status(409).json({ error: 'email_taken' });
 
   const id = ulid();
@@ -89,7 +94,7 @@ adminsRouter.post('/admins', requireAuth, requireAdmin, async (req, res) => {
 
 adminsRouter.post('/admins/:id/invite', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
-  const admin = await db<AdminRow>(TABLES.Admin).where({ id: req.params.id }).first();
+  const admin = await db<AdminRow>(TABLES.Admin).where({ id: req.params.id, tenantId }).first();
   if (!admin) return res.status(404).json({ error: 'not_found' });
   if (admin.revokedAt) return res.status(409).json({ error: 'admin_revoked' });
   if (admin.activatedAt) return res.status(409).json({ error: 'already_activated' });
@@ -106,7 +111,7 @@ class RevokeGuardError extends Error {
 }
 
 adminsRouter.post('/admins/:id/revoke', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const body = revokeSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
@@ -121,7 +126,7 @@ adminsRouter.post('/admins/:id/revoke', requireAuth, requireAdmin, async (req, r
     // concurrent revoke calls serialize. Without this, two simultaneous
     // revokes of the only two active admins both pass the "count > 1"
     // check and lock everyone out.
-    const admin = await db<AdminRow>(TABLES.Admin).where({ id: req.params.id }).forUpdate().first();
+    const admin = await db<AdminRow>(TABLES.Admin).where({ id: req.params.id, tenantId }).forUpdate().first();
     if (!admin) throw new RevokeGuardError('not_found');
     if (admin.revokedAt) throw new RevokeGuardError('already_revoked');
 
@@ -134,6 +139,7 @@ adminsRouter.post('/admins/:id/revoke', requireAuth, requireAdmin, async (req, r
     // Last-active-admin guard inside the same tx. Count active admins
     // under FOR UPDATE so the count is stable through commit.
     const actives = await db<AdminRow>(TABLES.Admin)
+      .where({ tenantId })
       .whereNotNull('activatedAt')
       .whereNull('revokedAt')
       .forUpdate();
@@ -143,11 +149,11 @@ adminsRouter.post('/admins/:id/revoke', requireAuth, requireAdmin, async (req, r
     }
 
     await db<AdminRow>(TABLES.Admin)
-      .where({ id: admin.id })
+      .where({ id: admin.id, tenantId })
       .update({ revokedAt: now, revokeReason: body.data.reason ?? null, updatedAt: now });
     // Kill admin sessions.
     await db<SessionRow>(TABLES.Session)
-      .where({ principalKind: 'admin', principalId: admin.id })
+      .where({ tenantId, principalKind: 'admin', principalId: admin.id })
       .whereNull('revokedAt')
       .update({ revokedAt: now });
   } catch (err) {
@@ -164,12 +170,12 @@ adminsRouter.post('/admins/:id/revoke', requireAuth, requireAdmin, async (req, r
 // -------- Reinstate --------
 
 adminsRouter.post('/admins/:id/reinstate', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  const admin = await db<AdminRow>(TABLES.Admin).where({ id: req.params.id }).first();
+  const { db, tenantId } = tenantOf(req);
+  const admin = await db<AdminRow>(TABLES.Admin).where({ id: req.params.id, tenantId }).first();
   if (!admin) return res.status(404).json({ error: 'not_found' });
   if (!admin.revokedAt) return res.status(409).json({ error: 'not_revoked' });
   await db<AdminRow>(TABLES.Admin)
-    .where({ id: admin.id })
+    .where({ id: admin.id, tenantId })
     .update({ revokedAt: null, revokeReason: null, updatedAt: new Date() });
   res.json({ ok: true });
 });

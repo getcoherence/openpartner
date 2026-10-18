@@ -19,22 +19,72 @@
  * tables we haven't yet designed for round-trip.
  */
 
+import { createHash, randomBytes } from 'node:crypto';
 import type { Knex } from 'knex';
 import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
+import { makeSecret } from './webhook-dispatcher.js';
 
 /** Bundle format version. Bumped when the table set or row shape changes.
  *  v1 → v2 (Aug 2026): added PartnerProgram, PartnerCommission, Coupon;
  *  every table now carries its real primary key instead of assuming `id`.
  *  v2 → v3 (Oct 2026): PartnerCommission rows carry `id` (the new primary
  *  key) and `programId` (null = partner-wide, set = one program).
- *  v3 → v4 (Oct 2026): added PartnerNetworkConsent. */
-export const SCHEMA_VERSION = 4;
+ *  v3 → v4 (Oct 2026): added PartnerNetworkConsent.
+ *  v4 → v5 (Oct 2026): added BrandAsset, WebhookEndpoint, PartnerPostback,
+ *  ConversionPostbackToken and Config — the last three tables' credentials
+ *  stay out (see CredentialSpec), and Config only for PORTABLE_CONFIG_KEYS.
+ *  Program rows carry `renewalsStayWithPartner`, and Partner rows carry
+ *  `portalAccess`. */
+export const SCHEMA_VERSION = 5;
 /** Older bundles still import — a v1 bundle is a v2 bundle minus three
  *  tables, a v2 bundle's PartnerCommission rows are partner-wide v3 rows
- *  (see upgradeBundle), and a v3 bundle is a v4 bundle minus
- *  PartnerNetworkConsent. Dropping support for a version people hold on
- *  disk would break the portability promise, so this list only ever grows. */
-export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4] as const;
+ *  (see upgradeBundle), a v3 bundle is a v4 bundle minus
+ *  PartnerNetworkConsent, and a v4 bundle is a v5 bundle minus the five
+ *  tables v5 added, whose rows take the new columns' defaults: a Program
+ *  row without `renewalsStayWithPartner` gets true (the value the migration
+ *  gave every existing program), and a Partner row without `portalAccess`
+ *  gets true (every partner had portal access before the column existed).
+ *  Dropping support for a version people hold on disk would break the
+ *  portability promise, so this list only ever grows. */
+export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4, 5] as const;
+
+/**
+ * The Config keys that travel: the brand's own program and portal settings.
+ * Every other key is a credential, hosted/platform operational state, or
+ * bookkeeping a fresh instance rebuilds — listed with the reason in
+ * docs/data-portability.md. Applied on import too, so a bundle can't carry
+ * a key the exporter would never write.
+ */
+export const PORTABLE_CONFIG_KEYS = [
+  // Program name, support email, router URL, whether partners see the
+  // Network (routes/settings.ts ProgramSettings).
+  'program_settings',
+  // The join page: auto-approve vs review, or closed.
+  'partner_signup',
+  // Whether partners created without an invite get portal access
+  // (partner-portal-access.ts). A headless program keeps its customers out
+  // of the portal, and a restored instance must keep doing so.
+  'partner_access',
+] as const;
+
+/**
+ * Credential columns. Never written to any export format, so a bundle on
+ * someone's disk can't sign a webhook or record a conversion. A NOT NULL
+ * column can't just be left empty on restore, so the importer puts a fresh
+ * value in its place.
+ */
+export interface CredentialSpec {
+  /** Dropped from every export (JSON, CSV, SQL); ignored if a bundle has them. */
+  omit: readonly string[];
+  /** JSON import: values for one restored row (`omit` and anything derived
+   *  from it). `reveal` is handed back once to the admin who ran the import
+   *  — the only way to learn a secret that is stored in plaintext. */
+  fresh: (row: Record<string, unknown>) => { values: Record<string, unknown>; reveal?: Record<string, unknown> };
+  /** SQL dump: column → expression the restoring Postgres evaluates per row. */
+  sql: Record<string, string>;
+  /** SQL dump: statements after the table's inserts, given the tenant expression. */
+  sqlAfter?: (tenantExpr: string) => string[];
+}
 
 export interface ExportTableSpec {
   table: string;
@@ -49,7 +99,21 @@ export interface ExportTableSpec {
    *  a fresh id but a taken natural key must be skipped, not fail the
    *  whole import. */
   conflict?: 'primaryKey' | 'any';
+  /** Only rows whose `column` is one of `values` travel. Applied on export
+   *  and on import. */
+  only?: { column: string; values: readonly string[] };
+  credentials?: CredentialSpec;
 }
+
+/** A token hash no plaintext matches: the restored row keeps its history
+ *  and allowlist, but the credential itself is dead until rotated. */
+function deadTokenHash(): string {
+  return createHash('sha256').update(randomBytes(32)).digest('hex');
+}
+
+/** 64 hex chars from the restoring server's CSPRNG (gen_random_uuid is core
+ *  since Postgres 13; the dump's docs say so). */
+const SQL_RANDOM_HEX = `replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', '')`;
 
 /**
  * The exportable set, in FK-safe import order (parents first).
@@ -90,6 +154,58 @@ export const EXPORT_TABLES = [
   // Core compensating-entry ledger (clawbacks/corrections against paid
   // commissions). Ordered after Commission for FK-safe import.
   { table: TABLES.CommissionAdjustment, primaryKey: 'id' },
+  // The marketing-asset library partners pull from. Image rows carry the
+  // public URL of the uploaded file, not its bytes — see
+  // docs/data-portability.md "Brand asset files".
+  { table: TABLES.BrandAsset, primaryKey: 'id' },
+  // The brand's outbound webhook endpoints (the delivery log stays out).
+  // The signing secret is a credential: a restored endpoint gets a fresh
+  // one and comes back paused, because its receiver doesn't know the new
+  // secret yet. The JSON import report shows the new secrets once.
+  {
+    table: TABLES.WebhookEndpoint,
+    primaryKey: 'id',
+    credentials: {
+      omit: ['secret', 'secretPrefix'],
+      fresh: (row) => {
+        const secret = makeSecret();
+        return {
+          values: { secret: secret.plaintext, secretPrefix: secret.prefix, active: false },
+          reveal: { id: row.id, url: row.url, secret: secret.plaintext },
+        };
+      },
+      sql: { secret: `'whsec_' || ${SQL_RANDOM_HEX}`, secretPrefix: "''", active: 'false' },
+      sqlAfter: (tenantExpr) => [
+        `UPDATE "WebhookEndpoint" SET "secretPrefix" = left("secret", 12) WHERE "tenantId" = ${tenantExpr} AND "secretPrefix" = '';`,
+      ],
+    },
+  },
+  // Each partner's own tracker callbacks. No credential of ours; the URL
+  // travels as the partner entered it.
+  { table: TABLES.PartnerPostback, primaryKey: 'id' },
+  // The inbound GET /postback credential: allowlist and rotation history
+  // travel, the token hash doesn't. A restored live token matches no URL
+  // until it is rotated (Integrations page), which keeps its allowlist.
+  // One live token per tenant is a partial unique index, so a destination
+  // that already has one keeps it ('any').
+  {
+    table: TABLES.ConversionPostbackToken,
+    primaryKey: 'id',
+    conflict: 'any',
+    credentials: {
+      omit: ['tokenHash'],
+      fresh: () => ({ values: { tokenHash: deadTokenHash() } }),
+      sql: { tokenHash: `encode(sha256(convert_to(${SQL_RANDOM_HEX}, 'UTF8')), 'hex')` },
+    },
+  },
+  // Program and portal settings. Primary key (tenantId, key); a setting the
+  // destination already has wins.
+  {
+    table: TABLES.Config,
+    primaryKey: 'key',
+    conflict: 'any',
+    only: { column: 'key', values: PORTABLE_CONFIG_KEYS },
+  },
 ] as const satisfies readonly ExportTableSpec[];
 
 export type ExportableTable = (typeof EXPORT_TABLES)[number]['table'];
@@ -99,8 +215,23 @@ export const EXPORTABLE_TABLES = EXPORT_TABLES.map((s) => s.table) as readonly E
 // Import order respects FK dependencies: parents first.
 export const IMPORT_ORDER = EXPORT_TABLES;
 
+function specOf(table: string): ExportTableSpec | undefined {
+  return (EXPORT_TABLES as readonly ExportTableSpec[]).find((s) => s.table === table);
+}
+
 export function primaryKeyOf(table: string): string {
-  return EXPORT_TABLES.find((s) => s.table === table)?.primaryKey ?? 'id';
+  return specOf(table)?.primaryKey ?? 'id';
+}
+
+/** Does this row travel? (ExportTableSpec.only) */
+function isPortableRow(spec: ExportTableSpec, row: Record<string, unknown>): boolean {
+  return !spec.only || spec.only.values.includes(row[spec.only.column] as string);
+}
+
+function withoutColumns(row: Record<string, unknown>, columns: readonly string[]): Record<string, unknown> {
+  const out = { ...row };
+  for (const c of columns) delete out[c];
+  return out;
 }
 
 function conflictModeOf(spec: ExportTableSpec): 'primaryKey' | 'any' {
@@ -162,13 +293,21 @@ export function isExportable(name: string): name is ExportableTable {
  *
  * Every table in EXPORT_TABLES carries `tenantId`, so this is complete
  * rather than best-effort.
+ *
+ * Every format goes through here, so this is also where credential
+ * columns are dropped and non-portable rows (ExportTableSpec.only) left out.
  */
 export async function exportTable(
   db: Knex,
   table: ExportableTable,
   tenantId: string,
 ): Promise<unknown[]> {
-  return db(table).where({ tenantId }).select('*');
+  const spec = specOf(table)!;
+  const query = db(table).where({ tenantId });
+  if (spec.only) query.whereIn(spec.only.column, spec.only.values);
+  const rows = (await query.select('*')) as Record<string, unknown>[];
+  const omit = spec.credentials?.omit;
+  return omit ? rows.map((r) => withoutColumns(r, omit)) : rows;
 }
 
 /**
@@ -366,21 +505,28 @@ export function buildSqlDump(bundle: ImportBundle, opts: SqlDumpOptions = {}): s
       continue;
     }
     const types = opts.columnTypes?.[table] ?? {};
-    const columns = Array.from(new Set(rows.flatMap((r) => Object.keys(r))));
+    // Credential columns are written by the restoring server, never taken
+    // from the bundle (CredentialSpec.sql).
+    const fresh: Record<string, string> = spec.credentials?.sql ?? {};
+    const columns = Array.from(new Set([...rows.flatMap((r) => Object.keys(r)), ...Object.keys(fresh)]));
     const columnList = columns.map(quoteIdent).join(', ');
     out.push(`-- ${table} (${rows.length} row${rows.length === 1 ? '' : 's'})`);
+    if (spec.credentials) {
+      out.push(`-- Not exported: ${spec.credentials.omit.join(', ')}. Fresh values are generated on restore.`);
+    }
     for (let i = 0; i < rows.length; i += chunkSize) {
       const chunk = rows.slice(i, i + chunkSize);
       const values = chunk.map(
         (row) =>
           `  (${columns
-            .map((c) => (c === 'tenantId' ? tenantExpr : sqlLiteral(row[c], types[c])))
+            .map((c) => (c === 'tenantId' ? tenantExpr : (fresh[c] ?? sqlLiteral(row[c], types[c]))))
             .join(', ')})`,
       );
       out.push(`INSERT INTO ${quoteIdent(table)} (${columnList}) VALUES`);
       out.push(values.join(',\n'));
       out.push(onConflict);
     }
+    out.push(...(spec.credentials?.sqlAfter?.(tenantExpr) ?? []));
     out.push('');
   }
 
@@ -453,6 +599,9 @@ export interface ImportBundle {
 export interface ImportReport {
   inserted: Record<string, number>;
   skipped: Record<string, number>;
+  /** Fresh credentials for restored rows, per table — shown once, like a
+   *  webhook secret at creation (CredentialSpec.fresh's `reveal`). */
+  credentials: Record<string, Array<Record<string, unknown>>>;
 }
 
 /**
@@ -475,21 +624,34 @@ export async function importBundle(
 ): Promise<ImportReport> {
   const inserted: Record<string, number> = {};
   const skipped: Record<string, number> = {};
+  const credentials: Record<string, Array<Record<string, unknown>>> = {};
   const current = upgradeBundle(bundle);
 
   for (const spec of IMPORT_ORDER as readonly ExportTableSpec[]) {
     const { table, primaryKey } = spec;
     const rows = current[table];
     if (!Array.isArray(rows) || rows.length === 0) continue;
+    const portable = (rows as Record<string, unknown>[]).filter((r) => isPortableRow(spec, r));
+    if (portable.length === 0) {
+      inserted[table] = 0;
+      skipped[table] = rows.length;
+      continue;
+    }
 
     // Read the destination's column types once per table. Without this a
     // JSON array (Program.commissionRule) is handed to the driver as a
     // Postgres array literal and the whole import fails.
     const types = await tableColumnTypes(db, table);
-    const normalized = rows.map((r) => ({
-      ...normalizeRow(r as Record<string, unknown>, types),
-      tenantId,
-    }));
+    const reveals = new Map<string, Record<string, unknown>>();
+    const normalized = portable.map((r) => {
+      const row: Record<string, unknown> = { ...normalizeRow(r, types), tenantId };
+      if (!spec.credentials) return row;
+      // A bundle never carries credentials; a hand-made one that does is
+      // ignored like any other.
+      const { values, reveal } = spec.credentials.fresh(row);
+      if (reveal) reveals.set(String(row[primaryKey]), reveal);
+      return { ...withoutColumns(row, spec.credentials.omit), ...values };
+    });
 
     // The conflict target has to be the table's REAL primary key —
     // assuming `id` silently broke every table keyed on something else
@@ -502,9 +664,15 @@ export async function importBundle(
 
     inserted[table] = result.length;
     skipped[table] = rows.length - result.length;
+    // Only rows that landed: a skipped row kept the destination's own
+    // credential, so there is nothing new to show.
+    const shown = (result as Array<Record<string, unknown>>)
+      .map((r) => reveals.get(String(r[primaryKey])))
+      .filter((r): r is Record<string, unknown> => !!r);
+    if (shown.length > 0) credentials[table] = shown;
   }
 
-  return { inserted, skipped };
+  return { inserted, skipped, credentials };
 }
 
 function normalizeRow(

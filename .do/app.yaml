@@ -70,9 +70,10 @@ services:
         scope: RUN_TIME
       # App-pool connection — connects as openpartner_app (a NOLOGIN-by-
       # default role provisioned by migration 20260507020000_app_role.ts).
-      # Required in multi-tenant deploys for RLS to actually engage at
-      # runtime; in single-tenant self-host you can leave it unset and
-      # let everything run as the migration role.
+      # Required in multi-tenant deploys: the api refuses to boot when
+      # OPENPARTNER_TENANCY=multi and this connection bypasses RLS
+      # (unset, superuser, BYPASSRLS or table owner). In single-tenant
+      # self-host you can leave it unset and run as the migration role.
       - key: DATABASE_URL_APP
         type: SECRET
         scope: RUN_TIME
@@ -134,6 +135,24 @@ services:
         type: SECRET
         scope: RUN_TIME
       - key: STRIPE_NETWORK_USAGE_PRICE_ID
+        type: SECRET
+        scope: RUN_TIME
+      # OpenPartner Stripe App (brands connect their own Stripe) — keys of
+      # the app's OWN developer account, never the billing account above.
+      # Optional: unset hides "Connect Stripe". docs/stripe-app.md.
+      - key: STRIPE_APP_SECRET_KEY
+        type: SECRET
+        scope: RUN_TIME
+      - key: STRIPE_APP_CLIENT_ID
+        type: SECRET
+        scope: RUN_TIME
+      - key: STRIPE_APP_SECRET_KEY_TEST
+        type: SECRET
+        scope: RUN_TIME
+      - key: STRIPE_APP_CLIENT_ID_TEST
+        type: SECRET
+        scope: RUN_TIME
+      - key: STRIPE_APP_WEBHOOK_SECRET
         type: SECRET
         scope: RUN_TIME
       - key: METRICS_TOKEN

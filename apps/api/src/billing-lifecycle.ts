@@ -27,6 +27,7 @@ import { db as privilegedDb } from './db.js';
 import { applyWhiteLabelFromSubscription } from './white-label-billing.js';
 import { mirrorHostedBillingState, type MirroredSubscriptionStatus } from './billing-plan.js';
 import { sendOpsEmail } from './platform-ops-mail.js';
+import { stripeMinorToMajorString } from './stripe-amounts.js';
 import {
   opsTenantCancellationResumedEmail,
   opsTenantCancellationScheduledEmail,
@@ -175,7 +176,7 @@ export async function notifyTenantInvoicePaymentFailed(
   const prev = marker?.value as { invoiceId?: string; attemptCount?: number } | undefined;
   if (prev?.invoiceId === invoice.id && (prev.attemptCount ?? 0) >= attempt) return 'duplicate';
   const { name, slug } = await tenantForOps(db, tenantId);
-  const amount = `${(invoice.amount_due / 100).toFixed(2)} ${(invoice.currency ?? 'usd').toUpperCase()}`;
+  const amount = `${stripeMinorToMajorString(invoice.amount_due, invoice.currency)} ${(invoice.currency ?? 'usd').toUpperCase()}`;
   const sent = await sendOpsEmail(
     privilegedDb,
     opsTenantInvoicePaymentFailedEmail(

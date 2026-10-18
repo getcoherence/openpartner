@@ -12,11 +12,16 @@
  *                 transaction (see tenancy.ts) sets `app.tenant_id` to
  *                 scope rows correctly.
  *
- * Self-hosters can leave DATABASE_URL_APP unset. RLS is then bypassed
- * (the app runs as the same role as migrations) but app-level tenantId
- * filtering still applies, so isolation is preserved at the query layer.
- * For real defense-in-depth, set DATABASE_URL_APP to the openpartner_app
- * role connection string.
+ * Multi-tenant (OPENPARTNER_TENANCY=multi) REQUIRES DATABASE_URL_APP to be
+ * the openpartner_app role. RLS is the tenant boundary. App-level tenantId
+ * filters are defence in depth and do NOT cover every query: an Oct 2026
+ * run without DATABASE_URL_APP leaked partners, program grants and billed
+ * GMV across tenants. server.ts refuses to start a multi-tenant API whose
+ * app pool bypasses RLS (tenant-isolation-guard.ts).
+ *
+ * Single-tenant self-host can leave DATABASE_URL_APP unset. The app then
+ * runs as the migration role and RLS is bypassed, which is harmless with
+ * only one tenant.
  */
 import './env.js';
 import { createDb } from '@openpartner/db';

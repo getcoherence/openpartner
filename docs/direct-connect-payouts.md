@@ -41,8 +41,9 @@ commit it, then talk to Stripe**.
 **What "frozen" means:**
 
 - The intent *is* the `Payout` row, committed with
-  `metadata.transferState='intent'`, its `amountMinor`, and its destination
-  account. Its id is durable, so the idempotency key `payout_<payoutId>` is
+  `metadata.transferState='intent'`, its `amountMinor` (Stripe's integer
+  form for the payout currency: ¥1,000 is 1000, KWD 1.230 is 1230 — see
+  `apps/api/src/stripe-amounts.ts`), and its destination account. Its id is durable, so the idempotency key `payout_<payoutId>` is
   durable — a retry re-uses it instead of minting a new one.
 - Its commission set is frozen by claiming the rows: `Commission.payoutId` is
   stamped while `status` stays `approved`. Every planner lookup filters

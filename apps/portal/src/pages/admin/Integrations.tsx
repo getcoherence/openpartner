@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink } from 'lucide-react';
 import { api, currentTenantSlug } from '../../api.js';
@@ -49,8 +49,10 @@ interface CreatedKey {
 //
 // IN_APP_SCOPES are opt-in: a headless in-app referral UI (the brand's
 // backend showing each user their link + earnings) needs per-partner
-// link and payout reads, and to mint a user's link on first visit.
-// Off by default so a CRM/Zapier key doesn't carry them.
+// link and payout reads, to mint a user's link on first visit, and to
+// create the user's partner (partners:create, which can't email anyone,
+// in place of partners:write). Off by default so a CRM/Zapier key
+// doesn't carry them.
 //
 // The scope lists are what the dev sees in the UI and what the create
 // mutation mints, so the displayed set never drifts from the key.
@@ -60,12 +62,13 @@ interface ScopeOption {
 }
 const CORE_SCOPES: ScopeOption[] = [
   { scope: 'events:write', description: 'Record conversion events (the CRM webhook path).' },
-  { scope: 'partners:write', description: 'Create + revoke partners (Zapier/ActivePieces actions).' },
+  { scope: 'partners:write', description: 'Create, invite and revoke partners (Zapier/ActivePieces actions). Revoking emails the partner unless told not to.' },
   { scope: 'partners:read', description: 'List partners, look one up by id or email, and read a partner’s dashboard stats.' },
   { scope: 'commissions:read', description: 'List commissions — tenant-wide or per partner, paged with a cursor.' },
   { scope: 'webhooks:write', description: 'Subscribe + unsubscribe webhook endpoints (Zapier/ActivePieces triggers register their callback URLs through these).' },
 ];
 const IN_APP_SCOPES: ScopeOption[] = [
+  { scope: 'partners:create', description: 'Create partners without an invite, and nothing else: no invites, revokes or commission terms. Use it instead of partners:write on an in-app key.' },
   { scope: 'links:read', description: 'Read a partner’s referral links (show each user their share link).' },
   { scope: 'links:write', description: 'Create a referral link for a partner (mint a user’s link on first visit).' },
   { scope: 'payouts:read', description: 'Read a partner’s payout history. Read-only — can’t run or confirm payouts.' },
@@ -85,6 +88,8 @@ export function AdminIntegrations() {
       title="Integrations"
       subtitle={`Pipe conversions from your CRM, lender systems or affiliate networks into ${programName} so partners get attributed for full-funnel deals, not just self-serve signups.`}
     >
+      <UnmatchedEventTypes />
+      <StripeAppCard />
       <WhyCard />
       <div style={{ height: 18 }} />
       <KeysPanel />
@@ -95,6 +100,64 @@ export function AdminIntegrations() {
       <div style={{ height: 18 }} />
       <PostbackPanel />
     </Page>
+  );
+}
+
+interface UnmatchedEventType {
+  type: string;
+  events: number;
+  lastSeenAt: string;
+  programs: Array<{ id: string; name: string }>;
+}
+
+const STRIPE_GUIDE_URL =
+  'https://github.com/getcoherence/openpartner/blob/main/docs/headless-referral.md#stripe-payment-links-on-openpartner-cloud';
+
+/** Conversions a sender reported under a type no commission rule takes,
+ *  e.g. `funded` for `loan_funded`. They're recorded and credited, and pay
+ *  nothing, so the sender never hears an error. Renders nothing when the
+ *  list is empty (or the API predates it). */
+function UnmatchedEventTypes() {
+  const list = useQuery({
+    queryKey: ['unmatched-event-types'],
+    queryFn: () => api<{ since: string; eventTypes: UnmatchedEventType[] }>('/attribution/unmatched-event-types'),
+  });
+  const types = list.data?.eventTypes ?? [];
+  if (types.length === 0) return null;
+  return (
+    <>
+      <div
+        role="alert"
+        style={{
+          background: theme.warnSoft,
+          border: `1px solid ${alpha(theme.warn, 0.4)}`,
+          borderRadius: theme.radiusMd,
+          padding: 16,
+        }}
+      >
+        <div style={{ fontSize: 14, fontWeight: 500, color: theme.warn, marginBottom: 6 }}>
+          {types.length === 1 ? 'An event type' : `${types.length} event types`} matched no commission rule
+        </div>
+        <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.55 }}>
+          In the last 30 days, these conversions were credited to a partner but paid nothing,
+          because no rule on the partner&rsquo;s terms takes their type. A typo in a stage name
+          (<code>funded</code> for <code>loan_funded</code>) lands here. Fix the sender, or add a
+          rule for the type on the program.
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {types.map((t) => (
+            <div key={t.type} style={{ fontSize: 13, lineHeight: 1.45 }}>
+              <code style={codeInline}>{t.type}</code>{' '}
+              <span style={{ color: theme.textMuted }}>
+                {t.events} {t.events === 1 ? 'conversion' : 'conversions'} · last {new Date(t.lastSeenAt).toLocaleString()} ·{' '}
+                {t.programs.map((p) => p.name).join(', ')}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div style={{ height: 18 }} />
+    </>
   );
 }
 
@@ -117,6 +180,239 @@ const preBlock = {
   overflow: 'auto',
   margin: 0,
 } as const;
+
+type StripeAppMode = 'live' | 'test' | 'sandbox';
+
+interface StripeAppStatus {
+  available: boolean;
+  reason?: 'selfhost' | 'not_configured';
+  modes: StripeAppMode[];
+  connection: {
+    stripeAccountId: string;
+    livemode: boolean;
+    connectedAt: string;
+    lastEventAt: string | null;
+    needsReconnect: boolean;
+    refreshError: string | null;
+    permissionsOutdated: boolean;
+    rewards: boolean;
+  } | null;
+}
+
+/**
+ * Connect Stripe — hosted brands install the OpenPartner Stripe App on
+ * their own Stripe account, and its checkouts, invoices, refunds and promo
+ * codes then attribute with no forwarding from their server. Hidden on a
+ * self-host (its own Stripe webhook already does this) and on hosted
+ * deployments where the app isn't configured yet.
+ *
+ * The install leaves for Stripe and comes back here with
+ * ?stripe_app_grant=… (encrypted code + state) or ?stripe_app_error=…;
+ * the grant is POSTed under this admin's session and stripped from the URL.
+ */
+function StripeAppCard() {
+  const qc = useQueryClient();
+  const { programName } = useBrand();
+  const status = useQuery({
+    queryKey: ['stripe-app'],
+    queryFn: () => api<StripeAppStatus>('/stripe-app/connection'),
+  });
+  const [notice, setNotice] = useState<string | null>(null);
+  const refresh = () => qc.invalidateQueries({ queryKey: ['stripe-app'] });
+
+  const complete = useMutation({
+    mutationFn: (grant: string) =>
+      api<{ replaced: boolean }>('/stripe-app/connection/complete', { method: 'POST', body: { grant } }),
+    onSuccess: (res) => {
+      setNotice(
+        res.replaced
+          ? 'Stripe connected. The account connected before it was disconnected.'
+          : 'Stripe connected. New checkouts, invoices and refunds now reach your program automatically.',
+      );
+      refresh();
+    },
+  });
+  const start = useMutation({
+    mutationFn: (mode: StripeAppMode) =>
+      api<{ url: string }>('/stripe-app/connection/start', {
+        method: 'POST',
+        body: { mode, returnUrl: `${window.location.origin}${window.location.pathname}` },
+      }),
+    onSuccess: (res) => {
+      window.location.href = res.url;
+    },
+  });
+  const disconnect = useMutation({
+    mutationFn: () => api<{ detail: string }>('/stripe-app/connection', { method: 'DELETE' }),
+    onSuccess: (res) => {
+      setNotice(res.detail);
+      refresh();
+    },
+  });
+
+  // Return leg of the Stripe install.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const grant = params.get('stripe_app_grant');
+    const error = params.get('stripe_app_error');
+    if (!grant && !error) return;
+    params.delete('stripe_app_grant');
+    params.delete('stripe_app_error');
+    const qs = params.toString();
+    window.history.replaceState({}, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`);
+    if (grant) complete.mutate(grant);
+    else setNotice(error === 'access_denied' ? 'Stripe connection cancelled.' : `Stripe didn’t finish the install (${error}).`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (!status.data?.available && !complete.isPending && !notice) return null;
+  const conn = status.data?.connection ?? null;
+  const modes = status.data?.modes ?? [];
+  const busy = start.isPending || complete.isPending || disconnect.isPending;
+  const mutedButton = {
+    background: 'transparent',
+    border: `1px solid ${theme.borderSubtle}`,
+    borderRadius: 6,
+    padding: '5px 10px',
+    fontSize: 12,
+    color: theme.textMuted,
+    cursor: 'pointer',
+  } as const;
+
+  return (
+    <>
+      <Card>
+        <h3 style={{ marginTop: 0, marginBottom: 4, fontSize: 15, fontWeight: 500 }}>Stripe</h3>
+        <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 12px', lineHeight: 1.55 }}>
+          Bill with Stripe? Connect your Stripe account and {programName} reads it directly: Checkout and
+          Payment Link purchases, invoices, refunds and disputes credit the partner who referred the customer,
+          with nothing forwarded from your server. Partner codes with a customer discount get their promotion
+          code created in your Stripe. {programName} can read your payments but never move money.
+        </p>
+        <ErrorBanner error={status.error ?? complete.error ?? start.error ?? disconnect.error} />
+        {notice && (
+          <div
+            style={{
+              background: alpha(theme.success, 0.063),
+              border: `1px solid ${alpha(theme.success, 0.333)}`,
+              borderRadius: theme.radiusSm,
+              padding: '8px 12px',
+              marginBottom: 12,
+              fontSize: 13,
+              color: theme.text,
+            }}
+          >
+            {notice}
+          </div>
+        )}
+
+        {complete.isPending ? (
+          <p style={{ fontSize: 13, color: theme.textMuted, margin: 0 }}>Finishing the connection…</p>
+        ) : status.isLoading ? (
+          <p style={{ fontSize: 13, color: theme.textMuted, margin: 0 }}>Loading…</p>
+        ) : !conn ? (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            {modes.includes('live') && (
+              <Button onClick={() => start.mutate('live')} disabled={busy}>
+                {start.isPending ? 'Opening Stripe…' : 'Connect Stripe'}
+              </Button>
+            )}
+            {modes.includes('test') && (
+              <button type="button" style={mutedButton} disabled={busy} onClick={() => start.mutate('test')}>
+                Connect a test-mode account
+              </button>
+            )}
+          </div>
+        ) : (
+          <>
+            {conn.needsReconnect && (
+              <div
+                style={{
+                  background: alpha(theme.danger, 0.063),
+                  border: `1px solid ${alpha(theme.danger, 0.333)}`,
+                  borderRadius: theme.radiusSm,
+                  padding: '8px 12px',
+                  marginBottom: 12,
+                  fontSize: 13,
+                  color: theme.text,
+                  lineHeight: 1.5,
+                }}
+              >
+                <strong>Reconnect needed.</strong> Stripe stopped accepting {programName}&rsquo;s access
+                {conn.refreshError ? <> ({conn.refreshError})</> : null}, so new Stripe payments aren&rsquo;t
+                being recorded. Reconnect to pick up from here.
+              </div>
+            )}
+            {!conn.needsReconnect && conn.permissionsOutdated && (
+              <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 12 }}>
+                The app asks for a little more access than when you connected. Reconnect to grant it.
+              </div>
+            )}
+            <div
+              style={{
+                display: 'flex',
+                gap: 12,
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                padding: '10px 12px',
+                background: theme.surface2,
+                border: `1px solid ${theme.borderSubtle}`,
+                borderRadius: theme.radiusSm,
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 200, fontSize: 12, color: theme.textMuted, lineHeight: 1.6 }}>
+                <div style={{ fontSize: 14, color: theme.text }}>
+                  <code>{conn.stripeAccountId}</code>{' '}
+                  <span
+                    style={{
+                      fontSize: 11,
+                      padding: '1px 6px',
+                      borderRadius: 4,
+                      background: conn.livemode ? alpha(theme.success, 0.12) : alpha(theme.warn, 0.15),
+                      color: conn.livemode ? theme.success : theme.warn,
+                    }}
+                  >
+                    {conn.livemode ? 'Live' : 'Test mode'}
+                  </span>
+                </div>
+                Connected {new Date(conn.connectedAt).toLocaleDateString()}
+                {' · '}
+                {conn.lastEventAt ? `last event ${new Date(conn.lastEventAt).toLocaleString()}` : 'no events yet'}
+                {' · '}
+                {conn.rewards ? 'customer discounts created in Stripe' : 'customer discounts set up by you'}
+              </div>
+              {(conn.needsReconnect || conn.permissionsOutdated) && (
+                <Button onClick={() => start.mutate(conn.livemode ? 'live' : 'test')} disabled={busy}>
+                  Reconnect
+                </Button>
+              )}
+              <button
+                type="button"
+                style={{ ...mutedButton, border: `1px solid ${alpha(theme.danger, 0.333)}`, color: theme.danger }}
+                disabled={busy}
+                onClick={() => {
+                  if (confirm(`Disconnect Stripe? ${programName} stops reading your Stripe account. Payments already recorded stay.`)) {
+                    disconnect.mutate();
+                  }
+                }}
+              >
+                Disconnect
+              </button>
+            </div>
+            <p style={{ fontSize: 12, color: theme.textMuted, margin: '12px 0 0', lineHeight: 1.55 }}>
+              Stop forwarding Stripe payments to <code>/attribution/events</code>,{' '}
+              <code>/attribution/conversions</code> or <code>/coupons/redeem</code>: one keyed on a Stripe invoice
+              or Checkout Session id now returns <code>409 recorded_from_stripe</code>. To credit a customer,
+              pass the click id as <code>client_reference_id</code> at Checkout, or set{' '}
+              <code>metadata.openpartner_user_id</code> on the Stripe Customer to the user id you identify.
+            </p>
+          </>
+        )}
+      </Card>
+      <div style={{ height: 18 }} />
+    </>
+  );
+}
 
 function WhyCard() {
   const { programName } = useBrand();
@@ -158,10 +454,12 @@ function WhyCard() {
       </p>
       <p style={{ fontSize: 13, color: theme.textMuted, margin: 0, lineHeight: 1.55 }}>
         Building your own in-app referral page instead of sending users
-        to the partner portal? Add the in-app scopes (links:read,
-        links:write, payouts:read) so your backend can show each user
-        their link, earnings, and payouts. Keep that key on your server
-        &mdash; it can read every partner&rsquo;s data on your tenant.
+        to the partner portal? Add the in-app scopes (partners:create,
+        links:read, links:write, payouts:read) and untick partners:write,
+        so your backend can create each user&rsquo;s partner and show them
+        their link, earnings, and payouts without being able to invite or
+        revoke anyone. Keep that key on your server &mdash; it can read
+        every partner&rsquo;s data on your tenant.
       </p>
     </Card>
   );
@@ -542,11 +840,26 @@ function ClickIdGuide() {
       </p>
       <pre style={{ ...preBlock, marginBottom: 10 }}>{'https://buy.stripe.com/abc123?client_reference_id={click_id}'}</pre>
       <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.55 }}>
-        On a self-hosted install whose Stripe webhook points at {programName}, that purchase is
-        then recorded automatically: a signup, plus its amount as <code>invoice_paid</code>.
-        Anywhere else, whatever holds the click id (your lender system, your CRM) reports the
-        conversion in one call. No <code>identify()</code> or <code>userId</code> needed. It needs
-        a key with <code>events:write</code>:
+        Write the macro exactly like that: single braces, lower case. Stripe drops a{' '}
+        <code>client_reference_id</code> it can&rsquo;t read without telling anyone, so{' '}
+        <code>{'{{click_id}}'}</code> (Zapier and Make syntax) is refused when you save.
+      </p>
+      <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.55 }}>
+        With your Stripe account connected (above), or on a self-hosted install whose Stripe
+        webhook points at {programName}, that purchase is then recorded automatically: a signup,
+        plus its amount as <code>invoice_paid</code>. Don&rsquo;t also report it here. Without a
+        connection, forward Stripe&rsquo;s checkout events to the call below from a small handler of
+        your own:{' '}
+        <a href={STRIPE_GUIDE_URL} target="_blank" rel="noreferrer" style={{ color: theme.accentText }}>
+          Stripe Payment Links on OpenPartner Cloud <ExternalLink size={11} style={{ verticalAlign: 'middle' }} />
+        </a>
+        .
+      </p>
+      <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.55 }}>
+        For anything that isn&rsquo;t a Stripe payment, whatever holds the click id (your lender
+        system, your CRM, that handler) reports the conversion in one call. No{' '}
+        <code>identify()</code> or <code>userId</code> needed. It needs a key with{' '}
+        <code>events:write</code>:
       </p>
       <pre style={preBlock}>{`curl -X POST ${apiBase}/attribution/conversions \\
   -H "Authorization: Bearer <your-key>" \\
@@ -560,9 +873,13 @@ function ClickIdGuide() {
   }'`}</pre>
       <p style={{ fontSize: 12, color: theme.textMuted, margin: '12px 0 0', lineHeight: 1.55 }}>
         <code>externalEventId</code> is required: a retry returns the original result with{' '}
-        <code>&quot;replayed&quot;: true</code>. Add <code>userId</code> if you also identify this
-        user elsewhere. Unknown clicks return <code>404</code>, and clicks flagged as fraud
-        return <code>422</code>.
+        <code>&quot;replayed&quot;: true</code>. It must be unique across your whole account and
+        differ per stage (<code>loan-881:approved</code>, <code>loan-881:funded</code>): a reused id
+        returns <code>409</code> and that conversion is lost. Add <code>userId</code> if you also
+        identify this user elsewhere. A click from any of your programs is accepted; unknown
+        clicks return <code>404</code>, and clicks flagged as fraud return <code>422</code>. The
+        response&rsquo;s <code>outcome</code> says whether a partner was credited and paid:{' '}
+        <code>attributed</code>, <code>no_matching_rule</code> or <code>not_attributed</code>.
       </p>
     </Card>
   );
@@ -637,8 +954,15 @@ function PostbackPanel() {
       <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 12px', lineHeight: 1.55 }}>
         For affiliate networks and lenders that can only fire a URL when a conversion happens.
         The URL carries its own token, which can record conversions and nothing else. It
-        isn&rsquo;t an API key and doesn&rsquo;t work as one. It answers <code>ok</code> (or a 1×1
-        GIF with <code>&amp;pixel=1</code>).
+        isn&rsquo;t an API key and doesn&rsquo;t work as one. It answers <code>ok</code> and what the
+        conversion came to: <code>ok attributed</code>, <code>ok no_matching_rule</code> (no
+        commission rule takes that <code>type</code>), or <code>ok not_attributed outside_window</code>.
+        With <code>&amp;pixel=1</code> it answers a 1×1 GIF.
+      </p>
+      <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 12px', lineHeight: 1.55 }}>
+        One token covers every program, so any sender holding it can report any click. Give each
+        sender its own <code>txn_id</code> prefix (<code>acme:loan-881:funded</code>), and limit the
+        token to your senders&rsquo; IPs below.
       </p>
       <ErrorBanner error={current.error ?? mint.error ?? turnOff.error ?? saveAllowlist.error} />
 

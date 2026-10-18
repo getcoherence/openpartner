@@ -515,6 +515,32 @@ export function money(amount: number | string | null, currency: string = 'USD'):
   return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(n);
 }
 
+/**
+ * Amounts in several currencies, never added together: "₹1,023,377.00 +
+ * $85,000.00". `primary` (the tenant's default currency) leads; with
+ * nothing to show it formats a zero in it.
+ */
+export function moneyByCurrency(amounts: Record<string, number> | undefined, primary: string): string {
+  const parts = Object.entries(amounts ?? {})
+    .filter(([, n]) => n !== 0)
+    .sort(([a], [b]) => (a === primary ? -1 : b === primary ? 1 : a.localeCompare(b)))
+    .map(([currency, n]) => money(n, currency));
+  return parts.length > 0 ? parts.join(' + ') : money(0, primary);
+}
+
+/** One status's amounts out of a `{ [currency]: { [status]: amount } }` map. */
+export function statusAmounts(
+  byCurrency: Record<string, Record<string, number>> | undefined,
+  ...statuses: string[]
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [currency, byStatus] of Object.entries(byCurrency ?? {})) {
+    const n = statuses.reduce((sum, s) => sum + (byStatus[s] ?? 0), 0);
+    if (n !== 0) out[currency] = n;
+  }
+  return out;
+}
+
 export function formatDate(d: string | Date | null, opts: { relative?: boolean } = {}): string {
   if (!d) return '—';
   const date = typeof d === 'string' ? new Date(d) : d;

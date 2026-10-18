@@ -72,6 +72,8 @@ A touch's share is its `Attribution.weight` divided by the sum of that event's w
 
 The tier applied is the highest level whose `atLeast` is less than or equal to the metric.
 
+Renewals count. A renewal that keeps its partner past the attribution window ([renewal-attribution.md](renewal-attribution.md)) is an ordinary Attribution row with the original weights, so it adds to the partner's revenue and conversions like any other event.
+
 ### Crossing a tier is not retroactive
 
 The event that pushes a partner over a threshold pays the **old** rate, and the events after it pay the new one. Earlier commissions are never recomputed, because the ledger is immutable. Brands get a rule they can explain ("once you've driven 100,000 this month, every further invoice pays 15%"), and the tier never depends on events that hadn't happened yet.
@@ -93,7 +95,23 @@ The engine does no FX. A sub-rule's `currency`, when set, is the currency of its
 
 - **Bands:** if the rule's currency differs from the event's, the thresholds can't be compared. The base rate applies, and the Commission row records `currencyMismatch: true`.
 - **Revenue tiers:** only prior events in the threshold currency are summed. The rate that results applies to the current event whatever its currency.
-- The accrued Commission is in the event's currency, as it always has been.
+- Currency codes compare upper-cased (`inr` is `INR`). Every ingest path stores them upper case. An event sent without a currency is stored in the tenant's default currency (Settings → Brand info, USD unless changed). A legacy row with no currency counts as USD.
+
+### Which currency the Commission is in
+
+| Sub-rule | Commission currency |
+| --- | --- |
+| `fixed` with `currency` | The rule's currency. |
+| `fixed` without `currency` | The event's currency. |
+| `percent` (with or without `currency`) | The event's currency. A percent is a share of the event's value, and the rule's `currency` only says what its thresholds are in. |
+
+A fixed amount is a bounty in the currency the brand wrote it in. "₹100 per lead" pays ₹100 whatever the event says: a lead sent with no currency, or a sale reported in USD. Before Oct 2026 the amount was booked in the event's currency, so that lead earned "100.00 USD".
+
+We considered and rejected two alternatives:
+- **Convert the amount to the event's currency.** The engine has no FX, by design. A commission is a raw-data derivation that has to come out the same on every re-derivation, and a rate feed would make it depend on the day it ran. FX exists only in platform billing (`fx.ts`), which converts OpenPartner's own fee, never a partner's earnings.
+- **Skip or reject a mismatched event.** A lead or demo event usually carries no money at all, so its currency says nothing. Refusing to pay a ₹100 bounty because the CRM didn't send `INR` would drop a commission the rule plainly promises.
+
+A partner who earns in two currencies has two balances and gets one payout per currency. Banded and tiered `fixed` rules follow the table too: their amounts, and the base amount paid on a `currencyMismatch`, are in the rule's currency.
 
 ## Audit trail: `Commission.metadata`
 

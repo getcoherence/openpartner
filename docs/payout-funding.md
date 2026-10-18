@@ -72,9 +72,11 @@ intent to export inertly on self-host import. NOTE: as of schemaVersion 2 these
 tables are not yet in `EXPORT_TABLES` — `HostedFundingAuthorization.adminId` is an
 FK to `Admin`, which is deliberately never exported, so wiring them up needs that
 decision first. Tracked in docs/data-portability.md. **All money columns are integer minor units** with canonical
-lowercase currency (finding 12); launch currencies are USD (ACH) with GBP (Bacs)
-as the designed-in fast-follow — both 2-decimal, so exponent handling stays trivial and
-asserted; the currency column and rail selection are scheme-aware from day one.
+lowercase currency (finding 12) — Stripe's integer form for the currency (`toMinor` →
+`apps/api/src/stripe-amounts.ts`: ×100 for USD/GBP, ×1 for JPY, ×1000 for KWD), since each
+is charged, transferred or matched against Stripe as-is. Launch currencies are USD (ACH) with
+GBP (Bacs) as the designed-in fast-follow; the currency column and rail selection are
+scheme-aware from day one.
 
 ### `HostedFundingBatch`
 `id` (ulid, also `transfer_group`) · `tenantId` · `currency` · `principalMinor` bigint ·

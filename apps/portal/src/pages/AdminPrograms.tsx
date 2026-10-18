@@ -7,7 +7,7 @@ import { useBrand } from '../lib/useBrand.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
 import { CompoundRuleEditor, ruleEventTypeMissing, ruleSlabProblem, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
-import { PROGRAM_CATEGORIES, clickDestinationProblem, parseVideoUrl } from '@openpartner/db';
+import { PROGRAM_CATEGORIES, clickDestinationProblem, clickDestinationWarning, parseVideoUrl } from '@openpartner/db';
 
 interface CustomerReward {
   type: 'percent_off' | 'amount_off' | 'free_months';
@@ -26,6 +26,8 @@ interface Program {
   commissionRule: CommissionSubRule[] | { type: 'percent' | 'fixed'; value: number; recurring?: boolean };
   attributionWindowDays: number;
   attributionModel: string;
+  /** Older API responses during a deploy gap omit it; treat as on. */
+  renewalsStayWithPartner?: boolean;
   destinationUrl: string;
   deepLinkAllowedDomains: string | null;
   holdbackDays: number | null;
@@ -34,6 +36,9 @@ interface Program {
   customerReward: CustomerReward | null;
   shareOnNetwork: boolean;
   partnersMayCustomizeCode?: boolean;
+  /** Event types that are sales in this program beyond invoice_paid and
+   *  subscription_created. */
+  revenueEventTypes?: string[];
   marketplaceDescription: string | null;
   marketplaceCoverUrl?: string | null;
   marketplaceVideoUrl?: string | null;
@@ -44,8 +49,9 @@ interface Program {
 
 /** Mirror of the API's customerRewardDelivery(): who puts the customer
  *  discount into checkout on this deployment. 'stripe' = we mint it in
- *  the brand's Stripe (single-tenant self-host with a key). 'brand' =
- *  hosted / multi-tenant, the brand sets it up in its own Stripe.
+ *  the brand's Stripe (single-tenant self-host with a key, or a hosted
+ *  brand that connected Stripe). 'brand' = hosted without a connection /
+ *  multi-tenant, the brand sets it up in its own Stripe.
  *  'unconfigured' = self-host with no Stripe key yet. Undefined while
  *  the program list loads (or from an API that predates the field). */
 type CustomerRewardDelivery = 'stripe' | 'unconfigured' | 'brand';
@@ -238,6 +244,10 @@ function EditProgramDates({
   const [holdbackDays, setHoldbackDays] = useState(
     campaign.holdbackDays != null ? String(campaign.holdbackDays) : '0',
   );
+  const [revenueEventTypes, setRevenueEventTypes] = useState((campaign.revenueEventTypes ?? []).join(', '));
+  const [renewalsStayWithPartner, setRenewalsStayWithPartner] = useState(
+    campaign.renewalsStayWithPartner ?? true,
+  );
 
   const save = useMutation({
     mutationFn: () =>
@@ -255,6 +265,8 @@ function EditProgramDates({
           categories,
           partnersMayCustomizeCode,
           holdbackDays: Number(holdbackDays) || 0,
+          revenueEventTypes: parseEventTypes(revenueEventTypes),
+          renewalsStayWithPartner,
         },
       }),
     onSuccess: onSaved,
@@ -343,6 +355,12 @@ function EditProgramDates({
           <option value="90">90 days</option>
         </Select>
       </div>
+      <RevenueEventTypesField value={revenueEventTypes} onChange={setRevenueEventTypes} />
+      <RenewalsField
+        enabled={renewalsStayWithPartner}
+        windowDays={campaign.attributionWindowDays}
+        onChange={setRenewalsStayWithPartner}
+      />
 
       <div style={{ display: 'flex', gap: 8 }}>
         <Button
@@ -353,7 +371,8 @@ function EditProgramDates({
             rules.some(ruleEventTypeMissing) ||
             rules.some((r) => ruleSlabProblem(r) !== null) ||
             (shareOnNetwork && !marketplaceDescription.trim()) ||
-            (shareOnNetwork && videoLinkInvalid(videoUrl))
+            (shareOnNetwork && videoLinkInvalid(videoUrl)) ||
+            revenueEventTypesProblem(revenueEventTypes) !== null
           }
         >
           {save.isPending ? 'Saving…' : 'Save changes'}
@@ -361,6 +380,56 @@ function EditProgramDates({
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
       </div>
     </Card>
+  );
+}
+
+function parseEventTypes(text: string): string[] {
+  return [...new Set(text.split(',').map((t) => t.trim()).filter(Boolean))];
+}
+
+/** Corrective event types the API refuses as revenue (CORRECTIVE_TYPES in
+ *  apps/api/src/routes/programs.ts). Keep the two lists identical. */
+const CORRECTIVE_EVENT_TYPES = new Set(['refund', 'chargeback', 'dispute_created', 'invoice_payment_failed']);
+
+/** What the API's revenueEventTypes schema would refuse, said here
+ *  instead of as a bare invalid_body after Save. */
+function revenueEventTypesProblem(text: string): string | null {
+  const types = parseEventTypes(text);
+  const corrective = types.filter((t) => CORRECTIVE_EVENT_TYPES.has(t));
+  if (corrective.length === 1) return `${corrective[0]} corrects a sale, so it can’t be revenue. Remove it.`;
+  if (corrective.length > 1) return `${corrective.join(', ')} correct sales, so they can’t be revenue. Remove them.`;
+  if (types.length > 20) return 'List at most 20 event types.';
+  if (types.some((t) => t.length > 80)) return 'An event type can be at most 80 characters.';
+  return null;
+}
+
+/**
+ * Event types that are sales in this program, beyond invoice_paid and
+ * subscription_created (always sales). Their value is partner-attributed
+ * revenue: on OpenPartner Cloud, the platform fee's revenue basis
+ * (docs/platform-fee.md). A conversion that pays a percentage commission
+ * counts as a sale whatever its type, so this matters for fixed bounties.
+ */
+function RevenueEventTypesField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const problem = revenueEventTypesProblem(value);
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <Label>Revenue event types</Label>
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="e.g. order_paid, deal_won"
+        style={problem ? { borderColor: alpha(theme.danger, 0.533) } : undefined}
+      />
+      {problem && <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>{problem}</div>}
+      <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4, lineHeight: 1.5 }}>
+        Event types in this program that are sales, comma-separated. <code>invoice_paid</code> and{' '}
+        <code>subscription_created</code> always are, and so is any conversion that pays a percentage
+        commission. List the rest here, such as an <code>order_paid</code> you pay a fixed bounty on, so
+        its value counts as partner-attributed revenue. On OpenPartner Cloud the platform fee is a
+        share of that revenue, with a minimum share of the commissions partners earn.
+      </div>
+    </div>
   );
 }
 
@@ -410,6 +479,7 @@ function CreateProgram({
   const [partnersMayCustomizeCode, setPartnersMayCustomizeCode] = useState(false);
   const [windowDays, setWindowDays] = useState('60');
   const [model, setModel] = useState<'last_click' | 'first_click' | 'linear' | 'position'>('last_click');
+  const [renewalsStayWithPartner, setRenewalsStayWithPartner] = useState(true);
   const [holdbackDays, setHoldbackDays] = useState('0');
   const [startsAt, setStartsAt] = useState('');
   const [endsAt, setEndsAt] = useState('');
@@ -423,6 +493,10 @@ function CreateProgram({
     urlProblem && /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(destinationUrl.trim())
       ? `https://${destinationUrl.trim()}`
       : null;
+  // Saveable, but a Stripe Payment Link without client_reference_id={click_id}
+  // never hands Stripe the click. Same check the API answers with `warnings`.
+  const urlWarning = !urlProblem && destinationUrl.trim() ? clickDestinationWarning(destinationUrl.trim()) : null;
+  const stripeFix = urlWarning ? withClientReferenceMacro(destinationUrl.trim()) : null;
 
   const mut = useMutation({
     mutationFn: () =>
@@ -435,6 +509,7 @@ function CreateProgram({
           commissionRule: rules,
           attributionWindowDays: Number(windowDays),
           attributionModel: model,
+          renewalsStayWithPartner,
           holdbackDays: Number(holdbackDays) || undefined,
           startsAt: startsAt ? new Date(startsAt).toISOString() : null,
           endsAt: endsAt ? new Date(endsAt).toISOString() : null,
@@ -486,6 +561,22 @@ function CreateProgram({
                   style={{ background: 'none', border: 'none', color: theme.accentText, cursor: 'pointer', padding: 0, fontSize: 12, textDecoration: 'underline' }}
                 >
                   Use {schemeFix}
+                </button>
+              </>
+            )}
+          </div>
+        ) : urlWarning ? (
+          <div style={{ fontSize: 12, color: theme.warn, marginTop: 4 }}>
+            {urlWarning}
+            {stripeFix && (
+              <>
+                {' '}
+                <button
+                  type="button"
+                  onClick={() => setDestinationUrl(stripeFix)}
+                  style={{ background: 'none', border: 'none', color: theme.accentText, cursor: 'pointer', padding: 0, fontSize: 12, textDecoration: 'underline' }}
+                >
+                  Add it
                 </button>
               </>
             )}
@@ -556,6 +647,11 @@ function CreateProgram({
           </Select>
         </div>
       </div>
+      <RenewalsField
+        enabled={renewalsStayWithPartner}
+        windowDays={Number(windowDays) || 60}
+        onChange={setRenewalsStayWithPartner}
+      />
       <div style={{ marginBottom: 16 }}>
         <LabelWithHelp
           label="Payout holdback (days)"
@@ -670,6 +766,46 @@ function PartnerCodeCustomizationField({
             {' '}Your checkout isn&rsquo;t updated for you: add each new code
             there, and retire deactivated ones there too — OpenPartner stops
             crediting a deactivated code, but it keeps discounting until you do.
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Program.renewalsStayWithPartner. On: the window picks who wins a
+ * customer, and that partner keeps the customer's renewals — the
+ * click-to-renewal promise. Spec: docs/renewal-attribution.md.
+ */
+function RenewalsField({
+  enabled,
+  windowDays,
+  onChange,
+}: {
+  enabled: boolean;
+  windowDays: number;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text, marginBottom: 6 }}>
+        <input type="checkbox" checked={enabled} onChange={(e) => onChange(e.target.checked)} />
+        Renewals stay with the partner who earned the customer
+      </label>
+      <div style={{ fontSize: 12, color: theme.textDim, marginLeft: 24 }}>
+        {enabled ? (
+          <>
+            On (default): the {windowDays}-day window decides which partner wins a customer&rsquo;s
+            first payment. Every renewal after it stays with that partner for as long as the
+            customer pays, even if they click another partner&rsquo;s link later. Past the window,
+            only rules marked <strong>Recurring</strong> pay, up to their month cap.
+          </>
+        ) : (
+          <>
+            Off: every payment is credited to whoever has the latest click in the {windowDays}-day
+            window (or as your model splits it). A customer who renews {windowDays} days after
+            their last partner click earns nobody a commission.
           </>
         )}
       </div>
@@ -962,6 +1098,9 @@ function rewardDeliveryHint(delivery: CustomerRewardDelivery | undefined): React
           the same string as each partner&rsquo;s code and the terms set here (or
           apply the discount in your own checkout). OpenPartner attributes the
           redemption when your checkout sends the code to <code>POST /coupons/redeem</code>.
+          On OpenPartner Cloud, connect your Stripe account under Integrations instead: each
+          code then gets its Stripe promotion code automatically, and redemptions attribute
+          without that call.
         </>
       );
     case 'unconfigured':
@@ -1126,6 +1265,15 @@ function destinationUrlProblem(value: string): string | null {
   } catch {
     return 'Must be a full URL starting with https:// — e.g. https://yourbrand.com/landing.';
   }
+}
+
+/** The one-click fix for a Stripe Payment Link with no client_reference_id:
+ *  the macro appended as typed, braces unencoded. Null when the link already
+ *  has the parameter (with the wrong value) or a fragment, where appending
+ *  would land in the wrong place; the warning text says what to change. */
+function withClientReferenceMacro(value: string): string | null {
+  if (value.includes('#') || /[?&]client_reference_id=/.test(value)) return null;
+  return `${value}${value.includes('?') ? '&' : '?'}client_reference_id={click_id}`;
 }
 
 function LabelWithHelp({ label, help }: { label: string; help: string }) {

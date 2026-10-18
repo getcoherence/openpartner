@@ -22,15 +22,19 @@ import {
   type CommissionRow,
   type EventRow,
   type IdentityRow,
+  type ProgramRow,
 } from '@openpartner/db';
-import { attributeEvent, type AttributeResult } from './attribution.js';
+import { attributeEvent, resolveCommissionRule, ruleTakesEventType, type AttributeResult } from './attribution.js';
+import { ingestCurrency, rowCurrency } from './currency.js';
+import { recordedFromStripe } from './stripe-app.js';
 
 /**
  * A replay must describe the same conversion. Reusing a key for a different
  * one is a caller bug, and replaying would silently drop the new event, so it
  * 409s instead. metadata and ts aren't compared: a retry that omits ts gets a
- * fresh server timestamp. Currency null ≡ USD, as the attribution engine
- * treats it (coupon redemptions store null).
+ * fresh server timestamp. Currencies compare upper-cased, and a stored null
+ * (coupon redemptions before currencies were stored) ≡ USD, as the
+ * attribution engine treats it.
  */
 export function sameConversion(
   existing: EventRow,
@@ -44,7 +48,7 @@ export function sameConversion(
     existing.userId === incoming.userId &&
     existing.type === incoming.type &&
     sameValue &&
-    (existing.currency ?? 'USD') === (incoming.currency ?? 'USD')
+    rowCurrency(existing.currency) === rowCurrency(incoming.currency)
   );
 }
 
@@ -55,7 +59,9 @@ export type ReplayedAttribution = Omit<AttributeResult, 'status'> & { status: 'a
  * request wrote, rather than re-running attributeEvent — a replay mutates
  * nothing. A miss leaves no row, so which one it was (no_identity / no_click /
  * outside_window) isn't recoverable: that reports 'not_attributed'. Weights
- * come back at their stored 4-dp precision.
+ * come back at their stored 4-dp precision. `commission` is 'accrued' when
+ * the first request wrote a commission; otherwise it's checked against the
+ * rules as they are now, so a retried typo still hears `no_matching_rule`.
  */
 export async function storedAttribution(db: Knex, eventId: string): Promise<ReplayedAttribution> {
   // Touch order matches attributeEvent's (click ts ascending). computedAt
@@ -93,7 +99,26 @@ export async function storedAttribution(db: Knex, eventId: string): Promise<Repl
       attributionId: t.id,
       commissionId: commissionByAttribution.get(t.id),
     })),
+    commission: commissions.length > 0 ? 'accrued' : await unpaidReason(db, eventId, touches),
   };
+}
+
+async function unpaidReason(
+  db: Knex,
+  eventId: string,
+  touches: AttributionRow[],
+): Promise<'none' | 'no_matching_rule'> {
+  const event = await db<EventRow>(TABLES.Event).where({ id: eventId }).first('type');
+  const programs = await db<ProgramRow>(TABLES.Program)
+    .whereIn('id', [...new Set(touches.map((t) => t.programId))])
+    .select('id', 'commissionRule');
+  for (const touch of touches) {
+    const program = programs.find((p) => p.id === touch.programId);
+    if (!program || !event) continue;
+    const rules = await resolveCommissionRule(db, touch.partnerId, touch.programId, program.commissionRule);
+    if (rules.some((r) => ruleTakesEventType(r, event.type))) return 'none';
+  }
+  return 'no_matching_rule';
 }
 
 /**
@@ -123,7 +148,8 @@ export type ClickConversionResult =
   | { ok: true; replayed: true; eventId: string; userId: string; attribution: ReplayedAttribution }
   | { ok: false; status: 404; error: 'click_not_found' }
   | { ok: false; status: 422; error: 'click_flagged'; fraudFlag: string }
-  | { ok: false; status: 409; error: 'external_event_id_conflict'; eventId: string };
+  | { ok: false; status: 409; error: 'external_event_id_conflict'; eventId: string }
+  | { ok: false; status: 409; error: 'recorded_from_stripe' };
 
 /**
  * Record a conversion against a click in one step: stitch the click to the
@@ -140,7 +166,9 @@ export type ClickConversionResult =
  *
  * A retry with the same externalEventId replays the original result, even if
  * the click has been flagged since. Reusing the key for a different click or
- * conversion is a 409.
+ * conversion is a 409, and so is a Stripe invoice or Checkout Session id while
+ * the brand's Stripe account is connected (recorded_from_stripe): that payment
+ * is recorded from Stripe itself.
  */
 export async function recordClickConversion(
   db: Knex,
@@ -151,6 +179,9 @@ export async function recordClickConversion(
   // the privileged role when DATABASE_URL_APP is unset (see auth.ts).
   const click = await db<ClickRow>(TABLES.Click).where({ id: input.clickId, tenantId }).first();
   if (!click) return { ok: false, status: 404, error: 'click_not_found' };
+  if (await recordedFromStripe(db, tenantId, input.externalEventId)) {
+    return { ok: false, status: 409, error: 'recorded_from_stripe' };
+  }
 
   const userId = input.userId ?? clickUserId(click.id);
   const row = {
@@ -159,7 +190,7 @@ export async function recordClickConversion(
     userId,
     type: input.type,
     value: input.value != null ? input.value.toFixed(2) : null,
-    currency: input.currency?.toUpperCase() ?? 'USD',
+    currency: await ingestCurrency(db, tenantId, input.currency),
     externalEventId: input.externalEventId,
     metadata: input.metadata ?? {},
     ts: input.ts ?? new Date(),

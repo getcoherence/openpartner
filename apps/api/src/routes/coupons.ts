@@ -48,16 +48,18 @@ import { getTenancyMode, tenantOf } from '../tenancy.js';
 import { getMode } from '../stripe.js';
 import { attributeEvent } from '../attribution.js';
 import { sameConversion } from '../conversion-ingest.js';
+import { currencyInputSchema, ingestCurrency } from '../currency.js';
 import { codeExistsInStripe, deactivateCustomerReward, provisionCustomerReward } from '../customer-rewards.js';
+import { RECORDED_FROM_STRIPE_DETAIL, recordedFromStripe } from '../stripe-app.js';
 
 export const couponsRouter = Router();
 
 // ---------- List + create per partner ----------
 
 couponsRouter.get('/partners/:id/coupons', requireAuth, requirePartnerOrAdmin('id'), async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const rows = await db<CouponRow>(TABLES.Coupon)
-    .where({ partnerId: req.params.id })
+    .where({ tenantId, partnerId: req.params.id })
     .orderBy('createdAt', 'asc');
   if (rows.length === 0) return res.json({ coupons: [] });
 
@@ -67,6 +69,7 @@ couponsRouter.get('/partners/:id/coupons', requireAuth, requirePartnerOrAdmin('i
   // without making a second round-trip per coupon.
   const programIds = Array.from(new Set(rows.map((r) => r.programId)));
   const programs = (await db<ProgramRow>(TABLES.Program)
+    .where({ tenantId })
     .whereIn('id', programIds)
     .select('id', 'partnersMayCustomizeCode')) as Array<Pick<ProgramRow, 'id' | 'partnersMayCustomizeCode'>>;
   const canEditByProgram = new Map(programs.map((p) => [p.id, p.partnersMayCustomizeCode]));
@@ -79,7 +82,7 @@ couponsRouter.get('/partners/:id/coupons', requireAuth, requirePartnerOrAdmin('i
   const landingUrls = rows.map((r) => `coupon://${r.code}`);
 
   const clickCounts = (await db(TABLES.Click)
-    .where({ partnerId: req.params.id })
+    .where({ tenantId, partnerId: req.params.id })
     .whereIn('landingUrl', landingUrls)
     .andWhere('ts', '>=', since)
     .groupBy('landingUrl')
@@ -89,6 +92,7 @@ couponsRouter.get('/partners/:id/coupons', requireAuth, requirePartnerOrAdmin('i
   const revenue = (await db(TABLES.Click)
     .join(TABLES.Attribution, `${TABLES.Attribution}.clickId`, `${TABLES.Click}.id`)
     .join(TABLES.Event, `${TABLES.Event}.id`, `${TABLES.Attribution}.eventId`)
+    .where(`${TABLES.Click}.tenantId`, tenantId)
     .where(`${TABLES.Click}.partnerId`, req.params.id)
     .whereIn(`${TABLES.Click}.landingUrl`, landingUrls)
     .andWhere(`${TABLES.Attribution}.computedAt`, '>=', since)
@@ -175,10 +179,10 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
   const body = createSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
 
-  const program = await db<ProgramRow>(TABLES.Program).where({ id: body.data.programId }).first();
+  const program = await db<ProgramRow>(TABLES.Program).where({ id: body.data.programId, tenantId }).first();
   if (!program) return res.status(404).json({ error: 'program_not_found' });
 
   // Federated callers must clear the program-level toggle. Admin
@@ -189,7 +193,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
   }
 
   if (isPartner) {
-    const grant = await db(TABLES.PartnerProgram).where({ partnerId: partner.id, programId: program.id }).first();
+    const grant = await db(TABLES.PartnerProgram).where({ tenantId, partnerId: partner.id, programId: program.id }).first();
     if (!grant) return res.status(403).json({ error: 'campaign_not_granted' });
     const { campaignAcceptsNewActivity } = await import('../campaign-lifecycle.js');
     if (!campaignAcceptsNewActivity(program)) return res.status(409).json({ error: 'campaign_not_active' });
@@ -206,7 +210,9 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
     | { couponIntegrationVerifiedAt: Date | null }
     | undefined;
   if (!tenant?.couponIntegrationVerifiedAt) {
-    const countRow = (await db(TABLES.Coupon).count<{ count: string }[]>({ count: '*' })) as Array<{ count: string }>;
+    const countRow = (await db(TABLES.Coupon)
+      .where({ tenantId })
+      .count<{ count: string }[]>({ count: '*' })) as Array<{ count: string }>;
     const existing = Number(countRow[0]?.count ?? 0);
     if (existing >= COUPON_VERIFICATION_THRESHOLD) {
       if (!isAdmin) {
@@ -231,7 +237,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
   // above is a separate, system-wide guard.)
   if (!isAdmin) {
     const activeCount = (await db(TABLES.Coupon)
-      .where({ partnerId: partner.id, programId: program.id })
+      .where({ tenantId, partnerId: partner.id, programId: program.id })
       .whereNull('deactivatedAt')
       .count<{ count: string }[]>({ count: '*' })) as Array<{ count: string }>;
     if (Number(activeCount[0]?.count ?? 0) >= ACTIVE_CODES_PER_PROGRAM_CAP) {
@@ -242,7 +248,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
       });
     }
     const createdToday = (await db(TABLES.Coupon)
-      .where({ partnerId: partner.id, programId: program.id })
+      .where({ tenantId, partnerId: partner.id, programId: program.id })
       .where('createdAt', '>', new Date(Date.now() - 24 * 60 * 60 * 1000))
       .count<{ count: string }[]>({ count: '*' })) as Array<{ count: string }>;
     if (Number(createdToday[0]?.count ?? 0) >= CREATIONS_PER_DAY_CAP) {
@@ -267,7 +273,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
   if (!adminChosen) {
     let shadowsStripe: boolean;
     try {
-      shadowsStripe = await codeExistsInStripe(code);
+      shadowsStripe = await codeExistsInStripe(tenantId, code);
     } catch (err) {
       console.error('[coupons] Stripe code check failed', { code, err });
       return res.status(503).json({
@@ -285,7 +291,7 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
   // the row is still inserted, just without the auto-applied discount.
   const reward = (program.customerReward as CustomerReward | null) ?? null;
   const provisioned = reward
-    ? await provisionCustomerReward(reward, code, program.name)
+    ? await provisionCustomerReward(tenantId, reward, code, program.name)
     : null;
 
   try {
@@ -299,12 +305,12 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
       stripeCouponId: provisioned?.stripeCouponId ?? null,
       stripePromotionCodeId: provisioned?.stripePromotionCodeId ?? null,
     });
-    const row = await db<CouponRow>(TABLES.Coupon).where({ id }).first();
+    const row = await db<CouponRow>(TABLES.Coupon).where({ id, tenantId }).first();
     return res.status(201).json({ ...row, canEdit: program.partnersMayCustomizeCode });
   } catch (err) {
     // No row owns the promo we just provisioned — release it so the code
     // doesn't keep discounting at checkout with nothing to attribute to.
-    if (provisioned) await deactivateCustomerReward(provisioned.stripePromotionCodeId);
+    if (provisioned) await deactivateCustomerReward(tenantId, provisioned.stripePromotionCodeId);
     if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505') {
       // Per-tenant code uniqueness only — the (partner, program) unique
       // is gone after the append-only migration.
@@ -332,13 +338,13 @@ couponsRouter.delete('/partners/:id/coupons/:couponId', requireAuth, async (req,
   const isPartner = principal?.role === 'partner' && principal.partnerId === req.params.id;
   if (!isAdmin && !isFederated && !isPartner) return res.status(403).json({ error: 'forbidden' });
 
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const coupon = await db<CouponRow>(TABLES.Coupon)
-    .where({ id: req.params.couponId, partnerId: req.params.id })
+    .where({ id: req.params.couponId, tenantId, partnerId: req.params.id })
     .first();
   if (!coupon) return res.status(404).json({ error: 'coupon_not_found' });
 
-  const program = await db<ProgramRow>(TABLES.Program).where({ id: coupon.programId }).first();
+  const program = await db<ProgramRow>(TABLES.Program).where({ id: coupon.programId, tenantId }).first();
   if (!program) return res.status(404).json({ error: 'program_not_found' });
 
   if (!isAdmin && !program.partnersMayCustomizeCode) {
@@ -346,7 +352,7 @@ couponsRouter.delete('/partners/:id/coupons/:couponId', requireAuth, async (req,
   }
 
   if (isPartner) {
-    const grant = await db(TABLES.PartnerProgram).where({ partnerId: req.params.id, programId: program.id }).first();
+    const grant = await db(TABLES.PartnerProgram).where({ tenantId, partnerId: req.params.id, programId: program.id }).first();
     if (!grant) return res.status(403).json({ error: 'campaign_not_granted' });
   }
 
@@ -363,14 +369,14 @@ couponsRouter.delete('/partners/:id/coupons/:couponId', requireAuth, async (req,
   // code without a matching active OpenPartner Coupon would just
   // discount the customer without attributing.
   if (coupon.stripePromotionCodeId) {
-    await deactivateCustomerReward(coupon.stripePromotionCodeId);
+    await deactivateCustomerReward(coupon.tenantId, coupon.stripePromotionCodeId);
   }
 
   await db<CouponRow>(TABLES.Coupon)
-    .where({ id: coupon.id })
+    .where({ id: coupon.id, tenantId })
     .update({ deactivatedAt: new Date() });
 
-  const updated = await db<CouponRow>(TABLES.Coupon).where({ id: coupon.id }).first();
+  const updated = await db<CouponRow>(TABLES.Coupon).where({ id: coupon.id, tenantId }).first();
   return res.json({ ...updated, canEdit: program.partnersMayCustomizeCode });
 });
 
@@ -397,7 +403,8 @@ export const redeemSchema = z.object({
    *  subscription_created, invoice_paid, etc. */
   eventType: z.string().min(1).max(80),
   value: z.number().nonnegative().optional(),
-  currency: z.string().length(3).optional(),
+  /** Any case; stored upper case. Omitted → the tenant's default currency. */
+  currency: currencyInputSchema.optional(),
   /** Required so we can dedup retries. Use the brand's checkout-session
    *  ID, order ID, or whatever's stable. */
   externalEventId: z.string().min(1).max(120),
@@ -419,10 +426,17 @@ couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), r
   const body = redeemSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const coupon = await findCouponByCode(db, body.data.code);
+  const coupon = await findCouponByCode(db, tenantId, body.data.code);
   if (!coupon) return res.status(404).json({ error: 'coupon_not_found' });
 
   const { userId, eventType, value, currency, externalEventId } = body.data;
+  // Keyed on a Checkout Session or invoice while the brand's Stripe account
+  // is connected: the app records that checkout, and redeems a partner code
+  // entered at Stripe Checkout itself. A redemption under the same key would
+  // take it first and the checkout's revenue would be dropped as a replay.
+  if (await recordedFromStripe(db, tenantId, externalEventId)) {
+    return res.status(409).json({ error: 'recorded_from_stripe', detail: RECORDED_FROM_STRIPE_DETAIL });
+  }
   const ts = body.data.ts ? new Date(body.data.ts) : new Date();
   const row = {
     id: ulid(),
@@ -430,7 +444,7 @@ couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), r
     userId,
     type: eventType,
     value: value != null ? value.toFixed(2) : null,
-    currency: currency ?? null,
+    currency: await ingestCurrency(db, tenantId, currency),
     externalEventId,
     metadata: { source: 'coupon', code: coupon.code },
     ts,
@@ -493,9 +507,16 @@ function isRedemptionOf(event: EventRow, coupon: CouponRow): boolean {
  */
 export async function findCouponByCode(
   db: import('knex').Knex,
+  tenantId: string,
   code: string,
 ): Promise<CouponRow | null> {
+  // Codes are unique per tenant only. Named explicitly: Coupon has RLS but
+  // not FORCE, and a pool that bypasses RLS would credit another brand's
+  // partner holding the same code.
+  // Explicit tenant filter, not RLS alone: appDb can run without the app
+  // role, and the Stripe paths match codes taken from a Stripe payload.
   const row = await db<CouponRow>(TABLES.Coupon)
+    .where({ tenantId })
     .whereRaw('lower("code") = ?', [code.toLowerCase()])
     .whereNull('deactivatedAt')
     .first();
@@ -527,6 +548,7 @@ export async function ensureCouponClickAndIdentity(
   // synthetic click would shift multi-touch weights unfairly.
   const existing = await trx<IdentityRow>(TABLES.Identity)
     .join(TABLES.Click, `${TABLES.Click}.id`, `${TABLES.Identity}.clickId`)
+    .where(`${TABLES.Identity}.tenantId`, tenantId)
     .where(`${TABLES.Identity}.userId`, userId)
     .andWhere(`${TABLES.Click}.partnerId`, coupon.partnerId)
     .first(`${TABLES.Identity}.clickId as clickId`) as { clickId: string } | undefined;
@@ -579,9 +601,9 @@ function defaultCode(email: string): string {
 /** Auto-mint's use of codeExistsInStripe. A generated code is a random
  *  draw rather than anyone's choice, so a Stripe outage shouldn't block
  *  the grant: fail open and log. (The POST route fails closed.) */
-async function generatedCodeShadowsStripe(code: string): Promise<boolean> {
+async function generatedCodeShadowsStripe(tenantId: string, code: string): Promise<boolean> {
   try {
-    return await codeExistsInStripe(code);
+    return await codeExistsInStripe(tenantId, code);
   } catch (err) {
     console.error('[coupons] auto-mint Stripe code check failed; proceeding', { code, err });
     return false;
@@ -610,6 +632,7 @@ export async function autoMintCouponsForGrants(
   // Pre-load campaigns so we know which need a Stripe-side reward without
   // a SELECT per code-collision retry.
   const campaigns = (await db<ProgramRow>(TABLES.Program)
+    .where({ tenantId })
     .whereIn('id', programIds)
     .select('id', 'name', 'customerReward')) as Array<{
       id: string;
@@ -640,10 +663,10 @@ export async function autoMintCouponsForGrants(
     // partner-grant operation.
     for (let attempt = 1; attempt <= 2; attempt++) {
       const code = defaultCode(partner.email);
-      if (await generatedCodeShadowsStripe(code)) continue;
+      if (await generatedCodeShadowsStripe(tenantId, code)) continue;
 
       const provisioned = campaign.customerReward
-        ? await provisionCustomerReward(campaign.customerReward, code, campaign.name)
+        ? await provisionCustomerReward(tenantId, campaign.customerReward, code, campaign.name)
         : null;
 
       let inserted: Array<Pick<CouponRow, 'id'>>;
@@ -667,13 +690,13 @@ export async function autoMintCouponsForGrants(
           .ignore()
           .returning('id')) as Array<Pick<CouponRow, 'id'>>;
       } catch (err) {
-        if (provisioned) await deactivateCustomerReward(provisioned.stripePromotionCodeId);
+        if (provisioned) await deactivateCustomerReward(tenantId, provisioned.stripePromotionCodeId);
         console.error('[coupons] auto-mint failed', { partnerId: partner.id, programId, err });
         break;
       }
       if (inserted.length > 0) break;
       // Collided: no row owns the promo provisioned for this draw.
-      if (provisioned) await deactivateCustomerReward(provisioned.stripePromotionCodeId);
+      if (provisioned) await deactivateCustomerReward(tenantId, provisioned.stripePromotionCodeId);
     }
   }
 }

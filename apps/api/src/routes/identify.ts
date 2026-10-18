@@ -37,7 +37,7 @@ identifyRouter.post(
 
     const { cref, userId } = body.data;
 
-    const click = await db<ClickRow>(TABLES.Click).where({ id: cref }).first();
+    const click = await db<ClickRow>(TABLES.Click).where({ id: cref, tenantId }).first();
     if (!click) return res.status(404).json({ error: 'click_not_found' });
 
     // Multi-touch: every (clickId, userId) pair kept. Unique constraint makes
@@ -50,7 +50,7 @@ identifyRouter.post(
       .returning('id');
 
     const firstStitch = inserted.length > 0;
-    const attributed = firstStitch ? await attributeBacklogForUser(db, userId) : 0;
+    const attributed = firstStitch ? await attributeBacklogForUser(db, tenantId, userId) : 0;
 
     res.json({
       ok: true,

@@ -40,11 +40,13 @@ import {
   signupWithNetwork,
 } from '../network-client.js';
 import { isNetworkOfferedToPartners, resyncConsentedPartners, summarizeNetworkConsent } from '../network-consent.js';
+import { readPartnerAccessSettings, savePartnerAccessSettings } from '../partner-portal-access.js';
 import { createApiKeyRow } from '../auth.js';
 import { getTenancyMode, tenantOf } from '../tenancy.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
 import { getTenantBillingState } from '../billing-plan.js';
 import { isWhiteLabelEntitled, getWhiteLabelState } from '../white-label.js';
+import { currencyInputSchema } from '../currency.js';
 
 export const settingsRouter = Router();
 
@@ -70,6 +72,8 @@ const settingsSchema = z.object({
     .optional()
     .or(z.literal('')),
   programTermsUrl: z.string().trim().url().max(2048).optional().or(z.literal('')),
+  /** ISO 4217. Conversions sent without a currency are stored in it. */
+  defaultCurrency: currencyInputSchema.optional(),
 });
 
 /** What we persist into the Config row. Logo lives on Tenant; everything
@@ -86,6 +90,10 @@ export interface ProgramSettings extends PersistedProgramSettings {
   faviconUrl: string | null;
   brandColor: string | null;
   programTermsUrl: string | null;
+  /** The brand's currency (Tenant.defaultCurrency): conversions sent
+   *  without one are stored in it, and the portal formats currency-less
+   *  amounts in it. Readable by partners, who see amounts in it. */
+  defaultCurrency: string;
   /** Effective white-label entitlement. The portal keys branding removal
    *  + Network-surface hiding on this (provisioned flag AND entitling
    *  billing state — see white-label.ts). */
@@ -115,7 +123,7 @@ async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings
   // there so the cached Config row never lags the actual values.
   const tenant = await db<TenantRow>(TABLES.Tenant)
     .where({ id: tenantId })
-    .first(['displayName', 'logoUrl', 'faviconUrl', 'brandColor', 'programTermsUrl', 'whiteLabel', 'status']);
+    .first(['displayName', 'logoUrl', 'faviconUrl', 'brandColor', 'programTermsUrl', 'whiteLabel', 'status', 'defaultCurrency']);
   if (!programName && tenant?.displayName) programName = tenant.displayName as string;
   // Effective white-label: the provisioned flag AND an entitling billing
   // state. Computed here so any authenticated caller (admin or partner)
@@ -136,6 +144,7 @@ async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings
     faviconUrl: tenant?.faviconUrl ?? null,
     brandColor: tenant?.brandColor ?? null,
     programTermsUrl: tenant?.programTermsUrl ?? null,
+    defaultCurrency: tenant?.defaultCurrency ?? 'USD',
     whiteLabel,
     partnerNetworkToggleAvailable: partnerNetworkToggleAvailable(),
   };
@@ -216,13 +225,16 @@ settingsRouter.post('/config/program', requireAuth, requireAdmin, async (req, re
     .merge({ value: next as unknown as never, updatedAt: now });
   // brandColor + programTermsUrl live on Tenant (column-typed, not blob).
   // Only patch when present so an unrelated POST doesn't clear them.
-  const tenantPatch: Partial<Pick<TenantRow, 'brandColor' | 'programTermsUrl' | 'updatedAt'>> = {};
+  const tenantPatch: Partial<Pick<TenantRow, 'brandColor' | 'programTermsUrl' | 'defaultCurrency' | 'updatedAt'>> = {};
   if (body.data.brandColor !== undefined) {
     tenantPatch.brandColor = body.data.brandColor.trim() || null;
   }
   if (body.data.programTermsUrl !== undefined) {
     tenantPatch.programTermsUrl = body.data.programTermsUrl.trim() || null;
   }
+  // Changing it re-labels nothing already stored: every Event, Commission
+  // and Payout row carries its own currency.
+  if (body.data.defaultCurrency !== undefined) tenantPatch.defaultCurrency = body.data.defaultCurrency;
   if (Object.keys(tenantPatch).length > 0) {
     tenantPatch.updatedAt = now;
     await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).update(tenantPatch);
@@ -373,6 +385,26 @@ settingsRouter.post('/config/partner-signup', requireAuth, requireAdmin, async (
   res.json(next);
 });
 
+// ---------- Partner portal access ----------
+
+/** The tenant default for partners added without an invite
+ *  (partner-portal-access.ts). Omitted fields keep their value. */
+export const partnerAccessSchema = z.object({
+  uninvitedPortalAccess: z.boolean().optional(),
+});
+
+settingsRouter.get('/config/partner-access', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  res.json(await readPartnerAccessSettings(db, tenantId));
+});
+
+settingsRouter.post('/config/partner-access', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = partnerAccessSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  res.json(await savePartnerAccessSettings(db, tenantId, body.data));
+});
+
 // ---------- Payout settings ----------
 
 /**
@@ -387,15 +419,25 @@ settingsRouter.post('/config/partner-signup', requireAuth, requireAdmin, async (
 
 interface PayoutSettings {
   rail: PayoutRailPreference;
+  /** Hundredths of a unit of `thresholdCurrency`. */
   thresholdCents: number;
+  /** The tenant's default currency. The minimum applies to balances in
+   *  it; balances in other currencies pay out at any amount. */
+  thresholdCurrency: string;
   cadence: PayoutCadence;
 }
 
+/** Hundredths: 10,000,000 units of the default currency (₹1 crore,
+ *  Rp 10M). Matches the DB CHECK constraint. */
+export const MAX_PAYOUT_THRESHOLD_CENTS = 1_000_000_000;
+
 const payoutSettingsSchema = z.object({
   rail: z.enum(PAYOUT_RAIL_PREFERENCES as readonly [PayoutRailPreference, ...PayoutRailPreference[]]).optional(),
-  // UI sends cents to match the column unit. Cap at $1,000 — anything above
-  // is a misconfiguration, and matches the DB CHECK constraint.
-  thresholdCents: z.number().int().min(0).max(100_000).optional(),
+  // UI sends hundredths of the default currency to match the column unit.
+  // The cap only catches a misplaced digit: it has to fit currencies with
+  // large unit counts (₹5,000 is 500,000 hundredths), and it matches the
+  // DB CHECK constraint.
+  thresholdCents: z.number().int().min(0).max(MAX_PAYOUT_THRESHOLD_CENTS).optional(),
   cadence: z.enum(PAYOUT_CADENCES as readonly [PayoutCadence, ...PayoutCadence[]]).optional(),
 });
 
@@ -404,6 +446,7 @@ async function readPayoutSettings(db: Knex, tenantId: string): Promise<PayoutSet
   return {
     rail: tenant?.payoutRailPreference ?? 'auto',
     thresholdCents: tenant?.payoutThresholdCents ?? 0,
+    thresholdCurrency: tenant?.defaultCurrency ?? 'USD',
     cadence: tenant?.payoutCadence ?? 'weekly',
   };
 }
@@ -508,8 +551,8 @@ settingsRouter.post('/config/network/backfill', requireAuth, requireAdmin, async
 
 /** How many partners have opted in / out — for the admin Network page. */
 settingsRouter.get('/config/network/partner-consent', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  res.json(await summarizeNetworkConsent(db));
+  const { db, tenantId } = tenantOf(req);
+  res.json(await summarizeNetworkConsent(db, tenantId));
 });
 
 // ---------- Network connect (self-serve onboarding) ----------
@@ -748,6 +791,7 @@ settingsRouter.get('/admin/network/me', requireAuth, requireAdmin, async (req, r
     // see on /admin/partners, so reconcile here.
     const remote = await networkProxy.whoami(db, tenantId);
     const partnerRows = await db(TABLES.Partner)
+      .where({ tenantId })
       .whereNull('revokedAt')
       .count<Array<{ count: string }>>({ count: '*' });
     const partnerCount = Number(partnerRows[0]?.count ?? 0);

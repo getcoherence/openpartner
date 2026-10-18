@@ -70,9 +70,14 @@ export interface TenantRow {
   /** Payout rail preference. Null = 'auto' (legacy: pick per-partner at
    *  payout time). See migration 20260622000000_tenant_payout_settings. */
   payoutRailPreference: PayoutRailPreference | null;
-  /** Minimum (partner, currency) balance to issue a payout, in cents.
-   *  Null or 0 = no threshold (legacy: pay any amount). */
+  /** Minimum (partner, currency) balance to issue a payout, in hundredths
+   *  of a unit of `defaultCurrency`. Balances in other currencies have no
+   *  minimum. Null or 0 = no threshold (legacy: pay any amount). */
   payoutThresholdCents: number | null;
+  /** The brand's own currency, ISO 4217 upper case. Conversions that
+   *  arrive without a currency are stored in it, and the portal formats
+   *  currency-less amounts in it. Defaults to USD. */
+  defaultCurrency: string;
   /** How often payouts run for this tenant. Null = 'weekly' (legacy:
    *  every Monday). */
   payoutCadence: PayoutCadence | null;
@@ -253,15 +258,22 @@ export interface CommissionSubRule {
   /** Event-type filter. Required for `first`, optional for `every` (omit = all events). */
   eventType?: string;
   type: 'percent' | 'fixed';
-  /** Percent: 20 means 20%. Fixed: dollar amount. With bands or tiers,
-   *  the base rate (below the first threshold). */
+  /** Percent: 20 means 20%. Fixed: an amount in `currency` (else the
+   *  event's currency). With bands or tiers, the base rate (below the
+   *  first threshold). */
   value: number;
   /** Currency of the rule's money amounts: a fixed value, and the
    *  thresholds of bands / revenue tiers. Unset = the event's currency.
-   *  (The accrued Commission is always in the event's currency.) */
+   *  A fixed rule's Commission is booked in this currency (₹100 per lead
+   *  is ₹100 whatever the event's currency); a percent rule's Commission
+   *  is a share of the event's value, so it is in the event's currency.
+   *  Nothing is converted. See docs/commission-slabs.md. */
   currency?: string;
   /** When true, the rule keeps firing on subsequent matching events
-   *  (renewals). Combined with recurringMonths to cap duration. */
+   *  (renewals), including renewals past the attribution window that
+   *  Program.renewalsStayWithPartner carries. A rule without it pays
+   *  only while the earning click is inside the window. Combined with
+   *  recurringMonths to cap duration. */
   recurring?: boolean;
   /** Cap (in months) after the first attributed event of this type for
    *  the (partner, user) pair. Null/omitted = no cap. */
@@ -331,6 +343,10 @@ export interface PartnerRow {
   // Admin-supplied free-text reason surfaced in the revoke notification
   // email and shown if the partner later tries to sign in.
   revokeReason: string | null;
+  // false = the partner can't sign in to the partner portal: no magic
+  // links, no sessions. For headless programs, where the brand's own app
+  // is the partner's only view. Default true. See partner-portal-access.ts.
+  portalAccess: boolean;
 }
 
 export type CommissionType = 'percent' | 'fixed';
@@ -590,8 +606,18 @@ export interface ProgramRow {
   tenantId: string;
   name: string;
   commissionRule: CommissionRule;
+  /** How old a click may be and still win a customer's FIRST conversion
+   *  of an event type. With renewalsStayWithPartner, later events of that
+   *  type keep the first one's attribution however old the click is. */
   attributionWindowDays: number;
   attributionModel: AttributionModel;
+  /** True (default): a repeat event — a type the customer already has an
+   *  attributed conversion of — keeps that conversion's partners and
+   *  weights instead of being re-decided against the window. Past the
+   *  window only `recurring` sub-rules pay on it, up to recurringMonths.
+   *  False: every event is attributed on its own within the window.
+   *  Spec: docs/renewal-attribution.md. */
+  renewalsStayWithPartner: boolean;
   /** Where partner share-links for this Campaign land by default. Brand
    *  controls this; partners can only override if deepLinkAllowedDomains
    *  is set and their override matches. */
@@ -653,6 +679,12 @@ export interface ProgramRow {
    *  the first successful federation upsert; subsequent edits PATCH
    *  this id instead of creating a new offering. */
   networkOfferingId: string | null;
+  /** Event types the brand declares are sales in this program, on top of
+   *  invoice_paid / subscription_created (which always are) — e.g.
+   *  `order_paid` paid with fixed bounties. Their value is partner-
+   *  attributed revenue for the hosted platform fee (docs/platform-fee.md).
+   *  Empty = none beyond the two. */
+  revenueEventTypes: string[];
   /** Platform-operator takedown (anti-spam). When set, the router refuses
    *  to serve this program's partner links regardless of the brand's
    *  approvalStatus — a per-program removal that leaves the brand live.
@@ -767,9 +799,11 @@ export interface CommissionRow {
   accruedAt: Date;
   paidAt: Date | null;
   payoutId: string | null;
-  /** How the amount was computed, for audit. Holds `slab` (see
-   *  CommissionSlabTrace in apps/api/src/commission-slabs.ts) when a band
-   *  or tier set the rate; `{}` otherwise. */
+  /** How the amount was computed, for audit. `rateType` is the sub-rule's
+   *  `percent` | `fixed` (absent on rows accrued before Oct 2026); `slab`
+   *  (see CommissionSlabTrace in apps/api/src/commission-slabs.ts) when a
+   *  band or tier set the rate; `refund` on a replacement accrued for the
+   *  share a partial refund left (refunds.ts). */
   metadata: Record<string, unknown>;
 }
 
@@ -1057,6 +1091,36 @@ export interface HostedBillingStateRow {
   updatedAt: Date;
 }
 
+/** Which OpenPartner Stripe App developer key issued a connection's tokens.
+ *  A refresh must use the same one. */
+export type StripeAppKeyMode = 'live' | 'test' | 'sandbox';
+
+/** Hosted-only sidecar: a brand's own Stripe account, connected through the
+ *  OpenPartner Stripe App (migration 20261017000000). Credentials — never
+ *  exported. At most one live row per tenant and per Stripe account. */
+export interface TenantStripeConnectionRow {
+  id: string;
+  tenantId: string;
+  stripeAccountId: string;
+  livemode: boolean;
+  keyMode: StripeAppKeyMode;
+  /** AES-GCM envelope (crypto.ts). Null once disconnected. */
+  refreshTokenEnc: string | null;
+  accessTokenEnc: string | null;
+  accessTokenExpiresAt: Date | null;
+  permissionsVersion: number;
+  permissionsGranted: string[] | null;
+  connectedByAdminId: string | null;
+  connectedAt: Date;
+  lastRefreshedAt: Date | null;
+  refreshFailedAt: Date | null;
+  refreshError: string | null;
+  lastEventAt: Date | null;
+  disconnectedAt: Date | null;
+  disconnectReason: 'admin' | 'deauthorized' | 'replaced' | null;
+  updatedAt: Date;
+}
+
 export interface StripeWebhookInboxRow {
   stripeEventId: string;
   type: string;
@@ -1086,6 +1150,73 @@ export interface CommissionAdjustmentRow {
   reason: 'transfer_reversed' | 'funding_disputed' | 'admin_correction' | 'refund_clawback';
   actorAdminId: string | null;
   metadata: Record<string, unknown>;
+  createdAt: Date;
+}
+
+/** HOSTED BILLING SIDECAR (not exported — see docs/data-portability.md):
+ *  what the platform-fee meter has billed or credited per conversion.
+ *  Append-only; a conversion's billed amount is the sum of its rows. See
+ *  apps/api/src/usage-ledger.ts. */
+export interface UsageLedgerRow {
+  id: string;
+  tenantId: string;
+  eventId: string;
+  /** The report that carried the row (`<meter identifier>@<run time>`),
+   *  or op-usage-opening-<tenant> for the cutover balance. */
+  reportKey: string;
+  reason: 'opening' | 'billed' | 'refunded' | 'reversed' | 'removed';
+  currency: string;
+  amount: string; // decimal, signed, the conversion's currency
+  /** Null: no published rate, held out of the meter. */
+  usdPerUnit: string | null;
+  amountUsd: string; // decimal, signed
+  /** The fee terms the conversion was billed under (usage-ledger.ts
+   *  FeeTerms). Null on rows from before the commission floor: the old rule. */
+  terms: Record<string, unknown> | null;
+  createdAt: Date;
+}
+
+/** HOSTED BILLING SIDECAR (not exported — see docs/data-portability.md):
+ *  how the platform fee applies to one tenant. See
+ *  apps/api/src/fee-terms.ts and docs/platform-fee.md. */
+export interface HostedFeeTermsRow {
+  tenantId: string;
+  planSubscriptionId: string | null;
+  /** Start of the tenant's paid Stripe subscription. */
+  planStartedAt: Date | null;
+  /** Conversions first attributed at or after this are billed on the
+   *  commission-floor rule. Null: the old rule. */
+  effectiveAt: Date | null;
+  effectiveSource: 'new_plan' | 'notice' | 'contract' | null;
+  noticeSentAt: Date | null;
+  noticeSentByEmail: string | null;
+  noticeRecipients: string[] | null;
+  /** Contract overrides; null = the plan's platform rates. Fractions. */
+  revenueRate: string | null;
+  commissionRate: string | null;
+  monthlyMinimumUsd: string | null;
+  contractNote: string | null;
+  updatedByEmail: string | null;
+  updatedAt: Date;
+}
+
+/** HOSTED BILLING SIDECAR (not exported): what the commission-floor rule
+ *  would have billed, next to what the old rule did, per usage report. */
+export interface UsageFeeShadowRow {
+  id: string;
+  tenantId: string;
+  reportKey: string;
+  rangeStart: Date | null;
+  rangeEnd: Date;
+  mode: string;
+  conversions: number;
+  oldBasisUsd: string;
+  newBasisUsd: string;
+  oldFeeUsd: string;
+  newFeeUsd: string;
+  floorConversions: number;
+  renamedSaleConversions: number;
+  heldOut: Record<string, number> | null;
   createdAt: Date;
 }
 

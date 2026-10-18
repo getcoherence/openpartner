@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { TABLES } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
+import { byCurrency, byCurrencyAndStatus, currencySql, tenantDefaultCurrency } from '../currency.js';
 
 export const adminOverviewRouter = Router();
 
@@ -56,34 +57,59 @@ adminOverviewRouter.get('/admin/overview', requireAuth, requireAdmin, async (req
 
   const { db, tenantId } = tenantOf(req);
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  // Amounts are never added across currencies. The scalar totals, the
+  // per-partner `revenue` / `commission`, and the ranking are in the
+  // brand's default currency; the ByCurrency maps hold every currency.
+  const currency = await tenantDefaultCurrency(db, tenantId);
 
   const [partnerCount] = await db(TABLES.Partner).where({ tenantId }).count<{ count: string }[]>({ count: '*' });
   const [clickTotal] = await clicksSince(db, tenantId, since).count<{ count: string }[]>({ count: '*' });
-  const [revenueTotal] = (await attributedSince(db, tenantId, since).select(
-    db.raw('coalesce(sum(e.value * a.weight), 0) as revenue'),
-    db.raw('count(*) as events'),
-  )) as Array<{ revenue: string; events: string }>;
-  const commissionTotals = await commissionsSince(db, tenantId, since)
-    .groupBy('status')
-    .select('status')
-    .sum<{ status: string; amount: string }[]>({ amount: 'amount' });
+  const [eventTotal] = (await attributedSince(db, tenantId, since).select(db.raw('count(*) as events'))) as Array<{
+    events: string;
+  }>;
+  const revenueByCurrency = byCurrency(
+    (await attributedSince(db, tenantId, since)
+      .groupByRaw(EVENT_CURRENCY)
+      .select(db.raw(`${EVENT_CURRENCY} as currency`), db.raw('sum(e.value * a.weight) as amount'))) as Array<{
+      currency: string;
+      amount: string | null;
+    }>,
+  );
+  const commissionByCurrency = byCurrencyAndStatus(
+    (await commissionsSince(db, tenantId, since)
+      .groupByRaw(`"status", ${COMMISSION_CURRENCY}`)
+      .select('status', db.raw(`${COMMISSION_CURRENCY} as currency`), db.raw('sum("amount") as amount'))) as Array<{
+      status: string;
+      currency: string;
+      amount: string | null;
+    }>,
+  );
 
-  const commissionBy = (status: string) => Number(commissionTotals.find((r) => r.status === status)?.amount ?? 0);
+  const commissionBy = (status: string) => commissionByCurrency[currency]?.[status] ?? 0;
   const totals = {
     partners: Number(partnerCount?.count ?? 0),
     clicks: Number(clickTotal?.count ?? 0),
-    attributedRevenue: Number(revenueTotal?.revenue ?? 0),
-    attributedEvents: Number(revenueTotal?.events ?? 0),
+    currency,
+    attributedRevenue: revenueByCurrency[currency] ?? 0,
+    attributedRevenueByCurrency: revenueByCurrency,
+    attributedEvents: Number(eventTotal?.events ?? 0),
     commissionAccrued: commissionBy('accrued'),
     commissionApproved: commissionBy('approved'),
     commissionPaid: commissionBy('paid'),
+    commissionByCurrency,
   };
 
-  const ranked = await rankedPartnersPage(db, tenantId, since, sort, limit, cursor);
+  const ranked = await rankedPartnersPage(db, tenantId, since, sort, limit, cursor, currency);
   const hasMore = ranked.length > limit;
   const page = hasMore ? ranked.slice(0, limit) : ranked;
   const last = page[page.length - 1];
   const nextCursor = hasMore && last ? encodeOverviewCursor({ s: sort, v: last.sortValue, id: last.id }) : null;
+  const perCurrency = await partnerAmountsByCurrency(
+    db,
+    tenantId,
+    since,
+    page.map((p) => p.id),
+  );
 
   res.json({
     since: since.toISOString(),
@@ -96,12 +122,52 @@ adminOverviewRouter.get('/admin/overview', requireAuth, requireAdmin, async (req
       stripeConnected: !!p.stripeConnectAccountId,
       clicks: Number(p.clicks),
       revenue: Number(p.revenue),
+      revenueByCurrency: perCurrency.revenue.get(p.id) ?? {},
       events: Number(p.events),
       commission: Object.fromEntries(COMMISSION_STATUSES.map((s) => [s, Number(p[s])])),
+      commissionByCurrency: perCurrency.commission.get(p.id) ?? {},
     })),
     nextCursor,
   });
 });
+
+const EVENT_CURRENCY = currencySql('"e"."currency"');
+const COMMISSION_CURRENCY = currencySql('"currency"');
+
+/** Every currency's revenue and commission for one page of partners. */
+async function partnerAmountsByCurrency(
+  db: Knex,
+  tenantId: string,
+  since: Date,
+  partnerIds: string[],
+): Promise<{ revenue: Map<string, Record<string, number>>; commission: Map<string, Record<string, Record<string, number>>> }> {
+  const revenue = new Map<string, Record<string, number>>();
+  const commission = new Map<string, Record<string, Record<string, number>>>();
+  if (partnerIds.length === 0) return { revenue, commission };
+
+  const revenueRows = (await attributedSince(db, tenantId, since)
+    .whereIn('a.partnerId', partnerIds)
+    .groupByRaw(`"a"."partnerId", ${EVENT_CURRENCY}`)
+    .select('a.partnerId as partnerId', db.raw(`${EVENT_CURRENCY} as currency`), db.raw('sum(e.value * a.weight) as amount'))) as Array<{
+    partnerId: string;
+    currency: string;
+    amount: string | null;
+  }>;
+  const commissionRows = (await commissionsSince(db, tenantId, since)
+    .whereIn('partnerId', partnerIds)
+    .groupByRaw(`"partnerId", "status", ${COMMISSION_CURRENCY}`)
+    .select('partnerId', 'status', db.raw(`${COMMISSION_CURRENCY} as currency`), db.raw('sum("amount") as amount'))) as Array<{
+    partnerId: string;
+    status: string;
+    currency: string;
+    amount: string | null;
+  }>;
+  for (const id of partnerIds) {
+    revenue.set(id, byCurrency(revenueRows.filter((r) => r.partnerId === id)));
+    commission.set(id, byCurrencyAndStatus(commissionRows.filter((r) => r.partnerId === id)));
+  }
+  return { revenue, commission };
+}
 
 function clicksSince(db: Knex, tenantId: string, since: Date) {
   return db(TABLES.Click).where({ tenantId }).where('ts', '>=', since);
@@ -132,7 +198,9 @@ type RankedPartnerRow = {
 
 /** Every partner in the tenant joined to its windowed aggregates, ranked
  *  by `sort` DESC then id DESC; returns up to `limit + 1` rows past the
- *  cursor so the caller can tell whether another page exists. */
+ *  cursor so the caller can tell whether another page exists. Revenue and
+ *  commission are in `currency` only: ranking by a sum of rupees and
+ *  dollars would rank by nothing. */
 function rankedPartnersPage(
   db: Knex,
   tenantId: string,
@@ -140,16 +208,24 @@ function rankedPartnersPage(
   sort: OverviewSort,
   limit: number,
   cursor: OverviewCursor | null,
+  currency: string,
 ): Promise<RankedPartnerRow[]> {
   const clicks = clicksSince(db, tenantId, since).groupBy('partnerId').select('partnerId').count({ clicks: '*' });
   const revenue = attributedSince(db, tenantId, since)
     .groupBy('a.partnerId')
     .select('a.partnerId as partnerId')
-    .select(db.raw('sum(e.value * a.weight) as revenue'), db.raw('count(*) as events'));
+    .select(
+      db.raw(`sum(e.value * a.weight) filter (where ${EVENT_CURRENCY} = ?) as revenue`, [currency]),
+      db.raw('count(*) as events'),
+    );
   const commission = commissionsSince(db, tenantId, since)
     .groupBy('partnerId')
     .select('partnerId')
-    .select(...COMMISSION_STATUSES.map((s) => db.raw('sum(amount) filter (where status = ?) as ??', [s, s])));
+    .select(
+      ...COMMISSION_STATUSES.map((s) =>
+        db.raw(`sum(amount) filter (where status = ? and ${COMMISSION_CURRENCY} = ?) as ??`, [s, currency, s]),
+      ),
+    );
 
   const ranked = db(`${TABLES.Partner} as p`)
     .leftJoin(clicks.as('k'), 'k.partnerId', 'p.id')

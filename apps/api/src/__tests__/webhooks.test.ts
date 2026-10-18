@@ -13,6 +13,7 @@ import { ulid } from 'ulid';
 import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 import { db } from '../db.js';
 import { createApp } from '../app.js';
+import { __setOutboundPolicyForTests } from '../outbound-guard.js';
 
 const ADMIN_KEY = 'op_test_webhook_admin_0123456789abcdef0123';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
@@ -86,6 +87,7 @@ const TABLES_TO_CLEAN = [
   TABLES.Program,
   TABLES.Payout,
   TABLES.ApiKey,
+  TABLES.PartnerPostback,
   TABLES.Partner,
   TABLES.Config,
 ];
@@ -384,5 +386,78 @@ describe.skipIf(skipIntegration)('webhooks', () => {
     const after = await db(TABLES.WebhookEndpoint).where({ id }).first();
     expect(after).toBeDefined();
     expect(after!.active).toBe(false);
+  });
+});
+
+// The hosted default (outbound-guard buildPolicy): ports 80/443, no
+// private-CIDR escape hatch. This file otherwise runs the self-host policy
+// with 127.0.0.1 allowed, for its local receivers.
+const HOSTED_POLICY = { allowedPorts: new Set([80, 443]), privateCidrs: [] };
+
+describe.skipIf(skipIntegration)('destination check at registration', () => {
+  beforeEach(() => __setOutboundPolicyForTests(HOSTED_POLICY));
+  afterEach(() => __setOutboundPolicyForTests(null));
+
+  const admin = (r: request.Test) => r.set('Authorization', `Bearer ${ADMIN_KEY}`);
+
+  it('refuses a private webhook URL with a clear 400 and stores nothing', async () => {
+    const res = await admin(request(app).post('/webhooks')).send({ url: 'http://127.0.0.1/hook', events: ['*'] });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: 'destination_not_allowed', reason: 'destination_not_public' });
+    expect(res.body.detail).toMatch(/public internet/);
+    expect(await db(TABLES.WebhookEndpoint)).toHaveLength(0);
+
+    const port = await admin(request(app).post('/webhooks')).send({ url: 'https://8.8.8.8:8443/hook', events: ['*'] });
+    expect(port.status).toBe(400);
+    expect(port.body).toMatchObject({ error: 'destination_not_allowed', reason: 'port_not_allowed' });
+    expect(port.body.detail).toMatch(/80 or 443/);
+
+    const local = await admin(request(app).post('/webhooks')).send({ url: 'https://localhost/hook', events: ['*'] });
+    expect(local.body).toMatchObject({ error: 'destination_not_allowed', reason: 'blocked_hostname' });
+  });
+
+  it('accepts a public URL, and a name that does not resolve yet (deliveries re-check)', async () => {
+    const ip = await admin(request(app).post('/webhooks')).send({ url: 'https://8.8.8.8/hook', events: ['*'] });
+    expect(ip.status).toBe(201);
+    const notLiveYet = await admin(request(app).post('/webhooks')).send({
+      url: 'https://hooks.not-live-yet.invalid/hook',
+      events: ['*'],
+    });
+    expect(notLiveYet.status).toBe(201);
+  });
+
+  it('PATCH refuses a private URL and keeps the old one', async () => {
+    const created = await admin(request(app).post('/webhooks')).send({ url: 'https://8.8.8.8/hook', events: ['*'] });
+    const id = created.body.endpoint.id as string;
+    const patch = await admin(request(app).patch(`/webhooks/${id}`)).send({ url: 'http://10.0.0.5/hook' });
+    expect(patch.status).toBe(400);
+    expect(patch.body).toMatchObject({ error: 'destination_not_allowed', reason: 'destination_not_public' });
+    expect((await db(TABLES.WebhookEndpoint).where({ id }).first())!.url).toBe('https://8.8.8.8/hook');
+    // Edits that don't touch the URL aren't re-checked.
+    const label = await admin(request(app).patch(`/webhooks/${id}`)).send({ label: 'renamed' });
+    expect(label.status).toBe(200);
+  });
+
+  it('partner postbacks get the same check on create and update', async () => {
+    const partnerId = ulid();
+    await db(TABLES.Partner).insert({ id: partnerId, tenantId: DEFAULT_TENANT_ID, email: 'pb@example.test', name: 'PB' });
+    const refused = await admin(request(app).post(`/partners/${partnerId}/postbacks`)).send({
+      url: 'http://169.254.169.254/latest/meta-data/?cid={click_id}',
+      events: ['commission.accrued'],
+    });
+    expect(refused.status).toBe(400);
+    expect(refused.body).toMatchObject({ error: 'destination_not_allowed', reason: 'destination_not_public' });
+    expect(await db(TABLES.PartnerPostback).where({ partnerId })).toHaveLength(0);
+
+    const ok = await admin(request(app).post(`/partners/${partnerId}/postbacks`)).send({
+      url: 'https://8.8.8.8/cb?cid={click_id}',
+      events: ['commission.accrued'],
+    });
+    expect(ok.status).toBe(201);
+    const update = await admin(request(app).patch(`/partners/${partnerId}/postbacks/${ok.body.id}`)).send({
+      url: 'http://192.168.1.10/cb',
+    });
+    expect(update.status).toBe(400);
+    expect(update.body.reason).toBe('destination_not_public');
   });
 });

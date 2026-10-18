@@ -63,11 +63,13 @@ Four models ship. Each Event, when ingested, writes one or more `Attribution` ro
 
 Model is per-campaign (`Campaign.attributionModel`). Change it and the next re-attribution run picks up the new setting. The attribution window is also per-campaign (default 60 days).
 
+The window decides **acquisition**: which click wins a customer's first conversion of each event type. With `Program.renewalsStayWithPartner` (on by default), a repeat of a type the customer already converted on, such as the 13th `invoice_paid`, keeps that first conversion's partners and weights however old the click is. A later click from another partner doesn't take it. This is derived from the existing Attribution × Event rows on every event; nothing is stored to make it happen. Rules and edge cases: [docs/renewal-attribution.md](docs/renewal-attribution.md).
+
 ## Commissions + payouts
 
 Commission = attribution + pricing rule. Rules live on the Campaign:
 
-- **percent** — percentage of the event's `value`. `recurring: true` means every recurring invoice counts, not just the first.
+- **percent** — percentage of the event's `value`. `recurring: true` means every recurring invoice counts, not just the first, including renewals past the attribution window; a rule without it pays only while the click is inside the window. `recurringMonths` caps it.
 - **fixed** — flat amount per event (signup bounties).
 
 Commissions enter `accrued` state. An admin (or approval webhook flow) moves them to `approved`. The payouts runner groups approved commissions by `(partnerId, currency)` and writes a Payout row plus a Stripe transfer (Connect mode) or leaves it `pending` for the operator to clear out-of-band (manual mode).
@@ -93,7 +95,7 @@ First-run is a three-step wizard at `/install` — admin account (name + email),
 **Personas** are first-class — neither admins nor partners authenticate with a shared token:
 
 - **Admin** — invited by another admin (or created during install), verifies a magic link, gets a `Session` cookie keyed `(principalKind='admin', principalId)`. Can invite / revoke / reinstate other admins, edit program + mail settings. `ADMIN_API_KEY` env stays valid as a bootstrap / headless / CI bearer; think `doctl`, migrations, or emergency access.
-- **Partner** — invited by an admin, same magic-link flow, separate `Partner` table. Creates their own Links + API keys from their dashboard; admin never sees partner credentials. Revocation kills sessions in-transaction and stamps clicks `fraudFlag='revoked'` so future attribution skips them without breaking the end-user click experience.
+- **Partner** — invited by an admin, same magic-link flow, separate `Partner` table. Creates their own Links + API keys from their dashboard; admin never sees partner credentials. Revocation kills sessions in-transaction and stamps clicks `fraudFlag='revoked'` so future attribution skips them without breaking the end-user click experience. A partner with `Partner.portalAccess = false` (a headless program's customer, created by the brand's backend with `sendInvite: false`) never gets a portal session: sign-in requests for them send nothing and answer as for an unknown email, and `resolveSession` rejects any session they hold (`apps/api/src/partner-portal-access.ts`).
 
 Magic-link tokens and sessions share one generalized schema (`MagicLinkToken`, `Session`) keyed by `(principalKind, principalId)`. The verify endpoint branches on `principalKind` — invites for partners stamp `Partner.activatedAt`, invites for admins stamp `Admin.activatedAt`.
 

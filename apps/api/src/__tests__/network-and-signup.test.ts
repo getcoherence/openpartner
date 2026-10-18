@@ -27,7 +27,7 @@
  * suite.
  */
 
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -80,6 +80,9 @@ let unlinkResponse: { status: number; body: unknown } = { status: 200, body: { r
 // re-sync test. When a request comes in with an email we've seen, return
 // the same networkCreatorId + alreadyExisted=true.
 const networkCreators = new Map<string, string>();
+// Runs before the receiver answers, while the vendor is still waiting on
+// the call: lets a test look at what the vendor had committed by then.
+let onReceive: ((path: string, body: unknown) => Promise<void>) | null = null;
 
 const upserts = () => received.filter((c) => c.path === '/partners/upsert');
 const unlinks = () => received.filter((c) => c.path === '/partners/unlink');
@@ -99,23 +102,7 @@ beforeAll(async () => {
           authorization: req.headers.authorization,
           body,
         });
-        if (req.url === '/partners/unlink') {
-          res.writeHead(unlinkResponse.status, { 'content-type': 'application/json' });
-          res.end(JSON.stringify(unlinkResponse.body));
-          return;
-        }
-        const email = (body && typeof body === 'object' && 'email' in body) ? (body as { email: string }).email : null;
-        if (email && networkCreators.has(email)) {
-          res.writeHead(200, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({
-            networkCreatorId: networkCreators.get(email),
-            alreadyExisted: true,
-            affiliations: [{ vendorId: 'vnd_other', vendorPartnerId: 'pp_other', status: 'active', displayName: 'Other Vendor' }],
-          }));
-          return;
-        }
-        res.writeHead(mockResponse.status, { 'content-type': 'application/json' });
-        res.end(JSON.stringify(mockResponse.body));
+        void (onReceive ? onReceive(req.url ?? '', body) : Promise.resolve()).then(() => reply(req.url ?? '', body, res));
       });
     }).listen(0, '127.0.0.1', () => {
       const addr = receiver.address() as AddressInfo;
@@ -124,6 +111,26 @@ beforeAll(async () => {
     });
   });
 });
+
+function reply(path: string, body: unknown, res: ServerResponse): void {
+  if (path === '/partners/unlink') {
+    res.writeHead(unlinkResponse.status, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(unlinkResponse.body));
+    return;
+  }
+  const email = (body && typeof body === 'object' && 'email' in body) ? (body as { email: string }).email : null;
+  if (email && networkCreators.has(email)) {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      networkCreatorId: networkCreators.get(email),
+      alreadyExisted: true,
+      affiliations: [{ vendorId: 'vnd_other', vendorPartnerId: 'pp_other', status: 'active', displayName: 'Other Vendor' }],
+    }));
+    return;
+  }
+  res.writeHead(mockResponse.status, { 'content-type': 'application/json' });
+  res.end(JSON.stringify(mockResponse.body));
+}
 
 afterAll(async () => {
   if (receiver) await new Promise<void>((r) => receiver.close(() => r()));
@@ -161,6 +168,7 @@ beforeEach(async () => {
   if (skipIntegration) return;
   received = [];
   networkCreators.clear();
+  onReceive = null;
   mockResponse = {
     status: 200,
     body: { networkCreatorId: `crt_${ulid()}`, alreadyExisted: false, affiliations: [] },
@@ -309,6 +317,26 @@ describe.skipIf(skipIntegration)('self-signup', () => {
     const consent = await consentOf(partner!.id);
     expect(consent).toMatchObject({ status: 'granted', source: 'join_page', withdrawnAt: null });
     expect(consent!.consentedAt).toBeInstanceOf(Date);
+  });
+
+  it('opt-in ticked: the partner and the consent are committed before the push goes out', async () => {
+    await configureNetwork({ enabled: true });
+    let seenByNetworkTime: unknown = 'not called';
+    onReceive = async (path, body) => {
+      if (path !== '/partners/upsert') return;
+      const partnerId = (body as { vendorPartnerId: string }).vendorPartnerId;
+      seenByNetworkTime = {
+        partner: !!(await db(TABLES.Partner).where({ id: partnerId }).first()),
+        consent: (await consentOf(partnerId))?.status ?? null,
+      };
+    };
+
+    const res = await request(app)
+      .post('/partner-signup')
+      .send({ email: 'ordered@example.test', name: 'Ordered', application: APPLICATION, networkOptIn: true });
+    expect(res.status).toBe(201);
+    expect(upserts()).toHaveLength(1);
+    expect(seenByNetworkTime).toEqual({ partner: true, consent: 'granted' });
   });
 
   it('opt-in ignored while the brand does not offer the Network', async () => {
@@ -551,6 +579,22 @@ describe.skipIf(skipIntegration)('re-sync (POST /config/network/backfill)', () =
     expect(await meta(p4)).toBeUndefined();
   });
 
+  it('a reply without affiliations still counts as pushed and stamps the creator', async () => {
+    const id = await seedPartner('resync-noaff@example.test');
+    await grantConsent(id);
+    await configureNetwork({ enabled: true });
+    mockResponse = { status: 200, body: { networkCreatorId: 'crt_resync_noaff', alreadyExisted: false } };
+
+    const res = await request(app)
+      .post('/config/network/backfill')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ total: 1, pushed: 1, queued: 0 });
+    const partner = await db(TABLES.Partner).where({ id }).first();
+    expect(partner.metadata.network).toMatchObject({ creatorId: 'crt_resync_noaff', affiliations: 0 });
+  });
+
   it('409 network_not_offered while the brand does not offer the Network', async () => {
     await configureNetwork({ enabled: true, autoEnroll: false });
     const id = await seedPartner('consented@example.test');
@@ -614,6 +658,68 @@ describe.skipIf(skipIntegration)("the partner's consent endpoints", () => {
     expect(grant.body).toMatchObject({ offered: true, status: 'granted', source: 'portal_prompt' });
     expect(upserts()).toHaveLength(1);
     expect((upserts()[0]!.body as { metadata: { source: string } }).metadata.source).toBe('admin_invite');
+  });
+
+  it('a Network reply without affiliations still records the opt-in and stamps the creator', async () => {
+    await configureNetwork({ enabled: true });
+    const id = await seedPartner('no-affiliations@example.test');
+    mockResponse = { status: 200, body: { networkCreatorId: 'crt_noaff', alreadyExisted: true } };
+
+    const grant = await request(app)
+      .post('/network/me/consent')
+      .set('Cookie', await partnerCookie(id))
+      .send({ decision: 'grant', via: 'setting' });
+    expect(grant.status).toBe(200);
+    expect(grant.body).toMatchObject({ status: 'granted', source: 'portal_setting' });
+    expect((await consentOf(id))?.status).toBe('granted');
+    expect(upserts()).toHaveLength(1);
+    const partner = await db(TABLES.Partner).where({ id }).first();
+    expect(partner.metadata.network).toMatchObject({ creatorId: 'crt_noaff', preExisting: true, affiliations: 0 });
+  });
+
+  it('the opt-in is committed before the push reaches the Network', async () => {
+    await configureNetwork({ enabled: true });
+    const id = await seedPartner('committed-first@example.test');
+    // What another connection could see while the Network handled the push.
+    let seenByNetworkTime: string | null | undefined;
+    onReceive = async (path) => {
+      if (path === '/partners/upsert') seenByNetworkTime = (await consentOf(id))?.status ?? null;
+    };
+
+    const grant = await request(app)
+      .post('/network/me/consent')
+      .set('Cookie', await partnerCookie(id))
+      .send({ decision: 'grant', via: 'prompt' });
+    expect(grant.status).toBe(200);
+    expect(upserts()).toHaveLength(1);
+    expect(seenByNetworkTime).toBe('granted');
+  });
+
+  it('withdraw and decline are committed before the unlink is sent', async () => {
+    await configureNetwork({ enabled: true });
+    const leaver = await seedPartner('withdraw-first@example.test');
+    await grantConsent(leaver);
+    const decliner = await seedPartner('decline-first@example.test');
+    const seen = new Map<string, string | null>();
+    onReceive = async (path, body) => {
+      if (path !== '/partners/unlink') return;
+      const partnerId = (body as { vendorPartnerId: string }).vendorPartnerId;
+      seen.set(partnerId, (await consentOf(partnerId))?.status ?? null);
+    };
+
+    const withdraw = await request(app)
+      .post('/network/me/consent')
+      .set('Cookie', await partnerCookie(leaver))
+      .send({ decision: 'withdraw', via: 'setting' });
+    expect(withdraw.status).toBe(200);
+    const decline = await request(app)
+      .post('/network/me/consent')
+      .set('Cookie', await partnerCookie(decliner))
+      .send({ decision: 'decline', via: 'prompt' });
+    expect(decline.status).toBe(200);
+    expect(unlinks()).toHaveLength(2);
+    expect(seen.get(leaver)).toBe('withdrawn');
+    expect(seen.get(decliner)).toBe('declined');
   });
 
   it('"No thanks" on the prompt records declined, sends a PII-free unlink, and only works once', async () => {
@@ -866,7 +972,7 @@ describe.skipIf(skipIntegration)('Network-access fee scope', () => {
       });
     }
 
-    expect(await aggregateNetworkOriginatedPayouts(db, null, new Date())).toBe(40);
+    expect(await aggregateNetworkOriginatedPayouts(db, DEFAULT_TENANT_ID, null, new Date())).toEqual({ USD: 40 });
   });
 });
 

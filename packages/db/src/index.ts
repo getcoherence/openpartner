@@ -30,6 +30,7 @@ export {
   CLICK_ID_MACRO,
   clickDestination,
   clickDestinationProblem,
+  clickDestinationWarning,
   hasClickIdMacro,
 } from './click-destination.js';
 export type { ProgramVideo, VideoProvider } from './program-video.js';
@@ -128,8 +129,12 @@ export const TABLES = {
   HostedFundingTransfer: 'HostedFundingTransfer',
   HostedFundingAuthorization: 'HostedFundingAuthorization',
   HostedBillingState: 'HostedBillingState',
+  TenantStripeConnection: 'TenantStripeConnection',
   StripeWebhookInbox: 'StripeWebhookInbox',
   PayoutReversal: 'PayoutReversal',
   CommissionAdjustment: 'CommissionAdjustment',
   OperatorRecoveryRequest: 'OperatorRecoveryRequest',
+  UsageLedger: 'UsageLedger',
+  HostedFeeTerms: 'HostedFeeTerms',
+  UsageFeeShadow: 'UsageFeeShadow',
 } as const;

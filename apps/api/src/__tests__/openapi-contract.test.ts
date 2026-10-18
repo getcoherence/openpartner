@@ -68,6 +68,7 @@ const TABLES_TO_CLEAN = [
   TABLES.PartnerProgram,
   TABLES.PartnerCommission,
   TABLES.ApiKey,
+  TABLES.ConversionPostbackToken,
   TABLES.Session,
   TABLES.MagicLinkToken,
   TABLES.Program,
@@ -163,7 +164,13 @@ function check<T = Record<string, unknown>>(operationId: string, res: Exchange):
   }
   const codes = op.errors[res.status];
   if (!codes) {
-    throw new Error(`${operationId} returned undocumented status ${res.status}: ${JSON.stringify(res.body)}`);
+    throw new Error(`${operationId} returned undocumented status ${res.status}: ${JSON.stringify(res.body ?? res.text)}`);
+  }
+  if (op.textErrors) {
+    // The code is the whole body (`invalid_parameters` adds `: <names>`).
+    expect(res.type, `${operationId} → ${res.status} content type`).toBe('text/plain');
+    expect(codes, `${operationId} → ${res.status} error code`).toContain(res.text.split(':')[0]);
+    return res.text as T;
   }
   expectShape(ErrorResponse, res.body, `${operationId} → ${res.status}`);
   expect(codes, `${operationId} → ${res.status} error code`).toContain(res.body.error);
@@ -227,7 +234,7 @@ beforeAll(async () => {
   if (skipIntegration) return;
   await db.raw('select 1');
   for (const t of TABLES_TO_CLEAN) await db(t).del();
-  await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID, key: 'network_membership' }).del();
+  await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access']).del();
   savedTenant = await db(TABLES.Tenant)
     .where({ id: DEFAULT_TENANT_ID })
     .first('payoutThresholdCents', 'couponIntegrationVerifiedAt');
@@ -252,7 +259,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (!skipIntegration) {
     for (const t of TABLES_TO_CLEAN) await db(t).del();
-    await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID, key: 'network_membership' }).del();
+    await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access']).del();
     await db(TABLES.Tenant)
       .where({ id: DEFAULT_TENANT_ID })
       .update({
@@ -277,6 +284,15 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     const membership = check<{ autoEnroll: boolean }>('updateNetworkMembership', await admin.post('/config/network', { autoEnroll: false }));
     expect(membership.autoEnroll).toBe(false);
 
+    // Customers created without an invite can't sign in to the hosted portal.
+    check('getPartnerAccessSettings', await admin.get('/config/partner-access'));
+    const access = check<{ uninvitedPortalAccess: boolean }>(
+      'updatePartnerAccessSettings',
+      await admin.post('/config/partner-access', { uninvitedPortalAccess: false }),
+    );
+    expect(access.uninvitedPortalAccess).toBe(false);
+    check('updatePartnerAccessSettings', await admin.post('/config/partner-access', { uninvitedPortalAccess: 'no' }));
+
     const program = check<{ id: string }>(
       'createProgram',
       await admin.post('/programs', {
@@ -293,14 +309,14 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       'createScopedKey',
       await admin.post('/api-keys/scoped', {
         label: 'in-app referral',
-        scopes: ['partners:write', 'partners:read', 'links:write', 'links:read', 'events:write', 'commissions:read', 'payouts:read'],
+        scopes: ['partners:create', 'partners:read', 'links:write', 'links:read', 'events:write', 'commissions:read', 'payouts:read'],
       }),
     );
     const integration = as(scoped.plaintext);
     check('listScopedKeys', await admin.get('/api-keys'));
 
     // --- First visit to the referral page: create the partner + link.
-    const partner = check<{ id: string; activatedAt: string | null; invited: boolean }>(
+    const partner = check<{ id: string; activatedAt: string | null; invited: boolean; portalAccess: boolean }>(
       'createPartner',
       await integration.post('/partners', {
         email: 'customer@example.com',
@@ -312,7 +328,12 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     );
     expect(partner.activatedAt).not.toBeNull();
     expect(partner.invited).toBe(false);
+    expect(partner.portalAccess).toBe(false);
     check('createPartner', await integration.post('/partners', { email: 'customer@example.com', name: 'Again', sendInvite: false }));
+    // partners:create never sends an invite, even by default.
+    const invite = check<{ required?: string }>('createPartner', await integration.post('/partners', { email: 'friend@example.com', name: 'Friend' }));
+    expect(invite.required).toBe('partners:write');
+    check('createPartner', await admin.post('/partners', { email: 'friend@example.com', name: 'Friend', portalAccess: false }));
 
     const found = check<{ partners: Array<{ id: string }> }>('listPartners', await integration.get('/partners?email=customer@example.com'));
     expect(found.partners.map((p) => p.id)).toEqual([partner.id]);
@@ -320,6 +341,11 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     check('listPartners', await integration.get('/partners?cursor=not-a-cursor'));
     check('getPartner', await integration.get(`/partners/${partner.id}`));
     check('invitePartner', await admin.post(`/partners/${partner.id}/invite`));
+    check('updatePartner', await admin.patch(`/partners/${partner.id}`, { portalAccess: true }));
+    const locked = check<{ portalAccess: boolean }>('updatePartner', await admin.patch(`/partners/${partner.id}`, { portalAccess: false }));
+    expect(locked.portalAccess).toBe(false);
+    check('updatePartner', await admin.patch(`/partners/${partner.id}`, { name: 'Renamed' }));
+    check('updatePartner', await admin.patch('/partners/missing', { portalAccess: true }));
 
     const link = check<{ linkKey: string }>(
       'createPartnerLink',
@@ -516,13 +542,62 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       await admin.post('/clicks', { id: loanClick, linkKey: otherLink.linkKey, landingUrl: 'https://app.example.com/signup', fraudFlag: null, ts: new Date().toISOString() }),
     );
     const loan = { clickId: loanClick, type: 'invoice_paid', value: 80, currency: 'USD', externalEventId: 'loan_1' };
-    const converted = check<{ attribution: { status: string } }>('recordConversion', await admin.post('/attribution/conversions', loan));
+    const converted = check<{ eventId: string; attribution: { status: string } }>('recordConversion', await admin.post('/attribution/conversions', loan));
     expect(converted.attribution.status).toBe('attributed');
     const replayedLoan = check<{ replayed?: boolean }>('recordConversion', await admin.post('/attribution/conversions', loan));
     expect(replayedLoan.replayed).toBe(true);
     check('recordConversion', await admin.post('/attribution/conversions', { ...loan, value: 81 }));
     check('recordConversion', await admin.post('/attribution/conversions', { ...loan, clickId: 'nope', externalEventId: 'loan_2' }));
     check('recordConversion', await admin.post('/attribution/conversions', { clickId: loanClick, type: 'signup', externalEventId: 4242, userId: 'borrower_1' }));
+
+    // Refunds of that conversion (a $5 fixed commission on 80.00): part of
+    // it, a replay, the misuses, then a chargeback of the rest.
+    const part = { conversionExternalEventId: 'loan_1', amount: 20, reason: 'partial refund', externalEventId: 'refund_1' };
+    const reduced = check<{ fullRefund: boolean; commissions: Array<{ status: string; keptAmount: string }> }>(
+      'recordRefund',
+      await admin.post('/attribution/refunds', part),
+    );
+    expect(reduced.fullRefund).toBe(false);
+    expect(reduced.commissions.map((c) => [c.status, c.keptAmount])).toEqual([['reduced', '3.75']]);
+    expect(check<{ replayed?: boolean }>('recordRefund', await admin.post('/attribution/refunds', part)).replayed).toBe(true);
+    check('recordRefund', await admin.post('/attribution/refunds', { ...part, amount: 21 }));
+    check('recordRefund', await admin.post('/attribution/refunds', { ...part, amount: 61, externalEventId: 'refund_2' }));
+    check('recordRefund', await admin.post('/attribution/refunds', { conversionExternalEventId: 'nope', externalEventId: 'refund_2' }));
+    check('recordRefund', await admin.post('/attribution/refunds', { conversionExternalEventId: 'loan_1', conversionEventId: converted.eventId, externalEventId: 'refund_2' }));
+    const rest = check<{ fullRefund: boolean; kind: string }>(
+      'recordRefund',
+      await admin.post('/attribution/refunds', { conversionEventId: converted.eventId, kind: 'chargeback', externalEventId: 9001 }),
+    );
+    expect(rest).toMatchObject({ fullRefund: true, kind: 'chargeback' });
+    check('recordRefund', await admin.post('/attribution/refunds', { conversionExternalEventId: 'loan_1', externalEventId: 'refund_3' }));
+    // The same, as a postback URL: token in the query, plain-text answers.
+    check('getConversionPostbackToken', await admin.get('/conversion-postback')); // none yet
+    check('updateConversionPostbackAllowlist', await admin.patch('/conversion-postback', { ipAllowlist: [] })); // 404
+    const minted = check<{ plaintext: string }>(
+      'rotateConversionPostbackToken',
+      await admin.post('/conversion-postback/token', { ipAllowlist: ['203.0.113.0/24'] }),
+    );
+    check('updateConversionPostbackAllowlist', await admin.patch('/conversion-postback', { ipAllowlist: [] }));
+    check('getConversionPostbackToken', await admin.get('/conversion-postback'));
+    const postback = (query: Record<string, string>) => anon.get('/postback').query(query);
+    const pb = { click_id: loanClick, type: 'loan_funded', amount: '120.00', currency: 'USD', txn_id: 'pb_1', token: minted.plaintext };
+    const recorded = await postback(pb);
+    check('conversionPostback', recorded);
+    expect(recorded.text).toBe('ok attributed');
+    check('conversionPostback', await postback(pb)); // replay
+    const pixel = await postback({ ...pb, txn_id: 'pb_2', pixel: '1', amount: '' });
+    check('conversionPostback', pixel);
+    expect(pixel.type).toBe('image/gif');
+    check('conversionPostback', await postback({ ...pb, amount: '121.00' })); // 409
+    check('conversionPostback', await postback({ ...pb, click_id: 'nope', txn_id: 'pb_3' })); // 404
+    check('conversionPostback', await postback({ ...pb, txn_id: '', type: '' })); // 400 invalid_parameters
+    check('conversionPostback', await postback({ ...pb, token: 'opcp_not_a_token' })); // 401
+    const { token: _token, ...noToken } = pb;
+    check('conversionPostback', await postback(noToken)); // 401
+    check('conversionPostback', await postback({ ...pb, token: ADMIN_KEY })); // an API key is no postback token
+    check('listUnmatchedEventTypes', await admin.get('/attribution/unmatched-event-types'));
+    check('revokeConversionPostbackToken', await admin.delete('/conversion-postback/token'));
+    check('revokeConversionPostbackToken', await admin.delete('/conversion-postback/token')); // nothing live
 
     // Revoke / reinstate.
     check('revokePartner', await admin.post(`/partners/${other.id}/revoke`, { notify: false }));
@@ -605,6 +680,15 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
         want(`${name} without a key`, !isDenied(anonymous), anonymous);
         continue;
       }
+      if (op.access.kind === 'postbackToken') {
+        // Only the postback token opens it: no API key does, the admin's included.
+        want(`${name} without a token`, anonymous.status === 401, anonymous);
+        for (const [label, key] of [['the admin key', ADMIN_KEY], ['a scoped key', noneKey], ['a partner key', ownKey]] as const) {
+          const r = await call(op, key, own.id);
+          want(`${name} with ${label} and no token`, r.status === 401, r);
+        }
+        continue;
+      }
       want(`${name} without a key`, anonymous.status === 401, anonymous);
       const noScope = await call(op, noneKey, 'missing');
       want(`${name} with a scoped key lacking its scope`, noScope.status === 403 && noScope.error === (ext.scopes.length ? 'forbidden_scope' : 'forbidden'), noScope);
@@ -659,10 +743,12 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
 
   it('delivers every documented webhook, signed and shaped as documented', async () => {
     // A fresh endpoint (the first was unsubscribed above), then an invited
-    // partner accepting their magic link, for partner.activated.
+    // partner accepting their magic link, for partner.activated, and a
+    // join-page applicant approved automatically, for the join_page shape
+    // of both partner events.
     const hook = check<{ secret: string }>(
       'createWebhookEndpoint',
-      await admin.post('/webhooks', { url: `${receiverBase}/hook/second`, events: ['partner.activated'] }),
+      await admin.post('/webhooks', { url: `${receiverBase}/hook/second`, events: ['partner.created', 'partner.activated'] }),
     );
     secrets['/hook/second'] = hook.secret;
     const id = ulid();
@@ -675,8 +761,28 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       principalId: id,
     });
     expect((await request(app).post('/auth/magic/verify').send({ token: link.plaintext })).status).toBe(200);
+    const joined = await request(app)
+      .post('/partner-signup')
+      .send({
+        email: 'applicant@example.com',
+        name: 'Applicant',
+        application: {
+          websiteUrl: 'https://applicant.example',
+          socialUrls: ['https://instagram.com/applicant'],
+          audienceSize: '1k_10k',
+          pitch: 'I run a weekly newsletter for designers and would feature the product in a deep-dive issue.',
+        },
+      });
+    expect(joined.status).toBe(201);
 
     await waitForEvents(Object.keys(WEBHOOK_PAYLOADS));
+    // Those types already arrived on the first endpoint, so wait for the
+    // join-page deliveries themselves.
+    const deadline = Date.now() + 8000;
+    const joinPage = () =>
+      received.filter((r) => r.path === '/hook/second' && (JSON.parse(r.raw) as { data: { source?: string } }).data.source === 'join_page');
+    while (joinPage().length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    expect(joinPage().map((r) => (JSON.parse(r.raw) as { event: string }).event).sort()).toEqual(['partner.activated', 'partner.created']);
     for (const r of received) {
       const secret = secrets[r.path];
       expect(secret, `delivery to ${r.path}`).toBeDefined();

@@ -91,7 +91,10 @@ export async function getTenantBillingState(db: Knex, tenantId: string): Promise
 }
 
 /** Map a billing plan to the legacy mode enum.
- *  - flex/enterprise → 'flat' (Stripe sub with monthly + metered)
+ *  - flex → 'flat' (Stripe sub with monthly + metered)
+ *  - enterprise → 'flat' too, but it has no Stripe sub; callers that
+ *    bill check `plan === 'enterprise'` first (reportUsageToStripe
+ *    skips it)
  *  - revshare → 'revshare' (metered-only)
  *  - null → fall through to OPENPARTNER_MODE env (selfhost or
  *    legacy hosted tenants from before this column existed) */

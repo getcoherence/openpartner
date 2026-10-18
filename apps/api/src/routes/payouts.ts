@@ -61,13 +61,13 @@ payoutsRouter.post('/payouts/run', requireAuth, requireAdmin, async (req, res) =
  * aggregation count.
  */
 payoutsRouter.post('/payouts/:id/confirm', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const updated = await db<PayoutRow>(TABLES.Payout)
-    .where({ id: req.params.id, method: 'manual', status: 'pending' })
+    .where({ id: req.params.id, tenantId, method: 'manual', status: 'pending' })
     .update({ status: 'paid', completedAt: new Date() })
     .returning('*');
   if (updated.length === 0) {
-    const existing = await db<PayoutRow>(TABLES.Payout).where({ id: req.params.id }).first();
+    const existing = await db<PayoutRow>(TABLES.Payout).where({ id: req.params.id, tenantId }).first();
     if (!existing) return res.status(404).json({ error: 'payout_not_found' });
     return res.status(409).json({
       error: 'not_confirmable',
@@ -88,9 +88,9 @@ payoutsRouter.get(
   grantScope('payouts:read'),
   requirePartnerOrAdmin('id'),
   async (req, res) => {
-    const { db } = tenantOf(req);
+    const { db, tenantId } = tenantOf(req);
     const payouts = await db<PayoutRow>(TABLES.Payout)
-      .where({ partnerId: req.params.id })
+      .where({ tenantId, partnerId: req.params.id })
       .orderBy('createdAt', 'desc')
       .limit(200);
     res.json({ payouts });

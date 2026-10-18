@@ -50,8 +50,21 @@ export const Partner = z
     activatedAt: tsNullable.openapi({ description: 'Null until the partner accepts their invite. `sendInvite: false` sets it at creation.' }),
     revokedAt: tsNullable,
     revokeReason: z.string().nullable(),
+    portalAccess: z.boolean().openapi({
+      description:
+        'May the partner sign in to the partner portal? `false`: `POST /auth/signin` sends them nothing (answering as it does for an unknown email), their sessions end, and no invite or portal email goes to them. For headless programs. Set it on `POST /partners` or `PATCH /partners/{id}`.',
+    }),
   })
   .openapi('Partner');
+
+export const PartnerAccessSettings = z
+  .object({
+    uninvitedPortalAccess: z.boolean().openapi({
+      description:
+        'Portal access for partners added without an invite: `POST /partners` with `sendInvite: false` and no `portalAccess` (except partners the OpenPartner Network provisions), and every `POST /import/partners-csv` row. Default `true`. Turn it off before creating a headless program\'s partners.',
+    }),
+  })
+  .openapi('PartnerAccessSettings');
 
 export const PartnerCreated = Partner.extend({ invited: z.boolean() }).openapi('PartnerCreated');
 
@@ -68,8 +81,13 @@ const commissionSubRule = z.object({
   type: z.enum(['percent', 'fixed']),
   value: z.number(),
   currency: z.string().optional(),
-  recurring: z.boolean().optional(),
-  recurringMonths: z.number().int().optional(),
+  recurring: z.boolean().optional().openapi({
+    description:
+      "Keeps paying on renewals, including renewals past the attribution window that the program's `renewalsStayWithPartner` carries. A rule without it pays only while the click that earned the customer is inside the window.",
+  }),
+  recurringMonths: z.number().int().optional().openapi({
+    description: "Stop paying this many months after the customer's first attributed event of the rule's type for this partner. Omitted: no cap.",
+  }),
   bands: commissionBandsSchema.optional().openapi('CommissionBands', {
     description:
       "Value bands: the rate steps up with the event's value. The sub-rule's own `value` is the base band; `levels` lists the steps above it. `whole` pays the reached band's rate on the whole value, `marginal` pays each slice at its own band's rate.",
@@ -125,8 +143,15 @@ export const Program = z
     tenantId: id,
     name: z.string(),
     commissionRule: CommissionRule,
-    attributionWindowDays: z.number().int(),
+    attributionWindowDays: z.number().int().openapi({
+      description:
+        "How old a click may be and still win a customer's first conversion of an event type. With `renewalsStayWithPartner`, it doesn't limit renewals.",
+    }),
     attributionModel: z.enum(ATTRIBUTION_MODELS),
+    renewalsStayWithPartner: z.boolean().openapi({
+      description:
+        "True (default): a repeat event, meaning a type the customer already has an attributed conversion of (the 2nd, 13th, 40th `invoice_paid`), keeps that first conversion's partners, weights and model whatever the click's age, and a later click from another partner doesn't take it. Past the window only `recurring` sub-rules pay on it, up to `recurringMonths`. False: every event is attributed on its own against the clicks inside the window.",
+    }),
     destinationUrl: z.string().url(),
     deepLinkAllowedDomains: z.string().nullable(),
     holdbackDays: z.number().int().nullable().openapi({
@@ -138,6 +163,10 @@ export const Program = z
     customerReward: orNull(CustomerReward),
     categories: z.array(z.string()),
     partnersMayCustomizeCode: z.boolean(),
+    revenueEventTypes: z.array(z.string()).openapi({
+      description:
+        'Event types that are sales in this program beyond invoice_paid and subscription_created, which always are. Their value counts as partner-attributed revenue for the hosted platform fee.',
+    }),
     shareOnNetwork: z.boolean(),
     marketplaceDescription: z.string().nullable(),
     marketplaceCoverUrl: z.string().nullable(),
@@ -149,6 +178,21 @@ export const Program = z
     createdAt: ts,
   })
   .openapi('Program');
+
+/** Saved anyway, but probably not what the caller meant. */
+export const SaveWarnings = z
+  .array(
+    z.object({
+      field: z.literal('destinationUrl'),
+      message: z.string(),
+    }),
+  )
+  .openapi('SaveWarnings', {
+    description:
+      'Present only when there is something to fix. Today: a Stripe Payment Link (`buy.stripe.com`, `checkout.stripe.com`) without `client_reference_id={click_id}`. Stripe reads the referral only from that parameter, so without it no purchase through the link can be credited to the partner.',
+  });
+
+export const ProgramSaved = Program.extend({ warnings: SaveWarnings.optional() }).openapi('ProgramSaved');
 
 export const ProgramList = z
   .object({
@@ -207,6 +251,8 @@ export const Link = z
       'A partner share link. The public URL is built from the router base, not stored: `https://app.openpartner.dev/r/<tenantSlug>/<linkKey>` on OpenPartner Cloud, `https://<custom-domain>/r/<linkKey>` on a white-label domain, `<router-origin>/r/<linkKey>` self-hosted.',
   });
 
+export const LinkSaved = Link.extend({ warnings: SaveWarnings.optional() }).openapi('LinkSaved');
+
 // ---------- Attribution ----------
 
 export const IdentifyResult = z
@@ -222,10 +268,12 @@ export const IdentifyResult = z
 
 export const Attribution = z
   .object({
-    status: z.enum(['attributed', 'no_identity', 'no_click', 'outside_window', 'already_attributed', 'not_attributed']).openapi({
-      description:
-        '`not_attributed` appears only on a replay of an event that did not attribute the first time; which miss it was is not stored.',
-    }),
+    status: z
+      .enum(['attributed', 'no_identity', 'no_click', 'outside_window', 'already_attributed', 'not_attributed', 'corrective'])
+      .openapi({
+        description:
+          "`outside_window`: no click is inside the window and the customer has no earlier attributed conversion to carry it (or the program has `renewalsStayWithPartner` off). A renewal of an attributed conversion attributes whatever the click's age. `not_attributed` appears only on a replay of an event that did not attribute the first time; which miss it was is not stored. `corrective`: a `refund`, `chargeback`, `dispute_created` or `invoice_payment_failed` event, recorded but never attributed. It reverses nothing; report refunds to `POST /attribution/refunds`.",
+      }),
     model: z.enum(ATTRIBUTION_MODELS).optional(),
     touches: z
       .array(
@@ -238,6 +286,13 @@ export const Attribution = z
         }),
       )
       .optional(),
+    commission: z
+      .enum(['accrued', 'no_matching_rule', 'none'])
+      .optional()
+      .openapi({
+        description:
+          "Present when `status` is `attributed`. `accrued`: at least one commission was written. `no_matching_rule`: no commission rule on the partner's terms takes this event type, so nothing is paid. Usually a typo'd stage name (`funded` for `loan_funded`); such types are listed under `GET /attribution/unmatched-event-types`. `none`: a rule takes the type but nothing accrued (the program has ended, a `first` rule already paid, a cap was reached, or the amount came to zero). On a replay with no commission, checked against the rules as they are now.",
+      }),
   })
   .openapi('AttributionResult');
 
@@ -257,12 +312,88 @@ export const ConversionResult = z
     ok: z.literal(true),
     eventId: id,
     userId: z.string().openapi({ description: "The user the click was stitched to: your `userId`, or the click's own synthetic user when you sent none." }),
+    outcome: z.enum(['attributed', 'no_matching_rule', 'not_attributed']).openapi({
+      description:
+        "What the conversion came to. `attributed`: a partner was credited (check `reason` and `attribution.commission`). `no_matching_rule`: a partner was credited, but no commission rule takes this `type`, so nothing is paid: check the stage name. `not_attributed`: no partner was credited (see `reason`). The conversion is recorded either way, so don't retry it. `GET /postback` answers the same words as text.",
+    }),
+    reason: z.enum(['no_commission', 'outside_window', 'no_click', 'no_identity', 'corrective']).optional().openapi({
+      description:
+        "With `attributed`: `no_commission` when a rule takes the type but nothing accrued. With `not_attributed`: `outside_window` (the click is older than the program's attribution window, or newer than the conversion's `ts`), `no_click` (the partner was revoked), `corrective` (a `refund`, `chargeback`, `dispute_created` or `invoice_payment_failed` type, which is recorded but never attributed; report refunds to `POST /attribution/refunds`). A replay of a miss carries no reason, because which miss it was isn't stored.",
+    }),
     attribution: Attribution,
     replayed: z.literal(true).optional().openapi({
       description: "Present when an earlier call with the same `externalEventId` already recorded this conversion. `eventId` and `attribution` are that call's.",
     }),
   })
   .openapi('ConversionResult');
+
+export const RefundCommission = z
+  .object({
+    commissionId: id.openapi({ description: 'The commission the conversion originally accrued.' }),
+    partnerId: id,
+    currency: z.string(),
+    originalAmount: Decimal,
+    keptAmount: Decimal.openapi({
+      description: "What the partner keeps for this conversion now: the live commission's amount, or a paid one's amount net of adjustments.",
+    }),
+    status: z.enum(['reversed', 'reduced', 'clawback_recorded', 'held_in_transfer', 'unchanged']).openapi({
+      description: [
+        '`reversed`: unpaid, and nothing is kept (a full refund), so it was reversed.',
+        '`reduced`: unpaid; reversed and replaced by `currentCommissionId` for the kept amount (a partial refund).',
+        '`clawback_recorded`: already paid. It stays paid, and a negative adjustment of `clawbackAmount` records the refunded revenue the partner holds. OpenPartner does not net it off later payouts; recover it with the partner.',
+        '`held_in_transfer`: a payout for it is in flight, so nothing changed. Retry this request (same `externalEventId`) once the payout settles.',
+        '`unchanged`: nothing to take back.',
+      ].join(' '),
+    }),
+    currentCommissionId: id.nullable().openapi({ description: 'The live commission row: the original, its replacement, or null once reversed.' }),
+    currentStatus: z.enum(['accrued', 'approved', 'paid']).nullable(),
+    clawbackAmount: orNull(Decimal).openapi({ description: 'Paid commissions only: the refund clawbacks recorded against it, negative. Null when none.' }),
+  })
+  .openapi('RefundCommission');
+
+export const RefundResult = z
+  .object({
+    ok: z.literal(true),
+    refundEventId: id.openapi({ description: 'The corrective event recorded for this refund.' }),
+    conversionEventId: id,
+    kind: z.enum(['refund', 'chargeback']),
+    amount: orNull(Decimal).openapi({ description: "This refund's amount, positive. Null for a refund of a conversion with no value." }),
+    refundedAmount: orNull(Decimal).openapi({ description: 'Everything refunded on this conversion so far, this refund included. Null when the conversion has no value.' }),
+    conversionValue: orNull(Decimal),
+    currency: z.string(),
+    fullRefund: z.boolean().openapi({ description: 'Nothing of the conversion is left.' }),
+    actionRequired: z.boolean().openapi({
+      description: 'Some commission is `held_in_transfer` (retry later) or `clawback_recorded` (the partner was already paid).',
+    }),
+    commissions: z.array(RefundCommission).openapi({ description: 'One entry per commission the conversion accrued; empty when no partner was credited.' }),
+    replayed: z.literal(true).optional().openapi({
+      description:
+        "Present when an earlier call with the same `externalEventId` recorded this refund. Nothing new is recorded; the refund is re-applied, which finishes any commission that was held in transfer, and `commissions` shows where they stand now.",
+    }),
+  })
+  .openapi('RefundResult');
+export const UnmatchedEventTypes = z
+  .object({
+    since: ts,
+    eventTypes: z.array(
+      z.object({
+        type: z.string(),
+        events: z.number().int().openapi({ description: 'Attributed events of this type since `since` that no rule took.' }),
+        lastSeenAt: ts,
+        programs: z.array(z.object({ id, name: z.string() })),
+      }),
+    ),
+  })
+  .openapi('UnmatchedEventTypes');
+
+export const PostbackToken = z
+  .object({
+    prefix: z.string().openapi({ description: 'The start of the token, `opcp_…`, to tell tokens apart. The full token is shown only once.' }),
+    ipAllowlist: z.array(z.string()).openapi({ description: 'IP addresses or CIDR ranges `GET /postback` accepts calls from. Empty: any address.' }),
+    createdAt: ts,
+    lastUsedAt: tsNullable,
+  })
+  .openapi('PostbackToken');
 
 export const ClickIngestResult = z.object({ ok: z.literal(true), id, replayed: z.literal(true).optional() }).openapi('ClickIngestResult');
 
@@ -316,7 +447,7 @@ const CommissionRowShape = z.object({
   payoutId: z.string().nullable(),
   metadata: z.record(z.unknown()).openapi({
     description:
-      "How the amount was worked out, where it took more than the rule's flat value. A banded or tiered rule records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. Empty for a flat rule.",
+      "How the amount was worked out. `rateType` is the sub-rule's `percent` or `fixed` (absent on commissions accrued before October 2026). A banded or tiered rule also records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. A replacement accrued for what a partial refund left records `refund`.",
   }),
 });
 
@@ -385,19 +516,41 @@ export const PayoutRunResult = z
 
 // ---------- Reporting ----------
 
+const amountsByCurrency = z.record(z.string(), z.number()).openapi({
+  description: 'Amount per ISO 4217 currency code. Currencies with nothing are absent; nothing is converted.',
+});
+
+const commissionByStatusAndCurrency = z.record(z.string(), z.record(z.enum(COMMISSION_STATUSES), z.number())).openapi({
+  description: 'Commission totals per currency, then per status. Currencies and statuses with nothing are absent.',
+});
+
 export const PartnerDashboard = z
   .object({
     partnerId: id,
     since: ts,
+    currency: z.string().openapi({
+      description: "The brand's default currency: the currency of `attributedRevenue` and `commissionByStatus`.",
+      example: 'USD',
+    }),
     clicks: z.number().int(),
     attributedEvents: z.number().int(),
-    attributedRevenue: z.number(),
+    attributedRevenue: z.number().openapi({ description: 'Attributed revenue in `currency` only.' }),
+    attributedRevenueByCurrency: amountsByCurrency,
     commissionByStatus: z.record(z.enum(COMMISSION_STATUSES), z.number()).openapi({
       description:
-        'Sum of commission amounts accrued since `since`, keyed by status, across all currencies (no conversion). Statuses with nothing are absent. `paid` includes manual payouts not yet sent: read payouts for money that went out.',
+        'Sum of commission amounts in `currency` accrued since `since`, keyed by status. Statuses with nothing are absent. Commissions in other currencies are in `commissionByCurrency`. `paid` includes manual payouts not yet sent: read payouts for money that went out.',
     }),
+    commissionByCurrency: commissionByStatusAndCurrency,
     links: z
-      .array(z.object({ linkKey: z.string(), clicks: z.number().int(), attributedEvents: z.number().int(), attributedRevenue: z.number() }))
+      .array(
+        z.object({
+          linkKey: z.string(),
+          clicks: z.number().int(),
+          attributedEvents: z.number().int(),
+          attributedRevenue: z.number().openapi({ description: 'In `currency` only.' }),
+          attributedRevenueByCurrency: amountsByCurrency,
+        }),
+      )
       .optional()
       .openapi({ description: 'Only with `includeLinks=true`.' }),
   })
@@ -564,7 +717,14 @@ export const ExportBundle = z
 export const ImportResult = z
   .object({
     ok: z.literal(true),
-    report: z.object({ inserted: z.record(z.number().int()), skipped: z.record(z.number().int()) }),
+    report: z.object({
+      inserted: z.record(z.number().int()),
+      skipped: z.record(z.number().int()),
+      credentials: z.record(z.array(z.record(z.unknown()))).openapi({
+        description:
+          'Fresh credentials for restored rows, per table, shown once. `WebhookEndpoint`: `{ id, url, secret }` for each endpoint restored (paused until you turn it back on).',
+      }),
+    }),
   })
   .openapi('ImportResult');
 

@@ -3,13 +3,13 @@ import type { Knex } from 'knex';
 import { z } from 'zod';
 import { ulid } from 'ulid';
 import { TABLES, type ApiKeyRow, type CommissionSubRule, type PartnerRow, type SessionRow } from '@openpartner/db';
-import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
+import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin, scopedKeyLacks } from '../auth.js';
 import { issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
 import { buildMagicLinkUrl, partnerInviteEmail, partnerRevokedEmail } from '../email-templates.js';
 import { cursorTimestamp, decodeCursor, takePage, whereAfterCursor } from '../pagination.js';
 import { linkTenantOf } from '../portal-url.js';
-import { tenantOf } from '../tenancy.js';
+import { afterCommit, tenantOf } from '../tenancy.js';
 import {
   grantNetworkConsent,
   isNetworkFederationCall,
@@ -18,11 +18,13 @@ import {
 } from '../network-consent.js';
 import { autoMintCouponsForGrants } from './coupons.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
+import { onCommit } from '../on-commit.js';
 import type { WebhookPayload } from '../openapi/webhook-events.js';
 import { commissionSlabFields, currencyCodeSchema, refineCommissionSubRule } from '../commission-rule-schema.js';
 import { vetApprovalSnapshot } from '../commission-slabs.js';
 import { isPendingReview } from '../partner-review.js';
 import { findPartnerCommission, legacyRuleColumns, upsertPartnerCommission } from '../partner-commission.js';
+import { endPortalAccess, readPartnerAccessSettings } from '../partner-portal-access.js';
 
 // Admin-set commission terms for a partner: the body of both override
 // PUTs (partner-wide and program-scoped) and of each POST /partners
@@ -69,6 +71,13 @@ export const createSchema = z.object({
   // Partner row on behalf of an external creator network). Default is
   // "invite them" since that's the intent of the admin UI.
   sendInvite: z.boolean().optional(),
+  /** May the partner sign in to the partner portal? false = no magic
+   *  links, no sessions, no portal email (partner-portal-access.ts), for a
+   *  headless program whose own app is the partner's only view. An invite
+   *  needs it, so `false` requires `sendInvite: false`. Omitted: true for
+   *  an invited partner (and one the OpenPartner Network provisions), the
+   *  tenant's default (`GET /config/partner-access`) for anyone else. */
+  portalAccess: z.boolean().optional(),
   /** Programs (campaigns) this partner can create share-links for.
    *  Omitted = grant access to ALL current campaigns (preserves the
    *  pre-PartnerCampaign behavior). Empty array = grant nothing
@@ -144,26 +153,54 @@ export const createSchema = z.object({
 
 export const partnersRouter = Router();
 
+/** What `partners:create` may not do on POST /partners, which needs
+ *  `partners:write`: send the invite (the default!) or set commission
+ *  terms. That's what makes it safe as an in-app integration's runtime
+ *  key: it can't email anyone, and a leak can't mint a 100% partner. */
+function beyondCreateScope(body: z.infer<typeof createSchema>): string | null {
+  if (body.sendInvite !== false) return 'A partners:create key creates partners without an invite: send "sendInvite": false.';
+  if (body.commissionSnapshot || body.programCommissions) {
+    return 'A partners:create key cannot set commission terms (commissionSnapshot, programCommissions).';
+  }
+  return null;
+}
+
 /**
  * Create a partner and, by default, send them an invite magic link. The
  * partner starts with `activatedAt = null`; when they click the link,
  * verify flips that to now() and issues a session. Admin never sees a
  * partner-facing credential.
+ *
+ * `partners:create` reaches this too, limited by beyondCreateScope.
  */
-partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requireAdmin, async (req, res) => {
+partnersRouter.post('/partners', requireAuth, grantScope('partners:write', 'partners:create'), requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = createSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
+  if (scopedKeyLacks(req, 'partners:write')) {
+    const detail = beyondCreateScope(body.data);
+    if (detail) return res.status(403).json({ error: 'forbidden_scope', required: 'partners:write', detail });
+  }
+
   const sendInvite = body.data.sendInvite !== false;
+  // The invite is a sign-in link, so it can't go to a partner who may not
+  // sign in.
+  if (sendInvite && body.data.portalAccess === false) {
+    return res.status(400).json({ error: 'invite_requires_portal_access' });
+  }
   const email = body.data.email.toLowerCase();
   const id = ulid();
 
   // Duplicate-email pre-check — we'd rather 409 with a clean error than
   // let Postgres throw a unique-constraint violation that would surface
   // to the admin as a generic 500. Race between the check + insert is
-  // caught below via the unique-violation path.
-  const existing = await db<PartnerRow>(TABLES.Partner).where({ email }).first();
+  // caught below via the unique-violation path. Email is unique per tenant.
+  //
+  // Every query here filters on tenantId explicitly rather than leaning on
+  // RLS alone: on a pool that bypasses RLS, these read and granted every
+  // tenant's partners and programs (Oct 2026 verification).
+  const existing = await db<PartnerRow>(TABLES.Partner).where({ email, tenantId }).first();
   if (existing) return res.status(409).json({ error: 'email_taken' });
 
   // Resolve program (campaign) grants before inserting the Partner so a
@@ -180,6 +217,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
     // and surfaces to the caller as an opaque 500. Federation flows
     // need a clean error message back instead.
     const known = (await db(TABLES.Program)
+      .where({ tenantId })
       .whereIn('id', requestedProgramIds)
       .select('id')) as Array<{ id: string }>;
     const knownIds = new Set(known.map((c) => c.id));
@@ -189,7 +227,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
     }
     programIds = requestedProgramIds;
   } else {
-    programIds = ((await db(TABLES.Program).select('id')) as Array<{ id: string }>).map((c) => c.id);
+    programIds = ((await db(TABLES.Program).where({ tenantId }).select('id')) as Array<{ id: string }>).map((c) => c.id);
   }
 
   // Commission terms, also checked before the insert for the same
@@ -216,6 +254,15 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
     termed.add(t.programId);
   }
 
+  // Portal access when the caller didn't say. An invited partner is going
+  // to sign in. So is a creator the Network provisions: they're a Network
+  // member, not a brand's in-app customer. Anyone else created without an
+  // invite gets the tenant's default (partner-portal-access.ts).
+  const fromNetwork = await isNetworkFederationCall(db, tenantId, req.principal, body.data.metadata);
+  const portalAccess =
+    body.data.portalAccess ??
+    (sendInvite || fromNetwork ? true : (await readPartnerAccessSettings(db, tenantId)).uninvitedPortalAccess);
+
   let partner;
   try {
     [partner] = await db<PartnerRow>(TABLES.Partner)
@@ -228,6 +275,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
         // sendInvite=false means the caller is responsible for activating
         // (federation client, admin seeding, etc); skip the pending state.
         activatedAt: sendInvite ? null : new Date(),
+        portalAccess,
       })
       .returning('*');
   } catch (err) {
@@ -347,11 +395,11 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
   // headless program's partners may never see it. Only a partner the
   // Network itself provisioned (its approve federation, on the brand's
   // registered federation key) is already a member, so it counts as
-  // consented and syncs back. Fire-and-forget: a Network outage queues
-  // the push in NetworkOutbox.
-  if (await isNetworkFederationCall(db, tenantId, req.principal, body.data.metadata)) {
+  // consented and syncs back — once this request has committed. A Network
+  // outage queues the push in NetworkOutbox.
+  if (fromNetwork) {
     await grantNetworkConsent(db, tenantId, id, 'network_offering');
-    await syncPartnerToNetwork(db, tenantId, partner as PartnerRow);
+    afterCommit(req, 'network federation push', (trx) => syncPartnerToNetwork(trx, tenantId, partner as PartnerRow));
   }
 
   // Webhook fan-out. partner.created always; partnership.approved
@@ -359,24 +407,46 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
   // (metadata.source === 'openpartner_network' set by the Network's
   // approve flow). Subscribers like Zapier / ActivePieces use these
   // to drive Slack notifications, CRM contact creation, welcome
-  // sequences, etc. Async — failures don't block the response.
+  // sequences, etc. Async — failures don't block the response. After
+  // COMMIT: a receiver may fetch the partner straight away, and a
+  // rolled-back request must announce nothing (on-commit.ts).
   const partnerRow = partner as PartnerRow;
-  dispatchEvent(tenantId, 'partner.created', {
+  const createdPayload = {
     partnerId: id,
     email,
     name: body.data.name,
     activatedAt: partnerRow.activatedAt ? partnerRow.activatedAt.toISOString() : null,
     invited: sendInvite,
+    portalAccess,
     programIds,
-  } satisfies WebhookPayload<'partner.created'>);
+    source: 'api',
+  } satisfies WebhookPayload<'partner.created'>;
+  onCommit(db, 'partner.created webhook', () => dispatchEvent(tenantId, 'partner.created', createdPayload));
+  // A partner created without an invite is active now, so this is their
+  // activation; an invited partner's comes from magic-link verify when
+  // they accept. Either way it fires once. Subscribers that greet new
+  // partners can tell the two apart by `invited`. After COMMIT, like
+  // partner.created.
+  if (partnerRow.activatedAt) {
+    const activatedPayload = {
+      partnerId: id,
+      email,
+      name: body.data.name,
+      activatedAt: partnerRow.activatedAt.toISOString(),
+      invited: false,
+      source: 'api',
+    } satisfies WebhookPayload<'partner.activated'>;
+    onCommit(db, 'partner.activated webhook', () => dispatchEvent(tenantId, 'partner.activated', activatedPayload));
+  }
   if ((body.data.metadata as Record<string, unknown> | undefined)?.source === 'openpartner_network') {
-    dispatchEvent(tenantId, 'partnership.approved', {
+    const approvedPayload = {
       partnerId: id,
       email,
       name: body.data.name,
       networkCreatorId: (body.data.metadata as Record<string, unknown>).networkCreatorId,
       programIds,
-    } satisfies WebhookPayload<'partnership.approved'>);
+    } satisfies WebhookPayload<'partnership.approved'>;
+    onCommit(db, 'partnership.approved webhook', () => dispatchEvent(tenantId, 'partnership.approved', approvedPayload));
   }
 
   res.status(201).json({ ...partner, invited: sendInvite });
@@ -394,9 +464,13 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write'), requ
  */
 partnersRouter.post('/partners/:id/invite', requireAuth, grantScope('partners:write'), requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });
   if (partner.activatedAt) return res.status(409).json({ error: 'already_activated' });
+  // The invite is a sign-in link: turn portal access on first
+  // (PATCH /partners/:id). Checked before the approval below, so a refused
+  // call approves nobody.
+  if (!partner.portalAccess) return res.status(409).json({ error: 'portal_access_disabled' });
 
   const approved = isPendingReview(partner);
   if (approved) {
@@ -444,24 +518,28 @@ partnersRouter.post('/partners/:id/invite', requireAuth, grantScope('partners:wr
 
 export const revokeSchema = z.object({
   reason: z.string().max(500).optional(),
-  // Default true: industry-standard partner-program norm is to notify.
-  // Admin unchecks for fraud cases where tipping the partner off is
-  // counterproductive.
-  notify: z.boolean().optional().default(true),
+  // Default: notify a partner who has portal access (the industry-standard
+  // partner-program norm); admin unchecks for fraud cases where tipping
+  // the partner off is counterproductive. A partner without portal access
+  // is a headless program's customer who has never heard from OpenPartner,
+  // so a suspension email from us would come out of nowhere: they're only
+  // told when the caller asks for it.
+  notify: z.boolean().optional(),
 });
 
 /**
  * Suspend a partner. Flips revokedAt, revokes all of their sessions so
  * they're kicked out mid-request, leaves historical commissions
  * untouched. Future attribution skips them; router flags clicks on their
- * links as 'revoked'. Sends a notification email unless notify=false.
+ * links as 'revoked'. Sends a notification email unless notify=false (or,
+ * for a partner without portal access, unless notify=true).
  */
 partnersRouter.post('/partners/:id/revoke', requireAuth, grantScope('partners:write'), requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = revokeSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });
   if (partner.revokedAt) return res.status(409).json({ error: 'already_revoked' });
 
@@ -494,7 +572,7 @@ partnersRouter.post('/partners/:id/revoke', requireAuth, grantScope('partners:wr
   // admin if they care.
   let notified = false;
   let notifyError: string | null = null;
-  if (body.data.notify) {
+  if (body.data.notify ?? partner.portalAccess) {
     try {
       const tmpl = partnerRevokedEmail(partner.name, reason);
       await getMailer().send({ db, tenantId }, {
@@ -516,16 +594,16 @@ partnersRouter.post('/partners/:id/revoke', requireAuth, grantScope('partners:wr
   // consented. Not gated on the brand offering the Network: a creator the
   // Network thinks is active shouldn't keep getting matched after the
   // vendor cuts them off. A partner who never opted in is never sent,
-  // revoke included.
-  await syncPartnerRevokeToNetwork(db, tenantId, partner);
+  // revoke included. Sent once the revoke has committed.
+  afterCommit(req, 'network revoke push', (trx) => syncPartnerRevokeToNetwork(trx, tenantId, partner));
 
   res.json({ ok: true, revokedAt: now, notified, notifyError });
 });
 
 /** Undo revoke — partner regains dashboard access and future attribution. */
 partnersRouter.post('/partners/:id/reinstate', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const { db, tenantId } = tenantOf(req);
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });
   if (!partner.revokedAt) return res.status(409).json({ error: 'not_revoked' });
 
@@ -567,8 +645,11 @@ function containsPattern(term: string): string {
 partnersRouter.get('/partners', requireAuth, grantScope('partners:read'), requireAdmin, async (req, res) => {
   const q = listQuerySchema.safeParse(req.query);
   if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
+  // tenantId spelled out, not left to RLS: the policy's platform-admin OR
+  // keeps Postgres off the (tenantId, email) index otherwise.
   const query = db<PartnerRow>(TABLES.Partner)
+    .where({ tenantId })
     .select('*', cursorTimestamp(db, 'createdAt'))
     .orderBy([
       { column: 'createdAt', order: 'desc' },
@@ -595,10 +676,43 @@ partnersRouter.get('/partners', requireAuth, grantScope('partners:read'), requir
 // scoped integration key — it just saves a headless integration paging
 // the list to look one partner up.
 partnersRouter.get('/partners/:id', requireAuth, grantScope('partners:read'), requirePartnerOrAdmin('id'), async (req, res) => {
-  const { db } = tenantOf(req);
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const { db, tenantId } = tenantOf(req);
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });
   res.json(partner);
+});
+
+/** Fields an admin can change on an existing partner. Strict, so a field
+ *  that isn't editable here is a 400 rather than silently ignored. */
+export const updateSchema = z
+  .object({
+    /** See createSchema.portalAccess. Turning it off ends the partner's
+     *  sessions and unused sign-in links at once; turning it on sends
+     *  nothing (an active partner can then request a link at sign-in, a
+     *  pending one needs POST /partners/:id/invite). */
+    portalAccess: z.boolean().optional(),
+  })
+  .strict();
+
+partnersRouter.patch('/partners/:id', requireAuth, grantScope('partners:write'), requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = updateSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  if (!partner) return res.status(404).json({ error: 'not_found' });
+
+  let updated = partner;
+  if (body.data.portalAccess !== undefined && body.data.portalAccess !== partner.portalAccess) {
+    const rows = (await db<PartnerRow>(TABLES.Partner)
+      .where({ id: partner.id })
+      .update({ portalAccess: body.data.portalAccess, updatedAt: new Date() })
+      .returning('*')) as PartnerRow[];
+    updated = rows[0] ?? partner;
+  }
+  // Also when it was already off: whatever slipped in since (a link sent
+  // a moment before, a session from a direct DB edit) ends here too.
+  if (body.data.portalAccess === false) await endPortalAccess(db, tenantId, partner.id);
+  res.json(updated);
 });
 
 // Per-partner commission snapshot: the PARTNER-WIDE PartnerCommission row
@@ -644,7 +758,7 @@ partnersRouter.put('/partners/:id/commission-snapshot', requireAuth, requireAdmi
   const { db, tenantId } = tenantOf(req);
   const body = overrideSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
   await writeCommissionOverride(db, tenantId, partner.id, null, body.data);
   res.json({ snapshot: await findPartnerCommission(db, partner.id, null) });
@@ -655,8 +769,8 @@ partnersRouter.put('/partners/:id/commission-snapshot', requireAuth, requireAdmi
 // the live Campaign rule again (program-scoped rows are left alone).
 // Useful for unwinding a VIP rate when a partnership downgrades.
 partnersRouter.delete('/partners/:id/commission-snapshot', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const { db, tenantId } = tenantOf(req);
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
   await db(TABLES.PartnerCommission).where({ partnerId: partner.id }).whereNull('programId').del();
   res.json({ ok: true });
@@ -684,9 +798,9 @@ partnersRouter.put('/partners/:id/programs/:programId/commission', requireAuth, 
   const { db, tenantId } = tenantOf(req);
   const body = overrideSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
-  const program = await db(TABLES.Program).where({ id: req.params.programId }).first('id');
+  const program = await db(TABLES.Program).where({ id: req.params.programId, tenantId }).first('id');
   if (!program) return res.status(404).json({ error: 'program_not_found' });
   await writeCommissionOverride(db, tenantId, partner.id, program.id as string, body.data);
   res.json({ snapshot: await findPartnerCommission(db, partner.id, program.id as string) });
@@ -695,8 +809,8 @@ partnersRouter.put('/partners/:id/programs/:programId/commission', requireAuth, 
 // Clears the program-scoped row only. Commissions on the program then
 // fall back to the partner-wide snapshot, or the program rule.
 partnersRouter.delete('/partners/:id/programs/:programId/commission', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const { db, tenantId } = tenantOf(req);
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
   await db(TABLES.PartnerCommission).where({ partnerId: partner.id, programId: req.params.programId }).del();
   res.json({ ok: true });

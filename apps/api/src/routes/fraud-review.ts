@@ -36,7 +36,7 @@ const listQuerySchema = z.object({
 });
 
 fraudReviewRouter.get('/admin/clicks/flagged', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const q = listQuerySchema.safeParse(req.query);
   if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
   const limit = q.data.limit ?? 100;
@@ -44,6 +44,7 @@ fraudReviewRouter.get('/admin/clicks/flagged', requireAuth, requireAdmin, async 
   const query = db(TABLES.Click)
     .leftJoin(TABLES.Link, `${TABLES.Link}.id`, `${TABLES.Click}.linkId`)
     .leftJoin(TABLES.Partner, `${TABLES.Partner}.id`, `${TABLES.Click}.partnerId`)
+    .where(`${TABLES.Click}.tenantId`, tenantId)
     .whereNotNull(`${TABLES.Click}.fraudFlag`)
     .orderBy(`${TABLES.Click}.ts`, 'desc')
     .limit(limit)
@@ -68,18 +69,18 @@ fraudReviewRouter.get('/admin/clicks/flagged', requireAuth, requireAdmin, async 
 });
 
 fraudReviewRouter.post('/clicks/:id/unflag', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const clickId = req.params.id!;
-  const click = await db<ClickRow>(TABLES.Click).where({ id: clickId }).first();
+  const click = await db<ClickRow>(TABLES.Click).where({ id: clickId, tenantId }).first();
   if (!click) return res.status(404).json({ error: 'click_not_found' });
   if (!click.fraudFlag) return res.status(409).json({ error: 'not_flagged' });
 
-  const identities = await db<IdentityRow>(TABLES.Identity).where({ clickId });
+  const identities = await db<IdentityRow>(TABLES.Identity).where({ clickId, tenantId });
   let reattributed = 0;
 
   // The request is already in a transaction (per-request via tenantMiddleware).
   // No nested transaction needed — operate on req.db directly.
-  await db<ClickRow>(TABLES.Click).where({ id: clickId }).update({ fraudFlag: null });
+  await db<ClickRow>(TABLES.Click).where({ id: clickId, tenantId }).update({ fraudFlag: null });
 
   // Re-run attribution for any user that stitched to this click. If we
   // just called the backlog helper directly, events already attributed
@@ -91,9 +92,13 @@ fraudReviewRouter.post('/clicks/:id/unflag', requireAuth, requireAdmin, async (r
   // accrued commissions, so the backlog recomputes clean. We leave
   // approved / paid commissions alone — you don't retroactively
   // rewrite the ledger.
+  //
+  // userId is unique per tenant only, so the event lookup names the
+  // tenant: without it, a pool that bypasses RLS deleted another brand's
+  // accrued commissions for a user with the same ID.
   for (const identity of identities) {
     const eventIds = (
-      await db(TABLES.Event).where({ userId: identity.userId }).select('id')
+      await db(TABLES.Event).where({ tenantId, userId: identity.userId }).select('id')
     ).map((r) => (r as { id: string }).id);
     if (eventIds.length === 0) continue;
 
@@ -117,7 +122,7 @@ fraudReviewRouter.post('/clicks/:id/unflag', requireAuth, requireAdmin, async (r
       await db(TABLES.Attribution).whereIn('id', attributionsToDelete).del();
     }
 
-    const n = await attributeBacklogForUser(db, identity.userId);
+    const n = await attributeBacklogForUser(db, tenantId, identity.userId);
     reattributed += n;
   }
 
@@ -125,12 +130,12 @@ fraudReviewRouter.post('/clicks/:id/unflag', requireAuth, requireAdmin, async (r
 });
 
 fraudReviewRouter.post('/clicks/:id/flag', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const clickId = req.params.id!;
-  const click = await db<ClickRow>(TABLES.Click).where({ id: clickId }).first();
+  const click = await db<ClickRow>(TABLES.Click).where({ id: clickId, tenantId }).first();
   if (!click) return res.status(404).json({ error: 'click_not_found' });
   if (click.fraudFlag) return res.status(409).json({ error: 'already_flagged', flag: click.fraudFlag });
 
-  await db<ClickRow>(TABLES.Click).where({ id: clickId }).update({ fraudFlag: 'manual' });
+  await db<ClickRow>(TABLES.Click).where({ id: clickId, tenantId }).update({ fraudFlag: 'manual' });
   res.json({ ok: true, clickId });
 });

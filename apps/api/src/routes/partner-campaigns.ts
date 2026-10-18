@@ -39,21 +39,22 @@ import { PARTNER_COMMISSION_COLUMNS } from '../partner-commission.js';
 export const partnerCampaignsRouter = Router();
 
 partnerCampaignsRouter.get('/partners/:id/programs', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const { db, tenantId } = tenantOf(req);
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
 
   const campaigns = (await db<ProgramRow>(TABLES.Program)
+    .where({ tenantId })
     .select('id', 'name', 'destinationUrl', 'deepLinkAllowedDomains', 'commissionRule', 'holdbackDays')
     .orderBy('createdAt', 'desc')) as Array<
     Pick<ProgramRow, 'id' | 'name' | 'destinationUrl' | 'deepLinkAllowedDomains' | 'commissionRule' | 'holdbackDays'>
   >;
   const grants = (await db<PartnerProgramRow>(TABLES.PartnerProgram)
-    .where({ partnerId: req.params.id })
+    .where({ tenantId, partnerId: req.params.id })
     .select('programId', 'source', 'createdAt')) as Array<Pick<PartnerProgramRow, 'programId' | 'source' | 'createdAt'>>;
   const grantByCampaign = new Map(grants.map((g) => [g.programId, g]));
   const scoped = await db(TABLES.PartnerCommission)
-    .where({ partnerId: req.params.id })
+    .where({ tenantId, partnerId: req.params.id })
     .whereNotNull('programId')
     .select(...PARTNER_COMMISSION_COLUMNS);
   const commissionByProgram = new Map(scoped.map((pc) => [pc.programId as string, pc]));
@@ -79,7 +80,7 @@ export const addSchema = z.object({
 
 partnerCampaignsRouter.post('/partners/:id/programs', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
-  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
+  const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
   if (!partner) return res.status(404).json({ error: 'partner_not_found' });
   const body = addSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
@@ -87,6 +88,7 @@ partnerCampaignsRouter.post('/partners/:id/programs', requireAuth, requireAdmin,
   // Filter to programIds that actually exist in the tenant — otherwise
   // a typo would create an orphan grant.
   const valid = (await db<ProgramRow>(TABLES.Program)
+    .where({ tenantId })
     .whereIn('id', body.data.programIds)
     .select('id')) as Array<{ id: string }>;
   const validIds = new Set(valid.map((c) => c.id));
@@ -117,9 +119,9 @@ partnerCampaignsRouter.post('/partners/:id/programs', requireAuth, requireAdmin,
 });
 
 partnerCampaignsRouter.delete('/partners/:id/programs/:programId', requireAuth, requireAdmin, async (req, res) => {
-  const { db } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const deleted = await db(TABLES.PartnerProgram)
-    .where({ partnerId: req.params.id, programId: req.params.programId })
+    .where({ tenantId, partnerId: req.params.id, programId: req.params.programId })
     .del();
   if (deleted === 0) return res.status(404).json({ error: 'grant_not_found' });
 
@@ -127,14 +129,15 @@ partnerCampaignsRouter.delete('/partners/:id/programs/:programId', requireAuth, 
   // does: Stripe PromotionCode first (best-effort, never throws), then
   // our own flag, which is what redemption checks.
   const coupons = await db<CouponRow>(TABLES.Coupon)
-    .where({ partnerId: req.params.id, programId: req.params.programId })
+    .where({ tenantId, partnerId: req.params.id, programId: req.params.programId })
     .whereNull('deactivatedAt')
     .select('id', 'code', 'stripePromotionCodeId');
   for (const c of coupons) {
-    if (c.stripePromotionCodeId) await deactivateCustomerReward(c.stripePromotionCodeId);
+    if (c.stripePromotionCodeId) await deactivateCustomerReward(tenantId, c.stripePromotionCodeId);
   }
   if (coupons.length > 0) {
     await db<CouponRow>(TABLES.Coupon)
+      .where({ tenantId })
       .whereIn('id', coupons.map((c) => c.id))
       .update({ deactivatedAt: new Date() });
   }

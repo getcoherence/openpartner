@@ -93,12 +93,17 @@ Migrations continue running as the privileged role with
 - `db` — privileged pool, `DATABASE_URL`. For migrations, signup,
   platform-admin tooling, jobs that legitimately need cross-tenant access.
 - `appDb` — app pool, `DATABASE_URL_APP` (falls back to `DATABASE_URL`
-  for self-host without role separation). Connection of choice for
-  request handlers via `req.db`.
+  for single-tenant self-host without role separation). Connection of
+  choice for request handlers via `req.db`.
 
-If `DATABASE_URL_APP` is unset, RLS is bypassed (the app runs as the
-migration role) but app-level filtering still applies. Self-hosters
-opt into RLS by setting both env vars.
+If `DATABASE_URL_APP` is unset, the app runs as the migration role and RLS
+is bypassed. That is fine single-tenant and NOT fine multi-tenant. App-level
+`tenantId` filtering is defence in depth, not a complete second boundary:
+an Oct 2026 run without the app role leaked partners, program grants and
+billed GMV across tenants. So `server.ts` refuses to start a multi-tenant
+API whose app pool is a superuser, has BYPASSRLS, or owns RLS tables it
+isn't forced onto (`tenant-isolation-guard.ts`). Single-tenant self-hosters
+may still opt into RLS by setting both env vars.
 
 ### Per-request transaction
 

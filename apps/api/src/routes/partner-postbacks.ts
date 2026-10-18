@@ -22,6 +22,7 @@ import {
 import { requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { isPostbackEvent, postbackEventsList } from '../partner-postback.js';
+import { checkOutboundDestination } from '../outbound-guard.js';
 
 const URL_MAX = 2048;
 
@@ -48,9 +49,9 @@ partnerPostbacksRouter.get(
   requireAuth,
   requirePartnerOrAdmin('id'),
   async (req, res) => {
-    const { db } = tenantOf(req);
+    const { db, tenantId } = tenantOf(req);
     const rows = await db<PartnerPostbackRow>(TABLES.PartnerPostback)
-      .where({ partnerId: req.params.id })
+      .where({ tenantId, partnerId: req.params.id })
       .orderBy('createdAt', 'desc');
     res.json({ postbacks: rows, supportedEvents: postbackEventsList() });
   },
@@ -65,8 +66,12 @@ partnerPostbacksRouter.post(
     const body = createSchema.safeParse(req.body);
     if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
-    const partner = await db(TABLES.Partner).where({ id: req.params.id }).first();
+    const partner = await db(TABLES.Partner).where({ id: req.params.id, tenantId }).first();
     if (!partner) return res.status(404).json({ error: 'partner_not_found' });
+    // Same check every fire runs (partner trust: never the private-CIDR
+    // escape hatch), so a URL no fire could reach is refused up front.
+    const refused = await checkOutboundDestination(body.data.url, 'partner');
+    if (refused) return res.status(400).json({ error: 'destination_not_allowed', ...refused });
 
     const id = ulid();
     const [row] = await db<PartnerPostbackRow>(TABLES.PartnerPostback)
@@ -88,9 +93,14 @@ partnerPostbacksRouter.patch(
   requireAuth,
   requirePartnerOrAdmin('id'),
   async (req, res) => {
-    const { db } = tenantOf(req);
+    const { db, tenantId } = tenantOf(req);
     const body = updateSchema.safeParse(req.body);
     if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+    if (body.data.url !== undefined) {
+      const refused = await checkOutboundDestination(body.data.url, 'partner');
+      if (refused) return res.status(400).json({ error: 'destination_not_allowed', ...refused });
+    }
 
     const patch: Partial<PartnerPostbackRow> = { updatedAt: new Date() };
     if (body.data.url !== undefined) patch.url = body.data.url;
@@ -100,7 +110,7 @@ partnerPostbacksRouter.patch(
     if (body.data.enabled !== undefined) patch.enabled = body.data.enabled;
 
     const updated = await db<PartnerPostbackRow>(TABLES.PartnerPostback)
-      .where({ id: req.params.postbackId, partnerId: req.params.id })
+      .where({ id: req.params.postbackId, tenantId, partnerId: req.params.id })
       .update(patch)
       .returning('*');
     if (updated.length === 0) return res.status(404).json({ error: 'postback_not_found' });
@@ -113,9 +123,9 @@ partnerPostbacksRouter.delete(
   requireAuth,
   requirePartnerOrAdmin('id'),
   async (req, res) => {
-    const { db } = tenantOf(req);
+    const { db, tenantId } = tenantOf(req);
     const deleted = await db(TABLES.PartnerPostback)
-      .where({ id: req.params.postbackId, partnerId: req.params.id })
+      .where({ id: req.params.postbackId, tenantId, partnerId: req.params.id })
       .del();
     if (deleted === 0) return res.status(404).json({ error: 'postback_not_found' });
     res.status(204).send();

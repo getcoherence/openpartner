@@ -118,6 +118,8 @@ function postWebhook(eventPayload: object) {
 }
 
 const TABLES_TO_CLEAN = [
+  // Before Commission — a refund of a paid commission records a clawback.
+  TABLES.CommissionAdjustment,
   TABLES.Commission,
   TABLES.Attribution,
   TABLES.Event,
@@ -1393,6 +1395,7 @@ describe.skipIf(skipIntegration)('stripe webhook — refund + reversal flow', ()
         eventType: 'invoice_paid',
         programId: attribution.programId,
         reason: 'refund',
+        refundEventId: expect.any(String),
       });
     }
     // Stripe redelivering the same event reverses nothing new and must
@@ -1492,8 +1495,18 @@ describe.skipIf(skipIntegration)('stripe webhook — refund + reversal flow', ()
 
     // The refund Event's metadata flags the count for admin attention.
     const refundEvent = await db(TABLES.Event).where({ type: 'refund' }).first();
-    expect((refundEvent!.metadata as { alreadyPaidCommissions?: number }).alreadyPaidCommissions)
-      .toBe(stillPaid.length);
+    expect(refundEvent!.metadata).toMatchObject({
+      alreadyPaidCommissions: stillPaid.length,
+      clawbackCommissions: stillPaid.length,
+    });
+    // Each paid commission carries a clawback for all of it, naming the refund.
+    const adjustments = await db(TABLES.CommissionAdjustment).orderBy('commissionId');
+    expect(adjustments.map((a) => [a.commissionId, a.amount, a.reason])).toEqual(
+      [...stillPaid]
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map((c) => [c.id, (-Number(c.amount)).toFixed(2), 'refund_clawback']),
+    );
+    expect(adjustments.every((a) => (a.metadata as { refundEventId?: string }).refundEventId === refundEvent!.id)).toBe(true);
   });
 
   it('charge.refunded does not run attribution on the corrective Event', async () => {
@@ -1532,8 +1545,8 @@ describe.skipIf(skipIntegration)('stripe webhook — refund + reversal flow', ()
   });
 });
 
-describe.skipIf(skipIntegration)('stripe webhook — partial refund stopgap', () => {
-  it('a PARTIAL charge.refunded does not reverse commissions (records + flags instead)', async () => {
+describe.skipIf(skipIntegration)('stripe webhook — partial refunds', () => {
+  it('a PARTIAL charge.refunded reduces commissions to the share the customer kept, cumulatively', async () => {
     const { clickId } = await seedClick();
     const customerId = `cus_${ulid()}`;
     const stripeInvoiceId = `in_${ulid()}`;
@@ -1570,44 +1583,78 @@ describe.skipIf(skipIntegration)('stripe webhook — partial refund stopgap', ()
     });
 
     const invoicePaidEvent = await db(TABLES.Event).where({ type: 'invoice_paid' }).first();
-    const invoiceAttributions = await db(TABLES.Attribution).where({ eventId: invoicePaidEvent!.id });
-    const accruedBefore = await db(TABLES.Commission)
-      .whereIn('attributionId', invoiceAttributions.map((a) => a.id))
-      .where({ status: 'accrued' });
-    expect(accruedBefore.length).toBeGreaterThan(0);
+    const attributionIds = (await db(TABLES.Attribution).where({ eventId: invoicePaidEvent!.id })).map((a) => a.id);
+    const [original, ...others] = await db(TABLES.Commission).whereIn('attributionId', attributionIds);
+    expect(others).toHaveLength(0);
+    expect(original).toMatchObject({ status: 'accrued', amount: '20.00' });
 
-    // $1 refund on a $100 charge — partial.
-    const res = await postWebhook({
-      id: `evt_${ulid()}`,
-      type: 'charge.refunded',
-      created: Math.floor(Date.now() / 1000),
-      data: {
-        object: {
-          id: stripeChargeId,
-          customer: { id: customerId, metadata: {}, object: 'customer' },
-          invoice: stripeInvoiceId,
-          amount: 10000,
-          amount_refunded: 100,
-          currency: 'usd',
+    const refundCharge = (amountRefunded: number) =>
+      postWebhook({
+        id: `evt_${ulid()}`,
+        type: 'charge.refunded',
+        created: Math.floor(Date.now() / 1000),
+        data: {
+          object: {
+            id: stripeChargeId,
+            customer: { id: customerId, metadata: {}, object: 'customer' },
+            invoice: stripeInvoiceId,
+            amount: 10000,
+            amount_refunded: amountRefunded,
+            currency: 'usd',
+          },
         },
-      },
-    });
+      });
 
+    // $1 of a $100 charge: the partner keeps 99%.
+    const res = await refundCharge(100);
     expect(res.status).toBe(200);
     expect(res.body.corrective).toBe('refund');
 
-    // Commissions untouched — a partial refund must NOT reverse 100%.
-    const after = await db(TABLES.Commission)
-      .whereIn('attributionId', invoiceAttributions.map((a) => a.id));
-    expect(after.every((c) => c.status === 'accrued')).toBe(true);
-    await new Promise((r) => setTimeout(r, 50));
-    expect(dispatched('commission.reversed')).toHaveLength(0);
+    const firstRefund = await db(TABLES.Event).where({ type: 'refund' }).first();
+    expect(firstRefund!.metadata).toMatchObject({ fullRefund: false, reversedCommissions: 0, reducedCommissions: 1 });
+    expect(firstRefund!.metadata).not.toHaveProperty('partialRefundReversalSkipped');
 
-    const refundEvent = await db(TABLES.Event).where({ type: 'refund' }).first();
-    const md = refundEvent!.metadata as { reversedCommissions?: number; partialRefundReversalSkipped?: boolean; fullRefund?: boolean };
-    expect(md.reversedCommissions).toBe(0);
-    expect(md.partialRefundReversalSkipped).toBe(true);
-    expect(md.fullRefund).toBe(false);
+    // The original is reversed, never rewritten, and a replacement for the
+    // kept amount takes its place with the same status and accrual time.
+    const afterFirst = await db(TABLES.Commission).whereIn('attributionId', attributionIds).orderBy('id');
+    expect(afterFirst.map((c) => [c.id === original!.id, c.status, c.amount])).toEqual([
+      [true, 'reversed', '20.00'],
+      [false, 'accrued', '19.80'],
+    ]);
+    const replacement = afterFirst[1]!;
+    expect(new Date(replacement.accruedAt).getTime()).toBe(new Date(original!.accruedAt).getTime());
+    expect((replacement.metadata as { refund?: unknown }).refund).toEqual({
+      rootCommissionId: original!.id,
+      replacesCommissionId: original!.id,
+      refundEventId: firstRefund!.id,
+    });
+    await vi.waitFor(() => expect(dispatched('commission.accrued')).toHaveLength(2));
+    expect(dispatched('commission.reversed')).toEqual([
+      expect.objectContaining({
+        commissionId: original!.id,
+        reason: 'refund',
+        refundEventId: firstRefund!.id,
+        replacementCommissionId: replacement.id,
+      }),
+    ]);
+    expect(dispatched('commission.accrued')[1]).toMatchObject({
+      commissionId: replacement.id,
+      amount: '19.80',
+      eventId: invoicePaidEvent!.id,
+      replacesCommissionId: original!.id,
+    });
+
+    // Stripe reports amount_refunded cumulatively: $50 in all leaves 50% of
+    // the ORIGINAL, not 50% of what the first refund left.
+    await refundCharge(5000);
+    const live = await db(TABLES.Commission).whereIn('attributionId', attributionIds).whereNot({ status: 'reversed' });
+    expect(live.map((c) => c.amount)).toEqual(['10.00']);
+
+    // The rest of the charge: a full refund reverses the live replacement.
+    await refundCharge(10000);
+    const final = await db(TABLES.Commission).whereIn('attributionId', attributionIds);
+    expect(final).toHaveLength(3);
+    expect(final.every((c) => c.status === 'reversed')).toBe(true);
   });
 
   it('fully refunding a partially-CAPTURED charge reverses commissions (measured vs amount_captured)', async () => {
@@ -2876,7 +2923,7 @@ describe.skipIf(skipIntegration)('stripe webhook — one-time (mode=payment) Che
     );
   });
 
-  it('a partial refund of a one-time purchase reverses nothing and is flagged', async () => {
+  it('a partial refund of a one-time purchase keeps the share the customer kept', async () => {
     const { clickId } = await seedClick();
     const customerId = `cus_${ulid()}`;
     const session = paymentSession({ client_reference_id: clickId, customer: customerId });
@@ -2899,9 +2946,13 @@ describe.skipIf(skipIntegration)('stripe webhook — one-time (mode=payment) Che
       },
     });
 
-    expect((await db(TABLES.Commission)).map((c) => c.status)).toEqual(['accrued']);
+    // 20% of 129.00 is 25.80; the customer kept 100 of 129.
+    expect((await db(TABLES.Commission).orderBy('id')).map((c) => [c.status, c.amount])).toEqual([
+      ['reversed', '25.80'],
+      ['accrued', '20.00'],
+    ]);
     const [refund] = await eventsOfType('refund');
-    expect(refund!.metadata).toMatchObject({ partialRefundReversalSkipped: true, reversedCommissions: 0 });
+    expect(refund!.metadata).toMatchObject({ fullRefund: false, reversedCommissions: 0, reducedCommissions: 1 });
   });
 
   it('a guest refund of a purchase no partner referred is skipped', async () => {
@@ -2935,6 +2986,7 @@ describe.skipIf(skipIntegration)('stripe webhook — one-time (mode=payment) Che
     expect(funnel.body.revenue).toBe(129);
 
     const { aggregateAttributedGmv } = await import('../usage-billing.js');
-    expect(await aggregateAttributedGmv(db, null, new Date(Date.now() + 60_000))).toBe(129);
+    // The session is in EUR: it is EUR GMV, not 129 dollars.
+    expect(await aggregateAttributedGmv(db, DEFAULT_TENANT_ID, null, new Date(Date.now() + 60_000))).toEqual({ EUR: 129 });
   });
 });
