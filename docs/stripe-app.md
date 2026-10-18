@@ -337,8 +337,11 @@ brand's token. Stripe lists no separate InvoicePayment permission, so
 `invoice_read` should cover it. That read hasn't run against a real install yet.
 If Stripe refuses it, the refund is recorded and reverses nothing, and the API
 logs `Stripe read failed permanently` for `invoicePayments.list`. So before
-moving an endpoint past acacia, run step 5's refund on a test-mode endpoint at
-the new version. Pick the `app.install.*` or `apps.install.*` event names that
+moving an endpoint past acacia, test it on a test-mode endpoint at the new
+version: refund a referred customer's **subscription invoice** in full and check
+that the commission flips to `reversed`. Step 5's Payment Link refund doesn't
+test this. A one-time purchase is matched by its PaymentIntent and never reads
+InvoicePayments. Pick the `app.install.*` or `apps.install.*` event names that
 version has.
 
 Events to select (names as of acacia):
