@@ -45,6 +45,7 @@ import { centsToStripeMinor, majorToCents, toStripeMinor } from './stripe-amount
 import { dispatchEvent } from './webhook-dispatcher.js';
 import type { WebhookPayload } from './openapi/webhook-events.js';
 import { dispatchCommissionEvents } from './commission-events.js';
+import { nettedClawbackCents, nettingPayloadFields, releaseNettedClawbacks } from './clawback-netting.js';
 
 /** Stripe replays a key for ~24h; past that a re-POST is a NEW charge, so
  *  ambiguity has to be resolved by listing instead. Matches
@@ -401,14 +402,18 @@ async function preflight(
   // changes what we owe. The frozen amount is now wrong, so drop the
   // intent and let the next planning run regroup what's still approved.
   if (claimed.some((c) => c.status !== 'approved')) return 'commission_set_changed';
-  // Compared in the unit the planner froze. A legacy intent that froze
-  // hundredths for a zero- or three-decimal currency can't match the
-  // converted total (¥2 is 2, not 200), so it is abandoned here, before
-  // anything reaches Stripe, and the next run replans it correctly.
-  const totalCents = claimed.reduce((s, c) => s + majorToCents(c.amount), 0);
-  if (centsToStripeMinor(totalCents, payout.currency) !== Number(meta.amountMinor)) {
-    return 'commission_amount_changed';
-  }
+  // The planner froze the commissions less the refund clawbacks it netted
+  // off this payout (clawback-netting.ts). Both sides are re-read here,
+  // summed in hundredths (the storage precision), and compared in the unit
+  // the planner froze. A legacy intent that froze hundredths for a zero- or
+  // three-decimal currency can't match the converted total (¥2 is 2, not
+  // 200), so it is abandoned here, before anything reaches Stripe, and the
+  // next run replans it correctly.
+  const totalCents =
+    claimed.reduce((s, c) => s + majorToCents(c.amount), 0) - (await nettedClawbackCents(db, payout.id));
+  const totalMinor = centsToStripeMinor(totalCents, payout.currency);
+  if (totalMinor !== Number(meta.amountMinor)) return 'commission_amount_changed';
+  if (totalMinor <= 0) return 'amount_not_positive';
 
   const partner = (await db<PartnerRow>(TABLES.Partner)
     .where({ id: payout.partnerId })
@@ -620,6 +625,7 @@ async function finalizeTransfer(
     method: payout.method,
     commissionIds: commissions.map((c) => c.id),
     platformFee: platformFee || undefined,
+    ...nettingPayloadFields((payout.metadata as { netting?: unknown }).netting),
   } satisfies WebhookPayload<'payout.created'>);
   void dispatchCommissionEvents(payout.tenantId, 'commission.paid', commissions, { payoutId: payout.id });
   result.confirmed.push({ payoutId: payout.id, stripeTransferId: transfer.id });
@@ -1411,12 +1417,18 @@ export async function resolveDuplicateReview(
 }
 
 /** Un-claim commissions frozen onto a dead intent. 'paid' rows are never
- *  touched — a paid commission's payoutId is its ledger link. */
+ *  touched — a paid commission's payoutId is its ledger link.
+ *
+ *  The refund clawbacks the intent netted go back to outstanding, every
+ *  time: each caller has established that the partner holds nothing from
+ *  this payout (never posted, rejected, or every transfer fully reversed),
+ *  so nothing was recovered and the next payout must net them again. */
 async function releaseClaims(trx: Knex.Transaction, payoutId: string): Promise<void> {
   await trx(TABLES.Commission)
     .where({ payoutId })
     .whereNot({ status: 'paid' })
     .update({ payoutId: null });
+  await releaseNettedClawbacks(trx, payoutId);
 }
 
 /** jsonb patch that preserves the rest of `metadata`. A key set to

@@ -1149,6 +1149,9 @@ export interface CommissionAdjustmentRow {
   currency: string;
   reason: 'transfer_reversed' | 'funding_disputed' | 'admin_correction' | 'refund_clawback';
   actorAdminId: string | null;
+  /** refund_clawback only: the payout that netted it off the partner.
+   *  Null = outstanding. Cleared when that payout is abandoned. */
+  appliedPayoutId: string | null;
   metadata: Record<string, unknown>;
   createdAt: Date;
 }

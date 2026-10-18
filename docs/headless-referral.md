@@ -329,7 +329,7 @@ What happens to the conversion's commissions. Each one ends up worth its origina
 | Commission was | What happens | `status` in the response |
 | --- | --- | --- |
 | `accrued` or `approved` | Reversed (`commission.reversed`, `reason: "refund"` or `"chargeback"`, plus the partner's postback). On a partial refund, a replacement commission for the kept amount follows (`commission.accrued` with `replacesCommissionId`). It keeps the original's status and accrual date, so its holdback doesn't restart. | `reversed`, or `reduced` with `currentCommissionId` |
-| `paid` | Stays paid: the partner has the money. A negative adjustment records what they hold for refunded revenue. **OpenPartner doesn't deduct it from later payouts.** Recover it with the customer yourself, for example by reducing their next manual payout. | `clawback_recorded`, with `clawbackAmount` |
+| `paid` | Stays paid: the partner has the money. A negative adjustment records what they hold for refunded revenue. OpenPartner deducts it from the partner's next manual or self-hosted Stripe Connect payout (a partner who owes more than they are due isn't paid until enough accrues). Funded Stripe Connect payouts on hosted OpenPartner don't deduct it: recover those yourself. | `clawback_recorded`, with `clawbackAmount` |
 | In a payout right now | Nothing changes. Retry the same request, with the same `externalEventId`, once the payout settles. | `held_in_transfer` |
 
 `actionRequired: true` means at least one commission is `clawback_recorded` or `held_in_transfer`.
@@ -499,7 +499,7 @@ Leave `amount` out to refund the whole deal. Send `"kind": "chargeback"` for a l
   };
   ```
 
-Key the refund on its own id (refund or credit note), not only on the deal. Two refunds of one deal are then two refunds, while the workflow's own retries of one refund are replays. If `actionRequired` comes back `true`, flag the deal for someone: the partner was already paid (`clawback_recorded`), or a payout was in flight (`held_in_transfer`; re-run the workflow later).
+Key the refund on its own id (refund or credit note), not only on the deal. Two refunds of one deal are then two refunds, while the workflow's own retries of one refund are replays. If `actionRequired` comes back `true`, flag the deal for someone: the partner was already paid (`clawback_recorded`; deducted from their next payout unless it's a funded hosted Stripe Connect payout), or a payout was in flight (`held_in_transfer`; re-run the workflow later).
 
 ### Webhooks → CRM fields
 
@@ -632,5 +632,5 @@ These are tracked as follow-ups. None of them is available today:
 - **Per-key rate limits.** Today the limit is per client IP (step 5).
 - **A create-only scope for CSV import.** `POST /import/partners-csv` needs `partners:write` or the admin key; `partners:create` covers `POST /partners` only.
 - **Read helpers in the server SDK** (dashboard, commissions, payouts). Today the SDK covers `trackEvent` and `identify`; use plain HTTP for reads, as the sample does.
-- **Netting refund clawbacks off later payouts.** A refund of an already-paid commission is recorded (`clawback_recorded`, step 8) but not deducted automatically.
+- **Netting refund clawbacks off funded Stripe Connect payouts on hosted OpenPartner.** Manual and self-hosted Stripe Connect payouts deduct them (step 8); funded hosted ones don't yet.
 - **A refund helper in the server SDK.** Use plain HTTP for `POST /attribution/refunds`.
