@@ -40,9 +40,12 @@ RevShare — the add-on attaches to it; `STRIPE_WHITELABEL_ADD_ON_PRICE_ID`
 must be set on the api component).
 
 **Self-serve:** tenant admin → **White label** → *Enable white-label
-add-on*. This adds the add-on price to their subscription as a prorated
-line item and flips `Tenant.whiteLabel`; the `customer.subscription.updated`
-webhook re-confirms it. (A brand that hasn't subscribed yet gets a
+add-on*. This adds the add-on price to their subscription, charges the
+prorated rest of the current period on the spot (`always_invoice`), and
+flips `Tenant.whiteLabel`; the `customer.subscription.updated` webhook
+re-confirms it. A declined charge returns 402 `payment_failed` and
+attaches nothing (`error_if_incomplete`) — the brand fixes their card in
+the Customer Portal and retries. (A brand that hasn't subscribed yet gets a
 `subscription_required` nudge to Billing first — or bundles the add-on
 into plan checkout via `whiteLabel: true` on `/billing/checkout`.)
 
@@ -65,7 +68,8 @@ curl -s -H "Authorization: Bearer $ADMIN_API_KEY" \
 Enterprise tenants: same endpoint sets the flag directly — no Stripe item,
 the add-on is encoded in the negotiated contract (§8.3). Disabling
 (`DELETE /billing/white-label`, or the UI's *Disable add-on*) removes the
-subscription item with a prorated credit AND revokes custom-domain
+subscription item with a prorated credit (pending, so it comes off the
+next invoice rather than going back to the card) AND revokes custom-domain
 routing + the DO edge. Cancelling the whole subscription or letting the
 add-on lapse does the same via webhook/sweep — nobody keeps white-label
 without paying for it.
