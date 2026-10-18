@@ -48,6 +48,7 @@ process.env.STRIPE_APP_CLIENT_ID_TEST = 'ca_test_openpartner_app';
 process.env.STRIPE_APP_SECRET_KEY_TEST = 'sk_test_app_developer';
 process.env.STRIPE_APP_WEBHOOK_SECRET = APP_WEBHOOK_SECRET;
 delete process.env.STRIPE_APP_REDIRECT_URI;
+for (const k of ['STRIPE_APP_AUTHORIZE_URL', 'STRIPE_APP_AUTHORIZE_URL_TEST']) delete process.env[k];
 
 // Every Stripe API call any client makes, with the key it was made with.
 const stripeApi = vi.hoisted(() => ({
@@ -162,6 +163,8 @@ const {
   StripeAppOAuthError,
   __resetStripeAppTokenCacheForTests,
   allowedReturnUrl,
+  stripeAppAuthorizeBase,
+  stripeAppInstallUrl,
   brandStripe,
   refreshAccessToken,
   signOAuthState,
@@ -390,6 +393,52 @@ beforeEach(async () => {
 });
 
 // ---------------------------------------------------------------------------
+
+describe('install link base (External test before App Review)', () => {
+  const CHANNEL = 'https://marketplace.stripe.com/oauth/v2/chnlink_61VbRZD7GqfQXOlfu41LKsWusNm7ZOpU/authorize';
+  const withEnv = (vars: Record<string, string>, fn: () => void) => {
+    Object.assign(process.env, vars);
+    try {
+      fn();
+    } finally {
+      for (const k of Object.keys(vars)) delete process.env[k];
+    }
+  };
+
+  it('is the public authorize link by default', () => {
+    expect(stripeAppAuthorizeBase('live')).toBe('https://marketplace.stripe.com/oauth/v2/authorize');
+  });
+
+  it('takes an External test link pasted whole, for every mode, keeping only its path', () => {
+    withEnv({ STRIPE_APP_AUTHORIZE_URL: `${CHANNEL}?client_id=ca_pasted&redirect_uri=https://x.test/cb` }, () => {
+      expect(stripeAppAuthorizeBase('live')).toBe(CHANNEL);
+      expect(stripeAppAuthorizeBase('test')).toBe(CHANNEL);
+      const install = new URL(stripeAppInstallUrl('test', 'st'));
+      expect(install.origin + install.pathname).toBe(CHANNEL);
+      // client_id comes from STRIPE_APP_CLIENT_ID_TEST, never the pasted link.
+      expect(install.searchParams.get('client_id')).toBe('ca_test_openpartner_app');
+      expect(install.searchParams.get('redirect_uri')).toBe(`${PORTAL}/api/stripe-app/oauth/callback`);
+    });
+  });
+
+  it('lets a mode override the shared link, and ignores anything that is not a Stripe authorize link', () => {
+    withEnv(
+      {
+        STRIPE_APP_AUTHORIZE_URL: CHANNEL,
+        STRIPE_APP_AUTHORIZE_URL_TEST: 'https://marketplace.stripe.com/oauth/v2/chnlink_TestOnly123/authorize',
+      },
+      () => {
+        expect(stripeAppAuthorizeBase('test')).toBe('https://marketplace.stripe.com/oauth/v2/chnlink_TestOnly123/authorize');
+        expect(stripeAppAuthorizeBase('live')).toBe(CHANNEL);
+      },
+    );
+    for (const bad of ['https://evil.test/oauth/v2/authorize', 'http://marketplace.stripe.com/oauth/v2/authorize', 'https://marketplace.stripe.com/elsewhere', 'not a url']) {
+      withEnv({ STRIPE_APP_AUTHORIZE_URL: bad }, () => {
+        expect(stripeAppAuthorizeBase('live')).toBe('https://marketplace.stripe.com/oauth/v2/authorize');
+      });
+    }
+  });
+});
 
 describe('OAuth state', () => {
   const input = { t: DEFAULT_TENANT_ID, a: 'adm_1', m: 'live' as const, r: RETURN_URL };

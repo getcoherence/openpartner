@@ -223,11 +223,43 @@ export function verifyOAuthState(raw: string, now = Date.now()): StripeAppOAuthS
   return state;
 }
 
+const PUBLIC_AUTHORIZE_URL = 'https://marketplace.stripe.com/oauth/v2/authorize';
+const AUTHORIZE_PATH = /^\/oauth\/v2\/(chnlink_[A-Za-z0-9]+\/)?authorize$/;
+
+/**
+ * Where the install link points. The public link, the default, only works
+ * once App Review has published the app. Before that, Stripe's External test
+ * links carry a channel in the path (…/oauth/v2/chnlink_…/authorize).
+ * STRIPE_APP_AUTHORIZE_URL takes one of those links, pasted whole: only its
+ * origin and path are kept, and client_id still comes from
+ * STRIPE_APP_CLIENT_ID[_TEST|_SANDBOX]. A _TEST / _SANDBOX variant overrides
+ * it for that mode. Live and test links have shared one channel so far.
+ * Anything that isn't a marketplace.stripe.com authorize path is ignored
+ * (logged), so a typo can't send admins elsewhere. Unset it once the app is
+ * published.
+ */
+export function stripeAppAuthorizeBase(mode: StripeAppKeyMode): string {
+  const own = `STRIPE_APP_AUTHORIZE_URL${mode === 'live' ? '' : `_${mode.toUpperCase()}`}`;
+  const name = (process.env[own] ?? '').trim() ? own : 'STRIPE_APP_AUTHORIZE_URL';
+  const raw = (process.env[name] ?? '').trim();
+  if (!raw) return PUBLIC_AUTHORIZE_URL;
+  try {
+    const url = new URL(raw);
+    if (url.protocol === 'https:' && url.hostname === 'marketplace.stripe.com' && AUTHORIZE_PATH.test(url.pathname)) {
+      return `${url.origin}${url.pathname}`;
+    }
+  } catch {
+    // Falls through to the warning.
+  }
+  console.error(`[stripe-app] ignoring ${name}: not a marketplace.stripe.com OAuth authorize link`);
+  return PUBLIC_AUTHORIZE_URL;
+}
+
 /** The Stripe install link for one link type. */
 export function stripeAppInstallUrl(mode: StripeAppKeyMode, state: string): string {
   const cfg = keyConfig(mode);
   if (!cfg) throw new Error(`Stripe App ${mode} keys are not configured`);
-  const url = new URL('https://marketplace.stripe.com/oauth/v2/authorize');
+  const url = new URL(stripeAppAuthorizeBase(mode));
   url.searchParams.set('client_id', cfg.clientId);
   url.searchParams.set('redirect_uri', stripeAppRedirectUri());
   url.searchParams.set('state', state);

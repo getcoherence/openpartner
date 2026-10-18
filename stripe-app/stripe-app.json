@@ -1,8 +1,21 @@
 {
+  "$schema": "https://stripe.com/stripe-app.schema.json",
   "id": "dev.openpartner.attribution",
-  "version": "0.1.0",
   "name": "OpenPartner",
+  "version": "0.1.0",
   "icon": "./openpartner_icon.png",
+  "ui_extension": {
+    "views": [
+      {
+        "viewport": "settings",
+        "component": "AppSettings"
+      }
+    ],
+    "content_security_policy": {
+      "purpose": ""
+    }
+  },
+  "extensions": null,
   "permissions": [
     {
       "permission": "event_read",
@@ -49,23 +62,9 @@
       "purpose": "Create the coupon behind each partner’s customer discount."
     }
   ],
-  "stripe_api_access_type": "oauth",
-  "distribution_type": "public",
   "allowed_redirect_uris": [
-    "https://app.openpartner.dev/api/stripe-app/oauth/callback",
-    "http://localhost:5673/api/stripe-app/oauth/callback"
+    "https://app.openpartner.dev/api/stripe-app/oauth/callback"
   ],
-  "ui_extension": {
-    "views": [
-      {
-        "viewport": "settings",
-        "component": "AppSettings"
-      }
-    ],
-    "content_security_policy": {
-      "connect-src": null,
-      "image-src": null,
-      "purpose": ""
-    }
-  }
+  "distribution_type": "public",
+  "stripe_api_access_type": "oauth"
 }

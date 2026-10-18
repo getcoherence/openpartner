@@ -267,53 +267,98 @@ app.
 
 ### 2. Upload the app
 
+Done Oct 18 2026: version 0.1.0 is uploaded to the **OpenPartner Apps** account
+(`acct_1URepJLKsWusNm7Z`). For later versions, bump `version` in
+`stripe-app.json` and repeat the last command.
+
 ```bash
-stripe login                     # log in to the NEW developer account
+stripe login --interactive --project-name openpartner-apps   # paste the live secret key
 stripe plugin install apps
 cd stripe-app
 npm install
-stripe apps upload
+stripe apps upload --live --project-name openpartner-apps
 ```
 
-The first upload creates the app from `stripe-app.json`: id
-`dev.openpartner.attribution`, name, permissions and redirect URIs. If Stripe
-says the id is taken, change `id` and upload again. Before App Review, replace
-the placeholder `openpartner_icon.png` (a 300×300 PNG) with the real mark.
+Things that tripped the first upload:
 
-Redirect URIs in the manifest:
+- **CLI version.** CLI 1.40 can't install plugins: its plugin index is gone.
+  Use 1.54 or later.
+- **`--live` is required.** Without it, uploads go to test mode. A live upload
+  records this account as the app's developer account, which a public app
+  needs.
+- **Log in with a key, not the browser flow.** Since 1.54, the browser login
+  saves an OAuth session that the apps plugin can't read yet ("your live mode
+  API key needs to be re-configured"). `stripe login --interactive` with the
+  account's live secret key works. That's the same key as
+  `STRIPE_APP_SECRET_KEY`.
+- **The Stripe Apps Agreement.** The account must accept it in the Dashboard
+  first. The CLI prints the link.
+- **Redirect URIs must be HTTPS**, in test mode too. A `localhost` URI is
+  rejected.
+- **The CLI rewrites the manifest** into its canonical layout (`$schema`, key
+  order). Commit that.
 
-- `https://app.openpartner.dev/api/stripe-app/oauth/callback`: production.
-  Live-mode links require HTTPS.
-- `http://localhost:5673/api/stripe-app/oauth/callback`: local dev, test mode
-  only, through the portal's `/api` proxy.
+The first upload created the app from `stripe-app.json`: id
+`dev.openpartner.attribution`, name, permissions and redirect URIs. The id can't
+change now. Before App Review, replace the placeholder `openpartner_icon.png`
+(a 300×300 PNG) with the real mark.
 
-Add a staging URI here if staging should connect too, then upload again.
+The only redirect URI in the manifest is
+`https://app.openpartner.dev/api/stripe-app/oauth/callback` (production). To
+connect from local dev or staging, add that host's HTTPS callback, e.g. through
+a tunnel, set `STRIPE_APP_REDIRECT_URI` to match, and upload a new version.
 
 ### 3. Webhook endpoints (one per environment)
 
 In the developer account, create an event destination for each environment. Use
 **Connected accounts** (the "Listen to events on Connected accounts" option):
 
-| Environment | Where | URL |
-| --- | --- | --- |
-| Live | Live mode → Developers → Webhooks | `https://app.openpartner.dev/api/webhooks/stripe-app` |
-| Test-mode sandbox | Test mode → Developers → Webhooks | same URL |
-| General sandboxes (optional) | The app's managed sandbox | same URL |
+| Environment | Where | URL | Status |
+| --- | --- | --- | --- |
+| Live | Live mode → Developers → Webhooks | `https://app.openpartner.dev/api/webhooks/stripe-app` | **Created Oct 18 2026**: `we_1US3LILKsWusNm7ZId7KuPr8` |
+| Test-mode sandbox | Test mode → Developers → Webhooks | same URL | to do |
+| General sandboxes (optional) | The app's managed sandbox | same URL | optional |
 
-Events to select:
+**API version: `2025-02-24.acacia`, on every endpoint.** Don't take the account
+default or the latest version. Version `2025-03-31.basil` removed
+`Invoice.charge`, `Invoice.payment_intent` and `Charge.invoice`, the fields the
+shared mapping uses to tie a refund to the payment it refunds (`invoice.paid`
+records them on the Event, and `charge.refunded` looks them up). On a basil or
+later endpoint, a subscription refund is recorded but reverses nothing. Moving
+past acacia needs the mapping to read `invoice.payments` (InvoicePayment) first.
+
+Events to select (names as of acacia):
 
 - `checkout.session.completed`, `checkout.session.async_payment_succeeded`
 - `customer.created`, `customer.subscription.created`
 - `invoice.paid`, `invoice.payment_failed`
 - `charge.refunded`, `charge.dispute.created`
 - `account.application.deauthorized`
-- `apps.install.created`, `apps.install.updated`, `apps.install.deleted`.
-  These are named `app.install.*` on API versions before 2026-09-30: pick the
-  names for the endpoint's API version.
+- `app.install.created`, `app.install.updated`, `app.install.deleted`. API
+  versions from 2026-09-30 call these `apps.install.*`. The route accepts both.
 
-Give each endpoint the same API version as the platform's Destination A, so
-payloads match what `/webhooks/stripe` is tested against. Copy each endpoint's
-signing secret into `STRIPE_APP_WEBHOOK_SECRET`, comma-separated.
+From the CLI, logged in to the developer account as in step 2 (this is how the
+live one was created):
+
+```bash
+stripe webhook_endpoints create --live --project-name openpartner-apps \
+  --url https://app.openpartner.dev/api/webhooks/stripe-app \
+  --api-version 2025-02-24.acacia -d connect=true \
+  --enabled-events checkout.session.completed --enabled-events checkout.session.async_payment_succeeded \
+  --enabled-events customer.created --enabled-events customer.subscription.created \
+  --enabled-events invoice.paid --enabled-events invoice.payment_failed \
+  --enabled-events charge.refunded --enabled-events charge.dispute.created \
+  --enabled-events account.application.deauthorized \
+  --enabled-events app.install.created --enabled-events app.install.updated --enabled-events app.install.deleted
+```
+
+Drop `--live` for the test-mode endpoint (that needs the test secret key in the
+CLI profile). The response includes the endpoint's signing secret, and only that
+once; it can be revealed again in the Dashboard (Developers → Webhooks → the
+endpoint → Signing secret). Put each endpoint's secret into
+`STRIPE_APP_WEBHOOK_SECRET`, comma-separated. Until that var is set, the route
+answers `503` and Stripe retries, which does no harm before any brand has
+installed.
 
 ### 4. Keys and client ids
 
@@ -326,6 +371,7 @@ signing secret into `STRIPE_APP_WEBHOOK_SECRET`, comma-separated.
 | `STRIPE_APP_SECRET_KEY_SANDBOX` / `STRIPE_APP_CLIENT_ID_SANDBOX` | Optional: the app's managed-sandbox key and link |
 | `STRIPE_APP_WEBHOOK_SECRET` | The endpoint signing secrets from step 3, comma-separated |
 | `STRIPE_APP_REDIRECT_URI` | Optional. Defaults to `${PORTAL_URL}/api/stripe-app/oauth/callback`, and must exactly match a manifest URI |
+| `STRIPE_APP_AUTHORIZE_URL` | **Until the app is published.** Paste the External test tab's live-mode link whole (`https://marketplace.stripe.com/oauth/v2/chnlink_…/authorize?…`). Only its origin and path are used; `client_id` still comes from the vars above. It applies to every mode unless `_TEST` / `_SANDBOX` overrides it, since the live and test links have shared one channel so far. Unset = the public link, which works only after publishing. |
 
 Each mode is offered in the portal only when both its key and client id are set:
 
@@ -337,9 +383,24 @@ With nothing set, the card is hidden. Set these on the DO app's `api` component.
 
 ### 5. External test
 
-1. App details → **External test** → Get started.
-2. Set `STRIPE_APP_CLIENT_ID` (and `_TEST`) to the client ids in that tab's
-   **Test OAuth** links. Public links don't work until the app is published.
+1. App details → **External test** → Get started, picking the uploaded version.
+2. Under **Test OAuth**, copy the **Live mode link** and the **Test mode link**.
+   They look like
+   `https://marketplace.stripe.com/oauth/v2/chnlink_…/authorize?client_id=ca_…`.
+   The channel (`chnlink_…`) is in the path, and each mode has its own
+   `client_id`. Set:
+   - `STRIPE_APP_CLIENT_ID`: the live link's `client_id`;
+   - `STRIPE_APP_CLIENT_ID_TEST`: the test link's `client_id`, plus
+     `STRIPE_APP_SECRET_KEY_TEST`, if you want the test-mode button;
+   - `STRIPE_APP_AUTHORIZE_URL`: the live link, pasted whole.
+
+   Without the channel, an install shows "The provided OAuth link is invalid":
+   public links don't work until the app is published.
+
+   As of Oct 18 2026 (version 0.1.0): live `client_id`
+   `ca_VSz5Gbxypnv9PUB5PlSbh4PVs0oKrdvI`, test `client_id`
+   `ca_VSz5qyW7JXnLY6PUvfnEfvGXS8aIPmaT`, channel
+   `chnlink_61VbRZD7GqfQXOlfu41LKsWusNm7ZOpU`.
 3. In OpenPartner Cloud, as an approved test brand: Admin → Integrations →
    Connect Stripe (or Connect a test-mode account).
 4. Make a test purchase on a Payment Link with
@@ -366,9 +427,11 @@ For example, a public page at `https://openpartner.dev/integrations/stripe`
 pre-approved demo brand. New brands queue for platform approval (`/platform`),
 so approve it first. Once published:
 
-1. Switch `STRIPE_APP_CLIENT_ID` to the **public** link's client id, from the
-   Settings tab.
-2. Redeploy.
+1. Switch `STRIPE_APP_CLIENT_ID` (and `_TEST`) to the **public** links' client
+   ids, from the Settings tab, if they differ.
+2. Remove `STRIPE_APP_AUTHORIZE_URL` (and any `_TEST` / `_SANDBOX`), so installs
+   use the public link.
+3. Redeploy.
 
 ---
 
