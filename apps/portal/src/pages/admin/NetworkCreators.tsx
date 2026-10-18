@@ -14,6 +14,7 @@ import { Users } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
+import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
 
 interface PlatformRow {
   id: string;
@@ -71,6 +72,7 @@ export function AdminNetworkCreators() {
   const [debouncedQ, setDebouncedQ] = useState('');
   const [categories, setCategories] = useState<string[]>([]);
   const [platforms, setPlatforms] = useState<string[]>([]);
+  const [verifiedOnly, setVerifiedOnly] = useState(false);
   const [locations, setLocations] = useState('');
   const [minFollowers, setMinFollowers] = useState<number | ''>('');
   const [minRevenue, setMinRevenue] = useState<number | ''>('');
@@ -86,6 +88,7 @@ export function AdminNetworkCreators() {
     if (debouncedQ) p.set('q', debouncedQ);
     if (categories.length > 0) p.set('categories', categories.join(','));
     if (platforms.length > 0) p.set('platforms', platforms.join(','));
+    if (verifiedOnly) p.set('verified', 'true');
     const cleanLocations = locations
       .split(',')
       .map((s) => s.trim().toUpperCase())
@@ -95,7 +98,7 @@ export function AdminNetworkCreators() {
     if (minRevenue !== '' && minRevenue > 0) p.set('minRevenue90d', String(minRevenue));
     if (sort !== 'revenue') p.set('sort', sort);
     return p.toString();
-  }, [debouncedQ, categories, platforms, locations, minFollowers, minRevenue, sort]);
+  }, [debouncedQ, categories, platforms, verifiedOnly, locations, minFollowers, minRevenue, sort]);
 
   const list = useQuery({
     queryKey: ['admin-discover-creators', qs],
@@ -175,6 +178,17 @@ export function AdminNetworkCreators() {
             selected={platforms}
             onChange={setPlatforms}
           />
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 10, fontSize: 13, color: theme.text, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={verifiedOnly}
+              onChange={(e) => setVerifiedOnly(e.target.checked)}
+            />
+            Verified accounts only
+            <span style={{ color: theme.textMuted, fontSize: 12 }}>
+              {platforms.length > 0 ? '(verified on one of the selected platforms)' : '(creator proved they own the account)'}
+            </span>
+          </label>
         </div>
       </Card>
 
@@ -226,7 +240,13 @@ function CreatorCard({ creator }: { creator: DirectoryRow }) {
       )}
       {creator.platforms.length > 0 && (
         <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 10 }}>
-          {creator.platforms.map((p) => p.platform).join(' · ')}
+          {creator.platforms.map((p, i) => (
+            <span key={p.id}>
+              {i > 0 && ' · '}
+              {p.platform}
+              {p.verified && <> <VerifiedBadge compact /></>}
+            </span>
+          ))}
           {creator.totalReach > 0 && (
             <> · <strong style={{ color: theme.text }}>{creator.totalReach.toLocaleString()}</strong> reach</>
           )}

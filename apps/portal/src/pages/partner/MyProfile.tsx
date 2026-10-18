@@ -6,6 +6,7 @@ import {
   type NetworkProfile,
   type NetworkProfileAdapter,
   type PlatformRow,
+  type VerificationStart,
 } from '../../lib/NetworkProfileEditor.js';
 import { NetworkMembershipCard, useNetworkConsent } from './NetworkConsent.js';
 
@@ -32,6 +33,10 @@ const partnerProfileAdapter: NetworkProfileAdapter = {
   listPlatforms: () => api<{ platforms: PlatformRow[] }>('/network/me/platforms'),
   putPlatform: (platform, body) => api(`/network/me/platforms/${platform}`, { method: 'PUT', body }),
   deletePlatform: (platform) => api(`/network/me/platforms/${platform}`, { method: 'DELETE' }),
+  startVerification: (platform) =>
+    api<VerificationStart>(`/network/me/platforms/${platform}/verify/start`, { method: 'POST', body: {} }),
+  checkVerification: (platform) =>
+    api<{ ok: boolean; platform?: PlatformRow }>(`/network/me/platforms/${platform}/verify`, { method: 'POST', body: {} }),
 };
 
 export function MyProfilePage() {

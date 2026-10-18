@@ -58,6 +58,8 @@ export const HANDLER_GUARDED_ROUTES_OUTSIDE_SPEC: Record<string, string> = {
   'GET /network/me/platforms': NETWORK_PROXY,
   'PUT /network/me/platforms/:platform': NETWORK_PROXY,
   'DELETE /network/me/platforms/:platform': NETWORK_PROXY,
+  'POST /network/me/platforms/:platform/verify/start': NETWORK_PROXY,
+  'POST /network/me/platforms/:platform/verify': NETWORK_PROXY,
   'GET /network/me/requests': NETWORK_PROXY,
   'POST /network/me/requests/:id/cancel': NETWORK_PROXY,
   'GET /network/me/affiliations': NETWORK_PROXY,

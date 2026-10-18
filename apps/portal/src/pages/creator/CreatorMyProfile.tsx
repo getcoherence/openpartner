@@ -8,6 +8,7 @@ import {
   type NetworkProfile,
   type NetworkProfileAdapter,
   type PlatformRow,
+  type VerificationStart,
 } from '../../lib/NetworkProfileEditor.js';
 
 /** The creator portal talks to the Network through /api/creator-api. */
@@ -19,6 +20,10 @@ const creatorProfileAdapter: NetworkProfileAdapter = {
   listPlatforms: () => creatorApi<{ platforms: PlatformRow[] }>('/creators/me/platforms'),
   putPlatform: (platform, body) => creatorApi(`/creators/me/platforms/${platform}`, { method: 'PUT', body }),
   deletePlatform: (platform) => creatorApi(`/creators/me/platforms/${platform}`, { method: 'DELETE' }),
+  startVerification: (platform) =>
+    creatorApi<VerificationStart>(`/creators/me/platforms/${platform}/verify/start`, { method: 'POST', body: {} }),
+  checkVerification: (platform) =>
+    creatorApi<{ ok: boolean; platform?: PlatformRow }>(`/creators/me/platforms/${platform}/verify`, { method: 'POST', body: {} }),
 };
 
 export function CreatorMyProfilePage() {
