@@ -79,8 +79,19 @@ function formatAmount(rule: CommissionSubRuleLike): string {
   if (rule.type === 'percent') {
     return lo === hi ? `${trimNumber(lo)}%` : `${trimNumber(lo)}–${trimNumber(hi)}%`;
   }
-  const range = lo === hi ? `$${trimNumber(lo)}` : `$${trimNumber(lo)}–$${trimNumber(hi)}`;
-  return `${range}${rule.currency && rule.currency !== 'USD' ? ` ${rule.currency}` : ''}`;
+  return lo === hi ? money(lo, rule.currency) : `${money(lo, rule.currency)}–${money(hi, rule.currency)}`;
+}
+
+/** A fixed amount in its own currency: "$100", "₹100", "€99.50". Unknown
+ *  codes fall back to "100 XYZ". (It used to be "$100 INR" for every
+ *  non-USD rule.) */
+function money(value: number, currency?: string): string {
+  const code = (currency ?? 'USD').toUpperCase();
+  try {
+    return new Intl.NumberFormat('en', { style: 'currency', currency: code, minimumFractionDigits: Number.isInteger(value) ? 0 : 2, maximumFractionDigits: 2 }).format(value);
+  } catch {
+    return `${trimNumber(value)} ${code}`;
+  }
 }
 
 function formatSlabPhrase(rule: CommissionSubRuleLike): string {
@@ -130,7 +141,7 @@ function formatCustomerReward(reward: CustomerRewardLike): string {
   const base = (() => {
     if (reward.type === 'percent_off') return `${trimNumber(reward.value)}% off`;
     if (reward.type === 'amount_off') {
-      return `$${trimNumber(reward.value)}${reward.currency && reward.currency.toUpperCase() !== 'USD' ? ` ${reward.currency.toUpperCase()}` : ''} off`;
+      return `${money(reward.value, reward.currency)} off`;
     }
     return `${trimNumber(reward.value)} ${reward.value === 1 ? 'month' : 'months'} free`;
   })();
