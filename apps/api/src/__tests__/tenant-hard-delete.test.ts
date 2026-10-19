@@ -7,7 +7,8 @@
  * still pointed at them, so any brand with clawback or funding history
  * rolled back and retried daily forever. The seed below puts a row in
  * every table that has a tenantId column (read from the catalog, so a new
- * table fails here until it joins TENANT_PURGE_ORDER).
+ * table fails here until it joins TENANT_PURGE_ORDER or TENANT_PURGE_KEEP).
+ * The kept compliance records must outlive the purge.
  */
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
@@ -18,7 +19,7 @@ process.env.PLATFORM_OPS_EMAIL = 'ops@openpartner.test';
 const { TABLES } = await import('@openpartner/db');
 const { db } = await import('../db.js');
 const { __setMailerForTests } = await import('../mailer.js');
-const { hardDeleteExpiredTenants, TENANT_PURGE_ORDER } = await import('../scheduler.js');
+const { hardDeleteExpiredTenants, TENANT_PURGE_KEEP, TENANT_PURGE_ORDER } = await import('../scheduler.js');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 
@@ -33,9 +34,14 @@ async function tenantScopedTables(): Promise<string[]> {
   return rows.map((r) => r.table_name).sort();
 }
 
+/** The tenant-scoped tables the purge empties: all but the kept records. */
+async function purgedTables(): Promise<string[]> {
+  return (await tenantScopedTables()).filter((t) => !TENANT_PURGE_KEEP.includes(t));
+}
+
 async function rowCounts(tenantId: string): Promise<Record<string, number>> {
   const out: Record<string, number> = {};
-  for (const tbl of await tenantScopedTables()) {
+  for (const tbl of await purgedTables()) {
     const [r] = await db(tbl).where({ tenantId }).count<Array<{ count: string }>>({ count: '*' });
     out[tbl] = Number(r?.count ?? 0);
   }
@@ -305,6 +311,7 @@ describe.skipIf(skipIntegration)('tenant-hard-delete', () => {
   async function wipe(): Promise<void> {
     if (created.length === 0) return;
     for (const tbl of TENANT_PURGE_ORDER) await db(tbl).whereIn('tenantId', created).del();
+    await db(TABLES.LocationDeclaration).whereIn('tenantId', created).del();
     await db(TABLES.Tenant).whereIn('id', created).del();
     created.length = 0;
   }
@@ -325,8 +332,9 @@ describe.skipIf(skipIntegration)('tenant-hard-delete', () => {
     await db.destroy();
   });
 
-  it('lists every table that has a tenantId column', async () => {
-    expect([...TENANT_PURGE_ORDER].sort()).toEqual(await tenantScopedTables());
+  it('lists every table that has a tenantId column, apart from the kept records', async () => {
+    expect([...TENANT_PURGE_ORDER].sort()).toEqual(await purgedTables());
+    expect(TENANT_PURGE_ORDER.filter((t) => TENANT_PURGE_KEEP.includes(t))).toEqual([]);
   });
 
   it('purges an expired tenant with a row in every tenant-scoped table, and nobody else', async () => {
@@ -337,6 +345,16 @@ describe.skipIf(skipIntegration)('tenant-hard-delete', () => {
     await insertTenant(inGrace, daysAgo(1));
     await seedEverything(expired);
     await seedEverything(inGrace);
+    // A compliance record the purge must keep (no FK, so it can't block it).
+    const declarationId = ulid();
+    await db(TABLES.LocationDeclaration).insert({
+      id: declarationId,
+      subjectKind: 'tenant',
+      subjectId: expired,
+      tenantId: expired,
+      country: 'DE',
+      source: 'signup',
+    });
 
     const before = await rowCounts(expired);
     const empty = Object.entries(before).filter(([, n]) => n === 0).map(([tbl]) => tbl);
@@ -350,6 +368,10 @@ describe.skipIf(skipIntegration)('tenant-hard-delete', () => {
     expect(await db(TABLES.Tenant).where({ id: expired }).first()).toBeUndefined();
     const left = Object.entries(await rowCounts(expired)).filter(([, n]) => n > 0);
     expect(left).toEqual([]);
+    expect(await db(TABLES.LocationDeclaration).where({ id: declarationId }).first()).toMatchObject({
+      tenantId: expired,
+      country: 'DE',
+    });
 
     // The brand still inside its grace window keeps everything.
     expect(await rowCounts(inGrace)).toEqual(before);

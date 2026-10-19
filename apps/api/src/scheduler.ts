@@ -377,17 +377,27 @@ export async function runPerformanceBountiesJob() {
 }
 
 /**
- * Every table with a tenantId column, in the order the tenant purge
- * deletes from them. Each table comes before every table it references
- * without ON DELETE CASCADE. The Tenant row is dropped last.
+ * Tables with a tenantId column that the tenant purge deliberately keeps:
+ * compliance records retained for 10 years (OFAC, 31 CFR 501.601; see
+ * docs/country-access.md "Records"). They're append-only with no foreign
+ * keys, so they never block the purge either. Plain strings because
+ * SanctionsScreening's TABLES entry arrives with its own migration.
+ */
+export const TENANT_PURGE_KEEP: readonly string[] = ['LocationDeclaration', 'SanctionsScreening'];
+
+/**
+ * Every table with a tenantId column, except TENANT_PURGE_KEEP, in the
+ * order the tenant purge deletes from them. Each table comes before every
+ * table it references without ON DELETE CASCADE. The Tenant row is
+ * dropped last.
  *
  * Tables whose Tenant FK cascades are listed too. The cascade fires only
  * when the Tenant row goes, which is too late for a row that also points
  * at a non-cascading parent deleted earlier (the funding and clawback
  * tables below). Coupon has no Tenant FK at all.
  *
- * A new tenant-scoped table must be added here: the tenant-purge test
- * reads the catalog and fails until it is.
+ * A new tenant-scoped table must be added here or to TENANT_PURGE_KEEP:
+ * the tenant-purge test reads the catalog and fails until it is.
  */
 export const TENANT_PURGE_ORDER = [
   TABLES.NetworkOutbox,
