@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
 import { alpha, theme } from '../theme.js';
+import { countryErrorMessage } from '../lib/CountryField.js';
 import { AuthFrame } from './auth/Shared.js';
 
 /**
@@ -41,7 +42,8 @@ export function SigninPage() {
       }
       setSent(true);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Something went wrong.');
+      const message = e instanceof Error ? e.message : 'Something went wrong.';
+      setErr(countryErrorMessage(message) ?? message);
     } finally {
       setBusy(false);
     }

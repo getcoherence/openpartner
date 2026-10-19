@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router';
 import { ApiError } from '../api.js';
 import { alpha, softText, theme } from '../theme.js';
 import { AuthFrame, SignupTabs } from './auth/Shared.js';
+import { CountryField, countryErrorMessage } from '../lib/CountryField.js';
 
 type SignupPlan = 'flex' | 'revshare' | 'enterprise';
 const PLAN_LABELS: Record<SignupPlan, { name: string; tagline: string }> = {
@@ -29,6 +30,8 @@ export function SignupPage() {
   const [displayName, setDisplayName] = useState('');
   const [adminEmail, setAdminEmail] = useState('');
   const [adminName, setAdminName] = useState('');
+  const [country, setCountry] = useState('');
+  const [outsideOccupiedRegions, setOutsideOccupiedRegions] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [result, setResult] = useState<SignupResult | null>(null);
@@ -50,6 +53,8 @@ export function SignupPage() {
           displayName: displayName.trim(),
           adminEmail: adminEmail.trim().toLowerCase(),
           adminName: adminName.trim(),
+          country,
+          ...(country === 'UA' ? { outsideOccupiedRegions } : {}),
           // Enterprise is sales-led: the API refuses self-declared
           // enterprise (it would bypass the plan-required gate), so the
           // CTA only records intent visually; ops set the plan on close.
@@ -130,6 +135,15 @@ export function SignupPage() {
             style={{ ...inputStyle, fontFamily: theme.fontMono }}
           />
         </Field>
+        <Field label="Where is your business based?">
+          <CountryField
+            value={country}
+            onChange={setCountry}
+            outsideOccupiedRegions={outsideOccupiedRegions}
+            onOutsideOccupiedRegionsChange={setOutsideOccupiedRegions}
+            selectStyle={inputStyle}
+          />
+        </Field>
         <Field label="Your name">
           <input
             name="name"
@@ -176,6 +190,8 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 }
 
 function friendlyError(code: string): string {
+  const country = countryErrorMessage(code);
+  if (country) return country;
   if (code.includes('slug_taken')) return 'That slug is already taken. Pick another.';
   if (code.includes('slug_reserved')) return 'That slug is reserved. Try a different one.';
   if (code.includes('invalid_body')) return 'Some fields look invalid — check the slug format and email.';

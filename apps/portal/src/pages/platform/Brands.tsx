@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { alpha, theme } from '../../theme.js';
+import { countryName } from '../../lib/CountryField.js';
 import { Button, Card, ErrorBanner, Label, Page, Select, Textarea, formatDate } from '../../ui.js';
 import { ApprovalBadge, StatusBadge } from './components.js';
 import {
@@ -267,6 +268,18 @@ function BrandCard({
         </Field>
         <Field label="Created">{formatDate(brand.createdAt)}</Field>
         <Field label="Created via">{brand.createdBy ?? '—'}</Field>
+        <Field label="Based in">
+          {brand.country ? (
+            <>
+              {countryName(brand.country)}
+              {brand.ipCountryAtDeclaration && brand.ipCountryAtDeclaration !== brand.country && (
+                <span style={{ color: theme.warn }}> · signed up from {countryName(brand.ipCountryAtDeclaration)}</span>
+              )}
+            </>
+          ) : (
+            'Not asked yet'
+          )}
+        </Field>
         <Field label="Plan">{brand.billingPlan ?? '—'}</Field>
         {brand.reviewedByEmail && (
           <Field label="Reviewed by">

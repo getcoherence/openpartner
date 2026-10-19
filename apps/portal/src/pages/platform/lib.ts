@@ -40,6 +40,10 @@ export interface PlatformBrand {
   /** Latest marketplace policy warning sent to this brand, if any. */
   lastPolicyWarningAt: string | null;
   policyWarningDeadline: string | null;
+  /** Where the brand says it is based (ISO code); null = not asked yet. */
+  country: string | null;
+  /** IP country when it declared, for spotting a mismatch. */
+  ipCountryAtDeclaration: string | null;
 }
 
 export interface PlatformProgram {

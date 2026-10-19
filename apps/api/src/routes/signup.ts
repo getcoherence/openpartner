@@ -29,6 +29,12 @@ import { adminInviteEmail, buildMagicLinkUrl } from '../email-templates.js';
 import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
 import { newTrialEnd } from '../billing-plan.js';
 import { findBlockingEntry, notifyOpsNewBrand } from '../brand-review.js';
+import {
+  checkCountryAccess,
+  countryAccessStatus,
+  countryCodeSchema,
+  recordLocationDeclaration,
+} from '../country-access.js';
 
 export const signupRouter = Router();
 
@@ -51,6 +57,11 @@ const signupSchema = z.object({
    *  without a Stripe subscription, so accepting it on a public endpoint
    *  would let anyone self-declare past the plan-required gate (§13). */
   plan: z.enum(['flex', 'revshare']).optional(),
+  /** Where the business is based (ISO 3166-1 alpha-2). The hosted platform
+   *  does not serve some countries (country-access.ts). */
+  country: countryCodeSchema(),
+  /** Ukraine only: the business is outside the occupied regions. */
+  outsideOccupiedRegions: z.boolean().optional(),
 });
 
 class SignupGuardError extends Error {
@@ -72,6 +83,18 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
 
   if (RESERVED_SLUGS.has(slug)) {
     return res.status(409).json({ error: 'slug_reserved' });
+  }
+
+  // Countries the platform doesn't serve: refused before anything is
+  // created, on the declared country or where the request comes from.
+  const location = await checkCountryAccess(db, {
+    declared: body.data.country,
+    ip: req.ip,
+    outsideOccupiedRegions: body.data.outsideOccupiedRegions,
+  });
+  if (!location.ok) {
+    console.warn('[signup] country refused', { via: location.via, ipCountry: location.ipCountry });
+    return res.status(countryAccessStatus(location.error)).json({ error: location.error });
   }
 
   // Signup blocklist (anti-spam): a banned admin email or email domain is
@@ -167,6 +190,17 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
     }
     throw err;
   }
+
+  await recordLocationDeclaration(db, {
+    subjectKind: 'tenant',
+    subjectId: tenantId,
+    tenantId,
+    country: body.data.country,
+    outsideOccupiedRegions: body.data.outsideOccupiedRegions ?? null,
+    ipCountry: location.ipCountry,
+    source: 'signup',
+    declaredByEmail: adminEmail,
+  });
 
   // Email the activation magic link. If this fails the Tenant + Admin row
   // remain — the operator can hit /admins/:id/invite later (after first

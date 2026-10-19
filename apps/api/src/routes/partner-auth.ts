@@ -32,6 +32,10 @@ import { tenantOf } from '../tenancy.js';
 import { onCommit } from '../on-commit.js';
 import { isPendingReview, partnerReviewOf } from '../partner-review.js';
 import type { WebhookPayload } from '../openapi/webhook-events.js';
+// The privileged pool: the country rules live in PlatformSetting, which the
+// app role can't read. Used for that lookup only.
+import { db as platformDb } from '../db.js';
+import { requireServedCountry } from '../country-access.js';
 
 export const partnerAuthRouter = Router();
 
@@ -43,7 +47,7 @@ const verifySchema = z.object({ token: z.string().min(8) });
 
 // -------- Signin --------
 
-partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
+partnerAuthRouter.post('/auth/signin', mailAuthLimit, requireServedCountry(platformDb, 'tenant-signin'), async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = signinSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
@@ -111,7 +115,7 @@ partnerAuthRouter.post('/auth/signin', mailAuthLimit, async (req, res) => {
 
 // -------- Verify --------
 
-partnerAuthRouter.post('/auth/magic/verify', verifyLimit, async (req, res) => {
+partnerAuthRouter.post('/auth/magic/verify', verifyLimit, requireServedCountry(platformDb, 'tenant-verify'), async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const body = verifySchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });

@@ -4,6 +4,7 @@ import { KeyRound, Mail } from 'lucide-react';
 import { api, clearApiKey, setApiKey, ApiError, type Principal } from '../../api.js';
 import { useTenantBase } from '../../tenant-base.js';
 import { alpha, softText, theme } from '../../theme.js';
+import { countryErrorMessage } from '../../lib/CountryField.js';
 import { Logo, AuthFrame } from './Shared.js';
 
 type Tab = 'email' | 'key';
@@ -66,7 +67,8 @@ function EmailTab() {
       await api('/auth/signin', { method: 'POST', body: { email } });
       setSent(true);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Something went wrong.');
+      const message = e instanceof Error ? e.message : 'Something went wrong.';
+      setErr(countryErrorMessage(message) ?? message);
     } finally {
       setBusy(false);
     }

@@ -601,6 +601,21 @@ export interface EmailOptOutRow {
   createdAt: Date;
 }
 
+/** Where a brand or partner said it is based (platform-scoped compliance
+ *  record, append-only; migration 20261019000000). */
+export interface LocationDeclarationRow {
+  id: string;
+  subjectKind: 'tenant' | 'partner';
+  subjectId: string;
+  tenantId: string;
+  country: string;
+  outsideOccupiedRegions: boolean | null;
+  ipCountry: string | null;
+  source: 'signup' | 'add_brand' | 'prompt' | 'join';
+  declaredByEmail: string | null;
+  createdAt: Date;
+}
+
 export interface ProgramRow {
   id: string;
   tenantId: string;

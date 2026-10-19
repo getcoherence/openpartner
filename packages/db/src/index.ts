@@ -51,6 +51,8 @@ export {
   isHttpUrl,
 } from './partner-application.js';
 export type { AudienceSize, PartnerApplication } from './partner-application.js';
+export { COUNTRY_CODES, OCCUPIED_REGION_COUNTRY, isCountryCode } from './countries.js';
+export type { CountryCode } from './countries.js';
 
 export interface DbConfig {
   connectionString: string;
@@ -105,6 +107,7 @@ export const TABLES = {
   PlatformSetting: 'PlatformSetting',
   BrandNotification: 'BrandNotification',
   EmailOptOut: 'EmailOptOut',
+  LocationDeclaration: 'LocationDeclaration',
   Partner: 'Partner',
   Program: 'Program',
   PartnerProgram: 'PartnerProgram',

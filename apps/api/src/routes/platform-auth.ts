@@ -19,6 +19,13 @@ import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
 import { newTrialEnd } from '../billing-plan.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { autoEnrollBrandOnNetwork } from './signup.js';
+import {
+  checkCountryAccess,
+  countryAccessStatus,
+  countryCodeSchema,
+  recordLocationDeclaration,
+  requireServedCountry,
+} from '../country-access.js';
 import { notifyOpsNewBrand } from '../brand-review.js';
 import {
   attachSessionToBundle,
@@ -49,7 +56,9 @@ function readBundleCookie(req: Request): string | null {
 
 // -------- Verify the platform magic-link token --------
 
-platformAuthRouter.post('/auth/platform-verify', async (req, res) => {
+const platformVerifyCountry = requireServedCountry(db, 'platform-verify');
+
+platformAuthRouter.post('/auth/platform-verify', platformVerifyCountry, async (req, res) => {
   const body = verifySchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
@@ -194,6 +203,9 @@ const addBrandSchema = z.object({
    *  a Stripe subscription, so accepting it here would let anyone
    *  self-declare past the plan-required gate. */
   plan: z.enum(['flex', 'revshare']),
+  /** Where the business is based — same rule as public signup. */
+  country: countryCodeSchema(),
+  outsideOccupiedRegions: z.boolean().optional(),
 });
 
 class AddBrandError extends Error {
@@ -227,6 +239,16 @@ platformAuthRouter.post('/me/brands', addBrandLimit, async (req, res) => {
 
   const slug = body.data.slug.toLowerCase();
   if (RESERVED_SLUGS.has(slug)) return res.status(409).json({ error: 'slug_reserved' });
+
+  const location = await checkCountryAccess(db, {
+    declared: body.data.country,
+    ip: req.ip,
+    outsideOccupiedRegions: body.data.outsideOccupiedRegions,
+  });
+  if (!location.ok) {
+    console.warn('[add-brand] country refused', { via: location.via, ipCountry: location.ipCountry });
+    return res.status(countryAccessStatus(location.error)).json({ error: location.error });
+  }
 
   const email = platform.email;
   // Reuse the person's display name from any brand they already admin;
@@ -286,6 +308,17 @@ platformAuthRouter.post('/me/brands', addBrandLimit, async (req, res) => {
     }
     throw err;
   }
+
+  await recordLocationDeclaration(db, {
+    subjectKind: 'tenant',
+    subjectId: tenantId,
+    tenantId,
+    country: body.data.country,
+    outsideOccupiedRegions: body.data.outsideOccupiedRegions ?? null,
+    ipCountry: location.ipCountry,
+    source: 'add_brand',
+    declaredByEmail: email,
+  });
 
   const network = await autoEnrollBrandOnNetwork({
     tenantId,

@@ -29,6 +29,7 @@ import { PLATFORM_SESSION_COOKIE, resolvePlatformSession } from '../platform-ses
 import { getPortalBaseUrl } from '../portal-url.js';
 import { getTenancyMode } from '../tenancy.js';
 import { isAllowedOperator } from './platform-admin.js';
+import { requireServedCountry } from '../country-access.js';
 
 export const signinRouter = Router();
 
@@ -44,7 +45,7 @@ const schema = z.object({
   add: z.boolean().optional(),
 });
 
-signinRouter.post('/signin', signinLimit, async (req, res) => {
+signinRouter.post('/signin', signinLimit, requireServedCountry(db, 'signin'), async (req, res) => {
   if (getTenancyMode() !== 'multi') {
     return res.status(400).json({ error: 'use_per_tenant_signin' });
   }
