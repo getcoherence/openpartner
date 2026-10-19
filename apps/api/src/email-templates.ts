@@ -553,6 +553,29 @@ export function opsTenantInvoicePaymentFailedEmail(
   };
 }
 
+/** Platform ops: the nightly hard delete failed for brands whose 30-day
+ *  deletion grace window has lapsed. Their data is still on file. */
+export function opsTenantPurgeFailedEmail(
+  failures: Array<{ tenantId: string; slug: string; displayName: string; pendingDeletionAt: Date; error: string }>,
+): EmailTemplate {
+  const n = failures.length;
+  const subject =
+    n === 1
+      ? `[Deletion] Hard delete failed for ${failures[0]!.displayName} (${failures[0]!.slug})`
+      : `[Deletion] Hard delete failed for ${n} brands`;
+  const text = [
+    `The nightly hard delete failed for ${n === 1 ? 'a brand' : `${n} brands`} past the 30-day deletion grace window.`,
+    `Each purge rolled back, so ${n === 1 ? 'its' : 'their'} data is still on file. The job retries daily.`,
+    ``,
+    ...failures.flatMap((f) => [
+      `  ${f.displayName} (${f.slug}), tenant ${f.tenantId}`,
+      `    Deletion requested: ${f.pendingDeletionAt.toISOString().slice(0, 10)}`,
+      `    Error: ${f.error}`,
+    ]),
+  ].join('\n');
+  return { subject, text, html: plainHtml(text) };
+}
+
 // ---------------------------------------------------------------------------
 // Platform → brand: setup reminders + marketplace policy notices. Sent in the
 // platform voice (Message.platform), never brand-branded.

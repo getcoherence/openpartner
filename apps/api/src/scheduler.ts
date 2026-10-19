@@ -376,46 +376,94 @@ export async function runPerformanceBountiesJob() {
   );
 }
 
+/**
+ * Every table with a tenantId column, in the order the tenant purge
+ * deletes from them. Each table comes before every table it references
+ * without ON DELETE CASCADE. The Tenant row is dropped last.
+ *
+ * Tables whose Tenant FK cascades are listed too. The cascade fires only
+ * when the Tenant row goes, which is too late for a row that also points
+ * at a non-cascading parent deleted earlier (the funding and clawback
+ * tables below). Coupon has no Tenant FK at all.
+ *
+ * A new tenant-scoped table must be added here: the tenant-purge test
+ * reads the catalog and fails until it is.
+ */
+export const TENANT_PURGE_ORDER = [
+  TABLES.NetworkOutbox,
+  TABLES.WebhookDelivery,
+  // After WebhookDelivery (WebhookDelivery.endpointId).
+  TABLES.WebhookEndpoint,
+  TABLES.Session,
+  TABLES.MagicLinkToken,
+  TABLES.ApiKey,
+  TABLES.ConversionPostbackToken,
+  TABLES.Config,
+  TABLES.BrandNotification,
+  TABLES.OperatorRecoveryRequest,
+  TABLES.UsageLedger,
+  TABLES.UsageFeeShadow,
+  TABLES.HostedFeeTerms,
+  TABLES.HostedBillingState,
+  TABLES.TenantStripeConnection,
+  TABLES.PortalCustomDomain,
+  // Before Payout (PayoutReversal.payoutId).
+  TABLES.PayoutReversal,
+  // Before Commission (CommissionAdjustment.commissionId).
+  TABLES.CommissionAdjustment,
+  // Before Commission and Partner (commissionId, partnerId), and before
+  // its batch.
+  TABLES.HostedFundingAllocation,
+  // Before Partner (partnerId), and before its batch.
+  TABLES.HostedFundingTransfer,
+  TABLES.HostedFundingBatch,
+  // Before Admin (HostedFundingAuthorization.adminId).
+  TABLES.HostedFundingAuthorization,
+  TABLES.Payout,
+  TABLES.Commission,
+  // After its Commission (Commission.bonusId), before Partner and
+  // Program, which it references without a cascade.
+  TABLES.Bonus,
+  // After Bonus (Bonus.bountyId), before Program.
+  TABLES.Bounty,
+  TABLES.Attribution,
+  TABLES.Event,
+  TABLES.Identity,
+  TABLES.Click,
+  TABLES.Link,
+  TABLES.Coupon,
+  TABLES.PartnerProgram,
+  TABLES.PartnerCommission,
+  TABLES.PartnerPostback,
+  TABLES.PartnerNetworkConsent,
+  TABLES.Program,
+  TABLES.Partner,
+  TABLES.Admin,
+  TABLES.BrandAsset,
+] as const;
+
 /** Cascade-delete tenants whose pendingDeletionAt is older than the
  *  grace window. Runs in the privileged db (we need to bypass RLS to
- *  drop child rows in any tenant's slice). */
-async function hardDeleteExpiredTenants(): Promise<{ purged: number; tenantIds: string[] }> {
+ *  drop child rows in any tenant's slice).
+ *
+ *  A tenant whose purge fails rolls back and is retried on the next run.
+ *  Each run that has failures sends ops one email listing them, so a
+ *  stuck erasure keeps showing up in the inbox until someone fixes it. */
+export async function hardDeleteExpiredTenants(): Promise<{
+  purged: number;
+  tenantIds: string[];
+  failed: Array<{ tenantId: string; error: string }>;
+}> {
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const expired = await db<TenantRow>(TABLES.Tenant)
     .where('pendingDeletionAt', '<', cutoff)
-    .select('id');
+    .select('id', 'slug', 'displayName', 'pendingDeletionAt');
   const tenantIds: string[] = [];
-  // Tenanted tables to wipe, all tagged with tenantId. Children before the
-  // parents they reference without a cascade. Tenant row is dropped last.
-  const TENANTED_TABLES = [
-    TABLES.NetworkOutbox,
-    TABLES.WebhookDelivery,
-    TABLES.WebhookEndpoint,
-    TABLES.Session,
-    TABLES.MagicLinkToken,
-    TABLES.ApiKey,
-    TABLES.Config,
-    TABLES.Payout,
-    TABLES.Commission,
-    // After its Commission (Commission.bonusId), before Partner and
-    // Program, which it references without a cascade.
-    TABLES.Bonus,
-    // After Bonus (Bonus.bountyId), before Program.
-    TABLES.Bounty,
-    TABLES.Attribution,
-    TABLES.Event,
-    TABLES.Identity,
-    TABLES.Click,
-    TABLES.Link,
-    TABLES.Program,
-    TABLES.Partner,
-    TABLES.Admin,
-    TABLES.BrandAsset,
-  ];
+  const failures: Array<{ tenantId: string; slug: string; displayName: string; pendingDeletionAt: Date; error: string }> = [];
   for (const t of expired) {
     try {
       await db.transaction(async (trx) => {
-        for (const tbl of TENANTED_TABLES) {
+        for (const tbl of TENANT_PURGE_ORDER) {
           await trx(tbl).where({ tenantId: t.id }).del();
         }
         await trx<TenantRow>(TABLES.Tenant).where({ id: t.id }).del();
@@ -423,9 +471,25 @@ async function hardDeleteExpiredTenants(): Promise<{ purged: number; tenantIds: 
       tenantIds.push(t.id);
     } catch (err) {
       console.error('[scheduler] hard-delete failed', { tenantId: t.id, err });
+      failures.push({
+        tenantId: t.id,
+        slug: t.slug,
+        displayName: t.displayName,
+        pendingDeletionAt: t.pendingDeletionAt!,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
-  return { purged: tenantIds.length, tenantIds };
+  if (failures.length > 0) {
+    const { sendOpsEmail } = await import('./platform-ops-mail.js');
+    const { opsTenantPurgeFailedEmail } = await import('./email-templates.js');
+    await sendOpsEmail(db, opsTenantPurgeFailedEmail(failures), 'ops_tenant_purge_failed');
+  }
+  return {
+    purged: tenantIds.length,
+    tenantIds,
+    failed: failures.map(({ tenantId, error }) => ({ tenantId, error })),
+  };
 }
 
 let started = false;
