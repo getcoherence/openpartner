@@ -49,6 +49,7 @@ const calls: CapturedCall[] = [];
 const TABLES_TO_CLEAN = [
   TABLES.PartnerPostback,
   TABLES.Commission,
+  TABLES.Bonus,
   TABLES.Attribution,
   TABLES.Event,
   TABLES.Identity,
@@ -336,5 +337,45 @@ describe.skipIf(skipIntegration)('partner postback', () => {
       expect(call.url).toContain('et=invoice_paid');
       expect(call.url).toContain(`prog=${programId}`);
     }
+  });
+
+  it('fires bonus.awarded with the bonus macros; a bonus has no click to fill', async () => {
+    const partnerRes = await request(app)
+      .post('/partners')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ email: 'pb-bonus@example.com', name: 'Bonus' });
+    const partnerId = partnerRes.body.id;
+    await db<PartnerPostbackRow>(TABLES.PartnerPostback).insert({
+      id: ulid(),
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId,
+      url: `${receiverUrl}/bonus?b={bonus_id}&amt={bonus_amount}&cur={currency}&bounty={bounty_id}&cid={click_id}`,
+      events: JSON.stringify(['bonus.awarded']) as never,
+      enabled: true,
+    });
+    // And one on commission.approved, which a bonus must never fire.
+    await db<PartnerPostbackRow>(TABLES.PartnerPostback).insert({
+      id: ulid(),
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId,
+      url: `${receiverUrl}/commission.approved`,
+      events: JSON.stringify(['commission.approved']) as never,
+      enabled: true,
+    });
+
+    const res = await request(app)
+      .post('/bonuses')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ partnerId, amount: 12.5, currency: 'EUR' });
+    expect(res.status).toBe(201);
+    const call = await waitFor(async () => calls.find((c) => c.url.startsWith('/bonus?')));
+    expect(call.url).toContain(`b=${res.body.bonus.id}`);
+    expect(call.url).toContain('amt=12.50');
+    expect(call.url).toContain('cur=EUR');
+    // No bounty and no click: unknown values stay literal, as for any macro.
+    expect(call.url).toContain('bounty={bounty_id}');
+    expect(call.url).toContain('cid={click_id}');
+    await new Promise((r) => setTimeout(r, 200));
+    expect(calls.filter((c) => c.url.startsWith('/commission.approved'))).toHaveLength(0);
   });
 });

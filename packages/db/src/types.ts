@@ -791,7 +791,10 @@ export interface AttributionRow {
 export interface CommissionRow {
   id: string;
   tenantId: string;
-  attributionId: string;
+  /** Exactly one of attributionId / bonusId is set (a CHECK enforces it):
+   *  an attributed sale's commission, or a bonus's (BonusRow). */
+  attributionId: string | null;
+  bonusId: string | null;
   partnerId: string;
   amount: string; // decimal as string
   currency: string;
@@ -805,6 +808,68 @@ export interface CommissionRow {
    *  band or tier set the rate; `refund` on a replacement accrued for the
    *  share a partial refund left (refunds.ts). */
   metadata: Record<string, unknown>;
+}
+
+/** Where a bonus came from. A plain string in the database, so a new
+ *  source needs no migration (apps/api/src/bonuses.ts validates it). */
+export type BonusSource = 'manual' | 'performance_bounty' | 'network';
+
+/** CORE + portable: a reward paid to a partner that isn't tied to an
+ *  attributed sale (docs/bounties.md). Immutable; each has exactly one
+ *  Commission (CommissionRow.bonusId), and reversing the bonus reverses it. */
+export interface BonusRow {
+  id: string;
+  tenantId: string;
+  partnerId: string;
+  /** Holdback and earnings-by-program come from here. */
+  programId: string | null;
+  amount: string; // decimal as string, > 0
+  currency: string;
+  source: BonusSource | (string & {});
+  /** Set when source = 'performance_bounty'. */
+  bountyId: string | null;
+  /** Caller's idempotency key, unique per (tenant, source) where set. */
+  externalRef: string | null;
+  /** Shown to the partner. */
+  note: string | null;
+  /** Admin id or API key id that awarded it; null for the bounty sweep. */
+  createdBy: string | null;
+  createdAt: Date;
+}
+
+export type BountyMetric = 'conversions' | 'revenue' | 'leads' | 'commissions';
+export type BountyScope = 'new' | 'lifetime';
+export type BountyStatus = 'draft' | 'active' | 'ended' | 'archived';
+
+/** CORE + portable: a goal on a program that pays a bonus (BonusRow, source
+ *  'performance_bounty') once a partner reaches it (docs/bounties.md §7).
+ *  A partner earns a bounty once. */
+export interface BountyRow {
+  id: string;
+  tenantId: string;
+  programId: string;
+  name: string;
+  /** Shown to partners. Plain text, at most 5,000 characters. */
+  description: string | null;
+  metric: BountyMetric;
+  /** conversions / revenue only: count this event type only. */
+  eventType: string | null;
+  threshold: string; // decimal as string; a currency amount for revenue/commissions
+  /** new: activity in [startsAt, endsAt). lifetime: all history before endsAt. */
+  scope: BountyScope;
+  startsAt: Date;
+  endsAt: Date | null;
+  rewardAmount: string; // decimal as string
+  currency: string;
+  /** Null: every partner in the program. Else an allowlist of partner ids. */
+  partnerIds: string[] | null;
+  status: BountyStatus;
+  createdAt: Date;
+  updatedAt: Date;
+  endedAt: Date | null;
+  /** Stamps for the "bounty started" and "ending soon" partner emails. */
+  startNotifiedAt: Date | null;
+  endingSoonNotifiedAt: Date | null;
 }
 
 export interface ConfigRow {
@@ -821,6 +886,7 @@ export type ApiScope =
   | 'links:write'
   | 'commissions:read'
   | 'payouts:read'
+  | 'bonuses:write'
   | (string & {}); // permit future additions without a migration
 
 export interface ApiKeyRow {
@@ -858,6 +924,10 @@ export type WebhookEventType =
   | 'commission.approved'
   | 'commission.paid'
   | 'commission.reversed'
+  | 'bonus.awarded'
+  | 'bonus.approved'
+  | 'bonus.paid'
+  | 'bonus.reversed'
   | 'partner.created'
   | 'partner.activated'
   | 'partnership.approved'
@@ -912,12 +982,14 @@ export interface PayoutRow {
 // ---- Partner postbacks ----
 
 /** Events a partner postback can subscribe to. Restricted to the
- *  conversion ledger; partner-state events stay tenant-scoped. */
+ *  partner's own earnings; partner-state events stay tenant-scoped. */
 export type PartnerPostbackEvent =
   | 'commission.accrued'
   | 'commission.approved'
   | 'commission.paid'
-  | 'commission.reversed';
+  | 'commission.reversed'
+  | 'bonus.awarded'
+  | 'bonus.paid';
 
 export interface PartnerPostbackRow {
   id: string;
@@ -1163,7 +1235,9 @@ export interface CommissionAdjustmentRow {
 export interface UsageLedgerRow {
   id: string;
   tenantId: string;
-  eventId: string;
+  /** Exactly one of eventId / bonusId: the conversion or bonus billed. */
+  eventId: string | null;
+  bonusId: string | null;
   /** The report that carried the row (`<meter identifier>@<run time>`),
    *  or op-usage-opening-<tenant> for the cutover balance. */
   reportKey: string;

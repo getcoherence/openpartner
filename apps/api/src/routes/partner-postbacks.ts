@@ -6,9 +6,10 @@
  * `requirePartnerOrAdmin('id')` guard scopes access to the partner
  * named in the URL.
  *
- * Allowlist-only: events must be commission.* (the conversion ledger).
- * partner-state events stay tenant-scoped via the WebhookEndpoint
- * surface and don't make sense to send to an affiliate tracker.
+ * Allowlist-only: events must be the partner's own earnings, commission.*
+ * (the conversion ledger) or bonus.awarded / bonus.paid. partner-state
+ * events stay tenant-scoped via the WebhookEndpoint surface and don't make
+ * sense to send to an affiliate tracker.
  */
 
 import { Router } from 'express';
@@ -28,7 +29,7 @@ const URL_MAX = 2048;
 
 const eventSchema = z
   .string()
-  .refine(isPostbackEvent, { message: 'event must be one of commission.*' });
+  .refine(isPostbackEvent, { message: 'event must be one of commission.*, bonus.awarded or bonus.paid' });
 
 const createSchema = z.object({
   url: z.string().url().max(URL_MAX),

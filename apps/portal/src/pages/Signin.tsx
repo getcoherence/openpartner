@@ -49,7 +49,14 @@ export function SigninPage() {
 
   if (sent) {
     return (
-      <AuthFrame title="Check your inbox" subtitle={`If we found accounts for ${email}, we just emailed sign-in links.`}>
+      <AuthFrame
+        title="Check your inbox"
+        subtitle={
+          addMode
+            ? `If ${email} is an admin on a brand, we just emailed it a sign-in link. If it isn’t, we emailed it to say so.`
+            : `If we found accounts for ${email}, we just emailed sign-in links.`
+        }
+      >
         <div style={{ background: theme.successSoft, border: `1px solid ${alpha(theme.success, 0.333)}`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
           The link is good for 15 minutes. If you have both a brand and a creator account, you&rsquo;ll get one email for each.
         </div>

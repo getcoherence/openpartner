@@ -15,6 +15,7 @@
  *   - POST /config/network/start-connect|complete-connect, and
  *     POST /config/network carrying a token/URL   (re-federate under a
  *                                                  different vendor identity)
+ *   - POST /bonuses                               (pay a partner a bonus)
  *
  * The click router refuses to serve links for an unapproved brand
  * separately (apps/router), so no attribution data is collected either.
@@ -57,6 +58,8 @@ const GO_LIVE_ROUTES: GatedRoute[] = [
   { method: 'POST', test: (p) => /^\/admin\/network\/requests\/[^/]+\/approve$/.test(p) },
   { method: 'POST', test: (p) => p === '/config/network/start-connect' },
   { method: 'POST', test: (p) => p === '/config/network/complete-connect' },
+  // Moves money to a partner.
+  { method: 'POST', test: (p) => p === '/bonuses' },
   {
     method: 'POST',
     test: (p) => p === '/config/network',

@@ -21,6 +21,9 @@ export const NETWORK_FEDERATION_SCOPES = [
   // Network pushes federated clicks (creator-domain traffic) back to
   // the vendor instance so brand-side analytics still see them.
   'clicks:write',
+  // Network bounties pay out through POST /bonuses. Keys issued before
+  // this was added get it from POST /config/network/authorize-bonuses.
+  'bonuses:write',
 ] as const;
 
 export const apiKeysRouter = Router();

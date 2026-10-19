@@ -6,7 +6,7 @@
   "description": "Partner dashboard. Links, clicks, attributed revenue, commissions, payouts.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p tsconfig.json && vite build",
+    "build": "pnpm --filter @openpartner/sdk build:global && tsc -p tsconfig.json && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
@@ -28,6 +28,6 @@
     "jsdom": "^29.0.2",
     "typescript": "6.0.3",
     "vite": "^6.4.4",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.12"
   }
 }

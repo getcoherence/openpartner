@@ -16,6 +16,10 @@ describe('isGoLiveRoute', () => {
     expect(isGoLiveRoute('POST', '/admin/network/offerings')).toBe(true);
     expect(isGoLiveRoute('POST', '/admin/network/requests/req_123/approve')).toBe(true);
     expect(isGoLiveRoute('POST', '/admin/network/offerings/off_1/invite-creator')).toBe(true);
+    // Paying a bonus moves money to a partner.
+    expect(isGoLiveRoute('POST', '/bonuses')).toBe(true);
+    expect(isGoLiveRoute('POST', '/Bonuses/')).toBe(true);
+    expect(isGoLiveRoute('GET', '/bonuses')).toBe(false);
   });
 
   it('cannot be bypassed with case or a trailing slash (Express routes both)', () => {

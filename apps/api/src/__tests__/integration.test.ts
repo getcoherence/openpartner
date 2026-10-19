@@ -380,7 +380,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
       .get('/export.json')
       .set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(exportRes.status).toBe(200);
-    expect(exportRes.body.schemaVersion).toBe(5);
+    expect(exportRes.body.schemaVersion).toBe(7);
     expect(exportRes.body.tables.Partner).toHaveLength(1);
 
     // Wipe, re-import.
