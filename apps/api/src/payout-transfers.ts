@@ -46,6 +46,7 @@ import { dispatchEvent } from './webhook-dispatcher.js';
 import type { WebhookPayload } from './openapi/webhook-events.js';
 import { dispatchCommissionEvents } from './commission-events.js';
 import { nettedClawbackCents, nettingPayloadFields, releaseNettedClawbacks } from './clawback-netting.js';
+import { partnerPayoutHolds, type PayoutHold } from './sanctions-screening.js';
 
 /** Stripe replays a key for ~24h; past that a re-POST is a NEW charge, so
  *  ambiguity has to be resolved by listing instead. Matches
@@ -337,6 +338,20 @@ async function advanceIntent(
       await reconcileIntent(db, stripe, moved, result);
       return;
     }
+    // A compliance hold that appeared after the first POST. The transfer
+    // may already exist, so the intent can't be abandoned and its claims
+    // stay frozen. But a re-POST is the one call that could still create
+    // it, so none is made while the hold stands. The intent stays `posted`
+    // until the hold lifts (the retry resumes) or the key window lapses
+    // (the branch above reconciles by listing, which never posts).
+    const hold = await complianceHold(db, payout);
+    if (hold) {
+      console.error(
+        `[payouts] ALERT: partner ${payout.partnerId} is on a compliance hold (${hold.reason}) with payout ${payout.id} already posted — not re-posting; the transfer may exist at Stripe`,
+      );
+      result.skipped += 1;
+      return;
+    }
     // Inside the window: re-POSTing the frozen key is safe — Stripe
     // replays the original outcome rather than creating a second transfer.
     // Take the retry as a LEASE first, though. The swap is on the exact
@@ -418,6 +433,12 @@ async function preflight(
   const partner = (await db<PartnerRow>(TABLES.Partner)
     .where({ id: payout.partnerId })
     .first()) as PartnerRow | undefined;
+  // A compliance hold that appeared after planning (a daily rescreen, a
+  // newly blocked country). The planner never froze a held partner's
+  // commissions, so releasing these claims puts them back where it would
+  // have left them: approved, unclaimed, and held by the next run.
+  const hold = partner ? (await partnerPayoutHolds(db, payout.tenantId, [partner])).get(partner.id) : undefined;
+  if (hold) return `compliance_hold:${hold.reason}`;
   const stripeMeta = (partner?.metadata ?? {}) as { stripe?: { payoutsEnabled?: boolean } };
   if (
     !partner ||
@@ -427,6 +448,17 @@ async function preflight(
     return 'stripe_onboarding_incomplete';
   }
   return null;
+}
+
+/** The partner's compliance hold, if any (sanctions-screening.ts). `db` is
+ *  the privileged pool the executor already runs on, which the hold
+ *  records need. */
+async function complianceHold(db: Knex, payout: PayoutRow): Promise<PayoutHold | undefined> {
+  const partner = (await db<PartnerRow>(TABLES.Partner)
+    .where({ id: payout.partnerId })
+    .first(['id', 'name'])) as Pick<PartnerRow, 'id' | 'name'> | undefined;
+  if (!partner) return undefined;
+  return (await partnerPayoutHolds(db, payout.tenantId, [partner])).get(partner.id);
 }
 
 async function postTransfer(

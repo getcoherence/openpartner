@@ -75,7 +75,8 @@ when any of these is true:
 | `screening_pending` | screening is on but hasn't answered for their current name yet: never screened, only errors so far, or renamed since |
 
 The check sits right after the planner resolves the partner's rail, before
-anything is claimed, netted or reserved:
+anything is claimed, netted or reserved. Both executors check again before
+they post (see *Holds that appear after planning* below):
 
 - **Direct Connect and the funded rail:** no intent, no batch reservation,
   no Payout row. The commissions stay `approved` and unclaimed, the group
@@ -91,13 +92,46 @@ the hold looks at the latest answer, and an error isn't one.
 Brand admins see held partners on the Payouts page (`GET /payouts/holds`).
 Ops see every held partner across brands on the Screening page.
 
-**Not covered: money already in flight.** The hold stops new intents and
-new funding reservations. A direct-Connect intent, or a funded batch, that
-was planned before the hold appeared still executes. Direct intents
-normally execute within minutes of planning. A funded batch waits days for
-the brand's payment to settle, and a daily rescreen can flag a partner
-inside that window. Stopping that would mean a release path in the funding
-executor (docs/payout-funding.md), which is a separate change.
+### Holds that appear after planning
+
+A payout can be planned before its partner is held: a daily rescreen or a
+newly blocked country can land between planning and the transfer. Direct
+intents usually execute within minutes, but a funded batch waits days for
+the brand's payment to settle. So both executors check the hold again
+before they post a transfer:
+
+- **Direct Connect** (`executePayoutTransfers`,
+  [direct-connect-payouts.md](direct-connect-payouts.md)): an intent that
+  hasn't been posted fails preflight with `compliance_hold:<reason>`. The
+  existing cancel path releases its claims, so the payout is `failed`, the
+  intent `canceled`, and the commissions `approved` and unclaimed. That's
+  where the planner would have left them, and the next run holds them.
+- **Funded batch** (`runTransferExecutor`,
+  [payout-funding.md](payout-funding.md)): while nothing for the partner
+  has reached Stripe (no transfer intent yet, or one Stripe refused), their
+  allocations go to `canceled`. Any intent is closed as `failed` with
+  `compliance_hold:<reason>`. That's the existing residual path (§7.4): the
+  rest of the batch transfers, the batch settles `settled_with_residual`,
+  and `residualMinor` holds the partner's share for an operator to dispose
+  of. Ops get one email per executor run listing every stopped partner,
+  plus a console ALERT. The commissions stay `approved`. Reservation won't
+  take them again until the batch's `residualDisposition` is `refund` or
+  `credit_next_batch`. Re-batching earlier would charge the brand twice.
+  Don't dispose of a held partner's residual as `manual_payout`, which
+  pays them by hand and keeps the commissions out of batches for good.
+- **Already posted, on either rail:** the transfer may exist at Stripe, so
+  the intent can't be canceled and its commissions stay claimed. But a
+  re-POST of the frozen key is the one call that could still create it, so
+  none is made while the hold stands. If the hold lifts, the retry resumes
+  on the same key. If it doesn't, the key window lapses and the intent
+  reconciles by listing, as any ambiguous intent does: a transfer that
+  landed is recorded; on the direct rail an empty listing is held for an
+  operator, and on the funded rail it re-arms, which the hold check then
+  stops.
+
+What the executors can't stop is a transfer already posted: a hold that
+appears after the POST is too late. The only unchecked window left is the
+moment between an executor's hold check and its POST.
 
 ## Records
 
@@ -151,6 +185,10 @@ timeout.
 
 - Brands are screened once per name, not re-screened daily like payable
   partners.
-- In-flight funded batches and direct intents (see above).
+- A transfer already posted when the hold appears (see *Holds that appear
+  after planning*). It isn't re-posted, but it may already have landed.
+- Residual dispositions have no ops-console action yet. An operator
+  refunds the residual in Stripe and sets the batch's
+  `residualDisposition` by hand, as for any other residual.
 - The Network's own creator signup.
 - The 85 threshold is a constant, not an ops setting.

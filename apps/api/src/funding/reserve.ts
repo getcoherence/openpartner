@@ -93,6 +93,21 @@ export async function reserveFundingBatch(
         .whereRaw('"HostedFundingAllocation"."commissionId" = "Commission"."id"')
         .whereNotIn('state', ['released', 'canceled']),
     )
+    // Nor in a residual nobody has disposed of (spec §7.4). An allocation
+    // canceled on a batch that went on to collect (a compliance hold
+    // stopped its transfer, funding/executor.ts) leaves the commission
+    // approved while the brand's money for it sits in that batch.
+    // Re-batching before the residual is refunded or credited would charge
+    // the brand twice, and after a manual payout it would pay twice. A
+    // released batch collected nothing, so it holds no residual.
+    .whereNotExists(
+      trx({ ca: TABLES.HostedFundingAllocation })
+        .join({ cb: TABLES.HostedFundingBatch }, 'cb.id', 'ca.batchId')
+        .whereRaw('"ca"."commissionId" = "Commission"."id"')
+        .where('ca.state', 'canceled')
+        .whereNot('cb.status', 'released')
+        .where((q) => q.whereNull('cb.residualDisposition').orWhere('cb.residualDisposition', 'manual_payout')),
+    )
     .forUpdate()
     .skipLocked()
     .select('id', 'partnerId', 'amount', 'currency')) as Pick<

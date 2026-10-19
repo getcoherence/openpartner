@@ -8,7 +8,8 @@
  *      possible match, confirmed match, not screened yet), on the direct
  *      Connect rail and the funded rail; the manual rail only warns; an
  *      operator's 'cleared' releases the hold. Also as the app role, which
- *      can't read the hold records itself.
+ *      can't read the hold records itself. And holds that appear after
+ *      planning, which the executors of both rails catch before posting.
  *   3. The sweep: first time payable, at most daily after, decisions
  *      carried across rescreens, and giving up when the API is down.
  *   4. Brands: signup screens in the background, ops review it, and a
@@ -25,8 +26,11 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import request from 'supertest';
 import { ulid } from 'ulid';
 import type { Knex } from 'knex';
+import type Stripe from 'stripe';
 import {
   TABLES,
+  type HostedFundingAllocationRow,
+  type HostedFundingBatchRow,
   type LocationDeclarationRow,
   type PlatformAdminRow,
   type SanctionsScreeningRow,
@@ -49,6 +53,8 @@ const { createApiKeyRow } = await import('../auth.js');
 const { setIpCountryLookupForTesting } = await import('../geoip.js');
 const { recordLocationDeclaration } = await import('../country-access.js');
 const { runPayouts } = await import('../payouts.js');
+const { executePayoutTransfers } = await import('../payout-transfers.js');
+const { runTransferExecutor } = await import('../funding/executor.js');
 const { __setMailerForTests } = await import('../mailer.js');
 const screening = await import('../sanctions-screening.js');
 const { createPlatformAdminSession, PLATFORM_ADMIN_SESSION_COOKIE } = await import(
@@ -183,6 +189,72 @@ async function review(id: string, decision: 'cleared' | 'confirmed_match', note?
 }
 
 const asAdmin = () => ({ Authorization: `Bearer ${adminKey}` });
+
+/** Put the tenant on the hosted funded rail: a plan, the flag, and a
+ *  funding authorization. */
+async function enableFundedRail(): Promise<void> {
+  await db(TABLES.Tenant)
+    .where({ id: tenant.id })
+    .update({ billingPlan: 'flex', stripeCustomerId: 'cus_test', stripeSubscriptionId: 'sub_test' });
+  process.env.HOSTED_FUNDING_ENABLED = '1';
+  await db(TABLES.HostedFundingAuthorization).insert({
+    id: ulid(),
+    tenantId: tenant.id,
+    adminId: null,
+    termsVersion: 'test',
+    stripePaymentMethodId: 'pm_x',
+    paymentMethodType: 'us_bank_account',
+    acceptedAt: new Date(),
+    revokedAt: null,
+  });
+}
+
+/** The brand's payment for the tenant's reserved batch settled: the state
+ *  the funding executor picks up. */
+async function fundOpenBatch(): Promise<HostedFundingBatchRow> {
+  const batch = (await db(TABLES.HostedFundingBatch).where({ tenantId: tenant.id, status: 'reserved' }).first()) as
+    | HostedFundingBatchRow
+    | undefined;
+  expect(batch).toBeDefined();
+  await db(TABLES.HostedFundingBatch)
+    .where({ id: batch!.id })
+    .update({ status: 'funded', stripeChargeId: `ch_${batch!.id.slice(0, 12)}`, fundedAt: new Date() });
+  return (await db(TABLES.HostedFundingBatch).where({ id: batch!.id }).first()) as HostedFundingBatchRow;
+}
+
+/** Stripe's transfers API, recording every call that could move money. */
+function stripeTransfers(createImpl?: () => Promise<never>) {
+  const created: Array<{ id: string; amount: number; currency: string; destination?: string; transfer_group?: string; metadata: Record<string, string> }> = [];
+  const create = vi.fn(
+    async (
+      params: { amount: number; currency: string; destination?: string; transfer_group?: string; metadata: Record<string, string> },
+      _opts?: { idempotencyKey?: string },
+    ) => {
+      if (createImpl) return createImpl();
+      const t = { id: `tr_${ulid()}`, ...params };
+      created.push(t);
+      return t;
+    },
+  );
+  const list = vi.fn(async () => ({ data: [], has_more: false }));
+  const retrieve = vi.fn(async (id: string) => created.find((t) => t.id === id) ?? { id, amount: 0, currency: 'usd', metadata: {} });
+  const stripe = { transfers: { create, list, retrieve } } as unknown as Stripe;
+  return { stripe, create, list };
+}
+
+/** Make these partners possible matches on tomorrow's daily rescreen
+ *  (one rescreen: a second the same day screens nobody). Returns the first
+ *  name's new screening. */
+async function flagOnRescreen(...names: string[]): Promise<SanctionsScreeningRow> {
+  names.forEach((name, i) => listed.set(name.toLowerCase(), [entry(name, `sdn-${i + 1}`)]));
+  const tomorrow = new Date(Date.now() + screening.RESCREEN_AFTER_MS + 60_000);
+  await screening.screenPayablePartners(db, { tenantId: tenant.id, now: tomorrow });
+  const rows = await db<SanctionsScreeningRow>(TABLES.SanctionsScreening)
+    .where({ tenantId: tenant.id, result: 'possible_match' })
+    .whereIn('screenedName', names);
+  expect(rows.map((r) => r.screenedName).sort()).toEqual([...names].sort());
+  return rows.find((r) => r.screenedName === names[0])!;
+}
 
 const TENANT_TABLES = [
   TABLES.HostedFundingTransfer,
@@ -509,20 +581,7 @@ describe.skipIf(skipIntegration)('payout holds', () => {
   });
 
   it('holds on the funded rail too: the held partner is never reserved', async () => {
-    await db(TABLES.Tenant)
-      .where({ id: tenant.id })
-      .update({ billingPlan: 'flex', stripeCustomerId: 'cus_test', stripeSubscriptionId: 'sub_test' });
-    process.env.HOSTED_FUNDING_ENABLED = '1';
-    await db(TABLES.HostedFundingAuthorization).insert({
-      id: ulid(),
-      tenantId: tenant.id,
-      adminId: null,
-      termsVersion: 'test',
-      stripePaymentMethodId: 'pm_x',
-      paymentMethodType: 'us_bank_account',
-      acceptedAt: new Date(),
-      revokedAt: null,
-    });
+    await enableFundedRail();
     const held = await seedPartner({ connect: true, name: 'Ivan Listed' });
     const heldCommission = await seedCommission(held);
     const clean = await seedPartner({ connect: true });
@@ -596,6 +655,190 @@ describe.skipIf(skipIntegration)('payout holds', () => {
     });
 
     expect(result.heldForCompliance.map((h) => h.reason)).toEqual(['country_not_supported']);
+  });
+});
+
+// A hold that appears after the planner ran: the daily rescreen, or a
+// country blocked later. The planner check can't see it, so each rail's
+// executor checks again before it posts a transfer.
+describe.skipIf(skipIntegration)('holds that appear after planning', () => {
+  it('cancels a direct-Connect intent, and its commissions go back to approved and unclaimed', async () => {
+    const partnerId = await seedPartner({ connect: true });
+    const commissionId = await seedCommission(partnerId);
+    await screening.screenPayablePartners(db, { tenantId: tenant.id });
+    const planned = await plan();
+    expect(planned.payouts).toMatchObject([{ partnerId, method: 'stripe_connect', status: 'pending' }]);
+    const payoutId = planned.payouts[0]!.payoutId;
+    expect((await commission(commissionId)).payoutId).toBe(payoutId);
+
+    await declare(partnerId, 'IR');
+    const { stripe, create } = stripeTransfers();
+    const result = await executePayoutTransfers(db, { tenantId: tenant.id, stripe });
+
+    expect(create).not.toHaveBeenCalled();
+    expect(result.canceled).toEqual([{ payoutId, reason: 'compliance_hold:country_not_supported' }]);
+    const payout = await db(TABLES.Payout).where({ id: payoutId }).first();
+    expect(payout.status).toBe('failed');
+    expect(payout.metadata).toMatchObject({ transferState: 'canceled', lastError: 'compliance_hold:country_not_supported' });
+    expect(await commission(commissionId)).toMatchObject({ status: 'approved', payoutId: null });
+
+    // The next run holds them like any held partner's: no new intent.
+    const next = await plan();
+    expect(next.heldForCompliance).toEqual([{ partnerId, currency: 'USD', amount: 50, reason: 'country_not_supported' }]);
+    expect(await db(TABLES.Payout).where({ partnerId })).toHaveLength(1);
+  });
+
+  it("doesn't re-post a direct-Connect intent that was already posted, and resumes once the hold lifts", async () => {
+    const partnerId = await seedPartner({ connect: true, name: 'Ivan Listed' });
+    const commissionId = await seedCommission(partnerId);
+    await screening.screenPayablePartners(db, { tenantId: tenant.id });
+    const payoutId = (await plan()).payouts[0]!.payoutId;
+    // The first POST went out an hour ago and its answer was lost: the
+    // transfer may exist. Past the retry cooldown, inside the key window.
+    const postedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    await db(TABLES.Payout)
+      .where({ id: payoutId })
+      .update({
+        metadata: db.raw(`"metadata" || ?::jsonb`, [
+          JSON.stringify({ transferState: 'posted', postedAt, leaseAt: postedAt, attempts: 1 }),
+        ]),
+      });
+
+    const flagged = await flagOnRescreen('Ivan Listed');
+    const { stripe, create, list } = stripeTransfers();
+    const held = await executePayoutTransfers(db, { tenantId: tenant.id, stripe });
+
+    expect(create).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+    expect(held).toMatchObject({ canceled: [], confirmed: [], skipped: 1 });
+    expect((await db(TABLES.Payout).where({ id: payoutId }).first()).metadata.transferState).toBe('posted');
+    // Not released: if the transfer exists, re-planning would pay twice.
+    expect(await commission(commissionId)).toMatchObject({ status: 'approved', payoutId });
+
+    expect((await review(flagged.id, 'cleared', 'Different person: the listed entry is a company')).status).toBe(200);
+    const resumed = await executePayoutTransfers(db, { tenantId: tenant.id, stripe });
+
+    expect(create).toHaveBeenCalledOnce();
+    expect(create.mock.calls[0]![1]).toMatchObject({ idempotencyKey: `payout_${payoutId}` });
+    expect(resumed.confirmed.map((c) => c.payoutId)).toEqual([payoutId]);
+    expect(await commission(commissionId)).toMatchObject({ status: 'paid', payoutId });
+  });
+
+  it('stops a funded transfer: allocations canceled, the batch settles with a residual, ops are emailed', async () => {
+    const sent: Array<{ to: string; subject: string; text: string; tag?: string }> = [];
+    await enableFundedRail();
+    const held = await seedPartner({ connect: true, name: 'Ivan Listed' });
+    const heldCommission = await seedCommission(held);
+    const clean = await seedPartner({ connect: true });
+    const cleanCommission = await seedCommission(clean, '30.00');
+    await screening.screenPayablePartners(db, { tenantId: tenant.id });
+    expect((await plan()).heldForCompliance).toEqual([]);
+    const batch = await fundOpenBatch();
+    expect(Number(batch.principalMinor)).toBe(8000);
+
+    // The daily rescreen flags one of them while the brand's payment settles.
+    const flagged = await flagOnRescreen('Ivan Listed');
+    __setMailerForTests({
+      send: async (_ctx, msg) => {
+        sent.push({ to: msg.to, subject: msg.subject, text: msg.text, tag: msg.tag });
+      },
+    });
+    process.env.PLATFORM_OPS_EMAIL = 'ops-inbox@openpartner.test';
+    try {
+      const { stripe, create } = stripeTransfers();
+      const result = await runTransferExecutor(db, { stripe });
+
+      // Only the clean partner is paid.
+      expect(create).toHaveBeenCalledOnce();
+      expect(create.mock.calls[0]![0]).toMatchObject({ amount: 3000, destination: `acct_${clean.slice(0, 10)}` });
+      expect(result.heldForCompliance).toEqual([
+        { batchId: batch.id, tenantId: tenant.id, partnerId: held, reason: 'screening_review', amountMinor: 5000, currency: 'usd' },
+      ]);
+      expect(await db(TABLES.HostedFundingTransfer).where({ partnerId: held })).toEqual([]);
+      const allocations = (await db(TABLES.HostedFundingAllocation).where({ batchId: batch.id })) as HostedFundingAllocationRow[];
+      expect(Object.fromEntries(allocations.map((a) => [a.commissionId, a.state]))).toEqual({
+        [heldCommission]: 'canceled',
+        [cleanCommission]: 'transferred',
+      });
+      const settled = (await db(TABLES.HostedFundingBatch).where({ id: batch.id }).first()) as HostedFundingBatchRow;
+      expect(settled).toMatchObject({ status: 'settled_with_residual', residualDisposition: null });
+      expect(Number(settled.residualMinor)).toBe(5000);
+      expect(await commission(heldCommission)).toMatchObject({ status: 'approved', payoutId: null });
+      expect((await commission(cleanCommission)).status).toBe('paid');
+
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toMatchObject({
+        to: 'ops-inbox@openpartner.test',
+        tag: 'funded_transfer_compliance_hold',
+        subject: '[Action] Funded payout stopped for a partner of Screening Brand: compliance hold',
+      });
+      expect(sent[0]!.text).toContain('Ivan Listed');
+      expect(sent[0]!.text).toContain('50.00 USD');
+      expect(sent[0]!.text).toContain(batch.id);
+
+      // Nothing more to stop on the next tick: no second email.
+      await runTransferExecutor(db, { stripe });
+      expect(sent).toHaveLength(1);
+    } finally {
+      delete process.env.PLATFORM_OPS_EMAIL;
+      __setMailerForTests(null);
+    }
+
+    // Cleared, but the brand's money for it is still in that batch's
+    // residual: it isn't batched again until ops record a disposition.
+    expect((await review(flagged.id, 'cleared', 'Different person: the listed entry is a company')).status).toBe(200);
+    expect((await plan()).heldForCompliance).toEqual([]);
+    expect(await db(TABLES.HostedFundingAllocation).where({ commissionId: heldCommission })).toHaveLength(1);
+
+    await db(TABLES.HostedFundingBatch).where({ id: batch.id }).update({ residualDisposition: 'refund' });
+    await plan();
+    const live = await db(TABLES.HostedFundingAllocation).where({ commissionId: heldCommission, state: 'reserved' });
+    expect(live).toHaveLength(1);
+    expect(live[0].batchId).not.toBe(batch.id);
+  });
+
+  it('closes a funded intent Stripe refused, and never re-posts one that may have landed', async () => {
+    await enableFundedRail();
+    const refused = await seedPartner({ connect: true, name: 'Ivan Listed' });
+    const refusedCommission = await seedCommission(refused);
+    const posted = await seedPartner({ connect: true, name: 'Olga Listed' });
+    const postedCommission = await seedCommission(posted);
+    await screening.screenPayablePartners(db, { tenantId: tenant.id });
+    await plan();
+    const batch = await fundOpenBatch();
+
+    // Stripe refuses both first attempts, which leaves both intents
+    // `failed` and their allocations transfer_pending...
+    const refusing = stripeTransfers(async () => {
+      throw Object.assign(new Error('Your destination account needs the transfers capability'), { statusCode: 400 });
+    });
+    await runTransferExecutor(db, { stripe: refusing.stripe });
+    expect(refusing.create).toHaveBeenCalledTimes(2);
+    // ...then Olga's retry goes out and its answer is lost.
+    await db(TABLES.HostedFundingTransfer)
+      .where({ partnerId: posted })
+      .update({ state: 'posted', postedAt: new Date(Date.now() - 60 * 60 * 1000) });
+
+    await flagOnRescreen('Ivan Listed', 'Olga Listed');
+    const { stripe, create } = stripeTransfers();
+    const result = await runTransferExecutor(db, { stripe });
+
+    expect(create).not.toHaveBeenCalled();
+    expect(result.heldForCompliance.map((h) => [h.partnerId, h.amountMinor])).toEqual([[refused, 5000]]);
+    const intents = await db(TABLES.HostedFundingTransfer).where({ batchId: batch.id });
+    expect(Object.fromEntries(intents.map((i: { partnerId: string; state: string }) => [i.partnerId, i.state]))).toEqual({
+      [refused]: 'failed',
+      [posted]: 'posted',
+    });
+    expect(intents.find((i: { partnerId: string }) => i.partnerId === refused).lastError).toBe('compliance_hold:screening_review');
+    const allocations = (await db(TABLES.HostedFundingAllocation).where({ batchId: batch.id })) as HostedFundingAllocationRow[];
+    expect(Object.fromEntries(allocations.map((a) => [a.commissionId, a.state]))).toEqual({
+      [refusedCommission]: 'canceled',
+      // May already be paid at Stripe: stays claimed for the window to settle it.
+      [postedCommission]: 'transfer_pending',
+    });
+    expect((await db(TABLES.HostedFundingBatch).where({ id: batch.id }).first()).status).toBe('transferring');
+    expect(await commission(refusedCommission)).toMatchObject({ status: 'approved', payoutId: null });
   });
 });
 

@@ -492,6 +492,62 @@ export function opsScreeningReviewEmail(opts: {
   return { subject, text, html: wrap(text, opts.reviewUrl, 'Open screening review') };
 }
 
+/** Platform ops: the funding executor reached a partner who went on a
+ *  compliance hold after their payout batch was reserved, and didn't make
+ *  the transfer. The brand's payment for it was already collected, so the
+ *  batch settles with a residual an operator has to dispose of. One email
+ *  per executor run. */
+export function opsFundedTransfersHeldEmail(opts: {
+  items: Array<{
+    brandName: string;
+    slug: string | null;
+    partnerName: string;
+    reason: 'country_not_supported' | 'screening_confirmed' | 'screening_review' | 'screening_pending';
+    /** Formatted, e.g. "50.00 USD". */
+    amount: string;
+    batchId: string;
+  }>;
+  reviewUrl: string;
+}): EmailTemplate {
+  const n = opts.items.length;
+  const first = opts.items[0]!;
+  const reasonText: Record<(typeof opts.items)[number]['reason'], string> = {
+    country_not_supported: "declared country we don't serve",
+    screening_confirmed: 'confirmed sanctions-list match',
+    screening_review: 'possible sanctions-list match awaiting review',
+    screening_pending: 'not screened yet',
+  };
+  const subject =
+    n === 1
+      ? `[Action] Funded payout stopped for a partner of ${first.brandName}: compliance hold`
+      : `[Action] ${n} funded payouts stopped by compliance holds`;
+  const lines: string[] = [
+    n === 1
+      ? `A partner went on a compliance hold after their funded payout batch was reserved, so their transfer was not made.`
+      : `${n} partners went on compliance holds after their funded payout batches were reserved, so their transfers were not made.`,
+  ];
+  for (const item of opts.items) {
+    lines.push(
+      ``,
+      `  Partner of: ${item.brandName}${item.slug ? ` (${item.slug})` : ''}`,
+      `  Partner:    ${item.partnerName}`,
+      `  Hold:       ${reasonText[item.reason]}`,
+      `  Amount:     ${item.amount}`,
+      `  Batch:      ${item.batchId}`,
+    );
+  }
+  lines.push(
+    ``,
+    `The brand's payment for this money was already collected. The batch settles with a residual that needs a disposition: refund it to the brand, or credit it to the brand's next batch. Don't pay it out by hand while the hold stands. The partner's commissions stay approved and aren't batched again until the disposition is recorded.`,
+    ``,
+    `Review the holds in the ops console:`,
+    ``,
+    opts.reviewUrl,
+  );
+  const text = lines.join('\n');
+  return { subject, text, html: wrap(text, opts.reviewUrl, 'Open screening review') };
+}
+
 /** Platform ops: self-hosted vendors registered on the Network and are
  *  waiting in the vendor review queue (nothing they publish lists until an
  *  operator approves them). */
