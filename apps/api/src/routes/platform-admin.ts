@@ -25,6 +25,7 @@ import { ulid } from 'ulid';
 import {
   DEFAULT_TENANT_ID,
   TABLES,
+  isCountryCode,
   type AdminRow,
   type PlatformAdminRow,
   type PlatformAuditLogRow,
@@ -39,6 +40,12 @@ import { getMailer } from '../mailer.js';
 import { marketplacePolicyWarningEmail, platformAdminSigninEmail } from '../email-templates.js';
 import { getPortalBaseUrl } from '../portal-url.js';
 import { getTenancyMode } from '../tenancy.js';
+import {
+  COUNTRY_ACCESS_DEFAULTS,
+  getCountryAccessSettings,
+  latestDeclaredCountries,
+  setCountryAccessSettings,
+} from '../country-access.js';
 import {
   addBlocklistEntry,
   approveBrand,
@@ -326,6 +333,8 @@ platformAdminRouter.get('/platform-admin/brands', requirePlatformAdmin, async (r
       }>)
     : [];
   const countsByTenant = new Map(programCounts.map((r) => [r.tenantId, r]));
+  // Where each brand says it's based — the reviewer's sanctions check.
+  const locations = await latestDeclaredCountries(db, 'tenant', ids);
 
   // Setup progress, reminder history, and the latest policy warning — so an
   // operator sees "stalled at tracking, reminded twice, warned on the 3rd"
@@ -370,6 +379,8 @@ platformAdminRouter.get('/platform-admin/brands', requirePlatformAdmin, async (r
       lastSetupReminderAt: reminders.get(t.id)?.lastSentAt ?? null,
       lastPolicyWarningAt: lastWarningBy.get(t.id)?.at ?? null,
       policyWarningDeadline: lastWarningBy.get(t.id)?.deadline ?? null,
+      country: locations.get(t.id)?.country ?? null,
+      ipCountryAtDeclaration: locations.get(t.id)?.ipCountry ?? null,
     })),
   });
 });
@@ -819,6 +830,70 @@ platformAdminRouter.delete(
       detail: { type: row.type, value: row.value },
     });
     res.json({ ok: true });
+  },
+);
+
+// --------------------------------------------------------------------------
+// Country access — countries the hosted platform doesn't serve
+// --------------------------------------------------------------------------
+//
+// Signup, partner join and every sign-in check the declared country and the
+// request's IP country against this list (country-access.ts). Sanctions
+// entries follow US law; policy entries are the company's own choice. The
+// two are labelled separately everywhere they appear.
+
+platformAdminRouter.get('/platform-admin/country-access', requirePlatformAdmin, async (_req, res) => {
+  const settings = await getCountryAccessSettings(db);
+  const [undeclared] = (await db(TABLES.Tenant)
+    .whereNotExists(
+      db(TABLES.LocationDeclaration)
+        .select(db.raw('1'))
+        .where('subjectKind', 'tenant')
+        .whereRaw(`"${TABLES.LocationDeclaration}"."subjectId" = "${TABLES.Tenant}"."id"`),
+    )
+    .whereNull('pendingDeletionAt')
+    .count({ c: '*' })) as Array<{ c: string | number }>;
+  res.json({
+    settings,
+    defaults: COUNTRY_ACCESS_DEFAULTS,
+    // Brands from before country capture; they're asked on next sign-in.
+    brandsWithoutCountry: Number(undeclared?.c ?? 0),
+    geoip: process.env.GEOIP_COUNTRY_DB ? 'configured' : 'db-ip-lite',
+  });
+});
+
+const countryAccessSchema = z
+  .object({
+    enforce: z.boolean().optional(),
+    blocked: z
+      .array(
+        z.object({
+          code: z.string().trim().length(2).transform((v) => v.toUpperCase()).refine(isCountryCode, 'unknown country code'),
+          basis: z.enum(['sanctions', 'policy']),
+        }),
+      )
+      .max(250)
+      .optional(),
+  })
+  .strict();
+
+platformAdminRouter.put(
+  '/platform-admin/country-access',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = countryAccessSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const actor = req.platformAdminActor!;
+    const before = await getCountryAccessSettings(db);
+    const settings = await setCountryAccessSettings(db, body.data, actor.email);
+    await writeAudit(db, {
+      actor,
+      action: 'country_access.settings',
+      targetType: 'platform',
+      detail: { before, after: settings },
+    });
+    res.json({ settings });
   },
 );
 

@@ -412,7 +412,12 @@ logs — not customer data):
 `Session`, `MagicLinkToken`, `ApiKey`, `ConversionPostbackToken`, `TenantStripeConnection`, `Admin`, `PlatformSession`,
 `PlatformSessionBundle`, `PlatformAdmin`, `PlatformAdminSession`,
 `PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
-`StripeWebhookInbox`.
+`StripeWebhookInbox`, `LocationDeclaration`.
+
+`LocationDeclaration` is the hosted platform's record of where each brand
+and partner said it is based ([country-access.md](country-access.md)). It
+is a compliance record the operator keeps for itself, not the brand's
+attribution data, and a self-hosted install doesn't use it.
 
 `Admin` is the consequential one: it is authentication data, so it stays
 out — which is exactly why `HostedFundingAuthorization` (whose `adminId`

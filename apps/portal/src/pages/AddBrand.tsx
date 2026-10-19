@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { theme } from '../theme.js';
 import { Logo } from './auth/Shared.js';
+import { CountryField, countryErrorMessage } from '../lib/CountryField.js';
 
 /**
  * Authenticated add-brand flow (§13). Reached from the identity switcher's
@@ -46,6 +47,8 @@ export function AddBrandPage() {
   const [slug, setSlug] = useState('');
   const [slugTouched, setSlugTouched] = useState(false);
   const [plan, setPlan] = useState<Plan | null>(null);
+  const [country, setCountry] = useState('');
+  const [outsideOccupiedRegions, setOutsideOccupiedRegions] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -62,7 +65,13 @@ export function AddBrandPage() {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ slug: effectiveSlug, displayName: displayName.trim(), plan }),
+        body: JSON.stringify({
+          slug: effectiveSlug,
+          displayName: displayName.trim(),
+          plan,
+          country,
+          ...(country === 'UA' ? { outsideOccupiedRegions } : {}),
+        }),
       });
       const data = (await res.json()) as { ok?: boolean; home?: string; tenant?: { slug: string }; error?: string };
       if (res.status === 401) {
@@ -125,6 +134,17 @@ export function AddBrandPage() {
               style={{ ...inputStyle, fontFamily: theme.fontMono, marginBottom: 0, flex: 1 }}
             />
           </div>
+          <label style={{ ...labelStyle, marginTop: 18 }} htmlFor="add-brand-country">
+            Where is this business based?
+          </label>
+          <CountryField
+            id="add-brand-country"
+            value={country}
+            onChange={setCountry}
+            outsideOccupiedRegions={outsideOccupiedRegions}
+            onOutsideOccupiedRegionsChange={setOutsideOccupiedRegions}
+            selectStyle={{ ...inputStyle, marginBottom: 0 }}
+          />
           <label style={{ ...labelStyle, marginTop: 18 }}>Plan for this brand</label>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {PLANS.map((p) => {
@@ -155,7 +175,7 @@ export function AddBrandPage() {
           </div>
           <button
             type="submit"
-            disabled={busy || !plan || !displayName.trim() || effectiveSlug.length < 3}
+            disabled={busy || !plan || !country || !displayName.trim() || effectiveSlug.length < 3}
             style={{
               marginTop: 18,
               width: '100%',
@@ -167,7 +187,7 @@ export function AddBrandPage() {
               fontSize: 14,
               fontWeight: 600,
               cursor: busy ? 'wait' : 'pointer',
-              opacity: busy || !plan || !displayName.trim() || effectiveSlug.length < 3 ? 0.5 : 1,
+              opacity: busy || !plan || !country || !displayName.trim() || effectiveSlug.length < 3 ? 0.5 : 1,
             }}
           >
             {busy ? 'Creating…' : 'Create brand & continue to billing'}
@@ -179,6 +199,8 @@ export function AddBrandPage() {
 }
 
 function friendlyError(code: string): string {
+  const country = countryErrorMessage(code);
+  if (country) return country;
   switch (code) {
     case 'slug_taken':
     case 'slug_reserved':

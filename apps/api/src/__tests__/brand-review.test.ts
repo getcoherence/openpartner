@@ -61,6 +61,7 @@ async function signup(overrides: Partial<{ slug: string; adminEmail: string; dis
       adminEmail: overrides.adminEmail ?? `admin-${rnd()}@example.test`,
       adminName: 'Test Admin',
       plan: 'flex',
+      country: 'US',
     });
   return { res, slug };
 }
@@ -105,6 +106,8 @@ async function purgeSlug(slug: string): Promise<void> {
     TABLES.Session,
     TABLES.Config,
     TABLES.ApiKey,
+    // Signup records where the brand is based (country-access.ts).
+    TABLES.LocationDeclaration,
   ]) {
     await db(table).where({ tenantId: t.id }).del();
   }
@@ -243,6 +246,7 @@ describe.skipIf(skipIntegration)('brand approval — signup + gate', () => {
       adminEmail: `danny@${domain}`,
       adminName: 'Danny',
       plan: 'flex',
+      country: 'US',
     });
     expect(res.status).toBe(403);
     expect(res.body.error).toBe('signup_unavailable');
@@ -336,6 +340,7 @@ describe.skipIf(skipIntegration)('brand approval — operator console', () => {
       adminEmail: `other@${domain}`,
       adminName: 'Other',
       plan: 'flex',
+      country: 'US',
     });
     expect(reSignup.status).toBe(403);
   });

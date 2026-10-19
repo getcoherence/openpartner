@@ -77,7 +77,9 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-function renderJoin(status: { open: boolean; reviewRequired: boolean } | null = { open: true, reviewRequired: false }) {
+function renderJoin(
+  status: { open: boolean; reviewRequired: boolean; countryRequired?: boolean } | null = { open: true, reviewRequired: false },
+) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   // GET /partner-signup/status; null = let the page fetch it.
   if (status) qc.setQueryData(['partner-signup-status', null], status);
@@ -197,5 +199,46 @@ describe('PartnerJoinPage signup status', () => {
     respond = () => json(404, { error: 'not_found' });
     const page = renderJoin(null);
     await waitFor(() => expect(page.getByLabelText('Website or main channel')).toBeTruthy());
+  });
+});
+
+describe('PartnerJoinPage country (hosted platform)', () => {
+  function fillApplication(page: ReturnType<typeof renderJoin>) {
+    fireEvent.change(page.getByPlaceholderText('Your name'), { target: { value: 'Ada' } });
+    fireEvent.change(page.getByPlaceholderText('you@example.com'), { target: { value: 'ada@example.com' } });
+    fireEvent.change(page.getByLabelText('Website or main channel'), { target: { value: 'https://ada.example' } });
+    fireEvent.change(page.getByLabelText('Social profile 1'), { target: { value: 'https://youtube.com/@ada' } });
+    fireEvent.change(page.getByLabelText('Audience size'), { target: { value: '10k_50k' } });
+    fireEvent.change(page.getByLabelText('How would you promote Acme?'), { target: { value: PITCH } });
+  }
+
+  it('does not ask on a self-hosted install', () => {
+    const page = renderJoin({ open: true, reviewRequired: false });
+    expect(page.queryByLabelText('Where are you based?')).toBeNull();
+  });
+
+  it('requires a country, asks Ukrainians to confirm, and sends both', async () => {
+    const page = renderJoin({ open: true, reviewRequired: false, countryRequired: true });
+    fillApplication(page);
+    const apply = page.getByRole('button', { name: 'Apply to join' }) as HTMLButtonElement;
+    expect(apply.disabled).toBe(true);
+
+    fireEvent.change(page.getByLabelText('Where are you based?'), { target: { value: 'UA' } });
+    expect(apply.disabled).toBe(true);
+    fireEvent.click(page.getByRole('checkbox', { name: /occupied areas/ }));
+    expect(apply.disabled).toBe(false);
+
+    fireEvent.click(apply);
+    await waitFor(() => expect(page.getByText('Check your inbox')).toBeTruthy());
+    expect(sent[0]!.body).toMatchObject({ country: 'UA', outsideOccupiedRegions: true });
+  });
+
+  it('says plainly when the country is not served', async () => {
+    respond = () => json(403, { error: 'country_not_supported' });
+    const page = renderJoin({ open: true, reviewRequired: false, countryRequired: true });
+    fillApplication(page);
+    fireEvent.change(page.getByLabelText('Where are you based?'), { target: { value: 'DE' } });
+    fireEvent.click(page.getByRole('button', { name: 'Apply to join' }));
+    await waitFor(() => expect(page.getByText("Sorry — OpenPartner isn't available in your country.")).toBeTruthy());
   });
 });

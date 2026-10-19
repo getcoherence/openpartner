@@ -59,6 +59,7 @@ import { AdminNetworkComplete } from './pages/admin/NetworkComplete.js';
 import { AdminNetworkRequests } from './pages/admin/NetworkRequests.js';
 import { AdminNetworkCreators } from './pages/admin/NetworkCreators.js';
 import { AdminNetworkBilling } from './pages/admin/NetworkBilling.js';
+import { BrandLocationPrompt, useBrandLocationMissing } from './pages/admin/BrandLocation.js';
 import { DiscoverPage } from './pages/partner/Discover.js';
 import { OfferingDetailPage } from './pages/partner/OfferingDetail.js';
 import { VendorDetailPage } from './pages/partner/VendorDetail.js';
@@ -232,6 +233,8 @@ function Shell() {
   // partner opted in (they can always reach the setting to leave). Waited
   // on so a deep link to /network/... isn't routed away while it loads.
   const partnerNetwork = usePartnerNetworkAccess(auth.principal?.role === 'partner');
+  // Hosted brands from before signup asked where they're based.
+  const brandLocationMissing = useBrandLocationMissing(auth.principal?.role === 'admin');
 
   if (auth.loading || brandLoading || partnerNetwork.loading) return <CenteredMessage>Loading…</CenteredMessage>;
   if (!auth.principal) return <Navigate to={`${tenantBase}/login`} state={{ from: location }} replace />;
@@ -265,6 +268,7 @@ function Shell() {
         {auth.principal.role === 'admin' && approvalStatus === 'pending' && !reviewBannerDismissed && (
           <PendingReviewBanner isMobile={isMobile} onDismiss={() => setReviewBannerDismissed(true)} />
         )}
+        {auth.principal.role === 'admin' && brandLocationMissing && <BrandLocationPrompt isMobile={isMobile} />}
         {showNetworkConsentPrompt && <NetworkConsentPrompt isMobile={isMobile} />}
         {showNetworkProfileBanner && <NetworkProfileBanner isMobile={isMobile} />}
         <Routes>

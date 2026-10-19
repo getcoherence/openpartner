@@ -927,6 +927,8 @@ describe.skipIf(skipIntegration)('per-tenant keys without RLS', () => {
       .send({
         email: A_EMAIL,
         name: 'Ada, applying to B',
+        // The hosted join page asks where the applicant is based.
+        country: 'GB',
         application: {
           websiteUrl: 'https://creator.example',
           socialUrls: ['https://youtube.com/@creator'],

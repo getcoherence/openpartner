@@ -68,7 +68,14 @@ import {
 import { getPortalBaseUrl, linkTenantOf } from '../portal-url.js';
 import type { PartnerReview } from '../partner-review.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
-import { afterCommit, tenantOf } from '../tenancy.js';
+import { afterCommit, getTenancyMode, tenantOf } from '../tenancy.js';
+import { db as platformDb } from '../db.js';
+import {
+  checkCountryAccess,
+  countryAccessStatus,
+  countryCodeSchema,
+  recordLocationDeclaration,
+} from '../country-access.js';
 import { grantNetworkConsent, isNetworkOfferedToPartners, syncPartnerToNetwork } from '../network-consent.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
 import { onCommit } from '../on-commit.js';
@@ -114,6 +121,12 @@ const schema = z.object({
    *  checkbox. Unchecked (or absent) = not asked yet: the partner gets the
    *  portal prompt instead. Ignored unless the brand offers the Network. */
   networkOptIn: z.boolean().optional(),
+  /** Where the applicant is based. Required on the hosted platform, which
+   *  does not serve some countries (country-access.ts); self-host ignores
+   *  it unless sent. */
+  country: countryCodeSchema().optional(),
+  /** Ukraine only: the applicant is outside the occupied regions. */
+  outsideOccupiedRegions: z.boolean().optional(),
 });
 
 // Partner.metadata keys the server owns. This endpoint is public, so a
@@ -202,6 +215,8 @@ partnerSignupRouter.get('/partner-signup/status', statusLimit, async (req, res) 
     reviewRequired: settings.policy === 'require_review',
     // Shows the optional Network checkbox. Never true for white-label.
     networkOffered: await isNetworkOfferedToPartners(db, tenantId),
+    // Hosted platform: the join page asks where the applicant is based.
+    countryRequired: getTenancyMode() === 'multi',
   });
 });
 
@@ -217,6 +232,24 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
 
   const body = schema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+
+  // Country rules come before the existence check, so a refused applicant
+  // learns nothing about whether the address is registered.
+  const hosted = getTenancyMode() === 'multi';
+  if (hosted && !body.data.country) {
+    return res.status(400).json({ error: 'country_required' });
+  }
+  // The privileged pool: PlatformSetting and LocationDeclaration are
+  // platform tables the app role can't read or write.
+  const location = await checkCountryAccess(platformDb, {
+    declared: body.data.country ?? null,
+    ip: req.ip,
+    outsideOccupiedRegions: body.data.outsideOccupiedRegions,
+  });
+  if (!location.ok) {
+    console.warn('[partner-signup] country refused', { via: location.via, ipCountry: location.ipCountry });
+    return res.status(countryAccessStatus(location.error)).json({ error: location.error });
+  }
 
   const email = body.data.email.toLowerCase();
   const profile = body.data.profile
@@ -260,6 +293,18 @@ partnerSignupRouter.post('/partner-signup', signupLimit, async (req, res) => {
       throw new Error('partner_insert_returned_no_rows');
     }
     partner = inserted[0]!;
+    if (hosted && body.data.country) {
+      await recordLocationDeclaration(platformDb, {
+        subjectKind: 'partner',
+        subjectId: partner.id,
+        tenantId,
+        country: body.data.country,
+        outsideOccupiedRegions: body.data.outsideOccupiedRegions ?? null,
+        ipCountry: location.ipCountry,
+        source: 'join',
+        declaredByEmail: email,
+      });
+    }
   } catch (err) {
     if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505') {
       // Race against the existence check — same generic response.
