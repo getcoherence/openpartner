@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { HelpCircle, Plus, Tag } from 'lucide-react';
 import { api } from '../api.js';
 import { alpha, theme } from '../theme.js';
+import { TenantLink } from '../tenant-link.js';
 import { useBrand } from '../lib/useBrand.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
@@ -167,6 +168,12 @@ export function AdminPrograms() {
                 >
                   Edit
                 </button>
+                <TenantLink
+                  to={`/admin/programs/${c.id}/bounties`}
+                  style={{ ...smallActionStyle(theme.textMuted), border: `1px solid ${alpha(theme.textMuted, 0.333)}`, textDecoration: 'none' }}
+                >
+                  Bounties
+                </TenantLink>
                 {status !== 'ended' && (
                   <button
                     type="button"

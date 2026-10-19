@@ -290,7 +290,7 @@ external_ref_conflict`. A brand that hasn't re-authorized its key answers
 **Commission lists and the timeseries include bonuses (Oct 2026).** A
 bonus is paid through one commission, so `GET /partners/:id/commissions`
 returns it alongside sale commissions, with `source: "bonus"`, a `bonus`
-object (`id`, `source`, `note`, `bountyId`), `bonusId` set and
+object (`id`, `source`, `note`, `bountyId`, `bountyName`), `bonusId` set and
 `attributionId` null: there is no event or click behind it. Sale
 commissions say `source: "attribution"` and `bonus: null`. The timeseries
 `earnings` include bonus commissions (filtered by the bonus's program when

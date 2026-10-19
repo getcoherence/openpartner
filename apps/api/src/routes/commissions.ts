@@ -104,6 +104,7 @@ function listQueryBase(db: Knex, tenantId: string) {
     .where('c.tenantId', tenantId)
     .leftJoin(`${TABLES.Attribution} as a`, 'a.id', 'c.attributionId')
     .leftJoin(`${TABLES.Bonus} as b`, 'b.id', 'c.bonusId')
+    .leftJoin(`${TABLES.Bounty} as bt`, 'bt.id', 'b.bountyId')
     .leftJoin(`${TABLES.Program} as cp`, 'cp.id', programId)
     .leftJoin(`${TABLES.PartnerCommission} as pcp`, (j) =>
       j.on('pcp.partnerId', 'c.partnerId').andOn('pcp.programId', programId),
@@ -119,6 +120,7 @@ function listQueryBase(db: Knex, tenantId: string) {
       'b.source as _bonusSource',
       'b.note as _bonusNote',
       'b.bountyId as _bonusBountyId',
+      'bt.name as _bonusBountyName',
     )
     .orderBy([
       { column: 'c.accruedAt', order: 'desc' },
@@ -134,7 +136,7 @@ interface DecoratedCommission extends CommissionRow {
   /** What it was earned on: an attributed sale, or a bonus. */
   source: 'attribution' | 'bonus';
   /** The bonus behind a `bonus` commission; null otherwise. */
-  bonus: { id: string; source: string; note: string | null; bountyId: string | null } | null;
+  bonus: { id: string; source: string; note: string | null; bountyId: string | null; bountyName: string | null } | null;
 }
 
 function decorateMaturity(row: CommissionRow & {
@@ -144,8 +146,9 @@ function decorateMaturity(row: CommissionRow & {
   _bonusSource: string | null;
   _bonusNote: string | null;
   _bonusBountyId: string | null;
+  _bonusBountyName: string | null;
 }): DecoratedCommission {
-  const { _holdbackDays, _campaignId, _campaignName, _bonusSource, _bonusNote, _bonusBountyId, ...c } = row;
+  const { _holdbackDays, _campaignId, _campaignName, _bonusSource, _bonusNote, _bonusBountyId, _bonusBountyName, ...c } = row;
   let matureAt: string | null = null;
   if (_holdbackDays && _holdbackDays > 0) {
     const m = new Date(c.accruedAt);
@@ -160,7 +163,7 @@ function decorateMaturity(row: CommissionRow & {
     matureAt,
     source: c.bonusId ? 'bonus' : 'attribution',
     bonus: c.bonusId
-      ? { id: c.bonusId, source: _bonusSource ?? 'manual', note: _bonusNote, bountyId: _bonusBountyId }
+      ? { id: c.bonusId, source: _bonusSource ?? 'manual', note: _bonusNote, bountyId: _bonusBountyId, bountyName: _bonusBountyName }
       : null,
   };
 }

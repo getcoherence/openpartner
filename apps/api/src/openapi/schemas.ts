@@ -471,6 +471,7 @@ export const CommissionListItem = CommissionRowShape.extend({
       source: z.enum(BONUS_SOURCES),
       note: z.string().nullable().openapi({ description: 'Shown to the partner.' }),
       bountyId: id.nullable(),
+      bountyName: z.string().nullable().openapi({ description: "The performance bounty's name, when a bounty paid it." }),
     })
     .nullable()
     .openapi({ description: 'The bonus behind a `source: "bonus"` commission; null otherwise.' }),

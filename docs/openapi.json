@@ -3072,13 +3072,21 @@
                   "string",
                   "null"
                 ]
+              },
+              "bountyName": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The performance bounty's name, when a bounty paid it."
               }
             },
             "required": [
               "id",
               "source",
               "note",
-              "bountyId"
+              "bountyId",
+              "bountyName"
             ],
             "description": "The bonus behind a `source: \"bonus\"` commission; null otherwise."
           }
@@ -11747,6 +11755,7 @@
                 "Identity",
                 "Event",
                 "Attribution",
+                "Bounty",
                 "Bonus",
                 "Commission",
                 "Payout",

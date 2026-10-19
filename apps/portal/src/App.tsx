@@ -26,6 +26,7 @@ import {
   Menu,
   Palette,
   AlertTriangle,
+  Trophy,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { clearApiKey, api, type Principal } from './api.js';
@@ -67,6 +68,8 @@ import { MyProfilePage } from './pages/partner/MyProfile.js';
 import { NetworkProfileBanner } from './pages/partner/NetworkProfileBanner.js';
 import { NetworkConsentPrompt, usePartnerNetworkAccess } from './pages/partner/NetworkConsent.js';
 import { PartnerPostbacksPage } from './pages/partner/Postbacks.js';
+import { PartnerBountiesPage } from './pages/partner/Bounties.js';
+import { AdminProgramBounties } from './pages/AdminProgramBounties.js';
 import { InstallPage } from './pages/Install.js';
 import { LandingPage } from './pages/Landing.js';
 import { SignupPage } from './pages/Signup.js';
@@ -294,6 +297,7 @@ function Shell() {
               )}
               <Route path="coupons" element={<AdminPartnerCoupons ownPartnerId={auth.principal.partnerId!} />} />
               <Route path="postbacks" element={<PartnerPostbacksPage principal={auth.principal} />} />
+              <Route path="bounties" element={<PartnerBountiesPage />} />
             </>
           )}
 
@@ -304,6 +308,7 @@ function Shell() {
               <Route path="admin/partners/:id/coupons" element={<AdminPartnerCoupons />} />
               <Route path="admin/partners/:id/commission" element={<AdminPartnerCommission />} />
               <Route path="admin/programs" element={<AdminPrograms />} />
+              <Route path="admin/programs/:id/bounties" element={<AdminProgramBounties />} />
               <Route path="admin/review" element={<AdminReview />} />
               <Route path="admin/export" element={<AdminExport />} />
               <Route path="admin/fraud-review" element={<FraudReviewPage />} />
@@ -458,6 +463,7 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
           <NavItem to="/" icon={<LayoutDashboard size={16} />}>Dashboard</NavItem>
           <NavItem to="/links" icon={<Link2 size={16} />}>Links</NavItem>
           {principal.role === 'partner' && <NavItem to="/coupons" icon={<Tag size={16} />}>Coupons</NavItem>}
+          {principal.role === 'partner' && <NavItem to="/bounties" icon={<Trophy size={16} />}>Bounties</NavItem>}
           <NavItem to="/commissions" icon={<Receipt size={16} />}>Commissions</NavItem>
           <NavItem to="/payouts" icon={<Banknote size={16} />}>Payouts</NavItem>
           {principal.role === 'partner' && <NavItem to="/connect" icon={<CreditCard size={16} />}>Stripe Connect</NavItem>}

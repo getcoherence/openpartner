@@ -837,6 +837,41 @@ export interface BonusRow {
   createdAt: Date;
 }
 
+export type BountyMetric = 'conversions' | 'revenue' | 'leads' | 'commissions';
+export type BountyScope = 'new' | 'lifetime';
+export type BountyStatus = 'draft' | 'active' | 'ended' | 'archived';
+
+/** CORE + portable: a goal on a program that pays a bonus (BonusRow, source
+ *  'performance_bounty') once a partner reaches it (docs/bounties.md §7).
+ *  A partner earns a bounty once. */
+export interface BountyRow {
+  id: string;
+  tenantId: string;
+  programId: string;
+  name: string;
+  /** Shown to partners. Plain text, at most 5,000 characters. */
+  description: string | null;
+  metric: BountyMetric;
+  /** conversions / revenue only: count this event type only. */
+  eventType: string | null;
+  threshold: string; // decimal as string; a currency amount for revenue/commissions
+  /** new: activity in [startsAt, endsAt). lifetime: all history before endsAt. */
+  scope: BountyScope;
+  startsAt: Date;
+  endsAt: Date | null;
+  rewardAmount: string; // decimal as string
+  currency: string;
+  /** Null: every partner in the program. Else an allowlist of partner ids. */
+  partnerIds: string[] | null;
+  status: BountyStatus;
+  createdAt: Date;
+  updatedAt: Date;
+  endedAt: Date | null;
+  /** Stamps for the "bounty started" and "ending soon" partner emails. */
+  startNotifiedAt: Date | null;
+  endingSoonNotifiedAt: Date | null;
+}
+
 export interface ConfigRow {
   tenantId: string;
   key: string;
