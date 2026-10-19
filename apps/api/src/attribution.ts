@@ -597,7 +597,7 @@ export async function resolveCommissionRule(
   programId: string,
   campaignRule: unknown,
 ): Promise<CommissionRule> {
-  const snapshot = await db<CommissionSnapshotRules>(TABLES.PartnerCommission)
+  const snapshot = await db<CommissionSnapshotRules & { partnerId: string; programId: string | null }>(TABLES.PartnerCommission)
     .where({ partnerId })
     .andWhere((q) => q.where({ programId }).orWhereNull('programId'))
     .orderByRaw('"programId" is null') // false (program-scoped) sorts first
