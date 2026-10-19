@@ -23,7 +23,7 @@
     "@types/pg": "^8.11.10",
     "dotenv": "^16.4.5",
     "tsx": "^4.19.0",
-    "typescript": "6.0.3",
+    "typescript": "7.0.2",
     "vitest": "^4.1.12"
   }
 }
