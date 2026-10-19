@@ -1,6 +1,6 @@
 {
   "name": "@openpartner/sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenPartner SDK. Browser client for click → identity stitching + Node server SDK for conversion events and attribution reads.",
   "type": "module",
   "main": "./dist/browser.cjs",
@@ -37,6 +37,7 @@
   },
   "files": [
     "dist",
+    "dist-global",
     "README.md"
   ],
   "publishConfig": {
@@ -60,6 +61,7 @@
   "sideEffects": false,
   "scripts": {
     "build": "tsup",
+    "build:global": "tsup --config tsup.global.config.ts",
     "dev": "tsup --watch",
     "lint": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
@@ -68,6 +70,8 @@
     "jsdom": "^29.0.2",
     "tsup": "^9.0.0",
     "typescript": "6.0.3",
-    "vitest": "^3.2.7"
-  }
+    "vitest": "^4.1.12"
+  },
+  "unpkg": "./dist-global/openpartner.js",
+  "jsdelivr": "./dist-global/openpartner.js"
 }
