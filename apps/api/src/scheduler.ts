@@ -45,6 +45,7 @@ import { getMode } from './stripe.js';
 import { sweepCampaignEndNotifications } from './campaign-end-notifications.js';
 import { autoApproveMatureCommissions } from './commission-auto-approve.js';
 import { dispatchCommissionEvents } from './commission-events.js';
+import { sendBountyEmails, sweepTenantBounties } from './performance-bounties.js';
 import { reverifyPortalDomains, sweepWhiteLabelEntitlement } from './portal-domains.js';
 
 interface ScheduledJob {
@@ -322,8 +323,16 @@ const JOBS: ScheduledJob[] = [
   {
     name: 'commission-auto-approve',
     cronExpr: '15 5 * * *',
-    description: 'Per tenant: auto-approve accrued commissions whose holdback has elapsed, then fire commission.approved (daily 05:15 UTC)',
+    description:
+      "Per tenant: auto-approve accrued commissions whose holdback has elapsed (re-checking a performance bounty's goal first), then fire commission.approved / bonus.approved (daily 05:15 UTC)",
     handler: runCommissionAutoApproveJob,
+  },
+  {
+    name: 'performance-bounties',
+    cronExpr: '20 * * * *',
+    description:
+      'Per tenant: measure partners against active performance bounties, pay the bonus to each who reached one, end bounties past their 7-day grace, and email partners (hourly at :20)',
+    handler: runPerformanceBountiesJob,
   },
 ];
 
@@ -339,9 +348,32 @@ const JOBS: ScheduledJob[] = [
 export async function runCommissionAutoApproveJob() {
   const swept = await forEachActiveTenant(
     (trx, tenantId) => autoApproveMatureCommissions(trx, tenantId),
-    (tenantId, result) => void dispatchCommissionEvents(tenantId, 'commission.approved', result.approved),
+    (tenantId, result) => {
+      void dispatchCommissionEvents(tenantId, 'commission.approved', result.approved);
+      void dispatchCommissionEvents(tenantId, 'commission.reversed', result.requalified, { reason: 'bounty_requalification' });
+    },
   );
-  return swept.map(({ result, ...t }) => (result ? { ...t, approvedCount: result.approvedCount } : t));
+  return swept.map(({ result, ...t }) =>
+    result ? { ...t, approvedCount: result.approvedCount, requalifiedCount: result.requalified.length } : t,
+  );
+}
+
+/**
+ * The performance-bounty sweep (performance-bounties.ts). Each tenant's
+ * bonus.* webhooks go out on its commit (awardBonus), and its partner
+ * emails right after, so a rolled-back tenant announces nothing. Returns
+ * counts only.
+ */
+export async function runPerformanceBountiesJob() {
+  const swept = await forEachActiveTenant(
+    (trx, tenantId) => sweepTenantBounties(trx, tenantId),
+    async (tenantId, result) => {
+      await sendBountyEmails(tenantId, result.emails);
+    },
+  );
+  return swept.map(({ result, ...t }) =>
+    result ? { ...t, evaluated: result.evaluated, awarded: result.awarded, ended: result.ended } : t,
+  );
 }
 
 /** Cascade-delete tenants whose pendingDeletionAt is older than the
@@ -353,8 +385,8 @@ async function hardDeleteExpiredTenants(): Promise<{ purged: number; tenantIds: 
     .where('pendingDeletionAt', '<', cutoff)
     .select('id');
   const tenantIds: string[] = [];
-  // Tenanted tables to wipe — order doesn't matter because they're
-  // all tagged with tenantId. Tenant row is dropped last.
+  // Tenanted tables to wipe, all tagged with tenantId. Children before the
+  // parents they reference without a cascade. Tenant row is dropped last.
   const TENANTED_TABLES = [
     TABLES.NetworkOutbox,
     TABLES.WebhookDelivery,
@@ -365,6 +397,11 @@ async function hardDeleteExpiredTenants(): Promise<{ purged: number; tenantIds: 
     TABLES.Config,
     TABLES.Payout,
     TABLES.Commission,
+    // After its Commission (Commission.bonusId), before Partner and
+    // Program, which it references without a cascade.
+    TABLES.Bonus,
+    // After Bonus (Bonus.bountyId), before Program.
+    TABLES.Bounty,
     TABLES.Attribution,
     TABLES.Event,
     TABLES.Identity,

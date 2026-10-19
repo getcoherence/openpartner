@@ -1,4 +1,4 @@
-import { useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router';
 
 /**
  * Returns the tenant URL prefix (`/t/<slug>`) when we're inside a

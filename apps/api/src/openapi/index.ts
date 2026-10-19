@@ -25,6 +25,7 @@ const TAGS: Array<{ name: string; description: string }> = [
   { name: 'Attribution', description: 'Stitch clicks to users, then report conversions server-side.' },
   { name: 'Coupons', description: 'Code-based attribution, for checkouts where a link can\'t be followed.' },
   { name: 'Commissions', description: 'The commission ledger: accrued → approved → paid, or reversed.' },
+  { name: 'Bonuses', description: 'Rewards not tied to a sale. Each is paid through one commission.' },
   { name: 'Payouts', description: 'Paying approved commissions, via Stripe Connect or a manual rail.' },
   { name: 'Partner reporting', description: 'Per-partner stats for your own UI.' },
   { name: 'Webhooks', description: 'Subscribe endpoints to the events under **Webhook events**.' },

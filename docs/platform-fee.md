@@ -93,6 +93,26 @@ nothing, because a dispute can be won.
 This guard applies on both rules. Refund credits were new in the same
 release, so it never raises what anyone paid before.
 
+### Bonuses
+
+A bonus ([bounties.md](bounties.md): a manual bonus, a performance bounty,
+a Network bounty) is a reward with no sale behind it, paid through one
+commission. The fee treats it like a fixed commission on a conversion with
+no revenue:
+
+- **Commission-floor rule:** `commissionRate × amount`, the "flat bounties
+  with no sale amount" line (10% on Revshare, 5% on Flex). A bonus is on
+  this rule when it was awarded at or after the tenant's effective date.
+- **Old rule:** nothing. That rule bills revenue only, and a bonus has
+  none.
+- **Reversed** (by an admin, or a performance bounty that no longer
+  qualifies): its basis drops to 0 and the next report credits it, like a
+  refund, at the rate it was billed at.
+
+The meter books it on its own ledger row (`UsageLedger.bonusId` instead of
+`eventId`). The shadow comparison, the ops estimates and contract
+statements include its fee, but don't count it as a conversion.
+
 ## Metering: one meter, revenue-equivalent units
 
 Both plans keep the one Stripe meter (`openpartner_attributed_gmv`) and

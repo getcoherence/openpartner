@@ -83,7 +83,8 @@ async function listPage(db: Knex, tenantId: string, q: z.infer<typeof listQueryS
   return { commissions: page.map(decorateMaturity), nextCursor };
 }
 
-/** Shared base query — joins Commission → Attribution → Campaign and
+/** Shared base query — joins Commission → Attribution → Campaign (or,
+ *  for a bonus's commission, Commission → Bonus → Program) and
  *  picks the effective holdback (EFFECTIVE_HOLDBACK_SQL): the partner's
  *  snapshot scoped to this program (pcp) if one exists, falling back to
  *  the program's own value when it leaves holdback unset; else their
@@ -96,12 +97,17 @@ async function listPage(db: Knex, tenantId: string, q: z.infer<typeof listQueryS
  *  pool that bypasses RLS (no app role) would otherwise list every
  *  tenant's commissions. */
 function listQueryBase(db: Knex, tenantId: string) {
+  // A commission has exactly one of the two (a CHECK says so), so the
+  // coalesce is "the commission's program" either way.
+  const programId = db.raw('coalesce(a."programId", b."programId")');
   return db(`${TABLES.Commission} as c`)
     .where('c.tenantId', tenantId)
     .leftJoin(`${TABLES.Attribution} as a`, 'a.id', 'c.attributionId')
-    .leftJoin(`${TABLES.Program} as cp`, 'cp.id', 'a.programId')
+    .leftJoin(`${TABLES.Bonus} as b`, 'b.id', 'c.bonusId')
+    .leftJoin(`${TABLES.Bounty} as bt`, 'bt.id', 'b.bountyId')
+    .leftJoin(`${TABLES.Program} as cp`, 'cp.id', programId)
     .leftJoin(`${TABLES.PartnerCommission} as pcp`, (j) =>
-      j.on('pcp.partnerId', 'c.partnerId').andOn('pcp.programId', 'a.programId'),
+      j.on('pcp.partnerId', 'c.partnerId').andOn('pcp.programId', programId),
     )
     .leftJoin(`${TABLES.PartnerCommission} as pcw`, (j) =>
       j.on('pcw.partnerId', 'c.partnerId').andOnNull('pcw.programId'),
@@ -110,6 +116,12 @@ function listQueryBase(db: Knex, tenantId: string) {
     .select(db.raw(`${EFFECTIVE_HOLDBACK_SQL} as "_holdbackDays"`))
     .select('cp.id as _campaignId')
     .select('cp.name as _campaignName')
+    .select(
+      'b.source as _bonusSource',
+      'b.note as _bonusNote',
+      'b.bountyId as _bonusBountyId',
+      'bt.name as _bonusBountyName',
+    )
     .orderBy([
       { column: 'c.accruedAt', order: 'desc' },
       { column: 'c.id', order: 'desc' },
@@ -121,14 +133,22 @@ interface DecoratedCommission extends CommissionRow {
   programId: string | null;
   campaignName: string | null;
   matureAt: string | null;
+  /** What it was earned on: an attributed sale, or a bonus. */
+  source: 'attribution' | 'bonus';
+  /** The bonus behind a `bonus` commission; null otherwise. */
+  bonus: { id: string; source: string; note: string | null; bountyId: string | null; bountyName: string | null } | null;
 }
 
 function decorateMaturity(row: CommissionRow & {
   _holdbackDays: number | null;
   _campaignId: string | null;
   _campaignName: string | null;
+  _bonusSource: string | null;
+  _bonusNote: string | null;
+  _bonusBountyId: string | null;
+  _bonusBountyName: string | null;
 }): DecoratedCommission {
-  const { _holdbackDays, _campaignId, _campaignName, ...c } = row;
+  const { _holdbackDays, _campaignId, _campaignName, _bonusSource, _bonusNote, _bonusBountyId, _bonusBountyName, ...c } = row;
   let matureAt: string | null = null;
   if (_holdbackDays && _holdbackDays > 0) {
     const m = new Date(c.accruedAt);
@@ -141,6 +161,10 @@ function decorateMaturity(row: CommissionRow & {
     programId: _campaignId,
     campaignName: _campaignName,
     matureAt,
+    source: c.bonusId ? 'bonus' : 'attribution',
+    bonus: c.bonusId
+      ? { id: c.bonusId, source: _bonusSource ?? 'manual', note: _bonusNote, bountyId: _bonusBountyId, bountyName: _bonusBountyName }
+      : null,
   };
 }
 

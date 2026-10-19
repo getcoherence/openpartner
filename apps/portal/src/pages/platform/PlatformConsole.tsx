@@ -1,4 +1,4 @@
-import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { LogOut } from 'lucide-react';
 import { theme } from '../../theme.js';

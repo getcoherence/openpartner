@@ -30,7 +30,9 @@ export const PARTNER_COMMISSION_COLUMNS = [
 /**
  * Effective holdbackDays for a commission, as SQL over three joined
  * aliases: `pcp` (the partner's row for the commission's program), `pcw`
- * (their partner-wide row) and `cp` (the Program). Shared by the
+ * (their partner-wide row) and `cp` (the Program). The commission's
+ * program is its Attribution's, or for a bonus's commission its Bonus's
+ * (null when the bonus has none: then only `pcw` can apply). Shared by the
  * auto-approve job and the review queue / manual approve so the two can't
  * drift.
  *

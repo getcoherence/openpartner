@@ -16,11 +16,12 @@
 
 import { useMemo, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link, NavLink, Outlet, Route, Routes, useNavigate, useOutletContext, useParams } from 'react-router-dom';
+import { Link, NavLink, Outlet, Route, Routes, useNavigate, useOutletContext, useParams } from 'react-router';
 import { ArrowLeft, ArrowUpRight } from 'lucide-react';
 import { Card, EmptyState, ErrorBanner, Page, formatDate, money, shortId } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
+import { commissionSourceLabel, isBonusCommission, type CommissionSourceFields } from '../../lib/commission-source.js';
 
 // ---------- Shared types (mirror federation responses) ----------
 
@@ -93,7 +94,7 @@ interface Customer {
   revenue: number;
 }
 
-interface CommissionRow {
+interface CommissionRow extends CommissionSourceFields {
   id: string;
   amount: string;
   currency: string | null;
@@ -1188,6 +1189,10 @@ function CommissionsList({ rows }: { rows: CommissionRow[] }) {
         <Row key={c.id}>
           <span style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
             <span style={{ fontSize: 13, color: theme.text }}>{c.campaignName ?? 'Commission'}</span>
+            {/* Network bounties and brand bonuses: no sale behind them. */}
+            {isBonusCommission(c) && (
+              <span style={{ fontSize: 11, color: theme.accentText, overflowWrap: 'anywhere' }}>{commissionSourceLabel(c)}</span>
+            )}
             {c.matureAt && c.status === 'accrued' && (
               <span style={{ fontSize: 11, color: theme.textDim }}>
                 Matures {formatDate(c.matureAt, { relative: true })}
