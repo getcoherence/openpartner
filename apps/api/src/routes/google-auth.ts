@@ -96,17 +96,15 @@ interface OAuthState {
   t?: string;
 }
 
-function stateCookieOptions(): CookieOptions {
-  return {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    // Lax, not Strict: the cookie has to ride the top-level redirect back
-    // from accounts.google.com.
-    sameSite: 'lax',
-    path: '/',
-    maxAge: STATE_TTL_MS,
-  };
-}
+/**
+ * The state cookie's attributes, for clearing it. Setting it spells them
+ * out at the res.cookie call so code scanning can see the flags.
+ *
+ * Secure even outside production, unlike the session cookies: Google only
+ * accepts HTTPS redirect URIs (localhost aside, which browsers treat as a
+ * secure context), so this cookie never exists on a plain-http origin.
+ */
+const STATE_COOKIE_SCOPE: CookieOptions = { httpOnly: true, secure: true, sameSite: 'lax', path: '/' };
 
 function readState(req: Request): OAuthState | null {
   const raw = (req as unknown as { cookies?: Record<string, string> }).cookies?.[GOOGLE_STATE_COOKIE];
@@ -177,7 +175,15 @@ googleAuthRouter.get('/auth/google/start', startLimit, async (req, res) => {
     f: parsed.data.flow,
     ...(parsed.data.flow === 'portal' && multi && slug ? { t: slug } : {}),
   };
-  res.cookie(GOOGLE_STATE_COOKIE, Buffer.from(JSON.stringify(state)).toString('base64url'), stateCookieOptions());
+  res.cookie(GOOGLE_STATE_COOKIE, Buffer.from(JSON.stringify(state)).toString('base64url'), {
+    httpOnly: true,
+    secure: true,
+    // Lax, not Strict: the cookie has to ride the top-level redirect back
+    // from accounts.google.com.
+    sameSite: 'lax',
+    path: '/',
+    maxAge: STATE_TTL_MS,
+  });
 
   const url = new URL(GOOGLE_AUTH_URL);
   url.searchParams.set('client_id', config.clientId);
@@ -262,7 +268,7 @@ googleAuthRouter.get('/auth/google/callback', async (req: Request, res: Response
   const config = googleConfig();
   const state = readState(req);
   // Single use, whatever happens next.
-  clearSessionCookie(res, GOOGLE_STATE_COOKIE, stateCookieOptions());
+  clearSessionCookie(res, GOOGLE_STATE_COOKIE, STATE_COOKIE_SCOPE);
   const flow = state?.f ?? null;
   const slug = state?.t;
 

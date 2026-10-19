@@ -11,7 +11,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import request, { type Response } from 'supertest';
+import request, { type Response as TestResponse } from 'supertest';
 import { ulid } from 'ulid';
 import { DEFAULT_TENANT_ID, TABLES, type PasswordCredentialRow, type PlatformSessionRow } from '@openpartner/db';
 
@@ -92,7 +92,7 @@ async function makePartner(
   return id;
 }
 
-function cookieFrom(res: Response, name: string): string | null {
+function cookieFrom(res: TestResponse, name: string): string | null {
   const set = res.headers['set-cookie'] as unknown as string[] | undefined;
   const c = set?.find((s) => s.startsWith(`${name}=`) && !s.startsWith(`${name}=;`));
   return c ? c.split(';')[0]! : null;
@@ -575,6 +575,11 @@ async function googleStart(query: string): Promise<Started> {
   const location = new URL(res.headers.location as string);
   expect(location.origin).toBe('https://accounts.google.com');
   expect(location.searchParams.get('redirect_uri')).toBe('http://localhost:5673/api/auth/google/callback');
+  // Never readable by page script, never sent over plain http.
+  const setCookie = (res.headers['set-cookie'] as unknown as string[]).find((s) => s.startsWith(`${GOOGLE_STATE_COOKIE}=`));
+  expect(setCookie).toMatch(/; HttpOnly/);
+  expect(setCookie).toMatch(/; Secure/);
+  expect(setCookie).toMatch(/; SameSite=Lax/);
   return {
     cookie: cookieFrom(res, GOOGLE_STATE_COOKIE)!,
     state: location.searchParams.get('state')!,
@@ -582,7 +587,7 @@ async function googleStart(query: string): Promise<Started> {
   };
 }
 
-async function googleCallback(started: Started, claims: Record<string, unknown>, state = started.state): Promise<Response> {
+async function googleCallback(started: Started, claims: Record<string, unknown>, state = started.state): Promise<TestResponse> {
   const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     if (url !== GOOGLE_TOKEN_URL) throw new Error(`unexpected fetch ${url}`);
@@ -608,7 +613,7 @@ async function googleCallback(started: Started, claims: Record<string, unknown>,
   }
 }
 
-function tokenFromLocation(res: Response): string {
+function tokenFromLocation(res: TestResponse): string {
   return new URL(res.headers.location as string).searchParams.get('token')!;
 }
 
@@ -646,7 +651,7 @@ describe.skipIf(skipIntegration)('Google sign-in', () => {
     try {
       const email = address('gbad');
       // One at a time: each callback swaps out global fetch.
-      const cases: Array<[(s: Started) => Promise<Response>, string]> = [
+      const cases: Array<[(s: Started) => Promise<TestResponse>, string]> = [
         [(s) => googleCallback(s, { email }, 'forged-state'), 'google_failed'],
         [(s) => googleCallback(s, { email, email_verified: false }), 'google_unverified'],
         [(s) => googleCallback(s, { email, aud: 'someone-else' }), 'google_failed'],
