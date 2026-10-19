@@ -39,6 +39,11 @@ function openPartnerScript(): Plugin {
 
 export default defineConfig({
   plugins: [react(), openPartnerScript()],
+  // @openpartner/db loads knex lazily inside createDb(), which the browser
+  // never calls. The dev server's dependency scan still follows that
+  // import(), and knex 3.3's MariaDB dialect requires 'mariadb/callback',
+  // which isn't installed, so pre-bundling knex fails and vite won't start.
+  optimizeDeps: { exclude: ['knex', 'pg'] },
   server: {
     // 5673: stays out of the brightyard-platform 5173/5175 range.
     port: Number(process.env.PORTAL_PORT ?? 5673),
