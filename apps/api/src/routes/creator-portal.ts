@@ -70,8 +70,9 @@ const ALLOWED_PREFIX: Array<{ prefix: string; methods: Set<string> }> = [
   // covers all since the matcher is method+prefix only — finer
   // method/path checks live on the Network side.
   { prefix: '/creators/me/partnerships/', methods: new Set(['GET', 'PATCH', 'POST', 'DELETE']) },
-  // Per-platform handle upsert (PUT) + delete.
-  { prefix: '/creators/me/platforms/', methods: new Set(['PUT', 'DELETE']) },
+  // Per-platform handle upsert (PUT) + delete, and account verification
+  // (POST .../:platform/verify/start, POST .../:platform/verify).
+  { prefix: '/creators/me/platforms/', methods: new Set(['PUT', 'DELETE', 'POST']) },
   // Public profile lookup — no creator session required, lets brands
   // and the open web hit /creators/by-handle/<handle> on the portal.
   { prefix: '/creators/by-handle/', methods: new Set(['GET']) },
