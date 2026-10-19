@@ -38,8 +38,36 @@ OpenPartner.init({
   queryParam: 'cref',           // query param on landing URLs
   storageKey: 'openpartner:cref', // localStorage key
   onError: (err) => Sentry.captureException(err),
+  stripe: { linkHosts: ['pay.yourbrand.com'] }, // or false — see below
+  referralCookie: { name: 'op_ref', domain: '.yourbrand.com' }, // off by default
 });
 ```
+
+### Stripe links and embeds
+
+When the visitor came from a partner link, the SDK hands that click to Stripe for you:
+
+- Every Payment Link on the page (`buy.stripe.com`, plus any `linkHosts` you list for a custom Payment Link domain) gets `client_reference_id`.
+- Every `<stripe-pricing-table>` and `<stripe-buy-button>` embed gets `client-reference-id`.
+
+That includes elements added after the page loads. A link or embed that already carries a reference keeps it. With your Stripe account connected to OpenPartner (or your self-host's webhook pointed at it), those checkouts then credit the partner with no code at all. `stripe: false` turns it off. For an app-created Checkout Session, pass `op.getReferral()`, or the `op_ref` cookie with `referralCookie` set, as `client_reference_id`.
+
+Pricing Table and Buy Button embeds read `client-reference-id` when Stripe renders them, so load the SDK before Stripe's embed script.
+
+### Script tag (no bundler)
+
+An OpenPartner portal serves a self-starting build of this SDK at `/op.js`. Paste it into your site's `<head>`:
+
+```html
+<script src="https://app.openpartner.dev/op.js" data-api-url="https://app.openpartner.dev/api/t/your-slug"></script>
+```
+
+**Admin → Integrations** shows the exact tag for your program. It does everything above, keeps the referral in an `op_ref` cookie on your domain, and exposes `window.openpartner` (`openpartner.identify(userId)`, `openpartner.getReferral()`). Optional attributes:
+- `data-stripe-hosts="pay.yourbrand.com"`: a custom Payment Link domain.
+- `data-cookie-domain=".yourbrand.com"`: share `op_ref` across subdomains.
+- `data-stripe="off"`, `data-cookie="off"`: turn either off.
+
+The npm package carries the same file at `dist-global/openpartner.js`.
 
 ### Framework notes
 
