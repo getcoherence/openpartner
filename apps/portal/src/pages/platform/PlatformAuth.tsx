@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router';
 import { theme } from '../../theme.js';
 import { PlatformFrame } from './components.js';
 import { papi, friendlyPlatformError } from './lib.js';
+import { stripQueryParamsFromAddressBar } from '../../lib/sensitive-url.js';
 
 /**
  * Operator magic-link landing. Reads ?token, POSTs the verify endpoint
@@ -17,6 +18,10 @@ export function PlatformAuthPage() {
 
   useEffect(() => {
     const token = params.get('token');
+    // The token signs in whoever holds it until verify spends it: take it
+    // out of the address bar (and so out of history, Referer headers and
+    // analytics pageviews) before anything else runs.
+    stripQueryParamsFromAddressBar(['token']);
     if (!token) {
       setState('failed');
       setDetail('No token in the link.');

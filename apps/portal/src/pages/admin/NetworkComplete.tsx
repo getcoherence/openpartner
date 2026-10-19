@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../api.js';
 import { Card, ErrorBanner, Page } from '../../ui.js';
 import { theme } from '../../theme.js';
+import { stripQueryParamsFromAddressBar } from '../../lib/sensitive-url.js';
 
 /**
  * Callback page for the Network self-serve onboarding magic link.
@@ -30,6 +31,9 @@ export function AdminNetworkComplete() {
   useEffect(() => {
     if (fired.current) return;
     fired.current = true;
+    // The ntoken is single-use but live until complete-connect spends it:
+    // keep it out of the address bar, history and analytics.
+    stripQueryParamsFromAddressBar(['ntoken']);
     if (!ntoken) {
       setState('error');
       setError('Missing ntoken in URL.');
