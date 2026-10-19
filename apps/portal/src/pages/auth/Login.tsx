@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { KeyRound, Mail } from 'lucide-react';
 import { api, clearApiKey, setApiKey, ApiError, type Principal } from '../../api.js';
 import { useTenantBase } from '../../tenant-base.js';

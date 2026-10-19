@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { CheckCircle2, Circle, Globe, HelpCircle } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
