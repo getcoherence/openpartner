@@ -71,7 +71,7 @@ ${scopeTable(operations)}
 
 ## Idempotency
 
-\`POST /attribution/events\`, \`POST /attribution/conversions\`, \`POST /attribution/refunds\` and \`POST /coupons/redeem\` take an \`externalEventId\`: your stable id for that one event (required on conversions and refunds). A retry with the same key replays the original result (\`replayed: true\`) and records nothing, even when the duplicates arrive at the same moment. A key reused for a different event is \`409 external_event_id_conflict\`. \`POST /clicks\` is idempotent on the click \`id\`. Other writes are not idempotent: \`POST /partners\` answers a duplicate email with \`409 email_taken\`, so look the partner up with \`GET /partners?email=\`.
+\`POST /attribution/events\`, \`POST /attribution/conversions\`, \`POST /attribution/refunds\` and \`POST /coupons/redeem\` take an \`externalEventId\`: your stable id for that one event (required on conversions and refunds). A retry with the same key replays the original result (\`replayed: true\`) and records nothing, even when the duplicates arrive at the same moment. A key reused for a different event is \`409 external_event_id_conflict\`. \`POST /clicks\` is idempotent on the click \`id\`, and \`POST /bonuses\` on its optional \`externalRef\` (reused for a different partner, program, amount or currency: \`409 external_ref_conflict\`). Other writes are not idempotent: \`POST /partners\` answers a duplicate email with \`409 email_taken\`, so look the partner up with \`GET /partners?email=\`.
 
 ## Pagination
 

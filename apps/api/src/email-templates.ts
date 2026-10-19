@@ -214,6 +214,88 @@ export function campaignEndingPartnerEmail(
 }
 
 // ---------------------------------------------------------------------------
+// Performance bounties (performance-bounties.ts) — partner-facing. `goal` is
+// renderBountySummary's sentence, never free text; `description` is the
+// brand's own words shown beside it.
+// ---------------------------------------------------------------------------
+
+/** Partner: a bounty they can earn has started. */
+export function bountyStartedEmail(opts: {
+  partnerName: string;
+  brandName: string | null;
+  bountyName: string;
+  goal: string;
+  description: string | null;
+  url: string;
+}): EmailTemplate {
+  const fromBrand = opts.brandName ?? 'Your partner program';
+  const subject = `New bounty from ${fromBrand}: ${opts.bountyName}`;
+  const text = [
+    `Hi ${opts.partnerName},`,
+    ``,
+    `${fromBrand} just launched a bounty, "${opts.bountyName}".`,
+    ``,
+    opts.goal,
+    ...(opts.description ? [``, opts.description] : []),
+    ``,
+    `Track your progress in your partner dashboard.`,
+    ``,
+    opts.url,
+  ].join('\n');
+  return { subject, text, html: wrap(text, opts.url, 'See the bounty') };
+}
+
+/** Partner: 7-day notice that a bounty they haven't reached yet ends soon. */
+export function bountyEndingSoonEmail(opts: {
+  partnerName: string;
+  brandName: string | null;
+  bountyName: string;
+  goal: string;
+  progress: string;
+  endsAt: Date;
+  url: string;
+}): EmailTemplate {
+  const dateStr = opts.endsAt.toUTCString().replace(/ \d\d:\d\d:\d\d GMT$/, '');
+  const subject = `"${opts.bountyName}" ends in 7 days`;
+  const text = [
+    `Hi ${opts.partnerName},`,
+    ``,
+    `The "${opts.bountyName}" bounty ends ${dateStr}.`,
+    ``,
+    opts.goal,
+    `You're at ${opts.progress} so far.`,
+    ``,
+    opts.url,
+  ].join('\n');
+  return { subject, text, html: wrap(text, opts.url, 'See your progress') };
+}
+
+/** Partner: they reached a bounty and earned its bonus. */
+export function bountyAwardedEmail(opts: {
+  partnerName: string;
+  brandName: string | null;
+  bountyName: string;
+  amount: string;
+  held: boolean;
+  url: string;
+}): EmailTemplate {
+  const fromBrand = opts.brandName ?? 'the program';
+  const subject = `You earned ${opts.amount}: "${opts.bountyName}"`;
+  const text = [
+    `Hi ${opts.partnerName},`,
+    ``,
+    `You reached the "${opts.bountyName}" bounty from ${fromBrand} and earned a ${opts.amount} bonus.`,
+    ``,
+    opts.held
+      ? `It shows on your Commissions page now, and is paid with your other earnings once the program's holdback ends.`
+      : `It shows on your Commissions page now, and is paid with your other earnings.`,
+    ``,
+    opts.url,
+  ].join('\n');
+  return { subject, text, html: wrap(text, opts.url, 'View your earnings') };
+}
+
+// ---------------------------------------------------------------------------
 // Brand review (approval gate) — brand-facing + platform-ops-facing.
 // ---------------------------------------------------------------------------
 

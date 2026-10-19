@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
 import { creatorApi, ApiError } from './creator-api.js';

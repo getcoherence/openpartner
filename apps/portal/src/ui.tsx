@@ -414,6 +414,10 @@ export function StatusPill({ status }: { status: string }) {
     'pending review': { bg: theme.infoSoft, fg: theme.info },
     active: { bg: theme.successSoft, fg: theme.success },
     revoked: { bg: theme.dangerSoft, fg: theme.danger },
+    // Performance bounties.
+    draft: { bg: theme.surface2, fg: theme.textMuted },
+    ended: { bg: theme.infoSoft, fg: theme.info },
+    archived: { bg: theme.surface2, fg: theme.textDim },
   };
   const c = palette[status] ?? { bg: theme.surface2, fg: theme.textMuted };
   return (
@@ -437,6 +441,28 @@ export function StatusPill({ status }: { status: string }) {
 }
 
 // ---------------- Avatar ----------------
+
+/** Progress toward a goal (a performance bounty), with its label under the
+ *  bar. Turns success-green once `value` reaches `threshold`. */
+export function ProgressBar({ value, threshold, label }: { value: number; threshold: number; label: string }) {
+  const pct = threshold > 0 ? Math.min(100, Math.round((value / threshold) * 100)) : 0;
+  const done = value >= threshold;
+  return (
+    <div style={{ minWidth: 160 }}>
+      <div
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={threshold}
+        aria-valuenow={value}
+        aria-label={label}
+        style={{ height: 8, borderRadius: 999, background: theme.surface3, overflow: 'hidden' }}
+      >
+        <div style={{ width: `${pct}%`, height: '100%', background: done ? theme.success : theme.accent, transition: 'width 200ms ease' }} />
+      </div>
+      <div style={{ fontSize: 12, color: done ? theme.success : theme.textMuted, marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>{label}</div>
+    </div>
+  );
+}
 
 export function Avatar({ name, size = 32 }: { name: string; size?: number }) {
   const initials = name

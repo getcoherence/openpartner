@@ -8,8 +8,9 @@
  * macro-substituted query parameters, the way affiliate trackers
  * universally consume conversions.
  *
- * Subscription is restricted to commission.* events (the conversion
- * ledger). partner-state events stay tenant-scoped.
+ * Subscription is restricted to the partner's own earnings: commission.*
+ * (the conversion ledger) and bonus.awarded / bonus.paid. partner-state
+ * events stay tenant-scoped.
  *
  * No HMAC: classic postbacks aren't signed. Partners that want
  * verification put a shared secret in the URL template
@@ -37,6 +38,8 @@ const POSTBACK_EVENTS: readonly PartnerPostbackEvent[] = [
   'commission.approved',
   'commission.paid',
   'commission.reversed',
+  'bonus.awarded',
+  'bonus.paid',
 ];
 
 export function isPostbackEvent(s: string): s is PartnerPostbackEvent {
@@ -69,6 +72,11 @@ export interface PostbackContext {
   /** Alias for event_id — affiliate trackers commonly call it
    *  "transaction_id" / "tid". */
   transaction_id?: string;
+  /** bonus.* only. A bonus has no click or event, so {click_id},
+   *  {event_id} and {transaction_id} stay literal on its postbacks. */
+  bonus_id?: string;
+  bounty_id?: string;
+  bonus_amount?: string;
 }
 
 /** Replace {name} placeholders with URL-encoded values from ctx.

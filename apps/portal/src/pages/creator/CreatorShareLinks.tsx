@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Copy, Megaphone } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, formatDate, money } from '../../ui.js';
 import { theme } from '../../theme.js';

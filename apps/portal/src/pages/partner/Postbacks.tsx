@@ -20,6 +20,8 @@ const POSTBACK_EVENTS = [
   'commission.approved',
   'commission.paid',
   'commission.reversed',
+  'bonus.awarded',
+  'bonus.paid',
 ] as const;
 
 type PostbackEvent = (typeof POSTBACK_EVENTS)[number];
@@ -301,7 +303,10 @@ function MacroReference() {
     ['{transaction_id}', 'Alias for {event_id} — many trackers use this name'],
     ['{event_type}', 'invoice_paid / signup / your custom event'],
     ['{program_id}', ' Program id'],
-    ['{payout_id}', 'Only present on commission.paid'],
+    ['{payout_id}', 'Only present on commission.paid and bonus.paid'],
+    ['{bonus_id}', 'bonus.* only: the bonus. A bonus has no click or event, so those macros stay literal'],
+    ['{bonus_amount}', 'bonus.* only: the bonus amount in major units'],
+    ['{bounty_id}', 'bonus.* only: the bounty you reached, when a bounty paid it'],
   ];
   return (
     <div style={{ marginTop: 28 }}>

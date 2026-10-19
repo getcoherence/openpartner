@@ -148,6 +148,12 @@ cumulative `amount_refunded`, so two partial refunds add up.
   later payouts.
 - **In a payout in flight:** held (`heldInTransferCommissions` on the refund
   Event). The next refund of the same charge finishes it.
+- **A payment split across invoices** (API version `2025-03-31.basil` and later):
+  if the refunded payment paid part of an invoice, or several invoices, the
+  refund is recorded (`splitPaymentReversalSkipped`, `stripeSplitInvoiceIds`)
+  and reverses nothing. The charge doesn't say how much of which invoice it
+  gave back. The brand reports it with `POST /attribution/refunds` and the
+  amount.
 
 `charge.dispute.created` is recorded as a `dispute_created` Event and reverses
 nothing, because a dispute can be won. OpenPartner doesn't read the dispute's
@@ -199,6 +205,25 @@ link the Stripe customer to their user instead: `client_reference_id = <click id
 at Checkout, or `metadata.openpartner_user_id` on the Customer. The Integrations
 page and the 409's `detail` say so.
 
+### Getting the partner click into Stripe
+
+Stripe never sees the brand's website, so the app can't know who referred a
+buyer unless the partner click reaches Stripe. Once it does, that customer's
+invoices, renewals and refunds attribute on their own. Once connected,
+Integrations asks how the brand takes payment and shows only that path:
+
+| How customers pay | What the brand does |
+| --- | --- |
+| A partner link goes straight to a Payment Link | Nothing: put `?client_reference_id={click_id}` on the program's destination URL |
+| Payment Links, a Pricing Table or a Buy Button on the brand's site | Paste one script tag (`<portal>/op.js`). The browser SDK adds the click to `buy.stripe.com` links and to Pricing Table / Buy Button embeds, including ones added later |
+| The brand's app creates the Checkout Session | The same tag, plus `client_reference_id: req.cookies.op_ref`. The script keeps the click in a first-party `op_ref` cookie |
+| Partner promo codes at Stripe Checkout | Nothing, when the program offers a customer discount (codes are created in the brand's Stripe) |
+
+The portal's build produces `/op.js` from `packages/sdk/src/auto.ts`
+(`pnpm --filter @openpartner/sdk build:global`). That makes it available on
+the platform origin and on every white-label domain, with no npm release
+needed.
+
 ### Customer rewards
 
 `customer-rewards.ts rewardStripe(tenantId)` returns the brand's own client on
@@ -223,7 +248,7 @@ money (CLAUDE.md principle 4), and nothing edits customers.
 | `checkout_session_read` | Read completed Checkout Sessions and Payment Link purchases to match them to the partner link the buyer clicked. | `checkout.session.*` events; `checkout.sessions.list` (`stitchFromCompletedCheckouts`); `checkout.sessions.retrieve` with `total_details.breakdown` (`collectDiscounts`) |
 | `customer_read` | Read a customer's metadata to match their payments to the user your app identified. | `customer.created`; `customers.retrieve` (`resolveUserIdFromCustomer`, `couponUserId`, the checkout's merchant-userId check) |
 | `subscription_read` | Record new subscriptions for referred customers. | `customer.subscription.created` |
-| `invoice_read` | Record paid invoices for referred customers so partners earn commission on them, including the promo code used. | `invoice.paid`, `invoice.payment_failed`; `invoices.retrieve` with expanded discounts (`collectDiscounts`) |
+| `invoice_read` | Record paid invoices for referred customers so partners earn commission on them, including the promo code used. | `invoice.paid`, `invoice.payment_failed`; `invoices.retrieve` with expanded discounts (`collectDiscounts`); `invoicePayments.list`, the invoice a refunded charge paid on API versions from 2025-03-31.basil (`invoicePaidBy`) |
 | `charge_read` | Read refunds and disputed charges so commissions on refunded revenue are reversed or flagged. | `charge.refunded`; `charges.retrieve` (a dispute's customer) |
 | `dispute_read` | Flag commissions on disputed payments for your review. | `charge.dispute.created` |
 | `promotion_code_read` | Match promotion codes used at checkout to your partners' codes. | `promotionCodes.retrieve` (`resolveDiscountCode`); `promotionCodes.list` (`codeExistsInStripe`); expanding a discount's promotion code |
@@ -322,13 +347,24 @@ In the developer account, create an event destination for each environment. Use
 | Test-mode sandbox | Test mode → Developers → Webhooks | same URL | to do |
 | General sandboxes (optional) | The app's managed sandbox | same URL | optional |
 
-**API version: `2025-02-24.acacia`, on every endpoint.** Don't take the account
-default or the latest version. Version `2025-03-31.basil` removed
-`Invoice.charge`, `Invoice.payment_intent` and `Charge.invoice`, the fields the
-shared mapping uses to tie a refund to the payment it refunds (`invoice.paid`
-records them on the Event, and `charge.refunded` looks them up). On a basil or
-later endpoint, a subscription refund is recorded but reverses nothing. Moving
-past acacia needs the mapping to read `invoice.payments` (InvoicePayment) first.
+**API version: any, but keep the app's endpoints on `2025-02-24.acacia` for
+now.** The live endpoint was created on acacia. Give the others the same version
+so every environment sends the same payloads.
+
+Version `2025-03-31.basil` removed `Invoice.charge`, `Invoice.payment_intent`
+and `Charge.invoice`, the fields that tie a refund to the payment it refunds. On
+basil and later, `charge.refunded` reads the invoice from the PaymentIntent's
+InvoicePayments instead (`invoicePaidBy` in `routes/stripe-webhook.ts`), with the
+brand's token. Stripe lists no separate InvoicePayment permission, so
+`invoice_read` should cover it. That read hasn't run against a real install yet.
+If Stripe refuses it, the refund is recorded and reverses nothing, and the API
+logs `Stripe read failed permanently` for `invoicePayments.list`. So before
+moving an endpoint past acacia, test it on a test-mode endpoint at the new
+version: refund a referred customer's **subscription invoice** in full and check
+that the commission flips to `reversed`. Step 5's Payment Link refund doesn't
+test this. A one-time purchase is matched by its PaymentIntent and never reads
+InvoicePayments. Pick the `app.install.*` or `apps.install.*` event names that
+version has.
 
 Events to select (names as of acacia):
 

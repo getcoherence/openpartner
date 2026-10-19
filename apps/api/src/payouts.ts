@@ -129,11 +129,11 @@ export interface PayoutRunResult {
 }
 
 /** A manual-rail payout's webhooks: payout.created, plus commission.paid
- *  for each commission it paid. */
+ *  for each commission it paid (bonus.paid for a bonus's). */
 export interface PendingPayoutNotification {
   /** The payout.created payload, exactly as dispatched. */
   payout: WebhookPayload<'payout.created'>;
-  commissions: Array<Pick<CommissionRow, 'id' | 'partnerId' | 'attributionId' | 'amount' | 'currency'>>;
+  commissions: Array<Pick<CommissionRow, 'id' | 'partnerId' | 'attributionId' | 'bonusId' | 'amount' | 'currency'>>;
 }
 
 /**
@@ -495,6 +495,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
           id: c.id,
           partnerId: c.partnerId,
           attributionId: c.attributionId,
+          bonusId: c.bonusId,
           amount: c.amount,
           currency: c.currency,
         })),

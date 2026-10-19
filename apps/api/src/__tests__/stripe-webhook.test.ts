@@ -34,6 +34,7 @@ const stripeApi = vi.hoisted(() => ({
   checkoutSessionsRetrieve: vi.fn(),
   promotionCodesRetrieve: vi.fn(),
   chargesRetrieve: vi.fn(),
+  invoicePaymentsList: vi.fn(),
 }));
 
 function resetStripeApi() {
@@ -44,6 +45,7 @@ function resetStripeApi() {
   stripeApi.checkoutSessionsRetrieve.mockReset().mockRejectedValue(new Error('unexpected checkout.sessions.retrieve'));
   stripeApi.promotionCodesRetrieve.mockReset().mockRejectedValue(new Error('unexpected promotionCodes.retrieve'));
   stripeApi.chargesRetrieve.mockReset().mockRejectedValue(new Error('unexpected charges.retrieve'));
+  stripeApi.invoicePaymentsList.mockReset().mockRejectedValue(new Error('unexpected invoicePayments.list'));
 }
 resetStripeApi();
 
@@ -68,6 +70,7 @@ vi.mock('stripe', async () => {
       retrieve: stripeApi.promotionCodesRetrieve,
     };
     (instance as unknown as { charges: unknown }).charges = { retrieve: stripeApi.chargesRetrieve };
+    (instance as unknown as { invoicePayments: unknown }).invoicePayments = { list: stripeApi.invoicePaymentsList };
     return instance;
   }
   // Preserve the static `webhooks` namespace for any direct imports.
@@ -1702,6 +1705,222 @@ describe.skipIf(skipIntegration)('stripe webhook — partial refunds', () => {
     expect(after.every((c) => c.status === 'reversed')).toBe(true);
     const refundEvent = await db(TABLES.Event).where({ type: 'refund' }).first();
     expect((refundEvent!.metadata as { fullRefund?: boolean }).fullRefund).toBe(true);
+  });
+});
+
+// From API version 2025-03-31.basil, Invoice has no `charge` or
+// `payment_intent` and Charge has no `invoice`: the link is an InvoicePayment.
+// These payloads leave the keys out entirely, as Stripe does.
+describe.skipIf(skipIntegration)('stripe webhook — API 2025-03-31.basil payloads', () => {
+  const now = () => Math.floor(Date.now() / 1000);
+
+  /** A referred customer with one paid basil-shaped invoice. */
+  async function seedBasilInvoice(amountPaid: number) {
+    const { clickId } = await seedClick();
+    const customerId = `cus_${ulid()}`;
+    const invoiceId = `in_${ulid()}`;
+    const paymentIntentId = `pi_${ulid()}`;
+    await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'checkout.session.completed',
+      created: now(),
+      data: { object: { id: `cs_${ulid()}`, mode: 'subscription', client_reference_id: clickId, customer: customerId, subscription: `sub_${ulid()}` } },
+    });
+    const paid = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'invoice.paid',
+      created: now(),
+      data: {
+        object: {
+          id: invoiceId,
+          object: 'invoice',
+          customer: { id: customerId, metadata: {}, object: 'customer' },
+          amount_paid: amountPaid,
+          currency: 'usd',
+          billing_reason: 'subscription_create',
+        },
+      },
+    });
+    expect(paid.status).toBe(200);
+    const conversion = (await db(TABLES.Event).where({ type: 'invoice_paid' }).first())!;
+    const attributionIds = (await db(TABLES.Attribution).where({ eventId: conversion.id })).map((a) => a.id);
+    return { customerId, invoiceId, paymentIntentId, conversion, attributionIds };
+  }
+
+  function chargeRefunded(o: { customerId: string; paymentIntentId: string; amount: number; refunded: number; chargeId?: string }) {
+    return {
+      id: `evt_${ulid()}`,
+      type: 'charge.refunded',
+      created: now(),
+      data: {
+        object: {
+          id: o.chargeId ?? `ch_${ulid()}`,
+          object: 'charge',
+          customer: { id: o.customerId, metadata: {}, object: 'customer' },
+          payment_intent: o.paymentIntentId,
+          amount: o.amount,
+          amount_captured: o.amount,
+          amount_refunded: o.refunded,
+          currency: 'usd',
+        },
+      },
+    };
+  }
+
+  function invoicePayment(invoiceId: string, paymentIntentId: string, amountPaid: number) {
+    return {
+      id: `inpay_${ulid()}`,
+      object: 'invoice_payment',
+      amount_paid: amountPaid,
+      amount_requested: amountPaid,
+      currency: 'usd',
+      invoice: invoiceId,
+      is_default: true,
+      livemode: false,
+      payment: { type: 'payment_intent', payment_intent: paymentIntentId },
+      status: 'paid',
+    };
+  }
+
+  const listOf = (...data: object[]) => ({ object: 'list', data, has_more: false, url: '/v1/invoice_payments' });
+
+  it('a full refund finds its invoice through the InvoicePayment and reverses the commission', async () => {
+    const { customerId, invoiceId, paymentIntentId, conversion, attributionIds } = await seedBasilInvoice(4900);
+    // invoice.paid had nothing to record but the invoice id, and read nothing extra.
+    expect(conversion.metadata).toMatchObject({ stripeInvoiceId: invoiceId });
+    expect(conversion.metadata).not.toHaveProperty('stripeChargeId');
+    expect(conversion.metadata).not.toHaveProperty('stripePaymentIntentId');
+    expect(stripeApi.invoicePaymentsList).not.toHaveBeenCalled();
+    const accrued = await db(TABLES.Commission).whereIn('attributionId', attributionIds);
+    expect(accrued.map((c) => [c.status, c.amount])).toEqual([['accrued', '9.80']]);
+
+    stripeApi.invoicePaymentsList.mockResolvedValue(listOf(invoicePayment(invoiceId, paymentIntentId, 4900)));
+    const refund = chargeRefunded({ customerId, paymentIntentId, amount: 4900, refunded: 4900 });
+    const res = await postWebhook(refund);
+
+    expect(res.status).toBe(200);
+    expect(res.body.corrective).toBe('refund');
+    expect(stripeApi.invoicePaymentsList).toHaveBeenCalledWith(
+      expect.objectContaining({ payment: { type: 'payment_intent', payment_intent: paymentIntentId }, status: 'paid' }),
+    );
+    const after = await db(TABLES.Commission).whereIn('attributionId', attributionIds);
+    expect(after.map((c) => c.status)).toEqual(['reversed']);
+    await vi.waitFor(() =>
+      expect(dispatched('commission.reversed')).toEqual([
+        expect.objectContaining({ commissionId: accrued[0]!.id, eventId: conversion.id, reason: 'refund' }),
+      ]),
+    );
+
+    // The refund Event names the invoice, which is how the usage ledger and a
+    // later replay match it to the conversion.
+    const [refundEvent] = await db(TABLES.Event).where({ type: 'refund' });
+    expect(refundEvent!.metadata).toMatchObject({
+      stripeInvoiceId: invoiceId,
+      stripePaymentIntentId: paymentIntentId,
+      fullRefund: true,
+      reversedCommissions: 1,
+    });
+    expect(refundEvent!.metadata).not.toHaveProperty('splitPaymentReversalSkipped');
+
+    // A redelivery records nothing new and announces nothing twice.
+    const again = await postWebhook(refund);
+    expect(again.status).toBe(200);
+    expect(again.body.idempotent).toBe(true);
+    expect(await db(TABLES.Event).where({ type: 'refund' })).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(dispatched('commission.reversed')).toHaveLength(1);
+  });
+
+  it('partial refunds prorate cumulatively, and billable GMV keeps the kept share', async () => {
+    const { customerId, invoiceId, paymentIntentId, attributionIds } = await seedBasilInvoice(10000);
+    stripeApi.invoicePaymentsList.mockResolvedValue(listOf(invoicePayment(invoiceId, paymentIntentId, 10000)));
+    const chargeId = `ch_${ulid()}`;
+
+    await postWebhook(chargeRefunded({ chargeId, customerId, paymentIntentId, amount: 10000, refunded: 2500 }));
+    let live = await db(TABLES.Commission).whereIn('attributionId', attributionIds).whereNot({ status: 'reversed' });
+    expect(live.map((c) => c.amount)).toEqual(['15.00']);
+
+    // The usage ledger matches the refund to the conversion by invoice id:
+    // without that it would still bill the whole $100.
+    const { aggregateAttributedGmv } = await import('../usage-billing.js');
+    expect(await aggregateAttributedGmv(db, DEFAULT_TENANT_ID, null, new Date(Date.now() + 60_000))).toEqual({ USD: 75 });
+
+    // amount_refunded is cumulative: $60 in all leaves 40% of the original.
+    await postWebhook(chargeRefunded({ chargeId, customerId, paymentIntentId, amount: 10000, refunded: 6000 }));
+    live = await db(TABLES.Commission).whereIn('attributionId', attributionIds).whereNot({ status: 'reversed' });
+    expect(live.map((c) => c.amount)).toEqual(['8.00']);
+  });
+
+  it('a payment that paid only part of the invoice records the refund and reverses nothing', async () => {
+    const { customerId, invoiceId, paymentIntentId, attributionIds } = await seedBasilInvoice(10000);
+    // $60 of the $100 invoice came from this payment; the rest from another.
+    stripeApi.invoicePaymentsList.mockResolvedValue(listOf(invoicePayment(invoiceId, paymentIntentId, 6000)));
+
+    const res = await postWebhook(chargeRefunded({ customerId, paymentIntentId, amount: 6000, refunded: 6000 }));
+
+    expect(res.status).toBe(200);
+    expect(res.body.corrective).toBe('refund');
+    const commissions = await db(TABLES.Commission).whereIn('attributionId', attributionIds);
+    expect(commissions.map((c) => c.status)).toEqual(['accrued']);
+    const [refundEvent] = await db(TABLES.Event).where({ type: 'refund' });
+    expect(refundEvent!.metadata).toMatchObject({
+      stripeSplitInvoiceIds: [invoiceId],
+      splitPaymentReversalSkipped: true,
+      fullRefund: true,
+      reversedCommissions: 0,
+    });
+    // Not linked by invoice id, so neither the usage ledger nor a replay
+    // takes this charge's 100% as the invoice's.
+    expect(refundEvent!.metadata).not.toHaveProperty('stripeInvoiceId');
+    const { aggregateAttributedGmv } = await import('../usage-billing.js');
+    expect(await aggregateAttributedGmv(db, DEFAULT_TENANT_ID, null, new Date(Date.now() + 60_000))).toEqual({ USD: 100 });
+  });
+
+  it('a payment spread across several invoices reverses nothing either', async () => {
+    const { customerId, invoiceId, paymentIntentId, attributionIds } = await seedBasilInvoice(4900);
+    const otherInvoiceId = `in_${ulid()}`;
+    stripeApi.invoicePaymentsList.mockResolvedValue(
+      listOf(invoicePayment(invoiceId, paymentIntentId, 4900), invoicePayment(otherInvoiceId, paymentIntentId, 5100)),
+    );
+
+    await postWebhook(chargeRefunded({ customerId, paymentIntentId, amount: 10000, refunded: 10000 }));
+
+    expect((await db(TABLES.Commission).whereIn('attributionId', attributionIds)).map((c) => c.status)).toEqual(['accrued']);
+    const [refundEvent] = await db(TABLES.Event).where({ type: 'refund' });
+    expect(refundEvent!.metadata).toMatchObject({ stripeSplitInvoiceIds: [invoiceId, otherInvoiceId], splitPaymentReversalSkipped: true });
+  });
+
+  it('a key that cannot read invoice payments records the refund without failing the webhook', async () => {
+    const { customerId, paymentIntentId, attributionIds } = await seedBasilInvoice(4900);
+    stripeApi.invoicePaymentsList.mockRejectedValue(stripeError('StripePermissionError'));
+
+    const res = await postWebhook(chargeRefunded({ customerId, paymentIntentId, amount: 4900, refunded: 4900 }));
+
+    expect(res.status).toBe(200);
+    expect((await db(TABLES.Commission).whereIn('attributionId', attributionIds)).map((c) => c.status)).toEqual(['accrued']);
+    expect(await db(TABLES.Event).where({ type: 'refund' })).toHaveLength(1);
+  });
+
+  it('a transient Stripe failure answers 500 so Stripe redelivers', async () => {
+    const { customerId, paymentIntentId } = await seedBasilInvoice(4900);
+    stripeApi.invoicePaymentsList.mockRejectedValue(stripeError('StripeConnectionError'));
+
+    const res = await postWebhook(chargeRefunded({ customerId, paymentIntentId, amount: 4900, refunded: 4900 }));
+
+    expect(res.status).toBe(500);
+    expect(await db(TABLES.Event).where({ type: 'refund' })).toHaveLength(0);
+  });
+
+  it('an acacia charge that says it has no invoice (null) is not looked up', async () => {
+    const { customerId, attributionIds } = await seedBasilInvoice(4900);
+    const refund = chargeRefunded({ customerId, paymentIntentId: `pi_${ulid()}`, amount: 4900, refunded: 4900 });
+    (refund.data.object as Record<string, unknown>).invoice = null;
+
+    const res = await postWebhook(refund);
+
+    expect(res.status).toBe(200);
+    expect(stripeApi.invoicePaymentsList).not.toHaveBeenCalled();
+    expect((await db(TABLES.Commission).whereIn('attributionId', attributionIds)).map((c) => c.status)).toEqual(['accrued']);
   });
 });
 

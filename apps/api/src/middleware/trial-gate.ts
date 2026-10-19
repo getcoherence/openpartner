@@ -20,6 +20,9 @@
  *   - POST /admin/network/requests/:id/approve  (approve creator
  *                                            application coming through
  *                                            the Network)
+ *   - POST /bonuses                         (pay a partner a bonus: the
+ *                                            platform fee bills it through
+ *                                            the plan's meter)
  *
  * What's gated — lapsed trial (402 trial_expired):
  *   - POST /programs                        (create new program)
@@ -72,6 +75,9 @@ const PLAN_REQUIRED: GatedRoute[] = [
   // the real cause on its Billing page.
   { method: 'POST', test: (p) => p === '/partner-signup' },
   { method: 'POST', test: (p) => /^\/admin\/network\/requests\/[^/]+\/approve$/.test(p) },
+  // Paying a bonus moves money, and on a hosted plan the platform fee bills
+  // it, so it needs a plan as onboarding does.
+  { method: 'POST', test: (p) => p === '/bonuses' },
 ];
 
 // Program-expansion routes: soft-gated only AFTER the trial expires without a
