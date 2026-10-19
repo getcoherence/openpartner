@@ -393,6 +393,102 @@ describe('the Consolidated Screening List client', () => {
   });
 });
 
+describe('pacing calls to the list', () => {
+  // trade.gov answered 429 after ~17 calls in 2s on the first prod sweep.
+  let sleeps: number[];
+  let fetchMock: ReturnType<typeof vi.fn>;
+  const ok = () =>
+    new Response(JSON.stringify({ results: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  const limited = (retryAfter?: string) =>
+    new Response('rate limited', { status: 429, headers: retryAfter ? { 'retry-after': retryAfter } : {} });
+
+  beforeEach(() => {
+    sleeps = [];
+    screening.setCslLookupForTesting(null);
+    // Record the waits instead of sleeping: time stands still, so every
+    // wait shows the full gap the pacing asked for.
+    screening.setCslPacingForTesting({
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    fetchMock = vi.fn(async () => ok());
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    screening.setCslPacingForTesting(null);
+    screening.setCslLookupForTesting(stubbedList);
+  });
+
+  it('spaces calls out, one after another', async () => {
+    for (const name of ['One', 'Two', 'Three']) await screening.screenName(name);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(sleeps).toHaveLength(2);
+    expect(sleeps[0]).toBeGreaterThan(400);
+    expect(sleeps[0]).toBeLessThanOrEqual(500);
+    expect(sleeps[1]).toBeGreaterThan(900);
+    expect(sleeps[1]).toBeLessThanOrEqual(1000);
+  });
+
+  it('queues concurrent callers into their own slots instead of bunching them', async () => {
+    await Promise.all(['One', 'Two', 'Three'].map((n) => screening.screenName(n)));
+
+    const waits = [...sleeps].sort((a, b) => a - b);
+    expect(waits).toHaveLength(2);
+    expect(waits[0]).toBeGreaterThan(400);
+    expect(waits[1]).toBeGreaterThan(900);
+  });
+
+  it('waits out Retry-After on a 429, then retries and gets the answer', async () => {
+    fetchMock.mockResolvedValueOnce(limited('3')).mockResolvedValueOnce(ok());
+
+    const outcome = await screening.screenName('Anyone');
+
+    expect(outcome.result).toBe('clear');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(sleeps).toHaveLength(1);
+    expect(sleeps[0]).toBeGreaterThan(2900);
+    expect(sleeps[0]).toBeLessThanOrEqual(3000);
+  });
+
+  it('waits a default 2s when a 429 gives no Retry-After', async () => {
+    fetchMock.mockResolvedValueOnce(limited()).mockResolvedValueOnce(ok());
+
+    expect((await screening.screenName('Anyone')).result).toBe('clear');
+    expect(sleeps[0]).toBeGreaterThan(1900);
+    expect(sleeps[0]).toBeLessThanOrEqual(2000);
+  });
+
+  it('records an error once the retries are spent, never a clear', async () => {
+    fetchMock.mockImplementation(async () => limited('1'));
+
+    const outcome = await screening.screenName('Anyone');
+
+    expect(outcome).toEqual({ result: 'error', matches: [], errorDetail: 'csl_http_429' });
+    // The first try and two retries.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("doesn't wait out a Retry-After longer than 30s: that's an error for the next sweep", async () => {
+    fetchMock.mockResolvedValueOnce(limited('120'));
+
+    expect((await screening.screenName('Anyone')).errorDetail).toBe('csl_http_429');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it('reads Retry-After as seconds or an HTTP date', () => {
+    const now = Date.UTC(2026, 9, 19, 21, 0, 0);
+    expect(screening.retryAfterMs('7', now)).toBe(7000);
+    expect(screening.retryAfterMs(new Date(now + 5000).toUTCString(), now)).toBe(5000);
+    expect(screening.retryAfterMs(new Date(now - 5000).toUTCString(), now)).toBe(0);
+    expect(screening.retryAfterMs('soon', now)).toBeNull();
+    expect(screening.retryAfterMs(null, now)).toBeNull();
+  });
+});
+
 describe.skipIf(skipIntegration)('payout holds', () => {
   it('holds a Connect partner whose declared country is blocked, and pays the others', async () => {
     const held = await seedPartner({ connect: true });

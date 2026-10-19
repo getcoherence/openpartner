@@ -106,22 +106,93 @@ export function setCslLookupForTesting(fn: CslLookup | null): void {
   lookupOverride = fn;
 }
 
+/**
+ * How fast this process calls the list. trade.gov rate-limits the API: the
+ * first prod sweep (Oct 19 2026) got 429s after about 17 calls in 2
+ * seconds. So calls are spaced out, and a 429 is retried after the wait it
+ * asks for (Retry-After). A wait longer than `maxRetryWaitMs`, or a 429
+ * that outlasts the retries, is an error: the sweep's error breaker stops
+ * it, and the next hourly sweep picks up where it left off.
+ */
+export interface CslPacing {
+  /** Gap between consecutive calls, across every caller in the process. */
+  minIntervalMs: number;
+  /** Retries of a 429 before it counts as an error. */
+  maxRetries: number;
+  /** The longest Retry-After we wait out. */
+  maxRetryWaitMs: number;
+  /** The wait when a 429 has no usable Retry-After. */
+  defaultRetryWaitMs: number;
+  sleep: (ms: number) => Promise<void>;
+}
+
+const DEFAULT_PACING: CslPacing = {
+  minIntervalMs: 500,
+  maxRetries: 2,
+  maxRetryWaitMs: 30_000,
+  defaultRetryWaitMs: 2_000,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+let pacing: CslPacing = DEFAULT_PACING;
+/** When the next call may go out (epoch ms). */
+let nextCallAt = 0;
+
+/** Tests: change the pacing, or restore the defaults with null. Either way
+ *  the spacing starts afresh. */
+export function setCslPacingForTesting(overrides: Partial<CslPacing> | null): void {
+  pacing = overrides ? { ...DEFAULT_PACING, ...overrides } : DEFAULT_PACING;
+  nextCallAt = 0;
+}
+
+/** Hold this call until its slot. The slot is claimed before waiting, so
+ *  concurrent callers (a sweep and a signup) queue up instead of bunching. */
+async function waitForSlot(): Promise<void> {
+  const now = Date.now();
+  const slot = Math.max(now, nextCallAt);
+  nextCallAt = slot + pacing.minIntervalMs;
+  if (slot > now) await pacing.sleep(slot - now);
+}
+
+/** Retry-After as milliseconds: delta-seconds or an HTTP date. Null when
+ *  absent or unreadable. */
+export function retryAfterMs(header: string | null, now = Date.now()): number | null {
+  if (!header) return null;
+  const value = header.trim();
+  if (/^\d+$/.test(value)) return Number(value) * 1000;
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? null : Math.max(0, at - now);
+}
+
 /** One fuzzy name search. Returns the raw result entries; throws on any
- *  non-2xx answer, a timeout, or a body that isn't the documented shape. */
+ *  non-2xx answer (a 429 only once its retries are spent), a timeout, or a
+ *  body that isn't the documented shape. */
 async function cslSearch(name: string): Promise<unknown[]> {
   if (lookupOverride) return lookupOverride(name);
   const url = new URL(CSL_SEARCH_URL);
   url.searchParams.set('name', name);
   url.searchParams.set('fuzzy_name', 'true');
   url.searchParams.set('size', '25');
-  const res = await fetch(url, {
-    headers: {
-      'subscription-key': (process.env.CSL_API_KEY ?? '').trim(),
-      accept: 'application/json',
-      'cache-control': 'no-cache',
-    },
-    signal: AbortSignal.timeout(CSL_TIMEOUT_MS),
-  });
+  let res: Response;
+  for (let attempt = 0; ; attempt += 1) {
+    await waitForSlot();
+    res = await fetch(url, {
+      headers: {
+        'subscription-key': (process.env.CSL_API_KEY ?? '').trim(),
+        accept: 'application/json',
+        'cache-control': 'no-cache',
+      },
+      signal: AbortSignal.timeout(CSL_TIMEOUT_MS),
+    });
+    if (res.status !== 429 || attempt >= pacing.maxRetries) break;
+    const wait = retryAfterMs(res.headers.get('retry-after')) ?? pacing.defaultRetryWaitMs;
+    if (wait > pacing.maxRetryWaitMs) break;
+    // Let the connection go back to the pool before trying again.
+    await res.body?.cancel().catch(() => {});
+    // Every caller waits, not just this one: the limit is per key.
+    nextCallAt = Math.max(nextCallAt, Date.now() + wait);
+    console.warn(`[sanctions-screening] CSL rate limit (429); retrying in ${wait}ms`);
+  }
   if (!res.ok) throw new Error(`csl_http_${res.status}`);
   const body = (await res.json()) as { results?: unknown };
   if (!Array.isArray(body.results)) throw new Error('csl_unexpected_body');
