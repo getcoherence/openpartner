@@ -29,9 +29,11 @@ if (KEY && typeof document !== 'undefined') {
   const tag = document.createElement('script');
   tag.type = 'text/javascript';
   tag.text = snippet;
-  // An inline script runs on insertion, so the stub exists from here on.
+  // An inline script runs on insertion, so the stub exists from here on
+  // (unless something blocked it, e.g. a future CSP: then analytics is
+  // off, and the app must still boot).
   document.head.appendChild(tag);
-  (window as unknown as { posthog: { init: (key: string, config: Record<string, unknown>) => void } }).posthog.init(
+  (window as unknown as { posthog?: { init?: (key: string, config: Record<string, unknown>) => void } }).posthog?.init?.(
     KEY,
     {
       api_host: HOST,

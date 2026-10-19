@@ -7,7 +7,7 @@
  * event that still caught it.
  */
 import type { ReactElement } from 'react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor } from '@testing-library/react';
 import { BrowserRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -111,6 +111,25 @@ describe('PostHog before_send scrubber', () => {
     expect(JSON.stringify(out)).not.toMatch(/op_ml_|nt_def/);
     // The input event is left alone.
     expect(event.properties.$current_url).toContain('token=op_ml_abc');
+  });
+
+  it('is the before_send PostHog is initialised with', async () => {
+    // A stub that already looks loaded (__SV) makes the snippet a no-op, so
+    // the init call that follows lands on the spy.
+    const init = vi.fn();
+    (window as unknown as { posthog: unknown }).posthog = { __SV: 1, init };
+    vi.stubEnv('VITE_POSTHOG_KEY', 'phc_test');
+    try {
+      await import('../posthog.js');
+    } finally {
+      vi.unstubAllEnvs();
+      delete (window as unknown as { posthog?: unknown }).posthog;
+    }
+    expect(init).toHaveBeenCalledTimes(1);
+    const [key, config] = init.mock.calls[0]! as [string, { before_send: unknown; api_host: string }];
+    expect(key).toBe('phc_test');
+    expect(config.api_host).toBe('https://us.i.posthog.com');
+    expect(config.before_send).toBe(scrubSensitiveEvent);
   });
 
   it('leaves strings without a sensitive param untouched', () => {
