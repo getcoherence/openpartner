@@ -80,6 +80,7 @@ import { AddBrandPage } from './pages/AddBrand.js';
 import { PartnerJoinPage } from './pages/PartnerJoin.js';
 import { BrandDocument } from './lib/BrandDocument.js';
 import { ThemeToggle } from './lib/ThemeToggle.js';
+import { CookieSettingsButton } from './lib/ConsentBanner.js';
 import { PlatformMagicLandingPage } from './pages/auth/PlatformMagicLanding.js';
 import { PlatformLoginPage } from './pages/platform/PlatformLogin.js';
 import { PlatformAuthPage } from './pages/platform/PlatformAuth.js';
@@ -574,6 +575,8 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
           {supportEmail}
         </a>
       )}
+
+      <CookieSettingsButton style={{ marginTop: 6, alignSelf: 'center' }} />
     </aside>
   );
 }

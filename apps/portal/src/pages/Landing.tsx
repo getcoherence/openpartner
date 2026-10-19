@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { theme } from '../theme.js';
 import { Logo } from './auth/Shared.js';
+import { CookieSettingsButton } from '../lib/ConsentBanner.js';
 
 /**
  * Public landing for the multi-tenant deployment. Voice mirrors the
@@ -117,6 +118,7 @@ export function LandingPage() {
 
       <footer style={{ padding: '20px 32px', borderTop: `1px solid ${theme.borderSubtle}`, color: theme.textDim, fontSize: 12, textAlign: 'center' }}>
         OpenPartner is open source. <a href="https://openpartner.dev" style={{ color: theme.textMuted }}>Learn more</a>
+        <CookieSettingsButton style={{ marginLeft: 12 }} />
       </footer>
     </div>
   );
