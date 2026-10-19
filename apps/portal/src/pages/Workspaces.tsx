@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import { theme } from '../theme.js';
 import { Logo } from './auth/Shared.js';
 
@@ -43,6 +43,12 @@ export function WorkspacesPage() {
         if (d.workspaces.length === 1) {
           // Single brand — skip the picker.
           enter(d.workspaces[0]!.tenantSlug);
+          return;
+        }
+        if (d.workspaces.length === 0) {
+          // Signed in with no brand yet — someone who just signed up with
+          // Google, most often. Straight to creating one.
+          nav('/brands/new', { replace: true });
           return;
         }
         setData(d);
@@ -122,9 +128,11 @@ export function WorkspacesPage() {
             </button>
           ))}
         </div>
-        {data?.workspaces.length === 0 && (
-          <div style={{ color: theme.textMuted, fontSize: 14 }}>
-            You don&rsquo;t have any brand workspaces. <a href="/brands/new" style={{ color: theme.accentText }}>Create one →</a>
+        {data && (
+          <div style={{ marginTop: 18, fontSize: 13, color: theme.textMuted }}>
+            <Link to="/account" style={{ color: theme.accentText }}>
+              Account &amp; password
+            </Link>
           </div>
         )}
       </div>

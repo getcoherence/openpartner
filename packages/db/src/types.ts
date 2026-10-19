@@ -443,9 +443,29 @@ export type MagicLinkPurpose =
    *  switcher). Differentiates an intentional stack from a fresh sign-in
    *  by a different user on the same device — the latter must NOT
    *  silently inherit the prior bundle. */
-  | 'platform_add_account';
+  | 'platform_add_account'
+  /** "Forgot password" link. principalKind 'platform' (principalId = email)
+   *  resets a brand admin's / operator's password and is redeemed by
+   *  POST /password/reset; principalKind 'partner' resets one brand's
+   *  partner password via POST /auth/password/reset. */
+  | 'password_reset';
 
 export type PrincipalKind = 'partner' | 'admin' | 'platform';
+
+/** See migration 20261019010000_password_credential for what each kind
+ *  keys on. */
+export type PasswordCredentialKind = 'platform' | 'partner' | 'signup';
+
+export interface PasswordCredentialRow {
+  id: string;
+  tenantId: string;
+  principalKind: PasswordCredentialKind;
+  principalId: string;
+  /** scrypt$N$r$p$salt$hash, base64 parts (apps/api/src/passwords.ts). */
+  passwordHash: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
 
 export interface MagicLinkTokenRow {
   id: string;

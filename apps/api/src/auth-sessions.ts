@@ -43,6 +43,9 @@ function generate(prefixLiteral: string): { plaintext: string; prefix: string; t
 }
 
 export interface IssuedMagicLink {
+  /** MagicLinkToken.id — lets a caller hang data off this one link (the
+   *  signup form's password waits on its activation link's id). */
+  id: string;
   plaintext: string;
   expiresAt: Date;
 }
@@ -58,9 +61,10 @@ export async function issueMagicLink(
   },
 ): Promise<IssuedMagicLink> {
   const { plaintext, prefix, tokenHash } = generate('opml');
+  const id = ulid();
   const expiresAt = new Date(Date.now() + MAGIC_TTL_MS);
   await db<MagicLinkTokenRow>(TABLES.MagicLinkToken).insert({
-    id: ulid(),
+    id,
     tenantId: params.tenantId,
     prefix,
     tokenHash,
@@ -70,7 +74,7 @@ export async function issueMagicLink(
     principalId: params.principalId,
     expiresAt,
   });
-  return { plaintext, expiresAt };
+  return { id, plaintext, expiresAt };
 }
 
 export interface ConsumedMagicLink {

@@ -418,6 +418,13 @@ async function hardDeleteExpiredTenants(): Promise<{ purged: number; tenantIds: 
         for (const tbl of TENANTED_TABLES) {
           await trx(tbl).where({ tenantId: t.id }).del();
         }
+        // The brand's partner passwords and any signup password still
+        // waiting on an activation link. Platform passwords belong to an
+        // email, not a brand, and stay.
+        await trx(TABLES.PasswordCredential)
+          .where({ tenantId: t.id })
+          .whereIn('principalKind', ['partner', 'signup'])
+          .del();
         await trx<TenantRow>(TABLES.Tenant).where({ id: t.id }).del();
       });
       tenantIds.push(t.id);

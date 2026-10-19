@@ -4,7 +4,8 @@
  * endpoint covers first-run setup.
  *
  * POST /signup creates a Tenant + first Admin and emails the admin a
- * magic-link to activate. The endpoint is unauthenticated, rate-limited
+ * magic-link to activate. A password given on the form starts working
+ * once that link is redeemed. The endpoint is unauthenticated, rate-limited
  * by IP, and gated by slug validation:
  *
  *   - slug matches /^[a-z0-9-]{3,30}$/
@@ -24,6 +25,7 @@ import { TABLES, type AdminRow, type TenantRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
 import { issueMagicLink } from '../auth-sessions.js';
+import { holdSignupPassword, passwordSchema } from '../passwords.js';
 import { getMailer } from '../mailer.js';
 import { adminInviteEmail, buildMagicLinkUrl } from '../email-templates.js';
 import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
@@ -62,6 +64,10 @@ const signupSchema = z.object({
   country: countryCodeSchema(),
   /** Ukraine only: the business is outside the occupied regions. */
   outsideOccupiedRegions: z.boolean().optional(),
+  /** Optional: the password to sign in with from now on. Takes effect only
+   *  when the activation link is redeemed (passwords.ts claimSignupPassword),
+   *  and never replaces a password the address already has. */
+  password: passwordSchema.optional(),
 });
 
 class SignupGuardError extends Error {
@@ -133,6 +139,7 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
         tenantId = existing.id;
         await trx<AdminRow>(TABLES.Admin).where({ tenantId }).del();
         await trx(TABLES.MagicLinkToken).where({ tenantId }).del();
+        await trx(TABLES.PasswordCredential).where({ tenantId, principalKind: 'signup' }).del();
         await trx(TABLES.Config).where({ tenantId, key: 'network_membership' }).del();
         await trx<TenantRow>(TABLES.Tenant).where({ id: tenantId }).update({
           displayName: body.data.displayName,
@@ -217,6 +224,9 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
       principalKind: 'admin',
       principalId: adminId,
     });
+    if (body.data.password) {
+      await holdSignupPassword(db, { tenantId, tokenId: issued.id, password: body.data.password });
+    }
     const tmpl = adminInviteEmail(body.data.adminName, buildMagicLinkUrl(issued.plaintext, { slug }), body.data.displayName);
     await getMailer().send({ db, tenantId }, {
       to: adminEmail,

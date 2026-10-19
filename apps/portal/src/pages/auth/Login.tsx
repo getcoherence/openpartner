@@ -1,18 +1,29 @@
 import { useState, type ReactNode } from 'react';
-import { useNavigate } from 'react-router';
+import { useLocation, useNavigate, useSearchParams } from 'react-router';
+import { useQueryClient } from '@tanstack/react-query';
 import { KeyRound, Mail } from 'lucide-react';
 import { api, clearApiKey, setApiKey, ApiError, type Principal } from '../../api.js';
 import { useTenantBase } from '../../tenant-base.js';
-import { alpha, softText, theme } from '../../theme.js';
-import { countryErrorMessage } from '../../lib/CountryField.js';
+import { theme } from '../../theme.js';
+import { usePublicBrand } from '../../lib/useBrand.js';
 import { Logo, AuthFrame } from './Shared.js';
+import {
+  AuthNotice,
+  EmailPasswordForm,
+  googleStartHref,
+  useAuthProviders,
+  type AuthLocationState,
+} from './PasswordAuth.js';
 
 type Tab = 'email' | 'key';
 
 export function LoginPage() {
   const [tab, setTab] = useState<Tab>('email');
+  const [params] = useSearchParams();
+  const state = (useLocation().state ?? {}) as AuthLocationState;
   return (
     <AuthFrame title="Sign in" subtitle="Choose how you want to sign in.">
+      <AuthNotice error={params.get('error')} reset={state.reset} />
       <div style={{ display: 'flex', gap: 4, background: theme.bg, padding: 4, borderRadius: theme.radiusSm, marginBottom: 20 }}>
         <TabButton active={tab === 'email'} onClick={() => setTab('email')} icon={<Mail size={14} />}>
           Email
@@ -53,59 +64,45 @@ function TabButton({ active, onClick, icon, children }: { active: boolean; onCli
   );
 }
 
+/**
+ * Email + password (admin or partner of this brand), Google, or an emailed
+ * link. A correct password returns the token the sign-in email would have
+ * carried; redeeming it here is the same POST /auth/magic/verify the
+ * emailed link's landing page makes.
+ */
 function EmailTab() {
-  const [email, setEmail] = useState('');
-  const [sent, setSent] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setErr(null);
-    try {
-      await api('/auth/signin', { method: 'POST', body: { email } });
-      setSent(true);
-    } catch (e) {
-      const message = e instanceof Error ? e.message : 'Something went wrong.';
-      setErr(countryErrorMessage(message) ?? message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (sent) {
-    return (
-      <div style={{ background: theme.successSoft, border: `1px solid ${alpha(theme.success, 0.333)}`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
-        <div style={{ fontWeight: 500, marginBottom: 4 }}>Check your inbox</div>
-        <div style={{ color: softText(theme.success) }}>
-          If an account exists for <strong>{email}</strong>, we sent a sign-in link. It's good for 15 minutes.
-        </div>
-      </div>
-    );
-  }
+  const nav = useNavigate();
+  const qc = useQueryClient();
+  const tenantBase = useTenantBase();
+  const state = (useLocation().state ?? {}) as AuthLocationState;
+  const providers = useAuthProviders();
+  // Resolved from the /t/<slug>/ prefix or the custom-domain host.
+  const { tenantSlug } = usePublicBrand();
 
   return (
-    <form onSubmit={submit}>
-      <div style={{ position: 'relative' }}>
-        <Mail size={15} style={{ position: 'absolute', left: 12, top: 12, color: theme.textDim, pointerEvents: 'none' }} />
-        <input
-          type="email"
-          name="email"
-          autoComplete="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@example.com"
-          autoFocus
-          required
-          style={inputStyle}
-        />
-      </div>
-      {err && <div style={{ color: theme.danger, fontSize: 13, marginTop: 8 }}>{err}</div>}
-      <button type="submit" disabled={busy || !email} style={primaryBtnStyle(busy || !email)}>
-        {busy ? 'Sending…' : 'Email me a sign-in link'}
-      </button>
-    </form>
+    <EmailPasswordForm
+      initialEmail={state.email}
+      googleHref={providers.googleStartUrl ? googleStartHref(providers.googleStartUrl, 'portal', tenantSlug) : null}
+      onPassword={async (email, password) => {
+        clearApiKey();
+        let token: string;
+        try {
+          ({ token } = await api<{ token: string }>('/auth/signin/password', { method: 'POST', body: { email, password } }));
+        } catch (e) {
+          // api() collapses every 401 to 'unauthorized'.
+          throw new Error(e instanceof ApiError && e.status === 401 ? 'invalid_credentials' : e instanceof Error ? e.message : String(e));
+        }
+        await api('/auth/magic/verify', { method: 'POST', body: { token } });
+        // Same as the magic-link landing: the install probe was cached
+        // before this admin existed.
+        qc.invalidateQueries({ queryKey: ['install-status'] });
+        nav(tenantBase || '/', { replace: true });
+      }}
+      onLink={(email) => api('/auth/signin', { method: 'POST', body: { email } }).then(() => undefined)}
+      onForgot={(email) => api('/auth/password/forgot', { method: 'POST', body: { email } }).then(() => undefined)}
+      linkSentText={(email) => `If an account exists for ${email}, we sent a sign-in link. It’s good for 15 minutes.`}
+      forgotSentText={(email) => `If an account exists for ${email}, we sent a link to choose a password. It’s good for 15 minutes.`}
+    />
   );
 }
 
@@ -138,7 +135,7 @@ function KeyTab() {
           // (CRM / Zapier / federation) into the portal sign-in.
           // Tell them what kind of key actually works here.
           setErr(
-            "That's a scoped integration key — they can't sign into the portal. Use your admin magic link (Email tab) or an admin API key.",
+            "That's a scoped integration key — they can't sign into the portal. Sign in on the Email tab, or use an admin API key.",
           );
         } else {
           setErr(e.message || 'Could not reach the API.');

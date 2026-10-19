@@ -27,6 +27,7 @@ import {
   Palette,
   AlertTriangle,
   Trophy,
+  KeyRound,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { clearApiKey, api, type Principal } from './api.js';
@@ -90,6 +91,8 @@ import { CreatorMagicLandingPage } from './pages/creator/CreatorMagicLanding.js'
 import { CreatorShell } from './pages/creator/CreatorShell.js';
 import { CreatorPublicProfilePage } from './pages/creator/CreatorPublicProfile.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
+import { ResetPasswordPage, TenantResetPasswordPage } from './pages/auth/ResetPassword.js';
+import { AccountPage, TenantAccountPage } from './pages/Account.js';
 
 interface AuthState {
   loading: boolean;
@@ -152,6 +155,7 @@ export function App() {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/join" element={<PartnerJoinPage />} />
             <Route path="/auth/magic" element={<MagicLandingPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage loginPath="/login" />} />
             <Route path="/*" element={<Shell />} />
           </>
         ) : isMultiTenant ? (
@@ -161,11 +165,15 @@ export function App() {
             <Route path="/signin" element={<SigninPage />} />
             <Route path="/workspaces" element={<WorkspacesPage />} />
             <Route path="/brands/new" element={<AddBrandPage />} />
+            <Route path="/account" element={<AccountPage />} />
+            {/* Platform-password reset links (brand admins; ?scope=account). */}
+            <Route path="/reset-password" element={<ResetPasswordPage loginPath="/signin" />} />
             {/* Platform-identity magic link (one email regardless of how many brands you admin). */}
             <Route path="/auth/magic" element={<PlatformMagicLandingPage />} />
             {/* Platform-ops console — OpenPartner staff, separate operator session. */}
             <Route path="/platform/login" element={<PlatformLoginPage />} />
             <Route path="/platform/auth" element={<PlatformAuthPage />} />
+            <Route path="/platform/reset-password" element={<ResetPasswordPage loginPath="/platform/login" variant="ops" />} />
             <Route path="/platform/*" element={<PlatformConsole />} />
             {/* Platform-level Creator surfaces — separate auth from vendor admins. */}
             <Route path="/creator/signup" element={<CreatorSignupPage />} />
@@ -177,6 +185,7 @@ export function App() {
             <Route path="/t/:slug/login" element={<LoginPage />} />
             <Route path="/t/:slug/join" element={<PartnerJoinPage />} />
             <Route path="/t/:slug/auth/magic" element={<MagicLandingPage />} />
+            <Route path="/t/:slug/reset-password" element={<TenantResetPasswordPage />} />
             <Route path="/t/:slug/*" element={<Shell />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </>
@@ -192,6 +201,7 @@ export function App() {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/join" element={<PartnerJoinPage />} />
             <Route path="/auth/magic" element={<MagicLandingPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage loginPath="/login" />} />
             <Route path="/*" element={<Shell />} />
           </>
         )}
@@ -278,6 +288,7 @@ function Shell() {
           <Route path="commissions" element={<CommissionsPage principal={auth.principal} />} />
           <Route path="payouts" element={<PayoutsPage principal={auth.principal} />} />
           <Route path="connect" element={<ConnectPage principal={auth.principal} />} />
+          <Route path="account" element={<TenantAccountPage />} />
 
           {/* Network discovery — open to anyone signed in (vendor admin can
               browse too). Hidden entirely for white-label tenants. */}
@@ -472,6 +483,7 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
           <NavItem to="/payouts" icon={<Banknote size={16} />}>Payouts</NavItem>
           {principal.role === 'partner' && <NavItem to="/connect" icon={<CreditCard size={16} />}>Stripe Connect</NavItem>}
           {principal.role === 'partner' && <NavItem to="/postbacks" icon={<Webhook size={16} />}>Postbacks</NavItem>}
+          {principal.role === 'partner' && <NavItem to="/account" icon={<KeyRound size={16} />}>Sign-in &amp; password</NavItem>}
         </div>
 
         {principal.role === 'partner' && partnerNetwork.show && (
@@ -633,6 +645,7 @@ function IdentitySwitcher({ principal }: { principal: Principal }) {
   // on the platform origin (dead links on a custom domain). The chip
   // itself (identity + sign out) stays.
   const { whiteLabel } = useBrand();
+  const tenantBase = useTenantBase();
 
   // Best-effort: 401 just means no platform session (admin signed in via
   // api key or pre-platform-sessions session). We still render the chip;
@@ -932,6 +945,16 @@ function IdentitySwitcher({ principal }: { principal: Principal }) {
                 flexDirection: 'column',
               }}
             >
+              <Link
+                to={`${tenantBase}/account`}
+                onClick={() => setOpen(false)}
+                style={switcherActionStyle}
+                onMouseEnter={switcherActionHoverOn}
+                onMouseLeave={switcherActionHoverOff}
+              >
+                <KeyRound size={14} />
+                Sign-in &amp; password
+              </Link>
               {!whiteLabel && (
                 <>
                   <a

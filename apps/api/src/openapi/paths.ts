@@ -49,6 +49,10 @@ const NETWORK_PROXY = 'Partner-facing OpenPartner Network proxy for the portal; 
 const NETWORK_CONSENT = "The partner's own OpenPartner Network opt-in, for the portal; the handler checks the caller is a partner.";
 export const HANDLER_GUARDED_ROUTES_OUTSIDE_SPEC: Record<string, string> = {
   'GET /auth/whoami': 'Who the current session or key is; any authenticated caller.',
+  'GET /auth/password':
+    "Whether the signed-in person has a password (portal sign-in settings); the handler refuses API keys — only an admin or partner session cookie has one.",
+  'PUT /auth/password':
+    "Set or change the signed-in person's own password; the handler refuses API keys, and needs the current password once one is set.",
   'GET /me/bounties': "The calling partner's performance bounties and progress (partner portal); the handler refuses anyone but a partner.",
   'GET /config/program': 'Program branding the portal renders; any authenticated caller.',
   'GET /network/discover': NETWORK_PROXY,

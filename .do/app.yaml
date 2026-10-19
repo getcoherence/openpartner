@@ -158,6 +158,14 @@ services:
       # Until App Review publishes the app: the External test install link.
       - key: STRIPE_APP_AUTHORIZE_URL
         scope: RUN_TIME
+      # Optional: unset hides "Continue with Google". Redirect URI to
+      # register in Google Cloud: https://app.openpartner.dev/api/auth/google/callback
+      - key: GOOGLE_CLIENT_ID
+        type: SECRET
+        scope: RUN_TIME
+      - key: GOOGLE_CLIENT_SECRET
+        type: SECRET
+        scope: RUN_TIME
       - key: METRICS_TOKEN
         type: SECRET
         scope: RUN_TIME

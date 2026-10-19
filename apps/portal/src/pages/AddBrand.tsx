@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router';
 import { theme } from '../theme.js';
 import { Logo } from './auth/Shared.js';
 import { CountryField, countryErrorMessage } from '../lib/CountryField.js';
+import { SIGNUP_PLAN_KEY } from './auth/PasswordAuth.js';
 
 /**
  * Authenticated add-brand flow (§13). Reached from the identity switcher's
@@ -33,6 +34,15 @@ const PLANS: Array<{ key: Plan; name: string; tagline: string; detail: string }>
   },
 ];
 
+function signupPlan(): Plan | null {
+  try {
+    const stored = sessionStorage.getItem(SIGNUP_PLAN_KEY);
+    return stored === 'flex' || stored === 'revshare' ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
 function slugify(name: string): string {
   return name
     .toLowerCase()
@@ -46,7 +56,8 @@ export function AddBrandPage() {
   const [displayName, setDisplayName] = useState('');
   const [slug, setSlug] = useState('');
   const [slugTouched, setSlugTouched] = useState(false);
-  const [plan, setPlan] = useState<Plan | null>(null);
+  // Preselected when "Sign up with Google" on /signup carried a plan here.
+  const [plan, setPlan] = useState<Plan | null>(signupPlan);
   const [country, setCountry] = useState('');
   const [outsideOccupiedRegions, setOutsideOccupiedRegions] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -89,6 +100,11 @@ export function AddBrandPage() {
       });
       const entered = (await enter.json()) as { ok?: boolean; home?: string; error?: string };
       if (!enter.ok || !entered.ok || !entered.home) throw new Error(entered.error ?? `${enter.status}`);
+      try {
+        sessionStorage.removeItem(SIGNUP_PLAN_KEY);
+      } catch {
+        /* storage blocked */
+      }
       nav(`${entered.home}admin/billing`, { replace: true });
     } catch (e) {
       setErr(friendlyError(e instanceof Error ? e.message : 'unknown_error'));
@@ -208,6 +224,8 @@ function friendlyError(code: string): string {
     case 'no_platform_session':
     case 'invalid_or_expired_session':
       return 'Your session expired. Sign in again, then retry.';
+    case 'signup_unavailable':
+      return 'We can’t create a brand for this account. Contact support if you think that’s wrong.';
     default:
       return `Could not create the brand (${code}).`;
   }

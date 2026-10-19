@@ -52,7 +52,7 @@ export const Partner = z
     revokeReason: z.string().nullable(),
     portalAccess: z.boolean().openapi({
       description:
-        'May the partner sign in to the partner portal? `false`: `POST /auth/signin` sends them nothing (answering as it does for an unknown email), their sessions end, and no invite or portal email goes to them. For headless programs. Set it on `POST /partners` or `PATCH /partners/{id}`.',
+        'May the partner sign in to the partner portal? `false`: `POST /auth/signin` sends them nothing (answering as it does for an unknown email), password and Google sign-in turn them away the same way, their sessions end, and no invite or portal email goes to them. For headless programs. Set it on `POST /partners` or `PATCH /partners/{id}`.',
     }),
   })
   .openapi('Partner');
