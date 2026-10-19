@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { LogOut } from 'lucide-react';
 import { theme } from '../../theme.js';
 import { ThemeToggle } from '../../lib/ThemeToggle.js';
+import { CookieSettingsButton } from '../../lib/ConsentBanner.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
 import { Logo } from '../auth/Shared.js';
 import { papi, type PlatformOperator } from './lib.js';
@@ -15,6 +16,7 @@ import { AuditPage } from './Audit.js';
 import { NotificationsPage } from './Notifications.js';
 import { FeesPage } from './Fees.js';
 import { CountriesPage } from './Countries.js';
+import { ScreeningPage } from './Screening.js';
 
 const TABS = [
   { to: '/platform/brands', label: 'Brands' },
@@ -25,6 +27,7 @@ const TABS = [
   { to: '/platform/fees', label: 'Fees' },
   { to: '/platform/blocklist', label: 'Blocklist' },
   { to: '/platform/countries', label: 'Countries' },
+  { to: '/platform/screening', label: 'Screening' },
   { to: '/platform/audit', label: 'Audit' },
 ] as const;
 
@@ -84,6 +87,7 @@ export function PlatformConsole() {
         <Route path="fees" element={<FeesPage operator={operator} />} />
         <Route path="blocklist" element={<BlocklistPage operator={operator} />} />
         <Route path="countries" element={<CountriesPage operator={operator} />} />
+        <Route path="screening" element={<ScreeningPage operator={operator} />} />
         <Route path="audit" element={<AuditPage />} />
         <Route path="*" element={<Navigate to="/platform/brands" replace />} />
       </Routes>
@@ -157,6 +161,7 @@ function TopNav({ operator, onSignOut }: { operator: PlatformOperator; onSignOut
             </div>
           </div>
           <ThemeToggle />
+          <CookieSettingsButton style={{ whiteSpace: 'nowrap' }} />
           <button
             onClick={onSignOut}
             style={{

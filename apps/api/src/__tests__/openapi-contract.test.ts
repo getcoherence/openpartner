@@ -428,6 +428,8 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     const run = check<{ payouts: Array<{ payoutId: string; method: string }> }>('runPayouts', await admin.post('/payouts/run'));
     expect(run.payouts).toHaveLength(1);
     expect(run.payouts[0]!.method).toBe('manual');
+    // Compliance holds are a hosted-platform control: a self-host holds no one.
+    expect(check<{ holds: unknown[] }>('listPayoutHolds', await admin.get('/payouts/holds')).holds).toEqual([]);
     // The manual rail: the commission is `paid` while its payout is still `pending` (docs, step 5).
     const planned = check<{ payouts: Array<{ id: string; status: string }> }>('listPartnerPayouts', await integration.get(`/partners/${partner.id}/payouts`));
     expect(planned.payouts[0]!.status).toBe('pending');

@@ -8,6 +8,7 @@ import { ProfileCompletionBanner } from '../../lib/ProfileCompletionBanner.js';
 import type { ProfileCompleteness } from '../../lib/profile-incomplete.js';
 import { Logo } from '../auth/Shared.js';
 import { ThemeToggle } from '../../lib/ThemeToggle.js';
+import { CookieSettingsButton } from '../../lib/ConsentBanner.js';
 import { creatorApi } from './creator-api.js';
 import { CreatorDiscoverPage } from './CreatorDiscover.js';
 import { CreatorOfferingDetailPage } from './CreatorOfferingDetail.js';
@@ -250,6 +251,8 @@ function CreatorSidebar({ creator, variant = 'sidebar' }: { creator: NonNullable
         <LogOut size={14} />
         Sign out
       </button>
+
+      <CookieSettingsButton style={{ marginTop: 10, alignSelf: 'center' }} />
     </aside>
   );
 }

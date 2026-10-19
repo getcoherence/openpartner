@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router';
 import { theme } from '../../theme.js';
 import { usePublicBrand } from '../../lib/useBrand.js';
 import { ThemeToggle } from '../../lib/ThemeToggle.js';
+import { CookieSettingsButton } from '../../lib/ConsentBanner.js';
 
 export function AuthFrame({
   title,
@@ -62,6 +63,7 @@ export function AuthFrame({
       {/* Footer-style, below the card: reachable on every public page
           without competing with the form. */}
       <ThemeToggle style={{ marginTop: 16 }} />
+      <CookieSettingsButton style={{ marginTop: 8 }} />
     </div>
   );
 }

@@ -31,6 +31,7 @@ import { adminInviteEmail, buildMagicLinkUrl } from '../email-templates.js';
 import { RESERVED_SLUGS, getTenancyMode } from '../tenancy.js';
 import { newTrialEnd } from '../billing-plan.js';
 import { findBlockingEntry, notifyOpsNewBrand } from '../brand-review.js';
+import { screenTenantInBackground } from '../sanctions-screening.js';
 import {
   checkCountryAccess,
   countryAccessStatus,
@@ -208,6 +209,10 @@ signupRouter.post('/signup', signupLimit, async (req, res) => {
     source: 'signup',
     declaredByEmail: adminEmail,
   });
+  // Brand name and admin name against the Consolidated Screening List.
+  // In the background: a possible match lands in the ops review queue,
+  // and the response doesn't wait on the list.
+  screenTenantInBackground(db, tenantId, 'signup');
 
   // Email the activation magic link. If this fails the Tenant + Admin row
   // remain — the operator can hit /admins/:id/invite later (after first

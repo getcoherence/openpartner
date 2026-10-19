@@ -229,6 +229,18 @@ Releasing reserved money is where the double-pay race lived. The protocol:
    `settled_with_residual`; the same commission cannot re-batch until the residual
    disposition is closed (blocker-1 variant and finding 9).
 
+   *As built (Oct 2026):* two paths cancel a funded allocation. The reversal
+   interlock (§8) cancels it when its commission is reversed. The executor cancels a
+   partner's allocations when a compliance hold
+   ([sanctions-screening.md](sanctions-screening.md)) appears before their transfer
+   reaches Stripe: no transfer intent yet, or one Stripe refused, which is closed
+   `failed`. In the compliance case the commission stays `approved`, so reservation
+   enforces the rule above: a commission with a `canceled` allocation on a batch that
+   isn't `released` is skipped until that batch's `residualDisposition` is `refund` or
+   `credit_next_batch`. A `manual_payout` disposition keeps it skipped; the operator
+   who paid it by hand marks it paid. A partner whose transfer is already `posted` is
+   never re-posted while held.
+
 ## 8. Refunds, disputes, fraud (blocker 4, finding 5)
 
 - Webhooks on the funding charge (`charge.refunded`, `charge.dispute.*` scoped by batch

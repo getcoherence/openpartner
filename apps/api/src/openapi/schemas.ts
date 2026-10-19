@@ -542,6 +542,11 @@ export const Payout = z
 
 const moneyGroup = z.object({ partnerId: id, currency: z.string(), amount: z.number() });
 
+const PayoutHoldReason = z.enum(['country_not_supported', 'screening_confirmed', 'screening_review', 'screening_pending']).openapi({
+  description:
+    "Why the partner is on hold: `country_not_supported` (their declared country isn't served), `screening_review` (a possible sanctions-list match waits for OpenPartner's review), `screening_confirmed` (a confirmed match), or `screening_pending` (not screened yet; usually clears within the hour).",
+});
+
 export const PayoutRunResult = z
   .object({
     runId: id,
@@ -551,6 +556,10 @@ export const PayoutRunResult = z
     heldForClawback: z.array(moneyGroup.extend({ clawbackAmount: z.number() })).openapi({
       description:
         'Partners not paid this run because their outstanding refund clawbacks are at least what they are owed (`amount`, before clawbacks). Their commissions stay approved and are paid, net, once enough accrues.',
+    }),
+    heldForCompliance: z.array(moneyGroup.extend({ reason: PayoutHoldReason })).openapi({
+      description:
+        'OpenPartner Cloud: Stripe payouts not made this run because the partner is on a compliance hold (`GET /payouts/holds`). Their commissions stay approved and are paid on the first run after the hold lifts. `amount` is what they are owed.',
     }),
     payouts: z.array(
       z.object({
@@ -563,6 +572,10 @@ export const PayoutRunResult = z
         platformFee: z.number().optional(),
         clawbackAmount: z.number().optional().openapi({
           description: 'Refund clawbacks netted off this payout. `amount` is already net of them.',
+        }),
+        complianceWarning: PayoutHoldReason.optional().openapi({
+          description:
+            'A `manual` payout to a partner on a compliance hold. You send this money yourself, so the payout was still made: check before you send it.',
         }),
         error: z.string().optional(),
       }),
@@ -578,6 +591,25 @@ export const PayoutRunResult = z
     }),
   })
   .openapi('PayoutRunResult');
+
+export const PayoutHolds = z
+  .object({
+    holds: z.array(
+      z.object({
+        partnerId: id,
+        partnerName: z.string(),
+        partnerEmail: z.string(),
+        reason: PayoutHoldReason,
+        effect: z.enum(['held', 'warning']).openapi({
+          description: '`held`: Stripe payouts are not made. `warning`: you pay this partner yourself, so nothing is held.',
+        }),
+        owed: z.array(z.object({ currency: z.string(), amount: z.number() })).openapi({
+          description: 'Approved commissions not yet on a payout, per currency.',
+        }),
+      }),
+    ),
+  })
+  .openapi('PayoutHolds');
 
 // ---------- Reporting ----------
 

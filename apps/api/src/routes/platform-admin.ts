@@ -28,8 +28,10 @@ import {
   isCountryCode,
   type AdminRow,
   type PlatformAdminRow,
+  type PartnerRow,
   type PlatformAuditLogRow,
   type ProgramRow,
+  type SanctionsScreeningRow,
   type SignupBlocklistRow,
   type TenantRow,
 } from '@openpartner/db';
@@ -69,6 +71,15 @@ import {
   platformNetworkUrl,
 } from '../network-client.js';
 import { linkVendorsToTenants } from '../network-review-reconcile.js';
+import {
+  MATCH_SCORE_THRESHOLD,
+  cslConfigured,
+  latestScreenings,
+  listHeldPartners,
+  reviewScreening,
+  screenTenant,
+  screeningReviewQueue,
+} from '../sanctions-screening.js';
 import { brandSetupFor } from '../brand-setup.js';
 import { brandReminderHistory, remindBrandNow, runBrandSetupReminders } from '../brand-setup-reminders.js';
 import {
@@ -366,6 +377,8 @@ platformAdminRouter.get('/platform-admin/brands', requirePlatformAdmin, async (r
   const countsByTenant = new Map(programCounts.map((r) => [r.tenantId, r]));
   // Where each brand says it's based — the reviewer's sanctions check.
   const locations = await latestDeclaredCountries(db, 'tenant', ids);
+  // The latest Consolidated Screening List answer for each name screened.
+  const screenings = await latestScreenings(db, 'tenant', ids);
 
   // Setup progress, reminder history, and the latest policy warning — so an
   // operator sees "stalled at tracking, reminded twice, warned on the 3rd"
@@ -412,9 +425,32 @@ platformAdminRouter.get('/platform-admin/brands', requirePlatformAdmin, async (r
       policyWarningDeadline: lastWarningBy.get(t.id)?.deadline ?? null,
       country: locations.get(t.id)?.country ?? null,
       ipCountryAtDeclaration: locations.get(t.id)?.ipCountry ?? null,
+      screenings: (screenings.get(t.id) ?? []).map(screeningView),
     })),
   });
 });
+
+/** A SanctionsScreening row as the console shows it. */
+function screeningView(r: SanctionsScreeningRow) {
+  return {
+    id: r.id,
+    subjectKind: r.subjectKind,
+    subjectId: r.subjectId,
+    tenantId: r.tenantId,
+    screenedName: r.screenedName,
+    country: r.country,
+    result: r.result,
+    matches: r.matches,
+    errorDetail: r.errorDetail,
+    trigger: r.trigger,
+    screenedAt: r.screenedAt,
+    decision: r.decision,
+    reviewedByEmail: r.reviewedByEmail,
+    reviewedAt: r.reviewedAt,
+    reviewNote: r.reviewNote,
+    decisionCarried: r.decisionCarriedFromId != null,
+  };
+}
 
 async function loadTenant(id: string): Promise<TenantRow | null> {
   const row = await db<TenantRow>(TABLES.Tenant).where({ id }).first();
@@ -925,6 +961,129 @@ platformAdminRouter.put(
       detail: { before, after: settings },
     });
     res.json({ settings });
+  },
+);
+
+// --------------------------------------------------------------------------
+// Sanctions screening — Consolidated Screening List matches + payout holds
+// --------------------------------------------------------------------------
+//
+// Brands are screened at signup and add-brand, payable partners hourly
+// (sanctions-screening.ts). A possible match waits here for an operator:
+// clearing it releases the partner's held payouts; confirming it keeps them
+// held and, for a brand, rejects the brand.
+
+platformAdminRouter.get('/platform-admin/screening', requirePlatformAdmin, async (_req, res) => {
+  const reviews = await screeningReviewQueue(db);
+  const held = await listHeldPartners(db);
+
+  const tenantIds = [...new Set([...reviews.map((r) => r.tenantId), ...held.map((h) => h.tenantId)])];
+  const tenants = tenantIds.length
+    ? await db<TenantRow>(TABLES.Tenant).whereIn('id', tenantIds).select('id', 'slug', 'displayName')
+    : [];
+  const tenantById = new Map(tenants.map((t) => [t.id, t]));
+  const partnerIds = reviews.filter((r) => r.subjectKind === 'partner').map((r) => r.subjectId);
+  const partners = partnerIds.length
+    ? await db<PartnerRow>(TABLES.Partner).whereIn('id', partnerIds).select('id', 'name', 'email')
+    : [];
+  const partnerById = new Map(partners.map((p) => [p.id, p]));
+
+  res.json({
+    cslConfigured: cslConfigured(),
+    matchScoreThreshold: MATCH_SCORE_THRESHOLD,
+    reviews: reviews.map((r) => ({
+      ...screeningView(r),
+      brandName: tenantById.get(r.tenantId)?.displayName ?? null,
+      brandSlug: tenantById.get(r.tenantId)?.slug ?? null,
+      // A partner the brand has since deleted shows as null.
+      partnerName: r.subjectKind === 'partner' ? (partnerById.get(r.subjectId)?.name ?? null) : null,
+      partnerEmail: r.subjectKind === 'partner' ? (partnerById.get(r.subjectId)?.email ?? null) : null,
+    })),
+    held: held.map((h) => ({
+      ...h,
+      brandName: tenantById.get(h.tenantId)?.displayName ?? null,
+      brandSlug: tenantById.get(h.tenantId)?.slug ?? null,
+    })),
+  });
+});
+
+const reviewSchema = z.object({
+  decision: z.enum(['cleared', 'confirmed_match']),
+  /** Why. Required to clear: the record must say why the match isn't them. */
+  note: z.string().trim().max(2000).optional(),
+});
+
+platformAdminRouter.post(
+  '/platform-admin/screenings/:id/review',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = reviewSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const note = body.data.note || null;
+    if (body.data.decision === 'cleared' && (!note || note.length < 3)) {
+      return res.status(400).json({ error: 'note_required' });
+    }
+    const actor = req.platformAdminActor!;
+    const outcome = await reviewScreening(db, req.params.id!, {
+      decision: body.data.decision,
+      reviewedByEmail: actor.email,
+      note,
+    });
+    if (!outcome.ok) {
+      return res.status(outcome.error === 'not_found' ? 404 : 409).json({ error: outcome.error });
+    }
+    const row = outcome.row;
+    await writeAudit(db, {
+      actor,
+      action: `screening.${row.decision}`,
+      targetType: row.subjectKind,
+      targetId: row.subjectId,
+      detail: {
+        screeningId: row.id,
+        tenantId: row.tenantId,
+        screenedName: row.screenedName,
+        note,
+        matches: row.matches.map((m) => ({ source: m.source, name: m.name, score: m.score, entryId: m.entryId })),
+      },
+    });
+
+    // A confirmed match on a brand: reject it through the normal flow
+    // (suspend, pull it off the Network, tell ops). Silently: the brand
+    // isn't emailed.
+    let brandRejected = false;
+    if (row.subjectKind === 'tenant' && row.decision === 'confirmed_match') {
+      const tenant = await loadTenant(row.subjectId);
+      if (tenant && tenant.approvalStatus !== 'rejected') {
+        await rejectBrand(db, tenant, actor, {
+          reason: 'Sanctions screening: confirmed match on the US Consolidated Screening List',
+          notifyBrand: false,
+        });
+        brandRejected = true;
+      }
+    }
+    res.json({ ok: true, screening: screeningView(row), brandRejected });
+  },
+);
+
+/** Screen a brand again now (after an error, a missing key, or a rename). */
+platformAdminRouter.post(
+  '/platform-admin/brands/:id/screen',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    if (!cslConfigured()) return res.status(409).json({ error: 'screening_not_configured' });
+    const tenant = await loadTenant(req.params.id!);
+    if (!tenant) return res.status(404).json({ error: 'brand_not_found' });
+    const rows = await screenTenant(db, tenant.id, 'ops');
+    await writeAudit(db, {
+      actor: req.platformAdminActor!,
+      action: 'screening.run',
+      targetType: 'tenant',
+      targetId: tenant.id,
+      detail: { results: rows.map((r) => ({ screeningId: r.id, screenedName: r.screenedName, result: r.result })) },
+    });
+    res.json({ screenings: rows.map(screeningView) });
   },
 );
 

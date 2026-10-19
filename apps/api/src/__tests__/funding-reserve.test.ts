@@ -184,6 +184,38 @@ describe.skipIf(skipIntegration)('funding reservation', () => {
     expect(result.batchId).toBeNull();
   });
 
+  it('a commission in an undisposed residual stays out of new batches until it is refunded or credited (spec §7.4)', async () => {
+    const { partnerId, ids } = await seedCommissions(1, '50.00');
+    const reserve = () =>
+      db.transaction((trx) => reserveFundingBatch(trx, TENANT, 'usd', [{ partnerId, commissionIds: ids, amountMinor: 5000 }]));
+    const first = await reserve();
+    // Its transfer was stopped after funding (a compliance hold): the
+    // allocation is canceled, the commission still approved, the money a
+    // residual on the settled batch.
+    await db(TABLES.HostedFundingAllocation).where({ batchId: first.batchId! }).update({ state: 'canceled' });
+    await db(TABLES.HostedFundingBatch)
+      .where({ id: first.batchId! })
+      .update({ status: 'settled_with_residual', residualMinor: 5000 });
+
+    expect(await reserve()).toMatchObject({ batchId: null, skipped: 'nothing_eligible' });
+    // Paid out by hand: re-batching would pay it twice.
+    await db(TABLES.HostedFundingBatch).where({ id: first.batchId! }).update({ residualDisposition: 'manual_payout' });
+    expect(await reserve()).toMatchObject({ batchId: null, skipped: 'nothing_eligible' });
+    // Refunded to the brand: the commission is owed again.
+    await db(TABLES.HostedFundingBatch).where({ id: first.batchId! }).update({ residualDisposition: 'refund' });
+    expect(await reserve()).toMatchObject({ skipped: null, reservedCommissions: 1 });
+  });
+
+  it('a canceled allocation on a released batch holds no residual and never blocks', async () => {
+    const { partnerId, ids } = await seedCommissions(1, '50.00');
+    const reserve = () =>
+      db.transaction((trx) => reserveFundingBatch(trx, TENANT, 'usd', [{ partnerId, commissionIds: ids, amountMinor: 5000 }]));
+    const first = await reserve();
+    await db(TABLES.HostedFundingAllocation).where({ batchId: first.batchId! }).update({ state: 'canceled' });
+    await db(TABLES.HostedFundingBatch).where({ id: first.batchId! }).update({ status: 'released' });
+    expect(await reserve()).toMatchObject({ skipped: null, reservedCommissions: 1 });
+  });
+
   it('reservation never touches Commission status', async () => {
     const { partnerId, ids } = await seedCommissions(2);
     await db.transaction((trx) =>

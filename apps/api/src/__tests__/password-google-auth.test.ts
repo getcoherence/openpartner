@@ -117,8 +117,12 @@ beforeAll(async () => {
 afterAll(async () => {
   __setMailerForTests(null);
   if (skipIntegration) return;
+  // Signup screens the new brand against sanctions lists in the background.
+  const { settleBackgroundScreeningsForTesting } = await import('../sanctions-screening.js');
+  await settleBackgroundScreeningsForTesting();
   for (const tenantId of tenants) {
     for (const table of [
+      TABLES.SanctionsScreening,
       TABLES.PasswordCredential,
       TABLES.Session,
       TABLES.MagicLinkToken,

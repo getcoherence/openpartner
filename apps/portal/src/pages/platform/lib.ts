@@ -44,6 +44,75 @@ export interface PlatformBrand {
   country: string | null;
   /** IP country when it declared, for spotting a mismatch. */
   ipCountryAtDeclaration: string | null;
+  /** Latest Consolidated Screening List answer per screened name (brand
+   *  name, admin name), newest first. Empty = never screened. */
+  screenings: PlatformScreening[];
+}
+
+export type ScreeningResult = 'clear' | 'possible_match' | 'error' | 'skipped';
+export type ScreeningDecision = 'cleared' | 'confirmed_match';
+
+/** A list entry a screened name came close to. */
+export interface ScreeningMatch {
+  source: string;
+  name: string;
+  /** Fuzzy score 0-100 (100 = exact); null when the list gave none. */
+  score: number | null;
+  entryId: string | null;
+  type: string | null;
+  programs: string[];
+  countries: string[];
+}
+
+/** One sanctions screening of a brand or partner name. */
+export interface PlatformScreening {
+  id: string;
+  subjectKind: 'tenant' | 'partner';
+  subjectId: string;
+  tenantId: string;
+  screenedName: string;
+  country: string | null;
+  result: ScreeningResult;
+  matches: ScreeningMatch[];
+  errorDetail: string | null;
+  trigger: string;
+  screenedAt: string;
+  decision: ScreeningDecision | null;
+  reviewedByEmail: string | null;
+  reviewedAt: string | null;
+  reviewNote: string | null;
+  /** The decision was inherited from an earlier review of the same list
+   *  entries (a rescreen found nothing new). */
+  decisionCarried: boolean;
+}
+
+export type PayoutHoldReason = 'country_not_supported' | 'screening_confirmed' | 'screening_review' | 'screening_pending';
+
+/** GET /platform-admin/screening. */
+export interface ScreeningOverview {
+  cslConfigured: boolean;
+  matchScoreThreshold: number;
+  reviews: Array<
+    PlatformScreening & {
+      brandName: string | null;
+      brandSlug: string | null;
+      partnerName: string | null;
+      partnerEmail: string | null;
+    }
+  >;
+  held: Array<{
+    tenantId: string;
+    brandName: string | null;
+    brandSlug: string | null;
+    partnerId: string;
+    partnerName: string;
+    partnerEmail: string;
+    reason: PayoutHoldReason;
+    country: string | null;
+    /** 'held' = Stripe payouts not made; 'warning' = the brand pays them itself. */
+    effect: 'held' | 'warning';
+    owed: Array<{ currency: string; amount: number }>;
+  }>;
 }
 
 export interface PlatformProgram {
@@ -395,6 +464,14 @@ export function friendlyPlatformError(err: unknown): string {
       return 'A monthly minimum is invoiced from the contract statement, so move the brand to the Enterprise plan first.';
     case 'fx_rates_unavailable':
       return 'The ECB rate feed is unreachable, so non-USD amounts can’t be converted right now. Try again later.';
+    case 'note_required':
+      return 'Say why the match isn’t them before clearing it: the note is the compliance record.';
+    case 'already_reviewed':
+      return 'Someone has already reviewed this match. Refresh to see the decision.';
+    case 'superseded':
+      return 'A newer screening has replaced this one. Refresh and review the latest.';
+    case 'screening_not_configured':
+      return 'CSL_API_KEY isn’t set, so nothing can be screened.';
     default:
       return raw;
   }

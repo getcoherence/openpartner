@@ -4,6 +4,7 @@ import { alpha, theme } from '../../theme.js';
 import { countryName } from '../../lib/CountryField.js';
 import { Button, Card, ErrorBanner, Label, Page, Select, Textarea, formatDate } from '../../ui.js';
 import { ApprovalBadge, StatusBadge } from './components.js';
+import { ScreeningDetail, screeningSummary } from './ScreeningReview.js';
 import {
   papi,
   friendlyPlatformError,
@@ -195,7 +196,16 @@ function BrandCard({
       void refresh();
     },
   });
+  const screenAgain = useMutation({
+    mutationFn: () => papi(`/platform-admin/brands/${brand.id}/screen`, { method: 'POST' }),
+    onSuccess: () => void refresh(),
+  });
   const live = brand.approvalStatus !== 'rejected';
+  const screening = screeningSummary(brand.screenings);
+  // Worth showing in full: anything but a plain clear.
+  const screeningsToShow = brand.screenings.filter((s) => s.result !== 'clear' || s.decision);
+  const canRescreen =
+    brand.screenings.length === 0 || brand.screenings.some((s) => s.result === 'error' || s.result === 'skipped');
 
   return (
     <Card>
@@ -280,6 +290,9 @@ function BrandCard({
             'Not asked yet'
           )}
         </Field>
+        <Field label="Sanctions screening">
+          <span style={{ color: screening.color }}>{screening.text}</span>
+        </Field>
         <Field label="Plan">{brand.billingPlan ?? '—'}</Field>
         {brand.reviewedByEmail && (
           <Field label="Reviewed by">
@@ -311,6 +324,22 @@ function BrandCard({
 
       {!brand.setupComplete && brand.setupMissing.length > 0 && (
         <div style={{ fontSize: 12, color: theme.textDim, marginTop: 8 }}>Missing: {brand.setupMissing.join(' · ')}</div>
+      )}
+
+      {(screeningsToShow.length > 0 || (canWrite && canRescreen)) && (
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {screeningsToShow.map((s) => (
+            <ScreeningDetail key={s.id} screening={s} canWrite={canWrite} onReviewed={() => void refresh()} />
+          ))}
+          {canWrite && canRescreen && (
+            <div>
+              <Button size="sm" variant="ghost" disabled={screenAgain.isPending} onClick={() => screenAgain.mutate()}>
+                {screenAgain.isPending ? 'Screening…' : 'Screen now'}
+              </Button>
+            </div>
+          )}
+          {screenAgain.error && <ErrorBanner error={friendlyPlatformError(screenAgain.error)} />}
+        </div>
       )}
 
       {notice && <div style={{ fontSize: 12.5, color: theme.success, marginTop: 10 }}>{notice}</div>}

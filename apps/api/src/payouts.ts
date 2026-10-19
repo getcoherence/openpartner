@@ -45,6 +45,14 @@
  * same transaction. A partner who owes at least what they're due is held
  * (`heldForClawback`) instead of paid. Funding-rail groups never net.
  *
+ * Compliance holds (sanctions-screening.ts): a partner whose latest
+ * declared country is blocked, or whose sanctions screening has an open or
+ * confirmed match (or hasn't answered yet), is not paid on the Connect or
+ * funded rails. Their commissions stay approved and unclaimed, nothing is
+ * written, and the group is reported in `heldForCompliance`; the run after
+ * the hold lifts pays it. On the manual rail the brand sends the money
+ * itself, so the payout goes ahead and carries a `complianceWarning`.
+ *
  * Multi-tenant: takes (db, tenantId), where `db` is a transaction with
  * app.tenant_id pinned. Open it with `withTenantTransaction` (the
  * scheduler's forEachActiveTenant does) and dispatch the result's
@@ -65,6 +73,9 @@ import {
   type TenantRow,
 } from '@openpartner/db';
 import { REVSHARE_FEE_BPS, type OpenPartnerMode } from './stripe.js';
+import { db as platformDb } from './db.js';
+import { resolvePayoutMethod } from './payout-method.js';
+import { partnerPayoutHolds, type PayoutHoldReason } from './sanctions-screening.js';
 import { centsToStripeMinor, fromStripeMinor, majorToCents } from './stripe-amounts.js';
 import type { PayoutTransferMeta } from './payout-transfers.js';
 import { getTenantBillingState } from './billing-plan.js';
@@ -103,6 +114,12 @@ export interface PayoutRunResult {
    *  is written: the commissions stay 'approved' and the clawbacks
    *  outstanding, and a later run nets them once enough has accrued. */
   heldForClawback: Array<{ partnerId: string; currency: string; amount: number; clawbackAmount: number }>;
+  /** Connect and funded-rail groups not paid because the partner is on a
+   *  compliance hold (blocked country, or a sanctions screening match
+   *  that's open, confirmed or not yet answered). Nothing is written: the
+   *  commissions stay approved and unclaimed until the hold lifts.
+   *  `amount` is the gross owed. */
+  heldForCompliance: Array<{ partnerId: string; currency: string; amount: number; reason: PayoutHoldReason }>;
   /** Connect-rail rows come back 'pending': the Payout intent is written
    *  and its commissions are frozen, but the transfer is posted later by
    *  `executePayoutTransfers`. Manual-rail rows are 'pending' too (the
@@ -118,6 +135,10 @@ export interface PayoutRunResult {
     /** Refund clawbacks netted off this payout; `amount` is already net
      *  of them. Absent when nothing was netted. */
     clawbackAmount?: number;
+    /** Manual rail only: the partner is on a compliance hold. The payout
+     *  is still written, because the brand sends the money itself; check
+     *  before sending it. */
+    complianceWarning?: PayoutHoldReason;
     error?: string;
   }>;
   /** Manual-rail announcements this run owes. NOT dispatched yet — the
@@ -168,6 +189,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
       skippedBelowThreshold: [],
       skippedUnfunded: [],
       heldForClawback: [],
+      heldForCompliance: [],
       pendingNotifications: [],
     };
   }
@@ -213,8 +235,24 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
   const skipped: PayoutRunResult['skippedBelowThreshold'] = [];
   const skippedUnfunded: PayoutRunResult['skippedUnfunded'] = [];
   const heldForClawback: PayoutRunResult['heldForClawback'] = [];
+  const heldForCompliance: PayoutRunResult['heldForCompliance'] = [];
   const pendingNotifications: PendingPayoutNotification[] = [];
   const fundingCandidates: Array<{ currency: string; candidate: ReservationCandidate }> = [];
+
+  // Compliance holds for every partner in this run, read once. On the
+  // privileged pool: the hold records are platform tables the tenant
+  // transaction's app role can't read.
+  const groupPartnerIds = [...new Set(groups.map((g) => g.partnerId))];
+  const holds = await partnerPayoutHolds(
+    platformDb,
+    tenantId,
+    groupPartnerIds.length > 0
+      ? ((await db<PartnerRow>(TABLES.Partner)
+          .where({ tenantId })
+          .whereIn('id', groupPartnerIds)
+          .select('id', 'name')) as Array<Pick<PartnerRow, 'id' | 'name'>>)
+      : [],
+  );
 
   for (const group of groups) {
     const partner = await db<PartnerRow>(TABLES.Partner).where({ id: group.partnerId }).first();
@@ -233,17 +271,25 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     // Summed in hundredths, the storage precision, so the total is exact.
     const grossCents = commissions.reduce((s, c) => s + majorToCents(c.amount), 0);
 
-    // Rail preference resolves to a concrete method per partner:
-    //   auto            (legacy) stripe_connect if Connect account exists, else manual
-    //   stripe_connect  always stripe_connect — partners without a Connect
-    //                   account get a 'failed' payout with a clear error
-    //                   instead of silently being paid manually
-    //   manual          force manual — operator handles all transfers off-platform
-    const method: PayoutMethod = (() => {
-      if (railPreference === 'manual') return 'manual';
-      if (railPreference === 'stripe_connect') return 'stripe_connect';
-      return partner.stripeConnectAccountId ? 'stripe_connect' : 'manual';
-    })();
+    // Rail preference resolves to a concrete method per partner
+    // (payout-method.ts).
+    const method: PayoutMethod = resolvePayoutMethod(railPreference, partner);
+
+    // Compliance hold: the platform moves no money to this partner. That
+    // covers both Connect rails (direct intent and funded batch), and a
+    // connect-blocked failure row too, which would only nag the partner to
+    // finish onboarding. Checked before anything is claimed, netted or
+    // reserved, so the group is untouched and the next run after the hold
+    // lifts pays it. The manual rail goes ahead with a warning below.
+    const hold = holds.get(partner.id);
+    if (hold && method === 'stripe_connect') {
+      console.warn(
+        `[payouts] HELD for compliance: tenant=${tenantId} partner=${partner.id} ${group.currency} (${hold.reason}); commissions remain approved`,
+      );
+      heldForCompliance.push({ partnerId: partner.id, currency: group.currency, amount: grossCents / 100, reason: hold.reason });
+      continue;
+    }
+
     // Hosted Connect goes through the funding pipeline (below) or nowhere.
     const fundedRail =
       method === 'stripe_connect' &&
@@ -509,6 +555,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
         status: 'pending',
         platformFee: platformFee || undefined,
         clawbackAmount: netting.clawbackCents > 0 ? netting.clawbackCents / 100 : undefined,
+        complianceWarning: hold?.reason,
       });
     }
   }
@@ -575,6 +622,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     skippedBelowThreshold: skipped,
     skippedUnfunded,
     heldForClawback,
+    heldForCompliance,
     pendingNotifications,
   };
 }
