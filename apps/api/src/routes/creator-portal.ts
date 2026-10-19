@@ -48,6 +48,8 @@ const ALLOWED_EXACT = new Set([
   '/creators/me/requests',
   '/creators/me/delete',
   '/creators/me/restore',
+  // GDPR access: the "Download my data" link on the creator profile.
+  '/creators/me/export',
   '/creators/handle-available',
   '/creators/me/domains',
   '/creators/me/partnerships',
@@ -163,6 +165,11 @@ creatorPortalRouter.all(/^\/creator-api(\/.*)?$/, async (req: Request, res: Resp
       forward.push(c.replace(/;\s*Domain=[^;]+/i, ''));
     }
     if (forward.length > 0) res.setHeader('set-cookie', forward);
+
+    // The data export arrives as an attachment with a filename; relay that
+    // so the browser saves it rather than showing the JSON.
+    const disposition = upstream.headers.get('content-disposition');
+    if (disposition) res.setHeader('content-disposition', disposition);
 
     const upstreamCt = upstream.headers.get('content-type') ?? '';
     const body = await upstream.text();
