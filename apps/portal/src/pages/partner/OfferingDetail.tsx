@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router';
 import { api, ApiError, type Principal } from '../../api.js';
 import { TenantLink } from '../../tenant-link.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
