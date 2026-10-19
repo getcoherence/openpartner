@@ -84,19 +84,25 @@ function renderWithClient(ui: React.ReactNode) {
   );
 }
 
-// A page is 100 full table rows, which jsdom renders slowly.
+// A page is 100 full table rows, which jsdom renders slowly. Re-rendering
+// it (a search swapping 100 rows for 1, a second page loading) can take
+// longer than findBy/waitFor's default 1s on a busy CI runner, so every
+// wait after a big render gets this allowance. Passing tests don't wait any
+// longer; only a genuine failure takes the full 5s to report.
+const SLOW = { timeout: 5_000 };
+
 describe('Admin → Partners at scale', { timeout: 15_000 }, () => {
   it('pages past the first 100 with Load more', async () => {
     roster = bulk(150);
     const page = renderWithClient(<AdminPartners />);
 
-    expect(await page.findByText('Showing 100 partners')).toBeTruthy();
+    expect(await page.findByText('Showing 100 partners', {}, SLOW)).toBeTruthy();
     expect(listRequests()[0]!.url.searchParams.get('limit')).toBe('100');
     expect(listRequests()[0]!.url.searchParams.has('cursor')).toBe(false);
     expect(page.queryByText('Bulk 149')).toBeNull();
 
     fireEvent.click(page.getByRole('button', { name: 'Load more' }));
-    expect(await page.findByText('Showing 150 partners')).toBeTruthy();
+    expect(await page.findByText('Showing 150 partners', {}, SLOW)).toBeTruthy();
     expect(listRequests().at(-1)!.url.searchParams.get('cursor')).toBe('100');
     expect(page.getByText('Bulk 149')).toBeTruthy();
     expect(page.queryByRole('button', { name: 'Load more' })).toBeNull();
@@ -105,38 +111,38 @@ describe('Admin → Partners at scale', { timeout: 15_000 }, () => {
   it('searches the whole roster on the server, not just the loaded rows', async () => {
     roster = [...bulk(250), ADA]; // Ada is far past the first page
     const page = renderWithClient(<AdminPartners />);
-    await page.findByText('Showing 100 partners');
+    await page.findByText('Showing 100 partners', {}, SLOW);
     expect(page.queryByText('Ada Lovelace')).toBeNull();
 
     const box = page.getByRole('searchbox', { name: 'Search partners' });
     fireEvent.change(box, { target: { value: '  Lovelace ' } });
-    expect(await page.findByText('Showing 1 partner matching “Lovelace”')).toBeTruthy();
+    expect(await page.findByText('Showing 1 partner matching “Lovelace”', {}, SLOW)).toBeTruthy();
     expect(listRequests().at(-1)!.url.searchParams.get('q')).toBe('Lovelace');
     expect(page.getByText('Ada Lovelace')).toBeTruthy();
     expect(page.queryByText('Bulk 0')).toBeNull();
 
     fireEvent.change(box, { target: { value: 'zzz' } });
-    expect(await page.findByText('No partners match “zzz”')).toBeTruthy();
+    expect(await page.findByText('No partners match “zzz”', {}, SLOW)).toBeTruthy();
     // The search box stays put so the admin can correct the term.
     expect(page.getByRole('searchbox', { name: 'Search partners' })).toBe(box);
 
     fireEvent.change(box, { target: { value: '' } });
-    expect(await page.findByText('Showing 100 partners')).toBeTruthy();
+    expect(await page.findByText('Showing 100 partners', {}, SLOW)).toBeTruthy();
   });
 
   it("refetches every loaded page when a row action invalidates ['partners']", async () => {
     const rita = partner('p_rita', 'Revoked Rita', 'rita@example.com', { revokedAt: '2026-10-05T00:00:00.000Z' });
     roster = [rita, ...bulk(150)];
     const page = renderWithClient(<AdminPartners />);
-    await page.findByText('Showing 100 partners');
+    await page.findByText('Showing 100 partners', {}, SLOW);
     fireEvent.click(page.getByRole('button', { name: 'Load more' }));
-    await page.findByText('Showing 151 partners');
+    await page.findByText('Showing 151 partners', {}, SLOW);
 
     const before = listRequests().length;
     roster[0] = { ...rita, revokedAt: null }; // what the reinstate does server-side
     fireEvent.click(page.getByRole('button', { name: 'Reinstate' }));
 
-    await waitFor(() => expect(page.queryByRole('button', { name: 'Reinstate' })).toBeNull());
+    await waitFor(() => expect(page.queryByRole('button', { name: 'Reinstate' })).toBeNull(), SLOW);
     expect(requests.some((r) => r.method === 'POST' && r.url.pathname === '/api/partners/p_rita/reinstate')).toBe(true);
     const refetched = listRequests().slice(before);
     expect(refetched.map((r) => r.url.searchParams.get('cursor'))).toEqual([null, '100']);
@@ -144,20 +150,20 @@ describe('Admin → Partners at scale', { timeout: 15_000 }, () => {
   });
 });
 
-describe('admin Links hub', () => {
+describe('admin Links hub', { timeout: 15_000 }, () => {
   it('is a searchable picker over the whole roster', async () => {
     roster = [...bulk(250), ADA];
     const page = renderWithClient(<LinksPage principal={{ role: 'admin' }} />);
 
-    expect(await page.findByText('Bulk 0')).toBeTruthy();
+    expect(await page.findByText('Bulk 0', {}, SLOW)).toBeTruthy();
     expect(listRequests()[0]!.url.searchParams.get('limit')).toBe('30');
     expect(page.getAllByRole('link')).toHaveLength(30);
 
     fireEvent.click(page.getByRole('button', { name: 'Load more' }));
-    await waitFor(() => expect(page.getAllByRole('link')).toHaveLength(60));
+    await waitFor(() => expect(page.getAllByRole('link')).toHaveLength(60), SLOW);
 
     fireEvent.change(page.getByRole('searchbox', { name: 'Search partners' }), { target: { value: 'ada@' } });
-    await waitFor(() => expect(page.queryByText('Bulk 0')).toBeNull());
+    await waitFor(() => expect(page.queryByText('Bulk 0')).toBeNull(), SLOW);
     expect(listRequests().at(-1)!.url.searchParams.get('q')).toBe('ada@');
     expect(page.getByRole('link', { name: /Ada Lovelace/ }).getAttribute('href')).toBe('/links?partnerId=p_ada');
     expect(page.queryByRole('button', { name: 'Load more' })).toBeNull();
