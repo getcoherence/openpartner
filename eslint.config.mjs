@@ -19,6 +19,9 @@ export default [
       '**/node_modules/**',
       '**/dist/**',
       '**/dist-migrate/**',
+      // The SDK's minified script-tag bundle (packages/sdk build:global,
+      // run by the portal build). Generated and git-ignored like dist.
+      '**/dist-global/**',
       '**/build/**',
       '**/coverage/**',
       '**/.turbo/**',
