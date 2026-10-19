@@ -221,7 +221,8 @@ describe.skipIf(skipIntegration)('platform password sign-in (/signin/password)',
     expect(res.status).toBe(429);
     expect(res.body.error).toBe('too_many_attempts');
     passwordFailures.reset(`platform|${email}`);
-  });
+    // Eleven scrypt checks back to back, each deliberately slow.
+  }, 30_000);
 });
 
 describe.skipIf(skipIntegration)('platform forgot / reset password', () => {
@@ -673,6 +674,30 @@ describe.skipIf(skipIntegration)('Google sign-in', () => {
 
       const no = await googleCallback(await googleStart('flow=ops'), { email: address('notops') });
       expect(no.headers.location).toBe('http://localhost:5673/platform/login?error=not_an_operator');
+    } finally {
+      restore();
+    }
+  });
+
+  it('the request log never records the authorization code', async () => {
+    const restore = withGoogle();
+    try {
+      const lines: string[] = [];
+      const { Writable } = await import('node:stream');
+      const logged = createApp({
+        logDestination: new Writable({
+          write(chunk, _enc, cb) {
+            lines.push(String(chunk));
+            cb();
+          },
+        }),
+      });
+      await request(logged).get('/auth/google/callback?code=4%2F0Asecret-auth-code&state=whatever');
+      await new Promise((r) => setImmediate(r));
+      const log = lines.join('');
+      expect(log).toContain('/auth/google/callback?');
+      expect(log).toContain('code=[REDACTED]');
+      expect(log).not.toContain('secret-auth-code');
     } finally {
       restore();
     }

@@ -4,11 +4,14 @@
  * replaced before a line is written:
  *   - the `token` query parameter: the conversion postback token on
  *     GET /postback is a URL credential by design
+ *   - the `code` query parameter: the OAuth authorization code Google and
+ *     Stripe redirect back with (/auth/google/callback,
+ *     /stripe-app/oauth/callback)
  *   - Authorization and Cookie headers: Bearer API keys, session cookies
  */
 
 const REDACTED = '[REDACTED]';
-const SECRET_QUERY_PARAMS = new Set(['token']);
+const SECRET_QUERY_PARAMS = new Set(['token', 'code']);
 const SECRET_HEADERS = ['authorization', 'cookie'];
 
 /** The URL with every secret query parameter's value replaced. */
