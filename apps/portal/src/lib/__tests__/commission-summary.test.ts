@@ -61,7 +61,7 @@ describe('renderCommissionSummary', () => {
         [{ trigger: 'every', type: 'percent', value: 10 }],
         { type: 'amount_off', value: 50, currency: 'eur', duration: 'once' },
       ),
-    ).toBe('10% — customers get $50 EUR off on first invoice');
+    ).toBe('10% — customers get €50 off on first invoice');
   });
 
   it('trims trailing zeros from non-integer values', () => {
@@ -94,6 +94,17 @@ describe('renderCommissionSummary', () => {
           tiers: { metric: 'conversions', window: 'rolling_days', windowDays: 30, levels: [{ atLeast: 10, value: 100 }] },
         },
       ]),
-    ).toBe('$50–$100 INR on first subscription (tiers by partner conversions, last 30 days)');
+    ).toBe('₹50–₹100 on first subscription (tiers by partner conversions, last 30 days)');
+  });
+
+  it('writes fixed amounts in their own currency', () => {
+    expect(
+      renderCommissionSummary([
+        { trigger: 'every', eventType: 'lead_created', type: 'fixed', value: 100, currency: 'INR' },
+        { trigger: 'every', eventType: 'demo_booked', type: 'fixed', value: 500, currency: 'inr' },
+      ]),
+    ).toBe('₹100 on every lead created + ₹500 on every demo booked');
+    expect(renderCommissionSummary([{ trigger: 'every', type: 'fixed', value: 25 }])).toBe('$25');
+    expect(renderCommissionSummary([{ trigger: 'every', type: 'fixed', value: 99.5, currency: 'EUR' }])).toBe('€99.50');
   });
 });
