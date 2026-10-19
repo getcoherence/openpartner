@@ -41,6 +41,9 @@ export interface ReconcileReport {
   attentionBatches: string[];
   residualsAwaitingDisposition: string[];
   reconcileRequiredIntents: string[];
+  /** Transfer intents parked in duplicate_review, awaiting an operator's
+   *  resolve_duplicate_review. The executor no longer alerts on them. */
+  duplicateReviewIntents: string[];
   feeBackfilled: string[];
   /** Webhook claims that were never finished and never redelivered. */
   unfinishedInboxEvents: string[];
@@ -190,6 +193,7 @@ export async function runFundingReconciliation(
     attentionBatches: [],
     residualsAwaitingDisposition: [],
     reconcileRequiredIntents: [],
+    duplicateReviewIntents: [],
     feeBackfilled: [],
     unfinishedInboxEvents: [],
     missedRefunds: [],
@@ -296,6 +300,22 @@ export async function runFundingReconciliation(
   if (intents.length > 0) {
     console.error(
       `[funding-reconcile] ${intents.length} transfer intent(s) in reconcile_required`,
+    );
+  }
+
+  // 2b'. Intents PARKED for a human. The executor stopped scanning them
+  // when it parked them (one ALERT, then silence), so this daily line is
+  // what keeps an unresolved review from being forgotten.
+  const parked = (await db(TABLES.HostedFundingTransfer)
+    .where({ state: 'duplicate_review' })
+    .select('id', 'batchId', 'lastError', 'updatedAt')) as Array<
+    Pick<HostedFundingTransferRow, 'id' | 'batchId' | 'lastError' | 'updatedAt'>
+  >;
+  report.duplicateReviewIntents = parked.map((i) => i.id);
+  for (const i of parked) {
+    report.attentionBatches.push(i.batchId);
+    console.error(
+      `[funding-reconcile] ALERT: transfer intent ${i.id} (batch ${i.batchId}) is parked in duplicate_review, last changed ${new Date(i.updatedAt).toISOString()} (${i.lastError ?? 'no reason recorded'}) — reverse the surplus, then POST /funding/transfers/${i.id}/recovery with kind resolve_duplicate_review`,
     );
   }
 

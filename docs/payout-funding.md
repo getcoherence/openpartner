@@ -98,8 +98,9 @@ Created and committed **before** any `transfers.create` call:
 `id` · `batchId` · `partnerId` · `currency` · `amountMinor` · `destinationAccountId`
 (snapshotted — changing destination under a retained key is a Stripe parameter-mismatch
 error) · `idempotencyKey` (`fbt:<transferIntentId>`, frozen; see key generations below) ·
-`state` (`pending | posted | confirmed | failed | reconcile_required`) · `stripeTransferId`
-unique nullable · `postedAt` · unique `(batchId, partnerId, currency)`.
+`state` (`pending | posted | confirmed | failed | reconcile_required | duplicate_review`) ·
+`stripeTransferId` unique nullable · `postedAt` · `reviewNonce` (the duplicate-review
+resolution fence, below) · unique `(batchId, partnerId, currency)`.
 
 **Retry discipline (finding 2):** within Stripe's idempotency window, retry the same key.
 After an ambiguous outcome older than ~24h (keys are pruned) or any lost-response case,
@@ -108,8 +109,9 @@ the intent moves to `reconcile_required`: resolve by listing transfers by
 blindly POST again**. Every Stripe object we create carries those metadata keys, which
 also fixes webhook tenant-resolution for transfers (finding 7).
 
-*As built (Oct 2026), brought up to the direct rail's round-6 rules
-([direct-connect-payouts.md](direct-connect-payouts.md), "Intent states"):*
+*As built (Oct 2026), brought up to the direct rail's round-6, round-10 and
+duplicate-review rules ([direct-connect-payouts.md](direct-connect-payouts.md), "Intent
+states"):*
 
 - **Only a definite error fails an intent.** `failed` is read as "Stripe refused it":
   the next tick retries the same key, and a compliance hold cancels a `failed`
@@ -137,24 +139,51 @@ also fixes webhook tenant-resolution for transfers (finding 7).
   re-arm compare-and-sets on the key the operator observed. No migration is involved.
   The unique index on the key still holds, and transfers carry
   `openpartner_key_generation` in their metadata (absent reads as 0).
-- **More than one transfer, or one from an abandoned generation, HOLDS too.** Reconcile
-  collects every match for the intent, not the first. Two matches
-  (`duplicate_transfers:<ids>`) or a match stamped with a generation other than the
-  current key's (`superseded_generation_transfer:<id>`) means the partner may have been
-  paid twice. The ledger stays unwritten and an ALERT names the transfers.
-  Disposition is manual (reverse the surplus, then finalize by hand); this rail has no
-  `resolve_duplicate_review` equivalent yet.
+- **Which transfers are the intent's.** The batch's `transfer_group` is shared by every
+  partner in it, so reconcile narrows it to the intent, and not on metadata alone:
+  metadata is mutable at Stripe, and a transfer whose stamp was cleared would vanish
+  from every decision (the direct rail's round 9). A transfer belongs to the intent when
+  it is stamped `openpartner_transfer_intent_id = <id>`, or when it pays the intent's
+  frozen destination and is not stamped with *another intent of the same batch* (two
+  partners sharing a Connect account keep their stamped transfers apart; an unstamped
+  one counts against both). Reconcile, the re-arm, the resolve and the 24h recheck all
+  use this one rule (`listFundedTransferMembers`). A listing that can't be completed
+  (Stripe unreadable, an empty page that claims more, past the page budget) decides
+  nothing; the next tick lists again.
+- **A single match is authenticated before it is recorded (round 10).** Anything on the
+  platform account can put a transfer in the group, and the stamp is mutable. One
+  current-generation match finalizes only if it matches the intent's frozen
+  `amountMinor`, `currency` and `destinationAccountId`, and its Stripe `created` is no
+  earlier than `postedAt` minus 5 minutes (`postedAt` is stamped before the
+  generation's first POST, so a forged stamp on an older transfer fails even when the
+  rest matches; a missing `created` fails closed). A transfer that fails is never
+  finalized: the intent parks with `unauthenticated_group_transfer:<id>`. Every
+  finalize is also compare-and-set on the state the caller expects and the key it
+  observed, so a reconciler holding a stale listing can't record over an intent another
+  tick parked or an operator re-armed.
+- **More than one transfer, one from an abandoned generation, or one that fails
+  authentication PARKS.** Reconcile collects every match for the intent, not the first.
+  Two matches (`duplicate_transfers:<ids>`) or a match stamped with a generation other
+  than the current key's (`superseded_generation_transfer:<id>`) means the partner may
+  have been paid twice. The ledger stays unwritten, the intent moves to
+  `duplicate_review` with a fresh `reviewNonce`, and ONE ALERT names the transfers. The
+  executor does not scan that state: no further listings, no per-tick alerts, and the
+  §7 deadline alert skips allocations behind a parked intent. The daily reconcile names
+  every parked intent (`duplicateReviewIntents`) so it isn't forgotten. Its allocations
+  stay `transfer_pending`, which also keeps the compliance cancel and the reversal
+  interlock off them: the money may be with the partner.
 
 **Operator re-arm** — `POST /funding/transfers/:intentId/recovery`
 `{ "kind": "release_intent_for_retry", "observedGeneration": N, "note": "..." }`, applied
 by the operator-recovery loop (rail `hosted_funding`, target = the transfer intent;
 `releaseFundedTransferForRetry` in `funding/executor.ts` is the break-glass REPL path).
-It refuses (`transfer_exists`) if the batch's group holds any transfer stamped with this
-intent *or paying its destination*. Metadata is mutable at Stripe, the destination is
-not. It returns `generation_moved` if the key no longer matches `observedGeneration`,
-`not_held` unless the intent is `reconcile_required`, and `cannot_verify` if Stripe
-can't be listed. On success the intent goes back to `pending` on generation N+1 and the
-next tick posts once. The operator is asserting what no listing can prove, so two
+It refuses (`transfer_exists`) if the batch's group holds any transfer of this intent by
+the membership rule above, which includes any transfer *paying its destination* that
+isn't stamped for another intent of the batch. Metadata is mutable at Stripe, the
+destination is not. It returns `generation_moved` if the key no longer matches
+`observedGeneration`, `not_held` unless the intent is `reconcile_required`, and
+`cannot_verify` if Stripe can't be listed. On success the intent goes back to `pending`
+on generation N+1 and the next tick posts once. The operator is asserting what no listing can prove, so two
 alarms watch for the abandoned key's POST landing late. The `transfer.created`
 detector (below) fires when Stripe reports it. An applied re-arm also schedules the
 same 24h transfer-group **recheck** as the direct rail, the backstop for a missed
@@ -168,7 +197,8 @@ the counterpart of the direct rail's `transfer_created_orphan`). A funded transf
 inbox now takes `transfer.created` first, before tenant resolution. It claims a
 transfer stamped `openpartner_transfer_intent_id` or `openpartner_funding_batch_id`, or
 one whose group names a `HostedFundingBatch`. It is a detector only: no intent, batch
-or payout state is written, and the inbox `outcome` is the record. A redelivery is an
+or payout state is written (the review fence below aside), and the inbox `outcome` is
+the record. A redelivery is an
 inbox replay, so each event alarms once.
 
 - **Matching.** Scope is the batch the group names (immutable), falling back to the
@@ -184,9 +214,13 @@ inbox replay, so each event alarms once.
   which a listing can't promise, so the abandoned key's straggler alarms the moment it
   lands, even before the re-armed attempt confirms.
 - **ALERT** (`transfer_created_orphan:<intentIds>`): an intent confirmed on a different
-  transfer, `failed`, or open but not expecting this one. **ALERT**
-  (`transfer_created_unmatched`): the batch's group holds a transfer no intent of that
-  batch matches.
+  transfer, `failed`, parked in `duplicate_review`, or open but not expecting this one.
+  **ALERT** (`transfer_created_unmatched`): the batch's group holds a transfer no intent
+  of that batch matches.
+- **Parked intents.** For an intent in `duplicate_review` the detector also moves its
+  `reviewNonce`, the one write it makes. A new transfer changes what the operator's
+  resolution is about, so a resolution validated against a listing without it loses
+  its commit (`review_moved`) and re-verifies, as it does after a reversal.
 
 ```sql
 select "stripeEventId", outcome, "processedAt"
@@ -195,19 +229,52 @@ where type = 'transfer.created' and outcome ~ '^transfer_created_(orphan|unmatch
 order by "processedAt" desc;
 ```
 
-Find held intents:
+**Operator resolve** — reverse the surplus in Stripe, then
+`POST /funding/transfers/:intentId/recovery` with
+`{ "kind": "resolve_duplicate_review", "keptTransferId": "tr_..." }` or
+`{ "kind": "resolve_duplicate_review", "allReversed": true }` (exactly one), applied by
+the operator-recovery loop (rail `hosted_funding`, target = the transfer intent;
+`resolveFundedDuplicateReview` is the function). It mirrors the direct rail's
+`resolveDuplicateReview` and verifies both dispositions against Stripe:
+
+- `keptTransferId`: the transfer must be one of the intent's, wholly unreversed, and
+  match the frozen amount, currency and destination (`kept_transfer_invalid`
+  otherwise); every other transfer of the intent must be fully reversed
+  (`transfers_still_live`). The intent is then finalized on it: Payout paid,
+  allocations `transferred`, commissions `paid`. The batch settles on the next tick.
+- `allReversed`: every transfer of the intent must be fully reversed. The intent closes
+  `failed`, its allocations go `canceled`, and the batch settles
+  `settled_with_residual` for a §7 disposition, the path a compliance hold takes for
+  funded money that won't transfer. The commissions stay `approved`, and reservation
+  won't take them again until the residual has a disposition.
+
+The commit is fenced on the `reviewNonce` read before the listing. The funding webhook
+moves the nonce whenever a transfer of a parked intent is reversed (and acknowledges
+the event rather than 5xx-ing it for want of a Payout) or a new one is created for it,
+so a reversal or a new transfer landing mid-resolution makes the commit lose with
+`review_moved`, which the loop retries
+against the world as it then is. Other outcomes: `not_in_duplicate_review`,
+`cannot_verify`. An applied resolve gets the same 24h transfer-group recheck as a
+re-arm. After a keep, a late reversal event for a surplus transfer is acknowledged as
+`reversal_of_unrecorded_transfer` and never applied to the Payout, which records the
+kept transfer only. After all-reversed, one is acknowledged as
+`reversal_on_closed_intent`.
+
+Find held (`reconcile_required`) and parked (`duplicate_review`) intents:
 
 ```sql
-select id, "tenantId", "batchId", "partnerId", "amountMinor", "idempotencyKey",
-       "postedAt", "lastError", "updatedAt"
+select id, state, "tenantId", "batchId", "partnerId", "amountMinor",
+       "destinationAccountId", "idempotencyKey", "postedAt", "lastError", "updatedAt"
 from "HostedFundingTransfer"
-where state = 'reconcile_required'
+where state in ('reconcile_required', 'duplicate_review')
 order by "updatedAt";
 ```
 
 Before re-arming, look: `stripe transfers list --transfer-group <batchId>`, and check
 there is nothing for this partner's destination. `observedGeneration` is the suffix of
-`idempotencyKey` (0 for a bare `fbt:<id>`).
+`idempotencyKey` (0 for a bare `fbt:<id>`). Before resolving, list the same group,
+decide which transfer (if any) the partner keeps, and reverse every other one of the
+intent's in full.
 
 ### `PayoutReversal` (finding 11)
 `id` · `payoutId` · `stripeReversalId` unique · `amountMinor` · `reason` ·
@@ -392,12 +459,20 @@ Transfer intents (`HostedFundingTransfer.state`, §4), all CAS:
 | posted | definite 4xx (not 409 / 429 / idempotency_error) | failed | retried with the same key next tick |
 | posted | 409 / 429 / idempotency_error / network | posted | replay inside the window |
 | posted | ambiguous and older than the window | reconcile_required | list by transfer_group |
-| reconcile_required | one match on the current generation | confirmed | finalize with it |
+| reconcile_required | a hung POST on the same key finally returns its transfer | confirmed | as for `posted` (a parked or re-armed intent is not finalized) |
+| reconcile_required | one match on the current generation that authenticates (amount, currency, destination, `created` ≥ `postedAt` − 5 min) | confirmed | finalize with it |
+| reconcile_required | listing incomplete (`cannot_verify`) | reconcile_required | nothing decided; next tick lists again |
 | reconcile_required | no match | reconcile_required (HELD) | ALERT each tick; `awaiting_operator:…` |
-| reconcile_required | 2+ matches, or one on another generation | reconcile_required (HELD) | ALERT; ledger unwritten |
+| reconcile_required | 2+ matches, one on another generation, or one that fails authentication | duplicate_review (PARKED) | one ALERT; ledger unwritten; fresh `reviewNonce`; executor stops scanning it |
 | reconcile_required | operator re-arm (no transfer for the intent listed) | pending, key → generation N+1 | 24h recheck scheduled |
+| duplicate_review | `transfer.reversed` on one of its transfers | duplicate_review | `reviewNonce` moved; event acknowledged |
+| duplicate_review | `transfer.created` for it (§4 detector) | duplicate_review | ALERT `transfer_created_orphan:…`; `reviewNonce` moved |
+| duplicate_review | operator resolve, kept transfer verified, others fully reversed (nonce unchanged) | confirmed | Payout paid on the kept transfer, allocations transferred, commissions paid; 24h recheck |
+| duplicate_review | operator resolve, every transfer fully reversed (nonce unchanged) | failed | allocations canceled → batch settles with residual; 24h recheck |
+| duplicate_review | operator resolve after the nonce moved | duplicate_review | `review_moved`; the loop retries and re-verifies |
 | any | `transfer.created` the intent isn't expecting (§4 detector) | unchanged | ALERT; inbox outcome `transfer_created_orphan:…` |
 | settled / settled_with_residual | `transfer.reversed` | (payout) derived partial/reversed | PayoutReversal + adjustments |
+| confirmed | `transfer.reversed` for a transfer other than the recorded one | confirmed | not applied (`reversal_of_unrecorded_transfer`) |
 
 Late `payment_intent.succeeded` on `released` is the one designed-impossible event (PI
 was confirmed canceled first); if Stripe ever delivers it, it CAS-fails, alerts, and

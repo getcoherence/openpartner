@@ -244,7 +244,10 @@ async function fundingBatchOfGroup(db: Knex, transfer: Stripe.Transfer): Promise
  * DETECTOR ONLY: the funded rail's counterpart of the direct rail's
  * `transfer_created_orphan` (routes/stripe-webhook.ts). No intent, batch or
  * payout state is written; the inbox outcome is the record, and the
- * disposition stays with a human.
+ * disposition stays with a human. The one write is a fence, not state: an
+ * intent parked in `duplicate_review` gets a fresh `reviewNonce`, so an
+ * operator resolution validated against a listing without this transfer
+ * loses its commit and re-verifies (as after a reversal, handled below).
  *
  * Why it exists: an operator re-arm (`releaseFundedTransferForRetry`) is an
  * absence-based decision. No listing can prove that the abandoned key's
@@ -307,6 +310,13 @@ export async function detectFundedTransferCreated(db: Knex, transfer: Stripe.Tra
   console.error(
     `[funding] ALERT: transfer ${transfer.id} (key generation ${transfer.metadata?.openpartner_key_generation ?? 'unstamped'}) was CREATED in funded batch ${batchId}'s group for transfer intent(s) not expecting it: ${described} — money moved outside the ledger (a late POST from a key an operator abandoned?); operator reconciliation required`,
   );
+  const parked = unexpected.filter((i) => i.state === 'duplicate_review').map((i) => i.id);
+  if (parked.length > 0) {
+    await db(TABLES.HostedFundingTransfer)
+      .whereIn('id', parked)
+      .where({ state: 'duplicate_review' })
+      .update({ reviewNonce: ulid(), updatedAt: db.fn.now() });
+  }
   return `transfer_created_orphan:${unexpected.map((i) => i.id).join(',')}`;
 }
 
@@ -441,6 +451,56 @@ export async function handleTransferReversed(
     .where({ id: intentId })
     .first()) as HostedFundingTransferRow | undefined;
   if (!intent) return 'transfer_intent_unknown';
+  if (intent.state === 'duplicate_review') {
+    // Parked for a human (funding/executor.ts parkForReview), with no
+    // Payout to record against, and the reversal changes what that human
+    // is looking at: it is how the surplus gets undone. Waiting for a
+    // Payout (the not-yet-linked path below) would 5xx every reversal for
+    // as long as the review lasts. Dropping it silently is worse (the
+    // direct rail's round 9): an operator mid-resolution could validate a
+    // pre-reversal listing and record the reversed transfer as the kept
+    // one. So record it by moving the review nonce to a fresh value that
+    // never repeats; resolveFundedDuplicateReview fences its commit on the
+    // nonce it read before listing and re-verifies when it loses. A
+    // reversal of the transfer later KEPT is not lost either: the daily
+    // reconcile sweep re-reads every confirmed intent's transfer and
+    // applies a reversal it finds.
+    const moved = await db(TABLES.HostedFundingTransfer)
+      .where({ id: intent.id, state: 'duplicate_review' })
+      .update({ reviewNonce: ulid(), updatedAt: db.fn.now() });
+    if (moved > 0) {
+      console.error(
+        `[funding] transfer ${transfer.id} saw reversal activity while transfer intent ${intent.id} sits in duplicate_review — recorded on the review; any in-flight operator resolution re-verifies`,
+      );
+      return 'transfer_reversal_in_duplicate_review';
+    }
+    // Resolved between the read and the write: handle it as it now is.
+    return handleTransferReversed(db, stripe, transfer, intentId);
+  }
+  if (intent.stripeTransferId && transfer.id !== intent.stripeTransferId) {
+    // A reversal of a transfer this intent did NOT record: a duplicate's
+    // surplus that an operator reversed, whose event arrived after the
+    // review was resolved onto the kept transfer. Recording it against the
+    // Payout would mark the kept, still-paid transfer reversed and write
+    // clawback adjustments for money the partner has. The resolution
+    // already verified that transfer fully reversed.
+    console.error(
+      `[funding] transfer ${transfer.id} was reversed, but transfer intent ${intent.id} recorded ${intent.stripeTransferId} — not applied to payout ${intent.payoutId ?? 'none'}; check the intent's group for duplicates if this was not an operator reversing a surplus`,
+    );
+    return 'reversal_of_unrecorded_transfer';
+  }
+  if (!intent.payoutId && intent.state === 'failed') {
+    // Closed without a Payout: Stripe refused the POST, a compliance hold
+    // canceled it, or an operator resolved a duplicate review as all
+    // reversed (after verifying every transfer fully reversed). There is
+    // no ledger row this reversal could belong to, and waiting for one
+    // would 5xx until Stripe gives up. If the intent is ever posted again
+    // and confirmed on this transfer, the daily sweep reads its reversal.
+    console.error(
+      `[funding] transfer ${transfer.id} was reversed, but transfer intent ${intent.id} is failed with no payout (${intent.lastError ?? 'no error recorded'}) — nothing to apply it to`,
+    );
+    return 'reversal_on_closed_intent';
+  }
   if (!intent.payoutId) {
     // NOT YET LINKED is not the same as UNKNOWN, and returning a terminal
     // outcome here lost reversals permanently (round-6 review).
