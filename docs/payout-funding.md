@@ -154,12 +154,46 @@ intent *or paying its destination*. Metadata is mutable at Stripe, the destinati
 not. It returns `generation_moved` if the key no longer matches `observedGeneration`,
 `not_held` unless the intent is `reconcile_required`, and `cannot_verify` if Stripe
 can't be listed. On success the intent goes back to `pending` on generation N+1 and the
-next tick posts once. The operator is asserting what no listing can prove, so an
-applied re-arm schedules the same 24h transfer-group **recheck** as the direct rail. It
-alarms (`orphan_transfers:<ids>`) on any live transfer for the intent other than the
-one it recorded, such as the abandoned key's POST landing late. It is the only alarm
-for that case on this rail: the `transfer.created` detector resolves direct-Connect
-payouts only.
+next tick posts once. The operator is asserting what no listing can prove, so two
+alarms watch for the abandoned key's POST landing late. The `transfer.created`
+detector (below) fires when Stripe reports it. An applied re-arm also schedules the
+same 24h transfer-group **recheck** as the direct rail, the backstop for a missed
+webhook: it alarms (`orphan_transfers:<ids>`) on any live transfer for the intent
+other than the one it recorded.
+
+**`transfer.created` detector** (`detectFundedTransferCreated` in `funding/webhook.ts`,
+the counterpart of the direct rail's `transfer_created_orphan`). A funded transfer's
+`transfer_group` is its batch id, not a Payout id, so the direct-rail detector in
+`routes/stripe-webhook.ts` used to find no Payout and acknowledge it unread. The funding
+inbox now takes `transfer.created` first, before tenant resolution. It claims a
+transfer stamped `openpartner_transfer_intent_id` or `openpartner_funding_batch_id`, or
+one whose group names a `HostedFundingBatch`. It is a detector only: no intent, batch
+or payout state is written, and the inbox `outcome` is the record. A redelivery is an
+inbox replay, so each event alarms once.
+
+- **Matching.** Scope is the batch the group names (immutable), falling back to the
+  metadata stamps. Intents match on the intent-id stamp **or** the destination, as in
+  the recheck. When one intent matches on both, it alone owns the transfer: two
+  partners can share a Connect account, and judging the other on destination alone
+  would alarm on ordinary payouts.
+- **Expected** (`transfer_created_observed`): the transfer the intent recorded, or any
+  transfer for an open intent (`pending`/`posted`/`reconcile_required`, nothing
+  recorded). That is the recheck's predicate. One addition: a transfer stamped for an
+  open intent must also carry the intent's current key generation and pay its frozen
+  destination. A `transfer.created` payload holds the metadata as it was at creation,
+  which a listing can't promise, so the abandoned key's straggler alarms the moment it
+  lands, even before the re-armed attempt confirms.
+- **ALERT** (`transfer_created_orphan:<intentIds>`): an intent confirmed on a different
+  transfer, `failed`, or open but not expecting this one. **ALERT**
+  (`transfer_created_unmatched`): the batch's group holds a transfer no intent of that
+  batch matches.
+
+```sql
+select "stripeEventId", outcome, "processedAt"
+from "StripeWebhookInbox"
+where type = 'transfer.created' and outcome ~ '^transfer_created_(orphan|unmatched)'
+order by "processedAt" desc;
+```
 
 Find held intents:
 
@@ -362,6 +396,7 @@ Transfer intents (`HostedFundingTransfer.state`, §4), all CAS:
 | reconcile_required | no match | reconcile_required (HELD) | ALERT each tick; `awaiting_operator:…` |
 | reconcile_required | 2+ matches, or one on another generation | reconcile_required (HELD) | ALERT; ledger unwritten |
 | reconcile_required | operator re-arm (no transfer for the intent listed) | pending, key → generation N+1 | 24h recheck scheduled |
+| any | `transfer.created` the intent isn't expecting (§4 detector) | unchanged | ALERT; inbox outcome `transfer_created_orphan:…` |
 | settled / settled_with_residual | `transfer.reversed` | (payout) derived partial/reversed | PayoutReversal + adjustments |
 
 Late `payment_intent.succeeded` on `released` is the one designed-impossible event (PI

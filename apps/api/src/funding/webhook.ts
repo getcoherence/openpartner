@@ -11,6 +11,9 @@
  * out-of-order and duplicate deliveries degrade to logged no-ops. A stale
  * event that loses its CAS re-reads the live Stripe object before deciding
  * anything (finding 7).
+ *
+ * `transfer.created` is the one detector here: it writes no funding state,
+ * only its inbox outcome (detectFundedTransferCreated).
  */
 
 import type Stripe from 'stripe';
@@ -27,6 +30,8 @@ import { casBatch, toMinor } from './state.js';
 import { claimInboxEvent, releaseInboxClaim, stampInboxOutcome } from './inbox.js';
 import { confirmFundingFromPaymentIntent } from './confirm.js';
 import { releaseBatch } from './release.js';
+import { keyGenerationOf } from './executor.js';
+import { readGeneration } from '../payout-transfers.js';
 
 /** Event types the funding pipeline may own. Everything else short-circuits
  *  in the caller without touching the inbox. */
@@ -36,8 +41,13 @@ const FUNDING_EVENT_TYPES = new Set([
   'payment_intent.canceled',
   'charge.refunded',
   'charge.dispute.created',
+  'transfer.created',
   'transfer.reversed',
 ]);
+
+/** Intent states the executor may still finalize a transfer for — the
+ *  same set the operator-recovery recheck treats as open. */
+const OPEN_INTENT_STATES = new Set(['pending', 'posted', 'reconcile_required']);
 
 /**
  * Another worker holds an unfinished claim on this event. The caller must
@@ -96,8 +106,16 @@ export async function handleFundingEvent(
   if (!FUNDING_EVENT_TYPES.has(event.type)) return null;
 
   const batchId = fundingBatchIdOf(event);
-  const intentId = event.type === 'transfer.reversed' ? transferIntentIdOf(event) : null;
-  if (!batchId && !intentId) return null; // not ours — merchant-side event
+  const isTransfer = event.type === 'transfer.reversed' || event.type === 'transfer.created';
+  const intentId = isTransfer ? transferIntentIdOf(event) : null;
+  if (!batchId && !intentId) {
+    // A funded transfer's group is its batch id, so a creation missing our
+    // stamps is still ours when the group names a batch. Without this it
+    // fell through to the direct rail's detector, which resolves groups
+    // to Payout ids, found none, and acknowledged it unread.
+    if (event.type !== 'transfer.created') return null; // not ours — merchant-side event
+    if (!(await fundingBatchOfGroup(db, event.data.object as Stripe.Transfer))) return null;
+  }
 
   // The claim is a lease: it blocks replays of an event we FINISHED, and
   // blocks concurrent workers, but a claim whose worker died is taken
@@ -201,12 +219,116 @@ async function routeFundingEvent(
       // are an operator flow — this handler makes the state loud and safe.
       return recordFundingChargeClawback(db, batchId!, event.type);
     }
+    case 'transfer.created': {
+      return detectFundedTransferCreated(db, event.data.object as Stripe.Transfer);
+    }
     case 'transfer.reversed': {
       return handleTransferReversed(db, stripe, event.data.object as Stripe.Transfer, intentId!);
     }
     default:
       return 'unhandled';
   }
+}
+
+/** The funding batch a transfer's group names, if any. transfer_group is
+ *  set at creation and immutable, which makes it the scope to trust. */
+async function fundingBatchOfGroup(db: Knex, transfer: Stripe.Transfer): Promise<string | null> {
+  if (!transfer.transfer_group) return null;
+  const row = (await db(TABLES.HostedFundingBatch)
+    .where({ id: transfer.transfer_group })
+    .first(['id'])) as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
+/**
+ * DETECTOR ONLY: the funded rail's counterpart of the direct rail's
+ * `transfer_created_orphan` (routes/stripe-webhook.ts). No intent, batch or
+ * payout state is written; the inbox outcome is the record, and the
+ * disposition stays with a human.
+ *
+ * Why it exists: an operator re-arm (`releaseFundedTransferForRetry`) is an
+ * absence-based decision. No listing can prove that the abandoned key's
+ * POST will never land, and when it does, Stripe tells us here. Before
+ * this, funded creations were acknowledged unread, and the 24h recheck in
+ * operator-recovery.ts was the only alarm.
+ *
+ * Scope is the batch the transfer's group names (immutable), falling back
+ * to our metadata stamps. The intents it can belong to are matched by the
+ * intent-id stamp OR the destination, as in the recheck. When one intent
+ * matches on both, it alone owns the transfer: a batch holds one intent per
+ * partner, and two partners can share a Connect account, so judging the
+ * others on destination alone would alarm on ordinary payouts.
+ *
+ * The predicate is the recheck's: an open intent with no recorded transfer
+ * expects one, and otherwise only the transfer an intent recorded is
+ * expected. One addition that the recheck can't make: this payload carries
+ * the metadata as it was at creation, so a transfer stamped for an open
+ * intent must also come from that intent's current key generation and pay
+ * its frozen destination. A straggler from a key an operator abandoned
+ * alarms the moment it lands, even before the re-armed attempt confirms.
+ */
+export async function detectFundedTransferCreated(db: Knex, transfer: Stripe.Transfer): Promise<string> {
+  const stampedIntentId = transfer.metadata?.openpartner_transfer_intent_id ?? null;
+  const destination =
+    typeof transfer.destination === 'string' ? transfer.destination : (transfer.destination?.id ?? null);
+
+  let batchId = (await fundingBatchOfGroup(db, transfer)) ?? transfer.metadata?.openpartner_funding_batch_id ?? null;
+  if (!batchId && stampedIntentId) {
+    const stamped = (await db(TABLES.HostedFundingTransfer)
+      .where({ id: stampedIntentId })
+      .first(['batchId'])) as { batchId: string } | undefined;
+    batchId = stamped?.batchId ?? null;
+  }
+
+  const candidates =
+    batchId && (stampedIntentId || destination)
+      ? ((await db(TABLES.HostedFundingTransfer)
+          .where({ batchId })
+          .where((qb) => {
+            if (stampedIntentId) qb.orWhere({ id: stampedIntentId });
+            if (destination) qb.orWhere({ destinationAccountId: destination });
+          })
+          .orderBy('id', 'asc')) as HostedFundingTransferRow[])
+      : [];
+  if (candidates.length === 0) {
+    console.error(
+      `[funding] ALERT: transfer ${transfer.id} was CREATED in funded batch ${batchId ?? 'unknown'}'s group (stamped intent ${stampedIntentId ?? 'none'}, destination ${destination ?? 'none'}) but no transfer intent in that batch matches it — money moved outside the ledger; operator reconciliation required`,
+    );
+    return 'transfer_created_unmatched';
+  }
+
+  const owner = candidates.find((i) => i.id === stampedIntentId && i.destinationAccountId === destination);
+  const unexpected = (owner ? [owner] : candidates).filter((i) => !expectsTransfer(i, transfer, destination));
+  if (unexpected.length === 0) return 'transfer_created_observed';
+
+  const described = unexpected
+    .map((i) => `${i.id} (${i.state}, key generation ${keyGenerationOf(i) ?? 'unreadable'}, on transfer ${i.stripeTransferId ?? 'none'})`)
+    .join('; ');
+  console.error(
+    `[funding] ALERT: transfer ${transfer.id} (key generation ${transfer.metadata?.openpartner_key_generation ?? 'unstamped'}) was CREATED in funded batch ${batchId}'s group for transfer intent(s) not expecting it: ${described} — money moved outside the ledger (a late POST from a key an operator abandoned?); operator reconciliation required`,
+  );
+  return `transfer_created_orphan:${unexpected.map((i) => i.id).join(',')}`;
+}
+
+/** Is this the transfer the intent is waiting for, or the one it recorded? */
+function expectsTransfer(
+  intent: HostedFundingTransferRow,
+  transfer: Stripe.Transfer,
+  destination: string | null,
+): boolean {
+  if (intent.stripeTransferId === transfer.id) return true;
+  // Confirmed on another transfer, failed, or recorded something else:
+  // nothing more is expected.
+  if (!OPEN_INTENT_STATES.has(intent.state) || intent.stripeTransferId != null) return false;
+  // Matched on destination only: open is benign, as in the recheck.
+  if (transfer.metadata?.openpartner_transfer_intent_id !== intent.id) return true;
+  // Stamped for this intent: the executor's own POST, under the current key.
+  const generation = keyGenerationOf(intent);
+  return (
+    destination === intent.destinationAccountId &&
+    generation !== null &&
+    readGeneration(transfer.metadata?.openpartner_key_generation) === generation
+  );
 }
 
 /**

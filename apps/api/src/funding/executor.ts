@@ -63,7 +63,7 @@ export function fundedTransferKey(intentId: string, generation = 0): string {
 
 /** The generation an intent's stored key belongs to, or null when the key
  *  is not one `fundedTransferKey` wrote (a hand edit). */
-function keyGenerationOf(intent: Pick<HostedFundingTransferRow, 'id' | 'idempotencyKey'>): number | null {
+export function keyGenerationOf(intent: Pick<HostedFundingTransferRow, 'id' | 'idempotencyKey'>): number | null {
   if (intent.idempotencyKey === fundedTransferKey(intent.id)) return 0;
   const prefix = `fbt:${intent.id}:g`;
   if (!intent.idempotencyKey.startsWith(prefix)) return null;
@@ -659,6 +659,9 @@ async function holdForOperator(db: Knex, intent: HostedFundingTransferRow, reaso
  * operators, or an operator and a concurrent reconcile, cannot both hand
  * out a generation. Called by the operator-recovery apply loop (kind
  * `release_intent_for_retry`, rail `hosted_funding`, target = intent id).
+ * If the abandoned key's POST lands anyway, the `transfer.created` detector
+ * (funding/webhook.ts) alarms, and the apply loop's 24h recheck is the
+ * backstop for a missed webhook.
  */
 export async function releaseFundedTransferForRetry(
   db: Knex,

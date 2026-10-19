@@ -59,8 +59,8 @@
  * transfer group and alarms on any live transfer the payout is no longer
  * expecting. Detector only — no payout state is written; disposition stays
  * with a human. A hosted-funding TRANSFER re-arm is the same decision and
- * gets the same recheck (and it is the only alarm there: the transfer.created
- * detector resolves direct-Connect payouts only). A forced BATCH release
+ * gets the same recheck, behind its own transfer.created detector in
+ * funding/webhook.ts (detectFundedTransferCreated). A forced BATCH release
  * needs no equivalent: a late funding PaymentIntent announces itself
  * through the payment_intent.* webhooks into the funding inbox
  * (redelivery-guaranteed), where a succeeded PI for a released batch
@@ -814,7 +814,9 @@ async function recheckOne(
  *  stamp is mutable at Stripe, the destination is not). Same benign/orphan
  *  predicate as above: an open intent with no recorded transfer may have
  *  live members (the executor will finalize them); otherwise only the
- *  transfer it recorded may be live. */
+ *  transfer it recorded may be live. The webhook detector
+ *  (detectFundedTransferCreated) shares this predicate, and also checks
+ *  the key generation, which a listing's mutable metadata can't vouch for. */
 async function recheckFundedTransfer(
   db: Knex,
   stripe: Stripe,

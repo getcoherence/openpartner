@@ -132,6 +132,10 @@ const TABLES_TO_CLEAN = [
   // Before Partner + Program — Coupon references both.
   TABLES.Coupon,
   TABLES.Program,
+  // Before Partner — a funded transfer intent references its partner.
+  TABLES.HostedFundingTransfer,
+  TABLES.HostedFundingBatch,
+  TABLES.StripeWebhookInbox,
   // Before Partner — Payout.partnerId is an FK. Commission is already
   // deleted above, which is what frees Payout.
   TABLES.Payout,
@@ -2893,6 +2897,80 @@ describe.skipIf(skipIntegration)('round-9: reversal activity on a duplicate_revi
     const res2 = await postWebhook(benign);
     expect(res2.status).toBe(200);
     expect(res2.body.connect).toBe('transfer_created_observed');
+  });
+
+  it('a hosted funded transfer.created goes to the funding detector, not the payout lookup', async () => {
+    // Its transfer_group is the funding batch id, which names no Payout:
+    // the direct-rail detector above found nothing and acknowledged it
+    // unread. The funding inbox takes it first now.
+    const partnerId = ulid();
+    const account = `acct_${partnerId.slice(0, 10)}`;
+    await db(TABLES.Partner).insert({
+      id: partnerId,
+      tenantId: DEFAULT_TENANT_ID,
+      name: 'Funded partner',
+      email: `fund-${partnerId}@example.com`,
+      stripeConnectAccountId: account,
+    });
+    const batchId = ulid();
+    await db(TABLES.HostedFundingBatch).insert({
+      id: batchId,
+      tenantId: DEFAULT_TENANT_ID,
+      currency: 'usd',
+      principalMinor: 5000,
+      grossChargeMinor: 5000,
+      status: 'settled',
+    });
+    const intentId = ulid();
+    await db(TABLES.HostedFundingTransfer).insert({
+      id: intentId,
+      tenantId: DEFAULT_TENANT_ID,
+      batchId,
+      partnerId,
+      currency: 'usd',
+      amountMinor: 5000,
+      destinationAccountId: account,
+      idempotencyKey: `fbt:${intentId}:g1`,
+      state: 'confirmed',
+      stripeTransferId: 'tr_rearmed_g1',
+    });
+
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // The generation 0 POST an operator abandoned, landing late.
+      const res = await postWebhook({
+        id: `evt_${ulid()}`,
+        type: 'transfer.created',
+        created: Math.floor(Date.now() / 1000),
+        data: {
+          object: {
+            id: 'tr_abandoned_g0',
+            object: 'transfer',
+            amount: 5000,
+            amount_reversed: 0,
+            currency: 'usd',
+            reversed: false,
+            destination: account,
+            transfer_group: batchId,
+            metadata: {
+              openpartner_transfer_intent_id: intentId,
+              openpartner_funding_batch_id: batchId,
+              openpartner_tenant_id: DEFAULT_TENANT_ID,
+              openpartner_partner_id: partnerId,
+              openpartner_key_generation: '0',
+            },
+          },
+        },
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.funding).toBe(`transfer_created_orphan:${intentId}`);
+      expect(errors.mock.calls.some((c) => String(c[0]).includes('ALERT: transfer tr_abandoned_g0'))).toBe(true);
+    } finally {
+      errors.mockRestore();
+    }
+    const intent = await db(TABLES.HostedFundingTransfer).where({ id: intentId }).first();
+    expect(intent.state).toBe('confirmed');
+    expect(intent.stripeTransferId).toBe('tr_rearmed_g1');
   });
 });
 
