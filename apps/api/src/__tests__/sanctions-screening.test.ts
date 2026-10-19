@@ -840,6 +840,37 @@ describe.skipIf(skipIntegration)('holds that appear after planning', () => {
     expect((await db(TABLES.HostedFundingBatch).where({ id: batch.id }).first()).status).toBe('transferring');
     expect(await commission(refusedCommission)).toMatchObject({ status: 'approved', payoutId: null });
   });
+
+  it('a 409 is not a refusal: a later hold leaves the intent posted and cancels nothing', async () => {
+    await enableFundedRail();
+    const partnerId = await seedPartner({ connect: true, name: 'Pavel Listed' });
+    const commissionId = await seedCommission(partnerId);
+    await screening.screenPayablePartners(db, { tenantId: tenant.id });
+    await plan();
+    const batch = await fundOpenBatch();
+
+    // Another request holds the key: Stripe answers 409. Its transfer may
+    // still land, so this intent must not read as one Stripe refused —
+    // the hold path cancels refused intents into a residual the brand is
+    // refunded from.
+    const conflicting = stripeTransfers(async () => {
+      throw Object.assign(new Error('There is currently another in-progress request using this Stripe token'), {
+        statusCode: 409,
+      });
+    });
+    await runTransferExecutor(db, { stripe: conflicting.stripe });
+    expect((await db(TABLES.HostedFundingTransfer).where({ partnerId }).first()).state).toBe('posted');
+
+    await flagOnRescreen('Pavel Listed');
+    const { stripe, create } = stripeTransfers();
+    const result = await runTransferExecutor(db, { stripe });
+
+    expect(create).not.toHaveBeenCalled();
+    expect(result.heldForCompliance).toEqual([]);
+    expect((await db(TABLES.HostedFundingTransfer).where({ partnerId }).first()).state).toBe('posted');
+    const allocations = (await db(TABLES.HostedFundingAllocation).where({ batchId: batch.id })) as HostedFundingAllocationRow[];
+    expect(allocations.map((a) => [a.commissionId, a.state])).toEqual([[commissionId, 'transfer_pending']]);
+  });
 });
 
 describe.skipIf(skipIntegration)('the screening sweep', () => {

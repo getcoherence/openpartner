@@ -9,6 +9,9 @@
  * (`fbt:<intentId>`). A crashed worker retries the same key; an ambiguous
  * outcome older than Stripe's ~24h key-pruning window is resolved by
  * listing transfers by transfer_group + metadata — never a blind re-POST.
+ * A listing that finds nothing HOLDS the intent for an operator, who alone
+ * may authorise a fresh key (`releaseFundedTransferForRetry`) — the direct
+ * rail's round-6 rule, docs/payout-funding.md §4.
  *
  * Transfers are linked to the funding charge via `source_transaction`, so
  * they draw on the brand's settled payment, not the platform's pooled
@@ -36,10 +39,37 @@ import { partnerPayoutHolds, type PayoutHold, type PayoutHoldReason } from '../s
 import { sendOpsEmail } from '../platform-ops-mail.js';
 import { opsFundedTransfersHeldEmail } from '../email-templates.js';
 import { getPortalBaseUrl } from '../portal-url.js';
+import { isDefiniteStripeError, listTransferGroup, readGeneration } from '../payout-transfers.js';
 
 /** Ambiguity window: within it, retrying the frozen key is safe (Stripe
  *  replays); past it the key may be pruned and we must reconcile. */
 const IDEMPOTENCY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** lastError of an intent the executor holds for an operator: past the
+ *  key window and nothing in its transfer group. */
+const AWAITING_OPERATOR = 'awaiting_operator:no_transfer_found_past_window';
+
+/**
+ * The idempotency key for a transfer intent at a key generation.
+ * Generation 0 is the key every intent is created with; only an operator
+ * hands out a later one (`releaseFundedTransferForRetry`), because
+ * Stripe's retention is anchored to the key's first use and re-using a
+ * key would replay its stored outcome. The stored `idempotencyKey` is
+ * frozen per generation and doubles as the generation fence.
+ */
+export function fundedTransferKey(intentId: string, generation = 0): string {
+  return generation > 0 ? `fbt:${intentId}:g${generation}` : `fbt:${intentId}`;
+}
+
+/** The generation an intent's stored key belongs to, or null when the key
+ *  is not one `fundedTransferKey` wrote (a hand edit). */
+function keyGenerationOf(intent: Pick<HostedFundingTransferRow, 'id' | 'idempotencyKey'>): number | null {
+  if (intent.idempotencyKey === fundedTransferKey(intent.id)) return 0;
+  const prefix = `fbt:${intent.id}:g`;
+  if (!intent.idempotencyKey.startsWith(prefix)) return null;
+  const g = readGeneration(intent.idempotencyKey.slice(prefix.length));
+  return g !== null && g > 0 && intent.idempotencyKey === fundedTransferKey(intent.id, g) ? g : null;
+}
 
 export interface ExecutorDeps {
   stripe?: Stripe;
@@ -52,6 +82,9 @@ export interface ExecutorResult {
   transfersConfirmed: string[];
   failed: string[];
   reconcileRequired: string[];
+  /** Intents HELD in reconcile_required for an operator: nothing found
+   *  past the key window, or more than one transfer for one intent. */
+  awaitingOperator: string[];
   settled: string[];
   /** Partners whose share of a funded batch a compliance hold stopped
    *  before any transfer: allocations canceled, residual on the batch. */
@@ -72,6 +105,7 @@ export async function runTransferExecutor(db: Knex, deps: ExecutorDeps = {}): Pr
     transfersConfirmed: [],
     failed: [],
     reconcileRequired: [],
+    awaitingOperator: [],
     settled: [],
     heldForCompliance: [],
   };
@@ -318,7 +352,7 @@ async function executePartnerTransfer(
           currency: batch.currency,
           amountMinor,
           destinationAccountId: destination,
-          idempotencyKey: `fbt:${intentId}`,
+          idempotencyKey: fundedTransferKey(intentId),
           state: 'pending',
           createdAt: new Date(),
           updatedAt: db.fn.now(),
@@ -375,9 +409,26 @@ async function executePartnerTransfer(
     return;
   }
 
-  await db(TABLES.HostedFundingTransfer)
-    .where({ id: intent.id })
+  const generation = keyGenerationOf(intent);
+  if (generation === null) {
+    console.error(
+      `[funding] ALERT: transfer intent ${intent.id} has an unrecognised idempotency key — refusing to post; operator repair required`,
+    );
+    result.failed.push(intent.id);
+    return;
+  }
+
+  // Compare-and-set on the state we read AND the key we are about to post:
+  // a row another writer finalized, or an operator re-armed onto a new key,
+  // is no longer ours to post.
+  const claimed = await db(TABLES.HostedFundingTransfer)
+    .where({ id: intent.id, idempotencyKey: intent.idempotencyKey })
+    .whereIn('state', ['pending', 'posted', 'failed'])
     .update({ state: 'posted', postedAt: intent.postedAt ?? now, updatedAt: db.fn.now() });
+  if (claimed === 0) {
+    console.warn(`[funding] transfer intent ${intent.id} moved before its post — not posting`);
+    return;
+  }
   let transfer: Stripe.Transfer;
   try {
     transfer = await stripe.transfers.create(
@@ -392,20 +443,35 @@ async function executePartnerTransfer(
           openpartner_funding_batch_id: batch.id,
           openpartner_tenant_id: batch.tenantId,
           openpartner_partner_id: partnerId,
+          // Which key generation produced this transfer, so a reconcile
+          // can tell a superseded attempt's straggler from the current one.
+          openpartner_key_generation: String(generation),
         },
       },
       { idempotencyKey: intent.idempotencyKey },
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // Shared with the direct rail: a 409 idempotency conflict or a 429 is
+    // AMBIGUOUS, not proof of absence. Another request may be mid-flight on
+    // this key, and a `failed` intent is read elsewhere as "Stripe refused
+    // it" (the compliance hold cancels its allocations into a residual).
     const definite = isDefiniteStripeError(err);
-    await db(TABLES.HostedFundingTransfer)
-      .where({ id: intent.id })
+    // Compare-and-set on `posted`: a concurrent finalize must win, never be
+    // overwritten back to failed/posted.
+    const recorded = await db(TABLES.HostedFundingTransfer)
+      .where({ id: intent.id, state: 'posted', idempotencyKey: intent.idempotencyKey })
       .update({
         state: definite ? 'failed' : 'posted', // ambiguous stays posted → window/reconcile
         lastError: message.slice(0, 500),
         updatedAt: db.fn.now(),
       });
+    if (recorded === 0) {
+      console.warn(
+        `[funding] transfer post errored for intent ${intent.id}, but the intent already left 'posted' — leaving it: ${message}`,
+      );
+      return;
+    }
     console.error(`[funding] transfer post failed (${definite ? 'definite' : 'ambiguous'}) intent=${intent.id}: ${message}`);
     result.failed.push(intent.id);
     return;
@@ -485,11 +551,9 @@ async function finalizeTransfer(
 /**
  * Reconcile an ambiguous intent by listing transfers in the batch's
  * transfer_group and matching our metadata stamp (spec §4 retry
- * discipline). Found → finalize with the real transfer. Not found → the
- * POST never landed; reset to pending so the next tick posts fresh with a
- * NEW intent... no — same intent, key now pruned, so a fresh POST is a
- * genuine first attempt. Reset to pending is safe precisely because the
- * listing proved no transfer exists.
+ * discipline). One transfer from the current key generation → finalize
+ * with it. Anything else HOLDS the intent in `reconcile_required` for an
+ * operator; later ticks keep listing, so a straggler still finalizes.
  */
 async function reconcileIntent(
   db: Knex,
@@ -500,9 +564,10 @@ async function reconcileIntent(
 ): Promise<void> {
   // Page through the ENTIRE transfer_group, not just the first 100 — a batch
   // with >100 transfers whose match sits on a later page would otherwise look
-  // "absent" and get re-posted as a DUPLICATE transfer. Follow has_more to
-  // exhaustion, stopping early once we find our metadata stamp.
-  let match: Stripe.Transfer | undefined;
+  // "absent". Every match is collected, not the first: once an operator has
+  // re-armed an intent onto a new key, a late transfer from the old key can
+  // sit beside the new one, and recording either alone hides the other.
+  const matches: Stripe.Transfer[] = [];
   let startingAfter: string | undefined;
   for (;;) {
     const page = await stripe.transfers.list({
@@ -510,22 +575,137 @@ async function reconcileIntent(
       limit: 100,
       ...(startingAfter ? { starting_after: startingAfter } : {}),
     });
-    match = page.data.find((t) => t.metadata?.openpartner_transfer_intent_id === intent.id);
-    if (match || !page.has_more || page.data.length === 0) break;
+    matches.push(...page.data.filter((t) => t.metadata?.openpartner_transfer_intent_id === intent.id));
+    if (!page.has_more || page.data.length === 0) break;
     startingAfter = page.data[page.data.length - 1]!.id;
   }
-  if (match) {
+
+  const generation = keyGenerationOf(intent);
+  // A transfer without the stamp predates generations: generation 0.
+  const stale = matches.filter(
+    (t) => generation === null || readGeneration(t.metadata?.openpartner_key_generation) !== generation,
+  );
+  if (matches.length > 1 || stale.length > 0) {
+    // Two transfers for one intent, or one from a key an operator already
+    // abandoned: the partner may have been paid twice. Never pick one —
+    // the ledger stays unwritten and a human decides.
+    const ids = matches.map((t) => t.id).join(', ');
+    await holdForOperator(
+      db,
+      intent,
+      matches.length > 1 ? `duplicate_transfers:${ids}` : `superseded_generation_transfer:${ids}`,
+    );
+    console.error(
+      `[funding] ALERT: transfer intent ${intent.id} (batch ${batch.id}, partner ${intent.partnerId}) has ${matches.length} transfer(s) in its group (${ids}) that do not match its one current key generation (${generation ?? 'unreadable'}) — the partner may have been paid twice; ledger NOT written, operator reconciliation required`,
+    );
+    result.awaitingOperator.push(intent.id);
+    return;
+  }
+
+  if (matches.length === 1) {
     const group = (await db(TABLES.HostedFundingAllocation)
       .where({ batchId: batch.id, partnerId: intent.partnerId })
       .whereIn('state', ['transfer_pending', 'reserved'])) as HostedFundingAllocationRow[];
-    await finalizeTransfer(db, batch, intent, group, match);
+    await finalizeTransfer(db, batch, intent, group, matches[0]!);
     result.transfersConfirmed.push(intent.id);
     return;
   }
-  // Proven absent — safe to re-post on the next tick as a first attempt.
+
+  // NOTHING FOUND. This used to reset the intent to `pending`, reasoning
+  // that the listing "proved" no transfer exists. It proves no such thing
+  // (the direct rail's round-6 finding, docs/direct-connect-payouts.md).
+  // `transfers.list` is accurate about requests Stripe has FINISHED, but it
+  // cannot see a POST still in flight, and stripe-node's timeout is a
+  // socket-inactivity timeout with no wall-clock bound. An empty listing
+  // means UNKNOWN, never ABSENT, and re-posting on it is the double-pay:
+  // the old POST lands while the new one creates a second transfer under a
+  // key Stripe has pruned.
+  //
+  // So the intent stays `reconcile_required` on the same key with its
+  // allocations `transfer_pending`, later ticks keep listing (a straggler
+  // finalizes above), and only an operator may authorise a fresh key
+  // (`releaseFundedTransferForRetry`). The cost is liveness, not money.
+  await holdForOperator(db, intent, AWAITING_OPERATOR);
+  console.error(
+    `[funding] ALERT: transfer intent ${intent.id} (batch ${batch.id}, partner ${intent.partnerId}) found no transfer in its group past the idempotency window — HELD on key generation ${generation ?? 'unreadable'} awaiting an operator; allocations stay transfer_pending. An empty listing does not prove the POST never landed.`,
+  );
+  result.awaitingOperator.push(intent.id);
+}
+
+/** Record why a `reconcile_required` intent is held. Written once per
+ *  reason, so `updatedAt` keeps measuring how long it has been held (the
+ *  daily reconcile's unlinked-intent alert reads it). */
+async function holdForOperator(db: Knex, intent: HostedFundingTransferRow, reason: string): Promise<void> {
   await db(TABLES.HostedFundingTransfer)
-    .where({ id: intent.id, state: 'reconcile_required' })
-    .update({ state: 'pending', postedAt: null, updatedAt: db.fn.now() });
+    .where({ id: intent.id, state: 'reconcile_required', idempotencyKey: intent.idempotencyKey })
+    .whereRaw('"lastError" is distinct from ?', [reason.slice(0, 500)])
+    .update({ lastError: reason.slice(0, 500), updatedAt: db.fn.now() });
+}
+
+/**
+ * Operator path out of a HELD intent: authorise a fresh-key attempt.
+ *
+ * The executor never re-arms by itself (see reconcileIntent). The operator
+ * is asserting what no listing can prove: that no transfer for this
+ * intent exists or ever will. This function refuses on positive evidence
+ * against that: any transfer in the batch's group stamped with this intent
+ * OR paying its destination (metadata is mutable at Stripe; the
+ * destination is not). It then moves the intent back to `pending` on the
+ * NEXT key generation (`fbt:<intentId>:g<N+1>`), because Stripe anchors a
+ * key's retention to its first use and the old key would replay its
+ * stored outcome.
+ *
+ * Fenced on the key the operator observed (generation N), so two
+ * operators, or an operator and a concurrent reconcile, cannot both hand
+ * out a generation. Called by the operator-recovery apply loop (kind
+ * `release_intent_for_retry`, rail `hosted_funding`, target = intent id).
+ */
+export async function releaseFundedTransferForRetry(
+  db: Knex,
+  intentId: string,
+  observedGeneration: number,
+  operator: string,
+  /** REQUIRED — the listing below is the guard, as on the direct rail. */
+  stripe: Stripe,
+): Promise<'rearmed' | 'not_held' | 'generation_moved' | 'transfer_exists' | 'cannot_verify'> {
+  const intent = (await db(TABLES.HostedFundingTransfer).where({ id: intentId }).first()) as
+    | HostedFundingTransferRow
+    | undefined;
+  if (!intent || intent.state !== 'reconcile_required') return 'not_held';
+  const observedKey = fundedTransferKey(intent.id, observedGeneration);
+  if (intent.idempotencyKey !== observedKey) return 'generation_moved';
+
+  const group = await listTransferGroup(stripe, intent.batchId, `OPERATOR ${operator} re-arm of funded transfer ${intentId}`);
+  if (group === 'cannot_verify') return 'cannot_verify';
+  const ours = group.filter((t) => {
+    const destination = typeof t.destination === 'string' ? t.destination : t.destination?.id;
+    return (
+      t.metadata?.openpartner_transfer_intent_id === intent.id || destination === intent.destinationAccountId
+    );
+  });
+  if (ours.length > 0) {
+    console.error(
+      `[funding] OPERATOR ${operator} tried to re-arm transfer intent ${intentId} but ${ours.length} transfer(s) for it exist in batch ${intent.batchId}'s group (${ours
+        .map((t) => t.id)
+        .join(', ')}) — refusing; the executor finalizes a single current-generation match, anything else needs reconciliation`,
+    );
+    return 'transfer_exists';
+  }
+
+  const rearmed = await db(TABLES.HostedFundingTransfer)
+    .where({ id: intentId, state: 'reconcile_required', idempotencyKey: observedKey })
+    .update({
+      state: 'pending',
+      idempotencyKey: fundedTransferKey(intent.id, observedGeneration + 1),
+      postedAt: null,
+      lastError: `operator_rearm:${operator}`.slice(0, 500),
+      updatedAt: db.fn.now(),
+    });
+  if (rearmed === 0) return 'generation_moved';
+  console.error(
+    `[funding] OPERATOR ${operator} re-armed transfer intent ${intentId} at key generation ${observedGeneration + 1} — asserting no transfer exists for it`,
+  );
+  return 'rearmed';
 }
 
 /** The partner's compliance hold, if any. `db` is the privileged pool the
@@ -624,11 +804,4 @@ async function notifyOpsOfHeldTransfers(db: Knex, held: ExecutorResult['heldForC
     }),
     'funded_transfer_compliance_hold',
   );
-}
-
-/** A definite error is one where Stripe RESPONDED (4xx semantics) — the
- *  transfer certainly does not exist. Network/timeout errors are ambiguous. */
-function isDefiniteStripeError(err: unknown): boolean {
-  const e = err as { type?: string; statusCode?: number };
-  return typeof e?.statusCode === 'number' && e.statusCode >= 400 && e.statusCode < 500;
 }

@@ -1591,8 +1591,11 @@ async function casTransferState(
  * Both are therefore treated as ambiguous: the intent stays `posted` and
  * the retry replays the frozen key (or reconciles by listing past the
  * window), which is the only way to learn what really happened.
+ *
+ * Shared with the hosted funding executor (funding/executor.ts), whose
+ * `failed` intents are likewise read as "Stripe refused it".
  */
-function isDefiniteStripeError(err: unknown): boolean {
+export function isDefiniteStripeError(err: unknown): boolean {
   const e = err as { type?: string; rawType?: string; code?: string; statusCode?: number };
   // stripe-node puts the wrapper class name on `type`
   // ('StripeIdempotencyError') and the API's own string on `rawType`
