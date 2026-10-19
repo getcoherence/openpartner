@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router';
 import { ArrowLeft } from 'lucide-react';
 import { api } from '../api.js';
 import { alpha, theme } from '../theme.js';

@@ -1,5 +1,6 @@
 node_modules
 dist
+dist-global
 dist-migrate
 build
 .turbo
@@ -17,3 +18,6 @@ coverage
 .claude/settings.local.json
 *.tsbuildinfo
 .claude/
+
+# Stripe App build output (stripe apps upload)
+stripe-app/.build/

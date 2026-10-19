@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router';
 import { theme } from '../../theme.js';
 import { usePublicBrand } from '../../lib/useBrand.js';
 import { ThemeToggle } from '../../lib/ThemeToggle.js';

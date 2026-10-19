@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { alpha, theme } from '../../theme.js';
 import { AuthFrame } from '../auth/Shared.js';
 import { creatorApi, ApiError } from './creator-api.js';
