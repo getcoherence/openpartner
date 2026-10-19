@@ -68,6 +68,7 @@ function resetStripeApi() {
     'checkout.sessions.retrieve': missing('checkout session'),
     'invoices.retrieve': missing('invoice'),
     'charges.retrieve': missing('charge'),
+    'invoicePayments.list': async () => ({ object: 'list', data: [], has_more: false }),
     'promotionCodes.retrieve': missing('promotion code'),
     'promotionCodes.list': async () => ({ object: 'list', data: [] }),
     'promotionCodes.create': async (p: unknown) => ({ id: 'promo_minted', ...(p as object) }),
@@ -95,6 +96,7 @@ vi.mock('stripe', async () => {
     };
     instance.invoices = { retrieve: call('invoices.retrieve') };
     instance.charges = { retrieve: call('charges.retrieve') };
+    instance.invoicePayments = { list: call('invoicePayments.list') };
     instance.promotionCodes = {
       retrieve: call('promotionCodes.retrieve'),
       list: call('promotionCodes.list'),
@@ -816,6 +818,77 @@ describe.skipIf(skipIntegration)('/webhooks/stripe-app', () => {
 
     // Read-only on customers: the checkout's metadata backfill was skipped.
     expect(stripeApi.calls.some((c) => c.method === 'customers.update')).toBe(false);
+    expect(keysUsed()).toEqual([BRAND_TOKEN]);
+  });
+
+  it('a basil-shaped refund (no charge.invoice) finds the invoice with the brand’s token', async () => {
+    const ids = await seedClick();
+    await seedConnection();
+    await postAppEvent(
+      appEvent('checkout.session.completed', {
+        id: `cs_live_${ulid()}`,
+        object: 'checkout.session',
+        mode: 'subscription',
+        payment_status: 'paid',
+        client_reference_id: ids.clickId,
+        customer: 'cus_brand_basil',
+        subscription: 'sub_brand_basil',
+        total_details: { amount_discount: 0 },
+        metadata: {},
+      }),
+    );
+    // API version 2025-03-31.basil and later: no invoice.charge / payment_intent.
+    const invoiceRes = await postAppEvent(
+      appEvent('invoice.paid', {
+        id: 'in_brand_basil',
+        object: 'invoice',
+        customer: 'cus_brand_basil',
+        amount_paid: 2000,
+        currency: 'usd',
+        billing_reason: 'subscription_create',
+        discounts: [],
+        total_discount_amounts: [],
+      }),
+    );
+    expect(invoiceRes.status).toBe(200);
+    const [commission] = await db(TABLES.Commission);
+    expect(commission).toMatchObject({ amount: '4.00', status: 'accrued' });
+
+    stripeApi.impl['invoicePayments.list'] = async () => ({
+      object: 'list',
+      has_more: false,
+      data: [
+        {
+          id: 'inpay_brand_basil',
+          object: 'invoice_payment',
+          amount_paid: 2000,
+          currency: 'usd',
+          invoice: 'in_brand_basil',
+          payment: { type: 'payment_intent', payment_intent: 'pi_brand_basil' },
+          status: 'paid',
+        },
+      ],
+    });
+    const refund = await postAppEvent(
+      appEvent('charge.refunded', {
+        id: 'ch_brand_basil',
+        object: 'charge',
+        customer: 'cus_brand_basil',
+        payment_intent: 'pi_brand_basil',
+        amount: 2000,
+        amount_captured: 2000,
+        amount_refunded: 2000,
+        currency: 'usd',
+      }),
+    );
+
+    expect(refund.status).toBe(200);
+    expect((await db(TABLES.Commission).where({ id: commission.id }).first()).status).toBe('reversed');
+    const lookup = stripeApi.calls.find((c) => c.method === 'invoicePayments.list');
+    expect(lookup).toMatchObject({
+      key: BRAND_TOKEN,
+      args: [expect.objectContaining({ payment: { type: 'payment_intent', payment_intent: 'pi_brand_basil' } })],
+    });
     expect(keysUsed()).toEqual([BRAND_TOKEN]);
   });
 

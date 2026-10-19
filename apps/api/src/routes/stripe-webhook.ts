@@ -29,7 +29,7 @@ import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
 import { handleFundingEvent, InboxEventHeldError } from '../funding/webhook.js';
 import { mirrorHostedBillingState, type MirroredSubscriptionStatus } from '../billing-plan.js';
 import { getMode } from '../stripe.js';
-import { fromStripeMinor } from '../stripe-amounts.js';
+import { fromStripeMinor, majorToCents, stripeMinorToCents } from '../stripe-amounts.js';
 import { getTenancyMode } from '../tenancy.js';
 import {
   announceRefund,
@@ -1159,8 +1159,12 @@ async function mapStripeEvent(
       // As for customer.subscription.created.
       if (userId !== extractCustomerId(invoice)) await lockMerchantUser(trx, tenantId, userId);
       // `charge` was moved off the Invoice type in recent SDK versions, but the
-      // webhook payload still carries it on older API versions and is useful
-      // for refund lookups. Read it tolerantly.
+      // webhook payload still carries it on API versions before
+      // 2025-03-31.basil and is useful for refund lookups. Read it tolerantly.
+      // A basil or later payload has neither this nor payment_intent.
+      // charge.refunded then finds the invoice through its InvoicePayment
+      // (invoicePaidBy), once per refund, rather than a read here on every
+      // invoice.
       const rawCharge = (invoice as unknown as { charge?: string | { id: string } | null }).charge;
       const chargeId = typeof rawCharge === 'string' ? rawCharge : rawCharge?.id ?? null;
       // Same story for payment_intent. A one-time Checkout's post-payment
@@ -1194,8 +1198,10 @@ async function mapStripeEvent(
         (await resolveUserIdFromCustomer(trx, tenantId, stripe, charge.customer)) ??
         (await userIdForPaymentIntent(trx, tenantId, paymentIntentId));
       if (!userId) return null;
+      // Absent, not null, from API version 2025-03-31.basil on: Stripe moved
+      // the charge → invoice pointer to InvoicePayment (see below).
       const rawInvoice = (charge as unknown as { invoice?: string | { id: string } | null }).invoice;
-      const invoiceId = typeof rawInvoice === 'string' ? rawInvoice : rawInvoice?.id ?? null;
+      let invoiceId = typeof rawInvoice === 'string' ? rawInvoice : rawInvoice?.id ?? null;
 
       // "Full" is measured against what was actually COLLECTED
       // (charge.amount_captured), NOT the intended charge.amount: a $100 auth
@@ -1218,7 +1224,25 @@ async function mapStripeEvent(
 
       // The refunded revenue is the invoice's (a subscription charge) or the
       // PaymentIntent's (a one-time Checkout).
-      const conversions = await conversionsForPayment(trx, tenantId, { invoiceId, paymentIntentId });
+      let conversions = await conversionsForPayment(trx, tenantId, { invoiceId, paymentIntentId });
+      // From 2025-03-31.basil the charge names no invoice, and invoice.paid
+      // names no PaymentIntent to match by (an invoice can take several
+      // payments now). The invoice is the InvoicePayment's. Not read when the
+      // payload says there's no invoice (null) or the PaymentIntent already
+      // matched a purchase.
+      let split: string[] | null = null;
+      if (conversions.length === 0 && !('invoice' in charge) && paymentIntentId) {
+        const paid = await invoicePaidBy(trx, tenantId, stripe, paymentIntentId);
+        if (paid && 'split' in paid) {
+          split = paid.split;
+          console.warn(
+            `[stripe-webhook] refund of ${paymentIntentId}: the payment paid part of an invoice, or several (${split.join(', ')}); commissions left alone — report the refund with POST /attribution/refunds`,
+          );
+        } else if (paid) {
+          invoiceId = paid.invoiceId;
+          conversions = paid.conversions;
+        }
+      }
       // Every refund of a conversion takes this lock first (refunds.ts), so
       // a redelivery of this Stripe event waits for the first delivery and
       // then finds its refund Event: the same id, and commissions that
@@ -1245,6 +1269,10 @@ async function mapStripeEvent(
         metadata: {
           stripeChargeId: charge.id,
           ...(invoiceId ? { stripeInvoiceId: invoiceId } : {}),
+          // Deliberately not stripeInvoiceId: the usage ledger and a later
+          // replay (reapplyRecordedRefunds) would take this charge's refunded
+          // share as the invoice's.
+          ...(split ? { stripeSplitInvoiceIds: split, splitPaymentReversalSkipped: true } : {}),
           ...(paymentIntentId ? { stripePaymentIntentId: paymentIntentId } : {}),
           amountRefunded: charge.amount_refunded,
           ...(collected != null ? { chargeCollected: collected } : {}),
@@ -1341,6 +1369,52 @@ async function conversionsForPayment(
         q.orWhereRaw(`"metadata"->>'stripePaymentIntentId' = ?`, [payment.paymentIntentId]);
       }
     })) as EventRow[];
+}
+
+/**
+ * The invoice a refunded PaymentIntent paid, from its InvoicePayments, for
+ * API versions from 2025-03-31.basil, whose Charge no longer names it.
+ *
+ * A charge's refunded share is its invoice's only when the payment paid
+ * exactly that one invoice, all of it: the only shape earlier versions had,
+ * and what Stripe Billing collecting a subscription invoice still does.
+ * Since basil one payment can pay several invoices, or part of one (with the
+ * rest paid by other payments or out of band). Those come back as `split`:
+ * which invoice a partial refund came out of, and how one payment's refund
+ * adds to another's, isn't something the charge says. "All of it" compares
+ * what the payment paid with the invoice's amount_paid as invoice.paid
+ * recorded it.
+ *
+ * Null when the payment paid no invoice, or the read failed permanently (a
+ * restricted key or Stripe App install that can't read invoices): the refund
+ * is then recorded and reverses nothing, as before this lookup existed.
+ */
+async function invoicePaidBy(
+  trx: Knex.Transaction,
+  tenantId: string,
+  stripe: Stripe,
+  paymentIntentId: string,
+): Promise<{ invoiceId: string; conversions: EventRow[] } | { split: string[] } | null> {
+  const list = await stripeReadOrNull('invoicePayments.list', paymentIntentId, () =>
+    stripe.invoicePayments.list({
+      payment: { type: 'payment_intent', payment_intent: paymentIntentId },
+      status: 'paid',
+      limit: 100,
+    }),
+  );
+  const payments = (list?.data ?? []).filter((p) => {
+    const pi = p.payment?.payment_intent;
+    return p.status === 'paid' && (typeof pi === 'string' ? pi : pi?.id) === paymentIntentId;
+  });
+  const invoiceIds = [...new Set(payments.map((p) => (typeof p.invoice === 'string' ? p.invoice : p.invoice.id)))];
+  if (invoiceIds.length === 0) return null;
+  if (invoiceIds.length > 1) return { split: invoiceIds };
+
+  const invoiceId = invoiceIds[0]!;
+  const conversions = await conversionsForPayment(trx, tenantId, { invoiceId, paymentIntentId: null });
+  const paidCents = payments.reduce((sum, p) => sum + stripeMinorToCents(p.amount_paid ?? 0, p.currency), 0);
+  const partOfInvoice = conversions.some((c) => c.value != null && paidCents < majorToCents(c.value));
+  return partOfInvoice ? { split: [invoiceId] } : { invoiceId, conversions };
 }
 
 async function resolveUserIdFromCustomer(
