@@ -7,7 +7,8 @@
     "moduleResolution": "node10",
     "declaration": false,
     "declarationMap": false,
-    "ignoreDeprecations": "6.0"
+    "ignoreDeprecations": "6.0",
+    "types": ["node"]
   },
   "include": [
     "migrations/**/*.ts",

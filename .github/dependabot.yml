@@ -2,6 +2,16 @@ version: 2
 updates:
   # npm deps across the workspace. Root manifest is the entry point;
   # Dependabot follows workspace:* resolution into apps/* and packages/*.
+  #
+  # Minor and patch updates only. Majors (TypeScript, ESLint, Vitest,
+  # React, …) need config or code changes, so we take them as deliberate
+  # PRs instead (see #160 React Router 7, #161 Vitest 4). Grouping majors
+  # with minors meant one failing major blocked the safe updates in the
+  # same group.
+  #
+  # Trade-off: the ignore rule may also stop Dependabot opening a security
+  # PR when the only fix is a major. The alert still appears under
+  # Security → Dependabot alerts, which is where to look.
   - package-ecosystem: npm
     directory: /
     schedule:
@@ -9,29 +19,37 @@ updates:
       day: monday
     open-pull-requests-limit: 5
     labels: [dependencies]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       typescript:
+        update-types: [minor, patch]
         patterns:
           - typescript
           - "@types/*"
           - typescript-eslint
           - "@typescript-eslint/*"
       eslint:
+        update-types: [minor, patch]
         patterns:
           - eslint
           - eslint-*
           - "@eslint/*"
       vitest:
+        update-types: [minor, patch]
         patterns:
           - vitest
           - "@vitest/*"
       react:
+        update-types: [minor, patch]
         patterns:
           - react
           - react-dom
           - react-router
           - "@tanstack/react-query"
       knex:
+        update-types: [minor, patch]
         patterns:
           - knex
           - pg
@@ -39,7 +57,9 @@ updates:
 
   # Pin our GitHub Actions via SHA? No — we accept the maintenance churn
   # for the paper-trail clarity of SemVer tags. Weekly PRs keep us close
-  # to the action authors' security fixes.
+  # to the action authors' security fixes. Majors stay on here: each is a
+  # one-line change that CI exercises (the docker publish steps run on
+  # main, so watch main's CI after merging one).
   - package-ecosystem: github-actions
     directory: /
     schedule:
