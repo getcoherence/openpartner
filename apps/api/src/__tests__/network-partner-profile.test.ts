@@ -7,6 +7,8 @@
  *   GET    /network/me/platforms            → GET    /creators/me/platforms
  *   PUT    /network/me/platforms/:platform  → PUT    /creators/me/platforms/:platform
  *   DELETE /network/me/platforms/:platform  → DELETE /creators/me/platforms/:platform
+ *   POST   /network/me/platforms/:platform/verify/start → same path on the Network
+ *   POST   /network/me/platforms/:platform/verify       → same path on the Network
  *   POST   /network/me/uploads/avatar       → POST   /creators/me/uploads/avatar (raw image)
  *
  * Each acts as the signed-in partner (vendor bearer + x-act-as-vendor-partner),
@@ -222,6 +224,28 @@ describe.skipIf(skipIntegration)('platform proxies', () => {
     expect(res.body.error).toBe('network_call_failed');
   });
 
+  it('starts and checks account verification as the partner', async () => {
+    nextResponse = { status: 200, body: { platform: 'youtube', method: 'bio_code', code: '012345' } };
+    const start = await request(app).post('/network/me/platforms/youtube/verify/start').set('Cookie', cookie).send({});
+    expect(start.status).toBe(200);
+    expect(start.body.code).toBe('012345');
+    expectActingCall(calls[0], 'POST', '/creators/me/platforms/youtube/verify/start');
+
+    nextResponse = { status: 200, body: { ok: true, platform: { platform: 'youtube', verified: true } } };
+    const check = await request(app).post('/network/me/platforms/youtube/verify').set('Cookie', cookie).send({});
+    expect(check.status).toBe(200);
+    expect(check.body.platform.verified).toBe(true);
+    expectActingCall(calls[1], 'POST', '/creators/me/platforms/youtube/verify');
+  });
+
+  it('passes a failed check through with the Network’s reason', async () => {
+    nextResponse = { status: 409, body: { error: 'code_not_found', detail: 'Code 012345 is not in the channel description yet.' } };
+    const res = await request(app).post('/network/me/platforms/youtube/verify').set('Cookie', cookie).send({});
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('network_call_failed');
+    expect(JSON.parse(res.body.detail)).toMatchObject({ error: 'code_not_found' });
+  });
+
   it('refuses a platform segment that could leave the platforms path', async () => {
     const res = await request(app).delete('/network/me/platforms/..%2F..%2Fdelete').set('Cookie', cookie);
     expect(res.status).toBe(400);
@@ -262,6 +286,8 @@ describe.skipIf(skipIntegration)('auth', () => {
       () => request(app).get('/network/me/platforms'),
       () => request(app).put('/network/me/platforms/youtube').send({ handle: 'x' }),
       () => request(app).delete('/network/me/platforms/youtube'),
+      () => request(app).post('/network/me/platforms/youtube/verify/start').send({}),
+      () => request(app).post('/network/me/platforms/youtube/verify').send({}),
       () => request(app).post('/network/me/uploads/avatar').set('content-type', 'image/png').send(Buffer.from([1])),
     ];
     for (const route of routes) {
@@ -283,6 +309,11 @@ describe.skipIf(skipIntegration)('acting as a partner needs their Network consen
     expect(res.body.error).toBe('network_consent_required');
     const apply = await request(app).post('/network/offerings/off_1/apply').set('Cookie', cookie).send({});
     expect(apply.status).toBe(403);
+    for (const path of ['/network/me/platforms/youtube/verify/start', '/network/me/platforms/youtube/verify']) {
+      const verify = await request(app).post(path).set('Cookie', cookie).send({});
+      expect(verify.status).toBe(403);
+      expect(verify.body.error).toBe('network_consent_required');
+    }
     expect(calls).toHaveLength(0);
   });
 
