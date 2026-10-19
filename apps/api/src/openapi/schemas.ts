@@ -15,7 +15,7 @@
  */
 
 import { z } from 'zod';
-import { ATTRIBUTION_MODELS, COMMISSION_STATUSES, PAYOUT_METHODS, PAYOUT_STATUSES } from './enums.js';
+import { ATTRIBUTION_MODELS, BONUS_SOURCES, COMMISSION_STATUSES, PAYOUT_METHODS, PAYOUT_STATUSES } from './enums.js';
 import { commissionBandsSchema, commissionTiersSchema } from '../commission-rule-schema.js';
 
 import './registry.js'; // extendZodWithOpenApi before any .openapi() call
@@ -435,7 +435,10 @@ export const CouponRedeemResult = z
 const CommissionRowShape = z.object({
   id,
   tenantId: id,
-  attributionId: id,
+  attributionId: id.nullable().openapi({
+    description: "The attributed sale this commission was earned on. Null on a bonus's commission (`bonusId` is set instead).",
+  }),
+  bonusId: id.nullable().openapi({ description: "The bonus this commission pays (`POST /bonuses`). Null on a sale's commission." }),
   partnerId: id,
   amount: Decimal,
   currency: z.string(),
@@ -459,11 +462,65 @@ export const CommissionListItem = CommissionRowShape.extend({
   programId: z.string().nullable(),
   campaignName: z.string().nullable().openapi({ description: 'The program\'s name (kept under its pre-rename key).' }),
   matureAt: tsNullable.openapi({ description: 'When the holdback ends and the commission becomes approvable. Null = no holdback.' }),
+  source: z.enum(['attribution', 'bonus']).openapi({
+    description: '`attribution`: earned on an attributed sale. `bonus`: pays a bonus, with no event or click behind it.',
+  }),
+  bonus: z
+    .object({
+      id,
+      source: z.enum(BONUS_SOURCES),
+      note: z.string().nullable().openapi({ description: 'Shown to the partner.' }),
+      bountyId: id.nullable(),
+      bountyName: z.string().nullable().openapi({ description: "The performance bounty's name, when a bounty paid it." }),
+    })
+    .nullable()
+    .openapi({ description: 'The bonus behind a `source: "bonus"` commission; null otherwise.' }),
 }).openapi('CommissionListItem');
 
 export const CommissionPage = z
   .object({ commissions: z.array(CommissionListItem), nextCursor: z.string().nullable() })
   .openapi('CommissionPage');
+
+export const Bonus = z
+  .object({
+    id,
+    tenantId: id,
+    partnerId: id,
+    programId: id.nullable(),
+    amount: Decimal,
+    currency: z.string(),
+    source: z.enum(BONUS_SOURCES).openapi({
+      description:
+        "`manual`: paid with `POST /bonuses` (an admin or your integration). `network`: an OpenPartner Network bounty, paid with the Network's federation key. `performance_bounty`: the partner reached a bounty's goal. New values may be added.",
+    }),
+    bountyId: id.nullable(),
+    externalRef: z.string().nullable(),
+    note: z.string().nullable(),
+    createdBy: z.string().nullable().openapi({ description: 'The admin or API key that paid it; null for a performance bounty.' }),
+    createdAt: ts,
+  })
+  .openapi('Bonus');
+
+export const BonusAwarded = z
+  .object({
+    replayed: z.literal(true).optional().openapi({ description: 'Set on a replay of an `externalRef` already used: the original bonus.' }),
+    bonus: Bonus,
+    commission: Commission,
+  })
+  .openapi('BonusAwarded');
+
+export const BonusListItem = Bonus.extend({
+  commission: z.object({
+    id,
+    status: z.enum(COMMISSION_STATUSES),
+    payoutId: z.string().nullable(),
+    paidAt: tsNullable,
+  }),
+}).openapi('BonusListItem');
+
+export const BonusPage = z
+  .object({ bonuses: z.array(BonusListItem), nextCursor: z.string().nullable() })
+  .openapi('BonusPage');
 
 export const Payout = z
   .object({
@@ -708,6 +765,10 @@ export const NetworkMembership = z
     autoEnroll: z.boolean().openapi({
       description:
         'Stored name for "offer the Network to my partners". When `enabled && autoEnroll`, partners are asked whether to join, and only those who opt in are shared (name and email; never `metadata`).',
+    }),
+    bonusesAuthorized: z.boolean().openapi({
+      description:
+        "The Network's federation key holds `bonuses:write`, so OpenPartner Network bounties can pay your partners through `POST /bonuses`. Keys from before Network bounties don't: `POST /config/network/authorize-bonuses` adds it.",
     }),
   })
   .openapi('NetworkMembership');

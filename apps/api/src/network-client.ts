@@ -65,7 +65,13 @@ interface PublicNetworkMembership {
   hasVendorToken: boolean;
   scopedKeyId: string | null;
   autoEnroll: boolean;
+  /** The Network's key may pay bonuses (`bonuses:write`). Keys issued
+   *  before Network bounties lack it until the brand re-authorizes. */
+  bonusesAuthorized: boolean;
 }
+
+/** The scope POST /bonuses needs; part of NETWORK_FEDERATION_SCOPES. */
+export const NETWORK_BONUS_SCOPE = 'bonuses:write';
 
 export async function getNetworkMembership(
   db: Knex,
@@ -81,7 +87,14 @@ export async function getPublicNetworkMembership(
 ): Promise<PublicNetworkMembership> {
   const m = await getNetworkMembership(db, tenantId);
   if (!m) {
-    return { enabled: false, networkUrl: '', hasVendorToken: false, scopedKeyId: null, autoEnroll: false };
+    return {
+      enabled: false,
+      networkUrl: '',
+      hasVendorToken: false,
+      scopedKeyId: null,
+      autoEnroll: false,
+      bonusesAuthorized: false,
+    };
   }
   return {
     enabled: m.enabled,
@@ -89,7 +102,48 @@ export async function getPublicNetworkMembership(
     hasVendorToken: !!m.vendorTokenCiphertext,
     scopedKeyId: m.scopedKeyId,
     autoEnroll: m.autoEnroll,
+    bonusesAuthorized: await federationKeyHasScope(db, tenantId, m.scopedKeyId, NETWORK_BONUS_SCOPE),
   };
+}
+
+/** Does the live federation key hold `scope`? A null-scoped (full admin)
+ *  key holds everything. */
+export async function federationKeyHasScope(
+  db: Knex,
+  tenantId: string,
+  scopedKeyId: string | null,
+  scope: string,
+): Promise<boolean> {
+  if (!scopedKeyId) return false;
+  const key = (await db(TABLES.ApiKey)
+    .where({ id: scopedKeyId, tenantId })
+    .whereNull('revokedAt')
+    .first('scopes')) as { scopes: string[] | null } | undefined;
+  if (!key) return false;
+  return key.scopes === null || key.scopes.includes(scope);
+}
+
+/**
+ * Add `scope` to the brand's live federation key, in place: the Network
+ * keeps calling with the key it has, now allowed to do one more thing.
+ * Federation keys issued before a scope joined NETWORK_FEDERATION_SCOPES
+ * lack it, and this side has no way to hand the Network a re-issued key.
+ * Returns false when there is no live federation key.
+ */
+export async function grantFederationScope(db: Knex, tenantId: string, scope: string): Promise<boolean> {
+  const m = await getNetworkMembership(db, tenantId);
+  if (!m?.scopedKeyId) return false;
+  const key = (await db(TABLES.ApiKey)
+    .where({ id: m.scopedKeyId, tenantId })
+    .whereNull('revokedAt')
+    .forUpdate()
+    .first('id', 'scopes')) as { id: string; scopes: string[] | null } | undefined;
+  if (!key) return false;
+  if (key.scopes === null || key.scopes.includes(scope)) return true;
+  await db(TABLES.ApiKey)
+    .where({ id: key.id, tenantId })
+    .update({ scopes: JSON.stringify([...key.scopes, scope]) as unknown as never });
+  return true;
 }
 
 export interface SaveNetworkMembershipInput {
@@ -1052,6 +1106,16 @@ export const partnerProxy = {
     }),
   deleteMyPlatform: (db: Knex, tenantId: string, vendorPartnerId: string, platform: string) =>
     callNetwork<{ ok: boolean }>(db, tenantId, 'DELETE', `/creators/me/platforms/${encodeURIComponent(platform)}`, undefined, {
+      actingVendorPartnerId: vendorPartnerId,
+    }),
+  // Account verification (YouTube description code, website DNS TXT):
+  // start issues the code, verify checks it. Network-side logic only.
+  startPlatformVerification: (db: Knex, tenantId: string, vendorPartnerId: string, platform: string) =>
+    callNetwork<unknown>(db, tenantId, 'POST', `/creators/me/platforms/${encodeURIComponent(platform)}/verify/start`, {}, {
+      actingVendorPartnerId: vendorPartnerId,
+    }),
+  checkPlatformVerification: (db: Knex, tenantId: string, vendorPartnerId: string, platform: string) =>
+    callNetwork<unknown>(db, tenantId, 'POST', `/creators/me/platforms/${encodeURIComponent(platform)}/verify`, {}, {
       actingVendorPartnerId: vendorPartnerId,
     }),
   uploadMyAvatar: (db: Knex, tenantId: string, vendorPartnerId: string, image: Buffer, contentType: string) =>

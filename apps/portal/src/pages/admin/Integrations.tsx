@@ -399,18 +399,174 @@ function StripeAppCard() {
                 Disconnect
               </button>
             </div>
-            <p style={{ fontSize: 12, color: theme.textMuted, margin: '12px 0 0', lineHeight: 1.55 }}>
-              Stop forwarding Stripe payments to <code>/attribution/events</code>,{' '}
-              <code>/attribution/conversions</code> or <code>/coupons/redeem</code>: one keyed on a Stripe invoice
-              or Checkout Session id now returns <code>409 recorded_from_stripe</code>. To credit a customer,
-              pass the click id as <code>client_reference_id</code> at Checkout, or set{' '}
-              <code>metadata.openpartner_user_id</code> on the Stripe Customer to the user id you identify.
-            </p>
+            <StripeCheckoutGuide rewards={conn.rewards} />
           </>
         )}
       </Card>
       <div style={{ height: 18 }} />
     </>
+  );
+}
+
+type CheckoutPath = 'payment_link' | 'site' | 'server' | 'codes';
+
+const CHECKOUT_PATHS: Array<{ key: CheckoutPath; label: string; effort: string }> = [
+  { key: 'payment_link', label: 'A partner link goes straight to a Stripe Payment Link', effort: 'No code' },
+  { key: 'site', label: 'Payment Links, a Pricing Table or a Buy Button on my website', effort: 'One script tag' },
+  { key: 'server', label: 'My app creates the Stripe Checkout Session', effort: 'Script tag + one line' },
+  { key: 'codes', label: 'Customers type a partner’s promo code at checkout', effort: 'No code' },
+];
+
+/**
+ * What a connected brand still has to do: get the partner click into
+ * Stripe once. Stripe never sees the brand's website, so the click can't
+ * reach it any other way; everything after that (invoices, renewals,
+ * refunds) the app records on its own. Shows only the path that matches
+ * how the brand takes payment, from nothing at all to one line.
+ */
+function StripeCheckoutGuide({ rewards }: { rewards: boolean }) {
+  const { apiBase } = useApiBase();
+  const origin = typeof window === 'undefined' ? 'https://your-instance' : window.location.origin;
+  const [path, setPath] = useState<CheckoutPath | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const scriptTag = `<script src="${origin}/op.js" data-api-url="${apiBase}"></script>`;
+  const serverLine = `const session = await stripe.checkout.sessions.create({
+  // ...your existing options
+  client_reference_id: req.cookies.op_ref, // the partner click, if the visitor had one
+});`;
+
+  const copy = (text: string) => {
+    navigator.clipboard.writeText(text).then(
+      () => setCopied(text),
+      () => {},
+    );
+  };
+  const snippet = (text: string) => (
+    <div style={{ position: 'relative', marginTop: 8 }}>
+      <pre style={{ ...preBlock, paddingRight: 70, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{text}</pre>
+      <button
+        type="button"
+        onClick={() => copy(text)}
+        style={{
+          position: 'absolute',
+          top: 8,
+          right: 8,
+          background: theme.surface,
+          border: `1px solid ${theme.borderSubtle}`,
+          borderRadius: 4,
+          padding: '2px 8px',
+          fontSize: 11,
+          color: theme.textMuted,
+          cursor: 'pointer',
+        }}
+      >
+        {copied === text ? 'Copied' : 'Copy'}
+      </button>
+    </div>
+  );
+  const body = { fontSize: 13, color: theme.textMuted, margin: '10px 0 0', lineHeight: 1.55 } as const;
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div style={{ fontSize: 14, fontWeight: 500, color: theme.text }}>Credit partners for Stripe checkouts</div>
+      <p style={{ ...body, marginTop: 4 }}>
+        Stripe can&rsquo;t see which partner sent a customer, so the partner click has to reach
+        Stripe once. After that, the customer&rsquo;s invoices, renewals and refunds are recorded
+        on their own. How do customers pay you?
+      </p>
+      <div role="radiogroup" aria-label="How customers pay" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+        {CHECKOUT_PATHS.map((p) => (
+          <button
+            key={p.key}
+            type="button"
+            role="radio"
+            aria-checked={path === p.key}
+            onClick={() => setPath(p.key)}
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 12,
+              flexWrap: 'wrap',
+              textAlign: 'left',
+              padding: '9px 12px',
+              borderRadius: theme.radiusSm,
+              border: `1px solid ${path === p.key ? theme.accentA55 : theme.borderSubtle}`,
+              background: path === p.key ? theme.accentA10 : theme.surface2,
+              color: theme.text,
+              fontSize: 13,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            <span>{p.label}</span>
+            <span style={{ fontSize: 11, color: theme.textDim }}>{p.effort}</span>
+          </button>
+        ))}
+      </div>
+
+      {path === 'payment_link' && (
+        <div style={body}>
+          Nothing to install. In <strong>Programs → Edit</strong>, set the program&rsquo;s Destination URL to
+          your Payment Link with the click id on the end:
+          {snippet('https://buy.stripe.com/your-link?client_reference_id={click_id}')}
+          <span style={{ display: 'block', marginTop: 8 }}>
+            Write <code style={codeInline}>{'{click_id}'}</code> exactly like that; each partner link fills in its own click.
+          </span>
+        </div>
+      )}
+      {path === 'site' && (
+        <div style={body}>
+          Paste this into your site&rsquo;s <code style={codeInline}>&lt;head&gt;</code> on every page, above
+          Stripe&rsquo;s own embed script. That&rsquo;s all: it adds the partner click to every{' '}
+          <code style={codeInline}>buy.stripe.com</code> link and to Stripe Pricing Table and Buy Button embeds.
+          {snippet(scriptTag)}
+          <span style={{ display: 'block', marginTop: 8 }}>
+            Payment Links on your own domain? Add <code style={codeInline}>data-stripe-hosts=&quot;pay.yourbrand.com&quot;</code> to the tag.
+          </span>
+        </div>
+      )}
+      {path === 'server' && (
+        <div style={body}>
+          First paste this into your site&rsquo;s <code style={codeInline}>&lt;head&gt;</code> on every page. It
+          keeps the partner click in a cookie on your own domain, <code style={codeInline}>op_ref</code>:
+          {snippet(scriptTag)}
+          <span style={{ display: 'block', marginTop: 10 }}>
+            Then add one line where your server creates the Checkout Session:
+          </span>
+          {snippet(serverLine)}
+          <span style={{ display: 'block', marginTop: 8 }}>
+            Visitors land on one subdomain and check out on another (<code style={codeInline}>www.</code> and{' '}
+            <code style={codeInline}>app.</code>)? Add <code style={codeInline}>data-cookie-domain=&quot;.yourbrand.com&quot;</code> to the tag.
+          </span>
+        </div>
+      )}
+      {path === 'codes' && (
+        <div style={body}>
+          {rewards ? (
+            <>
+              Nothing to install, as long as the program offers a customer discount (Programs → Edit). Each
+              partner&rsquo;s code is then created in your Stripe, and a purchase that uses it credits that
+              partner.
+            </>
+          ) : (
+            <>
+              Codes need the promotion-code permissions, which this connection doesn&rsquo;t have. Reconnect
+              Stripe and accept them, then give the program a customer discount (Programs → Edit).
+            </>
+          )}{' '}
+          Make sure promotion codes are allowed at your checkout: the Payment Link&rsquo;s{' '}
+          <em>Allow promotion codes</em> setting, or <code style={codeInline}>allow_promotion_codes: true</code> on
+          the Checkout Session.
+        </div>
+      )}
+
+      <p style={{ fontSize: 12, color: theme.textDim, margin: '14px 0 0', lineHeight: 1.55 }}>
+        Stop forwarding Stripe payments to <code>/attribution/events</code>,{' '}
+        <code>/attribution/conversions</code> or <code>/coupons/redeem</code>: one keyed on a Stripe invoice or
+        Checkout Session id now returns <code>409 recorded_from_stripe</code>.
+      </p>
+    </div>
   );
 }
 

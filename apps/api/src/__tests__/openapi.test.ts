@@ -53,6 +53,7 @@ const DOCUMENTED_ROUTERS: Record<string, Router> = {
   clicks: (await import('../routes/clicks.js')).clicksRouter,
   coupons: (await import('../routes/coupons.js')).couponsRouter,
   commissions: (await import('../routes/commissions.js')).commissionsRouter,
+  bonuses: (await import('../routes/bonuses.js')).bonusesRouter,
   payouts: (await import('../routes/payouts.js')).payoutsRouter,
   dashboard: (await import('../routes/dashboard.js')).dashboardRouter,
   funnel: (await import('../routes/funnel.js')).funnelRouter,

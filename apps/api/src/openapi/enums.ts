@@ -5,7 +5,7 @@
  * updating the list.
  */
 
-import type { AttributionModel, CommissionStatus, PayoutMethod, PayoutStatus } from '@openpartner/db';
+import type { AttributionModel, BonusSource, CommissionStatus, PayoutMethod, PayoutStatus } from '@openpartner/db';
 
 type Exhaustive<Union extends string, List extends readonly Union[]> = [Union] extends [List[number]] ? List : never;
 
@@ -17,3 +17,4 @@ export const ATTRIBUTION_MODELS = exhaustive<AttributionModel>()(['last_click', 
 export const COMMISSION_STATUSES = exhaustive<CommissionStatus>()(['accrued', 'approved', 'paid', 'reversed']);
 export const PAYOUT_METHODS = exhaustive<PayoutMethod>()(['stripe_connect', 'manual', 'external']);
 export const PAYOUT_STATUSES = exhaustive<PayoutStatus>()(['pending', 'paid', 'failed', 'partially_reversed', 'reversed']);
+export const BONUS_SOURCES = exhaustive<BonusSource>()(['manual', 'performance_bounty', 'network']);

@@ -5,11 +5,12 @@
  * proxy (which runs anonymously for that route).
  */
 import { useQuery } from '@tanstack/react-query';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import { ExternalLink, Globe } from 'lucide-react';
 import { Card, ErrorBanner, EmptyState } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { ThemeToggle } from '../../lib/ThemeToggle.js';
+import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
 import { creatorApi, ApiError } from './creator-api.js';
 import { audienceSizeLabel } from '@openpartner/db';
 
@@ -142,7 +143,10 @@ export function CreatorPublicProfilePage() {
                   <div style={{ width: 100, fontSize: 13, color: theme.textMuted }}>
                     {PLATFORM_LABELS[p.platform] ?? p.platform}
                   </div>
-                  <div style={{ flex: 1, fontFamily: theme.fontMono, fontSize: 13 }}>{p.handle}</div>
+                  <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontFamily: theme.fontMono, fontSize: 13 }}>{p.handle}</span>
+                    {p.verified && <VerifiedBadge />}
+                  </div>
                   {p.followerCount != null && (
                     <div style={{ fontSize: 13, color: theme.textMuted }}>
                       {p.followerCount.toLocaleString()} followers

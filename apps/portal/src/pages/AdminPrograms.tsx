@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { HelpCircle, Plus, Tag } from 'lucide-react';
 import { api } from '../api.js';
 import { alpha, theme } from '../theme.js';
+import { TenantLink } from '../tenant-link.js';
 import { useBrand } from '../lib/useBrand.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
@@ -167,6 +168,12 @@ export function AdminPrograms() {
                 >
                   Edit
                 </button>
+                <TenantLink
+                  to={`/admin/programs/${c.id}/bounties`}
+                  style={{ ...smallActionStyle(theme.textMuted), border: `1px solid ${alpha(theme.textMuted, 0.333)}`, textDecoration: 'none' }}
+                >
+                  Bounties
+                </TenantLink>
                 {status !== 'ended' && (
                   <button
                     type="button"
@@ -230,6 +237,8 @@ function EditProgramDates({
 }) {
   const [startsAt, setStartsAt] = useState(campaign.startsAt ? toDateTimeLocal(campaign.startsAt) : '');
   const [endsAt, setEndsAt] = useState(campaign.endsAt ? toDateTimeLocal(campaign.endsAt) : '');
+  const [destinationUrl, setDestinationUrl] = useState(campaign.destinationUrl ?? '');
+  const [deepLinkDomains, setDeepLinkDomains] = useState(campaign.deepLinkAllowedDomains ?? '');
   const [rules, setRules] = useState<CommissionSubRule[]>(normalizeRules(campaign.commissionRule));
   const [customerReward, setCustomerReward] = useState<CustomerReward | null>(campaign.customerReward);
   const { whiteLabel } = useBrand();
@@ -256,6 +265,9 @@ function EditProgramDates({
         body: {
           startsAt: startsAt ? new Date(startsAt).toISOString() : null,
           endsAt: endsAt ? new Date(endsAt).toISOString() : null,
+          destinationUrl: destinationUrl.trim(),
+          // null clears the list: deep links then stay locked to the destination.
+          deepLinkAllowedDomains: deepLinkDomains.trim() || null,
           commissionRule: rules,
           customerReward,
           shareOnNetwork,
@@ -302,6 +314,17 @@ function EditProgramDates({
           </div>
         </div>
       </div>
+
+      <div style={{ fontSize: 12, color: theme.textMuted, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: 8 }}>
+        Destination
+      </div>
+      <DestinationFields
+        destinationUrl={destinationUrl}
+        onDestinationChange={setDestinationUrl}
+        deepLinkDomains={deepLinkDomains}
+        onDeepLinkDomainsChange={setDeepLinkDomains}
+        editing
+      />
 
       <div style={{ fontSize: 12, color: theme.textMuted, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
         Terms
@@ -367,6 +390,8 @@ function EditProgramDates({
           onClick={() => save.mutate()}
           disabled={
             save.isPending ||
+            !destinationUrl.trim() ||
+            destinationUrlProblem(destinationUrl) !== null ||
             rules.length === 0 ||
             rules.some(ruleEventTypeMissing) ||
             rules.some((r) => ruleSlabProblem(r) !== null) ||
@@ -485,18 +510,7 @@ function CreateProgram({
   const [endsAt, setEndsAt] = useState('');
   const [grantToAllPartners, setGrantToAllPartners] = useState(false);
 
-  // The API requires a full URL (z.string().url()) — surface that next to
-  // the field instead of a bare 400 after submit. First real-world trip-up:
-  // typing "yourbrand.com" without the scheme, so offer the one-click fix.
   const urlProblem = destinationUrlProblem(destinationUrl);
-  const schemeFix =
-    urlProblem && /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(destinationUrl.trim())
-      ? `https://${destinationUrl.trim()}`
-      : null;
-  // Saveable, but a Stripe Payment Link without client_reference_id={click_id}
-  // never hands Stripe the click. Same check the API answers with `warnings`.
-  const urlWarning = !urlProblem && destinationUrl.trim() ? clickDestinationWarning(destinationUrl.trim()) : null;
-  const stripeFix = urlWarning ? withClientReferenceMacro(destinationUrl.trim()) : null;
 
   const mut = useMutation({
     mutationFn: () =>
@@ -541,66 +555,12 @@ function CreateProgram({
         <Label>Name</Label>
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Default" />
       </div>
-      <div style={{ marginBottom: 14 }}>
-        <Label>Destination URL</Label>
-        <Input
-          type="url"
-          value={destinationUrl}
-          onChange={(e) => setDestinationUrl(e.target.value)}
-          placeholder="https://yourbrand.com/landing-page"
-        />
-        {urlProblem ? (
-          <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>
-            {urlProblem}
-            {schemeFix && (
-              <>
-                {' '}
-                <button
-                  type="button"
-                  onClick={() => setDestinationUrl(schemeFix)}
-                  style={{ background: 'none', border: 'none', color: theme.accentText, cursor: 'pointer', padding: 0, fontSize: 12, textDecoration: 'underline' }}
-                >
-                  Use {schemeFix}
-                </button>
-              </>
-            )}
-          </div>
-        ) : urlWarning ? (
-          <div style={{ fontSize: 12, color: theme.warn, marginTop: 4 }}>
-            {urlWarning}
-            {stripeFix && (
-              <>
-                {' '}
-                <button
-                  type="button"
-                  onClick={() => setDestinationUrl(stripeFix)}
-                  style={{ background: 'none', border: 'none', color: theme.accentText, cursor: 'pointer', padding: 0, fontSize: 12, textDecoration: 'underline' }}
-                >
-                  Add it
-                </button>
-              </>
-            )}
-          </div>
-        ) : (
-          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
-            Where partner share-links for this campaign land. Partners can&rsquo;t change this unless you allow deep links below.
-            The click id is added as <code>?cref=</code>; to send it in your own parameter, put{' '}
-            <code>{'{click_id}'}</code> where it goes, e.g. a Stripe Payment Link&rsquo;s{' '}
-            <code>{'?client_reference_id={click_id}'}</code>.
-          </div>
-        )}
-      </div>
-      <div style={{ marginBottom: 14 }}>
-        <Label>Allowed deep-link domains (optional)</Label>
-        <Input
-          value={deepLinkDomains}
-          onChange={(e) => setDeepLinkDomains(e.target.value)}
-          placeholder="yourbrand.com,docs.yourbrand.com"
-        />
-        <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
-          Comma-separated host list. Partners can override the destination on share-links as long as their override matches one of these. Leave blank to lock destinations.
-        </div>
-      </div>
+      <DestinationFields
+        destinationUrl={destinationUrl}
+        onDestinationChange={setDestinationUrl}
+        deepLinkDomains={deepLinkDomains}
+        onDeepLinkDomainsChange={setDeepLinkDomains}
+      />
       <CompoundRuleEditor rules={rules} onChange={setRules} />
       <CustomerRewardEditor reward={customerReward} delivery={rewardDelivery} onChange={setCustomerReward} />
       <PartnerCodeCustomizationField
@@ -1253,6 +1213,114 @@ function CustomerRewardEditor({
 /** Mirror of the API's destination check (z.string().url() plus the
  *  {click_id} macro rules) so the form explains the rule instead of
  *  bouncing a 400. Null = fine (empty is gated separately). */
+/**
+ * Destination URL + allowed deep-link domains, shared by the create and
+ * edit forms so both run the same checks and hints.
+ *
+ * `editing` adds what changing a live program's destination means: share
+ * links without their own deep link resolve the program's destination at
+ * click time, so the change applies to every such link at once.
+ */
+function DestinationFields({
+  destinationUrl,
+  onDestinationChange,
+  deepLinkDomains,
+  onDeepLinkDomainsChange,
+  editing = false,
+}: {
+  destinationUrl: string;
+  onDestinationChange: (v: string) => void;
+  deepLinkDomains: string;
+  onDeepLinkDomainsChange: (v: string) => void;
+  editing?: boolean;
+}) {
+  // The API requires a full URL (z.string().url()) — surface that next to
+  // the field instead of a bare 400 after submit. First real-world trip-up:
+  // typing "yourbrand.com" without the scheme, so offer the one-click fix.
+  const urlProblem = destinationUrlProblem(destinationUrl);
+  const schemeFix =
+    urlProblem && /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(destinationUrl.trim())
+      ? `https://${destinationUrl.trim()}`
+      : null;
+  // Saveable, but a Stripe Payment Link without client_reference_id={click_id}
+  // never hands Stripe the click. Same check the API answers with `warnings`.
+  const urlWarning = !urlProblem && destinationUrl.trim() ? clickDestinationWarning(destinationUrl.trim()) : null;
+  const stripeFix = urlWarning ? withClientReferenceMacro(destinationUrl.trim()) : null;
+  const fixButton = {
+    background: 'none',
+    border: 'none',
+    color: theme.accentText,
+    cursor: 'pointer',
+    padding: 0,
+    fontSize: 12,
+    textDecoration: 'underline',
+  } as const;
+
+  return (
+    <>
+      <div style={{ marginBottom: 14 }}>
+        <Label>Destination URL</Label>
+        <Input
+          type="url"
+          value={destinationUrl}
+          onChange={(e) => onDestinationChange(e.target.value)}
+          placeholder="https://yourbrand.com/landing-page"
+        />
+        {urlProblem ? (
+          <div style={{ fontSize: 12, color: theme.danger, marginTop: 4 }}>
+            {urlProblem}
+            {schemeFix && (
+              <>
+                {' '}
+                <button type="button" onClick={() => onDestinationChange(schemeFix)} style={fixButton}>
+                  Use {schemeFix}
+                </button>
+              </>
+            )}
+          </div>
+        ) : urlWarning ? (
+          <div style={{ fontSize: 12, color: theme.warn, marginTop: 4 }}>
+            {urlWarning}
+            {stripeFix && (
+              <>
+                {' '}
+                <button type="button" onClick={() => onDestinationChange(stripeFix)} style={fixButton}>
+                  Add it
+                </button>
+              </>
+            )}
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+            Where partner share-links for this campaign land. Partners can&rsquo;t change this unless you allow deep links below.
+            The click id is added as <code>?cref=</code>; to send it in your own parameter, put{' '}
+            <code>{'{click_id}'}</code> where it goes, e.g. a Stripe Payment Link&rsquo;s{' '}
+            <code>{'?client_reference_id={click_id}'}</code>.
+            {editing && (
+              <>
+                {' '}A change applies at once to every share-link without its own deep link; links a
+                partner deep-linked elsewhere keep their destination.
+              </>
+            )}
+          </div>
+        )}
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <Label>Allowed deep-link domains (optional)</Label>
+        <Input
+          value={deepLinkDomains}
+          onChange={(e) => onDeepLinkDomainsChange(e.target.value)}
+          placeholder="yourbrand.com,docs.yourbrand.com"
+        />
+        <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+          Comma-separated host list. Partners can override the destination on share-links as long as their override matches one of these. Leave blank to lock destinations.
+          {editing && <> Clearing it doesn&rsquo;t change share-links already deep-linked.</>}
+        </div>
+      </div>
+    </>
+  );
+}
+
 function destinationUrlProblem(value: string): string | null {
   const v = value.trim();
   if (!v) return null;

@@ -13,6 +13,16 @@
  * brands). The job is safe to re-run; the WHERE clause is the source
  * of truth and a no-op once everything's been swept.
  *
+ * A bonus's commission (bonuses.ts) has no Attribution: its program, and
+ * so its holdback, comes through Bonus.programId. A bonus with no program
+ * takes the partner-wide holdback, or waits for an admin like any
+ * commission with none.
+ *
+ * A performance bounty's bonus is re-checked first (docs/bounties.md §7):
+ * if refunds have taken the partner back under the bounty's goal since it
+ * was awarded, the commission is reversed instead of approved, and comes
+ * back in `requalified` for bonus.reversed (reason bounty_requalification).
+ *
  * Returns the approved rows so the caller can fire commission.approved
  * once the sweep's transaction has committed — this runs inside the
  * scheduler's per-tenant transaction, so dispatching from here would
@@ -22,56 +32,92 @@
 import type { Knex } from 'knex';
 import { TABLES, type CommissionRow } from '@openpartner/db';
 import { EFFECTIVE_HOLDBACK_SQL } from './partner-commission.js';
+import { bountyStillMet } from './performance-bounties.js';
 
 export interface AutoApproveResult {
   approvedCount: number;
   approved: CommissionRow[];
+  /** Performance-bounty bonuses reversed because the goal is no longer met. */
+  requalified: CommissionRow[];
+}
+
+/**
+ * Accrued commissions whose effective holdback has elapsed. Effective
+ * holdback (EFFECTIVE_HOLDBACK_SQL): the partner's snapshot scoped to this
+ * commission's program (pcp) if one exists — falling back to the program's
+ * own value when it leaves holdback unset — else their partner-wide
+ * snapshot (pcw, programId null), else the program's value. Same expression
+ * as routes/commissions.ts listQueryBase, which the review queue and manual
+ * approve read through.
+ *
+ * Each join matches at most one row (partial unique indexes on
+ * PartnerCommission; a commission has one attribution or one bonus), so
+ * this can't fan out. Binds the tenant once.
+ */
+function matureSql(columns: string, extraWhere = ''): string {
+  return `
+      select ${columns}
+        from "${TABLES.Commission}" c
+        left join "${TABLES.Attribution}" a on a.id = c."attributionId" and a."partnerId" = c."partnerId"
+        left join "${TABLES.Bonus}" b on b.id = c."bonusId"
+        -- Every attribution has its program; a bonus may have none, and
+        -- then (no cp, so no pcp) the partner-wide holdback applies.
+        left join "${TABLES.Program}" cp on cp.id = coalesce(a."programId", b."programId")
+        left join "${TABLES.PartnerCommission}" pcp
+               on pcp."partnerId" = c."partnerId" and pcp."programId" = cp.id
+        left join "${TABLES.PartnerCommission}" pcw
+               on pcw."partnerId" = c."partnerId" and pcw."programId" is null
+       where c."tenantId" = ?
+         and c.status = 'accrued'
+         and (a.id is not null or b.id is not null)
+         and ${EFFECTIVE_HOLDBACK_SQL} is not null
+         and ${EFFECTIVE_HOLDBACK_SQL} > 0
+         and c."accruedAt" + (${EFFECTIVE_HOLDBACK_SQL} * interval '1 day') <= now()
+         ${extraWhere}`;
 }
 
 export async function autoApproveMatureCommissions(
   db: Knex,
   tenantId: string,
 ): Promise<AutoApproveResult> {
-  // Find every accrued commission whose effective holdback has
-  // elapsed. Effective holdback (EFFECTIVE_HOLDBACK_SQL): the partner's
-  // snapshot scoped to this commission's program (pcp) if one exists —
-  // falling back to the program's own value when it leaves holdback
-  // unset — else their partner-wide snapshot (pcw, programId null), else
-  // the program's value. Same expression as routes/commissions.ts
-  // listQueryBase, which the review queue and manual approve read through.
-  //
+  // Matured performance-bounty bonuses first: the goal must still be met.
+  // Locked, so a concurrent sweep re-checks after this one has decided.
+  const bounties = (await db.raw(
+    `${matureSql('c.id, c."partnerId", b."bountyId"', `and b.source = 'performance_bounty' and b."bountyId" is not null`)}
+     for update of c`,
+    [tenantId],
+  )) as { rows: Array<{ id: string; partnerId: string; bountyId: string }> };
+  const requalified: CommissionRow[] = [];
+  for (const row of bounties.rows) {
+    if (await bountyStillMet(db, tenantId, row.bountyId, row.partnerId)) continue;
+    const [reversed] = (await db(TABLES.Commission)
+      .where({ id: row.id, tenantId, status: 'accrued' })
+      .update({ status: 'reversed' })
+      .returning('*')) as CommissionRow[];
+    if (reversed) requalified.push(reversed);
+  }
+
   // Single statement so two scheduler ticks racing don't double-
-  // process the same row. Each join matches at most one row (partial
-  // unique indexes on PartnerCommission), so the FROM list can't fan out.
+  // process the same row: the second UPDATE re-checks `status =
+  // 'accrued'` on the row the first committed, and skips it.
   //
-  // PartnerCommission is keyed on the partner via the Attribution row
-  // (a."partnerId"), NOT the UPDATE target c."partnerId": Postgres forbids
-  // referencing an UPDATE's target table inside its FROM-clause join
-  // conditions ("invalid reference to FROM-clause entry for table c").
-  // c."attributionId" = a.id already pairs them, and a commission's
-  // partnerId equals its attribution's partnerId by construction, so the
-  // two are equivalent — but only the a. form is legal here.
+  // The candidates are picked in a CTE rather than the UPDATE's FROM list
+  // because a bonus's commission has no Attribution to inner-join, and
+  // Postgres forbids referencing the UPDATE target inside FROM-clause join
+  // conditions, which the left joins need.
   const result = (await db.raw(
     `
+    with due as (${matureSql('c.id')})
     update "${TABLES.Commission}" c
        set status = 'approved'
-      from "${TABLES.Attribution}" a
-      join "${TABLES.Program}" cp on a."programId" = cp.id
-      left join "${TABLES.PartnerCommission}" pcp
-             on pcp."partnerId" = a."partnerId" and pcp."programId" = a."programId"
-      left join "${TABLES.PartnerCommission}" pcw
-             on pcw."partnerId" = a."partnerId" and pcw."programId" is null
-     where c."tenantId" = ?
+      from due
+     where c.id = due.id
+       and c."tenantId" = ?
        and c.status = 'accrued'
-       and c."attributionId" = a.id
-       and c."partnerId" = a."partnerId"
-       and ${EFFECTIVE_HOLDBACK_SQL} is not null
-       and ${EFFECTIVE_HOLDBACK_SQL} > 0
-       and c."accruedAt" + (${EFFECTIVE_HOLDBACK_SQL} * interval '1 day') <= now()
     returning c.*
     `,
-    [tenantId],
+    [tenantId, tenantId],
   )) as { rows: CommissionRow[] };
 
-  return { approvedCount: result.rows.length, approved: result.rows };
+  return { approvedCount: result.rows.length, approved: result.rows, requalified };
 }

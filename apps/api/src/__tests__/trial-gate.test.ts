@@ -81,7 +81,7 @@ afterEach(async () => {
   const ids = createdTenantIds.splice(0);
   if (ids.length === 0) return;
   // FK order: children before Tenant.
-  for (const table of [TABLES.Coupon, TABLES.PartnerProgram, TABLES.Link, TABLES.Partner, TABLES.Program]) {
+  for (const table of [TABLES.Commission, TABLES.Bonus, TABLES.Coupon, TABLES.PartnerProgram, TABLES.Link, TABLES.Partner, TABLES.Program]) {
     await db(table).whereIn('tenantId', ids).del();
   }
   await db(TABLES.Tenant).whereIn('id', ids).del();
@@ -129,5 +129,30 @@ describe.skipIf(skipIntegration)('trial gate — POST /partners/:id/programs', (
     const res = await grant(slug, `/partners/${partnerId}/programs`, programId);
     expect(res.status).toBe(201);
     expect(await grantsFor(partnerId)).toHaveLength(1);
+  });
+});
+
+describe.skipIf(skipIntegration)('trial gate — POST /bonuses', () => {
+  const pay = (slug: string, path: string, partnerId: string) =>
+    request(app)
+      .post(`/t/${slug}${path}`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ partnerId, amount: 10, currency: 'USD' });
+
+  it('needs an active plan, even during the trial: the platform fee bills bonuses', async () => {
+    const { slug, partnerId } = await seedBrand({ trialEndsAt: new Date(Date.now() + 7 * DAY_MS), stripeSubscriptionId: null });
+    for (const path of ['/bonuses', '/Bonuses/']) {
+      const res = await pay(slug, path, partnerId);
+      expect(res.status).toBe(402);
+      expect(res.body.error).toBe('plan_required');
+    }
+    expect(await db(TABLES.Bonus).where({ partnerId })).toHaveLength(0);
+  });
+
+  it('pays once the brand has a plan', async () => {
+    const { slug, partnerId } = await seedBrand({ trialEndsAt: new Date(Date.now() - DAY_MS), stripeSubscriptionId: 'sub_trialgate_bonus' });
+    const res = await pay(slug, '/bonuses', partnerId);
+    expect(res.status).toBe(201);
+    expect(res.body.bonus.partnerId).toBe(partnerId);
   });
 });

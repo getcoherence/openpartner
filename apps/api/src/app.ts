@@ -25,6 +25,8 @@ import { connectRouter } from './routes/connect.js';
 import { payoutsRouter } from './routes/payouts.js';
 import { recoveryRouter } from './routes/recovery.js';
 import { commissionsRouter } from './routes/commissions.js';
+import { bonusesRouter } from './routes/bonuses.js';
+import { bountiesRouter } from './routes/bounties.js';
 import { exportRouter } from './routes/export.js';
 import { importPartnersRouter } from './routes/import-partners.js';
 import { couponsRouter } from './routes/coupons.js';
@@ -293,6 +295,8 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(payoutsRouter);
   app.use(recoveryRouter);
   app.use(commissionsRouter);
+  app.use(bonusesRouter);
+  app.use(bountiesRouter);
   app.use(exportRouter);
   app.use(importPartnersRouter);
   app.use(couponsRouter);

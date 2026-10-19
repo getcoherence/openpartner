@@ -1,9 +1,11 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
-import { CheckCircle2, Circle, Plus, X } from 'lucide-react';
+import { Check, CheckCircle2, Circle, Copy, ExternalLink, Plus, X } from 'lucide-react';
 import { AUDIENCE_SIZES, AUDIENCE_SIZE_LABELS, type AudienceSize } from '@openpartner/db';
 import { Button, Card, ErrorBanner, Input, Label, Select, Textarea } from '../ui.js';
 import { alpha, theme } from '../theme.js';
+import { useIsMobile } from './useMediaQuery.js';
+import { VerifiedBadge } from './VerifiedBadge.js';
 
 /**
  * The Network profile editor: completeness checklist, basics, audience,
@@ -21,8 +23,15 @@ export interface NetworkProfileAdapter {
   updateProfile: (body: Record<string, unknown>) => Promise<unknown>;
   uploadAvatar: (file: File) => Promise<{ avatarUrl: string }>;
   listPlatforms: () => Promise<{ platforms: PlatformRow[] }>;
-  putPlatform: (platform: Platform, body: { handle: string; followerCount: number | null }) => Promise<unknown>;
+  putPlatform: (
+    platform: Platform,
+    body: { handle: string; followerCount: number | null; profileUrl?: string },
+  ) => Promise<unknown>;
   deletePlatform: (platform: Platform) => Promise<unknown>;
+  /** Account verification on the Network (YouTube, website). Absent → no
+   *  Verify button. start issues (or re-shows) the code; check looks for it. */
+  startVerification?: (platform: Platform) => Promise<VerificationStart>;
+  checkVerification?: (platform: Platform) => Promise<{ ok: boolean; platform?: PlatformRow }>;
 }
 
 export type AgeRange = '13-17' | '18-24' | '25-34' | '35-44' | '45-54' | '55+';
@@ -62,7 +71,24 @@ export interface PlatformRow {
   profileUrl: string | null;
   followerCount: number | null;
   verified: boolean;
+  /** Absent on a Network that predates account verification. */
+  verifiedAt?: string | null;
+  verificationMethod?: 'bio_code' | 'dns' | 'oauth' | 'post_code' | null;
 }
+
+/** POST /creators/me/platforms/:platform/verify/start on the Network. */
+export interface VerificationStart {
+  platform: Platform;
+  method: 'bio_code' | 'dns';
+  code: string;
+  expiresAt: string;
+  instructions:
+    | { kind: 'youtube_description'; editUrl: string; channelUrl: string | null; text: string }
+    | { kind: 'dns_txt'; host: string; type: 'TXT'; value: string };
+}
+
+/** Platforms the Network can verify today. TikTok and Instagram follow via OAuth. */
+const VERIFIABLE: ReadonlySet<Platform> = new Set<Platform>(['youtube', 'website']);
 
 // Curated category list — covers the most-searched niches across
 // existing creator marketplaces. Brands filter on these in Tier 3.
@@ -553,8 +579,10 @@ function PlatformsCard({ adapter }: { adapter: NetworkProfileAdapter }) {
     <Card>
       <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>Platforms</div>
       <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 14px' }}>
-        Where you publish + your audience size on each. Self-reported &mdash; verified numbers
-        come when you connect platforms (coming soon).
+        Where you publish + your audience size on each. Follower counts are self-reported.
+        {adapter.startVerification && (
+          <> Verify your YouTube channel or website to show brands a verified badge.</>
+        )}
       </p>
       {list.isLoading ? (
         <p style={{ color: theme.textMuted, fontSize: 13 }}>Loading…</p>
@@ -601,6 +629,7 @@ function PlatformRowEditor({
 }) {
   const [handle, setHandle] = useState(existing?.handle ?? '');
   const [followerCount, setFollowerCount] = useState<number | ''>(existing?.followerCount ?? '');
+  const [verifying, setVerifying] = useState(false);
 
   useEffect(() => {
     setHandle(existing?.handle ?? '');
@@ -608,11 +637,17 @@ function PlatformRowEditor({
   }, [existing?.handle, existing?.followerCount]);
 
   const save = useMutation({
-    mutationFn: () =>
-      adapter.putPlatform(platform, {
-        handle: handle.trim(),
+    mutationFn: () => {
+      const nextHandle = handle.trim();
+      return adapter.putPlatform(platform, {
+        handle: nextHandle,
         followerCount: followerCount === '' ? null : Number(followerCount),
-      }),
+        // Keep the stored profile URL when only the count changes: the
+        // Network would otherwise rebuild it from the handle, and a
+        // changed URL unverifies the account.
+        ...(existing?.profileUrl && nextHandle === existing.handle ? { profileUrl: existing.profileUrl } : {}),
+      });
+    },
     onSuccess: onChanged,
   });
   const remove = useMutation({
@@ -621,6 +656,7 @@ function PlatformRowEditor({
   });
 
   const dirty = handle.trim() !== (existing?.handle ?? '') || (followerCount === '' ? null : Number(followerCount)) !== (existing?.followerCount ?? null);
+  const canVerify = !!existing && !existing.verified && VERIFIABLE.has(platform) && !!adapter.startVerification && !!adapter.checkVerification;
 
   return (
     <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '110px 1fr 140px auto', gap: 8, alignItems: 'center' }}>
@@ -633,7 +669,7 @@ function PlatformRowEditor({
         placeholder="followers"
         style={{ fontSize: 13 }}
       />
-      <div style={{ display: 'flex', gap: 6 }}>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
         <Button
           onClick={() => save.mutate()}
           disabled={!handle.trim() || !dirty || save.isPending}
@@ -650,8 +686,332 @@ function PlatformRowEditor({
             <X size={14} />
           </Button>
         )}
+        {existing?.verified && <VerifiedBadge />}
+        {canVerify && (
+          <Button
+            variant="secondary"
+            onClick={() => setVerifying(true)}
+            // A pending edit changes which account would be verified; save it first.
+            disabled={dirty}
+          >
+            Verify
+          </Button>
+        )}
+      </div>
+      {verifying && existing && (
+        <VerifyAccountDialog
+          adapter={adapter}
+          platform={platform}
+          label={label}
+          handle={existing.handle}
+          onClose={() => setVerifying(false)}
+          onVerified={onChanged}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------- Account verification ----------
+
+/**
+ * Three steps: copy the code, put it where only the account owner can (the
+ * YouTube channel description, or a DNS TXT record), then ask the Network
+ * to check. The Network does the lookup; the code stays valid for 24h and
+ * reopening the dialog shows the same one.
+ */
+function VerifyAccountDialog({
+  adapter,
+  platform,
+  label,
+  handle,
+  onClose,
+  onVerified,
+}: {
+  adapter: NetworkProfileAdapter;
+  platform: Platform;
+  label: string;
+  handle: string;
+  onClose: () => void;
+  onVerified: () => void;
+}) {
+  const isMobile = useIsMobile();
+  const start = useQuery({
+    queryKey: ['network-platform-verification', platform, ...adapter.platformsKey],
+    queryFn: () => adapter.startVerification!(platform),
+    retry: false,
+    staleTime: Infinity,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+  });
+  const check = useMutation({
+    mutationFn: () => adapter.checkVerification!(platform),
+    onSuccess: () => onVerified(),
+  });
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const data = start.data;
+  const youtube = data?.instructions.kind === 'youtube_description' ? data.instructions : null;
+  const dns = data?.instructions.kind === 'dns_txt' ? data.instructions : null;
+  const checkError = check.error ? verificationError(check.error) : null;
+  const startError = start.error ? verificationError(start.error) : null;
+  const title = platform === 'youtube' ? 'Verify YouTube account' : `Verify ${label.toLowerCase()}`;
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: theme.overlay,
+        display: 'flex',
+        alignItems: isMobile ? 'flex-end' : 'center',
+        justifyContent: 'center',
+        zIndex: 50,
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        style={{
+          background: theme.surface,
+          border: `1px solid ${theme.borderSubtle}`,
+          borderRadius: isMobile ? `${theme.radiusSm} ${theme.radiusSm} 0 0` : theme.radiusSm,
+          padding: isMobile ? 18 : 24,
+          width: isMobile ? '100%' : '92%',
+          maxWidth: isMobile ? undefined : 520,
+          maxHeight: '90vh',
+          overflowY: 'auto',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 4 }}>
+          <div style={{ fontSize: 15, fontWeight: 500, flex: 1 }}>{title}</div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            style={{ background: 'transparent', border: 'none', color: theme.textMuted, cursor: 'pointer', padding: 2 }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 16px' }}>
+          Prove <span style={{ fontFamily: theme.fontMono }}>{handle}</span> is yours and brands see a verified badge on your profile.
+        </p>
+
+        {check.isSuccess ? (
+          <>
+            <div style={{ background: theme.successSoft, border: `1px solid ${alpha(theme.success, 0.333)}`, borderRadius: theme.radiusSm, padding: 12, fontSize: 13, color: theme.success, marginBottom: 14 }}>
+              {platform === 'youtube'
+                ? 'Your YouTube account is verified. You can remove the code from your channel description now.'
+                : 'Your website is verified. You can remove the TXT record now.'}
+            </div>
+            <Button onClick={onClose}>Done</Button>
+          </>
+        ) : start.isLoading ? (
+          <p style={{ fontSize: 13, color: theme.textMuted }}>Getting your code…</p>
+        ) : startError ? (
+          <>
+            <ErrorBanner error={startError.message} />
+            <Button variant="secondary" onClick={onClose}>Close</Button>
+          </>
+        ) : data ? (
+          <div style={{ display: 'grid', gap: 16 }}>
+            <VerifyStep n={1} title={youtube ? 'Copy your code' : 'Copy the TXT record value'}>
+              <CopyBox value={youtube ? data.code : dns!.value} large={!!youtube} />
+              <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
+                Valid until {new Date(data.expiresAt).toLocaleString()}.
+              </div>
+            </VerifyStep>
+
+            {youtube ? (
+              <VerifyStep n={2} title="Add it to your channel description">
+                <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.5 }}>
+                  In YouTube Studio, open <strong style={{ color: theme.text }}>Customization → Basic info</strong>,
+                  paste the code anywhere in your description, and click <strong style={{ color: theme.text }}>Publish</strong>.
+                </p>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <ExternalButton href={youtube.editUrl}>Open YouTube Studio</ExternalButton>
+                  {youtube.channelUrl && <ExternalButton href={youtube.channelUrl}>View channel</ExternalButton>}
+                </div>
+              </VerifyStep>
+            ) : (
+              <VerifyStep n={2} title="Add a TXT record at your DNS provider">
+                <p style={{ fontSize: 13, color: theme.textMuted, margin: 0, lineHeight: 1.5 }}>
+                  Create a <strong style={{ color: theme.text }}>TXT</strong> record on{' '}
+                  <span style={{ fontFamily: theme.fontMono, color: theme.text }}>{dns!.host}</span>{' '}
+                  (often entered as <span style={{ fontFamily: theme.fontMono }}>@</span>) with the value above.
+                </p>
+              </VerifyStep>
+            )}
+
+            <VerifyStep n={3} title="Verify">
+              <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.5 }}>
+                {youtube
+                  ? 'Once the description is published, check it here. YouTube can take a minute to show the change.'
+                  : 'Once the record is saved, check it here. DNS changes can take a few minutes to appear.'}
+              </p>
+              {checkError && <ErrorBanner error={checkError.message} />}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {checkError?.code === 'code_expired' ? (
+                  <Button onClick={() => { check.reset(); void start.refetch(); }}>Get a new code</Button>
+                ) : (
+                  <Button onClick={() => check.mutate()} disabled={check.isPending}>
+                    {check.isPending ? 'Checking…' : 'Verify'}
+                  </Button>
+                )}
+                <Button variant="secondary" onClick={onClose}>Close</Button>
+              </div>
+            </VerifyStep>
+          </div>
+        ) : null}
       </div>
     </div>
   );
+}
+
+function VerifyStep({ n, title, children }: { n: number; title: string; children: ReactNode }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '24px 1fr', gap: 10 }}>
+      <div
+        style={{
+          width: 22,
+          height: 22,
+          borderRadius: '50%',
+          background: theme.accentA22,
+          color: theme.accentText,
+          fontSize: 12,
+          fontWeight: 600,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        {n}
+      </div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 500, marginBottom: 8, lineHeight: '22px' }}>{title}</div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function CopyBox({ value, large }: { value: string; large?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }, () => {/* clipboard blocked: the value is still selectable */});
+  };
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        background: theme.surface2,
+        border: `1px solid ${theme.borderSubtle}`,
+        borderRadius: theme.radiusSm,
+        padding: '8px 10px',
+      }}
+    >
+      <code
+        style={{
+          flex: 1,
+          fontFamily: theme.fontMono,
+          fontSize: large ? 20 : 13,
+          letterSpacing: large ? '0.12em' : undefined,
+          wordBreak: 'break-all',
+          userSelect: 'all',
+        }}
+      >
+        {value}
+      </code>
+      <button
+        onClick={copy}
+        aria-label="Copy"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 5,
+          background: 'transparent',
+          border: `1px solid ${theme.borderSubtle}`,
+          borderRadius: 6,
+          padding: '5px 9px',
+          fontSize: 12,
+          color: copied ? theme.success : theme.textMuted,
+          cursor: 'pointer',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {copied ? <Check size={13} /> : <Copy size={13} />}
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+    </div>
+  );
+}
+
+function ExternalButton({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '7px 12px',
+        background: theme.surface,
+        border: `1px solid ${theme.border}`,
+        borderRadius: theme.radiusSm,
+        fontSize: 13,
+        color: theme.text,
+        textDecoration: 'none',
+      }}
+    >
+      {children} <ExternalLink size={13} style={{ color: theme.textDim }} />
+    </a>
+  );
+}
+
+/**
+ * The Network's error code and a sentence for the creator. The creator
+ * portal relays the Network body as-is; the brand partner proxy wraps it
+ * as `{ error: 'network_call_failed', detail: '<Network JSON>' }`.
+ */
+function verificationError(err: unknown): { code: string; message: string } {
+  let body = (err as { detail?: unknown } | null)?.detail as Record<string, unknown> | null | undefined;
+  if (body?.error === 'network_call_failed' && typeof body.detail === 'string') {
+    try {
+      body = JSON.parse(body.detail) as Record<string, unknown>;
+    } catch {
+      /* not JSON: keep the wrapper */
+    }
+  }
+  const code = typeof body?.error === 'string' ? body.error : 'unknown';
+  const detail = typeof body?.detail === 'string' ? body.detail : null;
+  switch (code) {
+    case 'too_many_attempts': {
+      const minutes = Math.max(1, Math.ceil(Number(body?.retryAfterSeconds ?? 60) / 60));
+      return { code, message: `Too many checks for now. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.` };
+    }
+    case 'account_already_verified':
+      return { code, message: 'Another creator has already verified this account. If it’s yours, contact support.' };
+    case 'already_verified':
+      return { code, message: 'This account is already verified.' };
+    case 'youtube_unavailable':
+    case 'dns_lookup_failed':
+      return { code, message: 'We couldn’t complete the check just now. Try again in a minute.' };
+    default:
+      return { code, message: detail ?? (err instanceof Error ? err.message : 'Verification failed.') };
+  }
 }
 
