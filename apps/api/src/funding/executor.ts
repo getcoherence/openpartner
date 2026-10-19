@@ -25,12 +25,17 @@ import {
   type HostedFundingBatchRow,
   type HostedFundingTransferRow,
   type PartnerRow,
+  type TenantRow,
 } from '@openpartner/db';
 import { requireStripe } from '../stripe.js';
 import { dispatchEvent } from '../webhook-dispatcher.js';
 import type { WebhookPayload } from '../openapi/webhook-events.js';
 import { dispatchCommissionEvents } from '../commission-events.js';
 import { casBatch, minorToMajorString, TRANSFER_DEADLINE_DAYS } from './state.js';
+import { partnerPayoutHolds, type PayoutHold, type PayoutHoldReason } from '../sanctions-screening.js';
+import { sendOpsEmail } from '../platform-ops-mail.js';
+import { opsFundedTransfersHeldEmail } from '../email-templates.js';
+import { getPortalBaseUrl } from '../portal-url.js';
 
 /** Ambiguity window: within it, retrying the frozen key is safe (Stripe
  *  replays); past it the key may be pruned and we must reconcile. */
@@ -48,6 +53,16 @@ export interface ExecutorResult {
   failed: string[];
   reconcileRequired: string[];
   settled: string[];
+  /** Partners whose share of a funded batch a compliance hold stopped
+   *  before any transfer: allocations canceled, residual on the batch. */
+  heldForCompliance: Array<{
+    batchId: string;
+    tenantId: string;
+    partnerId: string;
+    reason: PayoutHoldReason;
+    amountMinor: number;
+    currency: string;
+  }>;
 }
 
 export async function runTransferExecutor(db: Knex, deps: ExecutorDeps = {}): Promise<ExecutorResult> {
@@ -58,6 +73,7 @@ export async function runTransferExecutor(db: Knex, deps: ExecutorDeps = {}): Pr
     failed: [],
     reconcileRequired: [],
     settled: [],
+    heldForCompliance: [],
   };
   const batches = (await db(TABLES.HostedFundingBatch)
     .whereIn('status', ['funded', 'transferring'])
@@ -71,6 +87,13 @@ export async function runTransferExecutor(db: Knex, deps: ExecutorDeps = {}): Pr
       console.error(`[funding] executor error on batch ${batch.id}`, err);
       result.failed.push(batch.id);
     }
+  }
+  try {
+    await notifyOpsOfHeldTransfers(db, result.heldForCompliance);
+  } catch (err) {
+    // The cancellations are committed and ALERT-logged; a lost email must
+    // not fail the job.
+    console.error('[funding] ops notice for compliance-held transfers failed', err);
   }
   return result;
 }
@@ -209,6 +232,20 @@ async function executePartnerTransfer(
     return;
   }
 
+  // Compliance hold (docs/sanctions-screening.md). The planner holds a
+  // partner before reserving, but the batch was reserved before the
+  // brand's payment settled, often days ago, and a daily rescreen or a
+  // newly blocked country can flag the partner inside that window. While nothing for
+  // them has reached Stripe (no intent, a `pending` one, or a `failed` one
+  // Stripe refused), their allocations are canceled: funded money that
+  // won't transfer, which settles the batch with a residual (spec §7.4).
+  // A `posted` intent is left for the pre-POST check below.
+  const hold = await partnerHold(db, batch.tenantId, partnerId);
+  if (hold && (!intent || intent.state === 'pending' || intent.state === 'failed')) {
+    await cancelHeldAllocations(db, batch, partnerId, intent ?? null, hold, result);
+    return;
+  }
+
   if (!intent) {
     // Step 2 — freeze the intent BEFORE any Stripe call, in one short
     // transaction: re-verify commissions under lock, claim allocations,
@@ -305,6 +342,18 @@ async function executePartnerTransfer(
       await reconcileIntent(db, stripe, batch, { ...intent, state: 'reconcile_required' }, result);
       return;
     }
+  }
+
+  // A held partner reaching here has a `posted` intent (every other state
+  // stopped above). Its transfer may already exist, so it can't be
+  // canceled, but a re-POST could still create it. None is made while the
+  // hold stands: the hold lifts and the retry resumes, or the key window
+  // lapses and the listing above settles it.
+  if (hold) {
+    console.error(
+      `[funding] ALERT: partner ${partnerId} is on a compliance hold (${hold.reason}) with transfer intent ${intent.id} already posted on batch ${batch.id} — not re-posting; the transfer may exist at Stripe`,
+    );
+    return;
   }
 
   // Step 3 — post the transfer with the frozen key. 'pending', 'posted'
@@ -477,6 +526,104 @@ async function reconcileIntent(
   await db(TABLES.HostedFundingTransfer)
     .where({ id: intent.id, state: 'reconcile_required' })
     .update({ state: 'pending', postedAt: null, updatedAt: db.fn.now() });
+}
+
+/** The partner's compliance hold, if any. `db` is the privileged pool the
+ *  executor runs on, which the hold records need. */
+async function partnerHold(db: Knex, tenantId: string, partnerId: string): Promise<PayoutHold | undefined> {
+  const partner = (await db(TABLES.Partner)
+    .where({ id: partnerId })
+    .first(['id', 'name'])) as Pick<PartnerRow, 'id' | 'name'> | undefined;
+  if (!partner) return undefined;
+  return (await partnerPayoutHolds(db, tenantId, [partner])).get(partnerId);
+}
+
+/**
+ * Stop a held partner's share of a funded batch while none of it has
+ * reached Stripe. Their live allocations go to `canceled`, the state the
+ * reversal interlock already uses for funded money that won't transfer:
+ * the batch settles `settled_with_residual` and the residual waits for an
+ * operator's disposition (spec §7.4). An intent that was never posted, or
+ * that Stripe refused, is closed as `failed` so nothing retries it.
+ *
+ * The commissions stay `approved`: reservation never changed them.
+ * Reservation won't take them again until that disposition is recorded
+ * (reserve.ts), and the planner keeps holding them while the hold stands.
+ */
+async function cancelHeldAllocations(
+  db: Knex,
+  batch: HostedFundingBatchRow,
+  partnerId: string,
+  intent: HostedFundingTransferRow | null,
+  hold: PayoutHold,
+  result: ExecutorResult,
+): Promise<void> {
+  const canceledMinor = await db.transaction(async (trx) => {
+    // Same gate as intent creation: a batch a dispute froze is not ours
+    // to edit.
+    const live = (await trx(TABLES.HostedFundingBatch)
+      .where({ id: batch.id })
+      .forUpdate()
+      .first(['status'])) as { status: string } | undefined;
+    if (live?.status !== 'transferring') return 0;
+    if (intent) {
+      const closed = await trx(TABLES.HostedFundingTransfer)
+        .where({ id: intent.id })
+        .whereIn('state', ['pending', 'failed'])
+        .update({ state: 'failed', lastError: `compliance_hold:${hold.reason}`, updatedAt: db.fn.now() });
+      if (closed === 0) return 0; // posted meanwhile: the pre-POST check owns it
+    }
+    // Without an intent the allocations are still `reserved`; with one they
+    // were claimed to `transfer_pending` alongside it.
+    const canceled = (await trx(TABLES.HostedFundingAllocation)
+      .where({ batchId: batch.id, partnerId })
+      .whereIn('state', intent ? ['reserved', 'transfer_pending'] : ['reserved'])
+      .update({ state: 'canceled', updatedAt: db.fn.now() })
+      .returning(['amountMinor'])) as Array<{ amountMinor: string | number }>;
+    return canceled.reduce((s, a) => s + Number(a.amountMinor), 0);
+  });
+  if (canceledMinor === 0) return;
+  console.error(
+    `[funding] ALERT: partner ${partnerId} is on a compliance hold (${hold.reason}) — ${canceledMinor} minor on funded batch ${batch.id} will not transfer; the batch settles with a residual that needs a disposition`,
+  );
+  result.heldForCompliance.push({
+    batchId: batch.id,
+    tenantId: batch.tenantId,
+    partnerId,
+    reason: hold.reason,
+    amountMinor: canceledMinor,
+    currency: batch.currency,
+  });
+}
+
+/** One ops email per executor run, listing every partner whose funded
+ *  transfer a compliance hold stopped. Best-effort (sendOpsEmail never
+ *  throws): the console ALERT above is the record either way. */
+async function notifyOpsOfHeldTransfers(db: Knex, held: ExecutorResult['heldForCompliance']): Promise<void> {
+  if (held.length === 0) return;
+  const tenants = (await db(TABLES.Tenant)
+    .whereIn('id', [...new Set(held.map((h) => h.tenantId))])
+    .select('id', 'displayName', 'slug')) as Array<Pick<TenantRow, 'id' | 'displayName' | 'slug'>>;
+  const partners = (await db(TABLES.Partner)
+    .whereIn('id', [...new Set(held.map((h) => h.partnerId))])
+    .select('id', 'name')) as Array<Pick<PartnerRow, 'id' | 'name'>>;
+  const tenantById = new Map(tenants.map((t) => [t.id, t]));
+  const partnerName = new Map(partners.map((p) => [p.id, p.name]));
+  await sendOpsEmail(
+    db,
+    opsFundedTransfersHeldEmail({
+      items: held.map((h) => ({
+        brandName: tenantById.get(h.tenantId)?.displayName ?? h.tenantId,
+        slug: tenantById.get(h.tenantId)?.slug ?? null,
+        partnerName: partnerName.get(h.partnerId) ?? h.partnerId,
+        reason: h.reason,
+        amount: `${minorToMajorString(h.amountMinor, h.currency)} ${h.currency.toUpperCase()}`,
+        batchId: h.batchId,
+      })),
+      reviewUrl: `${getPortalBaseUrl()}/platform/screening`,
+    }),
+    'funded_transfer_compliance_hold',
+  );
 }
 
 /** A definite error is one where Stripe RESPONDED (4xx semantics) — the
