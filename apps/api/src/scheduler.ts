@@ -300,7 +300,7 @@ const JOBS: ScheduledJob[] = [
     name: 'funding-reconcile',
     cronExpr: '30 5 * * *',
     description:
-      'Daily funding ledger audit: allocation/principal invariants, stuck batches past the transfer deadline, reconcile_required intents, residuals awaiting disposition, Stripe fee telemetry backfill (daily 05:30 UTC; verifies + alerts, never moves money)',
+      'Daily funding ledger audit: allocation/principal invariants, stuck batches past the transfer deadline, reconcile_required and duplicate_review transfer intents, residuals awaiting disposition, Stripe fee telemetry backfill (daily 05:30 UTC; verifies + alerts, never moves money)',
     handler: async () => {
       const { runFundingReconciliation } = await import('./funding/reconcile.js');
       return runFundingReconciliation(db);

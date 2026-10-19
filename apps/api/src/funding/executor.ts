@@ -11,7 +11,12 @@
  * listing transfers by transfer_group + metadata — never a blind re-POST.
  * A listing that finds nothing HOLDS the intent for an operator, who alone
  * may authorise a fresh key (`releaseFundedTransferForRetry`) — the direct
- * rail's round-6 rule, docs/payout-funding.md §4.
+ * rail's round-6 rule, docs/payout-funding.md §4. A single match is
+ * authenticated against the frozen intent before it is recorded, and
+ * anything else (two matches, an abandoned generation's, a match that
+ * fails authentication) PARKS the intent in `duplicate_review` until an
+ * operator resolves it (`resolveFundedDuplicateReview`) — the direct
+ * rail's round-10 and duplicate-review rules.
  *
  * Transfers are linked to the funding charge via `source_transaction`, so
  * they draw on the brand's settled payment, not the platform's pooled
@@ -24,6 +29,7 @@ import { ulid } from 'ulid';
 import {
   TABLES,
   type CommissionRow,
+  type FundingTransferState,
   type HostedFundingAllocationRow,
   type HostedFundingBatchRow,
   type HostedFundingTransferRow,
@@ -48,6 +54,10 @@ const IDEMPOTENCY_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** lastError of an intent the executor holds for an operator: past the
  *  key window and nothing in its transfer group. */
 const AWAITING_OPERATOR = 'awaiting_operator:no_transfer_found_past_window';
+
+/** Clock-skew grace when checking a found transfer's `created` against the
+ *  intent's `postedAt` — the direct rail's figure. */
+const CREATED_SKEW_MS = 5 * 60 * 1000;
 
 /**
  * The idempotency key for a transfer intent at a key generation.
@@ -83,8 +93,12 @@ export interface ExecutorResult {
   failed: string[];
   reconcileRequired: string[];
   /** Intents HELD in reconcile_required for an operator: nothing found
-   *  past the key window, or more than one transfer for one intent. */
+   *  past the key window. Later ticks keep listing. */
   awaitingOperator: string[];
+  /** Intents PARKED in duplicate_review on this run: more than one
+   *  transfer, one from an abandoned key generation, or one that failed
+   *  authentication. Reported once; the executor stops scanning them. */
+  duplicateReview: string[];
   settled: string[];
   /** Partners whose share of a funded batch a compliance hold stopped
    *  before any transfer: allocations canceled, residual on the batch. */
@@ -106,6 +120,7 @@ export async function runTransferExecutor(db: Knex, deps: ExecutorDeps = {}): Pr
     failed: [],
     reconcileRequired: [],
     awaitingOperator: [],
+    duplicateReview: [],
     settled: [],
     heldForCompliance: [],
   };
@@ -237,8 +252,15 @@ async function executeBatch(
   } else {
     // Deadline escalation (§7): allocations stuck past the transfer window
     // need an operator-recorded residual disposition (build 4 surfaces it).
+    // Allocations behind an intent parked in duplicate_review are not
+    // counted: their disposition is that intent's resolution, the daily
+    // reconcile names them, and re-alerting here every tick is the noise
+    // parking exists to stop.
     const ageMs = now().getTime() - new Date(batch.fundedAt ?? batch.createdAt).getTime();
-    if (ageMs > TRANSFER_DEADLINE_DAYS * 24 * 60 * 60 * 1000) {
+    if (
+      ageMs > TRANSFER_DEADLINE_DAYS * 24 * 60 * 60 * 1000 &&
+      (await hasUnparkedOpenAllocations(db, batch.id))
+    ) {
       console.error(
         `[funding] ALERT: batch ${batch.id} still has untransferred allocations ${TRANSFER_DEADLINE_DAYS}d after funding — residual disposition required`,
       );
@@ -261,6 +283,11 @@ async function executePartnerTransfer(
     .first()) as HostedFundingTransferRow | undefined;
 
   if (intent && intent.state === 'confirmed') return;
+  // Parked for a human (see parkForReview). Nothing here may touch it: not
+  // a listing, not an alert, and not the compliance cancel below, because
+  // a transfer for it may be with the partner. Its allocations stay
+  // transfer_pending until resolveFundedDuplicateReview settles them.
+  if (intent && intent.state === 'duplicate_review') return;
   if (intent && intent.state === 'reconcile_required') {
     await reconcileIntent(db, stripe, batch, intent, result);
     return;
@@ -477,14 +504,35 @@ async function executePartnerTransfer(
     return;
   }
 
-  await finalizeTransfer(db, batch, intent, group, transfer);
-  result.transfersConfirmed.push(intent.id);
+  // The response to our own keyed POST needs no authentication. A tick that
+  // moved the intent to reconcile_required while this POST hung may still
+  // be finalized by it; a parked or re-armed one may not.
+  const written = await finalizeTransfer(db, batch, intent, group, transfer, {
+    from: ['posted', 'reconcile_required'],
+  });
+  if (written) result.transfersConfirmed.push(intent.id);
+}
+
+/** What a finalize must still find on the intent row for its write to
+ *  stand. The key is always the one the caller observed. */
+interface FinalizeFence {
+  from: FundingTransferState[];
+  /** An operator resolution: the review nonce read before its listing. */
+  reviewNonce?: string | null;
+  /** Audit stamp; null (the default) clears a stale error. */
+  lastError?: string | null;
 }
 
 /**
  * Step 4 — one short transaction per confirmed transfer: intent →
  * confirmed, Payout written as paid, allocations → transferred,
  * commissions → paid. Webhooks fire only after the commit.
+ *
+ * Compare-and-set on the states the caller expects AND the key it
+ * observed. This used to finalize from any state but `confirmed`, so a
+ * reconciler holding a stale listing could record its transfer over an
+ * intent another tick had just parked for review, or one an operator had
+ * re-armed onto a new key. Returns whether this call wrote the ledger.
  */
 async function finalizeTransfer(
   db: Knex,
@@ -492,21 +540,27 @@ async function finalizeTransfer(
   intent: HostedFundingTransferRow,
   group: HostedFundingAllocationRow[],
   transfer: Stripe.Transfer,
-): Promise<void> {
+  fence: FinalizeFence,
+): Promise<boolean> {
   const payoutId = ulid();
   const commissionIds = group.map((a) => a.commissionId);
   const written = await db.transaction(async (trx) => {
     const updated = await trx(TABLES.HostedFundingTransfer)
-      .where({ id: intent.id })
-      .whereNot({ state: 'confirmed' })
+      .where({ id: intent.id, idempotencyKey: intent.idempotencyKey })
+      .whereIn('state', fence.from)
+      .modify((qb) => {
+        if (fence.reviewNonce !== undefined) {
+          qb.whereRaw('"reviewNonce" is not distinct from ?', [fence.reviewNonce]);
+        }
+      })
       .update({
         state: 'confirmed',
         stripeTransferId: transfer.id,
         payoutId,
-        lastError: null,
+        lastError: fence.lastError ?? null,
         updatedAt: db.fn.now(),
       });
-    if (updated === 0) return false; // another worker finalized first
+    if (updated === 0) return false; // another writer moved it first
 
     await trx(TABLES.Payout).insert({
       id: payoutId,
@@ -532,7 +586,7 @@ async function finalizeTransfer(
       .update({ status: 'paid', paidAt: new Date(), payoutId });
     return true;
   });
-  if (!written) return;
+  if (!written) return false;
 
   // After commit only (spec §6 step 4) — the dispatcher POSTs async and a
   // subscriber can immediately re-fetch consistent rows.
@@ -546,14 +600,16 @@ async function finalizeTransfer(
     commissionIds,
   } satisfies WebhookPayload<'payout.created'>);
   void dispatchCommissionEvents(batch.tenantId, 'commission.paid', commissions, { payoutId });
+  return true;
 }
 
 /**
  * Reconcile an ambiguous intent by listing transfers in the batch's
- * transfer_group and matching our metadata stamp (spec §4 retry
- * discipline). One transfer from the current key generation → finalize
- * with it. Anything else HOLDS the intent in `reconcile_required` for an
- * operator; later ticks keep listing, so a straggler still finalizes.
+ * transfer_group (spec §4 retry discipline). One transfer from the current
+ * key generation that authenticates against the frozen intent → finalize
+ * with it. Nothing → HOLD in `reconcile_required`; later ticks keep
+ * listing, so a straggler still finalizes. Anything else → PARK in
+ * `duplicate_review` for an operator.
  */
 async function reconcileIntent(
   db: Knex,
@@ -564,24 +620,28 @@ async function reconcileIntent(
 ): Promise<void> {
   // Page through the ENTIRE transfer_group, not just the first 100 — a batch
   // with >100 transfers whose match sits on a later page would otherwise look
-  // "absent". Every match is collected, not the first: once an operator has
-  // re-armed an intent onto a new key, a late transfer from the old key can
-  // sit beside the new one, and recording either alone hides the other.
-  const matches: Stripe.Transfer[] = [];
-  let startingAfter: string | undefined;
-  for (;;) {
-    const page = await stripe.transfers.list({
-      transfer_group: batch.id,
-      limit: 100,
-      ...(startingAfter ? { starting_after: startingAfter } : {}),
-    });
-    matches.push(...page.data.filter((t) => t.metadata?.openpartner_transfer_intent_id === intent.id));
-    if (!page.has_more || page.data.length === 0) break;
-    startingAfter = page.data[page.data.length - 1]!.id;
+  // "absent". The shared lister also refuses a listing it could not finish
+  // (an empty page claiming more, or past its page budget, the direct rail's
+  // round 10): a partial listing can hide the duplicate that would have
+  // stopped a finalize. Nothing is decided on it; the next tick lists again.
+  //
+  // Every match is collected, not the first: once an operator has re-armed
+  // an intent onto a new key, a late transfer from the old key can sit
+  // beside the new one, and recording either alone hides the other.
+  const matches = await listFundedTransferMembers(
+    db,
+    stripe,
+    intent,
+    `funded reconcile of transfer intent ${intent.id}`,
+  );
+  if (matches === 'cannot_verify') {
+    result.failed.push(intent.id);
+    return;
   }
 
   const generation = keyGenerationOf(intent);
-  // A transfer without the stamp predates generations: generation 0.
+  // A transfer without the stamp (one that predates generations, or whose
+  // metadata was cleared) reads as generation 0.
   const stale = matches.filter(
     (t) => generation === null || readGeneration(t.metadata?.openpartner_key_generation) !== generation,
   );
@@ -590,24 +650,48 @@ async function reconcileIntent(
     // abandoned: the partner may have been paid twice. Never pick one —
     // the ledger stays unwritten and a human decides.
     const ids = matches.map((t) => t.id).join(', ');
-    await holdForOperator(
+    const parked = await parkForReview(
       db,
       intent,
       matches.length > 1 ? `duplicate_transfers:${ids}` : `superseded_generation_transfer:${ids}`,
     );
+    if (!parked) return;
     console.error(
-      `[funding] ALERT: transfer intent ${intent.id} (batch ${batch.id}, partner ${intent.partnerId}) has ${matches.length} transfer(s) in its group (${ids}) that do not match its one current key generation (${generation ?? 'unreadable'}) — the partner may have been paid twice; ledger NOT written, operator reconciliation required`,
+      `[funding] ALERT: transfer intent ${intent.id} (batch ${batch.id}, partner ${intent.partnerId}) has ${matches.length} transfer(s) in its group (${ids}) that do not match its one current key generation (${generation ?? 'unreadable'}) — the partner may have been paid twice; ledger NOT written, PARKED in duplicate_review for an operator`,
     );
-    result.awaitingOperator.push(intent.id);
+    result.duplicateReview.push(intent.id);
     return;
   }
 
   if (matches.length === 1) {
-    const group = (await db(TABLES.HostedFundingAllocation)
+    const found = matches[0]!;
+    // AUTHENTICATE before recording it as THE payment (the direct rail's
+    // round 10). Membership rests partly on metadata, which is mutable at
+    // Stripe, and anything on the platform account can set a transfer's
+    // group to this batch. Two immutable references pin the real payment:
+    // the intent's frozen amount, currency and destination, and Stripe's
+    // own `created` against `postedAt`, which is stamped before this
+    // generation's first POST. A genuine current-generation transfer
+    // cannot predate it (5 minutes' grace for clock skew), so a forged
+    // stamp on an older transfer fails even when everything else matches.
+    // A member that fails is never finalized; it parks like a duplicate.
+    const failure = authenticationFailure(intent, found);
+    if (failure) {
+      const parked = await parkForReview(db, intent, `unauthenticated_group_transfer:${found.id}`);
+      if (!parked) return;
+      console.error(
+        `[funding] ALERT: transfer intent ${intent.id} (batch ${batch.id}, partner ${intent.partnerId}) found transfer ${found.id} in its group that does not match the frozen intent (${failure}) — NOT finalized; PARKED in duplicate_review for an operator`,
+      );
+      result.duplicateReview.push(intent.id);
+      return;
+    }
+    const allocations = (await db(TABLES.HostedFundingAllocation)
       .where({ batchId: batch.id, partnerId: intent.partnerId })
       .whereIn('state', ['transfer_pending', 'reserved'])) as HostedFundingAllocationRow[];
-    await finalizeTransfer(db, batch, intent, group, matches[0]!);
-    result.transfersConfirmed.push(intent.id);
+    const written = await finalizeTransfer(db, batch, intent, allocations, found, {
+      from: ['reconcile_required'],
+    });
+    if (written) result.transfersConfirmed.push(intent.id);
     return;
   }
 
@@ -643,6 +727,123 @@ async function holdForOperator(db: Knex, intent: HostedFundingTransferRow, reaso
 }
 
 /**
+ * Park an intent for human review, in a state the executor does NOT scan.
+ *
+ * Holding it in `reconcile_required` meant re-listing at Stripe and
+ * re-alerting on every 5-minute tick forever, and reversing
+ * the surplus doesn't make that stop, because reversed transfers still
+ * list. The disposition is manual either way; this makes "a human owns it
+ * now" a state rather than a hope, the direct rail's `duplicate_review`.
+ *
+ * Fenced on the key the caller observed, so a reconciler working from a
+ * stale snapshot cannot park an intent an operator has since re-armed
+ * (whose new generation's single transfer would read as "superseded"
+ * against the stale view). A fresh `reviewNonce` starts the resolution
+ * fence. Returns whether this call parked it.
+ */
+async function parkForReview(db: Knex, intent: HostedFundingTransferRow, reason: string): Promise<boolean> {
+  const parked = await db(TABLES.HostedFundingTransfer)
+    .where({ id: intent.id, idempotencyKey: intent.idempotencyKey })
+    .whereIn('state', ['posted', 'reconcile_required'])
+    .update({
+      state: 'duplicate_review',
+      lastError: reason.slice(0, 500),
+      reviewNonce: ulid(),
+      updatedAt: db.fn.now(),
+    });
+  if (parked === 0) {
+    console.warn(
+      `[funding] transfer intent ${intent.id} moved while it was being reconciled — not parking it (${reason.slice(0, 200)})`,
+    );
+  }
+  return parked > 0;
+}
+
+/**
+ * Why a lone group member cannot be recorded as this intent's payment, or
+ * null when it can. Checks only immutable facts: Stripe's amount,
+ * currency, destination and `created` against what the intent froze
+ * before its first POST. Fails closed on anything it cannot compare.
+ */
+function authenticationFailure(intent: HostedFundingTransferRow, t: Stripe.Transfer): string | null {
+  const expected = Number(intent.amountMinor);
+  if (!Number.isSafeInteger(expected) || Number(t.amount) !== expected) {
+    return `amount ${String(t.amount)} != frozen ${intent.amountMinor}`;
+  }
+  if (t.currency !== intent.currency.toLowerCase()) {
+    return `currency ${String(t.currency)} != frozen ${intent.currency}`;
+  }
+  const destination = typeof t.destination === 'string' ? t.destination : t.destination?.id;
+  if (!intent.destinationAccountId || destination !== intent.destinationAccountId) {
+    return `destination ${String(destination)} != frozen ${intent.destinationAccountId}`;
+  }
+  const postedAtMs = intent.postedAt ? new Date(intent.postedAt).getTime() : NaN;
+  if (typeof t.created !== 'number' || Number.isNaN(postedAtMs)) {
+    return 'no creation time or postedAt to compare';
+  }
+  if (t.created * 1000 < postedAtMs - CREATED_SKEW_MS) {
+    return `created ${new Date(t.created * 1000).toISOString()} predates postedAt ${new Date(postedAtMs).toISOString()}`;
+  }
+  return null;
+}
+
+/**
+ * The transfers in an intent's batch group that belong to it, or
+ * 'cannot_verify' when the group cannot be listed in full.
+ *
+ * The group is the batch, shared by every partner in it, so membership has
+ * to be narrowed, and narrowing on metadata alone is the direct rail's
+ * round-9 hole: metadata is mutable at Stripe, and a transfer whose stamp
+ * was cleared would vanish from every listing-based decision. So a
+ * transfer belongs to this intent when it is stamped with this intent, OR
+ * when it pays this intent's destination (immutable) and is not stamped
+ * with another intent of the same batch. Two partners sharing a Connect
+ * account keep their stamped transfers apart; an unstamped transfer to a
+ * shared account counts against both, which fails closed.
+ *
+ * Shared by reconcile, the operator re-arm and resolve, and the
+ * operator-recovery recheck, so all four agree on what "this intent's
+ * transfers" means.
+ */
+export async function listFundedTransferMembers(
+  db: Knex,
+  stripe: Stripe,
+  intent: Pick<HostedFundingTransferRow, 'id' | 'batchId' | 'destinationAccountId'>,
+  logContext: string,
+): Promise<Stripe.Transfer[] | 'cannot_verify'> {
+  const group = await listTransferGroup(stripe, intent.batchId, logContext);
+  if (group === 'cannot_verify') return group;
+  const siblings = new Set(
+    ((await db(TABLES.HostedFundingTransfer)
+      .where({ batchId: intent.batchId })
+      .whereNot({ id: intent.id })
+      .select('id')) as Array<{ id: string }>).map((r) => r.id),
+  );
+  return group.filter((t) => {
+    const stamped = t.metadata?.openpartner_transfer_intent_id;
+    if (stamped === intent.id) return true;
+    const destination = typeof t.destination === 'string' ? t.destination : t.destination?.id;
+    return destination === intent.destinationAccountId && !(stamped && siblings.has(stamped));
+  });
+}
+
+/** Does the batch have a live allocation that is NOT behind an intent
+ *  parked in duplicate_review? Only those are the §7 deadline's business. */
+async function hasUnparkedOpenAllocations(db: Knex, batchId: string): Promise<boolean> {
+  const row = await db(TABLES.HostedFundingAllocation)
+    .where({ batchId })
+    .whereNotIn('state', ['transferred', 'canceled', 'released'])
+    .whereNotExists(
+      db(TABLES.HostedFundingTransfer)
+        .whereRaw('"HostedFundingTransfer"."batchId" = "HostedFundingAllocation"."batchId"')
+        .whereRaw('"HostedFundingTransfer"."partnerId" = "HostedFundingAllocation"."partnerId"')
+        .where(`${TABLES.HostedFundingTransfer}.state`, 'duplicate_review'),
+    )
+    .first(['id']);
+  return row !== undefined;
+}
+
+/**
  * Operator path out of a HELD intent: authorise a fresh-key attempt.
  *
  * The executor never re-arms by itself (see reconcileIntent). The operator
@@ -650,10 +851,12 @@ async function holdForOperator(db: Knex, intent: HostedFundingTransferRow, reaso
  * intent exists or ever will. This function refuses on positive evidence
  * against that: any transfer in the batch's group stamped with this intent
  * OR paying its destination (metadata is mutable at Stripe; the
- * destination is not). It then moves the intent back to `pending` on the
- * NEXT key generation (`fbt:<intentId>:g<N+1>`), because Stripe anchors a
- * key's retention to its first use and the old key would replay its
- * stored outcome.
+ * destination is not), unless it is stamped with another intent of the
+ * batch (`listFundedTransferMembers`), which is a partner sharing the
+ * Connect account and not this intent's payment. It then moves the intent
+ * back to `pending` on the NEXT key generation (`fbt:<intentId>:g<N+1>`),
+ * because Stripe anchors a key's retention to its first use and the old
+ * key would replay its stored outcome.
  *
  * Fenced on the key the operator observed (generation N), so two
  * operators, or an operator and a concurrent reconcile, cannot both hand
@@ -678,14 +881,13 @@ export async function releaseFundedTransferForRetry(
   const observedKey = fundedTransferKey(intent.id, observedGeneration);
   if (intent.idempotencyKey !== observedKey) return 'generation_moved';
 
-  const group = await listTransferGroup(stripe, intent.batchId, `OPERATOR ${operator} re-arm of funded transfer ${intentId}`);
-  if (group === 'cannot_verify') return 'cannot_verify';
-  const ours = group.filter((t) => {
-    const destination = typeof t.destination === 'string' ? t.destination : t.destination?.id;
-    return (
-      t.metadata?.openpartner_transfer_intent_id === intent.id || destination === intent.destinationAccountId
-    );
-  });
+  const ours = await listFundedTransferMembers(
+    db,
+    stripe,
+    intent,
+    `OPERATOR ${operator} re-arm of funded transfer ${intentId}`,
+  );
+  if (ours === 'cannot_verify') return 'cannot_verify';
   if (ours.length > 0) {
     console.error(
       `[funding] OPERATOR ${operator} tried to re-arm transfer intent ${intentId} but ${ours.length} transfer(s) for it exist in batch ${intent.batchId}'s group (${ours
@@ -709,6 +911,191 @@ export async function releaseFundedTransferForRetry(
     `[funding] OPERATOR ${operator} re-armed transfer intent ${intentId} at key generation ${observedGeneration + 1} — asserting no transfer exists for it`,
   );
   return 'rearmed';
+}
+
+/**
+ * OPERATOR ACTION — resolve a transfer intent parked in `duplicate_review`.
+ *
+ * Reconcile parks an intent when its group shows more than one transfer
+ * for it, one from an abandoned key generation, or one that fails
+ * authentication: the partner may have been paid more than once, and no
+ * automatic rule can be right. The operator reverses the surplus in
+ * Stripe, then tells us which of two things is now true:
+ *
+ *   { keptTransferId }  the partner keeps this transfer: it paid these
+ *                       allocations, so record the ledger against it
+ *                       (Payout paid, allocations transferred,
+ *                       commissions paid).
+ *   { allReversed }     every transfer was reversed: the money is back in
+ *                       the platform balance, so the allocations are
+ *                       canceled and the batch settles with a residual for
+ *                       a §7 disposition, the same path a compliance hold
+ *                       takes for funded money that won't transfer.
+ *
+ * Mirrors the direct rail's `resolveDuplicateReview`, and like it VERIFIES
+ * BOTH DISPOSITIONS against Stripe rather than taking the operator's word.
+ * The kept transfer must belong to this intent, be wholly unreversed, and
+ * match the frozen amount, currency and destination; every other member
+ * must be fully reversed. "All reversed" must be true of every member.
+ * Members are `listFundedTransferMembers`, so a transfer whose metadata was
+ * cleared still counts against the resolution.
+ *
+ * The commit is fenced on the `reviewNonce` read BEFORE the listing. The
+ * funding webhook moves it whenever a member sees reversal activity, so a
+ * reversal landing between this listing and the commit makes the commit
+ * lose ('review_moved', retryable) and the next attempt re-verifies.
+ * Called by the operator-recovery apply loop (kind
+ * `resolve_duplicate_review`, rail `hosted_funding`, target = intent id).
+ */
+export async function resolveFundedDuplicateReview(
+  db: Knex,
+  intentId: string,
+  operator: string,
+  disposition: { keptTransferId: string } | { allReversed: true },
+  /** REQUIRED. Both dispositions are checked against Stripe. */
+  stripe: Stripe,
+): Promise<
+  | 'resolved'
+  | 'not_in_duplicate_review'
+  | 'review_moved'
+  | 'cannot_verify'
+  | 'kept_transfer_invalid'
+  | 'transfers_still_live'
+> {
+  if (!stripe) return 'cannot_verify';
+  const intent = (await db(TABLES.HostedFundingTransfer).where({ id: intentId }).first()) as
+    | HostedFundingTransferRow
+    | undefined;
+  if (!intent || intent.state !== 'duplicate_review') return 'not_in_duplicate_review';
+  const observedNonce = intent.reviewNonce;
+
+  const members = await listFundedTransferMembers(
+    db,
+    stripe,
+    intent,
+    `OPERATOR ${operator} resolve of funded transfer ${intentId}`,
+  );
+  if (members === 'cannot_verify') return 'cannot_verify';
+  const live = (t: Stripe.Transfer) => Number(t.amount_reversed ?? 0) < Number(t.amount ?? 0);
+
+  if ('keptTransferId' in disposition) {
+    const kept = members.find((t) => t.id === disposition.keptTransferId);
+    if (!kept) {
+      console.error(
+        `[funding] OPERATOR ${operator} named kept transfer ${disposition.keptTransferId} for transfer intent ${intentId}, but it is not one of this intent's transfers in batch ${intent.batchId}'s group — refusing`,
+      );
+      return 'kept_transfer_invalid';
+    }
+    if (Number(kept.amount_reversed ?? 0) > 0) {
+      console.error(
+        `[funding] OPERATOR ${operator} named kept transfer ${kept.id} for transfer intent ${intentId}, but it is reversed — refusing`,
+      );
+      return 'kept_transfer_invalid';
+    }
+    // Amount, currency and destination against the FROZEN intent: "present
+    // and unreversed" alone would let a one-cent transfer mark the whole
+    // allocation paid (the direct rail's round 9). Its `created` is not
+    // checked: an operator keeping a transfer is asserting it is ours.
+    const expected = Number(intent.amountMinor);
+    const keptDestination = typeof kept.destination === 'string' ? kept.destination : kept.destination?.id;
+    if (
+      !Number.isSafeInteger(expected) ||
+      Number(kept.amount) !== expected ||
+      kept.currency !== intent.currency.toLowerCase() ||
+      keptDestination !== intent.destinationAccountId
+    ) {
+      console.error(
+        `[funding] OPERATOR ${operator} named kept transfer ${kept.id} for transfer intent ${intentId}, but it is ${String(kept.amount)} ${String(kept.currency)} to ${String(keptDestination)} where the intent froze ${intent.amountMinor} ${intent.currency} to ${intent.destinationAccountId} — refusing; that transfer is not this payment`,
+      );
+      return 'kept_transfer_invalid';
+    }
+    // Every OTHER member must be fully reversed first. Resolving while one
+    // still holds money records this allocation paid and forgets it: the
+    // partner keeps the surplus with nothing left flagging it.
+    const liveOthers = members.filter((t) => t.id !== kept.id && live(t));
+    if (liveOthers.length > 0) {
+      console.error(
+        `[funding] OPERATOR ${operator} kept ${kept.id} for transfer intent ${intentId}, but ${liveOthers.length} other transfer(s) still hold money (${liveOthers
+          .map((t) => t.id)
+          .join(', ')}) — reverse the surplus first`,
+      );
+      return 'transfers_still_live';
+    }
+
+    const batch = (await db(TABLES.HostedFundingBatch).where({ id: intent.batchId }).first()) as
+      | HostedFundingBatchRow
+      | undefined;
+    if (!batch) return 'not_in_duplicate_review';
+    const allocations = (await db(TABLES.HostedFundingAllocation)
+      .where({ batchId: intent.batchId, partnerId: intent.partnerId })
+      .whereIn('state', ['transfer_pending', 'reserved'])) as HostedFundingAllocationRow[];
+    // The money moved whatever the batch's status, so the ledger records it
+    // even on a batch a dispute froze since; the executor settles a
+    // transferring batch on its next tick.
+    const written = await finalizeTransfer(db, batch, intent, allocations, kept, {
+      from: ['duplicate_review'],
+      reviewNonce: observedNonce,
+      lastError: `operator_kept_transfer:${operator}`,
+    });
+    if (written) {
+      console.error(
+        `[funding] OPERATOR ${operator} resolved duplicate_review on transfer intent ${intentId}: kept ${kept.id}, allocations transferred and commissions recorded PAID`,
+      );
+      return 'resolved';
+    }
+    return reviewOutcomeAfterLostFence(db, intentId, operator);
+  }
+
+  const liveMembers = members.filter(live);
+  if (liveMembers.length > 0) {
+    console.error(
+      `[funding] OPERATOR ${operator} claimed all transfers reversed for transfer intent ${intentId}, but ${liveMembers.length} still hold money (${liveMembers
+        .map((t) => t.id)
+        .join(', ')}) — refusing`,
+    );
+    return 'transfers_still_live';
+  }
+  const canceledMinor = await db.transaction(async (trx) => {
+    const closed = await trx(TABLES.HostedFundingTransfer)
+      .where({ id: intentId, state: 'duplicate_review', idempotencyKey: intent.idempotencyKey })
+      .whereRaw('"reviewNonce" is not distinct from ?', [observedNonce])
+      .update({ state: 'failed', lastError: `operator_all_reversed:${operator}`, updatedAt: db.fn.now() });
+    if (closed === 0) return null;
+    // Funded money that will not transfer: the same `canceled` state the
+    // compliance hold and the reversal interlock use. The commissions stay
+    // `approved`, and reserve.ts won't take them again until the batch's
+    // residual has a disposition, so the brand is never charged twice.
+    const canceled = (await trx(TABLES.HostedFundingAllocation)
+      .where({ batchId: intent.batchId, partnerId: intent.partnerId })
+      .whereIn('state', ['transfer_pending', 'reserved'])
+      .update({ state: 'canceled', updatedAt: db.fn.now() })
+      .returning(['amountMinor'])) as Array<{ amountMinor: string | number }>;
+    return canceled.reduce((s, a) => s + Number(a.amountMinor), 0);
+  });
+  if (canceledMinor === null) return reviewOutcomeAfterLostFence(db, intentId, operator);
+  console.error(
+    `[funding] OPERATOR ${operator} resolved duplicate_review on transfer intent ${intentId}: all transfers reversed, ${canceledMinor} minor of allocations canceled — batch ${intent.batchId} settles with a residual that needs a disposition`,
+  );
+  return 'resolved';
+}
+
+/** A resolution's commit lost its fence. Tell "the webhook moved the
+ *  nonce under us" (re-verify and retry) from "someone else resolved it". */
+async function reviewOutcomeAfterLostFence(
+  db: Knex,
+  intentId: string,
+  operator: string,
+): Promise<'review_moved' | 'not_in_duplicate_review'> {
+  const after = (await db(TABLES.HostedFundingTransfer).where({ id: intentId }).first(['state'])) as
+    | Pick<HostedFundingTransferRow, 'state'>
+    | undefined;
+  if (after?.state === 'duplicate_review') {
+    console.error(
+      `[funding] OPERATOR ${operator} resolve of transfer intent ${intentId} lost to new reversal activity recorded by the webhook — re-verify and retry`,
+    );
+    return 'review_moved';
+  }
+  return 'not_in_duplicate_review';
 }
 
 /** The partner's compliance hold, if any. `db` is the privileged pool the
