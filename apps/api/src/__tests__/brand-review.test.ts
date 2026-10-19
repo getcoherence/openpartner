@@ -34,6 +34,7 @@ delete process.env.PLATFORM_OPS_EMAIL; // no ops mail during tests
 const { db } = await import('../db.js');
 const { createApp } = await import('../app.js');
 const { issueMagicLink } = await import('../auth-sessions.js');
+const { settleBackgroundScreeningsForTesting } = await import('../sanctions-screening.js');
 const { createPlatformAdminSession, PLATFORM_ADMIN_SESSION_COOKIE } = await import(
   '../platform-admin-sessions.js'
 );
@@ -106,8 +107,10 @@ async function purgeSlug(slug: string): Promise<void> {
     TABLES.Session,
     TABLES.Config,
     TABLES.ApiKey,
-    // Signup records where the brand is based (country-access.ts).
+    // Signup records where the brand is based (country-access.ts), and
+    // screens it against the sanctions lists (sanctions-screening.ts).
     TABLES.LocationDeclaration,
+    TABLES.SanctionsScreening,
   ]) {
     await db(table).where({ tenantId: t.id }).del();
   }
@@ -194,6 +197,7 @@ afterEach(async () => {
   netVendors = [];
   netQueue = [];
   delete process.env.NETWORK_URL;
+  await settleBackgroundScreeningsForTesting();
   for (const slug of createdSlugs.splice(0)) await purgeSlug(slug);
   if (createdBlocklistValues.length) {
     await db(TABLES.SignupBlocklist).whereIn('value', createdBlocklistValues.splice(0)).del();

@@ -19,6 +19,11 @@
  *   - payout-transfers: every 15 minutes. Retries/reconciles Connect
  *                   transfer intents left open by a crash, an ambiguous
  *                   Stripe response, or a partner who wasn't ready.
+ *   - sanctions-screening: hourly. Screens partners with approved
+ *                   commissions against the Consolidated Screening List
+ *                   the first time they're payable, and again at most
+ *                   daily (the payouts tick also runs this part first),
+ *                   then any brand never screened under its current name.
  *
  * Both jobs are no-ops in selfhost mode for usage-report. Payouts run in
  * every mode (a self-host operator with no approved commissions just gets
@@ -47,6 +52,7 @@ import { autoApproveMatureCommissions } from './commission-auto-approve.js';
 import { dispatchCommissionEvents } from './commission-events.js';
 import { sendBountyEmails, sweepTenantBounties } from './performance-bounties.js';
 import { reverifyPortalDomains, sweepWhiteLabelEntitlement } from './portal-domains.js';
+import { runScreeningSweep, screenPayablePartners } from './sanctions-screening.js';
 
 interface ScheduledJob {
   name: string;
@@ -104,6 +110,12 @@ async function forEachActiveTenant<T>(
  * transfers.
  */
 export async function runPayoutsJob() {
+  // Screen anyone payable who hasn't been yet, so a partner who became
+  // payable since the last hourly sweep isn't held as screening_pending
+  // (or paid unscreened). Outside every transaction: it calls the list.
+  const screening = await screenPayablePartners(db).catch((err: unknown) => ({
+    error: err instanceof Error ? err.message : String(err),
+  }));
   const planned = await forEachActiveTenant(
     async (trx, tenantId) => {
       // Cron ticks every Monday; per-tenant cadence decides whether the
@@ -137,7 +149,7 @@ export async function runPayoutsJob() {
   // tick keeps the weekly run a single visible operation.
   const { executePayoutTransfers } = await import('./payout-transfers.js');
   const transfers = await executePayoutTransfers(db);
-  return { planned: summary, transfers };
+  return { screening, planned: summary, transfers };
 }
 
 const JOBS: ScheduledJob[] = [
@@ -171,6 +183,13 @@ const JOBS: ScheduledJob[] = [
       const transfers = await executePayoutTransfers(db);
       return { recovery, transfers };
     },
+  },
+  {
+    name: 'sanctions-screening',
+    cronExpr: '35 * * * *',
+    description:
+      'Screen partners with approved commissions against the US Consolidated Screening List the first time they are payable, then at most daily; then screen brands never screened under their current name (hourly at :35; skipped without CSL_API_KEY)',
+    handler: async () => runScreeningSweep(db),
   },
   {
     name: 'network-outbox-drain',
