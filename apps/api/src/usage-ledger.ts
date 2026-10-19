@@ -195,10 +195,11 @@ interface ConversionOptions {
   attributedBy?: Date;
 }
 
-/** A refund Event's share of its Stripe charge, 0..1. Nested CASEs, because
- *  SQL doesn't promise to evaluate AND operands in order and the casts must
- *  only see numbers. */
-const STRIPE_SHARE = `case
+/** A refund Event's share of its Stripe charge, 0..1, for an Event aliased
+ *  `r`. Nested CASEs, because SQL doesn't promise to evaluate AND operands
+ *  in order and the casts must only see numbers. Bounties net the same
+ *  shares (performance-metric.ts). */
+export const STRIPE_SHARE = `case
     when r.metadata->>'fullRefund' = 'true' then 1
     when coalesce(jsonb_typeof(r.metadata->'amountRefunded'), '') <> 'number'
       or coalesce(jsonb_typeof(r.metadata->'chargeCollected'), '') <> 'number' then 0
