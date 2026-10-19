@@ -215,9 +215,10 @@ stripeWebhookRouter.post(
     }
 
     // Funding-pipeline events (PaymentIntents/charges/transfers stamped
-    // with our funding metadata) are platform-money events, not merchant
-    // conversion events — they route to the funding state machine on the
-    // privileged pool and never reach attribution. Runs regardless of
+    // with our funding metadata, or transfers grouped under a funding
+    // batch) are platform-money events, not merchant conversion events —
+    // they route to the funding state machine on the privileged pool and
+    // never reach attribution. Runs regardless of
     // HOSTED_FUNDING_ENABLED: a late webhook after a flag flip must still
     // land in the inbox and CAS safely.
     let funding: string | null;
@@ -795,7 +796,9 @@ async function handleConnectEvent(
       // POST can still land afterwards. When it does, Stripe tells us —
       // this is where we listen. A transfer arriving for a payout that is
       // no longer expecting one is money moved outside the ledger, and it
-      // must be LOUD; disposition stays with a human.
+      // must be LOUD; disposition stays with a human. Hosted funded
+      // transfers (group = funding batch id) never reach this: the funding
+      // inbox takes them first (detectFundedTransferCreated).
       const transfer = event.data.object as Stripe.Transfer;
       const payoutId = transfer.transfer_group ?? transfer.metadata?.openpartner_payout_id;
       if (!payoutId) return null;
