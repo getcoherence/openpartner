@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { theme } from '../../theme.js';
+import { countryErrorMessage } from '../../lib/CountryField.js';
 import { AuthFrame } from './Shared.js';
 import { stripQueryParamsFromAddressBar } from '../../lib/sensitive-url.js';
 
@@ -43,7 +44,8 @@ export function PlatformMagicLandingPage() {
       })
       .catch((err) => {
         setState('failed');
-        setDetail(err instanceof Error ? err.message : 'Link is invalid or expired.');
+        const message = err instanceof Error ? err.message : 'Link is invalid or expired.';
+        setDetail(countryErrorMessage(message) ?? message);
       });
   }, [nav, params]);
 

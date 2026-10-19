@@ -417,6 +417,32 @@ export function opsBrandNeedsReviewEmail(
   return { subject, text, html: wrap(text, reviewUrl, 'Review brand') };
 }
 
+/** Platform ops: an existing brand, asked where it's based, named a
+ *  country the platform doesn't serve (or answered from one). Ops close it
+ *  through the review console. */
+export function opsBrandCountryNotServedEmail(
+  brandName: string,
+  slug: string,
+  declaredCountry: string,
+  via: 'declared' | 'ip' | 'region',
+  reviewUrl: string,
+): EmailTemplate {
+  const subject = `[Action] ${brandName} (${slug}) is in a country we don't serve`;
+  const text = [
+    `A brand answered the location question with a country the platform doesn't serve.`,
+    ``,
+    `  Brand:     ${brandName}`,
+    `  Slug:      ${slug}`,
+    `  Declared:  ${declaredCountry}`,
+    `  Matched:   ${via === 'ip' ? 'the sign-in IP country' : 'the declared country'}`,
+    ``,
+    `Their sign-in is already refused from blocked countries. Review and reject the brand in the ops console:`,
+    ``,
+    reviewUrl,
+  ].join('\n');
+  return { subject, text, html: wrap(text, reviewUrl, 'Open review console') };
+}
+
 /** Platform ops: self-hosted vendors registered on the Network and are
  *  waiting in the vendor review queue (nothing they publish lists until an
  *  operator approves them). */

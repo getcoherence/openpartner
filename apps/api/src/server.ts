@@ -2,6 +2,8 @@ import { createApp } from './app.js';
 import { startScheduler } from './scheduler.js';
 import { outboundPolicy } from './outbound-guard.js';
 import { assertAppPoolEnforcesRls } from './tenant-isolation-guard.js';
+import { warmGeoIp } from './geoip.js';
+import { getTenancyMode } from './tenancy.js';
 
 const PORT = Number(process.env.API_PORT ?? 4601);
 const MODE = process.env.OPENPARTNER_MODE ?? 'selfhost';
@@ -68,4 +70,7 @@ const app = createApp();
 app.listen(PORT, () => {
   console.log(`[api] listening on :${PORT} (mode=${MODE})`);
   startScheduler();
+  // Country rules only apply on the hosted platform; fetch the IP database
+  // now so the first sign-in doesn't wait on it.
+  if (getTenancyMode() === 'multi') warmGeoIp();
 });

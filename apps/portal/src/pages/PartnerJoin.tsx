@@ -11,6 +11,7 @@ import {
 } from '@openpartner/db';
 import { ApiError, api, currentTenantSlug } from '../api.js';
 import { alpha, theme } from '../theme.js';
+import { CountryField, countryErrorMessage } from '../lib/CountryField.js';
 import { AuthFrame } from './auth/Shared.js';
 import { usePublicBrand } from '../lib/useBrand.js';
 
@@ -139,25 +140,33 @@ export function PartnerJoinPage() {
   const [err, setErr] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: 'form' });
   const [networkOptIn, setNetworkOptIn] = useState(false);
+  // Hosted platform only: where the applicant is based (country-access).
+  const [country, setCountry] = useState('');
+  const [outsideOccupiedRegions, setOutsideOccupiedRegions] = useState(false);
   // Closed (or reviewed) is known before anyone fills in the form. If the
   // check fails (an older API without it), the form still works and a
   // closed program answers the submit with signup_disabled.
   const status = useQuery({
     queryKey: ['partner-signup-status', currentTenantSlug()],
-    queryFn: () => api<{ open: boolean; reviewRequired: boolean; networkOffered?: boolean }>('/partner-signup/status'),
+    queryFn: () =>
+      api<{ open: boolean; reviewRequired: boolean; networkOffered?: boolean; countryRequired?: boolean }>(
+        '/partner-signup/status',
+      ),
     retry: false,
     staleTime: 60_000,
   });
 
   const { errors, application } = validateJoinForm(values);
   const networkOffered = status.data?.networkOffered === true;
+  const countryRequired = status.data?.countryRequired === true;
+  const countryMissing = countryRequired && (!country || (country === 'UA' && !outsideOccupiedRegions));
   const set = <K extends JoinField>(key: K, value: JoinFormValues[K]) => setValues((v) => ({ ...v, [key]: value }));
   const touch = (key: JoinField) => setTouched((t) => (t[key] ? t : { ...t, [key]: true }));
   const shownError = (key: JoinField) => (touched[key] ? errors[key] : undefined);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!application) {
+    if (!application || countryMissing) {
       setTouched({ name: true, email: true, websiteUrl: true, socialUrls: true, audienceSize: true, pitch: true });
       return;
     }
@@ -171,6 +180,7 @@ export function PartnerJoinPage() {
           email: values.email.trim().toLowerCase(),
           application,
           ...(networkOffered && networkOptIn ? { networkOptIn: true } : {}),
+          ...(countryRequired ? { country, ...(country === 'UA' ? { outsideOccupiedRegions } : {}) } : {}),
         },
       });
       setPhase({ kind: 'sent', review: r.status.startsWith('pending_review') });
@@ -180,6 +190,8 @@ export function PartnerJoinPage() {
         // Either the brand closed signups or its billing is inactive —
         // the partner-facing message is the same.
         setPhase({ kind: 'closed' });
+      } else if (countryErrorMessage(code)) {
+        setErr(countryErrorMessage(code));
       } else if (e instanceof ApiError && e.status === 400 && code.includes('invalid_body')) {
         setErr(invalidBodyMessage(e));
       } else {
@@ -239,7 +251,7 @@ export function PartnerJoinPage() {
 
   const pitchLength = values.pitch.trim().length;
   const socialRows = values.socialUrls;
-  const disabled = busy || !application;
+  const disabled = busy || !application || countryMissing;
 
   return (
     <AuthFrame
@@ -279,6 +291,20 @@ export function PartnerJoinPage() {
           />
         </div>
         <FieldError message={shownError('email')} />
+
+        {countryRequired && (
+          <>
+            <FieldLabel htmlFor="join-country">Where are you based?</FieldLabel>
+            <CountryField
+              id="join-country"
+              value={country}
+              onChange={setCountry}
+              outsideOccupiedRegions={outsideOccupiedRegions}
+              onOutsideOccupiedRegionsChange={setOutsideOccupiedRegions}
+              selectStyle={inputStyle}
+            />
+          </>
+        )}
 
         <FieldLabel htmlFor="join-website">Website or main channel</FieldLabel>
         <input

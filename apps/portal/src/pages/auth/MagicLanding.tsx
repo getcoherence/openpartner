@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { api, clearApiKey } from '../../api.js';
 import { theme } from '../../theme.js';
+import { countryErrorMessage } from '../../lib/CountryField.js';
 import { AuthFrame } from './Shared.js';
 import { stripQueryParamsFromAddressBar } from '../../lib/sensitive-url.js';
 
@@ -57,7 +58,9 @@ export function MagicLandingPage() {
         setDetail(
           message.includes('pending_review')
             ? "Your application is still being reviewed. You'll get an email with a sign-in link once you're approved."
-            : message.includes('portal_access_disabled')
+            : countryErrorMessage(message)
+              ? countryErrorMessage(message)!
+              : message.includes('portal_access_disabled')
               ? 'Your account doesn\'t have access to this portal. Contact the program if you think it should.'
               : message || 'Link is invalid or expired.',
         );
