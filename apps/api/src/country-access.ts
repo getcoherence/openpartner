@@ -84,6 +84,12 @@ export async function getCountryAccessSettings(db: Knex): Promise<CountryAccessS
   };
 }
 
+/** The operator who last saved the list, or null while the defaults stand. */
+export async function getCountryAccessUpdatedBy(db: Knex): Promise<string | null> {
+  const row = await db<PlatformSettingRow>(TABLES.PlatformSetting).where({ key: SETTINGS_KEY }).first();
+  return row?.updatedByEmail ?? null;
+}
+
 export async function setCountryAccessSettings(
   db: Knex,
   patch: Partial<CountryAccessSettings>,

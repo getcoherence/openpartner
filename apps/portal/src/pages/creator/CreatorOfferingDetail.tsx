@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
+import { countryErrorMessage } from '../../lib/CountryField.js';
 import { creatorApi, ApiError } from './creator-api.js';
 import { categoryLabel } from '@openpartner/db';
 import { ListingBanner, ListingVideo, type OfferingVideo } from './ListingBanner.js';
@@ -755,7 +756,9 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
           link={<Link to="/creator/profile" style={{ color: theme.accentText, fontWeight: 500 }}>Go to your profile →</Link>}
         />
       )}
-      {!refusedMissing && <ErrorBanner error={apply.error} />}
+      {!refusedMissing && (
+        <ErrorBanner error={apply.error ? (countryErrorMessage(apply.error.message) ?? apply.error) : null} />
+      )}
       {apply.error instanceof ApiError && apply.error.message === 'request_already_exists' && (
         <p style={{ color: theme.textMuted, fontSize: 13 }}>You already have a pending or active request for this program.</p>
       )}

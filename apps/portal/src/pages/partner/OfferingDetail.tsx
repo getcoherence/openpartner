@@ -4,6 +4,7 @@ import { useNavigate, useParams } from 'react-router';
 import { api, ApiError, type Principal } from '../../api.js';
 import { TenantLink } from '../../tenant-link.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
+import { countryErrorMessage } from '../../lib/CountryField.js';
 import { theme } from '../../theme.js';
 import {
   ProfileIncompleteNotice,
@@ -122,7 +123,9 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
                     link={<TenantLink to="/network/profile" style={{ color: theme.accentText, fontWeight: 500 }}>Go to your profile →</TenantLink>}
                   />
                 )}
-                {!refusedMissing && <ErrorBanner error={apply.error} />}
+                {!refusedMissing && (
+                  <ErrorBanner error={apply.error ? (countryErrorMessage(apply.error.message) ?? apply.error) : null} />
+                )}
                 {apply.error instanceof ApiError && apply.error.detail && typeof apply.error.detail === 'object' &&
                   'detail' in (apply.error.detail as { detail?: { detail?: string } }) &&
                   (apply.error.detail as { detail?: string }).detail === 'request_already_exists' && (

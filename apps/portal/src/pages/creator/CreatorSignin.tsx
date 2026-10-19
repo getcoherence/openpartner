@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router';
 import { alpha, theme } from '../../theme.js';
 import { AuthFrame } from '../auth/Shared.js';
+import { countryErrorMessage } from '../../lib/CountryField.js';
 import { creatorApi, ApiError } from './creator-api.js';
 
 export function CreatorSigninPage() {
@@ -21,7 +22,8 @@ export function CreatorSigninPage() {
       });
       setSent(true);
     } catch (e) {
-      setErr(e instanceof ApiError ? e.message : 'Something went wrong.');
+      const message = e instanceof ApiError ? e.message : 'Something went wrong.';
+      setErr(countryErrorMessage(message) ?? message);
     } finally {
       setBusy(false);
     }
