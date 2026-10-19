@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { theme } from '../../theme.js';
 import { Logo } from '../auth/Shared.js';
 import { ThemeToggle } from '../../lib/ThemeToggle.js';
+import { CookieSettingsButton } from '../../lib/ConsentBanner.js';
 import type { ApprovalStatus } from './lib.js';
 
 /**
@@ -62,6 +63,7 @@ export function PlatformFrame({
         </div>
       </div>
       <ThemeToggle style={{ marginTop: 16 }} />
+      <CookieSettingsButton style={{ marginTop: 8 }} />
     </div>
   );
 }

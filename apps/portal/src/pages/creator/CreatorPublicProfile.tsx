@@ -10,6 +10,7 @@ import { ExternalLink, Globe } from 'lucide-react';
 import { Card, ErrorBanner, EmptyState } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { ThemeToggle } from '../../lib/ThemeToggle.js';
+import { CookieSettingsButton } from '../../lib/ConsentBanner.js';
 import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
 import { creatorApi, ApiError } from './creator-api.js';
 import { audienceSizeLabel } from '@openpartner/db';
@@ -230,7 +231,10 @@ function Shell({ children }: { children: React.ReactNode }) {
       <div style={{ maxWidth: 720, margin: '0 auto' }}>
         <div style={{ marginBottom: 24, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <Link to="/" style={{ color: theme.textMuted, textDecoration: 'none' }}>← OpenPartner</Link>
-          <ThemeToggle />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <CookieSettingsButton />
+            <ThemeToggle />
+          </div>
         </div>
         {children}
       </div>

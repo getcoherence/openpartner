@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { LogOut } from 'lucide-react';
 import { theme } from '../../theme.js';
 import { ThemeToggle } from '../../lib/ThemeToggle.js';
+import { CookieSettingsButton } from '../../lib/ConsentBanner.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
 import { Logo } from '../auth/Shared.js';
 import { papi, type PlatformOperator } from './lib.js';
@@ -160,6 +161,7 @@ function TopNav({ operator, onSignOut }: { operator: PlatformOperator; onSignOut
             </div>
           </div>
           <ThemeToggle />
+          <CookieSettingsButton style={{ whiteSpace: 'nowrap' }} />
           <button
             onClick={onSignOut}
             style={{
