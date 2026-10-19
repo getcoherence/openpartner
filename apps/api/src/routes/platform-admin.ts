@@ -130,7 +130,7 @@ function envAdminEmails(): Set<string> {
 
 /** May this email sign in to the ops console? True if it has a live
  *  PlatformAdmin row OR is listed in PLATFORM_ADMIN_EMAILS. */
-async function isAllowedOperator(email: string): Promise<boolean> {
+export async function isAllowedOperator(email: string): Promise<boolean> {
   const existing = await db<PlatformAdminRow>(TABLES.PlatformAdmin).where({ email }).first();
   if (existing && !existing.revokedAt) return true;
   return envAdminEmails().has(email);
