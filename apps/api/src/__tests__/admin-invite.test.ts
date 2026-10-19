@@ -4,7 +4,7 @@
  * URLs without Postmark.
  */
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { TABLES } from '@openpartner/db';
 import { db } from '../db.js';
@@ -191,5 +191,140 @@ describe.skipIf(skipIntegration)('admin personas', () => {
       .send({ email: 'dup@example.com', name: 'Second' });
     expect(dupe.status).toBe(409);
     expect(dupe.body.error).toBe('email_taken');
+  });
+});
+
+// Setup ran, but its activation link was lost (console scrolled away,
+// mail never arrived). Nobody has activated, so the portal keeps routing
+// to /install — which must be able to send a fresh link to the admin
+// setup registered, and only to them.
+describe.skipIf(skipIntegration)('first-run activation recovery', () => {
+  async function installPending(): Promise<void> {
+    const res = await request(app).post('/install').send({
+      adminName: 'Ada Admin',
+      adminEmail: 'ada@example.com',
+      programName: 'Acme Partners',
+    });
+    expect(res.status).toBe(200);
+    // The link is lost.
+    mailer.sent.length = 0;
+  }
+
+  it('a lost link leaves setup, install and sign-in all dead ends', async () => {
+    await installPending();
+
+    const status = await request(app).get('/install/status');
+    expect(status.body.needsSetup).toBe(true);
+
+    // Re-running setup, even with the same details, is refused…
+    const again = await request(app).post('/install').send({
+      adminName: 'Ada Admin',
+      adminEmail: 'ada@example.com',
+      programName: 'Acme Partners',
+    });
+    expect(again.status).toBe(409);
+    expect(again.body.error).toBe('already_installed');
+
+    // …and sign-in only mails admins who have activated.
+    const signin = await request(app).post('/auth/signin').send({ email: 'ada@example.com' });
+    expect(signin.status).toBe(200);
+    expect(mailer.sent).toHaveLength(0);
+  });
+
+  it('resend mails a fresh link to the registered admin, which finishes setup', async () => {
+    await installPending();
+
+    const res = await request(app).post('/install/resend').send({ adminEmail: '  Ada@Example.com ' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    expect(mailer.sent).toHaveLength(1);
+    const invite = mailer.sent[0]!;
+    expect(invite.to).toBe('ada@example.com');
+    expect(invite.subject).toContain('Acme Partners');
+    expect(invite.metadata).toMatchObject({ purpose: 'admin_invite', firstRun: true, resend: true });
+
+    const verify = await request(app).post('/auth/magic/verify').send({ token: extractToken(invite.text) });
+    expect(verify.status).toBe(200);
+    expect(verify.body.role).toBe('admin');
+    expect(verify.body.admin.email).toBe('ada@example.com');
+    expect((await request(app).get('/install/status')).body.needsSetup).toBe(false);
+
+    // Once an admin has activated, resend mails nobody.
+    mailer.sent.length = 0;
+    const after = await request(app).post('/install/resend').send({ adminEmail: 'ada@example.com' });
+    expect(after.body).toEqual({ ok: true });
+    expect(mailer.sent).toHaveLength(0);
+  });
+
+  it('a different email can neither install nor be sent the link', async () => {
+    await installPending();
+
+    const takeover = await request(app).post('/install').send({
+      adminName: 'Rogue',
+      adminEmail: 'rogue@example.com',
+      programName: 'Takeover',
+    });
+    expect(takeover.status).toBe(409);
+    expect(takeover.body.error).toBe('already_installed');
+
+    // Same answer as for the real address, so it confirms nothing.
+    const resend = await request(app).post('/install/resend').send({ adminEmail: 'rogue@example.com' });
+    expect(resend.status).toBe(200);
+    expect(resend.body).toEqual({ ok: true });
+    expect(mailer.sent).toHaveLength(0);
+
+    expect(await db(TABLES.Admin).select('email', 'activatedAt')).toEqual([
+      { email: 'ada@example.com', activatedAt: null },
+    ]);
+    const tokens = await db(TABLES.MagicLinkToken).select('email');
+    expect(tokens.map((t: { email: string }) => t.email)).toEqual(['ada@example.com']);
+  });
+
+  it('resend mails nobody before setup, or a revoked admin', async () => {
+    const fresh = await request(app).post('/install/resend').send({ adminEmail: 'ada@example.com' });
+    expect(fresh.body).toEqual({ ok: true });
+
+    await installPending();
+    await db(TABLES.Admin).where({ email: 'ada@example.com' }).update({ revokedAt: new Date() });
+    const revoked = await request(app).post('/install/resend').send({ adminEmail: 'ada@example.com' });
+    expect(revoked.body).toEqual({ ok: true });
+    expect(mailer.sent).toHaveLength(0);
+  });
+
+  it('a failed send answers like any other request', async () => {
+    await installPending();
+    __setMailerForTests({
+      async send() {
+        throw new Error('smtp down');
+      },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await request(app).post('/install/resend').send({ adminEmail: 'ada@example.com' });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true });
+      expect(warn).toHaveBeenCalledWith('[install] activation link resend failed', expect.objectContaining({ error: 'smtp down' }));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('rejects a malformed address', async () => {
+    const res = await request(app).post('/install/resend').send({ adminEmail: 'not-an-email' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_body');
+  });
+
+  it('is unavailable in multi-tenant mode', async () => {
+    await installPending();
+    process.env.OPENPARTNER_TENANCY = 'multi';
+    try {
+      const res = await request(app).post('/install/resend').send({ adminEmail: 'ada@example.com' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('install_not_available_in_multi_tenant');
+    } finally {
+      process.env.OPENPARTNER_TENANCY = 'single';
+    }
+    expect(mailer.sent).toHaveLength(0);
   });
 });
