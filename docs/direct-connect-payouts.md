@@ -108,9 +108,15 @@ intent ──preflight fails──▶ canceled   (nothing was ever sent to Strip
   loudly instead of paying twice.
 - **Preflight** (before the first POST only, when abandoning is still free)
   re-checks that every claimed commission is still `approved`, that they still
-  sum to the frozen amount, and that the partner is still Connect-ready. Any
+  sum to the frozen amount, that the partner is still Connect-ready, and that
+  they are not on a compliance hold (`compliance_hold:<reason>`,
+  [sanctions-screening.md](sanctions-screening.md)). Any
   drift cancels the intent and releases the claims so the next planning run
   regroups what remains.
+- A compliance hold on a **posted** intent can't cancel it (the transfer may
+  exist), so the executor skips the re-POST instead and the intent waits:
+  the hold lifts and the retry resumes, or the key window lapses and it
+  reconciles by listing.
 - Preflight can only catch drift *before* the first POST, so the frozen
   commissions are also protected from the other side: `interlockCommissionReversal`
   holds any commission claimed by an open intent, which is what makes the
