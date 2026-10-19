@@ -352,6 +352,49 @@ export function platformAdminSigninEmail(link: string): EmailTemplate {
   return { subject, text, html: wrap(text, link, 'Sign in to ops') };
 }
 
+/** Unified sign-in matched no brand admin for this address. Sent only where
+ *  the reader can act on it (routes/signin.ts): an ops-console address gets
+ *  pointed at the ops console; anyone else gets the ways to a brand account. */
+export function signinNoAccountEmail(opts: {
+  email: string;
+  /** Set when the address is an ops-console operator. */
+  opsConsoleUrl: string | null;
+  signupUrl: string;
+}): EmailTemplate {
+  const subject = `No OpenPartner brand account for this address`;
+  const opening = [
+    `Someone asked for an OpenPartner sign-in link for ${opts.email}, but this`,
+    `address isn't an admin on any brand, so no link was sent.`,
+    ``,
+  ];
+  const closing = [``, `If you didn't ask for a link, ignore this email. Nothing changed.`];
+  if (opts.opsConsoleUrl) {
+    const text = [
+      ...opening,
+      `It is an ops-console address. Sign in to the ops console here:`,
+      ``,
+      opts.opsConsoleUrl,
+      ``,
+      `To work in a brand, sign in with the address that brand's team invited,`,
+      `or ask one of its admins to invite this address.`,
+      ...closing,
+    ].join('\n');
+    return { subject, text, html: wrap(text, opts.opsConsoleUrl, 'Open the ops console') };
+  }
+  const text = [
+    ...opening,
+    `If that was you, sign in with the address your brand's team invited, or ask`,
+    `one of its admins to invite this address. To start a brand of your own:`,
+    ``,
+    opts.signupUrl,
+    ``,
+    `If this address has a creator account, its creator sign-in link comes in a`,
+    `separate email.`,
+    ...closing,
+  ].join('\n');
+  return { subject, text, html: wrap(text, opts.signupUrl, 'Create a brand') };
+}
+
 /** Platform ops: a new brand signed up and is waiting for review. */
 export function opsBrandNeedsReviewEmail(
   brandName: string,
