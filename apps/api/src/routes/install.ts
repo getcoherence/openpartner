@@ -8,6 +8,12 @@
  * activate. After they verify, they're the first admin and can invite
  * others + rotate ADMIN_API_KEY.
  *
+ * A lost activation link would otherwise strand the install: /install
+ * 409s (the admin row exists), /install/status still says needsSetup
+ * (nobody activated), and /auth/signin only mails activated admins.
+ * POST /install/resend mails a fresh link to that already-registered
+ * address.
+ *
  * Multi-tenant: install is the self-host bootstrap. In multi-tenant mode
  * it rejects — hosted operators provision tenants via /signup, and the
  * platform is never "uninstalled". The endpoint stays mounted as a
@@ -25,6 +31,7 @@ import { issueMagicLink } from '../auth-sessions.js';
 import { getMailer } from '../mailer.js';
 import { adminInviteEmail, buildMagicLinkUrl } from '../email-templates.js';
 import { saveMailSettings } from '../mail-settings.js';
+import { resolveBrandName } from '../brand-name.js';
 import { getTenancyMode } from '../tenancy.js';
 
 export const installRouter = Router();
@@ -81,6 +88,45 @@ const installSchema = z
     }
   });
 
+const resendSchema = z.object({
+  adminEmail: z.string().trim().email().max(254),
+});
+
+/** Admins who can sign in. Zero means first-run setup isn't finished. */
+async function countActiveAdmins(): Promise<number> {
+  const [row] = await db<AdminRow>(TABLES.Admin)
+    .where({ tenantId: DEFAULT_TENANT_ID })
+    .whereNotNull('activatedAt')
+    .whereNull('revokedAt')
+    .count<{ count: string }[]>({ count: '*' });
+  return Number(row?.count ?? 0);
+}
+
+/** Mint an admin_invite link and mail it to the address on the admin's
+ *  row — the only place a first-run activation link ever goes. */
+async function sendFirstRunInvite(
+  admin: Pick<AdminRow, 'id' | 'email' | 'name'>,
+  programName: string | null,
+  resend: boolean,
+): Promise<void> {
+  const issued = await issueMagicLink(db, {
+    tenantId: DEFAULT_TENANT_ID,
+    email: admin.email,
+    purpose: 'admin_invite',
+    principalKind: 'admin',
+    principalId: admin.id,
+  });
+  const tmpl = adminInviteEmail(admin.name, buildMagicLinkUrl(issued.plaintext), programName);
+  await getMailer().send({ db, tenantId: DEFAULT_TENANT_ID }, {
+    to: admin.email,
+    subject: tmpl.subject,
+    text: tmpl.text,
+    html: tmpl.html,
+    tag: 'admin_invite',
+    metadata: { purpose: 'admin_invite', adminId: admin.id, firstRun: true, ...(resend ? { resend: true } : {}) },
+  });
+}
+
 /**
  * Public status probe used by the portal to decide whether to route to
  * /install on mount. Always reachable (it's what tells the portal the
@@ -90,12 +136,48 @@ installRouter.get('/install/status', async (_req, res) => {
   if (getTenancyMode() === 'multi') {
     return res.json({ needsSetup: false, reason: 'multi_tenant' });
   }
-  const [row] = await db<AdminRow>(TABLES.Admin)
-    .where({ tenantId: DEFAULT_TENANT_ID })
-    .whereNotNull('activatedAt')
-    .whereNull('revokedAt')
-    .count<{ count: string }[]>({ count: '*' });
-  res.json({ needsSetup: Number(row?.count ?? 0) === 0 });
+  res.json({ needsSetup: (await countActiveAdmins()) === 0 });
+});
+
+/**
+ * Re-send the first-run activation link.
+ *
+ * Mails only an admin who is already registered (by setup, or invited
+ * with ADMIN_API_KEY), unrevoked and not yet activated, and only while
+ * no admin has activated. The link goes to the address on that row, and
+ * nothing else in the request is used — so this can't add an admin,
+ * change where mail is delivered, or reach anyone once the install is
+ * live. Always `{ ok: true }`, like /auth/signin, so it doesn't confirm
+ * which address is the admin's; a send failure is logged rather than
+ * returned for the same reason. Shares POST /install's per-IP bucket.
+ */
+installRouter.post('/install/resend', installLimit, async (req, res) => {
+  if (getTenancyMode() === 'multi') {
+    return res.status(400).json({ error: 'install_not_available_in_multi_tenant' });
+  }
+
+  const body = resendSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const email = body.data.adminEmail.toLowerCase();
+
+  if ((await countActiveAdmins()) === 0) {
+    const admin = await db<AdminRow>(TABLES.Admin)
+      .where({ tenantId: DEFAULT_TENANT_ID, email })
+      .whereNull('activatedAt')
+      .whereNull('revokedAt')
+      .first();
+    if (admin) {
+      try {
+        await sendFirstRunInvite(admin, await resolveBrandName(db, DEFAULT_TENANT_ID), true);
+      } catch (err) {
+        console.warn('[install] activation link resend failed', {
+          adminId: admin.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+  res.json({ ok: true });
 });
 
 /** Deterministic pg advisory-lock key — any 64-bit int, as long as this
@@ -182,22 +264,11 @@ installRouter.post('/install', installLimit, async (req, res) => {
       });
     }
 
-    const issued = await issueMagicLink(db, {
-      tenantId: DEFAULT_TENANT_ID,
-      email: adminEmail,
-      purpose: 'admin_invite',
-      principalKind: 'admin',
-      principalId: adminId,
-    });
-    const tmpl = adminInviteEmail(body.data.adminName.trim(), buildMagicLinkUrl(issued.plaintext), programName);
-    await getMailer().send({ db, tenantId: DEFAULT_TENANT_ID }, {
-      to: adminEmail,
-      subject: tmpl.subject,
-      text: tmpl.text,
-      html: tmpl.html,
-      tag: 'admin_invite',
-      metadata: { purpose: 'admin_invite', adminId, firstRun: true },
-    });
+    await sendFirstRunInvite(
+      { id: installedAdminId, email: adminEmail, name: body.data.adminName.trim() },
+      programName,
+      false,
+    );
   } catch (err) {
     // Remove the admin row + any magic-link token we issued before the
     // failure. MagicLinkToken has no FK to Admin since the schema was

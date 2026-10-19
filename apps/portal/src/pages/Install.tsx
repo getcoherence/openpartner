@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from 'react';
-import { useMutation } from '@tanstack/react-query';
-import { ArrowLeft, ArrowRight, Check, Rocket } from 'lucide-react';
-import { api } from '../api.js';
-import { theme } from '../theme.js';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { ArrowLeft, ArrowRight, Check, Mail, Rocket } from 'lucide-react';
+import { api, ApiError } from '../api.js';
+import { alpha, softText, theme } from '../theme.js';
 import { Button, ErrorBanner, Input, Label, Select } from '../ui.js';
 import { AuthFrame } from './auth/Shared.js';
 
@@ -12,12 +12,26 @@ import { AuthFrame } from './auth/Shared.js';
  *   2. Program  — program name + optional support email
  *   3. Mail     — transport + credentials (so the invite email can send)
  * Final screen tells the admin to go check their inbox.
+ *
+ * Setup runs once. If its activation link is lost, the admin row already
+ * exists, so POST /install 409s while /install/status still says
+ * needsSetup. The resend screen asks POST /install/resend for a fresh link
+ * to the address entered at setup.
  */
 
 type MailKind = 'smtp' | 'postmark' | 'none';
 
+interface InstallStatus {
+  needsSetup: boolean;
+  reason?: 'multi_tenant';
+}
+
 export function InstallPage() {
+  const qc = useQueryClient();
   const [step, setStep] = useState(0);
+  // Set once setup has already run: `pending` when a submit 409'd, false
+  // when the admin chose "resend" themselves.
+  const [resend, setResend] = useState<{ pending: boolean } | null>(null);
 
   const [adminName, setAdminName] = useState('');
   const [adminEmail, setAdminEmail] = useState('');
@@ -60,7 +74,39 @@ export function InstallPage() {
           },
         },
       }),
+    onError: async (err) => {
+      if (!(err instanceof ApiError) || err.status !== 409) return;
+      // already_installed. Re-probe through the query App routes on: if
+      // the admin activated meanwhile (another tab), needsSetup flips and
+      // App leaves /install for sign-in. Otherwise the install is waiting
+      // on an activation link.
+      try {
+        const status = await qc.fetchQuery({
+          queryKey: ['install-status'],
+          queryFn: () => api<InstallStatus>('/install/status'),
+          staleTime: 0,
+        });
+        if (status.needsSetup) setResend({ pending: true });
+      } catch {
+        // Probe failed: leave the 409 on the banner.
+      }
+    },
   });
+
+  if (resend) {
+    return (
+      <ResendActivation
+        initialEmail={adminEmail}
+        pending={resend.pending}
+        brand={programName || undefined}
+        onBack={() => {
+          // Clear a 409 off the wizard; a sent invite keeps its screen.
+          if (mut.isError) mut.reset();
+          setResend(null);
+        }}
+      />
+    );
+  }
 
   if (mut.isSuccess) {
     return (
@@ -73,6 +119,11 @@ export function InstallPage() {
             Didn't get it? Check your spam folder, or confirm the mail provider you just configured
             can deliver to <strong>{adminEmail}</strong>.
           </span>
+        </div>
+        <div style={{ marginTop: 16 }}>
+          <Button variant="secondary" size="sm" icon={<Mail size={14} />} onClick={() => setResend({ pending: false })}>
+            Resend the link
+          </Button>
         </div>
       </AuthFrame>
     );
@@ -109,6 +160,11 @@ export function InstallPage() {
             <Label>Your email</Label>
             <Input type="email" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} placeholder="ada@example.com" />
             <Hint>We'll send your activation link here.</Hint>
+          </div>
+          <div style={{ marginBottom: 4 }}>
+            <Button variant="ghost" size="sm" onClick={() => setResend({ pending: false })}>
+              Already ran setup? Resend the activation link
+            </Button>
           </div>
         </>
       )}
@@ -209,6 +265,97 @@ export function InstallPage() {
           {isLast ? (mut.isPending ? 'Sending…' : 'Send my setup link') : 'Continue'}
         </Button>
       </div>
+    </AuthFrame>
+  );
+}
+
+/**
+ * Fresh activation link for the admin setup created. The API mails only
+ * an admin who's still waiting to activate, and answers the same either
+ * way, so this screen can't confirm an address — it says "if".
+ */
+function ResendActivation({
+  initialEmail,
+  pending,
+  brand,
+  onBack,
+}: {
+  initialEmail: string;
+  pending: boolean;
+  brand?: string;
+  onBack: () => void;
+}) {
+  const [email, setEmail] = useState(initialEmail);
+  const mut = useMutation({
+    mutationFn: () => api('/install/resend', { method: 'POST', body: { adminEmail: email } }),
+  });
+
+  return (
+    <AuthFrame title="Check your inbox" subtitle="Or resend the activation link." brand={brand}>
+      {pending && (
+        <div style={{ fontSize: 13, color: theme.textMuted, lineHeight: 1.6, marginBottom: 16 }}>
+          Setup has already run on this server, so it can't run again. It sent an activation link to the
+          admin email entered then.
+        </div>
+      )}
+
+      {mut.isSuccess ? (
+        <>
+          <div
+            style={{
+              background: theme.successSoft,
+              border: `1px solid ${alpha(theme.success, 0.333)}`,
+              padding: 14,
+              borderRadius: theme.radiusSm,
+              fontSize: 13,
+              color: theme.success,
+            }}
+          >
+            <div style={{ fontWeight: 500, marginBottom: 4 }}>Activation link sent</div>
+            <div style={{ color: softText(theme.success) }}>
+              If <strong>{email}</strong> is the admin waiting to activate, a new link is on its way. It's good for 15
+              minutes.
+            </div>
+          </div>
+          <Hint>
+            Entered a different address at setup? Whoever holds the server's ADMIN_API_KEY can invite another admin
+            with POST /admins.
+          </Hint>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 18 }}>
+            <Button variant="secondary" onClick={() => mut.reset()}>
+              Send another link
+            </Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ marginBottom: 16 }}>
+            <Label>Admin email</Label>
+            <Input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="ada@example.com"
+              autoFocus
+            />
+            <Hint>
+              The address entered during setup. With no mail provider configured, the link prints to the API
+              server's console.
+            </Hint>
+          </div>
+
+          <ErrorBanner error={mut.error} />
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 18, gap: 8 }}>
+            <Button variant="secondary" icon={<ArrowLeft size={14} />} onClick={onBack}>
+              Back
+            </Button>
+            <Button onClick={() => mut.mutate()} disabled={!email.trim() || mut.isPending} icon={<Mail size={14} />}>
+              {mut.isPending ? 'Sending…' : 'Resend activation link'}
+            </Button>
+          </div>
+        </>
+      )}
     </AuthFrame>
   );
 }

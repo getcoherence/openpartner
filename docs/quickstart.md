@@ -30,6 +30,16 @@ Open **http://localhost:5673/install** — a three-step wizard:
 
 On submit, OpenPartner emails you a one-time activation link. Click it and you're signed in as the first admin with a session cookie. From here, everything else is admin UI — no more curl bootstrap.
 
+Lost the link (console scrolled away, or the email never arrived)? Setup won't run twice, so reopen `/install` and choose **Already ran setup? Resend the activation link**, or call the API:
+
+```bash
+curl -s -X POST http://localhost:4601/install/resend \
+  -H "content-type: application/json" \
+  -d '{"adminEmail":"you@example.com"}'
+```
+
+It mails a fresh 15-minute link to the admin setup registered, and only until an admin activates. The answer is `{"ok":true}` whatever address you send.
+
 > The `ADMIN_API_KEY` env remains valid as a headless / CI bearer. Everything below works with either auth mode.
 
 ## 3. Bootstrap via API (headless)
