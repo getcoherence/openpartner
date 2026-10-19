@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import { theme } from '../../theme.js';
 import { PlatformFrame } from './components.js';
 import { papi, friendlyPlatformError } from './lib.js';
