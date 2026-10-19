@@ -27,6 +27,7 @@ import {
   requireServedCountry,
 } from '../country-access.js';
 import { notifyOpsNewBrand } from '../brand-review.js';
+import { screenTenantInBackground } from '../sanctions-screening.js';
 import {
   attachSessionToBundle,
   createPlatformBundle,
@@ -319,6 +320,8 @@ platformAuthRouter.post('/me/brands', addBrandLimit, async (req, res) => {
     source: 'add_brand',
     declaredByEmail: email,
   });
+  // Same background screening as public signup (sanctions-screening.ts).
+  screenTenantInBackground(db, tenantId, 'add_brand');
 
   const network = await autoEnrollBrandOnNetwork({
     tenantId,

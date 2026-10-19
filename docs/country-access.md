@@ -38,9 +38,13 @@ is written to the audit log.
 | `POST /partner-signup` (join page) | required on hosted, checked | checked |
 | `POST /signin`, `/auth/signin`, `/auth/magic/verify`, `/auth/platform-verify` | — | checked |
 | `PUT /account/location` (existing brands' one-time prompt) | checked | checked |
+| `POST /partners` (API-created partners) | optional, checked when sent | — (the caller is the brand's server) |
 
 Refusals answer `403 country_not_supported`. A missing Ukraine
-confirmation answers `400 occupied_region_confirmation_required`. The
+confirmation answers `400 occupied_region_confirmation_required`.
+`POST /partners` answers both as `422` instead: it is an API call, and the
+declared country is a field the caller sent. An accepted country there is
+recorded with source `api`. The
 portal shows a neutral message that gives no reason.
 
 **Not gated:** the click router, `identify`, events, conversions. They
@@ -77,12 +81,20 @@ recorded, and ops are emailed to reject it from the review console.
 - **Lookup failure:** a lookup that can't answer means "unknown", and the
   declared country is still enforced.
 
+## Payouts
+
+A partner whose latest declared country is on the list is held: their
+Stripe payouts (direct Connect and the funded rail) aren't made, and a
+manual payout carries a warning. See
+[sanctions-screening.md](sanctions-screening.md#payout-holds), which also
+covers screening names against the US Consolidated Screening List.
+
 ## Not yet covered
 
-- Screening names against the US Consolidated Screening List (SDN and
-  others) at brand review and before each payout.
-- Holding payouts to partners in blocked countries.
-- A `country` field on API-created partners (`POST /partners`).
 - The Network's own creator signup.
 - Re-checking live sessions. Sign-in is gated, but a session started
   elsewhere (up to 30 days) isn't re-checked on each request.
+- Payouts already in flight when a hold appears
+  ([sanctions-screening.md](sanctions-screening.md#payout-holds)).
+- API-created partners without a `country`: there is nothing to hold on
+  until one is declared.

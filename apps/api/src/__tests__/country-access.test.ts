@@ -40,6 +40,7 @@ delete process.env.PLATFORM_OPS_EMAIL;
 const { db } = await import('../db.js');
 const { createApp } = await import('../app.js');
 const { setIpCountryLookupForTesting } = await import('../geoip.js');
+const { settleBackgroundScreeningsForTesting } = await import('../sanctions-screening.js');
 const { createPlatformAdminSession, PLATFORM_ADMIN_SESSION_COOKIE } = await import(
   '../platform-admin-sessions.js'
 );
@@ -124,9 +125,12 @@ beforeEach(async () => {
 
 afterEach(async () => {
   if (skipIntegration) return;
+  // Signup screens the brand in the background (sanctions-screening.ts).
+  await settleBackgroundScreeningsForTesting();
   for (const tenantId of createdTenantIds.splice(0)) {
     for (const table of [
       TABLES.LocationDeclaration,
+      TABLES.SanctionsScreening,
       TABLES.Partner,
       TABLES.Admin,
       TABLES.MagicLinkToken,

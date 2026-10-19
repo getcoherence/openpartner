@@ -9,7 +9,9 @@ import { getMailer } from '../mailer.js';
 import { buildMagicLinkUrl, partnerInviteEmail, partnerRevokedEmail } from '../email-templates.js';
 import { cursorTimestamp, decodeCursor, takePage, whereAfterCursor } from '../pagination.js';
 import { linkTenantOf } from '../portal-url.js';
-import { afterCommit, tenantOf } from '../tenancy.js';
+import { afterCommit, getTenancyMode, tenantOf } from '../tenancy.js';
+import { db as platformDb } from '../db.js';
+import { checkCountryAccess, countryCodeSchema, recordLocationDeclaration } from '../country-access.js';
 import {
   grantNetworkConsent,
   isNetworkFederationCall,
@@ -149,6 +151,14 @@ export const createSchema = z.object({
     .array(overrideSchema.extend({ programId: z.string().min(1) }))
     .max(100)
     .optional(),
+  /** Where the partner is based (ISO 3166-1 alpha-2). The hosted platform
+   *  doesn't serve some countries (country-access.ts): a blocked one is
+   *  refused, and an accepted one is recorded, which lets payouts be held
+   *  if the country is blocked later. Self-host ignores it. */
+  country: countryCodeSchema().optional(),
+  /** With `country: "UA"`: the partner is outside the Russian-occupied
+   *  regions of Ukraine, which no country code covers. */
+  outsideOccupiedRegions: z.boolean().optional(),
 });
 
 export const partnersRouter = Router();
@@ -191,6 +201,19 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write', 'part
   }
   const email = body.data.email.toLowerCase();
   const id = ulid();
+
+  // Countries the hosted platform doesn't serve. Only the declared
+  // country: the request comes from the brand's server, not the partner,
+  // so its IP says nothing about where the partner is. The privileged
+  // pool, because PlatformSetting is a platform table.
+  const hosted = getTenancyMode() === 'multi';
+  if (hosted && body.data.country) {
+    const location = await checkCountryAccess(platformDb, {
+      declared: body.data.country,
+      outsideOccupiedRegions: body.data.outsideOccupiedRegions,
+    });
+    if (!location.ok) return res.status(422).json({ error: location.error });
+  }
 
   // Duplicate-email pre-check — we'd rather 409 with a clean error than
   // let Postgres throw a unique-constraint violation that would surface
@@ -286,6 +309,25 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write', 'part
       return res.status(409).json({ error: 'email_taken' });
     }
     throw err;
+  }
+
+  // The declaration is a platform record (no FK), written once this
+  // request has committed so a rolled-back create leaves none behind.
+  if (hosted && body.data.country) {
+    const declared = body.data.country;
+    const outsideOccupiedRegions = body.data.outsideOccupiedRegions ?? null;
+    onCommit(db, 'partner location declaration', () =>
+      recordLocationDeclaration(platformDb, {
+        subjectKind: 'partner',
+        subjectId: id,
+        tenantId,
+        country: declared,
+        outsideOccupiedRegions,
+        ipCountry: null,
+        source: 'api',
+        declaredByEmail: null,
+      }),
+    );
   }
 
   // Grant program (campaign) access resolved above.

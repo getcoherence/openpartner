@@ -101,6 +101,8 @@ Creates a partner and grants it programs.
 
 **\`partners:create\`** is the scope for an in-app integration's runtime key: it can only create partners, and only without an invite or commission terms. A request with \`sendInvite\` omitted or \`true\`, a \`commissionSnapshot\` or \`programCommissions\` answers \`403 forbidden_scope\` with \`required: "partners:write"\`.
 
+**\`country\`** (optional, ISO 3166-1 alpha-2) is where the partner is based. OpenPartner Cloud doesn't serve some countries: a blocked one answers \`422 country_not_supported\`, and \`"UA"\` needs \`outsideOccupiedRegions: true\` (\`422 occupied_region_confirmation_required\` otherwise). An accepted country is recorded, and if it is blocked later, the partner's Stripe payouts are held. Self-hosted installs ignore it.
+
 **OpenPartner Network:** this call shares nothing with the OpenPartner Network. A partner's name and email reach it only if the partner opts in themselves, while the tenant offers the Network (\`autoEnroll\` on, \`GET /config/network\`): they're asked on the join page, once on first portal sign-in, and in a portal setting. \`metadata\` is never sent. To keep customer-referral partners from being asked, turn offering off: \`POST /config/network {"autoEnroll": false}\`.
 
 On OpenPartner Cloud the brand needs an active plan (\`402 plan_required\`) and an approved account (\`403 brand_pending_review\`).`,
@@ -112,6 +114,7 @@ On OpenPartner Cloud the brand needs an active plan (\`402 plan_required\`) and 
       402: ['plan_required'],
       403: ['brand_pending_review'],
       409: ['email_taken'],
+      422: ['country_not_supported', 'occupied_region_confirmation_required'],
     },
   });
 
@@ -918,6 +921,18 @@ Called with the brand's OpenPartner Network federation key, the bonus is recorde
       "Groups approved commissions per partner and currency. Stripe Connect partners are transferred. Everyone else (every headless partner) gets a `manual` payout: the Payout is `pending` and its commissions are marked `paid` right away, before any money moves. You send the money yourself, then `POST /payouts/{id}/confirm`. Totals under the payout threshold carry over. The scheduled jobs run this on the tenant's payout cadence (weekly by default; set it to Manual to run it only yourself).",
     access: { kind: 'admin' },
     responses: { 200: { description: 'What happened to each payout.', schema: S.PayoutRunResult } },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/payouts/holds',
+    tag: 'Payouts',
+    operationId: 'listPayoutHolds',
+    summary: 'List partners whose payouts are on hold',
+    description:
+      "OpenPartner Cloud only. Partners with approved commissions who are on a compliance hold: their declared country isn't served, or their sanctions screening has a possible match that's waiting for review, a confirmed match, or no answer yet. Payouts through Stripe (`effect: \"held\"`) aren't made; the commissions stay approved and are paid on the first run after the hold lifts. A partner you pay yourself (`effect: \"warning\"`) still gets a `manual` payout, so check before you send it. OpenPartner reviews every match; you don't need to do anything.",
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'Held partners.', schema: S.PayoutHolds } },
   });
 
   r.operation({
