@@ -163,6 +163,8 @@ installRouter.post('/install', installLimit, async (req, res) => {
     throw err;
   }
   if (!adminId) return res.status(500).json({ error: 'install_failed' });
+  // A const keeps the narrowing inside the rollback transaction's closure.
+  const installedAdminId = adminId;
 
   // Finish the install in a compensating try/catch: if mail config OR
   // the invite send fails, roll back the Admin row we just created so
@@ -201,8 +203,8 @@ installRouter.post('/install', installLimit, async (req, res) => {
     // failure. MagicLinkToken has no FK to Admin since the schema was
     // generalized, so clean it up explicitly.
     await db.transaction(async (trx) => {
-      await trx('MagicLinkToken').where({ principalKind: 'admin', principalId: adminId }).del();
-      await trx<AdminRow>(TABLES.Admin).where({ id: adminId }).del();
+      await trx('MagicLinkToken').where({ principalKind: 'admin', principalId: installedAdminId }).del();
+      await trx<AdminRow>(TABLES.Admin).where({ id: installedAdminId }).del();
     });
     const message = err instanceof Error ? err.message : 'install failed';
     return res.status(502).json({ error: 'install_mail_failed', detail: message });
