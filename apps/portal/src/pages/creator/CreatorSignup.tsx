@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { alpha, softText, theme } from '../../theme.js';
 import { AuthFrame, SignupTabs } from '../auth/Shared.js';
 import { creatorApi, ApiError } from './creator-api.js';

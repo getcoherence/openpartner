@@ -5,7 +5,7 @@
  * proxy (which runs anonymously for that route).
  */
 import { useQuery } from '@tanstack/react-query';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import { ExternalLink, Globe } from 'lucide-react';
 import { Card, ErrorBanner, EmptyState } from '../../ui.js';
 import { theme } from '../../theme.js';
