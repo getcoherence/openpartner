@@ -125,6 +125,17 @@ programs, countries), what triggered it, and the review. The table is:
    screens every live brand and every payable partner. Expect a backlog of
    possible matches to review on the first day.
 
+**Rate limits.** trade.gov rate-limits the API: the first prod sweep got
+`429` answers after about 17 calls in 2 seconds. Calls from the API are
+spaced 500ms apart, across every caller in the process (`CslPacing` in
+`sanctions-screening.ts`). A `429` is retried up to twice, after the wait
+its `Retry-After` asks for (2s when it gives none), and every other call
+waits too. A longer wait than 30s, or a third `429`, records an `error`
+row, and the next hourly sweep picks the name up again. At this pace a
+full sweep of 300 names takes about 2.5 minutes, so `POST /payouts/run`
+screens at most 20 partners before planning and leaves the rest to the
+sweep.
+
 Without the key, nothing is screened and nothing is held for screening.
 The API logs that once. A brand that signs up meanwhile gets a `skipped`
 row, and the sweep screens it once the key is set.

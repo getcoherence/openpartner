@@ -24,10 +24,10 @@ payoutsRouter.post('/payouts/run', requireAuth, requireAdmin, async (req, res) =
   // Screen this brand's payable partners who are due (sanctions-
   // screening.ts) before planning, outside the planning transaction: a
   // partner the planner finds unscreened is held. Capped so the request
-  // stays short; the hourly sweep screens the rest, and they stay held
-  // until it has.
+  // stays short, since calls to the list are spaced out (CslPacing); the
+  // hourly sweep screens the rest, and they stay held until it has.
   try {
-    await screenPayablePartners(privilegedDb, { tenantId, limit: 50 });
+    await screenPayablePartners(privilegedDb, { tenantId, limit: 20 });
   } catch (err) {
     console.error('[payouts] pre-run sanctions screening failed', err);
   }
