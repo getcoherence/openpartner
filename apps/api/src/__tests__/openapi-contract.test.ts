@@ -58,6 +58,7 @@ const TABLES_TO_CLEAN = [
   TABLES.WebhookDelivery,
   TABLES.WebhookEndpoint,
   TABLES.Commission,
+  TABLES.Bonus,
   TABLES.Payout,
   TABLES.Attribution,
   TABLES.Event,
@@ -435,6 +436,39 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     check('confirmManualPayout', await admin.post(`/payouts/${run.payouts[0]!.payoutId}/confirm`));
     check('confirmManualPayout', await admin.post(`/payouts/${run.payouts[0]!.payoutId}/confirm`));
 
+    // --- A bonus for the referrer: a reward with no sale behind it.
+    const bonusKey = check<{ plaintext: string }>(
+      'createScopedKey',
+      await admin.post('/api-keys/scoped', { label: 'contest bonuses', scopes: ['bonuses:write'] }),
+    );
+    const contest = as(bonusKey.plaintext);
+    const prize = { partnerId: partner.id, programId: program.id, amount: 25, currency: 'USD', note: 'Top referrer in October', externalRef: 'contest-2026-10' };
+    const awarded = check<{ bonus: { id: string }; commission: { id: string; status: string } }>('awardBonus', await contest.post('/bonuses', prize));
+    expect(awarded.commission.status).toBe('approved');
+    const again = check<{ replayed?: boolean; bonus: { id: string } }>('awardBonus', await contest.post('/bonuses', prize));
+    expect(again).toMatchObject({ replayed: true, bonus: { id: awarded.bonus.id } });
+    check('awardBonus', await contest.post('/bonuses', { ...prize, amount: 30 }));
+    check('awardBonus', await contest.post('/bonuses', { partnerId: 'missing', amount: 5, currency: 'USD' }));
+    check('awardBonus', await contest.post('/bonuses', { partnerId: partner.id, amount: 1.005, currency: 'USD' }));
+    const held = check<{ commission: { id: string } }>(
+      'awardBonus',
+      await admin.post('/bonuses', { partnerId: partner.id, amount: 5, currency: 'USD', hold: true }),
+    );
+    check('reverseCommission', await admin.post(`/commissions/${held.commission.id}/reverse`));
+    check('listBonuses', await integration.get(`/bonuses?partnerId=${partner.id}&limit=1`));
+    check('listBonuses', await admin.get('/bonuses?cursor=not-a-cursor'));
+    check('getBonus', await admin.get(`/bonuses/${awarded.bonus.id}`));
+    check('getBonus', await admin.get('/bonuses/missing'));
+    const withBonus = check<{ commissions: Array<{ id: string; source: string }> }>(
+      'listPartnerCommissions',
+      await integration.get(`/partners/${partner.id}/commissions`),
+    );
+    expect(withBonus.commissions.find((c) => c.id === awarded.commission.id)?.source).toBe('bonus');
+    const bonusRun = check<{ payouts: Array<{ amount: number }> }>('runPayouts', await admin.post('/payouts/run'));
+    expect(bonusRun.payouts.map((p) => p.amount)).toEqual([25]);
+    // Not connected to the Network here.
+    check('authorizeNetworkBonuses', await admin.post('/config/network/authorize-bonuses'));
+
     // --- A Network approval, for partnership.approved.
     await admin.post('/partners', {
       email: 'creator@example.com',
@@ -452,6 +486,10 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       'commission.reversed',
       'payout.created',
       'commission.paid',
+      'bonus.awarded',
+      'bonus.approved',
+      'bonus.reversed',
+      'bonus.paid',
     ]);
   });
 

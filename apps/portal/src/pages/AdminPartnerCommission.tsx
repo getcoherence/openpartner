@@ -10,6 +10,7 @@ import { CompoundRuleEditor, ruleEventTypeMissing, ruleSlabProblem, type Commiss
 import { renderCommissionSummary } from '../lib/commission-summary.js';
 import { rulesLeftUnpaid, sharedRules } from '../lib/commission-override.js';
 import { useIsMobile } from '../lib/useMediaQuery.js';
+import { PartnerBonusSection } from './AdminPartnerBonus.js';
 
 interface Partner {
   id: string;
@@ -109,7 +110,7 @@ export function AdminPartnerCommission() {
   return (
     <Page
       title={`Commission · ${partnerName}`}
-      subtitle="Override this partner's commission terms, for every program at once or for one program. Useful for VIP creators on a higher cut than the program default."
+      subtitle="Override this partner's commission terms, for every program at once or for one program. Useful for VIP creators on a higher cut than the program default. Pay them a one-off bonus at the bottom."
     >
       <div style={{ marginBottom: 14 }}>
         <TenantLink to="/admin/partners" style={{ color: theme.textMuted, fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -146,6 +147,11 @@ export function AdminPartnerCommission() {
             onSaved={() => {
               qc.invalidateQueries({ queryKey: ['partner-campaigns', partnerId] });
             }}
+          />
+          <PartnerBonusSection
+            partnerId={partnerId}
+            partnerName={partnerName}
+            programs={(programs.data?.programs ?? []).filter((p) => p.granted)}
           />
         </>
       )}

@@ -24,6 +24,12 @@ const h = vi.hoisted(() => ({
   subscription: null as null | { start_date: number; billing_cycle_anchor: number },
 }));
 
+// Bonuses announce themselves; nothing here listens.
+vi.mock('../webhook-dispatcher.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../webhook-dispatcher.js')>();
+  return { ...actual, dispatchEvent: vi.fn() };
+});
+
 vi.mock('../stripe.js', async () => {
   const actual = await vi.importActual<typeof import('../stripe.js')>('../stripe.js');
   return {
@@ -55,6 +61,7 @@ const { previewPricingNotices, sendPricingNotices } = await import('../fee-notic
 const { contractStatement, setContractTerms, ContractTermsError, estimateFeeImpact, reviewSignals } = await import('../fee-review.js');
 const { getFeeRuleSettings } = await import('../platform-settings.js');
 const { __setMailerForTests } = await import('../mailer.js');
+const { awardBonus } = await import('../bonuses.js');
 import type { Mailer, Message } from '../mailer.js';
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
@@ -158,7 +165,7 @@ const metered = () => h.calls.map((c) => c.value);
 
 const CLEAN = [
   TABLES.UsageFeeShadow, TABLES.UsageLedger, TABLES.HostedFeeTerms, TABLES.CommissionAdjustment, TABLES.Commission,
-  TABLES.Attribution, TABLES.Event, TABLES.Identity, TABLES.Click, TABLES.Link, TABLES.Program, TABLES.Partner,
+  TABLES.Bonus, TABLES.Attribution, TABLES.Event, TABLES.Identity, TABLES.Click, TABLES.Link, TABLES.Program, TABLES.Partner,
   TABLES.Config,
 ];
 const createdTenants: string[] = [];
@@ -654,6 +661,86 @@ describe.skipIf(skipIntegration)('contract terms', () => {
     await expect(
       setContractTerms(db, T, { revenueRate: null, commissionRate: 0.05, monthlyMinimumUsd: 299, effectiveAt: null, note: null }, OPERATOR),
     ).rejects.toBeInstanceOf(ContractTermsError);
+  });
+});
+
+/** A manual bonus to a new partner, approved. Returns its commission id. */
+async function bonus(amount: number, opts: { tenantId?: string; currency?: string } = {}): Promise<string> {
+  const tenantId = opts.tenantId ?? T;
+  const partnerId = ulid();
+  await db(TABLES.Partner).insert({ id: partnerId, tenantId, name: 'P', email: `b-${partnerId}@x.com` });
+  const res = await awardBonus(db, tenantId, { partnerId, amount, currency: opts.currency ?? 'USD', source: 'manual' });
+  if (!res.ok) throw new Error(res.error);
+  return res.commission.id;
+}
+
+describe.skipIf(skipIntegration)('bonuses (docs/bounties.md §6)', () => {
+  it('the new rule bills a bonus at the commission rate: it has no sale amount', async () => {
+    await newRule();
+    await bonus(50);
+    const res = await report();
+    // 10% × 50 = 5 → 5 / 0.03.
+    expect(metered()).toEqual(['166.67']);
+    expect(res.feeRule).toMatchObject({ newRuleUsd: 166.67 });
+    const rows = await db(TABLES.UsageLedger);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ eventId: null, reason: 'billed', currency: 'USD', amount: '166.67' });
+    expect(rows[0].bonusId).toEqual(expect.any(String));
+    expect(rows[0].terms).toMatchObject({ v: 2, rev: false, cr: 0.1 });
+  });
+
+  it('the old rule bills revenue only, so never a bonus', async () => {
+    await bonus(50);
+    await seed({ value: 100, commissions: [pct(20)] });
+    await report();
+    expect(metered()).toEqual(['100.00']);
+    expect(await db(TABLES.UsageLedger).whereNotNull('bonusId')).toHaveLength(0);
+  });
+
+  it('a bonus awarded before the tenant moves to the new rule stays unbilled', async () => {
+    await newRule(T, new Date(Date.now() + 20 * DAY));
+    await bonus(50);
+    await report();
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('a reversed bonus is credited like a refund', async () => {
+    await newRule();
+    const commissionId = await bonus(60);
+    await report();
+    expect(metered()).toEqual(['200.00']);
+
+    await db(TABLES.Commission).where({ id: commissionId }).update({ status: 'reversed' });
+    await seed({ type: 'signup', value: null, commissions: [fixed(90)] }); // 300 of basis
+    const res = await report();
+    expect(res.creditsByCurrency).toEqual({ USD: -200 });
+    expect(metered()).toEqual(['200.00', '100.00']);
+    const rows = await db(TABLES.UsageLedger).whereNotNull('bonusId').orderBy('createdAt');
+    expect(rows.map((r: { reason: string; amount: string }) => [r.reason, r.amount])).toEqual([
+      ['billed', '200.00'],
+      ['reversed', '-200.00'],
+    ]);
+    // Billed and credited at one rate: the bonus nets to exactly zero.
+    expect(rows.reduce((sum: number, r: { amountUsd: string }) => sum + Number(r.amountUsd), 0)).toBe(0);
+
+    // Nothing more to say about it.
+    await report();
+    expect(await db(TABLES.UsageLedger).whereNotNull('bonusId')).toHaveLength(2);
+  });
+
+  it('the shadow and the estimates count its fee, but not as a conversion', async () => {
+    await setFeeRuleSettings(db, { shadow: true }, OPERATOR);
+    await seed({ type: 'signup', value: null, commissions: [fixed(30)] });
+    await bonus(30);
+    await report();
+    const [row] = await db(TABLES.UsageFeeShadow);
+    expect(row).toMatchObject({ conversions: 1, floorConversions: 1 });
+    expect(Number(row.newFeeUsd)).toBe(6); // 3 + 3
+
+    const hosted = await hostedTenant('revshare');
+    await bonus(30, { tenantId: hosted.id });
+    const [estimate] = (await estimateFeeImpact(db, await getFeeRuleSettings(db), { days: 7 })).filter((e) => e.tenantId === hosted.id);
+    expect(estimate).toMatchObject({ conversions: 0, newFeeUsd: 3, oldFeeUsd: 0 });
   });
 });
 

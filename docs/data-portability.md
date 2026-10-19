@@ -14,7 +14,7 @@ that overstates itself is worse than one with a documented hole.
 ```json
 {
   "exportedAt": "2026-08-09T12:00:00.000Z",
-  "schemaVersion": 5,
+  "schemaVersion": 6,
   "tables": { "Partner": [ … ], "Program": [ … ], … }
 }
 ```
@@ -49,15 +49,16 @@ appears after everything it references.
 | 9 | `Identity` | `id` | click → user stitch |
 | 10 | `Event` | `id` | raw conversion events |
 | 11 | `Attribution` | `id` | derived attribution (re-derivable) |
-| 12 | `Commission` | `id` | derived commission ledger |
-| 13 | `Payout` | `id` | payout ledger |
-| 14 | `PortalCustomDomain` | `id` | white-label domain history (inert on self-host) |
-| 15 | `CommissionAdjustment` | `id` | clawbacks / corrections |
-| 16 | `BrandAsset` | `id` | **the marketing-asset library** (image URLs, text snippets) |
-| 17 | `WebhookEndpoint` | `id` | **your outbound webhook endpoints** (not the signing secret) |
-| 18 | `PartnerPostback` | `id` | **each partner's own tracker callbacks** |
-| 19 | `ConversionPostbackToken` | `id` | **the GET /postback allowlist and rotation history** (not the token) |
-| 20 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy and the portal-access default** |
+| 12 | `Bonus` | `id` | **rewards not tied to a sale** (manual, performance bounty, Network bounty) |
+| 13 | `Commission` | `id` | derived commission ledger |
+| 14 | `Payout` | `id` | payout ledger |
+| 15 | `PortalCustomDomain` | `id` | white-label domain history (inert on self-host) |
+| 16 | `CommissionAdjustment` | `id` | clawbacks / corrections |
+| 17 | `BrandAsset` | `id` | **the marketing-asset library** (image URLs, text snippets) |
+| 18 | `WebhookEndpoint` | `id` | **your outbound webhook endpoints** (not the signing secret) |
+| 19 | `PartnerPostback` | `id` | **each partner's own tracker callbacks** |
+| 20 | `ConversionPostbackToken` | `id` | **the GET /postback allowlist and rotation history** (not the token) |
+| 21 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy and the portal-access default** |
 
 Rows 3, 4 and 6 were added in schemaVersion 2 (Aug 2026). Without them a
 restored instance had the roster but no grants, no coupon attribution, and
@@ -72,10 +73,22 @@ v2 or v3 bundle restores with no consent rows, so every restored partner
 starts undecided and nobody is sent to the Network until they opt in on
 the new instance.
 
-Rows 16 to 20 were added in schemaVersion 5 (Oct 2026). Before that a
+Rows 17 to 21 were added in schemaVersion 5 (Oct 2026). Before that a
 restored instance had the attribution and money ledger but none of the
 brand's configuration: no program name or support email, no join-page
 policy, no asset library, no webhooks, and no partner postbacks.
+
+Row 12 was added in schemaVersion 6 (Oct 2026). A `Bonus` is a reward paid
+to a partner that isn't tied to an attributed sale
+([bounties.md](bounties.md)): who got it, how much, under which program,
+where it came from (`manual`, `performance_bounty`, `network`), the
+caller's idempotency key and the note shown to the partner. Each bonus is
+paid through exactly one `Commission` row whose `bonusId` names it and
+whose `attributionId` is null (a CHECK requires exactly one of the two),
+so it sits before `Commission`. A bonus is a decision, not a raw event, so
+it is never re-derived from the event log; it travels as recorded. A v1–v5
+bundle has no bonuses, and its `Commission` rows restore with `bonusId`
+null.
 
 `Partner` rows carry `portalAccess` (schemaVersion 5, Oct 2026): whether
 the partner may sign in to the partner portal. A headless program turns it
@@ -220,7 +233,7 @@ been on the old one.
 
 `SCHEMA_VERSION` is the current bundle version; `SUPPORTED_IMPORT_VERSIONS`
 is what `POST /import` accepts. **That list only ever grows.** A v1 bundle
-sitting on someone's disk keeps importing — it is simply a v5 bundle
+sitting on someone's disk keeps importing — it is simply a v6 bundle
 without the tables and columns added later. A v4 bundle restores with no
 settings, assets, webhooks or postbacks; configure those on the destination.
 
@@ -237,6 +250,7 @@ that should attribute every event against the window alone.
 | 3 (Oct 2026) | `PartnerCommission` gains `id` (the new primary key; was `partnerId`) and `programId` |
 | 4 (Oct 2026) | added `PartnerNetworkConsent` |
 | 5 (Oct 2026) | added `BrandAsset`, `WebhookEndpoint`, `PartnerPostback`, `ConversionPostbackToken` (credentials excluded) and `Config` (portable keys only); `Program` rows carry `renewalsStayWithPartner` and `Partner` gains `portalAccess` (older bundles restore both as `true`) |
+| 6 (Oct 2026) | added `Bonus`; `Commission` rows carry `bonusId`, and `attributionId` is null on a bonus's commission |
 
 **Importing a v1 or v2 bundle.** `POST /import` upgrades older rows before
 inserting them (`upgradeBundle` in `apps/api/src/export.ts`). A v2
@@ -427,7 +441,9 @@ instance like every other Event.
   nothing on a self-hosted instance, which isn't metered. Anything that
   needs it can re-derive the billable value from the exported Event,
   Attribution and Commission rows. Its `terms` column freezes the fee
-  terms each conversion was first billed under.
+  terms each conversion was first billed under. Bonuses are billed on rows
+  of their own (`bonusId` set instead of `eventId`), re-derivable the same
+  way from the exported Bonus and Commission rows.
 - `HostedFeeTerms` and `UsageFeeShadow` — which platform-fee rule a tenant
   is on (plan start, pricing-notice date, effective date, contract rates
   and minimum) and the old-vs-new shadow comparison

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../api.js';
 import { Button, Card, ErrorBanner, Input, Label, Page } from '../../ui.js';
-import { theme } from '../../theme.js';
+import { alpha, theme } from '../../theme.js';
 
 interface NetworkMembership {
   enabled: boolean;
@@ -10,6 +10,9 @@ interface NetworkMembership {
   hasVendorToken: boolean;
   scopedKeyId: string | null;
   autoEnroll: boolean;
+  /** The Network's key may pay bonuses (Network bounties). Absent on an
+   *  API from before bonuses. */
+  bonusesAuthorized?: boolean;
 }
 
 interface NetworkSelf {
@@ -63,6 +66,7 @@ function NetworkConnection() {
       {membership && (
         <>
           {!connected ? <ConnectForm membership={membership} /> : <ConnectedPanel membership={membership} />}
+          {connected && membership.bonusesAuthorized === false && <AuthorizeBonusesPanel />}
           {connected && <AutoEnrollPanel membership={membership} onChange={() => qc.invalidateQueries({ queryKey: ['network-membership'] })} />}
           {connected && <BackfillPanel />}
         </>
@@ -304,6 +308,30 @@ function AutoEnrollPanel({ membership, onChange }: { membership: NetworkMembersh
           {counts.declined + counts.withdrawn > 0 && <> · {counts.declined + counts.withdrawn} said no</>}.
         </p>
       )}
+    </Card>
+  );
+}
+
+/** Keys issued before Network bounties can't pay bonuses; one click adds
+ *  the scope to the key the Network already holds. */
+function AuthorizeBonusesPanel() {
+  const qc = useQueryClient();
+  const m = useMutation({
+    mutationFn: () => api<NetworkMembership>('/config/network/authorize-bonuses', { method: 'POST', body: {} }),
+    onSuccess: (membership) => qc.setQueryData(['network-membership'], membership),
+  });
+  return (
+    <Card style={{ borderColor: alpha(theme.info, 0.333) }}>
+      <h3 style={{ marginTop: 0, fontSize: 15, fontWeight: 500 }}>Re-authorize to enable Network bounties</h3>
+      <p style={{ fontSize: 13, color: theme.textMuted, marginTop: 0, lineHeight: 1.5 }}>
+        Creators can earn bounties you post on the Network, such as a fee for an approved video. The Network pays
+        them as bonuses through your program, so it needs permission to record a bonus. Your connection predates
+        bounties and doesn&rsquo;t have it yet. Nothing else about the connection changes.
+      </p>
+      <ErrorBanner error={m.error} />
+      <Button onClick={() => m.mutate()} disabled={m.isPending}>
+        {m.isPending ? 'Authorizing…' : 'Re-authorize'}
+      </Button>
     </Card>
   );
 }

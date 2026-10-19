@@ -85,24 +85,28 @@ async function runDispatch(tenantId: string, event: WebhookEventType, data: unkn
     await Promise.all(matching.map((endpoint) => deliverOne(tenantId, endpoint, envelope)));
   }
 
-  // Partner-side postbacks. Only commission.* events carry a partnerId
-  // and a meaningful conversion ledger semantic — partner-state events
-  // (partner.created etc.) stay tenant-scoped.
+  // Partner-side postbacks. Only the partner's own earnings (commission.*
+  // and bonus.awarded / .paid) carry a partnerId and a ledger semantic —
+  // partner-state events (partner.created etc.) stay tenant-scoped.
   if (isPostbackEvent(event)) {
     const d = (data ?? {}) as Record<string, unknown>;
-    const partnerId = typeof d.partnerId === 'string' ? d.partnerId : null;
+    const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+    const partnerId = str(d.partnerId) ?? null;
     if (partnerId) {
       dispatchPartnerPostbacks(tenantId, partnerId, event, {
-        click_id: typeof d.clickId === 'string' ? d.clickId : undefined,
+        click_id: str(d.clickId),
         partner_id: partnerId,
-        commission_id: typeof d.commissionId === 'string' ? d.commissionId : undefined,
-        commission_amount: typeof d.amount === 'string' ? d.amount : undefined,
-        currency: typeof d.currency === 'string' ? d.currency : undefined,
-        event_id: typeof d.eventId === 'string' ? d.eventId : undefined,
-        transaction_id: typeof d.eventId === 'string' ? d.eventId : undefined,
-        event_type: typeof d.eventType === 'string' ? d.eventType : undefined,
-        program_id: typeof d.programId === 'string' ? d.programId : undefined,
-        payout_id: typeof d.payoutId === 'string' ? d.payoutId : undefined,
+        commission_id: str(d.commissionId),
+        commission_amount: str(d.amount),
+        currency: str(d.currency),
+        event_id: str(d.eventId),
+        transaction_id: str(d.eventId),
+        event_type: str(d.eventType),
+        program_id: str(d.programId),
+        payout_id: str(d.payoutId),
+        bonus_id: str(d.bonusId),
+        bounty_id: str(d.bountyId),
+        bonus_amount: event.startsWith('bonus.') ? str(d.amount) : undefined,
       });
     }
   }
@@ -191,6 +195,11 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
   'commission.approved': () => sampleLifecyclePayload(),
   'commission.paid': () => sampleLifecyclePayload({ payoutId: `01J${'5'.repeat(23)}` }),
   'commission.reversed': () => sampleLifecyclePayload({ reason: 'refund' }),
+  // Bonus events share bonuses.ts's bonusPayload shape.
+  'bonus.awarded': () => sampleBonusPayload({ status: 'approved' }),
+  'bonus.approved': () => sampleBonusPayload(),
+  'bonus.paid': () => sampleBonusPayload({ payoutId: `01J${'5'.repeat(23)}` }),
+  'bonus.reversed': () => sampleBonusPayload({ reason: 'manual' }),
   'partner.created': () => ({
     partnerId: `01J${'1'.repeat(23)}`,
     email: 'sample@example.com',
@@ -237,6 +246,21 @@ function sampleLifecyclePayload(extra: Record<string, unknown> = {}): Record<str
     eventId: `01J${'3'.repeat(23)}`,
     eventType: 'invoice_paid',
     programId: 'cmp_default',
+    ...extra,
+  };
+}
+
+function sampleBonusPayload(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    bonusId: `01J${'6'.repeat(23)}`,
+    commissionId: `01J${'0'.repeat(23)}`,
+    partnerId: `01J${'1'.repeat(23)}`,
+    programId: 'cmp_default',
+    bountyId: null,
+    source: 'manual',
+    amount: '50.00',
+    currency: 'USD',
+    note: 'Thanks for a great launch week',
     ...extra,
   };
 }

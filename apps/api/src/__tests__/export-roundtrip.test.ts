@@ -53,9 +53,16 @@ interface Seeded {
   eventId: string;
   attributionId: string;
   commissionId: string;
+  bonusId: string;
+  bonusCommissionId: string;
   payoutId: string;
   couponId: string;
 }
+
+/** Rows seedEverything writes per table, where it isn't one: a bonus has
+ *  its own commission next to the attributed sale's. */
+const SEEDED_ROWS: Partial<Record<string, number>> = { [TABLES.Commission]: 2 };
+const seededRows = (table: string) => SEEDED_ROWS[table] ?? 1;
 
 /** One row in every exportable table, with the FK chain intact. */
 async function seedEverything(): Promise<Seeded> {
@@ -69,6 +76,8 @@ async function seedEverything(): Promise<Seeded> {
   const commissionId = ulid();
   const payoutId = ulid();
   const couponId = ulid();
+  const bonusId = ulid();
+  const bonusCommissionId = ulid();
 
   await db(TABLES.Partner).insert({
     id: partnerId,
@@ -178,6 +187,30 @@ async function seedEverything(): Promise<Seeded> {
     currency: 'USD',
     status: 'approved',
   });
+  // A bonus (schemaVersion 6) and its commission: no attribution behind it.
+  await db(TABLES.Bonus).insert({
+    id: bonusId,
+    tenantId: TENANT,
+    partnerId,
+    programId,
+    amount: '25.00',
+    currency: 'USD',
+    source: 'network',
+    externalRef: 'sub_0001',
+    note: "Thanks for the launch-week video — it's great",
+    createdBy: 'key_network',
+  });
+  await db(TABLES.Commission).insert({
+    id: bonusCommissionId,
+    tenantId: TENANT,
+    partnerId,
+    attributionId: null,
+    bonusId,
+    amount: '25.00',
+    currency: 'USD',
+    status: 'approved',
+    metadata: { rateType: 'fixed' },
+  });
   await db(TABLES.Payout).insert({
     id: payoutId,
     tenantId: TENANT,
@@ -258,9 +291,22 @@ async function seedEverything(): Promise<Seeded> {
     eventId,
     attributionId,
     commissionId,
+    bonusId,
+    bonusCommissionId,
     payoutId,
     couponId,
   };
+}
+
+/** What a bundle written before schemaVersion 6 looks like: no Bonus table,
+ *  no bonus commissions, and no `bonusId` on Commission rows. */
+function beforeBonuses(full: Record<string, unknown[]>): Record<string, unknown[]> {
+  const out: Record<string, unknown[]> = { ...full };
+  delete out[TABLES.Bonus];
+  out[TABLES.Commission] = (full[TABLES.Commission] as Record<string, unknown>[])
+    .filter((c) => c.bonusId === null)
+    .map(({ bonusId: _dropped, ...row }) => row);
+  return out;
 }
 
 /** Reverse of IMPORT_ORDER so foreign keys never block the delete. */
@@ -353,6 +399,9 @@ describe.skipIf(skipIntegration)('export coverage', () => {
     expect(at(TABLES.Click)).toBeLessThan(at(TABLES.Identity));
     expect(at(TABLES.Event)).toBeLessThan(at(TABLES.Attribution));
     expect(at(TABLES.Attribution)).toBeLessThan(at(TABLES.Commission));
+    expect(at(TABLES.Partner)).toBeLessThan(at(TABLES.Bonus));
+    expect(at(TABLES.Program)).toBeLessThan(at(TABLES.Bonus));
+    expect(at(TABLES.Bonus)).toBeLessThan(at(TABLES.Commission));
     expect(at(TABLES.Commission)).toBeLessThan(at(TABLES.CommissionAdjustment));
   });
 });
@@ -363,7 +412,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     const bundle = await exportAll(db, TENANT);
     const before = await counts();
     for (const { table } of EXPORT_TABLES) {
-      expect(before[table], `${table} should have been seeded`).toBe(1);
+      expect(before[table], `${table} should have been seeded`).toBe(seededRows(table));
     }
 
     await wipe();
@@ -371,7 +420,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
 
     expect(await counts()).toEqual(before);
     for (const { table } of EXPORT_TABLES) {
-      expect(report.inserted[table], `${table} should have been imported`).toBe(1);
+      expect(report.inserted[table], `${table} should have been imported`).toBe(seededRows(table));
     }
 
     // Spot-check the three that used not to round-trip.
@@ -400,6 +449,13 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     const commission = await db(TABLES.Commission).where({ id: seeded.commissionId }).first();
     expect(commission.amount).toBe('40.00');
     expect(commission.status).toBe('approved');
+    expect(commission.bonusId).toBeNull();
+    // A bonus and its commission (schemaVersion 6), still linked.
+    const bonus = await db(TABLES.Bonus).where({ id: seeded.bonusId }).first();
+    expect(bonus).toMatchObject({ source: 'network', externalRef: 'sub_0001', amount: '25.00', programId: seeded.programId });
+    expect(bonus.note).toBe("Thanks for the launch-week video — it's great");
+    const bonusCommission = await db(TABLES.Commission).where({ id: seeded.bonusCommissionId }).first();
+    expect(bonusCommission).toMatchObject({ bonusId: seeded.bonusId, attributionId: null, amount: '25.00' });
     // A headless partner stays locked out of the portal on the new instance.
     const partner = await db(TABLES.Partner).where({ id: seeded.partnerId }).first();
     expect(partner.portalAccess).toBe(false);
@@ -557,14 +613,14 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     // hardcoded `id` conflict target this threw instead of skipping.
     for (const { table } of EXPORT_TABLES) {
       expect(second.inserted[table] ?? 0, `${table} should not re-insert`).toBe(0);
-      expect(second.skipped[table] ?? 0, `${table} should be skipped`).toBe(1);
+      expect(second.skipped[table] ?? 0, `${table} should be skipped`).toBe(seededRows(table));
     }
     expect((await counts())[TABLES.PartnerCommission]).toBe(1);
   }, 30_000);
 
   it('accepts a v1 bundle — older exports keep working', async () => {
     await seedEverything();
-    const full = await exportAll(db, TENANT);
+    const full = beforeBonuses(await exportAll(db, TENANT));
     const v1: Record<string, unknown[]> = { ...full };
     // v1 didn't know about these three.
     delete v1[TABLES.PartnerProgram];
@@ -603,7 +659,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
 
   it('accepts a v2 bundle — one exported before Network consent existed', async () => {
     await seedEverything();
-    const full = await exportAll(db, TENANT);
+    const full = beforeBonuses(await exportAll(db, TENANT));
     const v2: Record<string, unknown[]> = { ...full };
     delete v2[TABLES.PartnerNetworkConsent];
     await wipe();
@@ -624,7 +680,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
 
   it('accepts a v3 bundle — program-scoped commission terms, but no Network consent yet', async () => {
     await seedEverything();
-    const full = await exportAll(db, TENANT);
+    const full = beforeBonuses(await exportAll(db, TENANT));
     const v3: Record<string, unknown[]> = { ...full };
     delete v3[TABLES.PartnerNetworkConsent];
     await wipe();
@@ -644,7 +700,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
 
   it('accepts a v4 bundle — no settings, assets or integrations; programs and partners take the new defaults', async () => {
     const seeded = await seedEverything();
-    const full = await exportAll(db, TENANT);
+    const full = beforeBonuses(await exportAll(db, TENANT));
     // A v4 bundle: no v5 tables, and no v5 columns on Program and Partner.
     const v4: Record<string, unknown[]> = {
       ...full,
@@ -695,8 +751,27 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect((await db(TABLES.WebhookEndpoint).first()).secret).toBe(shown[0]!.secret);
   }, 30_000);
 
-  it('exports at schemaVersion 5', () => {
-    expect(SCHEMA_VERSION).toBe(5);
+  it('accepts a v5 bundle — no bonuses; its commissions are all attributed sales', async () => {
+    const seeded = await seedEverything();
+    const v5 = beforeBonuses(await exportAll(db, TENANT));
+    await wipe();
+
+    const app = createApp();
+    const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+    const viaRoute = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: 5, tables: v5 });
+    expect(viaRoute.status).toBe(200);
+    const after = await counts();
+    expect(after[TABLES.Bonus]).toBe(0);
+    expect(after[TABLES.Commission]).toBe(1);
+    const commission = await db(TABLES.Commission).where({ id: seeded.commissionId }).first();
+    expect(commission).toMatchObject({ attributionId: seeded.attributionId, bonusId: null });
+  }, 30_000);
+
+  it('exports at schemaVersion 6', () => {
+    expect(SCHEMA_VERSION).toBe(6);
   });
 });
 

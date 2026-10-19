@@ -77,6 +77,14 @@
  * rows is only picked up when it was first attributed after the previous
  * report (less a day's grace for transactions that committed late): one
  * that was worth nothing then isn't billed later because a setting changed.
+ *
+ * Bonuses (bonuses.ts) are billed beside conversions, as their own ledger
+ * rows (UsageLedger.bonusId). A bonus has no revenue, only its commission,
+ * so rule 1 bills it nothing and rule 2 bills commissionRate × amount: the
+ * published "flat bounties with no sale amount" line. A bonus is on rule 2
+ * when it was awarded at or after the tenant's effective date. Reversing
+ * its commission takes its basis to zero, which the diff credits like a
+ * refund (reason `reversed`).
  */
 
 import type { Knex } from 'knex';
@@ -127,8 +135,10 @@ export interface FeeContext {
 /** Rule 1 for everything: the old reporter's basis. */
 export const OLD_RULE: FeeContext = { revenueRate: 0, commissionRate: 0, meterRate: 1, effectiveAt: null };
 
+/** Exactly one of eventId / bonusId: the conversion or the bonus. */
 export interface LedgerEntry {
-  eventId: string;
+  eventId: string | null;
+  bonusId: string | null;
   currency: string;
   /** Signed, in the conversion's currency. */
   amount: number;
@@ -139,9 +149,11 @@ export interface LedgerEntry {
   terms: FeeTerms | null;
 }
 
-/** A conversion whose basis differs from what has been billed for it. */
+/** A conversion (or bonus) whose basis differs from what has been billed
+ *  for it. Exactly one of eventId / bonusId is set. */
 export interface LedgerDelta {
-  eventId: string;
+  eventId: string | null;
+  bonusId: string | null;
   currency: string;
   target: number;
   billed: number;
@@ -331,6 +343,40 @@ export function conversionSql(o: ConversionOptions): { sql: string; bindings: Kn
   return { sql, bindings };
 }
 
+/**
+ * One row per bonus, in conversionSql's column shape so the ledger and the
+ * rule comparison take it as one more billable item: `bonusId` where a
+ * conversion has `eventId`, no revenue, never declared, percent or
+ * refunded, and `commissions` = its commission while that stands (zero
+ * once reversed). `firstAttributedAt` is when it was awarded; `since`
+ * filters on the same.
+ */
+export function bonusSql(o: ConversionOptions): { sql: string; bindings: Knex.RawBinding[] } {
+  const bindings: Knex.RawBinding[] = [];
+  const p = (v: Knex.RawBinding) => {
+    bindings.push(v);
+    return '?';
+  };
+  const sql = `
+    select b.id as "bonusId", upper(b.currency) as currency, 'bonus'::text as type,
+      b."createdAt" as "firstAttributedAt",
+      false as declared, false as percent,
+      c.status = 'reversed' as reversed, false as refunded,
+      0::numeric as revenue,
+      case when c.status = 'reversed' then 0 else c.amount end as commissions
+    from "Bonus" b
+    join "Commission" c on c."bonusId" = b.id
+    where b."createdAt" <= ${p(o.until)}${o.tenantId ? ` and b."tenantId" = ${p(o.tenantId)}` : ''}${
+      o.since ? ` and b."createdAt" > ${p(o.since)}` : ''
+    }${o.attributedAfter ? ` and b."createdAt" > ${p(o.attributedAfter)}` : ''}${
+      o.attributedBy ? ` and b."createdAt" <= ${p(o.attributedBy)}` : ''
+    }`;
+  return { sql, bindings };
+}
+
+/** The columns ledgerDeltas and compareRules read, common to both shapes. */
+const BILLABLE_COLUMNS = 'currency, "firstAttributedAt", declared, percent, reversed, refunded, revenue, commissions';
+
 /** Rule 1's basis of a conversionSql row `v`, 2 dp. */
 const RULE1_BASIS = (v: string) => `round(case when ${v}.declared then ${v}.revenue else 0 end, 2)`;
 
@@ -370,18 +416,27 @@ export async function ledgerDeltas(
   fee: FeeContext,
   newSince: Date | null,
 ): Promise<LedgerDelta[]> {
-  const { sql, bindings } = conversionSql({ tenantId, until });
+  const conversions = conversionSql({ tenantId, until });
+  const bonuses = bonusSql({ tenantId, until });
   const after = newSince ? new Date(newSince.getTime() - LATE_COMMIT_GRACE_MS) : null;
+  // Conversions and bonuses are keyed (kind, ref): a ledger row bills one
+  // or the other (usage_ledger_source_exactly_one).
   const res = (await db.raw(
     `with l as (
-      select "eventId", currency, sum(amount) as amount, sum("amountUsd") as usd,
+      select case when "bonusId" is null then 'event' else 'bonus' end as kind,
+        coalesce("eventId", "bonusId") as ref, currency,
+        sum(amount) as amount, sum("amountUsd") as usd,
         (array_agg(terms order by "createdAt", id) filter (where terms is not null))[1] as terms,
         true as present
       from "UsageLedger"
       where "tenantId" = ?
-      group by "eventId", currency
+      group by 1, 2, 3
     ),
-    v as (${sql}),
+    v as (
+      select 'event'::text as kind, c."eventId" as ref, ${BILLABLE_COLUMNS} from (${conversions.sql}) c
+      union all
+      select 'bonus'::text as kind, b."bonusId" as ref, ${BILLABLE_COLUMNS} from (${bonuses.sql}) b
+    ),
     t as (
       select v.*,
         case
@@ -391,7 +446,7 @@ export async function ledgerDeltas(
         end as tv,
         l.terms as lterms
       from v
-      left join l on l."eventId" = v."eventId" and l.currency = v.currency
+      left join l on l.kind = v.kind and l.ref = v.ref and l.currency = v.currency
       where l.present or ?::timestamptz is null or v."firstAttributedAt" > ?::timestamptz
     ),
     b as (
@@ -417,22 +472,24 @@ export async function ledgerDeltas(
       from b
     )
     select
-      coalesce(s."eventId", l."eventId") as "eventId",
+      coalesce(s.kind, l.kind) as kind,
+      coalesce(s.ref, l.ref) as ref,
       coalesce(s.currency, l.currency) as currency,
       coalesce(s.basis, 0) as target,
       coalesce(l.amount, 0) as billed,
       coalesce(l.usd, 0) as "billedUsd",
-      s."eventId" is null as gone,
+      s.ref is null as gone,
       coalesce(s.reversed, false) as reversed,
       coalesce(s.refunded, false) as refunded,
       s.tv, s.trev, s.trr, s.tcr, s.tmr
     from s
-    full outer join l on l."eventId" = s."eventId" and l.currency = s.currency
+    full outer join l on l.kind = s.kind and l.ref = s.ref and l.currency = s.currency
     where coalesce(s.basis, 0) <> coalesce(l.amount, 0)
-    order by 1, 2`,
+    order by coalesce(s.kind, l.kind) = 'bonus', 2, 3`,
     [
       tenantId,
-      ...bindings,
+      ...conversions.bindings,
+      ...bonuses.bindings,
       fee.effectiveAt,
       fee.effectiveAt,
       after,
@@ -443,7 +500,8 @@ export async function ledgerDeltas(
     ],
   )) as {
     rows: Array<{
-      eventId: string;
+      kind: 'event' | 'bonus';
+      ref: string;
       currency: string;
       target: string;
       billed: string;
@@ -459,7 +517,8 @@ export async function ledgerDeltas(
     }>;
   };
   return res.rows.map((r) => ({
-    eventId: r.eventId,
+    eventId: r.kind === 'event' ? r.ref : null,
+    bonusId: r.kind === 'bonus' ? r.ref : null,
     currency: r.currency,
     target: Number(r.target),
     billed: Number(r.billed),
@@ -516,6 +575,7 @@ export async function priceDeltas(deltas: LedgerDelta[]): Promise<PricedRun> {
     if (d.terms?.v === 2) newRuleUsd += amountUsd;
     entries.push({
       eventId: d.eventId,
+      bonusId: d.bonusId,
       currency: d.currency,
       amount,
       usdPerUnit: usdPerUnit === null ? null : round12(usdPerUnit),
@@ -567,13 +627,14 @@ export async function insertLedgerEntries(
   entries: LedgerEntry[],
 ): Promise<void> {
   const createdAt = new Date();
-  // 11 columns a row: well under Postgres's 65535-parameter cap.
+  // 12 columns a row: well under Postgres's 65535-parameter cap.
   for (let i = 0; i < entries.length; i += 1000) {
     await db(TABLES.UsageLedger).insert(
       entries.slice(i, i + 1000).map((e) => ({
         id: ulid(),
         tenantId,
         eventId: e.eventId,
+        bonusId: e.bonusId,
         reportKey,
         reason: e.reason,
         currency: e.currency,
@@ -608,27 +669,37 @@ export interface RuleComparison {
  * this is what the shadow comparison, the ops console's estimates and the
  * contract statements are built from. Tenant scope: `tenantId`, or the
  * caller's GUC when null.
+ *
+ * Bonuses awarded in the window count toward `newFee` and `commissions`
+ * (rule 2 bills them) but not toward the conversion counts: they aren't
+ * conversions.
  */
 export async function compareRules(
   db: Knex,
   o: { tenantId: string | null; attributedAfter: Date | null; attributedBy: Date; revenueRate: number; commissionRate: number },
 ): Promise<RuleComparison[]> {
-  const { sql, bindings } = conversionSql({
+  const window = {
     tenantId: o.tenantId,
     until: o.attributedBy,
     attributedAfter: o.attributedAfter,
     attributedBy: o.attributedBy,
-  });
+  };
+  const conversions = conversionSql(window);
+  const bonuses = bonusSql(window);
   const res = (await db.raw(
     `select v.currency,
-        count(*) filter (where w.fee > 0 or w.old > 0) as conversions,
+        count(*) filter (where not v.bonus and (w.fee > 0 or w.old > 0)) as conversions,
         coalesce(sum(w.old), 0) as "oldBasis",
         coalesce(sum(w.fee), 0) as "newFee",
-        count(*) filter (where w."floorWins") as "floorConversions",
+        count(*) filter (where not v.bonus and w."floorWins") as "floorConversions",
         count(*) filter (where v.percent and not v.declared and v.revenue > 0) as "renamedSaleConversions",
         coalesce(sum(w.rev), 0) as revenue,
         coalesce(sum(v.commissions), 0) as commissions
-      from (${sql}) v
+      from (
+        select false as bonus, ${BILLABLE_COLUMNS} from (${conversions.sql}) c
+        union all
+        select true as bonus, ${BILLABLE_COLUMNS} from (${bonuses.sql}) b
+      ) v
       cross join lateral (
         select
           ${RULE1_BASIS('v')} as old,
@@ -638,7 +709,7 @@ export async function compareRules(
       ) w
       group by v.currency
       order by v.currency`,
-    [...bindings, o.revenueRate, o.commissionRate, o.commissionRate, o.revenueRate],
+    [...conversions.bindings, ...bonuses.bindings, o.revenueRate, o.commissionRate, o.commissionRate, o.revenueRate],
   )) as {
     rows: Array<Record<string, string>>;
   };
@@ -695,6 +766,7 @@ export async function openLedger(db: Knex, tenantId: string, cutoff: Date | null
       const usdPerUnit = r.currency === METER_CURRENCY ? 1 : conversion?.fx?.usdPerUnit[r.currency] ?? null;
       return {
         eventId: r.eventId,
+        bonusId: null,
         currency: r.currency,
         amount,
         usdPerUnit: usdPerUnit === null ? null : round12(usdPerUnit),
