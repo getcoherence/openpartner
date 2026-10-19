@@ -264,8 +264,11 @@ curl -s -X POST $OP/attribution/identify -H 'content-type: application/json' \
 
 ## 7. Report conversions from your server
 
-> **Bill with Stripe? Connect it instead.** On OpenPartner Cloud, **Admin → Integrations → Connect Stripe** installs the OpenPartner Stripe App on your own Stripe account ([stripe-app.md](stripe-app.md)). Your Checkout and Payment Link purchases, invoices, refunds and disputes are then recorded from Stripe directly: no forwarding conversions, no reporting invoices. Link each Stripe customer to your user instead:
-> - **Checkout or a Payment Link:** pass the click id as `client_reference_id` (`https://buy.stripe.com/…?client_reference_id={click_id}` in the destination URL, or set it when you create the Checkout Session).
+> **Bill with Stripe? Connect it instead.** On OpenPartner Cloud, **Admin → Integrations → Connect Stripe** installs the OpenPartner Stripe App on your own Stripe account ([stripe-app.md](stripe-app.md)). Your Checkout and Payment Link purchases, invoices, refunds and disputes are then recorded from Stripe directly: no forwarding conversions, no reporting invoices. What's left is getting the partner click into Stripe once. Integrations asks how you take payment and shows just that step:
+> - **A partner link straight to a Payment Link:** no code. Put `?client_reference_id={click_id}` on the program's destination URL.
+> - **Payment Links, a Pricing Table or a Buy Button on your site:** one script tag, `<script src="<your portal>/op.js" data-api-url="…">`. It adds the click to them on its own.
+> - **Your app creates the Checkout Session:** the same tag, plus `client_reference_id: req.cookies.op_ref` where you create the session.
+> - **Partner promo codes at Stripe Checkout:** no code, when the program offers a customer discount.
 > - **Stripe Billing customers you create yourself:** set `metadata.openpartner_user_id` on the Customer to the same `userId` you pass to `identify()`.
 >
 > Partner codes with a customer discount get their Stripe promotion code created for you, and a code entered at Stripe Checkout attributes without `POST /coupons/redeem`. Once connected, a conversion forwarded under a Stripe invoice or Checkout Session id (`in_…`, `cs_…`) returns `409 recorded_from_stripe`: Stripe's record of the payment wins. Keep using the calls below for anything that isn't a Stripe payment: signups, CRM stages, payments taken elsewhere.

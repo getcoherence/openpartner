@@ -1054,6 +1054,16 @@ export const partnerProxy = {
     callNetwork<{ ok: boolean }>(db, tenantId, 'DELETE', `/creators/me/platforms/${encodeURIComponent(platform)}`, undefined, {
       actingVendorPartnerId: vendorPartnerId,
     }),
+  // Account verification (YouTube description code, website DNS TXT):
+  // start issues the code, verify checks it. Network-side logic only.
+  startPlatformVerification: (db: Knex, tenantId: string, vendorPartnerId: string, platform: string) =>
+    callNetwork<unknown>(db, tenantId, 'POST', `/creators/me/platforms/${encodeURIComponent(platform)}/verify/start`, {}, {
+      actingVendorPartnerId: vendorPartnerId,
+    }),
+  checkPlatformVerification: (db: Knex, tenantId: string, vendorPartnerId: string, platform: string) =>
+    callNetwork<unknown>(db, tenantId, 'POST', `/creators/me/platforms/${encodeURIComponent(platform)}/verify`, {}, {
+      actingVendorPartnerId: vendorPartnerId,
+    }),
   uploadMyAvatar: (db: Knex, tenantId: string, vendorPartnerId: string, image: Buffer, contentType: string) =>
     callNetwork<{ avatarUrl: string }>(db, tenantId, 'POST', '/creators/me/uploads/avatar', image, {
       actingVendorPartnerId: vendorPartnerId,
