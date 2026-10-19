@@ -97,8 +97,8 @@ reservation; the release protocol prevents the released/late-payment race (block
 Created and committed **before** any `transfers.create` call:
 `id` · `batchId` · `partnerId` · `currency` · `amountMinor` · `destinationAccountId`
 (snapshotted — changing destination under a retained key is a Stripe parameter-mismatch
-error) · `idempotencyKey` (`fbt:<transferIntentId>`, frozen) · `state`
-(`pending | posted | confirmed | failed | reconcile_required`) · `stripeTransferId`
+error) · `idempotencyKey` (`fbt:<transferIntentId>`, frozen; see key generations below) ·
+`state` (`pending | posted | confirmed | failed | reconcile_required`) · `stripeTransferId`
 unique nullable · `postedAt` · unique `(batchId, partnerId, currency)`.
 
 **Retry discipline (finding 2):** within Stripe's idempotency window, retry the same key.
@@ -107,6 +107,73 @@ the intent moves to `reconcile_required`: resolve by listing transfers by
 `transfer_group` + metadata (`openpartner_transfer_intent_id`, tenant, batch) — **never
 blindly POST again**. Every Stripe object we create carries those metadata keys, which
 also fixes webhook tenant-resolution for transfers (finding 7).
+
+*As built (Oct 2026), brought up to the direct rail's round-6 rules
+([direct-connect-payouts.md](direct-connect-payouts.md), "Intent states"):*
+
+- **Only a definite error fails an intent.** `failed` is read as "Stripe refused it":
+  the next tick retries the same key, and a compliance hold cancels a `failed`
+  intent's allocations into a residual. A **409 idempotency conflict**, a **429**, and
+  an `idempotency_error` (key reused with different parameters) are **ambiguous** —
+  another request may be mid-flight on the key — so the intent stays `posted`. The
+  classifier is shared with the direct rail (`isDefiniteStripeError`). Every write
+  around the POST is compare-and-set: the pre-POST stamp on the state read and the key
+  about to be posted, the error write on `posted`, so neither can overwrite an intent
+  another writer confirmed.
+- **An empty listing past the window HOLDS; it never re-arms.** `transfers.list` is
+  accurate about requests Stripe has finished, but it cannot see a POST still in
+  flight, and stripe-node's timeout has no wall-clock bound. An empty listing means
+  *unknown*, not *absent*, and re-posting on it is the double-pay. The intent stays
+  `reconcile_required` on the same key with its allocations `transfer_pending`, with
+  `lastError = awaiting_operator:no_transfer_found_past_window` (written once, so
+  `updatedAt` measures the hold). Each executor tick lists again and logs an ALERT; a
+  straggler that lands still finalizes normally. The batch stays `transferring`, and
+  the §7 deadline alert escalates it. The cost is liveness, not money.
+- **Key generations.** Only an operator may authorise a fresh attempt (below). That
+  needs a key Stripe has never seen, because retention is anchored to a key's first use
+  and the old key would replay its stored outcome. The intent's `idempotencyKey` is
+  therefore frozen **per generation**: `fbt:<id>` is generation 0, and an operator
+  re-arm moves it to `fbt:<id>:g<N>`. The stored key is also the generation fence: the
+  re-arm compare-and-sets on the key the operator observed. No migration is involved.
+  The unique index on the key still holds, and transfers carry
+  `openpartner_key_generation` in their metadata (absent reads as 0).
+- **More than one transfer, or one from an abandoned generation, HOLDS too.** Reconcile
+  collects every match for the intent, not the first. Two matches
+  (`duplicate_transfers:<ids>`) or a match stamped with a generation other than the
+  current key's (`superseded_generation_transfer:<id>`) means the partner may have been
+  paid twice. The ledger stays unwritten and an ALERT names the transfers.
+  Disposition is manual (reverse the surplus, then finalize by hand); this rail has no
+  `resolve_duplicate_review` equivalent yet.
+
+**Operator re-arm** — `POST /funding/transfers/:intentId/recovery`
+`{ "kind": "release_intent_for_retry", "observedGeneration": N, "note": "..." }`, applied
+by the operator-recovery loop (rail `hosted_funding`, target = the transfer intent;
+`releaseFundedTransferForRetry` in `funding/executor.ts` is the break-glass REPL path).
+It refuses (`transfer_exists`) if the batch's group holds any transfer stamped with this
+intent *or paying its destination*. Metadata is mutable at Stripe, the destination is
+not. It returns `generation_moved` if the key no longer matches `observedGeneration`,
+`not_held` unless the intent is `reconcile_required`, and `cannot_verify` if Stripe
+can't be listed. On success the intent goes back to `pending` on generation N+1 and the
+next tick posts once. The operator is asserting what no listing can prove, so an
+applied re-arm schedules the same 24h transfer-group **recheck** as the direct rail. It
+alarms (`orphan_transfers:<ids>`) on any live transfer for the intent other than the
+one it recorded, such as the abandoned key's POST landing late. It is the only alarm
+for that case on this rail: the `transfer.created` detector resolves direct-Connect
+payouts only.
+
+Find held intents:
+
+```sql
+select id, "tenantId", "batchId", "partnerId", "amountMinor", "idempotencyKey",
+       "postedAt", "lastError", "updatedAt"
+from "HostedFundingTransfer"
+where state = 'reconcile_required'
+order by "updatedAt";
+```
+
+Before re-arming, look: `stripe transfers list --transfer-group <batchId>`, and check
+there is nothing for this partner's destination. `observedGeneration` is the suffix of
+`idempotencyKey` (0 for a bare `fbt:<id>`).
 
 ### `PayoutReversal` (finding 11)
 `id` · `payoutId` · `stripeReversalId` unique · `amountMinor` · `reason` ·
@@ -281,6 +348,20 @@ Any (state, event) pair not listed is an explicit logged no-op. All transitions 
 | transferring | deadline residual disposition chosen | settled_with_residual | record disposition |
 | transferring | transfer intent ambiguous > window | (allocation) reconcile_required | reconcile by group/metadata |
 | funding_failed | release protocol completes | released | — |
+
+Transfer intents (`HostedFundingTransfer.state`, §4), all CAS:
+
+| State | Event | → | Side effects |
+|---|---|---|---|
+| pending / posted / failed | executor posts (key = current generation) | posted | `transfers.create` with the frozen key |
+| posted | transfer returned | confirmed | Payout paid, allocations transferred, commissions paid |
+| posted | definite 4xx (not 409 / 429 / idempotency_error) | failed | retried with the same key next tick |
+| posted | 409 / 429 / idempotency_error / network | posted | replay inside the window |
+| posted | ambiguous and older than the window | reconcile_required | list by transfer_group |
+| reconcile_required | one match on the current generation | confirmed | finalize with it |
+| reconcile_required | no match | reconcile_required (HELD) | ALERT each tick; `awaiting_operator:…` |
+| reconcile_required | 2+ matches, or one on another generation | reconcile_required (HELD) | ALERT; ledger unwritten |
+| reconcile_required | operator re-arm (no transfer for the intent listed) | pending, key → generation N+1 | 24h recheck scheduled |
 | settled / settled_with_residual | `transfer.reversed` | (payout) derived partial/reversed | PayoutReversal + adjustments |
 
 Late `payment_intent.succeeded` on `released` is the one designed-impossible event (PI

@@ -1368,7 +1368,8 @@ export interface OperatorRecoveryRequestRow {
   tenantId: string;
   rail: OperatorRecoveryRail;
   kind: OperatorRecoveryKind;
-  /** payoutId (direct_connect) or batchId (hosted_funding). */
+  /** payoutId (direct_connect); on hosted_funding the transfer intent id
+   *  for release_intent_for_retry, otherwise the batchId. */
   targetId: string;
   params: Record<string, unknown>;
   requestedBy: string;
