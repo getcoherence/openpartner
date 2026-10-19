@@ -199,6 +199,25 @@ link the Stripe customer to their user instead: `client_reference_id = <click id
 at Checkout, or `metadata.openpartner_user_id` on the Customer. The Integrations
 page and the 409's `detail` say so.
 
+### Getting the partner click into Stripe
+
+Stripe never sees the brand's website, so the app can't know who referred a
+buyer unless the partner click reaches Stripe. Once it does, that customer's
+invoices, renewals and refunds attribute on their own. Once connected,
+Integrations asks how the brand takes payment and shows only that path:
+
+| How customers pay | What the brand does |
+| --- | --- |
+| A partner link goes straight to a Payment Link | Nothing: put `?client_reference_id={click_id}` on the program's destination URL |
+| Payment Links, a Pricing Table or a Buy Button on the brand's site | Paste one script tag (`<portal>/op.js`). The browser SDK adds the click to `buy.stripe.com` links and to Pricing Table / Buy Button embeds, including ones added later |
+| The brand's app creates the Checkout Session | The same tag, plus `client_reference_id: req.cookies.op_ref`. The script keeps the click in a first-party `op_ref` cookie |
+| Partner promo codes at Stripe Checkout | Nothing, when the program offers a customer discount (codes are created in the brand's Stripe) |
+
+The portal's build produces `/op.js` from `packages/sdk/src/auto.ts`
+(`pnpm --filter @openpartner/sdk build:global`). That makes it available on
+the platform origin and on every white-label domain, with no npm release
+needed.
+
 ### Customer rewards
 
 `customer-rewards.ts rewardStripe(tenantId)` returns the brand's own client on
