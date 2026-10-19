@@ -9,22 +9,30 @@
  * which brand to enter. Creator signin is forwarded to the Network in
  * parallel — same email, separate flow, separate cookie.
  *
- * Always 200 silently to avoid email enumeration.
+ * Always 200 silently to avoid email enumeration. When no brand admin
+ * matches, the address itself may hear why (sendNoAccountNotice) — the
+ * response never says.
  *
  * Multi-tenant only — single-tenant deployments use the existing
  * per-tenant /auth/signin which already knows its tenant.
  */
 
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { z } from 'zod';
 import { TABLES, type AdminRow, DEFAULT_TENANT_ID } from '@openpartner/db';
 import { db } from '../db.js';
 import { issueMagicLink } from '../auth-sessions.js';
-import { adminSigninEmail, buildMagicLinkUrl } from '../email-templates.js';
+import { adminSigninEmail, buildMagicLinkUrl, signinNoAccountEmail } from '../email-templates.js';
 import { getMailer } from '../mailer.js';
+import { ipRateLimit } from '../middleware/rate-limit.js';
+import { PLATFORM_SESSION_COOKIE, resolvePlatformSession } from '../platform-sessions.js';
+import { getPortalBaseUrl } from '../portal-url.js';
 import { getTenancyMode } from '../tenancy.js';
+import { isAllowedOperator } from './platform-admin.js';
 
 export const signinRouter = Router();
+
+const signinLimit = ipRateLimit({ name: 'unified-signin', max: 10, windowMs: 60_000 });
 
 const schema = z.object({
   email: z.string().trim().email(),
@@ -36,7 +44,7 @@ const schema = z.object({
   add: z.boolean().optional(),
 });
 
-signinRouter.post('/signin', async (req, res) => {
+signinRouter.post('/signin', signinLimit, async (req, res) => {
   if (getTenancyMode() !== 'multi') {
     return res.status(400).json({ error: 'use_per_tenant_signin' });
   }
@@ -69,21 +77,24 @@ signinRouter.post('/signin', async (req, res) => {
       // enter.
       const link = buildMagicLinkUrl(issued.plaintext);
       const tmpl = adminSigninEmail(anyAdmin.name, link);
-      await getMailer().send({ db, tenantId: anyAdmin.tenantId }, {
+      // Platform mail context, not the matched Admin row's tenant: workspace
+      // sign-in spans every brand the person admins, and a brand that wired
+      // up its own mail provider would otherwise carry OpenPartner's sign-in
+      // link through its SMTP/Postmark and From address.
+      await getMailer().send({ db, tenantId: DEFAULT_TENANT_ID }, {
         to: email,
         subject: tmpl.subject,
         text: tmpl.text,
         html: tmpl.html,
         tag: 'platform_signin',
         metadata: { purpose: 'platform_signin', email, source: 'unified_signin' },
-        // Workspace sign-in spans every brand the person admins; the tenant
-        // context above is just whichever Admin row matched first, so its
-        // brand color would be arbitrary.
         platform: true,
       });
     } catch (err) {
       console.error('[signin] platform mail failed', { email, err });
     }
+  } else {
+    await sendNoAccountNotice(req, email, body.data.add === true);
   }
 
   // Creator side — same email, separate cookie, parallel flow. Best-effort.
@@ -103,3 +114,44 @@ signinRouter.post('/signin', async (req, res) => {
 
   res.json({ ok: true });
 });
+
+/**
+ * No brand admin matched. The response stays the same 200, but the
+ * address's owner hears why no link came, in the two cases where they can
+ * act on it and nobody can make us mail a stranger:
+ *   - an ops-console address (PlatformAdmin / PLATFORM_ADMIN_EMAILS): its
+ *     sign-in is /platform/login, not this page;
+ *   - "Add another account" from a browser with a live platform session:
+ *     a signed-in admin expected a brand account at that address.
+ * A plain sign-in for an unknown address stays silent. The Network sends
+ * the creator link in parallel and we can't see whether it did, so a
+ * creator would get a "no account" email on every sign-in.
+ */
+async function sendNoAccountNotice(req: Request, email: string, addMode: boolean): Promise<void> {
+  try {
+    const opsIdentity = await isAllowedOperator(email);
+    if (!opsIdentity && !(addMode && (await hasLivePlatformSession(req)))) return;
+    const base = getPortalBaseUrl();
+    const tmpl = signinNoAccountEmail({
+      email,
+      opsConsoleUrl: opsIdentity ? `${base}/platform/login` : null,
+      signupUrl: `${base}/signup`,
+    });
+    await getMailer().send({ db, tenantId: DEFAULT_TENANT_ID }, {
+      to: email,
+      subject: tmpl.subject,
+      text: tmpl.text,
+      html: tmpl.html,
+      tag: 'signin_no_account',
+      metadata: { purpose: 'signin_no_account', email, source: 'unified_signin', opsIdentity },
+      platform: true,
+    });
+  } catch (err) {
+    console.error('[signin] no-account mail failed', { email, err });
+  }
+}
+
+async function hasLivePlatformSession(req: Request): Promise<boolean> {
+  const cookie = (req as unknown as { cookies?: Record<string, string> }).cookies?.[PLATFORM_SESSION_COOKIE];
+  return !!cookie && (await resolvePlatformSession(db, cookie)) !== null;
+}
