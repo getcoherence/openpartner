@@ -292,9 +292,11 @@ app.
 
 ### 2. Upload the app
 
-Done Oct 18 2026: version 0.1.0 is uploaded to the **OpenPartner Apps** account
-(`acct_1URepJLKsWusNm7Z`). For later versions, bump `version` in
-`stripe-app.json` and repeat the last command.
+Done Oct 18 2026: versions 0.1.0 and then 0.1.1 (the real icon) are uploaded to
+the **OpenPartner Apps** account (`acct_1URepJLKsWusNm7Z`). For a later version,
+bump `version` in `stripe-app.json`, repeat the last command, and switch the
+External test (step 5) to the new version: it stays on the version it was
+started with.
 
 ```bash
 stripe login --interactive --project-name openpartner-apps   # paste the live secret key
@@ -313,9 +315,9 @@ Things that tripped the first upload:
   needs.
 - **Log in with a key, not the browser flow.** Since 1.54, the browser login
   saves an OAuth session that the apps plugin can't read yet ("your live mode
-  API key needs to be re-configured"). `stripe login --interactive` with the
-  account's live secret key works. That's the same key as
-  `STRIPE_APP_SECRET_KEY`.
+  API key needs to be re-configured"). `stripe login --interactive` with a live
+  key of the account works. A restricted key (`rk_live_…`) is enough for the
+  CLI, but `STRIPE_APP_SECRET_KEY` must be the standard secret key (step 4).
 - **The Stripe Apps Agreement.** The account must accept it in the Dashboard
   first. The CLI prints the link.
 - **Redirect URIs must be HTTPS**, in test mode too. A `localhost` URI is
@@ -325,8 +327,9 @@ Things that tripped the first upload:
 
 The first upload created the app from `stripe-app.json`: id
 `dev.openpartner.attribution`, name, permissions and redirect URIs. The id can't
-change now. Before App Review, replace the placeholder `openpartner_icon.png`
-(a 300×300 PNG) with the real mark.
+change now. The icon, `openpartner_icon.png`, is a 300×300 PNG: the "op" mark
+from `apps/portal/public/logo-mark-white.svg` on the brand green `#53735D`. A
+logo change needs a new version upload; the Dashboard can't edit it.
 
 The only redirect URI in the manifest is
 `https://app.openpartner.dev/api/stripe-app/oauth/callback` (production). To
@@ -400,7 +403,7 @@ installed.
 
 | Env var (api component) | Value |
 | --- | --- |
-| `STRIPE_APP_SECRET_KEY` | Developer account **live** secret key (`sk_live_…`) |
+| `STRIPE_APP_SECRET_KEY` | Developer account **live** secret key (`sk_live_…`, from **Standard keys**). Not a restricted `rk_live_…` key: Stripe's token endpoint refuses those with `invalid_client`, "Unable to authenticate the request", and every install then fails at the last step. |
 | `STRIPE_APP_CLIENT_ID` | `client_id` from the app's **live** install link (Settings → public OAuth links, or External test → live link before publishing) |
 | `STRIPE_APP_SECRET_KEY_TEST` | Developer account **test** secret key (`sk_test_…`) |
 | `STRIPE_APP_CLIENT_ID_TEST` | `client_id` from the **test-mode** install link |
