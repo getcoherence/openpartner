@@ -6,19 +6,23 @@
  *     and respond. The brand is immediately locked out (the tenancy
  *     middleware refuses requests for a tenant that's pending deletion).
  *
- *   Phase 2 — hard delete: a scheduler sweep finds tenants past the
- *     30-day grace window and cascades the wipe. Until then, an admin
- *     can call /account/restore to clear pendingDeletionAt and recover.
+ *   Phase 2 — hard delete: a scheduler sweep (hardDeleteExpiredTenants
+ *     in scheduler.ts) finds tenants past the 30-day grace window and
+ *     wipes every tenant-scoped row. Until then, an admin can call
+ *     /account/restore to clear pendingDeletionAt and recover.
  *
- * NOT yet handled (TODOs that should land before public launch):
- *   - Stripe subscription cancellation. Today the brand keeps getting
- *     billed inside the grace window. Should at least set the sub to
- *     cancel-at-period-end at delete-time.
- *   - Network-side vendor row revoke (the Network keeps thinking we're
- *     federated). Needs a /vendors/me/delete on the Network.
- *   - Any pending payouts / unpaid commissions guard — right now we
- *     allow deletion regardless. A real production gate would refuse
- *     until the ledger is settled.
+ * Phase 1 also:
+ *   - Refuses with 409 pending_obligations while the brand has unpaid
+ *     (accrued/approved) commissions or pending payouts, unless the
+ *     admin passes forceDespiteObligations after seeing the warning.
+ *   - Sets the Stripe plan subscription to cancel at period end, so the
+ *     brand isn't billed again. Restore clears the flag.
+ *   - Tells the Network to cancel the vendor (which revokes its creator
+ *     affiliations) and disables the local Network membership. Restore
+ *     reinstates the vendor and mints a fresh vendorToken (needs
+ *     NETWORK_ADMIN_API_KEY).
+ * The Stripe and Network calls are best-effort: a failure is logged and
+ * the deletion goes ahead.
  */
 
 import { Router } from 'express';

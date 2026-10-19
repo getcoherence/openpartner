@@ -4,6 +4,7 @@ import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '..
 import { db as privilegedDb } from '../db.js';
 import { dispatchPayoutNotifications, runPayouts } from '../payouts.js';
 import { executePayoutTransfers } from '../payout-transfers.js';
+import { listHeldPartners, screenPayablePartners } from '../sanctions-screening.js';
 import { tenantOf, withTenantTransaction } from '../tenancy.js';
 
 export const payoutsRouter = Router();
@@ -20,6 +21,16 @@ export const payoutsRouter = Router();
  */
 payoutsRouter.post('/payouts/run', requireAuth, requireAdmin, async (req, res) => {
   const { tenantId } = tenantOf(req);
+  // Screen this brand's payable partners who are due (sanctions-
+  // screening.ts) before planning, outside the planning transaction: a
+  // partner the planner finds unscreened is held. Capped so the request
+  // stays short; the hourly sweep screens the rest, and they stay held
+  // until it has.
+  try {
+    await screenPayablePartners(privilegedDb, { tenantId, limit: 50 });
+  } catch (err) {
+    console.error('[payouts] pre-run sanctions screening failed', err);
+  }
   const { pendingNotifications, ...result } = await withTenantTransaction(tenantId, (trx) =>
     runPayouts(trx, tenantId),
   );
@@ -50,6 +61,29 @@ payoutsRouter.post('/payouts/run', requireAuth, requireAdmin, async (req, res) =
     }
   }
   res.json({ ...result, transfers });
+});
+
+/**
+ * Partners with approved commissions who are on a compliance hold
+ * (sanctions-screening.ts): a blocked declared country, or a sanctions
+ * screening match that is open, confirmed or not answered yet. Their
+ * Stripe payouts are held; a partner the brand pays itself (manual rail)
+ * is listed as a warning. Read on the privileged pool, scoped to this
+ * tenant: the hold records are platform tables.
+ */
+payoutsRouter.get('/payouts/holds', requireAuth, requireAdmin, async (req, res) => {
+  const { tenantId } = tenantOf(req);
+  const held = await listHeldPartners(privilegedDb, { tenantId });
+  res.json({
+    holds: held.map((h) => ({
+      partnerId: h.partnerId,
+      partnerName: h.partnerName,
+      partnerEmail: h.partnerEmail,
+      reason: h.reason,
+      effect: h.effect,
+      owed: h.owed,
+    })),
+  });
 });
 
 /**

@@ -108,6 +108,7 @@ export const TABLES = {
   BrandNotification: 'BrandNotification',
   EmailOptOut: 'EmailOptOut',
   LocationDeclaration: 'LocationDeclaration',
+  SanctionsScreening: 'SanctionsScreening',
   Partner: 'Partner',
   Program: 'Program',
   PartnerProgram: 'PartnerProgram',

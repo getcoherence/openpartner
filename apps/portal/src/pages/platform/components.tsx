@@ -68,7 +68,7 @@ export function PlatformFrame({
   );
 }
 
-function Pill({ label, tone }: { label: string; tone: { bg: string; fg: string } }) {
+export function Pill({ label, tone }: { label: string; tone: { bg: string; fg: string } }) {
   return (
     <span
       style={{

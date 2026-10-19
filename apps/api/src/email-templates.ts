@@ -443,6 +443,55 @@ export function opsBrandCountryNotServedEmail(
   return { subject, text, html: wrap(text, reviewUrl, 'Open review console') };
 }
 
+/** Platform ops: sanctions screenings came back with possible matches on
+ *  the US Consolidated Screening List. A partner's Stripe payouts are held
+ *  until an operator clears or confirms the match in the console. One
+ *  email per screening run. Names only, no emails: the console has the
+ *  rest. */
+export function opsScreeningReviewEmail(opts: {
+  items: Array<{
+    subjectKind: 'tenant' | 'partner';
+    brandName: string;
+    slug: string | null;
+    names: string[];
+    topMatch: { source: string; name: string; score: number | null } | null;
+  }>;
+  reviewUrl: string;
+}): EmailTemplate {
+  const n = opts.items.length;
+  const first = opts.items[0]!;
+  const subject =
+    n === 1
+      ? `[Action] Sanctions screening: possible match for ${first.subjectKind === 'tenant' ? 'brand' : 'a partner of'} ${first.brandName}`
+      : `[Action] Sanctions screening: ${n} possible matches to review`;
+  const lines: string[] = [
+    n === 1
+      ? `${first.subjectKind === 'tenant' ? 'A brand' : 'A partner'} came back as a possible match on the US Consolidated Screening List.`
+      : `${n} brands or partners came back as possible matches on the US Consolidated Screening List.`,
+  ];
+  for (const item of opts.items) {
+    lines.push(
+      ``,
+      `  ${item.subjectKind === 'tenant' ? 'Brand:   ' : 'Partner of:'} ${item.brandName}${item.slug ? ` (${item.slug})` : ''}`,
+      `  Screened:   ${item.names.join(', ')}`,
+      ...(item.topMatch
+        ? [
+            `  Closest:    ${item.topMatch.name}${item.topMatch.score != null ? ` (score ${item.topMatch.score})` : ''}`,
+            `  List:       ${item.topMatch.source}`,
+          ]
+        : []),
+    );
+  }
+  lines.push(
+    ``,
+    `A partner's Stripe payouts are held until you clear or confirm the match. Confirming a brand's match rejects the brand. Review them in the ops console:`,
+    ``,
+    opts.reviewUrl,
+  );
+  const text = lines.join('\n');
+  return { subject, text, html: wrap(text, opts.reviewUrl, 'Open screening review') };
+}
+
 /** Platform ops: self-hosted vendors registered on the Network and are
  *  waiting in the vendor review queue (nothing they publish lists until an
  *  operator approves them). */
@@ -577,6 +626,29 @@ export function opsTenantInvoicePaymentFailedEmail(
     text,
     html: invoiceUrl ? wrap(text, invoiceUrl, 'View invoice in Stripe') : plainHtml(text),
   };
+}
+
+/** Platform ops: the nightly hard delete failed for brands whose 30-day
+ *  deletion grace window has lapsed. Their data is still on file. */
+export function opsTenantPurgeFailedEmail(
+  failures: Array<{ tenantId: string; slug: string; displayName: string; pendingDeletionAt: Date; error: string }>,
+): EmailTemplate {
+  const n = failures.length;
+  const subject =
+    n === 1
+      ? `[Deletion] Hard delete failed for ${failures[0]!.displayName} (${failures[0]!.slug})`
+      : `[Deletion] Hard delete failed for ${n} brands`;
+  const text = [
+    `The nightly hard delete failed for ${n === 1 ? 'a brand' : `${n} brands`} past the 30-day deletion grace window.`,
+    `Each purge rolled back, so ${n === 1 ? 'its' : 'their'} data is still on file. The job retries daily.`,
+    ``,
+    ...failures.flatMap((f) => [
+      `  ${f.displayName} (${f.slug}), tenant ${f.tenantId}`,
+      `    Deletion requested: ${f.pendingDeletionAt.toISOString().slice(0, 10)}`,
+      `    Error: ${f.error}`,
+    ]),
+  ].join('\n');
+  return { subject, text, html: plainHtml(text) };
 }
 
 // ---------------------------------------------------------------------------

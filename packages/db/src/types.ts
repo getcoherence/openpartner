@@ -611,9 +611,46 @@ export interface LocationDeclarationRow {
   country: string;
   outsideOccupiedRegions: boolean | null;
   ipCountry: string | null;
-  source: 'signup' | 'add_brand' | 'prompt' | 'join';
+  source: 'signup' | 'add_brand' | 'prompt' | 'join' | 'api';
   declaredByEmail: string | null;
   createdAt: Date;
+}
+
+/** One entry of the US Consolidated Screening List that a screened name
+ *  came close to. */
+export interface SanctionsScreeningMatch {
+  /** The list it is on, e.g. "Specially Designated Nationals (SDN) - Treasury Department". */
+  source: string;
+  name: string;
+  /** Fuzzy-match score, 0-100 (100 = exact). Null when the list gave none. */
+  score: number | null;
+  /** The list's own id for the entry, when it has one. */
+  entryId: string | null;
+  type: string | null;
+  programs: string[];
+  countries: string[];
+}
+
+/** A screening of a brand or partner name against the US Consolidated
+ *  Screening List (platform-scoped compliance record, append-only apart
+ *  from the one-time review; migration 20261019010000). */
+export interface SanctionsScreeningRow {
+  id: string;
+  subjectKind: 'tenant' | 'partner';
+  subjectId: string;
+  tenantId: string;
+  screenedName: string;
+  country: string | null;
+  result: 'clear' | 'possible_match' | 'error' | 'skipped';
+  matches: SanctionsScreeningMatch[];
+  errorDetail: string | null;
+  trigger: 'signup' | 'add_brand' | 'first_payable' | 'rescreen' | 'backfill' | 'ops';
+  screenedAt: Date;
+  decision: 'cleared' | 'confirmed_match' | null;
+  reviewedByEmail: string | null;
+  reviewedAt: Date | null;
+  reviewNote: string | null;
+  decisionCarriedFromId: string | null;
 }
 
 export interface ProgramRow {

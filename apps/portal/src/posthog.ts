@@ -15,12 +15,14 @@
  * otherwise clear anything PostHog left behind and, unless the browser
  * sends Global Privacy Control / Do Not Track, ask.
  *
- * The bootstrap below is the verbatim PostHog snippet (minus its init
- * call), injected into <head> as a <script> element. We do this instead
- * of re-implementing the array-stub in TypeScript because the snippet has
- * subtle function-shape requirements (arguments capture, push semantics)
- * that are easy to get wrong in a rewrite. Keeping it as a string ships
- * exactly what the studio-website ships.
+ * The bootstrap below is the verbatim PostHog snippet, injected into
+ * <head> as a <script> element. We do this instead of re-implementing
+ * the array-stub in TypeScript because the snippet has subtle
+ * function-shape requirements (arguments capture, push semantics) that
+ * are easy to get wrong in a rewrite. Keeping it as a string ships
+ * exactly what the studio-website ships, minus its trailing
+ * posthog.init(...) call: that call is made from TypeScript below so the
+ * config can carry functions (before_send), which a string can't.
  */
 import {
   CONSENT_STORAGE_KEY,
@@ -31,6 +33,7 @@ import {
   writeConsent,
   type ConsentChoice,
 } from './lib/consent.js';
+import { scrubSensitiveEvent } from './lib/sensitive-url.js';
 
 const KEY = import.meta.env.VITE_POSTHOG_KEY as string | undefined;
 const HOST = (import.meta.env.VITE_POSTHOG_HOST as string | undefined) ?? 'https://us.i.posthog.com';
@@ -41,7 +44,7 @@ export const analyticsEnabled = Boolean(KEY);
 const SNIPPET = `!function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]);t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(/\\/$/,"")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;void 0!==a?u=e[a]=[]:a="posthog";u.analytics=u;u.init=function(i,s,a){e._i.push([i,s,a])};u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e};u.people=u.people||[];g(u,"capture");g(u,"register");g(u,"register_once");g(u,"ready");g(u,"set_config");g(u,"get_config");g(u,"get_property");g(u,"get_distinct_id");g(u,"toString");g(u,"opt_in_capturing");g(u,"opt_out_capturing");g(u,"has_opted_in_capturing");g(u,"has_opted_out_capturing");g(u,"clear_opt_in_out_capturing");g(u,"startSessionRecording");g(u,"stopSessionRecording");g(u,"sessionRecordingStarted");g(u,"getActiveMatchingSurveys");g(u,"getSurveys");g(u,"getNextSurveyStep");g(u,"onFeatureFlags");g(u,"onSessionId");g(u,"getSessionId");g(u,"identify");g(u,"setPersonProperties");g(u,"group");g(u,"getGroups");g(u,"setGroupProperties");g(u,"reloadFeatureFlags");u._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);`;
 
 interface PostHog {
-  init(key: string, config: Record<string, unknown>): void;
+  init?(key: string, config: Record<string, unknown>): void;
   opt_out_capturing(): void;
 }
 
@@ -93,8 +96,11 @@ function loadPostHog(): void {
   const tag = document.createElement('script');
   tag.type = 'text/javascript';
   tag.text = SNIPPET;
+  // An inline script runs on insertion, so the stub exists from here on
+  // (unless something blocked it, e.g. a future CSP: then analytics is
+  // off, and the app must still boot).
   document.head.appendChild(tag);
-  posthog()?.init(KEY, {
+  posthog()?.init?.(KEY, {
     api_host: HOST,
     person_profiles: 'identified_only',
     // Dashboards show partner names, emails and amounts. That's the
@@ -103,7 +109,13 @@ function loadPostHog(): void {
     mask_all_text: true,
     mask_all_element_attributes: true,
     disable_session_recording: true,
-    before_send: scrubAnalyticsEvent,
+    // Sign-in links carry a one-time token in the query string. The
+    // landing pages strip it from the address bar as soon as they read
+    // it, but array.js loads async and the first pageview can win that
+    // race: scrubSensitiveEvent redacts token / ntoken wherever they
+    // appear, then scrubAnalyticsEvent drops every remaining query string
+    // and fragment from URL properties (invitations, Stripe session ids).
+    before_send: [scrubSensitiveEvent, scrubAnalyticsEvent],
   });
 }
 

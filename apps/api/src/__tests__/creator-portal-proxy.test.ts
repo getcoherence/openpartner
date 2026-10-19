@@ -1,8 +1,9 @@
 /**
  * The /creator-api reverse proxy only forwards allowlisted Network paths.
  * Covers the account-verification POSTs under /creators/me/platforms/
- * (verify/start, verify) and that paths off the allowlist stay 404 without
- * reaching the Network. A local HTTP server plays the Network.
+ * (verify/start, verify), the creator data export, and that paths off the
+ * allowlist stay 404 without reaching the Network. A local HTTP server
+ * plays the Network.
  */
 
 import { createServer, type Server } from 'node:http';
@@ -27,6 +28,17 @@ beforeAll(async () => {
       calls.push({ method: req.method ?? '', path: req.url ?? '', cookie: req.headers.cookie });
       req.resume();
       req.on('end', () => {
+        if (req.url === '/creators/me/export') {
+          if (!req.headers.cookie) {
+            res.writeHead(401, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'unauthenticated' }));
+          }
+          res.writeHead(200, {
+            'content-type': 'application/json; charset=utf-8',
+            'content-disposition': 'attachment; filename="openpartner-creator-export-ada_example_com-2026-10-19.json"',
+          });
+          return res.end(JSON.stringify({ exportedAt: '2026-10-19T00:00:00.000Z', creator: { id: 'cr_1' } }));
+        }
         if (req.url?.endsWith('/verify')) {
           res.writeHead(409, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ error: 'code_not_found', detail: 'Not in the description yet.' }));
@@ -77,5 +89,29 @@ describe('creator-api proxy: platform verification', () => {
     const res = await request(app).post('/creator-api/vendors/me/discover/creators').send({});
     expect(res.status).toBe(404);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe('creator-api proxy: data export', () => {
+  it('forwards GET /creators/me/export with the creator cookie and relays the download', async () => {
+    const res = await request(app)
+      .get('/creator-api/creators/me/export')
+      .set('Cookie', 'op_network_creator_session=abc');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-disposition']).toBe(
+      'attachment; filename="openpartner-creator-export-ada_example_com-2026-10-19.json"',
+    );
+    expect(res.headers['content-type']).toMatch(/^application\/json/);
+    expect(res.body).toEqual({ exportedAt: '2026-10-19T00:00:00.000Z', creator: { id: 'cr_1' } });
+    expect(calls).toEqual([{ method: 'GET', path: '/creators/me/export', cookie: 'op_network_creator_session=abc' }]);
+  });
+
+  it('leaves the session check to the Network, like the other /creators/me routes', async () => {
+    const res = await request(app).get('/creator-api/creators/me/export');
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: 'unauthenticated' });
+    expect(res.headers['content-disposition']).toBeUndefined();
+    expect(calls).toEqual([{ method: 'GET', path: '/creators/me/export', cookie: undefined }]);
   });
 });

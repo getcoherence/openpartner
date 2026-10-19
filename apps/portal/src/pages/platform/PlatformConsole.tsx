@@ -16,6 +16,7 @@ import { AuditPage } from './Audit.js';
 import { NotificationsPage } from './Notifications.js';
 import { FeesPage } from './Fees.js';
 import { CountriesPage } from './Countries.js';
+import { ScreeningPage } from './Screening.js';
 
 const TABS = [
   { to: '/platform/brands', label: 'Brands' },
@@ -26,6 +27,7 @@ const TABS = [
   { to: '/platform/fees', label: 'Fees' },
   { to: '/platform/blocklist', label: 'Blocklist' },
   { to: '/platform/countries', label: 'Countries' },
+  { to: '/platform/screening', label: 'Screening' },
   { to: '/platform/audit', label: 'Audit' },
 ] as const;
 
@@ -85,6 +87,7 @@ export function PlatformConsole() {
         <Route path="fees" element={<FeesPage operator={operator} />} />
         <Route path="blocklist" element={<BlocklistPage operator={operator} />} />
         <Route path="countries" element={<CountriesPage operator={operator} />} />
+        <Route path="screening" element={<ScreeningPage operator={operator} />} />
         <Route path="audit" element={<AuditPage />} />
         <Route path="*" element={<Navigate to="/platform/brands" replace />} />
       </Routes>
