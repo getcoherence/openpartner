@@ -1,4 +1,4 @@
-import { Link, type LinkProps } from 'react-router-dom';
+import { Link, type LinkProps } from 'react-router';
 import { useTenantBase } from './tenant-base.js';
 
 /**

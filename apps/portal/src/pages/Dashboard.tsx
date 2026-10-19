@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import {
   MousePointerClick,
   Receipt,

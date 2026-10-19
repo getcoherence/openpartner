@@ -29,7 +29,7 @@ updates:
         patterns:
           - react
           - react-dom
-          - react-router-dom
+          - react-router
           - "@tanstack/react-query"
       knex:
         patterns:
