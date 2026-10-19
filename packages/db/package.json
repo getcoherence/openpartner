@@ -16,11 +16,12 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "knex": "^3.1.0",
-    "pg": "^8.11.5"
+    "knex": "^3.3.0",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
-    "@types/pg": "^8.11.10",
+    "@types/node": "^25.7.0",
+    "@types/pg": "^8.23.1",
     "dotenv": "^16.4.5",
     "tsx": "^4.19.0",
     "typescript": "6.0.3",
