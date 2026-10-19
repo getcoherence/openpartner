@@ -155,6 +155,9 @@ services:
       - key: STRIPE_APP_WEBHOOK_SECRET
         type: SECRET
         scope: RUN_TIME
+      # Until App Review publishes the app: the External test install link.
+      - key: STRIPE_APP_AUTHORIZE_URL
+        scope: RUN_TIME
       - key: METRICS_TOKEN
         type: SECRET
         scope: RUN_TIME
