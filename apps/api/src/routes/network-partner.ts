@@ -345,6 +345,30 @@ networkPartnerRouter.delete('/network/me/platforms/:platform', requireAuth, asyn
   return proxy(req, res, (db, tenantId) => partnerProxy.deleteMyPlatform(db, tenantId, partnerId, platform.data));
 });
 
+// Account verification. The Network issues and checks the code; these
+// just forward, acting as the partner's creator identity.
+networkPartnerRouter.post('/network/me/platforms/:platform/verify/start', requireAuth, async (req, res) => {
+  const partnerId = requirePartnerPrincipal(req, res);
+  if (!partnerId) return;
+  if (!(await requireConsent(req, res, partnerId))) return;
+  const platform = platformParam.safeParse(req.params.platform);
+  if (!platform.success) return res.status(400).json({ error: 'invalid_platform' });
+  return proxy(req, res, (db, tenantId) =>
+    partnerProxy.startPlatformVerification(db, tenantId, partnerId, platform.data),
+  );
+});
+
+networkPartnerRouter.post('/network/me/platforms/:platform/verify', requireAuth, async (req, res) => {
+  const partnerId = requirePartnerPrincipal(req, res);
+  if (!partnerId) return;
+  if (!(await requireConsent(req, res, partnerId))) return;
+  const platform = platformParam.safeParse(req.params.platform);
+  if (!platform.success) return res.status(400).json({ error: 'invalid_platform' });
+  return proxy(req, res, (db, tenantId) =>
+    partnerProxy.checkPlatformVerification(db, tenantId, partnerId, platform.data),
+  );
+});
+
 const AVATAR_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
 networkPartnerRouter.post(

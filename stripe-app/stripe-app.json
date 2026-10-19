@@ -2,7 +2,7 @@
   "$schema": "https://stripe.com/stripe-app.schema.json",
   "id": "dev.openpartner.attribution",
   "name": "OpenPartner",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "icon": "./openpartner_icon.png",
   "ui_extension": {
     "views": [

@@ -169,7 +169,10 @@ dashboardRouter.get('/partners/:id/dashboard', requireAuth, grantScope('partners
 //   sales    — Events with non-null value > 0 (subscription_created,
 //              invoice_paid, custom paid events)
 //   revenue  — Σ(Event.value × Attribution.weight) for sales events
-//   earnings — Σ(Commission.amount) accrued in the bucket
+//   earnings — Σ(Commission.amount) accrued in the bucket, bonuses
+//              included (a bonus's commission has no attribution; its
+//              program is Bonus.programId). Leads, sales and revenue stay
+//              event-based, so a bonus never counts as a sale.
 //
 // All filterable by programId so the per-partnership detail page on the
 // creator portal scopes the chart correctly. The Network forwards the
@@ -214,7 +217,11 @@ dashboardRouter.get(
     const programFilter = q.data.programId ? `AND "programId" = :programId` : '';
     const eventProgramFilter = q.data.programId ? `AND "Attribution"."programId" = :programId` : '';
     const commissionProgramJoin = q.data.programId
-      ? `JOIN "Attribution" ON "Attribution"."id" = "Commission"."attributionId" AND "Attribution"."programId" = :programId`
+      ? `LEFT JOIN "Attribution" ON "Attribution"."id" = "Commission"."attributionId"
+         LEFT JOIN "Bonus" ON "Bonus"."id" = "Commission"."bonusId"`
+      : '';
+    const commissionProgramFilter = q.data.programId
+      ? `AND coalesce("Attribution"."programId", "Bonus"."programId") = :programId`
       : '';
 
     const bindings = q.data.programId
@@ -254,6 +261,7 @@ dashboardRouter.get(
          WHERE "Commission"."partnerId" = :partnerId
            AND "Commission"."accruedAt" >= :since
            AND "Commission"."accruedAt" <= :until
+           ${commissionProgramFilter}
          GROUP BY 1`,
         bindings,
       ),

@@ -280,12 +280,14 @@ export async function applyRefund(
       let replacement: CommissionRow | null = null;
       if (w.targetMinor > 0) {
         replacement = await accrueReplacement(trx, w, input.refundEventId);
-        const attribution = attributionsById.get(replacement.attributionId)!;
+        // Loaded by attributionId above, so never a bonus commission.
+        const attributionId = replacement.attributionId!;
+        const attribution = attributionsById.get(attributionId)!;
         const conversion = conversionsById.get(attribution.eventId)!;
         out.announce.accrued.push({
           commissionId: replacement.id,
           partnerId: replacement.partnerId,
-          attributionId: replacement.attributionId,
+          attributionId,
           clickId: attribution.clickId,
           eventId: conversion.id,
           programId: attribution.programId,
@@ -319,7 +321,7 @@ export async function applyRefund(
         reason: 'refund_clawback',
         metadata: {
           refundEventId: input.refundEventId,
-          conversionEventId: attributionsById.get(w.current.attributionId)?.eventId ?? null,
+          conversionEventId: attributionsById.get(w.current.attributionId!)?.eventId ?? null,
           ...(w.current.id !== w.root.id ? { rootCommissionId: w.root.id } : {}),
         },
         createdAt: new Date(),

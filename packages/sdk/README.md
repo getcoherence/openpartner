@@ -38,8 +38,36 @@ OpenPartner.init({
   queryParam: 'cref',           // query param on landing URLs
   storageKey: 'openpartner:cref', // localStorage key
   onError: (err) => Sentry.captureException(err),
+  stripe: { linkHosts: ['pay.yourbrand.com'] }, // or false — see below
+  referralCookie: { name: 'op_ref', domain: '.yourbrand.com' }, // off by default
 });
 ```
+
+### Stripe links and embeds
+
+When the visitor came from a partner link, the SDK hands that click to Stripe for you:
+
+- Every Payment Link on the page (`buy.stripe.com`, plus any `linkHosts` you list for a custom Payment Link domain) gets `client_reference_id`.
+- Every `<stripe-pricing-table>` and `<stripe-buy-button>` embed gets `client-reference-id`.
+
+That includes elements added after the page loads. A link or embed that already carries a reference keeps it. With your Stripe account connected to OpenPartner (or your self-host's webhook pointed at it), those checkouts then credit the partner with no code at all. `stripe: false` turns it off. For an app-created Checkout Session, pass `op.getReferral()`, or the `op_ref` cookie with `referralCookie` set, as `client_reference_id`.
+
+Pricing Table and Buy Button embeds read `client-reference-id` when Stripe renders them, so load the SDK before Stripe's embed script.
+
+### Script tag (no bundler)
+
+An OpenPartner portal serves a self-starting build of this SDK at `/op.js`. Paste it into your site's `<head>`:
+
+```html
+<script src="https://app.openpartner.dev/op.js" data-api-url="https://app.openpartner.dev/api/t/your-slug"></script>
+```
+
+**Admin → Integrations** shows the exact tag for your program. It does everything above, keeps the referral in an `op_ref` cookie on your domain, and exposes `window.openpartner` (`openpartner.identify(userId)`, `openpartner.getReferral()`). Optional attributes:
+- `data-stripe-hosts="pay.yourbrand.com"`: a custom Payment Link domain.
+- `data-cookie-domain=".yourbrand.com"`: share `op_ref` across subdomains.
+- `data-stripe="off"`, `data-cookie="off"`: turn either off.
+
+The npm package carries the same file at `dist-global/openpartner.js`.
 
 ### Framework notes
 
@@ -121,6 +149,8 @@ How Stripe revenue reaches OpenPartner depends on where OpenPartner runs.
 
 **Self-hosted, single tenant.** If the instance's `STRIPE_SECRET_KEY` and webhook signing secret (`STRIPE_WEBHOOK_SECRET_PLATFORM`, or the legacy `STRIPE_WEBHOOK_SECRET`) belong to *your* Stripe account, you can skip `trackEvent` for Stripe revenue. OpenPartner takes revenue from `invoice.paid` (subscriptions and other invoices) and from paid one-time Checkout Sessions (`mode: 'payment'`, including Payment Links). Point a webhook in your Stripe account at `https://<your-openpartner-api>/webhooks/stripe`. Subscribe it to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `customer.created`, `customer.subscription.created`, `invoice.paid`, `charge.refunded` and `charge.dispute.created`.
 
+The endpoint can use any Stripe API version, including the one Stripe preselects when you create it. Version `2025-03-31.basil` removed the invoice ↔ payment pointers from webhook payloads (`Invoice.charge`, `Invoice.payment_intent`, `Charge.invoice`). On basil and later, OpenPartner reads a refunded charge's invoice back from Stripe's InvoicePayments: one Stripe API call per refund of an invoice's charge.
+
 OpenPartner has to know which Stripe customer is which referred user. Link them in one of two ways:
 
 - **Checkout `client_reference_id`.** Pass the captured referral through when you create the Checkout Session:
@@ -143,9 +173,9 @@ OpenPartner has to know which Stripe customer is which referred user. Link them 
 
 You can use both. If the Customer already carries your `openpartner_user_id` when the checkout completes, OpenPartner stitches the click to that id instead of the `cus_…` id and leaves your metadata as you set it. The user gets one signup, although `customer.created` and `checkout.session.completed` both report it.
 
-Once a customer is linked, OpenPartner ingests and attributes their `customer.subscription.created` and `invoice.paid` automatically, and their later one-time Checkout purchases even without a `client_reference_id`. A refund of an invoice's or one-time purchase's charge (`charge.refunded`) leaves each of that payment's commissions worth its original amount times the share of the collected amount the customer kept, so a full refund keeps nothing. Partial refunds add up. Accrued and approved commissions are reversed, and on a partial refund a replacement for the kept share is accrued with the same status and accrual date. Paid commissions stay paid: a `refund_clawback` adjustment records what the partner holds, and OpenPartner doesn't deduct it from later payouts, so recover it by hand. A commission in a payout that's in progress is held until the next refund of that charge. A dispute is recorded and reverses nothing. If you lose it, report the chargeback with `POST /attribution/refunds` (`"kind": "chargeback"`). Don't also `trackEvent` the same invoices from your backend, or the revenue is counted twice.
+Once a customer is linked, OpenPartner ingests and attributes their `customer.subscription.created` and `invoice.paid` automatically, and their later one-time Checkout purchases even without a `client_reference_id`. A refund of an invoice's or one-time purchase's charge (`charge.refunded`) leaves each of that payment's commissions worth its original amount times the share of the collected amount the customer kept, so a full refund keeps nothing. Partial refunds add up. Accrued and approved commissions are reversed, and on a partial refund a replacement for the kept share is accrued with the same status and accrual date. Paid commissions stay paid: a `refund_clawback` adjustment records what the partner holds, and OpenPartner doesn't deduct it from later payouts, so recover it by hand. A commission in a payout that's in progress is held until the next refund of that charge. Since `2025-03-31.basil`, an invoice can be paid in several payments, and one payment can pay several invoices. A refund of such a payment is recorded but reverses nothing, because the charge doesn't say how much of which invoice it gave back. Report it with `POST /attribution/refunds` and the amount. A dispute is recorded and reverses nothing. If you lose it, report the chargeback with `POST /attribution/refunds` (`"kind": "chargeback"`). Don't also `trackEvent` the same invoices from your backend, or the revenue is counted twice.
 
-If `STRIPE_SECRET_KEY` is a restricted key, give it read access to Customers and Checkout Sessions. When the key isn't allowed to read one of them, OpenPartner skips that lookup instead of failing the webhook, and the event can go unattributed.
+If `STRIPE_SECRET_KEY` is a restricted key, give it read access to Customers, Checkout Sessions and Invoices. Invoices covers a promo code applied to an invoice, and on API versions from `2025-03-31.basil` the InvoicePayment that names a refunded charge's invoice. When the key isn't allowed to read one of them, OpenPartner skips that lookup instead of failing the webhook, and the event can go unattributed.
 
 Call `trackEvent` from your backend when:
 

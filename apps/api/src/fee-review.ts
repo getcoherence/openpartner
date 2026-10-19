@@ -161,7 +161,9 @@ export async function estimateFeeImpact(
     if (!isMeteredMode(mode)) continue;
     const rates = ratesFor(mode, settings, terms.get(t.id) ?? null);
     const cmp = await shadowComparison(db, t.id, { ...rates, meterRate: METER_RATES[mode] }, since, now);
-    if (!cmp || (cmp.conversions === 0 && cmp.oldFeeUsd === 0)) continue;
+    // A tenant whose only activity is bonuses has no conversions, but the
+    // new rule still bills them.
+    if (!cmp || (cmp.conversions === 0 && cmp.oldFeeUsd === 0 && cmp.newFeeUsd === 0)) continue;
     out.push({ tenantId: t.id, slug: t.slug, mode, revenueRate: rates.revenueRate, commissionRate: rates.commissionRate, ...cmp });
   }
   return out;
