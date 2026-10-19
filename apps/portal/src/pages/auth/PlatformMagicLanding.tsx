@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router';
 import { theme } from '../../theme.js';
 import { countryErrorMessage } from '../../lib/CountryField.js';
 import { AuthFrame } from './Shared.js';
+import { stripQueryParamsFromAddressBar } from '../../lib/sensitive-url.js';
 
 /**
  * Multi-tenant magic-link landing for platform-identity tokens (the
@@ -18,6 +19,10 @@ export function PlatformMagicLandingPage() {
 
   useEffect(() => {
     const token = params.get('token');
+    // The token signs in whoever holds it until verify spends it: take it
+    // out of the address bar (and so out of history, Referer headers and
+    // analytics pageviews) before anything else runs.
+    stripQueryParamsFromAddressBar(['token']);
     if (!token) {
       setState('failed');
       setDetail('No token in URL.');
