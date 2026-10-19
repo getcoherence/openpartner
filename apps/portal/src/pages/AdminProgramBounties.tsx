@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router';
 import { ArrowLeft, Plus, Trophy, X } from 'lucide-react';
 import { formatBountyAmount, formatBountyValue, renderBountySummary, type BountyLike } from '@openpartner/db';
 import { api } from '../api.js';
