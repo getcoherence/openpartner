@@ -3,6 +3,8 @@ import { Banknote, Play } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { alpha, theme } from '../theme.js';
 import { Button, Card, EmptyState, ErrorBanner, Page, StatusPill, Table, formatDate, money, shortId } from '../ui.js';
+import { HOLD_REASON, type HoldReason } from './payout-holds.js';
+import { ManualPayoutFiles } from './ManualPayoutFiles.js';
 
 interface Payout {
   id: string;
@@ -16,8 +18,6 @@ interface Payout {
   stripeTransferId: string | null;
 }
 
-type HoldReason = 'country_not_supported' | 'screening_confirmed' | 'screening_review' | 'screening_pending';
-
 /** GET /payouts/holds: partners on a compliance hold (OpenPartner Cloud). */
 interface PayoutHold {
   partnerId: string;
@@ -27,13 +27,6 @@ interface PayoutHold {
   effect: 'held' | 'warning';
   owed: Array<{ currency: string; amount: number }>;
 }
-
-const HOLD_REASON: Record<HoldReason, string> = {
-  country_not_supported: 'Based in a country OpenPartner can’t send payouts to.',
-  screening_review: 'Sanctions screening found a possible match. OpenPartner is reviewing it.',
-  screening_confirmed: 'Sanctions screening confirmed a match.',
-  screening_pending: 'Not screened against the sanctions lists yet. This usually clears within the hour.',
-};
 
 export function PayoutsPage({ principal }: { principal: Principal }) {
   const qc = useQueryClient();
@@ -51,6 +44,7 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['payouts'] });
       qc.invalidateQueries({ queryKey: ['payout-holds'] });
+      qc.invalidateQueries({ queryKey: ['manual-payout-runs'] });
       qc.invalidateQueries({ queryKey: ['commissions'] });
       qc.invalidateQueries({ queryKey: ['admin-overview'] });
     },
@@ -160,6 +154,8 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
           </pre>
         </Card>
       )}
+
+      {principal.role === 'admin' && !partnerId && <ManualPayoutFiles />}
 
       {!partnerId ? (
         <EmptyState

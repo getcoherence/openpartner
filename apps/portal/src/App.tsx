@@ -28,6 +28,7 @@ import {
   AlertTriangle,
   Trophy,
   KeyRound,
+  Landmark,
   CalendarCheck,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
@@ -41,6 +42,7 @@ import { LinksPage } from './pages/Links.js';
 import { CommissionsPage } from './pages/Commissions.js';
 import { PayoutsPage } from './pages/Payouts.js';
 import { ConnectPage } from './pages/Connect.js';
+import { PayoutDetailsPage } from './pages/PayoutDetails.js';
 import { AdminPartners } from './pages/AdminPartners.js';
 import { AdminPartnerPrograms } from './pages/AdminPartnerPrograms.js';
 import { AdminPartnerCoupons } from './pages/AdminPartnerCoupons.js';
@@ -294,6 +296,7 @@ function Shell() {
           <Route path="commissions" element={<CommissionsPage principal={auth.principal} />} />
           <Route path="payouts" element={<PayoutsPage principal={auth.principal} />} />
           <Route path="connect" element={<ConnectPage principal={auth.principal} />} />
+          <Route path="payout-details" element={<PayoutDetailsPage principal={auth.principal} />} />
           <Route path="account" element={<TenantAccountPage />} />
 
           {/* Network discovery — open to anyone signed in (vendor admin can
@@ -488,6 +491,7 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
           {principal.role === 'partner' && <NavItem to="/bounties" icon={<Trophy size={16} />}>Bounties</NavItem>}
           <NavItem to="/commissions" icon={<Receipt size={16} />}>Commissions</NavItem>
           <NavItem to="/payouts" icon={<Banknote size={16} />}>Payouts</NavItem>
+          {principal.role === 'partner' && <NavItem to="/payout-details" icon={<Landmark size={16} />}>Payout details</NavItem>}
           {principal.role === 'partner' && <NavItem to="/connect" icon={<CreditCard size={16} />}>Stripe Connect</NavItem>}
           {principal.role === 'partner' && <NavItem to="/postbacks" icon={<Webhook size={16} />}>Postbacks</NavItem>}
           {principal.role === 'partner' && <NavItem to="/account" icon={<KeyRound size={16} />}>Sign-in &amp; password</NavItem>}

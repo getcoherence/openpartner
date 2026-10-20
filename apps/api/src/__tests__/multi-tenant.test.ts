@@ -246,6 +246,40 @@ describe.skipIf(skipIntegration)('multi-tenant RLS isolation', () => {
     ).rejects.toThrow(/row-level security|new row violates/i);
   });
 
+  it("a partner's payout details are visible only under its own tenant", async () => {
+    if (!appRoleAvailable) return;
+    const partnerId = ulid();
+    await db(TABLES.Partner).insert({ id: partnerId, tenantId: TENANT_A, email: `payee-${ulid()}@acme.test`, name: 'Payee' });
+    await db(TABLES.PartnerPayoutProfile).insert({
+      partnerId,
+      tenantId: TENANT_A,
+      method: 'paypal',
+      details: 'sealed-elsewhere',
+      updatedBy: 'partner',
+    });
+    const asAcme = await asAppRole({ tenantId: TENANT_A }, (trx) => trx(TABLES.PartnerPayoutProfile).where({ partnerId }));
+    const asGlobex = await asAppRole({ tenantId: TENANT_B }, (trx) => trx(TABLES.PartnerPayoutProfile).where({ partnerId }));
+    expect(asAcme).toHaveLength(1);
+    expect(asGlobex).toHaveLength(0);
+    // Globex can't redirect an Acme partner's payouts either.
+    await expect(
+      asAppRole({ tenantId: TENANT_B }, (trx) =>
+        trx(TABLES.PartnerPayoutProfile).where({ partnerId }).update({ details: 'attacker' }),
+      ),
+    ).resolves.toBe(0);
+    await expect(
+      asAppRole({ tenantId: TENANT_A }, (trx) =>
+        trx(TABLES.PartnerPayoutProfile).insert({
+          partnerId: ulid(),
+          tenantId: TENANT_B, // mismatch on purpose
+          method: 'other',
+          details: 'x',
+          updatedBy: 'api',
+        }),
+      ),
+    ).rejects.toThrow(/row-level security|new row violates/i);
+  });
+
   it('a Session stitched to Acme is invisible under Globex GUC', async () => {
     if (!appRoleAvailable) return;
     const sessionId = ulid();
