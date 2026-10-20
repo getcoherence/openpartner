@@ -1176,6 +1176,12 @@ export const partnerProxy = {
       actingVendorPartnerId: vendorPartnerId,
       rawContentType: contentType,
     }),
+  // The banner on the public profile and the marketplace storefront card.
+  uploadMyCover: (db: Knex, tenantId: string, vendorPartnerId: string, image: Buffer, contentType: string) =>
+    callNetwork<{ coverImageUrl: string }>(db, tenantId, 'POST', '/creators/me/uploads/cover', image, {
+      actingVendorPartnerId: vendorPartnerId,
+      rawContentType: contentType,
+    }),
 };
 
 // ---------- Network-originated payouts reporting ----------

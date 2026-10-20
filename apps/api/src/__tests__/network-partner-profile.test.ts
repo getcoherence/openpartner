@@ -1,7 +1,7 @@
 /**
  * Partner-role proxies for editing the partner's Network profile from the
  * brand portal: everything the Network's completeness bar checks (handle,
- * avatar, bio, categories, platforms) plus the audience fields.
+ * avatar, bio, categories, platforms) plus the audience fields and the cover.
  *
  *   PATCH  /network/me/profile              → PATCH  /creators/me
  *   GET    /network/me/platforms            → GET    /creators/me/platforms
@@ -10,6 +10,7 @@
  *   POST   /network/me/platforms/:platform/verify/start → same path on the Network
  *   POST   /network/me/platforms/:platform/verify       → same path on the Network
  *   POST   /network/me/uploads/avatar       → POST   /creators/me/uploads/avatar (raw image)
+ *   POST   /network/me/uploads/cover        → POST   /creators/me/uploads/cover (raw image)
  *
  * Each acts as the signed-in partner (vendor bearer + x-act-as-vendor-partner),
  * exactly like the existing /network/me/profile GET. A local HTTP server
@@ -145,6 +146,7 @@ describe.skipIf(skipIntegration)('PATCH /network/me/profile', () => {
       name: 'Pat',
       handle: 'pat',
       avatarUrl: 'https://cdn.example/pat.png',
+      coverImageUrl: 'https://cdn.example/pat-cover.png',
       bio: 'I make weekly videos about design tools for indie founders.',
       categories: ['Design', 'tech'],
       audienceLocations: ['us', 'GB'],
@@ -173,11 +175,18 @@ describe.skipIf(skipIntegration)('PATCH /network/me/profile', () => {
     expect(JSON.parse(calls[0]!.raw.toString('utf8'))).toEqual({ audienceSize: null, audienceAgeRange: null });
   });
 
+  it('removes the cover with null', async () => {
+    const res = await request(app).patch('/network/me/profile').set('Cookie', cookie).send({ coverImageUrl: null });
+    expect(res.status).toBe(200);
+    expect(JSON.parse(calls[0]!.raw.toString('utf8'))).toEqual({ coverImageUrl: null });
+  });
+
   it.each([
     ['an unknown audience bucket', { audienceSize: 'huge' }],
     ['a bad country code', { audienceLocations: ['USA'] }],
     ['too many categories', { categories: Array.from({ length: 13 }, (_, i) => `c${i}`) }],
     ['a non-URL portfolio link', { portfolioLinks: ['not a url'] }],
+    ['a non-http cover', { coverImageUrl: 'javascript:alert(1)' }],
   ])('rejects %s without calling the Network', async (_label, body) => {
     const res = await request(app).patch('/network/me/profile').set('Cookie', cookie).send(body);
     expect(res.status).toBe(400);
@@ -253,6 +262,33 @@ describe.skipIf(skipIntegration)('platform proxies', () => {
   });
 });
 
+describe.skipIf(skipIntegration)('POST /network/me/uploads/cover', () => {
+  it('forwards the image bytes and type as the partner', async () => {
+    nextResponse = { status: 200, body: { coverImageUrl: 'https://cdn.example/creators/crt_1/covers/c.webp' } };
+    const webp = Buffer.from([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 1, 2, 3]);
+    const res = await request(app)
+      .post('/network/me/uploads/cover')
+      .set('Cookie', cookie)
+      .set('content-type', 'image/webp')
+      .send(webp);
+    expect(res.status).toBe(200);
+    expect(res.body.coverImageUrl).toBe('https://cdn.example/creators/crt_1/covers/c.webp');
+    expectActingCall(calls[0], 'POST', '/creators/me/uploads/cover');
+    expect(calls[0]!.contentType).toBe('image/webp');
+    expect(calls[0]!.raw.equals(webp)).toBe(true);
+  });
+
+  it('rejects non-image bodies without calling the Network', async () => {
+    const res = await request(app)
+      .post('/network/me/uploads/cover')
+      .set('Cookie', cookie)
+      .set('content-type', 'application/json')
+      .send({ coverImageUrl: 'https://cdn.example/x.png' });
+    expect(res.status).toBe(400);
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe.skipIf(skipIntegration)('POST /network/me/uploads/avatar', () => {
   it('forwards the image bytes and type as the partner', async () => {
     nextResponse = { status: 200, body: { avatarUrl: 'https://cdn.example/creators/crt_1/avatars/a.png' } };
@@ -289,6 +325,7 @@ describe.skipIf(skipIntegration)('auth', () => {
       () => request(app).post('/network/me/platforms/youtube/verify/start').send({}),
       () => request(app).post('/network/me/platforms/youtube/verify').send({}),
       () => request(app).post('/network/me/uploads/avatar').set('content-type', 'image/png').send(Buffer.from([1])),
+      () => request(app).post('/network/me/uploads/cover').set('content-type', 'image/png').send(Buffer.from([1])),
     ];
     for (const route of routes) {
       expect((await route()).status).toBe(401);

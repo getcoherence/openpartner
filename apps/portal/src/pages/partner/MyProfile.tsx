@@ -30,6 +30,7 @@ const partnerProfileAdapter: NetworkProfileAdapter = {
   platformsKey: ['network-my-platforms'],
   updateProfile: (body) => api('/network/me/profile', { method: 'PATCH', body }),
   uploadAvatar: (file) => api<{ avatarUrl: string }>('/network/me/uploads/avatar', { method: 'POST', body: file }),
+  uploadCover: (file) => api<{ coverImageUrl: string }>('/network/me/uploads/cover', { method: 'POST', body: file }),
   listPlatforms: () => api<{ platforms: PlatformRow[] }>('/network/me/platforms'),
   putPlatform: (platform, body) => api(`/network/me/platforms/${platform}`, { method: 'PUT', body }),
   deletePlatform: (platform) => api(`/network/me/platforms/${platform}`, { method: 'DELETE' }),
