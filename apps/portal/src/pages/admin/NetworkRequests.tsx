@@ -56,7 +56,7 @@ function RequestList({ statusFilter }: { statusFilter: string }) {
     mutationFn: ({ id, decisionNote }: { id: string; decisionNote?: string }) =>
       api(`/admin/network/requests/${id}/approve`, { method: 'POST', body: { decisionNote } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['network-requests'] }),
-    onError: (err) => setActionError(err instanceof ApiError ? err.message : 'failed'),
+    onError: (err) => setActionError(approveErrorMessage(err)),
   });
   const reject = useMutation({
     mutationFn: ({ id, decisionNote }: { id: string; decisionNote?: string }) =>
@@ -147,4 +147,15 @@ function RequestRow({
       )}
     </Card>
   );
+}
+
+/** The approve error to show. A creator the Network no longer offers
+ *  partnerships with answers 409 creator_not_available; the Network doesn't
+ *  say why, and neither do we. */
+function approveErrorMessage(err: unknown): string {
+  if (!(err instanceof ApiError)) return 'failed';
+  if (err.message.includes('creator_not_available')) {
+    return "This creator isn't available for partnerships on the Network any more, so the request can't be approved. You can reject it.";
+  }
+  return err.message;
 }

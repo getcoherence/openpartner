@@ -1149,7 +1149,15 @@ export type FundingAllocationState =
   | 'released'
   | 'recovery_required';
 
-export type FundingTransferState = 'pending' | 'posted' | 'confirmed' | 'failed' | 'reconcile_required';
+export type FundingTransferState =
+  | 'pending'
+  | 'posted'
+  | 'confirmed'
+  | 'failed'
+  | 'reconcile_required'
+  /** Parked for an operator: duplicate, superseded-generation or
+   *  unauthenticated transfers. The executor does not scan it. */
+  | 'duplicate_review';
 
 export interface HostedFundingBatchRow {
   id: string;
@@ -1207,6 +1215,9 @@ export interface HostedFundingTransferRow {
   payoutId: string | null;
   lastError: string | null;
   postedAt: Date | null;
+  /** Fence for an operator's duplicate_review resolution. Set when the
+   *  intent is parked; the funding webhook moves it on reversal activity. */
+  reviewNonce: string | null;
   /** Reconcile-sweep scheduling (per-object, see funding/reconcile.ts). */
   sweepDueAt: Date | null;
   sweepLeaseAt: Date | null;
@@ -1388,7 +1399,8 @@ export interface OperatorRecoveryRequestRow {
   tenantId: string;
   rail: OperatorRecoveryRail;
   kind: OperatorRecoveryKind;
-  /** payoutId (direct_connect) or batchId (hosted_funding). */
+  /** payoutId (direct_connect); on hosted_funding the transfer intent id
+   *  for release_intent_for_retry, otherwise the batchId. */
   targetId: string;
   params: Record<string, unknown>;
   requestedBy: string;

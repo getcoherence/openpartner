@@ -15,6 +15,9 @@
  *                          dispose_intent           → disposeIntent
  *                          resolve_duplicate_review → resolveDuplicateReview
  *   rail 'hosted_funding'  force_release_batch      → forceReleaseBatch
+ *                          release_intent_for_retry → releaseFundedTransferForRetry
+ *                          resolve_duplicate_review → resolveFundedDuplicateReview
+ *                                                     (both target = transfer intent id)
  *
  * Outcome mapping (§0.4): the function's success literal → `applied`; its
  * definitive refusals → `refused` with the literal recorded; the retryable
@@ -56,10 +59,14 @@
  * for a missed webhook: RECHECK_AFTER_MS after apply it re-lists the
  * transfer group and alarms on any live transfer the payout is no longer
  * expecting. Detector only — no payout state is written; disposition stays
- * with a human. The hosted-funding rail needs no equivalent: a late
- * funding PaymentIntent announces itself through the payment_intent.*
- * webhooks into the funding inbox (redelivery-guaranteed), where a
- * succeeded PI for a released batch already freezes and alerts.
+ * with a human. A hosted-funding TRANSFER re-arm or duplicate resolution is
+ * the same decision and gets the same recheck, behind its own
+ * transfer.created detector in funding/webhook.ts
+ * (detectFundedTransferCreated). A forced BATCH release
+ * needs no equivalent: a late funding PaymentIntent announces itself
+ * through the payment_intent.* webhooks into the funding inbox
+ * (redelivery-guaranteed), where a succeeded PI for a released batch
+ * already freezes and alerts.
  */
 
 import type Stripe from 'stripe';
@@ -68,6 +75,7 @@ import { ulid } from 'ulid';
 import {
   TABLES,
   type HostedFundingBatchRow,
+  type HostedFundingTransferRow,
   type OperatorRecoveryKind,
   type OperatorRecoveryRail,
   type OperatorRecoveryRequestRow,
@@ -81,6 +89,11 @@ import {
   resolveDuplicateReview,
 } from './payout-transfers.js';
 import { forceReleaseBatch } from './funding/release.js';
+import {
+  listFundedTransferMembers,
+  releaseFundedTransferForRetry,
+  resolveFundedDuplicateReview,
+} from './funding/executor.js';
 
 /** Claims per pass. Small on purpose: every apply is 1–3 Stripe listings,
  *  and the scheduler comes back every 5–15 minutes. */
@@ -125,10 +138,20 @@ const RETRYABLE_OUTCOMES = new Set(['cannot_verify', 'review_moved', 'too_recent
 
 const RAIL_KINDS: Record<OperatorRecoveryRail, Set<OperatorRecoveryKind>> = {
   direct_connect: new Set(['release_intent_for_retry', 'dispose_intent', 'resolve_duplicate_review']),
-  hosted_funding: new Set(['force_release_batch']),
+  hosted_funding: new Set(['force_release_batch', 'release_intent_for_retry', 'resolve_duplicate_review']),
 };
 
 const OPEN_PAYOUT_STATES = new Set(['intent', 'posted', 'reconcile_required']);
+const OPEN_FUNDED_TRANSFER_STATES = new Set(['pending', 'posted', 'reconcile_required']);
+
+/** A hosted-funding request names a transfer intent for the re-arm and
+ *  resolve kinds, and a batch for force_release_batch. */
+function targetsFundedTransfer(request: Pick<OperatorRecoveryRequestRow, 'rail' | 'kind'>): boolean {
+  return (
+    request.rail === 'hosted_funding' &&
+    (request.kind === 'release_intent_for_retry' || request.kind === 'resolve_duplicate_review')
+  );
+}
 
 export interface RecoveryApplyDeps {
   rail: OperatorRecoveryRail;
@@ -313,9 +336,13 @@ async function applyOne(
       ? ((await db<PayoutRow>(TABLES.Payout)
           .where({ id: request.targetId })
           .first(['id', 'tenantId'])) as Pick<PayoutRow, 'id' | 'tenantId'> | undefined)
-      : ((await db<HostedFundingBatchRow>(TABLES.HostedFundingBatch)
-          .where({ id: request.targetId })
-          .first(['id', 'tenantId'])) as Pick<HostedFundingBatchRow, 'id' | 'tenantId'> | undefined);
+      : targetsFundedTransfer(request)
+        ? ((await db<HostedFundingTransferRow>(TABLES.HostedFundingTransfer)
+            .where({ id: request.targetId })
+            .first(['id', 'tenantId'])) as Pick<HostedFundingTransferRow, 'id' | 'tenantId'> | undefined)
+        : ((await db<HostedFundingBatchRow>(TABLES.HostedFundingBatch)
+            .where({ id: request.targetId })
+            .first(['id', 'tenantId'])) as Pick<HostedFundingBatchRow, 'id' | 'tenantId'> | undefined);
   if (!target) {
     await settleTerminal(db, request, token, 'refused', 'target_not_found', result);
     return;
@@ -365,7 +392,10 @@ async function applyOne(
         await settleTerminal(db, request, token, 'refused', 'invalid_request:params', result);
         return;
       }
-      outcome = await releaseIntentForRetry(db, request.targetId, generation, operator, stripe);
+      outcome =
+        request.rail === 'direct_connect'
+          ? await releaseIntentForRetry(db, request.targetId, generation, operator, stripe)
+          : await releaseFundedTransferForRetry(db, request.targetId, generation, operator, stripe);
       break;
     }
     case 'dispose_intent': {
@@ -385,13 +415,11 @@ async function applyOne(
         await settleTerminal(db, request, token, 'refused', 'invalid_request:params', result);
         return;
       }
-      outcome = await resolveDuplicateReview(
-        db,
-        request.targetId,
-        operator,
-        kept ? { keptTransferId: kept } : { allReversed: true },
-        stripe,
-      );
+      const disposition = kept ? { keptTransferId: kept } : ({ allReversed: true } as const);
+      outcome =
+        request.rail === 'direct_connect'
+          ? await resolveDuplicateReview(db, request.targetId, operator, disposition, stripe)
+          : await resolveFundedDuplicateReview(db, request.targetId, operator, disposition, stripe);
       break;
     }
     case 'force_release_batch': {
@@ -524,7 +552,13 @@ async function targetCarriesOurMarker(
       .first()) as PayoutRow | undefined;
     return matches((payout?.metadata as { lastError?: string } | null)?.lastError);
   }
-  const batch = (await db<HostedFundingBatchRow>(TABLES.HostedFundingBatch)
+  if (targetsFundedTransfer(request)) {
+    const intent = (await db<HostedFundingTransferRow>(TABLES.HostedFundingTransfer)
+      .where({ id: request.targetId })
+      .first(['lastError'])) as Pick<HostedFundingTransferRow, 'lastError'> | undefined;
+    return matches(intent?.lastError);
+  }
+  const batch =(await db<HostedFundingBatchRow>(TABLES.HostedFundingBatch)
     .where({ id: request.targetId })
     .first(['failureReason'])) as Pick<HostedFundingBatchRow, 'failureReason'> | undefined;
   return matches(batch?.failureReason);
@@ -532,7 +566,9 @@ async function targetCarriesOurMarker(
 
 /** Terminal write, fenced on the claim token: only the claim holder may
  *  settle, and only while the row is still pending. Direct-Connect
- *  requests schedule the §0.2 group recheck when APPLIED — and also on a
+ *  requests (and hosted-funding transfer re-arms and resolutions, the same
+ *  decisions on the other rail) schedule the §0.2 group recheck when
+ *  APPLIED — and also on a
  *  takeover-ANNOTATED refusal (round 14): a rearm whose interrupted
  *  attempt succeeded has its marker legitimately cleared once the
  *  executor finalizes the new generation, so the takeover cannot tell
@@ -548,7 +584,7 @@ async function settleTerminal(
   result: RecoveryApplyResult,
 ): Promise<void> {
   const scheduleRecheck =
-    request.rail === 'direct_connect' &&
+    (request.rail === 'direct_connect' || targetsFundedTransfer(request)) &&
     (status === 'applied' ||
       (status === 'refused' && outcome.endsWith(':after_interrupted_attempt')));
   const updated = await db(TABLES.OperatorRecoveryRequest)
@@ -616,10 +652,11 @@ async function settleRetryable(
 
 /**
  * The §0.2 backstop: re-list the transfer group of every applied
- * direct-Connect request whose recheck is due, and ALARM on any live
- * transfer the payout is no longer expecting — a late in-flight POST that
- * landed after the operator's absence-based decision, caught even if its
- * `transfer.created` webhook was missed.
+ * direct-Connect request (or hosted-funding transfer re-arm or resolution)
+ * whose recheck is due, and ALARM on any live transfer the target is no longer
+ * expecting — a late in-flight POST that landed after the operator's
+ * absence-based decision, caught even if its `transfer.created` webhook
+ * was missed.
  *
  * DETECTOR ONLY, exactly like the webhook handler: no payout state is
  * written, the benign/orphan predicate is the same, and fully-reversed
@@ -633,14 +670,14 @@ async function recheckAppliedRequests(
   token: string,
   result: RecoveryApplyResult,
 ): Promise<void> {
-  if (deps.rail !== 'direct_connect') return;
   const sub = db(TABLES.OperatorRecoveryRequest)
     .select('id')
     // 'refused' rows carry a recheck too when the refusal was a takeover
     // annotation (settleTerminal) — only rows with recheckDueAt set are
-    // ever claimed, so plain refusals stay untouched.
+    // ever claimed, so plain refusals stay untouched. On the hosted rail
+    // only transfer-intent requests (re-arm, resolve) ever have one.
     .whereIn('status', ['applied', 'refused'])
-    .where({ rail: 'direct_connect' })
+    .where({ rail: deps.rail })
     .modify((qb) => {
       if (deps.tenantId) qb.where({ tenantId: deps.tenantId });
       if (deps.requestId) qb.where({ id: deps.requestId });
@@ -696,7 +733,7 @@ async function recheckAppliedRequests(
     }
     if (outcome === 'cannot_verify') done = false;
     if (!done && request.recheckAttempts >= MAX_RECHECK_ATTEMPTS) {
-      alert = `[recovery] ALERT: recheck for request ${request.id} (payout ${request.targetId}) could not verify after ${request.recheckAttempts} attempts — giving up; list the transfer group by hand`;
+      alert = `[recovery] ALERT: recheck for request ${request.id} (${request.rail === 'direct_connect' ? 'payout' : 'transfer intent'} ${request.targetId}) could not verify after ${request.recheckAttempts} attempts — giving up; list the transfer group by hand`;
       done = true;
     }
     // Fence FIRST, side effects only on a win: a stale pass that lost its
@@ -737,6 +774,7 @@ async function recheckOne(
   stripe: Stripe,
   request: OperatorRecoveryRequestRow,
 ): Promise<{ outcome: string; alert: string | null }> {
+  if (targetsFundedTransfer(request)) return recheckFundedTransfer(db, stripe, request);
   const payout = (await db<PayoutRow>(TABLES.Payout)
     .where({ id: request.targetId })
     .first()) as PayoutRow | undefined;
@@ -773,6 +811,50 @@ async function recheckOne(
     return {
       outcome: `orphan_transfers:${ids}`.slice(0, 500),
       alert: `[recovery] ALERT: recheck for request ${request.id} found ${orphans.length} live transfer(s) (${ids}) for payout ${payout.id} which is ${state ?? 'unknown'}/${payout.status} on transfer ${payout.stripeTransferId ?? 'none'} — money moved outside the ledger after an operator disposition; operator reconciliation required`,
+    };
+  }
+  return { outcome: 'clear', alert: null };
+}
+
+/** The recheck for a hosted-funding transfer re-arm or duplicate
+ *  resolution. The batch's transfer_group holds every partner's transfer,
+ *  so membership is narrowed to this intent by the same rule reconcile and
+ *  the operator functions use (`listFundedTransferMembers`: its stamp, or
+ *  its destination unless stamped for another intent of the batch). Same
+ *  benign/orphan predicate as above: an open intent with no recorded
+ *  transfer may have live members (the executor will finalize them);
+ *  otherwise only the transfer it recorded may be live. The webhook
+ *  detector (detectFundedTransferCreated) shares this predicate, and also
+ *  checks the key generation, which a listing's mutable metadata can't
+ *  vouch for. */
+async function recheckFundedTransfer(
+  db: Knex,
+  stripe: Stripe,
+  request: OperatorRecoveryRequestRow,
+): Promise<{ outcome: string; alert: string | null }> {
+  const intent = (await db<HostedFundingTransferRow>(TABLES.HostedFundingTransfer)
+    .where({ id: request.targetId })
+    .first()) as HostedFundingTransferRow | undefined;
+  if (!intent || intent.tenantId !== request.tenantId) {
+    return {
+      outcome: 'target_missing',
+      alert: `[recovery] ALERT: recheck for request ${request.id} cannot load transfer intent ${request.targetId} — target missing`,
+    };
+  }
+  const members = await listFundedTransferMembers(db, stripe, intent, `recovery recheck ${request.id}`);
+  if (members === 'cannot_verify') return { outcome: 'cannot_verify', alert: null };
+
+  const benignOpen = OPEN_FUNDED_TRANSFER_STATES.has(intent.state) && intent.stripeTransferId == null;
+  const orphans = benignOpen
+    ? []
+    : members.filter(
+        (t) => Number(t.amount_reversed ?? 0) < Number(t.amount ?? 0) && t.id !== intent.stripeTransferId,
+      );
+  if (orphans.length > 0) {
+    const ids = orphans.map((t) => t.id).join(', ');
+    return {
+      outcome: `orphan_transfers:${ids}`.slice(0, 500),
+      alert: `[recovery] ALERT: recheck for request ${request.id} found ${orphans.length} live transfer(s) (${ids}) for funded transfer intent ${intent.id} (batch ${intent.batchId}) which is ${intent.state} on transfer ${intent.stripeTransferId ?? 'none'} — money moved outside the ledger after an operator ${request.kind === 'resolve_duplicate_review' ? 'resolution' : 're-arm'}; operator reconciliation required`,
     };
   }
   return { outcome: 'clear', alert: null };

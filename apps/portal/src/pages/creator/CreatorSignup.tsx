@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { alpha, softText, theme } from '../../theme.js';
 import { AuthFrame, SignupTabs } from '../auth/Shared.js';
+import { CountryField, countryErrorMessage } from '../../lib/CountryField.js';
 import { creatorApi, ApiError } from './creator-api.js';
 
 type HandleStatus = 'idle' | 'checking' | 'available' | 'taken';
@@ -11,6 +12,10 @@ export function CreatorSignupPage() {
   const [name, setName] = useState('');
   const [handle, setHandle] = useState('');
   const [handleStatus, setHandleStatus] = useState<HandleStatus>('idle');
+  // Where the creator is based: the Network refuses countries it doesn't
+  // serve, and Ukraine also needs the occupied-regions confirmation.
+  const [country, setCountry] = useState('');
+  const [outsideOccupiedRegions, setOutsideOccupiedRegions] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
@@ -43,18 +48,29 @@ export function CreatorSignupPage() {
     };
   }, [handle]);
 
+  const countryMissing = !country || (country === 'UA' && !outsideOccupiedRegions);
+  const cannotSubmit = busy || handleStatus === 'taken' || handleStatus === 'checking' || countryMissing;
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (countryMissing) return;
     setBusy(true);
     setErr(null);
     try {
       await creatorApi('/creators/signup', {
         method: 'POST',
-        body: { email: email.trim(), name: name.trim(), handle: handle.trim() || undefined },
+        body: {
+          email: email.trim(),
+          name: name.trim(),
+          handle: handle.trim() || undefined,
+          country,
+          ...(country === 'UA' ? { outsideOccupiedRegions } : {}),
+        },
       });
       setSent(true);
     } catch (e) {
-      setErr(e instanceof ApiError ? e.message : 'Something went wrong.');
+      const message = e instanceof ApiError ? e.message : 'Something went wrong.';
+      setErr(countryErrorMessage(message) ?? message);
     } finally {
       setBusy(false);
     }
@@ -107,11 +123,21 @@ export function CreatorSignupPage() {
             style={{ ...inputStyle, fontFamily: theme.fontMono }}
           />
         </Field>
+        <Field label="Where are you based?">
+          <CountryField
+            id="creator-country"
+            value={country}
+            onChange={setCountry}
+            outsideOccupiedRegions={outsideOccupiedRegions}
+            onOutsideOccupiedRegionsChange={setOutsideOccupiedRegions}
+            selectStyle={inputStyle}
+          />
+        </Field>
         {err && <div style={{ color: theme.danger, fontSize: 13, marginTop: 4, marginBottom: 8 }}>{err}</div>}
         <button
           type="submit"
-          disabled={busy || handleStatus === 'taken' || handleStatus === 'checking'}
-          style={primaryBtnStyle(busy || handleStatus === 'taken' || handleStatus === 'checking')}
+          disabled={cannotSubmit}
+          style={primaryBtnStyle(cannotSubmit)}
         >
           {busy ? 'Creating creator…' : 'Become a creator'}
         </button>

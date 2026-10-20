@@ -228,6 +228,13 @@ const JOBS: ScheduledJob[] = [
     },
   },
   {
+    name: 'network-country-access-sync',
+    cronExpr: '45 3 * * *',
+    description:
+      'Hosted multi-tenant: re-push the ops console country list to the Network, which checks creators against its own copy (daily 03:45 UTC)',
+    handler: runCountryAccessSyncJob,
+  },
+  {
     name: 'tenant-hard-delete',
     cronExpr: '0 4 * * *',
     description: 'Hard-delete tenants whose 30-day deletion grace window has lapsed (daily 04:00 UTC)',
@@ -300,7 +307,7 @@ const JOBS: ScheduledJob[] = [
     name: 'funding-reconcile',
     cronExpr: '30 5 * * *',
     description:
-      'Daily funding ledger audit: allocation/principal invariants, stuck batches past the transfer deadline, reconcile_required intents, residuals awaiting disposition, Stripe fee telemetry backfill (daily 05:30 UTC; verifies + alerts, never moves money)',
+      'Daily funding ledger audit: allocation/principal invariants, stuck batches past the transfer deadline, reconcile_required and duplicate_review transfer intents, residuals awaiting disposition, Stripe fee telemetry backfill (daily 05:30 UTC; verifies + alerts, never moves money)',
     handler: async () => {
       const { runFundingReconciliation } = await import('./funding/reconcile.js');
       return runFundingReconciliation(db);
@@ -354,6 +361,17 @@ const JOBS: ScheduledJob[] = [
     handler: runPerformanceBountiesJob,
   },
 ];
+
+/**
+ * Re-send the ops console's country list to the Network (country-access-
+ * sync.ts). Every console save pushes it already; this heals a push that
+ * failed, and covers a Network that was updated or restored since.
+ */
+export async function runCountryAccessSyncJob() {
+  if (getTenancyMode() !== 'multi') return { skipped: 'single_tenant' };
+  const { pushCountryAccessToNetwork } = await import('./country-access-sync.js');
+  return pushCountryAccessToNetwork(db);
+}
 
 /**
  * The holdback sweep, then commission.approved (webhook + partner

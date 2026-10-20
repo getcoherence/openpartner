@@ -64,7 +64,9 @@ Every row: state before → action → expected state after. Verify in DB
 | # | Scenario | Expected |
 |---|---|---|
 | D1 | Kill the API mid-executor (after intent commit, before Stripe responds) | Intent `posted`; next tick retries the frozen key; no duplicate transfer in Stripe |
-| D2 | Ambiguous post older than 24h (set `postedAt` back manually) | Intent → `reconcile_required` → transfer_group listing finds/doesn't find it → `confirmed` or reset to `pending`; **never a blind re-POST** |
+| D2 | Ambiguous post older than 24h (set `postedAt` back manually) | Intent → `reconcile_required` → transfer_group listing finds it → `confirmed`; finds nothing → **HELD** (`awaiting_operator:no_transfer_found_past_window`, ALERT every tick, no `transfers.create` across ticks); **never a blind re-POST** |
+| D2b | Re-arm the D2 hold: `POST /funding/transfers/:intentId/recovery` `{ "kind": "release_intent_for_retry", "observedGeneration": 0 }` | Request `applied`/`rearmed`; key → `fbt:<id>:g1`; next tick posts exactly one transfer stamped `openpartner_key_generation=1`; `recheckDueAt` set 24h out |
+| D2c | Stripe answers 409 (two executors on one key) or 429 | Intent stays `posted`, never `failed`; next tick replays the same key |
 | D3 | Partner loses `payouts_enabled` between funding and transfer | Allocation held; deadline alert at 14d; residual disposition path |
 | D4 | `transfer.reversed` (partial, then full) | PayoutReversal rows; payout `partially_reversed` → `reversed`; CommissionAdjustment entries on full; commissions stay `paid` |
 
@@ -247,6 +249,24 @@ stamped PI. That case is not stuck — it is the ordinary release path — and
 forcing past a live intent is exactly the double-charge the protocol
 exists to prevent. Cancel the intent in Stripe and let the normal path
 finish.
+
+**A HELD transfer intent** (`reconcile_required`, an ambiguous post past
+the key window with nothing in the batch's transfer group) has the same
+shape on the transfer side: the executor will not re-post on an empty
+listing, so the partner waits for a human. Look first
+(`stripe transfers list --transfer-group <batchId>`, nothing to this
+partner's destination), then:
+
+```
+POST /funding/transfers/:intentId/recovery
+  { "kind": "release_intent_for_retry", "observedGeneration": 0, "note": "..." }
+```
+
+`observedGeneration` is the `:g<N>` suffix of the intent's
+`idempotencyKey` (0 when there is none). See payout-funding.md §4 for the
+refusals, the key generations and the 24h recheck. Break-glass:
+`releaseFundedTransferForRetry(db, intentId, observedGeneration, 'keith', stripe)`
+from `funding/executor.ts`.
 
 ## Known gaps at launch (accept knowingly, or close first)
 

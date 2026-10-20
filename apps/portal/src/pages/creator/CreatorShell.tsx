@@ -19,6 +19,7 @@ import { CreatorMyProfilePage } from './CreatorMyProfile.js';
 import { CreatorShareLinksPage } from './CreatorShareLinks.js';
 import { CreatorDomainsPage } from './CreatorDomains.js';
 import { CreatorProgramDetailPage } from './CreatorProgramDetail.js';
+import { CreatorLocationPrompt, useCreatorLocationMissing } from './CreatorLocation.js';
 
 interface Whoami {
   creator: { id: string; name: string; email: string; handle: string | null; avatarUrl: string | null; bio: string | null } | null;
@@ -59,6 +60,7 @@ export function CreatorShell() {
       )}
       <main style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
         {isMobile && <CreatorMobileTopBar onMenu={() => setDrawerOpen(true)} />}
+        <CreatorLocationGate isMobile={isMobile} />
         {!location.pathname.startsWith('/creator/profile') && <ProfileIncompleteBanner isMobile={isMobile} />}
         {/* Redirects are absolute on purpose: this shell sits on a splat
             route (/creator/*), where React Router 7 resolves a relative
@@ -80,6 +82,14 @@ export function CreatorShell() {
       </main>
     </div>
   );
+}
+
+/** The one-time "where are you based?" question, until it's answered
+ *  (creators from before the Network asked at signup). Mounted only
+ *  once the creator is signed in, so the lookup never runs logged out. */
+function CreatorLocationGate({ isMobile }: { isMobile: boolean }) {
+  const missing = useCreatorLocationMissing();
+  return missing ? <CreatorLocationPrompt isMobile={isMobile} /> : null;
 }
 
 /**

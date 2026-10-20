@@ -26,6 +26,7 @@ import { ulid } from 'ulid';
 import {
   TABLES,
   type HostedFundingBatchRow,
+  type HostedFundingTransferRow,
   type OperatorRecoveryKind,
   type OperatorRecoveryRail,
   type OperatorRecoveryRequestRow,
@@ -65,6 +66,24 @@ const batchRecoverySchema = z.object({
   reason: z.string().min(1).max(500),
   note: z.string().max(2000).optional(),
 });
+
+/** A held or parked hosted-funding transfer intent. For a re-arm the
+ *  generation is the one in the intent's idempotencyKey: `fbt:<id>` is 0,
+ *  `fbt:<id>:g<N>` is N. A resolve takes the same dispositions as the
+ *  direct rail's. */
+const fundedTransferRecoverySchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('release_intent_for_retry'),
+    observedGeneration: z.number().int().min(0),
+    note: z.string().max(2000).optional(),
+  }),
+  z.object({
+    kind: z.literal('resolve_duplicate_review'),
+    keptTransferId: z.string().min(1).max(64).optional(),
+    allReversed: z.literal(true).optional(),
+    note: z.string().max(2000).optional(),
+  }),
+]);
 
 /** Who is asking, as a stable audit string. Session admins resolve to
  *  their email (the id survives in the session row either way); API keys
@@ -228,6 +247,42 @@ recoveryRouter.post('/funding/batches/:id/recovery', requireAuth, requireAdmin, 
     targetId,
     params: { reason: body.data.reason },
     note: body.data.note,
+  });
+});
+
+recoveryRouter.post('/funding/transfers/:id/recovery', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = fundedTransferRecoverySchema.safeParse(req.body);
+  if (!body.success) {
+    return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  }
+  const data = body.data;
+  if (data.kind === 'resolve_duplicate_review') {
+    if ((data.keptTransferId !== undefined) === (data.allReversed === true)) {
+      return res.status(400).json({
+        error: 'invalid_body',
+        detail: 'provide exactly one of keptTransferId or allReversed: true',
+      });
+    }
+  }
+  const targetId = req.params.id!;
+  const intent = (await db<HostedFundingTransferRow>(TABLES.HostedFundingTransfer)
+    .where({ id: targetId, tenantId })
+    .first(['id'])) as Pick<HostedFundingTransferRow, 'id'> | undefined;
+  if (!intent) return res.status(404).json({ error: 'transfer_not_found' });
+
+  const params: Record<string, unknown> =
+    data.kind === 'release_intent_for_retry'
+      ? { observedGeneration: data.observedGeneration }
+      : data.keptTransferId !== undefined
+        ? { keptTransferId: data.keptTransferId }
+        : { allReversed: true };
+  await createAndApply(req, res, {
+    rail: 'hosted_funding',
+    kind: data.kind,
+    targetId,
+    params,
+    note: data.note,
   });
 });
 

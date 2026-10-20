@@ -1,11 +1,13 @@
 /**
  * The /creator-api reverse proxy only forwards allowlisted Network paths.
  * Covers the account-verification POSTs under /creators/me/platforms/
- * (verify/start, verify), the creator data export, and that paths off the
- * allowlist stay 404 without reaching the Network. A local HTTP server
- * plays the Network.
+ * (verify/start, verify), the creator data export, the location prompt,
+ * that paths off the allowlist stay 404 without reaching the Network, and
+ * the signed header that tells the Network the creator's own address. A
+ * local HTTP server plays the Network.
  */
 
+import { createHmac } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -19,13 +21,17 @@ const app = createApp({ enableLogger: false });
 
 let network: Server;
 const calls: Array<{ method: string; path: string; cookie: string | undefined }> = [];
+const clientIpHeaders: Array<string | undefined> = [];
 let previousNetworkUrl: string | undefined;
+let previousAdminKey: string | undefined;
 
 beforeAll(async () => {
   previousNetworkUrl = process.env.NETWORK_URL;
+  previousAdminKey = process.env.NETWORK_ADMIN_API_KEY;
   await new Promise<void>((resolve) => {
     network = createServer((req, res) => {
       calls.push({ method: req.method ?? '', path: req.url ?? '', cookie: req.headers.cookie });
+      clientIpHeaders.push(req.headers['x-openpartner-client-ip'] as string | undefined);
       req.resume();
       req.on('end', () => {
         if (req.url === '/creators/me/export') {
@@ -56,11 +62,15 @@ beforeAll(async () => {
 afterAll(async () => {
   if (previousNetworkUrl === undefined) delete process.env.NETWORK_URL;
   else process.env.NETWORK_URL = previousNetworkUrl;
+  if (previousAdminKey === undefined) delete process.env.NETWORK_ADMIN_API_KEY;
+  else process.env.NETWORK_ADMIN_API_KEY = previousAdminKey;
   await new Promise<void>((r) => network.close(() => r()));
 });
 
 beforeEach(() => {
   calls.length = 0;
+  clientIpHeaders.length = 0;
+  delete process.env.NETWORK_ADMIN_API_KEY;
 });
 
 describe('creator-api proxy: platform verification', () => {
@@ -113,5 +123,75 @@ describe('creator-api proxy: data export', () => {
     expect(res.body).toEqual({ error: 'unauthenticated' });
     expect(res.headers['content-disposition']).toBeUndefined();
     expect(calls).toEqual([{ method: 'GET', path: '/creators/me/export', cookie: undefined }]);
+  });
+});
+
+describe('creator-api proxy: location prompt', () => {
+  it('forwards GET and PUT /creators/me/location', async () => {
+    const read = await request(app)
+      .get('/creator-api/creators/me/location')
+      .set('Cookie', 'op_network_creator_session=abc');
+    expect(read.status).toBe(200);
+    const save = await request(app)
+      .put('/creator-api/creators/me/location')
+      .set('Cookie', 'op_network_creator_session=abc')
+      .send({ country: 'DE' });
+    expect(save.status).toBe(200);
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      'GET /creators/me/location',
+      'PUT /creators/me/location',
+    ]);
+  });
+});
+
+describe('creator-api proxy: the creator address header', () => {
+  // The Network's parser for it (openpartner-network src/client-ip.ts).
+  const NETWORK_SHAPE = /^([0-9A-Fa-f.:]{2,45});t=(\d{1,12});sig=([0-9a-f]{64})$/;
+  const key = 'network-admin-key-for-tests';
+
+  it('vouches for the address the request came from, signed with the Network admin key', async () => {
+    process.env.NETWORK_ADMIN_API_KEY = key;
+    const before = Math.floor(Date.now() / 1000);
+    // The app trusts one proxy hop (the platform ingress), so this is req.ip.
+    const res = await request(app)
+      .post('/creator-api/creators/signin')
+      .set('X-Forwarded-For', '203.0.113.7')
+      .send({ email: 'a@example.com' });
+    expect(res.status).toBe(200);
+
+    const header = clientIpHeaders[0];
+    const m = NETWORK_SHAPE.exec(header ?? '');
+    expect(m).not.toBeNull();
+    const [, ip, t, sig] = m!;
+    expect(ip).toBe('203.0.113.7');
+    expect(Number(t)).toBeGreaterThanOrEqual(before);
+    expect(Number(t)).toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
+    expect(sig).toBe(createHmac('sha256', key).update(`${ip}.${t}`).digest('hex'));
+    // The key itself never travels with creator traffic.
+    expect(header).not.toContain(key);
+  });
+
+  it('sends it on every proxied path', async () => {
+    process.env.NETWORK_ADMIN_API_KEY = key;
+    await request(app).get('/creator-api/offerings').set('X-Forwarded-For', '198.51.100.4');
+    await request(app).get('/creator-api/creators/me/location').set('X-Forwarded-For', '198.51.100.4');
+    expect(clientIpHeaders).toHaveLength(2);
+    for (const h of clientIpHeaders) expect(h).toMatch(/^198\.51\.100\.4;t=\d+;sig=[0-9a-f]{64}$/);
+  });
+
+  it('sends nothing when the Network admin key is not set', async () => {
+    const res = await request(app).post('/creator-api/creators/signin').set('X-Forwarded-For', '203.0.113.7').send({});
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(clientIpHeaders).toEqual([undefined]);
+  });
+
+  it("doesn't pass on a header the caller sent", async () => {
+    const res = await request(app)
+      .post('/creator-api/creators/signin')
+      .set('x-openpartner-client-ip', `10.0.0.1;t=1;sig=${'0'.repeat(64)}`)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(clientIpHeaders).toEqual([undefined]);
   });
 });
