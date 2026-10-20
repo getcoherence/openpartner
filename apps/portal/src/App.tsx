@@ -91,6 +91,7 @@ import { CreatorSigninPage } from './pages/creator/CreatorSignin.js';
 import { CreatorMagicLandingPage } from './pages/creator/CreatorMagicLanding.js';
 import { CreatorShell } from './pages/creator/CreatorShell.js';
 import { CreatorPublicProfilePage } from './pages/creator/CreatorPublicProfile.js';
+import { BookingConfirmPage } from './pages/creator/BookingConfirm.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
 import { ResetPasswordPage, TenantResetPasswordPage } from './pages/auth/ResetPassword.js';
 import { AccountPage, TenantAccountPage } from './pages/Account.js';
@@ -183,6 +184,8 @@ export function App() {
             <Route path="/creator/*" element={<CreatorShell />} />
             {/* Public creator profiles — no auth, browsable from anywhere. */}
             <Route path="/creators/:handle" element={<CreatorPublicProfilePage />} />
+            {/* A brand confirming a booking request sent from a creator's storefront. */}
+            <Route path="/booking/confirm" element={<BookingConfirmPage />} />
             <Route path="/t/:slug/login" element={<LoginPage />} />
             <Route path="/t/:slug/join" element={<PartnerJoinPage />} />
             <Route path="/t/:slug/auth/magic" element={<MagicLandingPage />} />
