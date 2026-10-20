@@ -142,8 +142,15 @@ from connected-account events:
 ### Destination A — platform events
 
 - URL: `https://app.openpartner.dev/api/webhooks/stripe`
-- Events: `checkout.session.completed`, `customer.created`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`, `transfer.updated`, `transfer.reversed`
+- Events (19, as registered in live Stripe on Oct 20 2026): `checkout.session.completed`, `customer.created`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`, `invoice.finalized`, `invoice.voided`, `invoice.marked_uncollectible`, `invoice.overdue`, `charge.refunded`, `charge.dispute.created`, `payment_intent.succeeded`, `payment_intent.payment_failed`, `payment_intent.canceled`, `transfer.created`, `transfer.updated`, `transfer.reversed`
 - Save → copy the **Signing secret** (`whsec_...`)
+
+> **Pay-by-invoice billing** ([invoice-billing.md](invoice-billing.md))
+> relies on `customer.subscription.created` to adopt an invoice subscription
+> whose request died before recording it, so keep it registered. The four
+> `invoice.finalized` / `.voided` / `.marked_uncollectible` / `.overdue`
+> events make overdue tracking immediate. Without them the nightly
+> `billing-subscription-reconcile` job catches up within a day.
 
 > **`customer.subscription.updated` + `customer.subscription.deleted` are
 > load-bearing.** They are how a tenant's cancellation (usually made in the
