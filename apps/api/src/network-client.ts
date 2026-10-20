@@ -686,6 +686,21 @@ export const networkProxy = {
       `/vendors/me/discover/creators${querystring ? `?${querystring}` : ''}`,
     ),
 
+  /** Tracked storefront bookings: book a creator's package for an agreed
+   *  amount, then approve the delivered work, which the Network pays as a
+   *  bonus through this instance's POST /bonuses. */
+  listBookings: (db: Knex, tenantId: string, status?: string) =>
+    callNetwork<{ bookings: unknown[] }>(
+      db,
+      tenantId,
+      'GET',
+      `/vendors/me/bookings${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+    ),
+  createBooking: (db: Knex, tenantId: string, body: unknown) =>
+    callNetwork<{ booking: unknown }>(db, tenantId, 'POST', '/vendors/me/bookings', body),
+  bookingAction: (db: Knex, tenantId: string, id: string, action: 'cancel' | 'approve' | 'retry-payout') =>
+    callNetwork<{ booking: unknown }>(db, tenantId, 'POST', `/vendors/me/bookings/${encodeURIComponent(id)}/${action}`),
+
   /** Invite a creator to apply to one of this vendor's offerings.
    *  Network mints an OfferingInvitation + emails the creator a
    *  deeplink. Idempotent per (offering, creator) — re-inviting the

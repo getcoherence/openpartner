@@ -20,6 +20,12 @@ describe('isGoLiveRoute', () => {
     expect(isGoLiveRoute('POST', '/bonuses')).toBe(true);
     expect(isGoLiveRoute('POST', '/Bonuses/')).toBe(true);
     expect(isGoLiveRoute('GET', '/bonuses')).toBe(false);
+    // Storefront bookings: booking adds a partner, approving pays one.
+    expect(isGoLiveRoute('POST', '/admin/network/bookings')).toBe(true);
+    expect(isGoLiveRoute('POST', '/admin/network/bookings/bkr_1/approve')).toBe(true);
+    expect(isGoLiveRoute('POST', '/admin/network/bookings/bkr_1/retry-payout')).toBe(true);
+    expect(isGoLiveRoute('POST', '/admin/network/bookings/bkr_1/cancel')).toBe(false);
+    expect(isGoLiveRoute('GET', '/admin/network/bookings')).toBe(false);
   });
 
   it('cannot be bypassed with case or a trailing slash (Express routes both)', () => {
