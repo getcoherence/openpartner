@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router';
-import { Globe, Inbox, Link2, LogOut, Megaphone, Menu, Network, UserCog } from 'lucide-react';
+import { CalendarCheck, Globe, Inbox, Link2, LogOut, Megaphone, Menu, Network, Store, UserCog } from 'lucide-react';
 import { theme } from '../../theme.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
 import { ProfileCompletionBanner } from '../../lib/ProfileCompletionBanner.js';
@@ -19,6 +19,8 @@ import { CreatorMyProfilePage } from './CreatorMyProfile.js';
 import { CreatorShareLinksPage } from './CreatorShareLinks.js';
 import { CreatorDomainsPage } from './CreatorDomains.js';
 import { CreatorProgramDetailPage } from './CreatorProgramDetail.js';
+import { CreatorStorefrontPage } from './CreatorStorefront.js';
+import { CreatorBookingsPage } from './CreatorBookings.js';
 import { CreatorLocationPrompt, useCreatorLocationMissing } from './CreatorLocation.js';
 
 interface Whoami {
@@ -76,6 +78,8 @@ export function CreatorShell() {
           <Route path="links" element={<CreatorShareLinksPage />} />
           <Route path="domains" element={<CreatorDomainsPage />} />
           <Route path="requests" element={<CreatorMyRequestsPage />} />
+          <Route path="storefront" element={<CreatorStorefrontPage />} />
+          <Route path="bookings" element={<CreatorBookingsPage />} />
           <Route path="profile" element={<CreatorMyProfilePage />} />
           <Route path="*" element={<Navigate to="/creator/discover" replace />} />
         </Routes>
@@ -225,6 +229,10 @@ function CreatorSidebar({ creator, variant = 'sidebar' }: { creator: NonNullable
           <CreatorNavItem to="/creator/affiliations" icon={<Megaphone size={16} />}>My partnerships</CreatorNavItem>
           <CreatorNavItem to="/creator/links" icon={<Link2 size={16} />}>Share links</CreatorNavItem>
           <CreatorNavItem to="/creator/requests" icon={<Inbox size={16} />}>My applications</CreatorNavItem>
+        </NavSection>
+        <NavSection title="Storefront">
+          <CreatorNavItem to="/creator/storefront" icon={<Store size={16} />}>Packages</CreatorNavItem>
+          <CreatorNavItem to="/creator/bookings" icon={<CalendarCheck size={16} />}>Bookings</CreatorNavItem>
         </NavSection>
         <NavSection title="Settings">
           <CreatorNavItem to="/creator/domains" icon={<Network size={16} />}>Custom domains</CreatorNavItem>
