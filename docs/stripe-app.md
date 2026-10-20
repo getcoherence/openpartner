@@ -144,8 +144,10 @@ cumulative `amount_refunded`, so two partial refunds add up.
   kept share is accrued on the same attribution, with the same status and
   accrual date, so its holdback doesn't restart.
 - **Paid:** stays paid. A negative `refund_clawback` CommissionAdjustment
-  records what the partner holds for refunded revenue. Nothing deducts it from
-  later payouts.
+  records what the partner holds for refunded revenue, and the payout planner
+  takes it off that partner's next manual or direct-Connect payout
+  ([refund-clawback-netting.md](refund-clawback-netting.md)). The
+  hosted-funding rail doesn't net, so there it stays outstanding.
 - **In a payout in flight:** held (`heldInTransferCommissions` on the refund
   Event). The next refund of the same charge finishes it.
 - **A payment split across invoices** (API version `2025-03-31.basil` and later):

@@ -36,9 +36,14 @@ jobs:
         with:
           node-version: '22'
           cache: pnpm
-          # registry-url is what enables `pnpm publish` to pick up
-          # NODE_AUTH_TOKEN below. Without it, publish 401s.
+          # Points npm at the public registry for the publish below.
           registry-url: 'https://registry.npmjs.org'
+
+      # Trusted Publishing (OIDC) needs npm CLI 11.5.1 or later, and Node 22
+      # ships npm 10, which can't exchange the OIDC token and fails the
+      # publish with an auth error.
+      - name: npm 11
+        run: npm install -g npm@^11.5.1
 
       - run: pnpm install --frozen-lockfile
 
@@ -63,8 +68,10 @@ jobs:
         # Trusted Publishing: no NPM_TOKEN secret. The npm CLI mints a
         # short-lived publish credential from this workflow's OIDC token
         # (enabled by `id-token: write` above), validated against the
-        # trusted-publisher config on npmjs.com. Provenance attestation
-        # is automatic. --no-git-checks: pnpm refuses to publish from a
-        # detached HEAD by default; tag pushes always run detached so
-        # we opt out.
-        run: pnpm --filter @openpartner/sdk publish --access public --provenance --no-git-checks
+        # trusted-publisher config on npmjs.com (package settings →
+        # Trusted Publisher: getcoherence/openpartner, npm-publish.yml).
+        # npm itself publishes, so the OIDC exchange doesn't depend on the
+        # pnpm version; the SDK has no workspace dependencies for pnpm to
+        # rewrite. Provenance attestation is automatic.
+        working-directory: packages/sdk
+        run: npm publish --access public --provenance
