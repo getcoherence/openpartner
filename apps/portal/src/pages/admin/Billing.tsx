@@ -36,7 +36,7 @@ interface BillingStatus {
   /** How the live subscription is collected. */
   subscriptionCollectionMethod?: CollectionMethod | null;
   /** Set while a pay-by-invoice subscription is past due. */
-  invoiceOverdue?: { since: string; graceEndsAt: string; graceExpired: boolean } | null;
+  invoiceOverdue?: { since: string; graceEndsAt: string; graceExpired: boolean; neverPaid: boolean } | null;
 }
 
 type CollectionMethod = 'send_invoice' | 'charge_automatically';
@@ -107,12 +107,15 @@ export function AdminBilling() {
           {payingByInvoice(status.data) && (
             <OpenInvoicesCard invoices={invoices.data?.invoices ?? []} overdue={status.data.invoiceOverdue ?? null} />
           )}
-          {status.data.subscribed && status.data.collection?.country === 'IN' && (
-            <>
-              <div style={{ height: 16 }} />
-              <TaxDetailsCard gstin={status.data.collection.gstin} />
-            </>
-          )}
+          {/* Every Indian brand needs a GSTIN, by card or by invoice. The
+              pay-by-invoice form asks for it itself before the plan starts. */}
+          {status.data.collection?.gstinRequired &&
+            !(status.data.plan && !status.data.subscribed && payingByInvoice(status.data)) && (
+              <>
+                <div style={{ height: 16 }} />
+                <TaxDetailsCard gstin={status.data.collection.gstin} />
+              </>
+            )}
           {status.data.fee && (
             <>
               <div style={{ height: 16 }} />
@@ -275,6 +278,13 @@ function PlanCard({ status }: { status: BillingStatus }) {
         <InvoiceSubscribe collection={status.collection} trialExpired={!!status.trialExpiredWithoutSubscription} />
       )}
 
+      {plan && !subscribed && !byInvoice && status.collection?.gstinRequired && !status.collection.gstin && (
+        <Notice tone="danger">
+          Add your GSTIN under Tax details below before subscribing. OpenPartner bills businesses in India only when
+          they are registered for GST.
+        </Notice>
+      )}
+
       {plan && !subscribed && !byInvoice && (
         <div>
           {status.trialExpiredWithoutSubscription ? (
@@ -422,6 +432,7 @@ function InvoiceSubscribe({ collection, trialExpired }: { collection: Collection
   const [legalName, setLegalName] = useState('');
   const [gstin, setGstin] = useState(collection.gstin ?? '');
   const [billingEmail, setBillingEmail] = useState('');
+  const [promotionCode, setPromotionCode] = useState('');
   // On success the page re-renders as subscribed, and "Invoices to pay"
   // carries the first invoice's pay link.
   const start = useMutation({
@@ -432,6 +443,7 @@ function InvoiceSubscribe({ collection, trialExpired }: { collection: Collection
           ...(legalName.trim() ? { legalName: legalName.trim() } : {}),
           ...(billingEmail.trim() ? { billingEmail: billingEmail.trim() } : {}),
           ...(collection.country === 'IN' && gstin.trim() ? { gstin: gstin.trim() } : {}),
+          ...(promotionCode.trim() ? { promotionCode: promotionCode.trim() } : {}),
         },
       }),
     onSuccess: () => {
@@ -481,6 +493,10 @@ function InvoiceSubscribe({ collection, trialExpired }: { collection: Collection
           </p>
         </div>
       )}
+      <div style={{ marginBottom: 12, maxWidth: 260 }}>
+        <Label>Promotion code (optional)</Label>
+        <Input value={promotionCode} onChange={(e) => setPromotionCode(e.target.value.trim())} placeholder="CODE" />
+      </div>
       {start.error && <ErrorBanner error={errorText(start.error, 'Could not start your plan.')} />}
       <Button onClick={() => start.mutate()} disabled={start.isPending || needsGstin}>
         {start.isPending ? 'Starting…' : 'Start plan, pay by invoice'}
@@ -495,7 +511,9 @@ function OverdueBanner({ overdue }: { overdue: NonNullable<BillingStatus['invoic
     <Notice tone="danger">
       <strong style={{ color: theme.danger }}>Invoice overdue.</strong>{' '}
       {overdue.graceExpired
-        ? 'New partners are paused until your overdue invoices are paid. Everything else keeps running.'
+        ? overdue.neverPaid
+          ? 'Adding new partners is paused until your first invoice is paid. Everything else keeps running.'
+          : 'New partners are paused until your overdue invoices are paid. Everything else keeps running.'
         : `Pay it below. If it’s still unpaid on ${graceEnd}, adding new partners pauses until it is.`}
     </Notice>
   );
@@ -595,7 +613,9 @@ function TaxDetailsCard({ gstin }: { gstin: string | null }) {
       ) : (
         <>
           <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px' }}>
-            Your GSTIN prints on your OpenPartner invoices, with “Reverse charge applicable”.
+            {gstin
+              ? 'Your GSTIN prints on your OpenPartner invoices, with “Reverse charge applicable”.'
+              : 'OpenPartner bills businesses in India only when they are registered for GST. Add your GSTIN: it prints on your invoices, with “Reverse charge applicable”.'}
           </p>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <Input

@@ -97,8 +97,9 @@ function BrandsCard({ state, canWrite }: { state: InvoiceBillingState; canWrite:
     <Card>
       <div style={sectionTitle}>Brands</div>
       <div style={{ ...muted, marginTop: 4 }}>
-        Brands on the country default, brands you set terms for, and brands whose subscription is invoiced. Overdue
-        ones first.
+        Brands on the country default, every brand in India (each needs a GSTIN, however it pays), brands you set
+        terms for, and brands whose subscription is invoiced. Overdue invoices and missing GSTINs first. A GSTIN is
+        only checked for typos: compare it with the brand when you review it.
       </div>
       <div style={{ marginTop: 12 }}>
         <Table
@@ -120,8 +121,14 @@ function BrandsCard({ state, canWrite }: { state: InvoiceBillingState; canWrite:
               {t.subscription.live ? (
                 <>
                   {methodLabel(t.subscription.collectionMethod)} · {t.subscription.status ?? 'unknown'}
-                  {t.subscription.pastDueSince ? (
-                    <div style={{ fontSize: 12, color: theme.danger }}>overdue since {formatDate(t.subscription.pastDueSince)}</div>
+                  {t.overdue ? (
+                    <div style={{ fontSize: 12, color: theme.danger }}>
+                      invoice due {formatDate(t.overdue.since)} unpaid ·{' '}
+                      {t.overdue.graceExpired
+                        ? 'onboarding paused'
+                        : `pauses ${formatDate(t.overdue.graceEndsAt)}`}
+                      {t.overdue.neverPaid ? ' (never paid)' : ''}
+                    </div>
                   ) : null}
                   {t.subscription.collectionMethod && t.subscription.collectionMethod !== t.terms.method ? (
                     <div style={{ fontSize: 12, color: theme.warn }}>differs from new subscriptions</div>
@@ -134,7 +141,7 @@ function BrandsCard({ state, canWrite }: { state: InvoiceBillingState; canWrite:
             <span key="t" style={{ fontSize: 12.5 }}>
               due {t.terms.daysUntilDue}d · grace {t.terms.graceDays}d
             </span>,
-            <span key="g" style={{ fontSize: 12.5, fontFamily: theme.fontMono }}>
+            <span key="g" style={{ fontSize: 12.5, fontFamily: theme.fontMono }} title={t.profile?.gstinUpdatedByEmail ? `set by ${t.profile.gstinUpdatedByEmail}` : undefined}>
               {t.terms.gstin ?? (t.terms.gstinRequired ? <span style={{ color: theme.warn, fontFamily: theme.fontSans }}>needed</span> : '—')}
             </span>,
             canWrite ? (

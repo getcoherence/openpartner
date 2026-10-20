@@ -27,9 +27,20 @@ interface SentMail {
   tag?: string;
 }
 
-function fakeStripe(retrieveImpl: (id: string) => Promise<unknown>) {
+function fakeStripe(
+  retrieveImpl: (id: string) => Promise<unknown>,
+  openInvoices: Array<{ id: string; dueDaysAgo: number }> = [],
+) {
+  const now = Math.floor(Date.now() / 1000);
   return {
     subscriptions: { retrieve: vi.fn(retrieveImpl) },
+    invoices: {
+      list: vi.fn(async (params: { status?: string }) =>
+        params.status === 'open'
+          ? { data: openInvoices.map((i) => ({ id: i.id, amount_remaining: 4900, due_date: now - i.dueDaysAgo * 86400 })) }
+          : { data: [{ id: 'in_paid_before', amount_paid: 4900 }] },
+      ),
+    },
   } as unknown as Parameters<typeof reconcileTenantSubscriptions>[1];
 }
 
@@ -96,20 +107,52 @@ describe.skipIf(skipIntegration)('billing-subscription-reconcile', () => {
     expect(again).toMatchObject({ checked: 0 });
   });
 
-  it('a pay-by-invoice subscription found past_due is mirrored with its stretch, and ops told once', async () => {
-    const stripe = fakeStripe(async () => liveSub({ status: 'past_due', collection_method: 'send_invoice' }));
+  // Pay-by-invoice: an invoice passing its due date fires no event, so
+  // the nightly pass is what notices it.
+  it('finds an overdue pay-by-invoice invoice, mirrors it, and tells ops once', async () => {
+    const stripe = fakeStripe(
+      async () => liveSub({ status: 'active', collection_method: 'send_invoice', customer: 'cus_reconcile_test' }),
+      [{ id: 'in_jan', dueDaysAgo: 3 }],
+    );
     const first = await reconcileTenantSubscriptions(db, stripe);
     expect((first as { invoiceOverdue: string[] }).invoiceOverdue).toHaveLength(1);
     const mirror = await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).first();
-    expect(mirror).toMatchObject({ subscriptionStatus: 'past_due', collectionMethod: 'send_invoice' });
-    expect(mirror!.pastDueSince).toBeInstanceOf(Date);
+    expect(mirror).toMatchObject({ subscriptionStatus: 'active', collectionMethod: 'send_invoice', oldestOpenInvoiceId: 'in_jan' });
     expect(sentMail.filter((m) => m.tag === 'ops_tenant_invoice_overdue')).toHaveLength(1);
 
     const second = await reconcileTenantSubscriptions(db, stripe);
     expect((second as { invoiceOverdue: string[] }).invoiceOverdue).toHaveLength(0);
     expect(sentMail.filter((m) => m.tag === 'ops_tenant_invoice_overdue')).toHaveLength(1);
-    const kept = await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).first();
-    expect(kept!.pastDueSince.getTime()).toBe(mirror!.pastDueSince.getTime());
+  });
+
+  it('a failed overdue email releases its claim, so the next pass sends it', async () => {
+    __setMailerForTests({
+      send: async () => {
+        throw new Error('smtp down');
+      },
+    });
+    const stripe = fakeStripe(
+      async () => liveSub({ status: 'past_due', collection_method: 'send_invoice', customer: 'cus_reconcile_test' }),
+      [{ id: 'in_jan', dueDaysAgo: 3 }],
+    );
+    const failed = await reconcileTenantSubscriptions(db, stripe);
+    expect((failed as { invoiceOverdue: string[] }).invoiceOverdue).toHaveLength(0);
+    expect(await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID, key: 'billing_overdue_notice' }).first()).toBeUndefined();
+
+    __setMailerForTests({
+      send: async (_ctx, msg) => {
+        sentMail.push({ to: msg.to, subject: msg.subject, tag: msg.tag });
+      },
+    });
+    const retried = await reconcileTenantSubscriptions(db, stripe);
+    expect((retried as { invoiceOverdue: string[] }).invoiceOverdue).toHaveLength(1);
+    expect(sentMail.filter((m) => m.tag === 'ops_tenant_invoice_overdue')).toHaveLength(1);
+  });
+
+  it('a card subscription reads no invoices', async () => {
+    const stripe = fakeStripe(async () => liveSub({ status: 'past_due', customer: 'cus_reconcile_test' }));
+    await reconcileTenantSubscriptions(db, stripe);
+    expect((stripe as unknown as { invoices: { list: ReturnType<typeof vi.fn> } }).invoices.list).not.toHaveBeenCalled();
   });
 
   it('resource_missing NEVER heals — a wrong key/account must not mass-revoke live tenants', async () => {

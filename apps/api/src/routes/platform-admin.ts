@@ -1548,14 +1548,16 @@ platformAdminRouter.put(
     if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
     const actor = req.platformAdminActor!;
     try {
-      const result = await setTenantCollection(db, stripe, req.params.ref!, body.data, actor.email);
-      await writeAudit(db, {
-        actor,
-        action: 'invoice_billing.tenant',
-        targetType: 'tenant',
-        targetId: result.tenantId,
-        detail: { ...body.data, effective: result.terms.method, movedSubscriptionTo: result.moved },
-      });
+      // The audit row commits with the profile (or neither does).
+      const result = await setTenantCollection(db, stripe, req.params.ref!, body.data, actor.email, (trx, r) =>
+        writeAudit(trx, {
+          actor,
+          action: 'invoice_billing.tenant',
+          targetType: 'tenant',
+          targetId: r.tenantId,
+          detail: { ...body.data, effective: r.terms.method, movedSubscriptionTo: r.moved },
+        }),
+      );
       res.json(result);
     } catch (err) {
       if (err instanceof OpsCollectionError) {

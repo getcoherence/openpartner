@@ -33,26 +33,21 @@ import { TABLES, type AdminRow, type BillingPlan, type TenantRow } from '@openpa
 import { requireAdmin, requireAuth, type ApiKeyPrincipal } from '../auth.js';
 import { REVSHARE_FEE_BPS, requireStripe } from '../stripe.js';
 import { describeTenantFee } from '../fee-terms.js';
-import {
-  getTenantBillingState,
-  mirrorHostedBillingState,
-  priceIdsForPlan,
-  type MirroredSubscriptionStatus,
-  type TenantBillingState,
-} from '../billing-plan.js';
+import { getTenantBillingState, priceIdsForPlan, type TenantBillingState } from '../billing-plan.js';
 import {
   applyCustomerTaxDetails,
+  InvoiceSubscribeError,
   normalizeGstin,
   resolveCollectionTerms,
-  sendInvoiceParams,
-  upsertBillingProfile,
+  setGstin,
+  startInvoiceSubscription,
   type CollectionTerms,
 } from '../invoice-billing.js';
 import { reportUsageToStripe } from '../usage-billing.js';
 import { tenantOf } from '../tenancy.js';
 import { getWhiteLabelState } from '../white-label.js';
 import { getNetworkMembership } from '../network-client.js';
-import { applyWhiteLabelFromSubscription, subscriptionHasWhiteLabel, whiteLabelPriceId } from '../white-label-billing.js';
+import { applyWhiteLabelFromSubscription, whiteLabelPriceId } from '../white-label-billing.js';
 
 export const billingRouter = Router();
 
@@ -76,6 +71,7 @@ function collectionView(terms: CollectionTerms, state: TenantBillingState) {
           since: state.invoiceOverdue.since.toISOString(),
           graceEndsAt: state.invoiceOverdue.graceEndsAt.toISOString(),
           graceExpired: state.invoiceOverdue.graceExpired,
+          neverPaid: state.invoiceOverdue.neverPaid,
         }
       : null,
   };
@@ -359,10 +355,18 @@ billingRouter.post('/billing/checkout', requireAuth, requireAdmin, async (req, r
 
   // Card Checkout would put a pay-by-invoice tenant straight back on the
   // auto-charge it can't use.
-  if ((await resolveCollectionTerms(db, tenantId)).method === 'send_invoice') {
+  const terms = await resolveCollectionTerms(db, tenantId);
+  if (terms.method === 'send_invoice') {
     return res.status(409).json({
       error: 'invoice_billing',
       detail: 'This account pays by invoice. Start your plan from the Billing page.',
+    });
+  }
+  // An Indian brand needs a GSTIN by card too (invoice-billing.ts).
+  if (terms.gstinRequired && !terms.gstin) {
+    return res.status(409).json({
+      error: 'gstin_required',
+      detail: 'Add your GSTIN on the Billing page first. OpenPartner bills businesses in India only when they are registered for GST.',
     });
   }
 
@@ -396,6 +400,9 @@ billingRouter.post('/billing/checkout', requireAuth, requireAdmin, async (req, r
       .where({ id: tenantId })
       .update({ stripeCustomerId: customerId, updatedAt: new Date() });
   }
+  // The GSTIN and reverse-charge footer must be on the customer before
+  // Checkout's first invoice is finalized.
+  await applyCustomerTaxDetails(stripe, customerId, { country: terms.country, gstin: terms.gstin });
 
   // The 14-day trial runs from signup, not from Stripe Checkout — by
   // the time a brand reaches Checkout the evaluation window is the
@@ -429,6 +436,8 @@ const invoiceSubscriptionSchema = z.object({
   /** Indian GSTIN: required for a brand that declared India, unless one
    *  is already on file. */
   gstin: z.string().trim().max(32).optional(),
+  /** A sales-issued promotion code, as Checkout accepts. */
+  promotionCode: z.string().trim().min(1).max(100).optional(),
   whiteLabel: z.boolean().optional(),
 });
 
@@ -436,12 +445,11 @@ const invoiceSubscriptionSchema = z.object({
  * Start the plan on pay-by-invoice terms (docs/invoice-billing.md): a
  * subscription with collection_method=send_invoice on the same prices and
  * meter as Checkout's, created here because Checkout only makes
- * auto-charged subscriptions. The first invoice (Flex's first month; a $0
+ * auto-charged subscriptions. invoice-billing.ts startInvoiceSubscription
+ * makes sure the app never loses track of one: it runs in transactions of
+ * its own, not the request's. The first invoice (Flex's first month; a $0
  * one for metered-only Revshare) is finalized right away, so Stripe emails
- * it and its pay link comes back in the response. The subscription is
- * active from the start. An invoice unpaid past its due date makes it
- * past_due, and partner onboarding pauses only once the grace runs out
- * (billing-plan.ts invoiceOverdue).
+ * it and its pay link comes back in the response.
  */
 billingRouter.post('/billing/invoice-subscription', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
@@ -451,6 +459,9 @@ billingRouter.post('/billing/invoice-subscription', requireAuth, requireAdmin, a
     return res.status(400).json({ error: 'enterprise_plan_no_checkout', detail: 'Enterprise tenants are billed out of band.' });
   }
   if (!state.plan) return res.status(400).json({ error: 'no_plan_chosen', detail: 'Pick a plan first via /admin/billing.' });
+  if (state.stripeSubscriptionId) {
+    return res.status(409).json({ error: 'already_subscribed', detail: 'Use the Customer Portal to change plans.' });
+  }
 
   const body = invoiceSubscriptionSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
@@ -472,7 +483,7 @@ billingRouter.post('/billing/invoice-subscription', requireAuth, requireAdmin, a
   if (terms.gstinRequired && !gstin) {
     return res.status(400).json({
       error: 'gstin_required',
-      detail: 'Enter your GSTIN. OpenPartner invoices businesses in India only when they are registered for GST.',
+      detail: 'Enter your GSTIN. OpenPartner bills businesses in India only when they are registered for GST.',
     });
   }
 
@@ -483,69 +494,47 @@ billingRouter.post('/billing/invoice-subscription', requireAuth, requireAdmin, a
     return res.status(500).json({ error: 'stripe_price_not_configured', detail: err instanceof Error ? err.message : String(err) });
   }
 
-  // Serialize on the tenant row: a double submit must not start two
-  // subscriptions (unlike a Checkout Session, this one bills as soon as it
-  // exists). The second request waits here, then sees the pointer.
-  const locked = await db<TenantRow>(TABLES.Tenant)
-    .where({ id: tenantId })
-    .forUpdate()
-    .first(['stripeSubscriptionId', 'stripeCustomerId', 'displayName']);
-  if (locked?.stripeSubscriptionId) {
-    return res.status(409).json({ error: 'already_subscribed', detail: 'Use the Customer Portal to change plans.' });
-  }
-
-  const signedIn = await adminEmail(db, tenantId, req.principal);
-  if (gstin && gstin !== terms.gstin) await upsertBillingProfile(db, tenantId, { gstin }, signedIn);
-
   const stripe = requireStripe();
-  let customerId = locked?.stripeCustomerId ?? null;
-  if (!customerId) {
-    const customer = await stripe.customers.create({
-      email: body.data.billingEmail ?? signedIn ?? undefined,
-      name: body.data.legalName ?? locked?.displayName ?? undefined,
-      metadata: { openpartner_role: 'merchant_self_subscription', openpartner_tenant_id: tenantId },
-    });
-    customerId = customer.id;
-    await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).update({ stripeCustomerId: customerId, updatedAt: new Date() });
-  } else if (body.data.billingEmail || body.data.legalName) {
-    await stripe.customers.update(customerId, {
-      ...(body.data.billingEmail ? { email: body.data.billingEmail } : {}),
-      ...(body.data.legalName ? { name: body.data.legalName } : {}),
-    });
-  }
-  await applyCustomerTaxDetails(stripe, customerId, { country: terms.country, gstin });
-
-  const sub = await stripe.subscriptions.create({
-    customer: customerId,
-    items: lineItems,
-    ...sendInvoiceParams(terms.daysUntilDue),
-    metadata: { openpartner_tenant_id: tenantId, openpartner_plan: state.plan, openpartner_collection: 'send_invoice' },
-    expand: ['latest_invoice'],
-  });
-
-  await persistMerchantSubscription(db, tenantId, { stripeCustomerId: customerId, stripeSubscriptionId: sub.id });
-  await mirrorHostedBillingState(db, tenantId, sub.status as MirroredSubscriptionStatus, sub.collection_method);
-  if (subscriptionHasWhiteLabel(sub.items.data.map((it) => it.price.id))) {
-    await applyWhiteLabelFromSubscription(db, tenantId, true);
-  }
-
-  // Stripe finalizes a subscription's first invoice about an hour after
-  // creating it. Finalizing now emails it and returns the pay link at once;
-  // if this fails, Stripe still finalizes it on its own schedule.
-  let invoice = typeof sub.latest_invoice === 'object' ? sub.latest_invoice : null;
-  if (invoice?.id && invoice.status === 'draft') {
-    try {
-      invoice = await stripe.invoices.finalizeInvoice(invoice.id, { auto_advance: true });
-    } catch (err) {
-      console.warn('[billing] first invoice left for Stripe to finalize', {
-        tenantId,
-        invoiceId: invoice.id,
-        err: err instanceof Error ? err.message : String(err),
-      });
+  let promotionCodeId: string | undefined;
+  if (body.data.promotionCode) {
+    const found = await stripe.promotionCodes.list({ code: body.data.promotionCode, active: true, limit: 1 });
+    promotionCodeId = found.data[0]?.id;
+    if (!promotionCodeId) {
+      return res.status(400).json({ error: 'invalid_promotion_code', detail: 'That promotion code isn’t valid.' });
     }
   }
 
-  res.json({ ok: true, subscriptionId: sub.id, status: sub.status, invoice: invoice ? invoiceView(invoice) : null });
+  let started: Awaited<ReturnType<typeof startInvoiceSubscription>>;
+  try {
+    started = await startInvoiceSubscription(stripe, {
+      tenantId,
+      plan: state.plan,
+      lineItems,
+      terms,
+      gstin,
+      billingEmail: body.data.billingEmail,
+      legalName: body.data.legalName,
+      adminEmail: await adminEmail(db, tenantId, req.principal),
+      promotionCodeId,
+    });
+  } catch (err) {
+    if (err instanceof InvoiceSubscribeError) return res.status(409).json({ error: err.code, detail: err.message });
+    // Stripe refusing the code itself (first-time-only, a minimum amount,
+    // a customer restriction) is the brand's to fix, not a server error.
+    const param = (err as { param?: string }).param ?? '';
+    if (promotionCodeId && (err as { type?: string }).type === 'StripeInvalidRequestError' && /discount|promotion|coupon/.test(param)) {
+      return res.status(400).json({ error: 'promotion_code_not_applicable', detail: (err as Error).message });
+    }
+    throw err;
+  }
+
+  res.json({
+    ok: true,
+    subscriptionId: started.subscription.id,
+    status: started.subscription.status,
+    adopted: started.adopted,
+    invoice: started.invoice ? invoiceView(started.invoice) : null,
+  });
 });
 
 const taxDetailsSchema = z.object({ gstin: z.string().trim().min(1).max(32) });
@@ -553,7 +542,7 @@ const taxDetailsSchema = z.object({ gstin: z.string().trim().min(1).max(32) });
 /**
  * Record or correct an Indian brand's GSTIN: on the billing profile and,
  * once the brand has a Stripe customer, on that too, so invoices finalized
- * from now on print it.
+ * from now on print it. Every Indian brand needs one, by card or invoice.
  */
 billingRouter.put('/billing/tax-details', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
@@ -572,7 +561,7 @@ billingRouter.put('/billing/tax-details', requireAuth, requireAdmin, async (req,
       detail: 'That isn’t a valid GSTIN. Check it against your GST registration certificate.',
     });
   }
-  await upsertBillingProfile(db, tenantId, { gstin }, await adminEmail(db, tenantId, req.principal));
+  await setGstin(db, tenantId, gstin, await adminEmail(db, tenantId, req.principal));
   if (state.stripeCustomerId) {
     await applyCustomerTaxDetails(requireStripe(), state.stripeCustomerId, { country: terms.country, gstin });
   }

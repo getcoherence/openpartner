@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { hasActivePlan, invoiceOverdue } from '../billing-plan.js';
+import { hasActivePlan, invoiceOverdue, type InvoiceDueMirror } from '../billing-plan.js';
 import type { TenantBillingState } from '../billing-plan.js';
 import { isPlanRequiredRoute, isTrialGatedRoute } from '../middleware/trial-gate.js';
 
@@ -73,65 +73,64 @@ describe('hasActivePlan (partner-onboarding gate)', () => {
   });
 });
 
-// Pay-by-invoice (docs/invoice-billing.md): the subscription is past_due
-// from the day an invoice passes its due date, and Stripe may leave it
-// there. Service continues through the grace, then onboarding pauses.
-describe('hasActivePlan with a pay-by-invoice subscription', () => {
+// Pay-by-invoice (docs/invoice-billing.md): overdue follows the oldest open
+// invoice, not the subscription status. A brand that has paid before gets
+// the grace; one that never has gets none.
+describe('hasActivePlan with pay-by-invoice invoices', () => {
   const DAY = 86_400_000;
   const now = new Date('2026-11-20T00:00:00Z');
-  const mirror = (overrides: Partial<Parameters<typeof invoiceOverdue>[0] & object> = {}) => ({
-    subscriptionStatus: 'past_due' as const,
-    collectionMethod: 'send_invoice' as const,
-    pastDueSince: new Date(now.getTime() - 5 * DAY),
+  const mirror = (overrides: Partial<InvoiceDueMirror> = {}): InvoiceDueMirror => ({
+    oldestOpenInvoiceId: 'in_jan',
+    oldestOpenInvoiceDueAt: new Date(now.getTime() - 5 * DAY),
+    invoicePaidAt: new Date('2026-09-01T00:00:00Z'),
     graceDays: null,
     ...overrides,
   });
-  const invoiced = (m: ReturnType<typeof mirror>) =>
+  const invoiced = (m: InvoiceDueMirror, subscriptionStatus: 'active' | 'past_due' = 'past_due') =>
     billing({
       plan: 'flex',
       stripeSubscriptionId: 'sub_inv',
-      subscriptionStatus: m.subscriptionStatus,
-      collectionMethod: m.collectionMethod,
+      subscriptionStatus,
+      collectionMethod: 'send_invoice',
       invoiceOverdue: invoiceOverdue(m, now),
     });
 
-  it('an open invoice not yet due is plain active', () => {
-    const m = mirror({ subscriptionStatus: 'active' as never, pastDueSince: null });
+  it('an open invoice not yet due is no overdue at all', () => {
+    const m = mirror({ oldestOpenInvoiceDueAt: new Date(now.getTime() + 3 * DAY) });
     expect(invoiceOverdue(m, now)).toBeNull();
-    expect(hasActivePlan(invoiced(m))).toBe(true);
+    expect(hasActivePlan(invoiced(m, 'active'))).toBe(true);
   });
 
-  it('keeps service on day 1 of overdue and through the default 30-day grace', () => {
-    const day1 = mirror({ pastDueSince: new Date(now.getTime() - DAY) });
-    expect(invoiceOverdue(day1, now)).toMatchObject({ graceExpired: false });
+  it('nothing open (or a card subscription) is no overdue', () => {
+    expect(invoiceOverdue(mirror({ oldestOpenInvoiceId: null, oldestOpenInvoiceDueAt: null }), now)).toBeNull();
+    expect(invoiceOverdue(null, now)).toBeNull();
+  });
+
+  it('a paying brand keeps service from day 1 overdue through the default 30-day grace', () => {
+    const day1 = mirror({ oldestOpenInvoiceDueAt: new Date(now.getTime() - DAY) });
+    expect(invoiceOverdue(day1, now)).toMatchObject({ invoiceId: 'in_jan', graceExpired: false, neverPaid: false });
     expect(hasActivePlan(invoiced(day1))).toBe(true);
-    const day29 = mirror({ pastDueSince: new Date(now.getTime() - 29 * DAY) });
+    const day29 = mirror({ oldestOpenInvoiceDueAt: new Date(now.getTime() - 29 * DAY) });
     expect(hasActivePlan(invoiced(day29))).toBe(true);
     expect(invoiceOverdue(day29, now)!.graceEndsAt).toEqual(new Date(now.getTime() + DAY));
-  });
-
-  it('pauses onboarding once the grace runs out', () => {
-    const day30 = mirror({ pastDueSince: new Date(now.getTime() - 30 * DAY) });
-    expect(invoiceOverdue(day30, now)).toMatchObject({ graceExpired: true });
+    const day30 = mirror({ oldestOpenInvoiceDueAt: new Date(now.getTime() - 30 * DAY) });
     expect(hasActivePlan(invoiced(day30))).toBe(false);
   });
 
+  it('an older invoice still owed pauses onboarding even when the latest was paid (status active)', () => {
+    const jan = mirror({ oldestOpenInvoiceDueAt: new Date(now.getTime() - 40 * DAY) });
+    expect(hasActivePlan(invoiced(jan, 'active'))).toBe(false);
+  });
+
+  it('a brand that has never paid a non-zero invoice gets no grace', () => {
+    const first = mirror({ invoicePaidAt: null, oldestOpenInvoiceDueAt: new Date(now.getTime() - 1) });
+    expect(invoiceOverdue(first, now)).toMatchObject({ neverPaid: true, graceExpired: true });
+    expect(hasActivePlan(invoiced(first, 'active'))).toBe(false);
+  });
+
   it('honours a per-tenant grace from ops', () => {
-    const m = mirror({ pastDueSince: new Date(now.getTime() - 40 * DAY), graceDays: 60 });
-    expect(hasActivePlan(invoiced(m))).toBe(true);
-    const none = mirror({ pastDueSince: new Date(now.getTime() - 1), graceDays: 0 });
-    expect(hasActivePlan(invoiced(none))).toBe(false);
-  });
-
-  it('an untimed stretch (mirrored before pastDueSince existed) starts now, not expired', () => {
-    const m = mirror({ pastDueSince: null });
-    expect(invoiceOverdue(m, now)).toMatchObject({ since: now, graceExpired: false });
-  });
-
-  it('card subscriptions keep the old rule: past_due is left to Stripe dunning', () => {
-    const m = mirror({ collectionMethod: 'charge_automatically' as never, pastDueSince: new Date(now.getTime() - 90 * DAY) });
-    expect(invoiceOverdue(m, now)).toBeNull();
-    expect(hasActivePlan(invoiced(m))).toBe(true);
+    expect(hasActivePlan(invoiced(mirror({ oldestOpenInvoiceDueAt: new Date(now.getTime() - 40 * DAY), graceDays: 60 })))).toBe(true);
+    expect(hasActivePlan(invoiced(mirror({ oldestOpenInvoiceDueAt: new Date(now.getTime() - 1), graceDays: 0 })))).toBe(false);
   });
 });
 

@@ -15,13 +15,17 @@ import type { Knex } from 'knex';
  *     null follows the country default in PlatformSetting
  *     'invoiceBilling'), the invoice terms, the overdue grace before partner
  *     onboarding pauses, and the brand's Indian GSTIN (printed on invoices
- *     as Stripe customer tax ID in_gst). A row exists only once ops or the
- *     brand set something.
+ *     as Stripe customer tax ID in_gst; who last set it is kept apart from
+ *     who set the terms). A row exists only once ops or the brand set
+ *     something.
  *
- *  2. HostedBillingState.collectionMethod / pastDueSince — the webhook
- *     mirror also records how the LIVE subscription is collected and since
- *     when it has been continuously past_due, which is what the overdue
- *     grace counts from.
+ *  2. HostedBillingState gains how the LIVE subscription is collected, the
+ *     oldest open pay-by-invoice invoice (id + due date) the overdue grace
+ *     counts from, and when the brand first paid a non-zero invoice (no
+ *     grace before that). Overdue follows the invoices rather than the
+ *     subscription status: Stripe derives the status from the LATEST
+ *     invoice only, so paying February made it active again while January
+ *     was still owed.
  *
  * RLS + app-role grant follow the canonical tenant_isolation pattern, with
  * the plain predicate 20261017100000_rls_plain_tenant_policies settled on.
@@ -36,6 +40,8 @@ export async function up(knex: Knex): Promise<void> {
     t.integer('daysUntilDue').notNullable().defaultTo(15);
     t.integer('graceDays').notNullable().defaultTo(30);
     t.string('gstin', 15);
+    t.string('gstinUpdatedByEmail', 255);
+    t.timestamp('gstinUpdatedAt', { useTz: true });
     t.string('updatedByEmail', 255);
     t.timestamp('createdAt', { useTz: true }).notNullable().defaultTo(knex.fn.now());
     t.timestamp('updatedAt', { useTz: true }).notNullable().defaultTo(knex.fn.now());
@@ -52,7 +58,9 @@ export async function up(knex: Knex): Promise<void> {
 
   await knex.schema.alterTable('HostedBillingState', (t) => {
     t.string('collectionMethod', 32);
-    t.timestamp('pastDueSince', { useTz: true });
+    t.string('oldestOpenInvoiceId', 255);
+    t.timestamp('oldestOpenInvoiceDueAt', { useTz: true });
+    t.timestamp('invoicePaidAt', { useTz: true });
   });
 
   await knex.raw(`alter table "HostedBillingProfile" enable row level security`);
@@ -86,7 +94,9 @@ export async function down(knex: Knex): Promise<void> {
   await knex.raw(`drop policy if exists tenant_isolation on "HostedBillingProfile"`);
   await knex.schema.dropTableIfExists('HostedBillingProfile');
   await knex.schema.alterTable('HostedBillingState', (t) => {
-    t.dropColumn('pastDueSince');
+    t.dropColumn('invoicePaidAt');
+    t.dropColumn('oldestOpenInvoiceDueAt');
+    t.dropColumn('oldestOpenInvoiceId');
     t.dropColumn('collectionMethod');
   });
 }

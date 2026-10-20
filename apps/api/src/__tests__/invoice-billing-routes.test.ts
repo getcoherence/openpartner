@@ -1,10 +1,10 @@
 /**
  * Pay-by-invoice billing end to end against the DB (docs/invoice-billing.md):
- * the brand's subscribe and tax-details routes, the Checkout guard, the
- * overdue grace in the partner-onboarding gate, and ops moving a live
- * subscription between card and invoice. Stripe is a recording fake; the
- * real behaviour it stands in for was checked in Stripe test mode (see the
- * doc).
+ * the brand's subscribe and tax-details routes, the Checkout guards, the
+ * overdue grace in the partner-onboarding gate, never losing a created
+ * subscription, and ops moving a live subscription between card and
+ * invoice. Stripe is a recording fake; the real behaviour it stands in for
+ * was checked in Stripe test mode (see the doc).
  *
  * Skipped if DATABASE_URL isn't set.
  */
@@ -21,14 +21,19 @@ process.env.OPENPARTNER_TENANCY = 'single';
 process.env.STRIPE_FLAT_PRICE_ID = 'price_inv_flat';
 process.env.STRIPE_FLAT_USAGE_PRICE_ID = 'price_inv_flat_usage';
 process.env.STRIPE_REVSHARE_USAGE_PRICE_ID = 'price_inv_rev';
+process.env.STRIPE_WHITELABEL_ADD_ON_PRICE_ID = 'price_inv_wl';
 
 const GSTIN = '27AAPFU0939F1ZV';
+const DAY = 86_400_000;
 
 const h = vi.hoisted(() => ({
   calls: [] as Array<[string, unknown]>,
   taxIds: [] as Array<{ id: string; type: string; value: string }>,
   defaultPaymentMethod: null as string | null,
   live: { collection_method: 'charge_automatically', days_until_due: null as number | null, status: 'active' },
+  existingSubs: [] as Array<Record<string, unknown>>,
+  promotionCodes: {} as Record<string, string>,
+  failWhiteLabel: false,
 }));
 
 function fakeStripe() {
@@ -57,6 +62,7 @@ function fakeStripe() {
       },
     },
     subscriptions: {
+      list: async () => ({ data: h.existingSubs }),
       create: async (args: { items: Array<{ price: string }>; collection_method: string }) => {
         h.calls.push(['subscriptions.create', args]);
         return {
@@ -66,6 +72,10 @@ function fakeStripe() {
           items: { data: args.items.map((i) => ({ price: { id: i.price } })) },
           latest_invoice: { id: 'in_inv_test', status: 'draft', amount_due: 4900, hosted_invoice_url: null },
         };
+      },
+      cancel: async (id: string) => {
+        h.calls.push(['subscriptions.cancel', id]);
+        return { id, status: 'canceled' };
       },
       retrieve: async (id: string) => ({
         id,
@@ -98,11 +108,41 @@ function fakeStripe() {
           amount_remaining: 4900,
           currency: 'usd',
           created: 1_800_000_000,
-          due_date: 1_801_296_000,
+          due_date: Math.floor((Date.now() + 15 * DAY) / 1000),
           collection_method: 'send_invoice',
           hosted_invoice_url: 'https://invoice.stripe.com/i/test_inv',
           invoice_pdf: null,
         };
+      },
+      update: async (id: string, args: Record<string, unknown>) => {
+        h.calls.push(['invoices.update', args]);
+        return { id };
+      },
+      voidInvoice: async (id: string) => {
+        h.calls.push(['invoices.voidInvoice', id]);
+        return { id, status: 'void' };
+      },
+      // The first invoice is open once finalized to be sent (auto_advance).
+      list: async (params: { status?: string }) =>
+        params.status === 'open'
+          ? {
+              data: h.calls.some(([n, a]) => n === 'invoices.finalizeInvoice' && (a as { auto_advance?: boolean }).auto_advance)
+                ? [{ id: 'in_inv_test', amount_remaining: 4900, due_date: Math.floor((Date.now() + 15 * DAY) / 1000) }]
+                : [],
+            }
+          : { data: [] },
+    },
+    promotionCodes: {
+      list: async (params: { code: string }) => ({
+        data: h.promotionCodes[params.code] ? [{ id: h.promotionCodes[params.code] }] : [],
+      }),
+    },
+    checkout: {
+      sessions: {
+        create: async (args: Record<string, unknown>) => {
+          h.calls.push(['checkout.sessions.create', args]);
+          return { url: 'https://checkout.stripe.com/test' };
+        },
       },
     },
   };
@@ -113,6 +153,19 @@ vi.mock('../stripe.js', async () => {
   return { ...actual, requireStripe: () => fakeStripe() };
 });
 
+// A failure after the subscription exists in Stripe, before the pointer
+// commits: the white-label step is the last write in that transaction.
+vi.mock('../white-label-billing.js', async () => {
+  const actual = await vi.importActual<typeof import('../white-label-billing.js')>('../white-label-billing.js');
+  return {
+    ...actual,
+    applyWhiteLabelFromSubscription: async (...args: Parameters<typeof actual.applyWhiteLabelFromSubscription>) => {
+      if (h.failWhiteLabel) throw new Error('white-label write failed');
+      return actual.applyWhiteLabelFromSubscription(...args);
+    },
+  };
+});
+
 const { db } = await import('../db.js');
 const { createApp } = await import('../app.js');
 const { setTenantCollection, OpsCollectionError, listInvoiceBillingTenants } = await import('../invoice-billing.js');
@@ -121,6 +174,7 @@ const { setInvoiceBillingSettings } = await import('../platform-settings.js');
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
 const auth = { Authorization: `Bearer ${ADMIN_KEY}` };
+const noAudit = async () => undefined;
 
 async function declare(country: string): Promise<void> {
   await db(TABLES.LocationDeclaration).where({ subjectKind: 'tenant', subjectId: DEFAULT_TENANT_ID }).del();
@@ -146,11 +200,18 @@ function called(name: string): unknown[] {
   return h.calls.filter(([n]) => n === name).map(([, a]) => a);
 }
 
+async function tenantRow() {
+  return (await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first())!;
+}
+
 beforeEach(async () => {
   h.calls = [];
   h.taxIds = [];
   h.defaultPaymentMethod = null;
   h.live = { collection_method: 'charge_automatically', days_until_due: null, status: 'active' };
+  h.existingSubs = [];
+  h.promotionCodes = {};
+  h.failWhiteLabel = false;
   if (skipIntegration) return;
   await wipe();
   await db(TABLES.Tenant)
@@ -200,8 +261,7 @@ describe.skipIf(skipIntegration)('brand subscribes by invoice', () => {
     expect(typo.status).toBe(400);
     expect(typo.body.error).toBe('invalid_gstin');
     expect(h.calls).toEqual([]);
-    const tenant = await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first();
-    expect(tenant!.stripeSubscriptionId).toBeNull();
+    expect((await tenantRow()).stripeSubscriptionId).toBeNull();
   });
 
   it('creates a send_invoice subscription with the GSTIN, reverse-charge footer, card + bank transfer', async () => {
@@ -215,6 +275,7 @@ describe.skipIf(skipIntegration)('brand subscribes by invoice', () => {
       ok: true,
       subscriptionId: 'sub_inv_test',
       status: 'active',
+      adopted: false,
       invoice: { id: 'in_inv_test', status: 'open', hostedInvoiceUrl: 'https://invoice.stripe.com/i/test_inv', amountRemaining: 4900 },
     });
 
@@ -226,13 +287,14 @@ describe.skipIf(skipIntegration)('brand subscribes by invoice', () => {
       },
     ]);
     expect(called('customers.createTaxId')).toEqual([{ type: 'in_gst', value: GSTIN }]);
-    expect(called('customers.update')).toEqual([
-      { invoice_settings: { footer: 'Reverse charge applicable' }, address: { country: 'IN' } },
-    ]);
+    expect(called('customers.update')).toContainEqual({
+      invoice_settings: { footer: 'Reverse charge applicable' },
+      address: { country: 'IN' },
+    });
     // Tax details go on the customer BEFORE the subscription: the first
     // invoice copies them when it's finalized.
     const order = h.calls.map(([n]) => n);
-    expect(order.indexOf('customers.update')).toBeLessThan(order.indexOf('subscriptions.create'));
+    expect(order.lastIndexOf('customers.update')).toBeLessThan(order.indexOf('subscriptions.create'));
     expect(called('subscriptions.create')).toEqual([
       {
         customer: 'cus_inv_test',
@@ -251,12 +313,12 @@ describe.skipIf(skipIntegration)('brand subscribes by invoice', () => {
     ]);
     expect(called('invoices.finalizeInvoice')).toEqual([{ auto_advance: true }]);
 
-    const tenant = await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first();
-    expect(tenant).toMatchObject({ stripeCustomerId: 'cus_inv_test', stripeSubscriptionId: 'sub_inv_test' });
+    expect(await tenantRow()).toMatchObject({ stripeCustomerId: 'cus_inv_test', stripeSubscriptionId: 'sub_inv_test' });
     const mirror = await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).first();
-    expect(mirror).toMatchObject({ subscriptionStatus: 'active', collectionMethod: 'send_invoice', pastDueSince: null });
+    // The first invoice is tracked, not overdue; nothing has been paid yet.
+    expect(mirror).toMatchObject({ subscriptionStatus: 'active', collectionMethod: 'send_invoice', oldestOpenInvoiceId: 'in_inv_test', invoicePaidAt: null });
     const profile = await db(TABLES.HostedBillingProfile).where({ tenantId: DEFAULT_TENANT_ID }).first();
-    expect(profile).toMatchObject({ gstin: GSTIN, collectionMethod: null });
+    expect(profile).toMatchObject({ gstin: GSTIN, collectionMethod: null, updatedByEmail: null });
 
     // Partner onboarding is open: the plan is active.
     const partner = await request(app).post('/partners').set(auth).send({});
@@ -265,6 +327,68 @@ describe.skipIf(skipIntegration)('brand subscribes by invoice', () => {
     const again = await request(app).post('/billing/invoice-subscription').set(auth).send({});
     expect(again.status).toBe(409);
     expect(again.body.error).toBe('already_subscribed');
+  });
+
+  it('a failure after Stripe created the subscription cancels it, so nothing invoices unseen and a retry is clean', async () => {
+    await declare('IN');
+    h.failWhiteLabel = true;
+    const failed = await request(app).post('/billing/invoice-subscription').set(auth).send({ gstin: GSTIN, whiteLabel: true });
+    expect(failed.status).toBe(500);
+    expect(called('subscriptions.create')).toHaveLength(1);
+    expect(called('subscriptions.cancel')).toEqual(['sub_inv_test']);
+    // Its draft first invoice is finalized WITHOUT sending, then voided.
+    expect(called('invoices.update')).toEqual([{ auto_advance: false }]);
+    expect(called('invoices.finalizeInvoice')).toEqual([{ auto_advance: false }]);
+    expect(called('invoices.voidInvoice')).toEqual(['in_inv_test']);
+    const after = await tenantRow();
+    expect(after.stripeSubscriptionId).toBeNull();
+    // The customer and GSTIN committed on their own, so the retry reuses them.
+    expect(after.stripeCustomerId).toBe('cus_inv_test');
+
+    h.failWhiteLabel = false;
+    h.calls = [];
+    const retry = await request(app).post('/billing/invoice-subscription').set(auth).send({ whiteLabel: true });
+    expect(retry.status).toBe(200);
+    expect(called('customers.create')).toEqual([]);
+    expect(called('subscriptions.create')).toHaveLength(1);
+    expect(await tenantRow()).toMatchObject({ stripeSubscriptionId: 'sub_inv_test', whiteLabel: true });
+  });
+
+  it('a retry adopts a live subscription this tenant already started instead of starting a second', async () => {
+    await declare('IN');
+    await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ stripeCustomerId: 'cus_inv_test' });
+    await db(TABLES.HostedBillingProfile).insert({ tenantId: DEFAULT_TENANT_ID, gstin: GSTIN });
+    h.existingSubs = [
+      // Someone else's metadata, or a cancelled one, is never adopted.
+      { id: 'sub_cancelled', status: 'canceled', metadata: { openpartner_tenant_id: DEFAULT_TENANT_ID, openpartner_collection: 'send_invoice' }, items: { data: [] } },
+      {
+        id: 'sub_lost_response',
+        status: 'active',
+        collection_method: 'send_invoice',
+        metadata: { openpartner_tenant_id: DEFAULT_TENANT_ID, openpartner_collection: 'send_invoice' },
+        items: { data: [{ price: { id: 'price_inv_flat' } }] },
+        latest_invoice: { id: 'in_lost', status: 'open', amount_due: 4900 },
+      },
+    ];
+    const res = await request(app).post('/billing/invoice-subscription').set(auth).send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ subscriptionId: 'sub_lost_response', adopted: true });
+    expect(called('subscriptions.create')).toEqual([]);
+    expect((await tenantRow()).stripeSubscriptionId).toBe('sub_lost_response');
+  });
+
+  it('applies a sales-issued promotion code, and refuses an unknown one', async () => {
+    await declare('US');
+    await db(TABLES.HostedBillingProfile).insert({ tenantId: DEFAULT_TENANT_ID, collectionMethod: 'send_invoice' });
+    const bad = await request(app).post('/billing/invoice-subscription').set(auth).send({ promotionCode: 'NOPE' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe('invalid_promotion_code');
+    expect(called('subscriptions.create')).toEqual([]);
+
+    h.promotionCodes = { WLFIRST: 'promo_wl_first' };
+    const ok = await request(app).post('/billing/invoice-subscription').set(auth).send({ promotionCode: 'WLFIRST' });
+    expect(ok.status).toBe(200);
+    expect(called('subscriptions.create')[0]).toMatchObject({ discounts: [{ promotion_code: 'promo_wl_first' }] });
   });
 
   it('a brand ops put on invoices needs no GSTIN outside India; a card brand is sent to Checkout', async () => {
@@ -280,36 +404,62 @@ describe.skipIf(skipIntegration)('brand subscribes by invoice', () => {
     expect(called('subscriptions.create')[0]).toMatchObject({ collection_method: 'send_invoice', days_until_due: 30 });
   });
 
-  it('an invoice overdue past its grace pauses onboarding with a pay-your-invoice message', async () => {
+  it('an Indian brand paying by card needs a GSTIN too, and gets it on its invoices', async () => {
+    await declare('IN');
+    await db(TABLES.HostedBillingProfile).insert({ tenantId: DEFAULT_TENANT_ID, collectionMethod: 'charge_automatically' });
+    const body = { successUrl: 'https://x.test/ok', cancelUrl: 'https://x.test/no' };
+    const refused = await request(app).post('/billing/checkout').set(auth).send(body);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toBe('gstin_required');
+    expect(called('checkout.sessions.create')).toEqual([]);
+
+    await db(TABLES.HostedBillingProfile).where({ tenantId: DEFAULT_TENANT_ID }).update({ gstin: GSTIN });
+    const ok = await request(app).post('/billing/checkout').set(auth).send(body);
+    expect(ok.status).toBe(200);
+    expect(called('customers.createTaxId')).toEqual([{ type: 'in_gst', value: GSTIN }]);
+    const order = h.calls.map(([n]) => n);
+    expect(order.indexOf('customers.createTaxId')).toBeLessThan(order.indexOf('checkout.sessions.create'));
+  });
+
+  it('an overdue invoice pauses onboarding after the grace, or at once for a brand that has never paid', async () => {
     await declare('IN');
     await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ stripeSubscriptionId: 'sub_inv_test' });
     await db(TABLES.HostedBillingState).insert({
       tenantId: DEFAULT_TENANT_ID,
-      subscriptionStatus: 'past_due',
+      // Stripe says active: the latest invoice is paid. January isn't.
+      subscriptionStatus: 'active',
       collectionMethod: 'send_invoice',
-      pastDueSince: new Date(Date.now() - 10 * 86_400_000),
+      oldestOpenInvoiceId: 'in_jan',
+      oldestOpenInvoiceDueAt: new Date(Date.now() - 10 * DAY),
+      invoicePaidAt: new Date(Date.now() - 60 * DAY),
     });
 
-    // Inside the 30-day grace: still onboarding.
-    const inGrace = await request(app).post('/partners').set(auth).send({});
-    expect(inGrace.status).not.toBe(402);
+    // A paying brand inside the 30-day grace: still onboarding.
+    expect((await request(app).post('/partners').set(auth).send({})).status).not.toBe(402);
     const status = await request(app).get('/billing/status').set(auth);
-    expect(status.body.invoiceOverdue).toMatchObject({ graceExpired: false });
+    expect(status.body.invoiceOverdue).toMatchObject({ graceExpired: false, neverPaid: false });
 
     await db(TABLES.HostedBillingState)
       .where({ tenantId: DEFAULT_TENANT_ID })
-      .update({ pastDueSince: new Date(Date.now() - 31 * 86_400_000) });
+      .update({ oldestOpenInvoiceDueAt: new Date(Date.now() - 31 * DAY) });
     const blocked = await request(app).post('/partners').set(auth).send({});
     expect(blocked.status).toBe(402);
     expect(blocked.body).toMatchObject({ error: 'plan_required', reason: 'invoice_overdue' });
     expect(blocked.body.detail).toContain('overdue');
+
+    // Never paid anything: no grace, one day overdue is enough.
+    await db(TABLES.HostedBillingState)
+      .where({ tenantId: DEFAULT_TENANT_ID })
+      .update({ oldestOpenInvoiceDueAt: new Date(Date.now() - DAY), invoicePaidAt: null });
+    expect((await request(app).post('/partners').set(auth).send({})).status).toBe(402);
   });
 });
 
 describe.skipIf(skipIntegration)('brand tax details', () => {
-  it('stores a GSTIN for an Indian brand and puts it on its Stripe customer', async () => {
+  it('stores a GSTIN for an Indian brand and puts it on its Stripe customer, without claiming the ops terms', async () => {
     await declare('IN');
     await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ stripeCustomerId: 'cus_inv_test' });
+    await db(TABLES.HostedBillingProfile).insert({ tenantId: DEFAULT_TENANT_ID, collectionMethod: 'send_invoice', updatedByEmail: 'ops@x.test' });
     h.taxIds = [{ id: 'txi_old', type: 'in_gst', value: '29AAGCB7383J1Z4' }];
 
     const res = await request(app).put('/billing/tax-details').set(auth).send({ gstin: GSTIN });
@@ -318,7 +468,9 @@ describe.skipIf(skipIntegration)('brand tax details', () => {
     expect(called('customers.createTaxId')).toEqual([{ type: 'in_gst', value: GSTIN }]);
     // The corrected GSTIN replaces the old one rather than printing both.
     expect(called('customers.deleteTaxId')).toEqual(['txi_old']);
-    expect((await db(TABLES.HostedBillingProfile).where({ tenantId: DEFAULT_TENANT_ID }).first())!.gstin).toBe(GSTIN);
+    const profile = await db(TABLES.HostedBillingProfile).where({ tenantId: DEFAULT_TENANT_ID }).first();
+    expect(profile).toMatchObject({ gstin: GSTIN, updatedByEmail: 'ops@x.test' });
+    expect(profile!.gstinUpdatedAt).toBeInstanceOf(Date);
   });
 
   it('refuses a GSTIN for a brand outside India, and a malformed one', async () => {
@@ -339,30 +491,34 @@ describe.skipIf(skipIntegration)('ops switches how a brand pays', () => {
     await db(TABLES.Tenant)
       .where({ id: DEFAULT_TENANT_ID })
       .update({ stripeCustomerId: 'cus_inv_test', stripeSubscriptionId: 'sub_live' });
-    // The country default alone doesn't move a live subscription.
+    // The country default alone doesn't move a live subscription, and the
+    // missing GSTIN is flagged.
     const listed = await listInvoiceBillingTenants(db, { defaultCountries: ['IN'] });
     expect(listed.find((t) => t.tenantId === DEFAULT_TENANT_ID)).toMatchObject({
-      terms: { method: 'send_invoice', source: 'country' },
+      terms: { method: 'send_invoice', source: 'country', gstinRequired: true, gstin: null },
       subscription: { live: true },
     });
 
     // No GSTIN on file: refused, nothing saved, nothing moved.
     await expect(
-      setTenantCollection(db, fakeStripe() as never, DEFAULT_TENANT_ID, { collectionMethod: 'send_invoice' }, 'ops@x.test'),
+      setTenantCollection(db, fakeStripe() as never, DEFAULT_TENANT_ID, { collectionMethod: 'send_invoice' }, 'ops@x.test', noAudit),
     ).rejects.toMatchObject({ code: 'gstin_required' });
     expect(called('subscriptions.update')).toEqual([]);
     expect(await db(TABLES.HostedBillingProfile).where({ tenantId: DEFAULT_TENANT_ID }).first()).toBeUndefined();
 
     await db(TABLES.HostedBillingProfile).insert({ tenantId: DEFAULT_TENANT_ID, gstin: GSTIN });
-    const slug = (await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first())!.slug as string;
+    const slug = (await tenantRow()).slug as string;
+    const audited: unknown[] = [];
     const result = await setTenantCollection(
       db,
       fakeStripe() as never,
       slug,
       { collectionMethod: 'send_invoice', daysUntilDue: 20 },
       'ops@x.test',
+      async (_trx, r) => void audited.push(r.moved),
     );
     expect(result).toMatchObject({ tenantId: DEFAULT_TENANT_ID, moved: 'send_invoice' });
+    expect(audited).toEqual(['send_invoice']);
     expect(called('customers.createTaxId')).toEqual([{ type: 'in_gst', value: GSTIN }]);
     expect(called('subscriptions.update')).toEqual([
       expect.objectContaining({ collection_method: 'send_invoice', days_until_due: 20 }),
@@ -379,9 +535,30 @@ describe.skipIf(skipIntegration)('ops switches how a brand pays', () => {
 
     // Same terms again: nothing to move.
     h.calls = [];
-    const same = await setTenantCollection(db, fakeStripe() as never, DEFAULT_TENANT_ID, { graceDays: 45 }, 'ops@x.test');
+    const same = await setTenantCollection(db, fakeStripe() as never, DEFAULT_TENANT_ID, { graceDays: 45 }, 'ops@x.test', noAudit);
     expect(same.moved).toBeNull();
     expect(called('subscriptions.update')).toEqual([]);
+  });
+
+  it('when the save or audit fails after Stripe moved, the subscription is moved back and nothing is saved', async () => {
+    await declare('US');
+    await db(TABLES.Tenant)
+      .where({ id: DEFAULT_TENANT_ID })
+      .update({ stripeCustomerId: 'cus_inv_test', stripeSubscriptionId: 'sub_live' });
+    h.defaultPaymentMethod = 'pm_card';
+    await expect(
+      setTenantCollection(db, fakeStripe() as never, DEFAULT_TENANT_ID, { collectionMethod: 'send_invoice' }, 'ops@x.test', async () => {
+        throw new Error('audit write failed');
+      }),
+    ).rejects.toThrow('audit write failed');
+    // Moved to invoices, then back to the card it was on.
+    expect(called('subscriptions.update').map((u) => (u as { collection_method: string }).collection_method)).toEqual([
+      'send_invoice',
+      'charge_automatically',
+    ]);
+    expect(h.live.collection_method).toBe('charge_automatically');
+    expect(await db(TABLES.HostedBillingProfile).where({ tenantId: DEFAULT_TENANT_ID }).first()).toBeUndefined();
+    expect(await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).first()).toBeUndefined();
   });
 
   it('moving back to a card needs a card on file', async () => {
@@ -397,6 +574,7 @@ describe.skipIf(skipIntegration)('ops switches how a brand pays', () => {
       DEFAULT_TENANT_ID,
       { collectionMethod: 'charge_automatically' },
       'ops@x.test',
+      noAudit,
     ).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(OpsCollectionError);
     expect((err as InstanceType<typeof OpsCollectionError>).code).toBe('no_payment_method');
@@ -409,6 +587,7 @@ describe.skipIf(skipIntegration)('ops switches how a brand pays', () => {
       DEFAULT_TENANT_ID,
       { collectionMethod: 'charge_automatically' },
       'ops@x.test',
+      noAudit,
     );
     expect(ok.moved).toBe('charge_automatically');
     expect(called('subscriptions.update')).toEqual([

@@ -2,7 +2,7 @@
  * Pay-by-invoice terms (docs/invoice-billing.md) — DB-free tier.
  *
  * Pins: which way a tenant pays (ops choice, then the declared-country
- * default, then a card), that an Indian brand on invoices needs a GSTIN,
+ * default, then a card), that every Indian brand needs a GSTIN,
  * and that a GSTIN's check character is verified — Stripe only checks an
  * in_gst tax ID's shape.
  */
@@ -55,7 +55,10 @@ describe('collectionTerms', () => {
   it('leaves everyone else on a card', () => {
     expect(collectionTerms(null, 'US', settings)).toMatchObject({ method: 'charge_automatically', source: 'default', gstinRequired: false });
     expect(collectionTerms(null, null, settings)).toMatchObject({ method: 'charge_automatically', source: 'default' });
-    expect(collectionTerms(null, 'IN', { defaultCountries: [] })).toMatchObject({ method: 'charge_automatically' });
+    expect(collectionTerms(null, 'IN', { defaultCountries: [] })).toMatchObject({
+      method: 'charge_automatically',
+      gstinRequired: true,
+    });
   });
 
   it('an ops choice wins over the country default, both ways', () => {
@@ -67,10 +70,12 @@ describe('collectionTerms', () => {
       graceDays: 10,
       gstinRequired: false,
     });
+    // An Indian brand needs a GSTIN by card too: the OIDAR exposure is the
+    // same however it pays.
     expect(collectionTerms({ ...base, collectionMethod: 'charge_automatically' }, 'IN', settings)).toMatchObject({
       method: 'charge_automatically',
       source: 'ops',
-      gstinRequired: false,
+      gstinRequired: true,
     });
     // A profile row with no choice (only a GSTIN) follows the default.
     expect(collectionTerms({ ...base, collectionMethod: null, gstin: '27AAPFU0939F1ZV' }, 'IN', settings)).toMatchObject({

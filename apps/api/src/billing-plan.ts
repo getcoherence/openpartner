@@ -67,15 +67,27 @@ export interface TenantBillingState {
   /** How the live subscription is collected (webhook mirror). Null when
    *  no mirror row records it — treated as a card subscription. */
   collectionMethod: BillingCollectionMethod | null;
-  /** Set while a pay-by-invoice subscription is past due: when that
-   *  started, and when the grace before onboarding pauses runs out. */
+  /** Set while a pay-by-invoice invoice is past its due date: the oldest
+   *  such invoice, and when the grace before onboarding pauses runs out. */
   invoiceOverdue: InvoiceOverdue | null;
 }
 
 export interface InvoiceOverdue {
+  invoiceId: string | null;
+  /** The overdue invoice's due date. */
   since: Date;
   graceEndsAt: Date;
   graceExpired: boolean;
+  /** No non-zero invoice has been paid yet, so there is no grace. */
+  neverPaid: boolean;
+}
+
+/** The mirror columns invoiceOverdue reads. */
+export interface InvoiceDueMirror {
+  oldestOpenInvoiceId: string | null;
+  oldestOpenInvoiceDueAt: Date | string | null;
+  invoicePaidAt: Date | string | null;
+  graceDays: number | null;
 }
 
 export async function getTenantBillingState(db: Knex, tenantId: string): Promise<TenantBillingState> {
@@ -85,13 +97,18 @@ export async function getTenantBillingState(db: Knex, tenantId: string): Promise
   const mirror = (await db(`${TABLES.HostedBillingState} as s`)
     .leftJoin(`${TABLES.HostedBillingProfile} as p`, 'p.tenantId', 's.tenantId')
     .where('s.tenantId', tenantId)
-    .first(['s.subscriptionStatus', 's.collectionMethod', 's.pastDueSince', 'p.graceDays'])) as
-    | {
+    .first([
+      's.subscriptionStatus',
+      's.collectionMethod',
+      's.oldestOpenInvoiceId',
+      's.oldestOpenInvoiceDueAt',
+      's.invoicePaidAt',
+      'p.graceDays',
+    ])) as
+    | (InvoiceDueMirror & {
         subscriptionStatus: MirroredSubscriptionStatus | null;
         collectionMethod: BillingCollectionMethod | null;
-        pastDueSince: Date | string | null;
-        graceDays: number | null;
-      }
+      })
     | undefined;
   const plan = (tenant?.billingPlan as BillingPlan | null) ?? null;
   const hasUsedTrial = !!tenant?.firstTrialActivatedAt;
@@ -120,28 +137,26 @@ export async function getTenantBillingState(db: Knex, tenantId: string): Promise
 }
 
 /**
- * A pay-by-invoice subscription goes past_due the day its invoice passes
- * the due date, and Stripe can leave it there indefinitely (the account's
- * "Manage invoices sent to customers" setting). Service continues through
- * a grace counted from the start of the past_due stretch; only after it
- * does hasActivePlan say no. Card subscriptions are left to Stripe's
- * dunning, as before.
+ * Overdue for pay-by-invoice billing follows the invoices, not the
+ * subscription status: Stripe derives the status from the LATEST invoice
+ * only, so paying February's turns a subscription active again while
+ * January's is still owed. The mirror keeps the oldest open invoice
+ * (invoice-billing.ts refreshInvoiceDue); once its due date passes, service
+ * continues through the grace counted from that date, then hasActivePlan
+ * says no. A brand that has never paid a non-zero invoice gets no grace:
+ * invoice terms start a plan with nothing paid, and the grace is slack for
+ * a paying customer, not a free extension for a new one. Card
+ * subscriptions never have a send_invoice invoice open, so this is null
+ * for them and Stripe's dunning decides, as before.
  */
-export function invoiceOverdue(
-  mirror: {
-    subscriptionStatus: MirroredSubscriptionStatus | null;
-    collectionMethod: BillingCollectionMethod | null;
-    pastDueSince: Date | string | null;
-    graceDays: number | null;
-  } | null,
-  now: Date = new Date(),
-): InvoiceOverdue | null {
-  if (mirror?.subscriptionStatus !== 'past_due' || mirror.collectionMethod !== 'send_invoice') return null;
-  // A stretch the mirror didn't time (a row from before pastDueSince
-  // existed) starts now rather than counting as already expired.
-  const since = mirror.pastDueSince ? new Date(mirror.pastDueSince) : now;
-  const graceEndsAt = new Date(since.getTime() + (mirror.graceDays ?? INVOICE_GRACE_DAYS_DEFAULT) * DAY_MS);
-  return { since, graceEndsAt, graceExpired: graceEndsAt <= now };
+export function invoiceOverdue(mirror: InvoiceDueMirror | null, now: Date = new Date()): InvoiceOverdue | null {
+  if (!mirror?.oldestOpenInvoiceDueAt) return null;
+  const since = new Date(mirror.oldestOpenInvoiceDueAt);
+  if (since > now) return null;
+  const neverPaid = !mirror.invoicePaidAt;
+  const graceDays = neverPaid ? 0 : (mirror.graceDays ?? INVOICE_GRACE_DAYS_DEFAULT);
+  const graceEndsAt = new Date(since.getTime() + graceDays * DAY_MS);
+  return { invoiceId: mirror.oldestOpenInvoiceId, since, graceEndsAt, graceExpired: graceEndsAt <= now, neverPaid };
 }
 
 /** Map a billing plan to the legacy mode enum.
@@ -229,48 +244,72 @@ export function hasActivePlan(state: TenantBillingState): boolean {
   // status refines it — past_due keeps service (Stripe is still dunning);
   // unpaid/paused/canceled do not. No mirror row = legacy tenant,
   // grandfathered on the id check until the next subscription webhook.
-  if (state.subscriptionStatus == null) return true;
-  // A pay-by-invoice subscription keeps service while past due only for
-  // its grace (invoiceOverdue above).
+  // An overdue pay-by-invoice invoice keeps service only for its grace
+  // (invoiceOverdue above), whatever the subscription status says.
   if (state.invoiceOverdue?.graceExpired) return false;
+  if (state.subscriptionStatus == null) return true;
   return ['active', 'trialing', 'past_due'].includes(state.subscriptionStatus);
 }
 
 /**
  * Mirror a Stripe subscription status onto HostedBillingState. Called from
  * the subscription webhooks; the mirror is what hasActivePlan and funding
- * eligibility read instead of live Stripe calls.
- *
- * `collectionMethod` is the subscription's, when the caller has it
- * (undefined leaves the mirrored one alone). pastDueSince keeps the start
- * of a continuous past_due stretch and clears on any other status; it is
- * returned so callers can tell one overdue stretch from the next.
+ * eligibility read instead of live Stripe calls. `collectionMethod` is the
+ * subscription's, when the caller has it (undefined leaves the mirrored one
+ * alone).
  */
 export async function mirrorHostedBillingState(
   db: Knex,
   tenantId: string,
   status: MirroredSubscriptionStatus,
   collectionMethod?: BillingCollectionMethod | null,
-): Promise<{ pastDueSince: Date | null }> {
+): Promise<void> {
   const method = collectionMethod === undefined ? {} : { collectionMethod };
-  const rows = (await db(TABLES.HostedBillingState)
+  await db(TABLES.HostedBillingState)
+    .insert({ tenantId, subscriptionStatus: status, delinquentFundingCount: 0, ...method, updatedAt: new Date() })
+    .onConflict('tenantId')
+    .merge({ subscriptionStatus: status, ...method, updatedAt: new Date() });
+}
+
+/**
+ * Mirror the oldest open pay-by-invoice invoice (null: none open) and
+ * whether the brand has ever paid a non-zero invoice. invoicePaidAt is
+ * sticky: once set it is never cleared.
+ */
+export async function mirrorInvoiceDue(
+  db: Knex,
+  tenantId: string,
+  due: { invoiceId: string | null; dueAt: Date | null; paid: boolean },
+): Promise<void> {
+  const paidAt = due.paid
+    ? db.raw(`coalesce(??, now())`, [`${TABLES.HostedBillingState}.invoicePaidAt`])
+    : db.raw('??', [`${TABLES.HostedBillingState}.invoicePaidAt`]);
+  await db(TABLES.HostedBillingState)
     .insert({
       tenantId,
-      subscriptionStatus: status,
       delinquentFundingCount: 0,
-      pastDueSince: status === 'past_due' ? db.fn.now() : null,
-      ...method,
+      oldestOpenInvoiceId: due.invoiceId,
+      oldestOpenInvoiceDueAt: due.dueAt,
+      invoicePaidAt: due.paid ? new Date() : null,
       updatedAt: new Date(),
     })
     .onConflict('tenantId')
     .merge({
-      subscriptionStatus: status,
-      pastDueSince:
-        status === 'past_due' ? db.raw(`coalesce(??, now())`, [`${TABLES.HostedBillingState}.pastDueSince`]) : null,
-      ...method,
+      oldestOpenInvoiceId: due.invoiceId,
+      oldestOpenInvoiceDueAt: due.dueAt,
+      invoicePaidAt: paidAt,
       updatedAt: new Date(),
-    })
-    .returning(['pastDueSince'])) as Array<{ pastDueSince: Date | string | null }>;
-  const since = rows[0]?.pastDueSince;
-  return { pastDueSince: since ? new Date(since) : null };
+    });
+}
+
+/** A non-zero invoice was paid (by card or by invoice): from now on an
+ *  overdue invoice gets the grace. */
+export async function markInvoicePaid(db: Knex, tenantId: string): Promise<void> {
+  await db(TABLES.HostedBillingState)
+    .insert({ tenantId, delinquentFundingCount: 0, invoicePaidAt: new Date(), updatedAt: new Date() })
+    .onConflict('tenantId')
+    .merge({
+      invoicePaidAt: db.raw(`coalesce(??, now())`, [`${TABLES.HostedBillingState}.invoicePaidAt`]),
+      updatedAt: new Date(),
+    });
 }

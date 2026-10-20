@@ -372,6 +372,7 @@ export interface InvoiceBillingTenant {
     graceDays: number;
     gstin: string | null;
     updatedByEmail: string | null;
+    gstinUpdatedByEmail: string | null;
     updatedAt: string;
   } | null;
   terms: {
@@ -387,8 +388,9 @@ export interface InvoiceBillingTenant {
     live: boolean;
     status: string | null;
     collectionMethod: CollectionMethod | null;
-    pastDueSince: string | null;
   };
+  /** The oldest unpaid pay-by-invoice invoice past its due date. */
+  overdue: { invoiceId: string | null; since: string; graceEndsAt: string; graceExpired: boolean; neverPaid: boolean } | null;
 }
 
 export interface InvoiceBillingState {

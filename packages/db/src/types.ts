@@ -1250,8 +1250,13 @@ export interface HostedBillingStateRow {
   /** How the live subscription is collected, as Stripe last reported it.
    *  Null on rows mirrored before 20261019050000. */
   collectionMethod: BillingCollectionMethod | null;
-  /** Start of the current continuous past_due stretch; null otherwise. */
-  pastDueSince: Date | null;
+  /** The oldest open pay-by-invoice invoice with an amount still due, and
+   *  its due date. Null when none is open. */
+  oldestOpenInvoiceId: string | null;
+  oldestOpenInvoiceDueAt: Date | null;
+  /** When a non-zero invoice was first seen paid. Sticky. Until then an
+   *  overdue invoice gets no grace. */
+  invoicePaidAt: Date | null;
   updatedAt: Date;
 }
 
@@ -1276,6 +1281,10 @@ export interface HostedBillingProfileRow {
   /** Indian GST registration number, upper case. Printed on invoices as
    *  the Stripe customer tax ID in_gst. */
   gstin: string | null;
+  /** The brand admin who last set the GSTIN, and when. */
+  gstinUpdatedByEmail: string | null;
+  gstinUpdatedAt: Date | null;
+  /** The operator who last set the collection terms. */
   updatedByEmail: string | null;
   createdAt: Date;
   updatedAt: Date;
