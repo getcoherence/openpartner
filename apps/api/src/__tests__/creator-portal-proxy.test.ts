@@ -229,6 +229,8 @@ describe('creator-api proxy: storefront', () => {
       ['POST', '/creators/me/bookings/bkr_1/accept'],
       ['POST', '/creators/me/bookings/bkr_1/decline'],
       ['DELETE', '/creators/me/bookings/bkr_1'],
+      ['POST', '/creators/me/storefront/import/preview'],
+      ['POST', '/creators/me/storefront/import/apply'],
     ];
     for (const [method, path] of steps) {
       const r = request(app)[method.toLowerCase() as 'get' | 'put' | 'post' | 'patch' | 'delete'](`/creator-api${path}`).set('Cookie', cookie);
