@@ -140,7 +140,7 @@ describe.skipIf(skipIntegration)('partner postback', () => {
       id: ulid(),
       tenantId: DEFAULT_TENANT_ID,
       partnerId,
-      url: `${receiverUrl}/cb?cid={click_id}&amt={commission_amount}&cur={currency}&tx={transaction_id}`,
+      url: `${receiverUrl}/cb?cid={click_id}&amt={commission_amount}&cur={currency}&tx={transaction_id}&sub={sub_id}&st={status}&rev={sale_amount}`,
       events: JSON.stringify(['commission.accrued']) as never,
       enabled: true,
     });
@@ -159,6 +159,8 @@ describe.skipIf(skipIntegration)('partner postback', () => {
       ipHash: 'test-hash',
       userAgent: 'test',
       referer: null,
+      // What the router stores off ?sub_id= on the partner link.
+      subId: 'wct click/42',
       fraudFlag: null,
     });
 
@@ -185,6 +187,11 @@ describe.skipIf(skipIntegration)('partner postback', () => {
     // resolves to a non-empty string (the actual event id is generated
     // server-side so we just check it's there).
     expect(captured.url).toMatch(/tx=[A-Z0-9]/);
+    // The publisher's sub-ID comes back URL-encoded, with the status the
+    // event announces and the sale's value.
+    expect(captured.url).toContain('sub=wct%20click%2F42');
+    expect(captured.url).toContain('st=pending');
+    expect(captured.url).toContain('rev=100.00');
 
     // 5. Audit counters bumped on the row.
     const row = await waitFor(async () =>
@@ -264,7 +271,7 @@ describe.skipIf(skipIntegration)('partner postback', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('fills {click_id} / {event_id} / {event_type} on commission.approved and commission.reversed', async () => {
+  it('fills {click_id} / {event_id} / {event_type} / {sub_id} / {sale_amount} on commission.approved and commission.reversed', async () => {
     // These macros used to resolve on commission.accrued only, so a
     // tracker got approvals and reversals it couldn't match to a click.
     const partnerRes = await request(app)
@@ -291,7 +298,7 @@ describe.skipIf(skipIntegration)('partner postback', () => {
         id: ulid(),
         tenantId: DEFAULT_TENANT_ID,
         partnerId,
-        url: `${receiverUrl}/${event}?cid={click_id}&tx={event_id}&et={event_type}&prog={program_id}`,
+        url: `${receiverUrl}/${event}?cid={click_id}&tx={event_id}&et={event_type}&prog={program_id}&sub={sub_id}&st={status}&rev={sale_amount}`,
         events: JSON.stringify([event]) as never,
         enabled: true,
       });
@@ -308,6 +315,7 @@ describe.skipIf(skipIntegration)('partner postback', () => {
       ipHash: 'h',
       userAgent: 't',
       referer: null,
+      subId: 'wct-life-7',
       fraudFlag: null,
     });
     const userId = `u_${Date.now()}_life`;
@@ -336,7 +344,12 @@ describe.skipIf(skipIntegration)('partner postback', () => {
       expect(call.url).toContain(`tx=${sourceEvent!.id}`);
       expect(call.url).toContain('et=invoice_paid');
       expect(call.url).toContain(`prog=${programId}`);
+      expect(call.url).toContain('sub=wct-life-7');
+      expect(call.url).toContain('rev=100.00');
     }
+    // One URL could take both events and still tell them apart.
+    expect(approved.url).toContain('st=approved');
+    expect(reversed.url).toContain('st=reversed');
   });
 
   it('fires bonus.awarded with the bonus macros; a bonus has no click to fill', async () => {
@@ -349,7 +362,7 @@ describe.skipIf(skipIntegration)('partner postback', () => {
       id: ulid(),
       tenantId: DEFAULT_TENANT_ID,
       partnerId,
-      url: `${receiverUrl}/bonus?b={bonus_id}&amt={bonus_amount}&cur={currency}&bounty={bounty_id}&cid={click_id}`,
+      url: `${receiverUrl}/bonus?b={bonus_id}&amt={bonus_amount}&cur={currency}&bounty={bounty_id}&cid={click_id}&sub={sub_id}&st={status}`,
       events: JSON.stringify(['bonus.awarded']) as never,
       enabled: true,
     });
@@ -375,7 +388,65 @@ describe.skipIf(skipIntegration)('partner postback', () => {
     // No bounty and no click: unknown values stay literal, as for any macro.
     expect(call.url).toContain('bounty={bounty_id}');
     expect(call.url).toContain('cid={click_id}');
+    expect(call.url).toContain('sub={sub_id}');
+    // Awarded without a hold: straight to the next payout run.
+    expect(call.url).toContain('st=approved');
     await new Promise((r) => setTimeout(r, 200));
     expect(calls.filter((c) => c.url.startsWith('/commission.approved'))).toHaveLength(0);
+  });
+
+  it('fills {sub_id} and {sale_amount} empty for a link without a sub-ID and a valueless event', async () => {
+    const partnerRes = await request(app)
+      .post('/partners')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ email: 'pb-empty@example.com', name: 'Empty' });
+    const partnerId = partnerRes.body.id;
+    const campaignRes = await request(app)
+      .post('/programs')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({
+        name: 'Leads',
+        commissionRule: { type: 'fixed', value: 5, eventType: 'signup' },
+        destinationUrl: 'https://example.com/',
+      });
+    expect(campaignRes.status).toBe(201);
+    const programId = campaignRes.body.id;
+    const linkRes = await request(app)
+      .post(`/partners/${partnerId}/links`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ linkKey: `empty_${Date.now()}`, programId });
+    await db<PartnerPostbackRow>(TABLES.PartnerPostback).insert({
+      id: ulid(),
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId,
+      url: `${receiverUrl}/lead?sub={sub_id}&rev={sale_amount}&amt={commission_amount}&st={status}`,
+      events: JSON.stringify(['commission.accrued']) as never,
+      enabled: true,
+    });
+
+    const clickId = ulid();
+    await db(TABLES.Click).insert({
+      id: clickId,
+      tenantId: DEFAULT_TENANT_ID,
+      linkId: linkRes.body.id,
+      partnerId,
+      programId,
+      landingUrl: 'https://example.com/',
+      ipHash: 'h',
+      userAgent: 't',
+      referer: null,
+      fraudFlag: null,
+    });
+    const userId = `u_${Date.now()}_empty`;
+    await request(app).post('/attribution/identify').send({ cref: clickId, userId });
+    const eventRes = await request(app)
+      .post('/attribution/events')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ userId, type: 'signup' });
+    expect(eventRes.status).toBe(200);
+
+    const call = await waitFor(async () => calls.find((c) => c.url.startsWith('/lead?')));
+    // Known to be empty, so empty: not left literal like a macro with no value.
+    expect(call.url).toBe('/lead?sub=&rev=&amt=5.00&st=pending');
   });
 });

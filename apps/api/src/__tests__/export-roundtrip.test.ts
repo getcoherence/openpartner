@@ -152,6 +152,8 @@ async function seedEverything(): Promise<Seeded> {
     partnerId,
     programId,
     landingUrl: 'https://x.test/landing',
+    // The publisher's ?sub_id= (schemaVersion 8).
+    subId: 'wct_9f2a-17',
     ts: new Date(),
   });
   await db(TABLES.Identity).insert({
@@ -320,9 +322,17 @@ async function seedEverything(): Promise<Seeded> {
   };
 }
 
+/** A schemaVersion 7 bundle: its Click rows have no `subId`. */
+function beforeSubIds(full: Record<string, unknown[]>): Record<string, unknown[]> {
+  return {
+    ...full,
+    [TABLES.Click]: (full[TABLES.Click] as Record<string, unknown>[]).map(({ subId: _dropped, ...row }) => row),
+  };
+}
+
 /** A schemaVersion 6 bundle: no bounties. */
 function beforeBounties(full: Record<string, unknown[]>): Record<string, unknown[]> {
-  const out: Record<string, unknown[]> = { ...full };
+  const out: Record<string, unknown[]> = beforeSubIds(full);
   delete out[TABLES.Bounty];
   return out;
 }
@@ -465,6 +475,8 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(terms.holdbackDays).toBe(30);
     const coupon = await db(TABLES.Coupon).where({ id: seeded.couponId }).first();
     expect(coupon.code).toBe('CREATOR15');
+    // The publisher's sub-ID stays on its click (schemaVersion 8).
+    expect((await db(TABLES.Click).where({ id: seeded.clickId }).first()).subId).toBe('wct_9f2a-17');
     // The Network consent record keeps how and when, not just the status.
     const consent = await db(TABLES.PartnerNetworkConsent).where({ partnerId: seeded.partnerId }).first();
     expect(consent.status).toBe('withdrawn');
@@ -834,8 +846,25 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect((await db(TABLES.Bonus).where({ id: seeded.bonusId }).first()).bountyId).toBeNull();
   }, 30_000);
 
-  it('exports at schemaVersion 7', () => {
-    expect(SCHEMA_VERSION).toBe(7);
+  it('accepts a v7 bundle — clicks restore without a sub-ID', async () => {
+    const seeded = await seedEverything();
+    const v7 = beforeSubIds(await exportAll(db, TENANT));
+    await wipe();
+
+    const app = createApp();
+    const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+    const viaRoute = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: 7, tables: v7 });
+    expect(viaRoute.status).toBe(200);
+    const click = await db(TABLES.Click).where({ id: seeded.clickId }).first();
+    expect(click).toMatchObject({ linkId: seeded.linkId, subId: null });
+    expect((await counts())[TABLES.Bounty]).toBe(1);
+  }, 30_000);
+
+  it('exports at schemaVersion 8', () => {
+    expect(SCHEMA_VERSION).toBe(8);
   });
 });
 
@@ -1009,6 +1038,7 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
     expect(program.commissionRule).toEqual([{ trigger: 'every', type: 'percent', value: 20 }]);
     expect(program.categories).toEqual(['saas', 'devtools']);
     expect(program.renewalsStayWithPartner).toBe(false);
+    expect((await db(TABLES.Click).first()).subId).toBe('wct_9f2a-17');
   }, 30_000);
 
   it('generates fresh credentials on restore, and the file carries none', async () => {

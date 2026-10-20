@@ -380,7 +380,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
       .get('/export.json')
       .set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(exportRes.status).toBe(200);
-    expect(exportRes.body.schemaVersion).toBe(7);
+    expect(exportRes.body.schemaVersion).toBe(8);
     expect(exportRes.body.tables.Partner).toHaveLength(1);
 
     // Wipe, re-import.
@@ -1073,5 +1073,35 @@ describe.skipIf(skipIntegration)('server-to-server ingest routes reject partner 
       .send(body);
     expect(asAdmin.status).not.toBe(403);
     expect(asAdmin.status).toBe(404); // link_not_found — reached the handler
+  });
+
+  it("POST /clicks stores a federated click's sub-ID as the router does", async () => {
+    const partnerRes = await request(app)
+      .post('/partners')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ email: 'fed-sub@example.com', name: 'Fed' });
+    const programRes = await request(app)
+      .post('/programs')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ name: 'Fed', commissionRule: { type: 'percent', value: 10 }, destinationUrl: 'https://example.com/' });
+    const linkKey = `fed_${Date.now()}`;
+    await request(app)
+      .post(`/partners/${partnerRes.body.id}/links`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ linkKey, programId: programRes.body.id });
+
+    const send = (subId: string | undefined) =>
+      request(app)
+        .post('/clicks')
+        .set('Authorization', `Bearer ${ADMIN_KEY}`)
+        .send({ id: ulid(), linkKey, landingUrl: 'https://example.com/', subId, ts: new Date().toISOString() });
+    const withSub = await send(' wct-fed-1 ');
+    const blank = await send('   ');
+    const without = await send(undefined);
+    expect([withSub.status, blank.status, without.status]).toEqual([201, 201, 201]);
+    const stored = async (id: string) => (await db(TABLES.Click).where({ id }).first()).subId;
+    expect(await stored(withSub.body.id)).toBe('wct-fed-1');
+    expect(await stored(blank.body.id)).toBeNull();
+    expect(await stored(without.body.id)).toBeNull();
   });
 });

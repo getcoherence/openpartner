@@ -12,33 +12,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createRouterApp } from '../app.js';
-
-type Row = Record<string, unknown>;
-
-/** `db(table).where({...}).first(cols?)` and `db(table).insert(row)`. */
-function fakeDb(tables: Record<string, Row[]>) {
-  return (name: string) => {
-    const rows = (tables[name] ??= []);
-    const filters: Row[] = [];
-    const builder = {
-      where(filter: Row) {
-        filters.push(filter);
-        return builder;
-      },
-      async first(cols?: string[]) {
-        const row = rows.find((r) => filters.every((f) => Object.entries(f).every(([k, v]) => r[k] === v)));
-        return row && cols ? Object.fromEntries(cols.map((c) => [c, row[c]])) : row;
-      },
-      async insert(row: Row) {
-        rows.push(row);
-      },
-    };
-    return builder;
-  };
-}
-
-// What @hono/node-server hands the app; resolveLink reads the socket IP.
-const NODE_BINDINGS = { incoming: { socket: { remoteAddress: '203.0.113.7' } } };
+import { fakeDb, NODE_BINDINGS, type Row } from './fake-db.js';
 
 interface Brand {
   tenantId: string;

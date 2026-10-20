@@ -154,7 +154,15 @@ describe.skipIf(skipIntegration)('POST /attribution/refunds — full refunds', (
     await vi.waitFor(() =>
       expect(postbacks('commission.reversed').map((p) => p.commission_id).sort()).toEqual([percent!.id, fixed!.id].sort()),
     );
-    expect(postbacks('commission.reversed')[0]).toMatchObject({ click_id: clickId, partner_id: partnerId, event_id: eventId });
+    expect(postbacks('commission.reversed')[0]).toMatchObject({
+      click_id: clickId,
+      partner_id: partnerId,
+      event_id: eventId,
+      status: 'reversed',
+      sale_amount: '100.00',
+      // The link carried no sub_id: known empty, not left literal.
+      sub_id: '',
+    });
   });
 
   it('records a chargeback as its own corrective type and reverses with reason chargeback', async () => {
@@ -189,6 +197,8 @@ describe.skipIf(skipIntegration)('POST /attribution/refunds — partial refunds'
       { trigger: 'every', type: 'percent', value: 20 },
       { trigger: 'every', type: 'fixed', value: 5 },
     ]);
+    // The publisher's ?sub_id= rides on every announcement below.
+    await db(TABLES.Click).where({ id: clickId }).update({ subId: 'wct-order-2' });
     const eventId = await convert(clickId, { value: 100, externalEventId: 'order-2' });
     // By amount, not position: both commissions are written in the same
     // millisecond, so their ULID order (and the response's) is random.
@@ -223,12 +233,25 @@ describe.skipIf(skipIntegration)('POST /attribution/refunds — partial refunds'
     // reversed → accrued (+ approved for the approved one), each naming the other.
     await vi.waitFor(() => expect(dispatched('commission.approved')).toHaveLength(1));
     expect(dispatched('commission.reversed')).toContainEqual(
-      expect.objectContaining({ commissionId: percent!.id, reason: 'refund', replacementCommissionId: replacement.id }),
+      expect.objectContaining({
+        commissionId: percent!.id,
+        reason: 'refund',
+        replacementCommissionId: replacement.id,
+        subId: 'wct-order-2',
+        eventValue: '100.00',
+      }),
     );
     expect(dispatched('commission.accrued')).toContainEqual(
-      expect.objectContaining({ commissionId: replacement.id, amount: '14.00', eventId, clickId, replacesCommissionId: percent!.id }),
+      expect.objectContaining({
+        commissionId: replacement.id,
+        amount: '14.00',
+        eventId,
+        clickId,
+        subId: 'wct-order-2',
+        replacesCommissionId: percent!.id,
+      }),
     );
-    expect(dispatched('commission.approved')[0]).toMatchObject({ commissionId: replacement.id, eventId, clickId });
+    expect(dispatched('commission.approved')[0]).toMatchObject({ commissionId: replacement.id, eventId, clickId, subId: 'wct-order-2' });
     const order = vi.mocked(dispatchEvent).mock.calls.map((c) => `${c[1]}:${(c[2] as { commissionId: string }).commissionId}`);
     expect(order.indexOf(`commission.reversed:${percent!.id}`)).toBeLessThan(order.indexOf(`commission.accrued:${replacement.id}`));
 

@@ -814,6 +814,10 @@ export interface ClickRow {
   utmCampaign: string | null;
   utmTerm: string | null;
   utmContent: string | null;
+  /** The publisher's own sub-ID (`?sub_id=` on the partner link), echoed
+   *  back on commission.* webhooks and the `{sub_id}` postback macro.
+   *  Null when the link carried none. */
+  subId: string | null;
   /** ISO 3166-1 alpha-2, lowercase. From cf-ipcountry header. Null
    *  when the click bypassed Cloudflare or pre-dates Tier 3. */
   country: string | null;

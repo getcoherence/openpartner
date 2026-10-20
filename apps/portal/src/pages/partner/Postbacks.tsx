@@ -295,9 +295,18 @@ function CreateForm({
 function MacroReference() {
   const macros: Array<[string, string]> = [
     ['{click_id}', 'Originating click — present on every commission event'],
+    [
+      '{sub_id}',
+      'Your own sub-ID from the link (…?sub_id=abc123), so your tracker can match its click. Empty when the link had none',
+    ],
+    [
+      '{status}',
+      'pending / approved / reversed / paid — which change fired it (accrued = pending). bonus.awarded: approved, or pending during a holdback',
+    ],
     ['{partner_id}', 'Your partner ID'],
     ['{commission_id}', 'The Commission row id'],
     ['{commission_amount}', 'Decimal amount in major units (e.g. 12.50)'],
+    ['{sale_amount}', "The sale's value in major units (e.g. 60.00). Empty when the event has no value"],
     ['{currency}', '3-letter ISO currency code (USD, EUR, …)'],
     ['{event_id}', 'The Event row that drove the commission'],
     ['{transaction_id}', 'Alias for {event_id} — many trackers use this name'],

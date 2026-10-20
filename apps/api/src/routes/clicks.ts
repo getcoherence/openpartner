@@ -41,6 +41,10 @@ export const ingestSchema = z.object({
   utmCampaign: z.string().max(255).nullable().optional(),
   utmTerm: z.string().max(255).nullable().optional(),
   utmContent: z.string().max(255).nullable().optional(),
+  /** The publisher's own sub-ID (`?sub_id=` on the link), echoed back on
+   *  commission.* webhooks and the {sub_id} postback macro. Older Network
+   *  builds omit it. */
+  subId: z.string().max(255).nullable().optional(),
   country: z.string().length(2).nullable().optional(),
   fraudFlag: z.enum(['velocity', 'manual', 'revoked']).nullable().optional(),
   /** Click timestamp from the federating caller — preserves the actual
@@ -83,6 +87,7 @@ clicksRouter.post('/clicks', requireAuth, grantScope('clicks:write'), requireAdm
       utmCampaign: body.data.utmCampaign ?? null,
       utmTerm: body.data.utmTerm ?? null,
       utmContent: body.data.utmContent ?? null,
+      subId: body.data.subId?.trim() || null,
       country: body.data.country?.toLowerCase() ?? null,
       fraudFlag: body.data.fraudFlag ?? null,
       ts: new Date(body.data.ts),

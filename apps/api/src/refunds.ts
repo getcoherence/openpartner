@@ -156,12 +156,20 @@ export async function applyRefund(
   ])) as AttributionRow[];
   if (attributions.length === 0) return out;
   const attributionsById = new Map(attributions.map((a) => [a.id, a]));
+  // The publisher's sub-ID rides on every announcement ({sub_id}).
+  const clicks = (await trx(TABLES.Click)
+    .whereIn('id', [...new Set(attributions.map((a) => a.clickId))])
+    .select('id', 'subId')) as Array<{ id: string; subId: string | null }>;
+  const subIds = new Map(clicks.map((c) => [c.id, c.subId]));
   for (const a of attributions) {
+    const conversion = conversionsById.get(a.eventId);
     out.announce.origins.set(a.id, {
       clickId: a.clickId,
       eventId: a.eventId,
-      eventType: conversionsById.get(a.eventId)?.type ?? null,
+      eventType: conversion?.type ?? null,
       programId: a.programId,
+      eventValue: conversion?.value ?? null,
+      subId: subIds.get(a.clickId) ?? null,
     });
   }
 
@@ -295,6 +303,7 @@ export async function applyRefund(
           currency: replacement.currency,
           eventType: conversion.type,
           eventValue: conversion.value,
+          subId: out.announce.origins.get(attributionId)?.subId ?? null,
           replacesCommissionId: w.current.id,
         });
         if (replacement.status === 'approved') out.announce.approved.push(replacement);
