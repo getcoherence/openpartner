@@ -3,13 +3,15 @@ import { Receipt } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { commissionSourceLabel, isBonusCommission, type CommissionSourceFields } from '../lib/commission-source.js';
 import { theme } from '../theme.js';
-import { Button, Card, EmptyState, ErrorBanner, Page, StatusPill, Table, formatDate, money, shortId } from '../ui.js';
+import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, StatusPill, Table, formatDate, money, shortId } from '../ui.js';
 
 export { StatusPill };
 
 interface Commission extends CommissionSourceFields {
   id: string;
   partnerId: string;
+  /** Null only if the partner record is gone. */
+  partnerName?: string | null;
   amount: string;
   currency: string;
   status: string;
@@ -19,6 +21,17 @@ interface Commission extends CommissionSourceFields {
 }
 
 const PAGE_SIZE = 200;
+
+/** The partner's avatar and name; the start of their id if the record is gone. */
+function PartnerCell({ c }: { c: Commission }) {
+  if (!c.partnerName) return <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(c.partnerId)}</code>;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+      <Avatar name={c.partnerName} size={26} />
+      <span style={{ fontWeight: 500 }}>{c.partnerName}</span>
+    </span>
+  );
+}
 
 /** What it was earned on, with the program underneath. A bonus's note is
  *  the brand's own words to the partner, so it wraps rather than truncates. */
@@ -58,7 +71,7 @@ export function CommissionsPage({ principal }: { principal: Principal }) {
   const rows = (data?.pages.flatMap((p) => p.commissions) ?? []).map((c) => {
     const base = [
       <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(c.id)}</code>,
-      isAdminView ? <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(c.partnerId)}</code> : null,
+      isAdminView ? <PartnerCell c={c} /> : null,
       <SourceCell c={c} />,
       <span style={{ fontWeight: 500 }}>{money(c.amount, c.currency)}</span>,
       <StatusPill status={c.status} />,

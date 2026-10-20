@@ -83,8 +83,9 @@ async function listPage(db: Knex, tenantId: string, q: z.infer<typeof listQueryS
   return { commissions: page.map(decorateMaturity), nextCursor };
 }
 
-/** Shared base query — joins Commission → Attribution → Campaign (or,
- *  for a bonus's commission, Commission → Bonus → Program) and
+/** Shared base query — joins Commission → Attribution → Event and
+ *  → Campaign (or, for a bonus's commission, Commission → Bonus →
+ *  Program), names the partner, and
  *  picks the effective holdback (EFFECTIVE_HOLDBACK_SQL): the partner's
  *  snapshot scoped to this program (pcp) if one exists, falling back to
  *  the program's own value when it leaves holdback unset; else their
@@ -103,6 +104,10 @@ function listQueryBase(db: Knex, tenantId: string) {
   return db(`${TABLES.Commission} as c`)
     .where('c.tenantId', tenantId)
     .leftJoin(`${TABLES.Attribution} as a`, 'a.id', 'c.attributionId')
+    .leftJoin(`${TABLES.Event} as e`, (j) => j.on('e.id', 'a.eventId').andOn('e.tenantId', 'c.tenantId'))
+    // No foreign key holds a commission's partner, so a left join: a
+    // missing partner lists with a null name rather than vanishing.
+    .leftJoin(`${TABLES.Partner} as p`, (j) => j.on('p.id', 'c.partnerId').andOn('p.tenantId', 'c.tenantId'))
     .leftJoin(`${TABLES.Bonus} as b`, 'b.id', 'c.bonusId')
     .leftJoin(`${TABLES.Bounty} as bt`, 'bt.id', 'b.bountyId')
     .leftJoin(`${TABLES.Program} as cp`, 'cp.id', programId)
@@ -116,6 +121,7 @@ function listQueryBase(db: Knex, tenantId: string) {
     .select(db.raw(`${EFFECTIVE_HOLDBACK_SQL} as "_holdbackDays"`))
     .select('cp.id as _campaignId')
     .select('cp.name as _campaignName')
+    .select('p.name as _partnerName', 'e.type as _eventType')
     .select(
       'b.source as _bonusSource',
       'b.note as _bonusNote',
@@ -129,17 +135,24 @@ function listQueryBase(db: Knex, tenantId: string) {
 }
 
 interface DecoratedCommission extends CommissionRow {
+  /** Who earned it, so an admin list needn't show an id. */
+  partnerName: string | null;
   holdbackDays: number | null;
   programId: string | null;
   campaignName: string | null;
   matureAt: string | null;
   /** What it was earned on: an attributed sale, or a bonus. */
   source: 'attribution' | 'bonus';
+  /** The attributed event's type (`trial_started`, `invoice_paid`, a
+   *  custom type…); null on a bonus's commission. */
+  eventType: string | null;
   /** The bonus behind a `bonus` commission; null otherwise. */
   bonus: { id: string; source: string; note: string | null; bountyId: string | null; bountyName: string | null } | null;
 }
 
 function decorateMaturity(row: CommissionRow & {
+  _partnerName: string | null;
+  _eventType: string | null;
   _holdbackDays: number | null;
   _campaignId: string | null;
   _campaignName: string | null;
@@ -148,7 +161,18 @@ function decorateMaturity(row: CommissionRow & {
   _bonusBountyId: string | null;
   _bonusBountyName: string | null;
 }): DecoratedCommission {
-  const { _holdbackDays, _campaignId, _campaignName, _bonusSource, _bonusNote, _bonusBountyId, _bonusBountyName, ...c } = row;
+  const {
+    _partnerName,
+    _eventType,
+    _holdbackDays,
+    _campaignId,
+    _campaignName,
+    _bonusSource,
+    _bonusNote,
+    _bonusBountyId,
+    _bonusBountyName,
+    ...c
+  } = row;
   let matureAt: string | null = null;
   if (_holdbackDays && _holdbackDays > 0) {
     const m = new Date(c.accruedAt);
@@ -157,11 +181,13 @@ function decorateMaturity(row: CommissionRow & {
   }
   return {
     ...c,
+    partnerName: _partnerName,
     holdbackDays: _holdbackDays,
     programId: _campaignId,
     campaignName: _campaignName,
     matureAt,
     source: c.bonusId ? 'bonus' : 'attribution',
+    eventType: c.bonusId ? null : _eventType,
     bonus: c.bonusId
       ? { id: c.bonusId, source: _bonusSource ?? 'manual', note: _bonusNote, bountyId: _bonusBountyId, bountyName: _bonusBountyName }
       : null,

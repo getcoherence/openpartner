@@ -931,6 +931,20 @@ Called with the brand's OpenPartner Network federation key, the bonus is recorde
 
   r.operation({
     method: 'get',
+    path: '/payouts',
+    tag: 'Payouts',
+    operationId: 'listPayouts',
+    summary: 'List all payouts',
+    description:
+      "Every partner's payouts with the partner's name, newest first, keyset-paginated: pass `nextCursor` back as `cursor` (`limit`, default 50, at most 200). Filter with `status`. A `manual` payout stays `pending` until you confirm you sent it.",
+    access: { kind: 'admin', scope: 'payouts:read' },
+    query: payouts.listPayoutsQuerySchema,
+    responses: { 200: { description: 'One page.', schema: S.PayoutPage } },
+    errors: { 400: ['invalid_cursor'] },
+  });
+
+  r.operation({
+    method: 'get',
     path: '/payouts/holds',
     tag: 'Payouts',
     operationId: 'listPayoutHolds',

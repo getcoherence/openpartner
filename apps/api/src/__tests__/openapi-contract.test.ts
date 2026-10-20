@@ -419,15 +419,22 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     );
     const [toApprove, toReverse] = [...page.commissions, ...rest.commissions];
     expect(toApprove && toReverse).toBeTruthy();
-    check('listCommissions', await integration.get('/commissions?status=accrued'));
+    const accrued = check<{ commissions: Array<{ partnerName: string | null; eventType: string | null }> }>(
+      'listCommissions',
+      await integration.get('/commissions?status=accrued'),
+    );
+    expect(accrued.commissions[0]).toMatchObject({ partnerName: 'Ada Customer', eventType: expect.any(String) });
 
     // --- Admin side: approve, reverse, pay.
     check('approveCommission', await admin.post(`/commissions/${toApprove!.id}/approve`));
     check('approveCommission', await admin.post(`/commissions/${toApprove!.id}/approve`));
     check('reverseCommission', await admin.post(`/commissions/${toReverse!.id}/reverse`));
-    const run = check<{ runId: string; payouts: Array<{ payoutId: string; method: string }> }>('runPayouts', await admin.post('/payouts/run'));
+    const run = check<{ runId: string; payouts: Array<{ payoutId: string; method: string; partnerName: string | null }> }>(
+      'runPayouts',
+      await admin.post('/payouts/run'),
+    );
     expect(run.payouts).toHaveLength(1);
-    expect(run.payouts[0]!.method).toBe('manual');
+    expect(run.payouts[0]).toMatchObject({ method: 'manual', partnerName: 'Ada Customer' });
     // Compliance holds are a hosted-platform control: a self-host holds no one.
     expect(check<{ holds: unknown[] }>('listPayoutHolds', await admin.get('/payouts/holds')).holds).toEqual([]);
     // The manual rail's batch files: the app saves the referrer's PayPal
@@ -469,6 +476,12 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     // The manual rail: the commission is `paid` while its payout is still `pending` (docs, step 5).
     const planned = check<{ payouts: Array<{ id: string; status: string }> }>('listPartnerPayouts', await integration.get(`/partners/${partner.id}/payouts`));
     expect(planned.payouts[0]!.status).toBe('pending');
+    const everyone = check<{ payouts: Array<{ id: string; partnerName: string | null }> }>(
+      'listPayouts',
+      await integration.get('/payouts?status=pending&limit=1'),
+    );
+    expect(everyone.payouts).toEqual([expect.objectContaining({ id: run.payouts[0]!.payoutId, partnerName: 'Ada Customer' })]);
+    check('listPayouts', await admin.get('/payouts?cursor=bm9wZQ'));
     const afterRun = check<{ commissions: Array<{ id: string; status: string }> }>('listPartnerCommissions', await integration.get(`/partners/${partner.id}/commissions`));
     expect(afterRun.commissions.find((c) => c.id === toApprove!.id)?.status).toBe('paid');
     check('confirmManualPayout', await admin.post(`/payouts/${run.payouts[0]!.payoutId}/confirm`));
