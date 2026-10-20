@@ -1,10 +1,11 @@
 /**
- * /creator/storefront/setup — first-run setup for the storefront, five
- * steps: how it works, channels (add, verify, pitch), packages from
- * templates, past collaborations, then a preview and turning bookings on.
- * Each step saves as it goes, so leaving halfway keeps what's done; the
- * editor at /creator/storefront changes anything later. The step lives in
- * ?step= so a reload stays put.
+ * /creator/storefront/setup — first-run setup for the storefront: how it
+ * works, an optional import from Passionfroot, channels (add, verify,
+ * pitch), packages from templates, past collaborations, then a preview and
+ * turning bookings on. Each step saves as it goes, so leaving halfway keeps
+ * what's done; the editor at /creator/storefront changes anything later.
+ * The step lives in ?step=<key> so a reload stays put and links can point
+ * at one (?step=import).
  */
 import { useMemo, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
@@ -26,6 +27,7 @@ import {
 } from './CreatorStorefront.js';
 import { ChannelHeader } from './StorefrontSection.js';
 import { PreviewColumn, StorefrontPreview } from './StorefrontPreview.js';
+import { PassionfrootImport } from './StorefrontImport.js';
 import {
   PACKAGE_CURRENCIES,
   parsePackagePrice,
@@ -36,7 +38,15 @@ import {
   type StorefrontPackage,
 } from './storefront-shared.js';
 
-const STEPS = ['How it works', 'Channels', 'Packages', 'Past work', 'Preview'] as const;
+const STEPS = [
+  { key: 'intro', label: 'How it works' },
+  { key: 'import', label: 'Import' },
+  { key: 'channels', label: 'Channels' },
+  { key: 'packages', label: 'Packages' },
+  { key: 'past', label: 'Past work' },
+  { key: 'preview', label: 'Preview' },
+] as const;
+type StepKey = (typeof STEPS)[number]['key'];
 
 /** A template the creator ticked in the packages step, with their price. */
 interface TemplatePick {
@@ -50,9 +60,9 @@ const pickKey = (platform: string | null, title: string) => `${platform ?? 'any'
 export function CreatorStorefrontSetupPage() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  const step = Math.min(Math.max(Number(params.get('step')) || 1, 1), STEPS.length);
-  const go = (n: number) => {
-    setParams({ step: String(n) });
+  const step: StepKey = STEPS.find((s) => s.key === params.get('step'))?.key ?? 'intro';
+  const go = (key: StepKey) => {
+    setParams({ step: key });
     window.scrollTo({ top: 0 });
   };
 
@@ -102,23 +112,26 @@ export function CreatorStorefrontSetupPage() {
   ];
 
   const wide = useMediaQuery('(min-width: 1100px)');
-  const sidePreview = wide && step >= 2 && step <= 4 && data;
+  // Beside the steps that edit what brands see. The import step lists what
+  // it found instead; the preview step is the preview.
+  const sidePreview = wide && (step === 'channels' || step === 'packages' || step === 'past') && data;
 
   let body: ReactNode = null;
   if (sf.isLoading) body = <Card>Loading…</Card>;
   else if (data) {
-    if (step === 1) body = <HowItWorks onNext={() => go(2)} />;
-    else if (step === 2)
+    if (step === 'intro') body = <HowItWorks onNext={() => go('import')} />;
+    else if (step === 'import') body = <ImportStep onBack={() => go('intro')} onNext={() => go('channels')} />;
+    else if (step === 'channels')
       body = (
         <ChannelsStep
           channels={channels}
           loading={platforms.isLoading}
           onDraft={(platform, d) => setChannelDrafts((prev) => ({ ...prev, [platform]: d }))}
-          onBack={() => go(1)}
-          onNext={() => go(3)}
+          onBack={() => go('import')}
+          onNext={() => go('packages')}
         />
       );
-    else if (step === 3)
+    else if (step === 'packages')
       body = (
         <PackagesStep
           storefront={data}
@@ -127,18 +140,18 @@ export function CreatorStorefrontSetupPage() {
           setPicks={setPicks}
           currency={packageCurrency}
           setCurrency={setCurrency}
-          onBack={() => go(2)}
-          onNext={() => go(4)}
+          onBack={() => go('channels')}
+          onNext={() => go('past')}
         />
       );
-    else if (step === 4)
+    else if (step === 'past')
       body = (
         <PastWorkStep
           profile={profile.data}
           raw={brandsRaw ?? (profile.data?.pastBrands ?? []).join(', ')}
           setRaw={setBrandsRaw}
-          onBack={() => go(3)}
-          onNext={() => go(5)}
+          onBack={() => go('packages')}
+          onNext={() => go('preview')}
         />
       );
     else
@@ -147,7 +160,7 @@ export function CreatorStorefrontSetupPage() {
           storefront={data}
           profile={profile.data}
           channels={channels}
-          onBack={() => go(4)}
+          onBack={() => go('past')}
           onFinished={() => {
             navigate('/creator/storefront');
             window.scrollTo({ top: 0 });
@@ -191,18 +204,19 @@ export function CreatorStorefrontSetupPage() {
   );
 }
 
-function StepBar({ step, onGo }: { step: number; onGo: (n: number) => void }) {
+function StepBar({ step, onGo }: { step: StepKey; onGo: (key: StepKey) => void }) {
+  const at = STEPS.findIndex((s) => s.key === step);
   return (
     <ol style={{ listStyle: 'none', padding: 0, margin: '0 0 20px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-      {STEPS.map((label, i) => {
+      {STEPS.map(({ key, label }, i) => {
         const n = i + 1;
-        const current = n === step;
-        const done = n < step;
+        const current = i === at;
+        const done = i < at;
         return (
-          <li key={label}>
+          <li key={key}>
             <button
               type="button"
-              onClick={() => onGo(n)}
+              onClick={() => onGo(key)}
               aria-current={current ? 'step' : undefined}
               style={{
                 display: 'inline-flex',
@@ -315,7 +329,29 @@ function HowItWorks({ onNext }: { onNext: () => void }) {
   );
 }
 
-// ---------- 2. Channels ----------
+// ---------- 2. Import (optional) ----------
+
+function ImportStep({ onBack, onNext }: { onBack: () => void; onNext: () => void }) {
+  // Once something's imported, the summary's Continue is the way on.
+  const [imported, setImported] = useState(false);
+  return (
+    <>
+      <PassionfrootImport onDone={onNext} onImported={() => setImported(true)} />
+      {!imported && (
+        <StepNav
+          onBack={onBack}
+          next={
+            <Button variant="secondary" onClick={onNext}>
+              Skip, I’m starting fresh
+            </Button>
+          }
+        />
+      )}
+    </>
+  );
+}
+
+// ---------- 3. Channels ----------
 
 function ChannelsStep({
   channels,
@@ -359,7 +395,7 @@ function ChannelsStep({
   );
 }
 
-// ---------- 3. Packages ----------
+// ---------- 4. Packages ----------
 
 function PackagesStep({
   storefront,
@@ -551,7 +587,7 @@ function PackagesStep({
   );
 }
 
-// ---------- 4. Past work ----------
+// ---------- 5. Past work ----------
 
 function splitBrands(raw: string): string[] {
   return raw
@@ -626,7 +662,7 @@ function PastWorkStep({
   );
 }
 
-// ---------- 5. Preview ----------
+// ---------- 6. Preview ----------
 
 function PreviewStep({
   storefront,

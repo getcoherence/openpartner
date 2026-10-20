@@ -771,7 +771,7 @@ export class NetworkAdminError extends Error {
 
 async function callNetworkAdmin<T = void>(
   networkUrl: string,
-  method: 'GET' | 'POST' | 'PUT',
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
   body?: Record<string, unknown>,
 ): Promise<T> {
@@ -961,6 +961,24 @@ export interface NetworkCreatorSummary {
   lastRemindedAt?: string | null;
   /** Set when the creator unsubscribed from reminder emails. */
   emailOptOutAt?: string | null;
+  /** Storefront imports refused because another account holds the page
+   *  (the Network's docs/creator-storefront.md §7.3). Absent on an older
+   *  Network. */
+  importConflicts?: NetworkImportConflict[];
+}
+
+export interface NetworkImportConflict {
+  source: string;
+  /** The page's id on the source, e.g. the Passionfroot slug. */
+  sourceKey: string;
+  /** The claim ops can release; null once it's gone. */
+  claimId: string | null;
+  /** 'refused': this creator tried; 'claimant': this creator holds the page. */
+  role: 'refused' | 'claimant';
+  otherCreatorId: string | null;
+  otherEmail: string | null;
+  attempts: number;
+  lastAttemptAt: string;
 }
 
 export async function adminListCreators(networkUrl: string): Promise<NetworkCreatorSummary[]> {
@@ -986,6 +1004,20 @@ export async function adminBlockCreator(
 
 export async function adminUnblockCreator(networkUrl: string, creatorId: string): Promise<void> {
   await callNetworkAdmin(networkUrl, 'POST', `/admin/creators/${encodeURIComponent(creatorId)}/unblock`, {});
+}
+
+/** Release a storefront import claim so another account can import the
+ *  page. Returns what was released. */
+export async function adminReleaseStorefrontImport(
+  networkUrl: string,
+  claimId: string,
+): Promise<{ source: string; sourceKey: string; creatorId: string }> {
+  const body = await callNetworkAdmin<{ released: { source: string; sourceKey: string; creatorId: string } }>(
+    networkUrl,
+    'DELETE',
+    `/admin/storefront-imports/${encodeURIComponent(claimId)}`,
+  );
+  return body.released;
 }
 
 // ---------- Country access (platform-ops console) ----------

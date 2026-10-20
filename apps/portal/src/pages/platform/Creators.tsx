@@ -9,13 +9,21 @@ import {
   type PlatformOperator,
 } from './lib.js';
 
-type Filter = 'all' | 'blocked' | 'incomplete';
+type Filter = 'all' | 'blocked' | 'incomplete' | 'imports';
 
 const FILTERS: { key: Filter; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'incomplete', label: 'Incomplete' },
   { key: 'blocked', label: 'Blocked' },
+  { key: 'imports', label: 'Import conflicts' },
 ];
+
+const hasImportConflict = (c: NetworkCreator) => (c.importConflicts ?? []).length > 0;
+
+/** Where an imported storefront came from, as a link-like label. */
+function importSourceLabel(source: string, sourceKey: string): string {
+  return source === 'passionfroot' ? `passionfroot.me/${sourceKey}` : `${source}: ${sourceKey}`;
+}
 
 /**
  * Network creators (partners). These live on the Network coordinator, not in
@@ -55,11 +63,28 @@ export function CreatorsPage({ operator }: { operator: PlatformOperator }) {
     },
   });
 
+  // A storefront page imported by the wrong account: release it so the
+  // owner can import it (the Network's docs/creator-storefront.md §7.3).
+  const release = useMutation({
+    mutationFn: (claimId: string) =>
+      papi<{ released: { source: string; sourceKey: string } }>(`/platform-admin/storefront-imports/${claimId}`, { method: 'DELETE' }),
+    onSuccess: (r) => {
+      setNotice(`Released ${importSourceLabel(r.released.source, r.released.sourceKey)}. The other account can import it now.`);
+      void invalidate();
+    },
+  });
+
   const all = creators.data?.creators ?? [];
   const rows = all.filter((c) =>
-    filter === 'blocked' ? c.status === 'blocked' : filter === 'incomplete' ? !c.profileComplete : true,
+    filter === 'blocked'
+      ? c.status === 'blocked'
+      : filter === 'incomplete'
+        ? !c.profileComplete
+        : filter === 'imports'
+          ? hasImportConflict(c)
+          : true,
   );
-  const actionError = block.error ?? unblock.error ?? remind.error;
+  const actionError = block.error ?? unblock.error ?? remind.error ?? release.error;
 
   return (
     <Page
@@ -74,7 +99,9 @@ export function CreatorsPage({ operator }: { operator: PlatformOperator }) {
               ? all.filter((c) => c.status === 'blocked').length
               : f.key === 'incomplete'
                 ? all.filter((c) => !c.profileComplete).length
-                : all.length;
+                : f.key === 'imports'
+                  ? all.filter(hasImportConflict).length
+                  : all.length;
           return (
             <button
               key={f.key}
@@ -138,6 +165,8 @@ export function CreatorsPage({ operator }: { operator: PlatformOperator }) {
               onUnblock={() => unblock.mutate(c.id)}
               reminding={remind.isPending && remind.variables?.id === c.id}
               onRemind={() => remind.mutate(c)}
+              releasing={release.isPending ? release.variables : null}
+              onRelease={(claimId) => release.mutate(claimId)}
             />
           ))}
         </div>
@@ -154,6 +183,8 @@ function CreatorCard({
   onUnblock,
   reminding,
   onRemind,
+  releasing,
+  onRelease,
 }: {
   creator: NetworkCreator;
   canWrite: boolean;
@@ -162,6 +193,9 @@ function CreatorCard({
   onUnblock: () => void;
   reminding: boolean;
   onRemind: () => void;
+  /** The claim being released, if any. */
+  releasing: string | null;
+  onRelease: (claimId: string) => void;
 }) {
   const blocked = c.status === 'blocked';
   // Reminders only go to creators who proved their email by signing in.
@@ -180,6 +214,7 @@ function CreatorCard({
             )}
             {blocked && <Pill tone="danger">Blocked</Pill>}
             {!c.profileComplete && !blocked && <Pill tone="warn">Incomplete — hidden from discovery</Pill>}
+            {hasImportConflict(c) && <Pill tone="warn">Storefront import conflict</Pill>}
           </div>
 
           <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 3 }}>{c.email}</div>
@@ -223,6 +258,39 @@ function CreatorCard({
                     : 'No reminders sent yet'}
             </div>
           )}
+
+          {(c.importConflicts ?? []).map((x) => (
+            <div
+              key={`${x.role}:${x.source}:${x.sourceKey}:${x.otherCreatorId ?? ''}`}
+              style={{ fontSize: 11.5, color: theme.warn, marginTop: 6, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}
+            >
+              <span>
+                {x.role === 'refused'
+                  ? `Tried to import ${importSourceLabel(x.source, x.sourceKey)}, already imported by ${x.otherEmail ?? 'a deleted account'}`
+                  : `Imported ${importSourceLabel(x.source, x.sourceKey)}; ${x.otherEmail ?? 'another account'} tried to import it too`}
+                {` · ${x.attempts} attempt${x.attempts === 1 ? '' : 's'}, last ${formatDate(x.lastAttemptAt, { relative: true })}`}
+              </span>
+              {canWrite && x.claimId && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={releasing === x.claimId}
+                  onClick={() => {
+                    const holder = x.role === 'claimant' ? c.email : (x.otherEmail ?? 'the current holder');
+                    if (
+                      window.confirm(
+                        `Release ${importSourceLabel(x.source, x.sourceKey)} from ${holder}? Another account can then import it. What was already imported stays with ${holder}.`,
+                      )
+                    ) {
+                      onRelease(x.claimId!);
+                    }
+                  }}
+                >
+                  {releasing === x.claimId ? 'Releasing…' : 'Release claim'}
+                </Button>
+              )}
+            </div>
+          ))}
 
           {blocked && (
             <div style={{ fontSize: 11.5, color: theme.danger, marginTop: 6 }}>

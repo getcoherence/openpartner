@@ -62,6 +62,7 @@ import {
   adminBlockCreator,
   adminListCreators,
   adminListVendors,
+  adminReleaseStorefrontImport,
   adminRemindCreator,
   adminRunCreatorReminders,
   adminSetFeaturedVendors,
@@ -600,6 +601,35 @@ platformAdminRouter.post(
     if (!program) return res.status(404).json({ error: 'program_not_found' });
     await unblockProgram(db, program, req.platformAdminActor!);
     res.json({ ok: true, blocked: false });
+  },
+);
+
+// A storefront page imported by the wrong account (the Network's
+// docs/creator-storefront.md §7.3): release the claim so its owner can
+// import it. What was imported stays with the account that imported it.
+platformAdminRouter.delete(
+  '/platform-admin/storefront-imports/:id',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    const actor = req.platformAdminActor!;
+    let released;
+    try {
+      released = await adminReleaseStorefrontImport(networkUrl, req.params.id!);
+    } catch (err) {
+      if (err instanceof NetworkAdminError && err.status === 404) return res.status(404).json({ error: 'not_found' });
+      return res.status(502).json(networkErrorBody(err));
+    }
+    await writeAudit(db, {
+      actor,
+      action: 'storefront_import.release',
+      targetType: 'creator',
+      targetId: released.creatorId,
+      detail: { source: released.source, sourceKey: released.sourceKey, claimId: req.params.id! },
+    });
+    res.json({ ok: true, released });
   },
 );
 

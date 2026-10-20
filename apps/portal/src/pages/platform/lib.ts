@@ -161,6 +161,20 @@ export interface NetworkCreator {
   lastRemindedAt?: string | null;
   /** Set when the creator unsubscribed from reminder emails. */
   emailOptOutAt?: string | null;
+  /** Storefront imports refused because another account holds the page.
+   *  Absent on an older Network. */
+  importConflicts?: Array<{
+    source: string;
+    sourceKey: string;
+    /** The claim to release; null once it's gone. */
+    claimId: string | null;
+    /** 'refused': this creator tried; 'claimant': this creator holds the page. */
+    role: 'refused' | 'claimant';
+    otherCreatorId: string | null;
+    otherEmail: string | null;
+    attempts: number;
+    lastAttemptAt: string;
+  }>;
 }
 
 /** A Network vendor (brand) as the marketplace sees it. Featured fields are
