@@ -23,6 +23,8 @@ function billing(overrides: Partial<TenantBillingState> = {}): TenantBillingStat
     stripeSubscriptionId: null,
     trialExpiredWithoutSubscription: false,
     subscriptionStatus: null,
+    collectionMethod: null,
+    invoiceOverdue: null,
     ...overrides,
   };
 }

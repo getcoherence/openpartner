@@ -152,5 +152,6 @@ export const TABLES = {
   OperatorRecoveryRequest: 'OperatorRecoveryRequest',
   UsageLedger: 'UsageLedger',
   HostedFeeTerms: 'HostedFeeTerms',
+  HostedBillingProfile: 'HostedBillingProfile',
   UsageFeeShadow: 'UsageFeeShadow',
 } as const;

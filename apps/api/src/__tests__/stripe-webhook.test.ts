@@ -31,6 +31,7 @@ const stripeApi = vi.hoisted(() => ({
   customersUpdate: vi.fn(),
   checkoutSessionsList: vi.fn(),
   invoicesRetrieve: vi.fn(),
+  invoicesList: vi.fn(),
   checkoutSessionsRetrieve: vi.fn(),
   promotionCodesRetrieve: vi.fn(),
   chargesRetrieve: vi.fn(),
@@ -42,6 +43,7 @@ function resetStripeApi() {
   stripeApi.customersUpdate.mockReset().mockResolvedValue({ id: 'cus_test_mocked' });
   stripeApi.checkoutSessionsList.mockReset().mockResolvedValue({ object: 'list', data: [], has_more: false });
   stripeApi.invoicesRetrieve.mockReset().mockRejectedValue(new Error('unexpected invoices.retrieve'));
+  stripeApi.invoicesList.mockReset().mockRejectedValue(new Error('unexpected invoices.list'));
   stripeApi.checkoutSessionsRetrieve.mockReset().mockRejectedValue(new Error('unexpected checkout.sessions.retrieve'));
   stripeApi.promotionCodesRetrieve.mockReset().mockRejectedValue(new Error('unexpected promotionCodes.retrieve'));
   stripeApi.chargesRetrieve.mockReset().mockRejectedValue(new Error('unexpected charges.retrieve'));
@@ -62,7 +64,10 @@ vi.mock('stripe', async () => {
       update: stripeApi.customersUpdate,
       retrieve: stripeApi.customersRetrieve,
     };
-    (instance as unknown as { invoices: unknown }).invoices = { retrieve: stripeApi.invoicesRetrieve };
+    (instance as unknown as { invoices: unknown }).invoices = {
+      retrieve: stripeApi.invoicesRetrieve,
+      list: stripeApi.invoicesList,
+    };
     (instance as unknown as { checkout: unknown }).checkout = {
       sessions: { list: stripeApi.checkoutSessionsList, retrieve: stripeApi.checkoutSessionsRetrieve },
     };
@@ -2175,6 +2180,129 @@ describe.skipIf(skipIntegration)('stripe webhook — tenant billing lifecycle', 
       .first();
     expect(marker).toBeTruthy();
     expect((marker!.value as { subscriptionId?: string }).subscriptionId).toBe(TENANT_SUB);
+  });
+
+  // Pay-by-invoice (docs/invoice-billing.md): overdue follows the open
+  // invoices, not the subscription status, which Stripe derives from the
+  // LATEST invoice only.
+  function payByInvoiceStripe(open: Array<{ id: string; dueDaysAgo: number; amount?: number }>, paidBefore: boolean) {
+    const now = Math.floor(Date.now() / 1000);
+    stripeApi.invoicesList.mockImplementation(async (params: { status?: string; collection_method?: string }) => {
+      if (params.status === 'open') {
+        expect(params.collection_method).toBe('send_invoice');
+        return {
+          object: 'list',
+          has_more: false,
+          data: open.map((i) => ({ id: i.id, amount_remaining: i.amount ?? 4900, due_date: now - i.dueDaysAgo * 86400 })),
+        };
+      }
+      return { object: 'list', has_more: false, data: paidBefore ? [{ id: 'in_paid', amount_paid: 4900 }] : [] };
+    });
+  }
+  const subUpdated = (status: string) => ({
+    id: `evt_${ulid()}`,
+    type: 'customer.subscription.updated',
+    created: Math.floor(Date.now() / 1000),
+    data: {
+      object: {
+        id: TENANT_SUB,
+        object: 'subscription',
+        customer: TENANT_CUS,
+        status,
+        collection_method: 'send_invoice',
+        cancel_at_period_end: false,
+        items: { data: [{ price: { id: 'price_unknown_plan' } }] },
+      },
+      previous_attributes: { latest_invoice: 'in_x' },
+    },
+  });
+
+  it('pay-by-invoice: an overdue invoice is mirrored from the open invoices and ops is told once', async () => {
+    // January is 10 days overdue; February was just paid, so Stripe says
+    // the subscription is ACTIVE. The open invoice still counts.
+    payByInvoiceStripe([{ id: 'in_jan', dueDaysAgo: 10 }], true);
+    const res = await postWebhook(subUpdated('active'));
+    expect(res.status).toBe(200);
+    expect(res.body.connect).toContain('invoice_overdue');
+    const mirror = await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).first();
+    expect(mirror).toMatchObject({ subscriptionStatus: 'active', collectionMethod: 'send_invoice', oldestOpenInvoiceId: 'in_jan' });
+    expect(mirror!.oldestOpenInvoiceDueAt).toBeInstanceOf(Date);
+    expect(mirror!.invoicePaidAt).toBeInstanceOf(Date);
+    expect(sentMail.filter((m) => m.tag === 'ops_tenant_invoice_overdue')).toHaveLength(1);
+
+    // The same overdue invoice seen again: no second email.
+    await postWebhook(subUpdated('past_due'));
+    expect(sentMail.filter((m) => m.tag === 'ops_tenant_invoice_overdue')).toHaveLength(1);
+
+    // January paid: the brand's own invoice.paid re-reads and clears it.
+    payByInvoiceStripe([], true);
+    const paid = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'invoice.paid',
+      created: Math.floor(Date.now() / 1000),
+      data: { object: { id: 'in_jan', object: 'invoice', customer: TENANT_CUS, collection_method: 'send_invoice', amount_paid: 4900, currency: 'usd' } },
+    });
+    expect(paid.body.connect).toBe('tenant_invoice_paid');
+    const cleared = await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).first();
+    expect(cleared).toMatchObject({ oldestOpenInvoiceId: null, oldestOpenInvoiceDueAt: null });
+    // Our own invoice is never a conversion.
+    expect(await db(TABLES.Event).where({ type: 'invoice_paid' })).toHaveLength(0);
+  });
+
+  it('pay-by-invoice: an invoice not yet due is tracked but not overdue', async () => {
+    payByInvoiceStripe([{ id: 'in_feb', dueDaysAgo: -5 }], false);
+    const res = await postWebhook(subUpdated('active'));
+    expect(res.body.connect).not.toContain('invoice_overdue');
+    const mirror = await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).first();
+    expect(mirror).toMatchObject({ oldestOpenInvoiceId: 'in_feb', invoicePaidAt: null });
+    expect(sentMail).toHaveLength(0);
+  });
+
+  it('a card subscription going past_due reads no invoices and sends no overdue notice', async () => {
+    const res = await postWebhook({
+      ...subUpdated('past_due'),
+      data: { ...subUpdated('past_due').data, object: { ...subUpdated('past_due').data.object, collection_method: 'charge_automatically' } },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.connect).not.toContain('invoice_overdue');
+    expect(stripeApi.invoicesList).not.toHaveBeenCalled();
+    expect(sentMail).toHaveLength(0);
+  });
+
+  it('customer.subscription.created adopts an invoice subscription whose request never recorded it', async () => {
+    await inDeployment('flat', 'single', async () => {
+      await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ stripeCustomerId: TENANT_CUS, stripeSubscriptionId: null });
+      const created = (id: string) => ({
+        id: `evt_${ulid()}`,
+        type: 'customer.subscription.created',
+        created: Math.floor(Date.now() / 1000),
+        data: {
+          object: {
+            id,
+            object: 'subscription',
+            customer: TENANT_CUS,
+            status: 'active',
+            collection_method: 'send_invoice',
+            metadata: { openpartner_tenant_id: DEFAULT_TENANT_ID, openpartner_collection: 'send_invoice', openpartner_plan: 'flex' },
+            items: { data: [{ price: { id: 'price_unknown_plan' } }] },
+          },
+        },
+      });
+      const res = await postWebhook(created('sub_orphan'));
+      expect(res.status).toBe(200);
+      expect(res.body.connect).toBe('invoice_subscription_adopted');
+      expect((await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first())!.stripeSubscriptionId).toBe('sub_orphan');
+      expect(await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).first()).toMatchObject({
+        subscriptionStatus: 'active',
+        collectionMethod: 'send_invoice',
+      });
+
+      // The same event again: already linked. A second one: a conflict for
+      // ops, never a silent overwrite.
+      expect((await postWebhook(created('sub_orphan'))).body.connect).toBe('invoice_subscription_already_linked');
+      expect((await postWebhook(created('sub_second'))).body.connect).toBe('invoice_subscription_conflict');
+      expect((await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).first())!.stripeSubscriptionId).toBe('sub_orphan');
+    });
   });
 
   it('subscription.updated without a cancel_at_period_end change stays quiet', async () => {

@@ -521,6 +521,11 @@ instance like every other Event.
   ([platform-fee.md](platform-fee.md)). Hosted billing sidecars in the
   same category as `UsageLedger`: the hosted contract, not attribution
   data, and meaningless on an unmetered self-hosted instance.
+- `HostedBillingProfile` — how a tenant pays its OpenPartner subscription
+  (card or invoice, invoice terms, overdue grace, Indian GSTIN;
+  [invoice-billing.md](invoice-billing.md)). A hosted billing sidecar like
+  `HostedFeeTerms`: the brand's billing relationship with OpenPartner, not
+  attribution data.
 - `OperatorRecoveryRequest` — the operator-recovery decision ledger
   (apps/api/src/operator-recovery.ts). Operational sidecar in the same
   category: an auditable record of hosted/self-host *operations*, not of

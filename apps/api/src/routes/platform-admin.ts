@@ -85,10 +85,20 @@ import { brandSetupFor } from '../brand-setup.js';
 import { brandReminderHistory, remindBrandNow, runBrandSetupReminders } from '../brand-setup-reminders.js';
 import {
   getFeeRuleSettings,
+  getInvoiceBillingSettings,
   getNotificationSettings,
   setFeeRuleSettings,
+  setInvoiceBillingSettings,
   setNotificationSettings,
 } from '../platform-settings.js';
+import {
+  DAYS_UNTIL_DUE_DEFAULT,
+  listInvoiceBillingTenants,
+  OpsCollectionError,
+  setTenantCollection,
+} from '../invoice-billing.js';
+import { INVOICE_GRACE_DAYS_DEFAULT } from '../billing-plan.js';
+import { stripe } from '../stripe.js';
 import { METER_RATES, NOTICE_DAYS } from '../fee-terms.js';
 import { previewPricingNotices, sendPricingNotices } from '../fee-notice.js';
 import {
@@ -1477,6 +1487,86 @@ platformAdminRouter.get('/platform-admin/fees/contracts/:tenantId/statement', re
     throw err;
   }
 });
+
+// --------------------------------------------------------------------------
+// Invoicing — which brands pay by invoice instead of an auto-charged card
+// --------------------------------------------------------------------------
+//
+// docs/invoice-billing.md. A brand pays by invoice when ops chose that for
+// it, or when its declared country is on the default list and ops chose
+// nothing. Switching a brand with a live subscription moves that
+// subscription in Stripe from its next invoice on.
+
+platformAdminRouter.get('/platform-admin/invoice-billing', requirePlatformAdmin, async (_req, res) => {
+  const settings = await getInvoiceBillingSettings(db);
+  res.json({
+    settings,
+    defaults: { daysUntilDue: DAYS_UNTIL_DUE_DEFAULT, graceDays: INVOICE_GRACE_DAYS_DEFAULT },
+    tenants: await listInvoiceBillingTenants(db, settings),
+  });
+});
+
+const invoiceBillingSettingsSchema = z
+  .object({
+    defaultCountries: z
+      .array(z.string().trim().length(2).transform((v) => v.toUpperCase()).refine(isCountryCode, 'unknown country code'))
+      .max(250),
+  })
+  .strict();
+
+platformAdminRouter.put(
+  '/platform-admin/invoice-billing/settings',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = invoiceBillingSettingsSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const actor = req.platformAdminActor!;
+    const before = await getInvoiceBillingSettings(db);
+    const settings = await setInvoiceBillingSettings(db, body.data, actor.email);
+    await writeAudit(db, { actor, action: 'invoice_billing.settings', targetType: 'platform', detail: { before, after: settings } });
+    res.json({ settings });
+  },
+);
+
+const tenantCollectionSchema = z
+  .object({
+    // null: back to the country default.
+    collectionMethod: z.enum(['send_invoice', 'charge_automatically']).nullable().optional(),
+    daysUntilDue: z.number().int().min(1).max(90).optional(),
+    graceDays: z.number().int().min(0).max(180).optional(),
+  })
+  .strict();
+
+/** `:ref` is the tenant id or slug, so ops can add a brand by slug. */
+platformAdminRouter.put(
+  '/platform-admin/invoice-billing/tenants/:ref',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = tenantCollectionSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const actor = req.platformAdminActor!;
+    try {
+      // The audit row commits with the profile (or neither does).
+      const result = await setTenantCollection(db, stripe, req.params.ref!, body.data, actor.email, (trx, r) =>
+        writeAudit(trx, {
+          actor,
+          action: 'invoice_billing.tenant',
+          targetType: 'tenant',
+          targetId: r.tenantId,
+          detail: { ...body.data, effective: r.terms.method, movedSubscriptionTo: r.moved },
+        }),
+      );
+      res.json(result);
+    } catch (err) {
+      if (err instanceof OpsCollectionError) {
+        return res.status(err.code === 'not_found' ? 404 : 409).json({ error: err.code, detail: err.message });
+      }
+      throw err;
+    }
+  },
+);
 
 // --------------------------------------------------------------------------
 // Audit

@@ -134,3 +134,44 @@ export async function setFeeRuleSettings(
     .merge({ value: next as unknown as never, updatedByEmail: operatorEmail, updatedAt: new Date() });
   return next;
 }
+
+/**
+ * Pay-by-invoice billing (docs/invoice-billing.md). A brand whose declared
+ * country is listed here subscribes by invoice unless ops chose otherwise
+ * for it (HostedBillingProfile.collectionMethod). Only new subscriptions
+ * follow the default: a live card subscription moves to invoices when ops
+ * switches that tenant explicitly.
+ */
+export interface InvoiceBillingSettings {
+  /** ISO 3166-1 alpha-2 codes, upper case. */
+  defaultCountries: string[];
+}
+
+/** India: recurring card debits over ₹15,000 need the cardholder's
+ *  approval each time (RBI e-mandate rules), so auto-charging fails. */
+export const INVOICE_BILLING_DEFAULTS: InvoiceBillingSettings = { defaultCountries: ['IN'] };
+
+const INVOICE_BILLING_KEY = 'invoiceBilling';
+
+export async function getInvoiceBillingSettings(db: Knex): Promise<InvoiceBillingSettings> {
+  const row = await db<PlatformSettingRow>(TABLES.PlatformSetting).where({ key: INVOICE_BILLING_KEY }).first();
+  const v = (row?.value ?? {}) as Partial<InvoiceBillingSettings>;
+  return {
+    defaultCountries: Array.isArray(v.defaultCountries)
+      ? v.defaultCountries.filter((c): c is string => typeof c === 'string').map((c) => c.toUpperCase())
+      : INVOICE_BILLING_DEFAULTS.defaultCountries,
+  };
+}
+
+export async function setInvoiceBillingSettings(
+  db: Knex,
+  next: InvoiceBillingSettings,
+  operatorEmail: string,
+): Promise<InvoiceBillingSettings> {
+  const value = { defaultCountries: [...new Set(next.defaultCountries.map((c) => c.toUpperCase()))].sort() };
+  await db(TABLES.PlatformSetting)
+    .insert({ key: INVOICE_BILLING_KEY, value: value as unknown as never, updatedByEmail: operatorEmail, updatedAt: new Date() })
+    .onConflict('key')
+    .merge({ value: value as unknown as never, updatedByEmail: operatorEmail, updatedAt: new Date() });
+  return value;
+}

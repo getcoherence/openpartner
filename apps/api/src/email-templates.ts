@@ -731,6 +731,34 @@ export function opsTenantInvoicePaymentFailedEmail(
   };
 }
 
+/** Platform ops: a pay-by-invoice brand's OpenPartner invoice is past its
+ *  due date (docs/invoice-billing.md). Nothing retries a send_invoice
+ *  invoice, so this is the cue to chase it. */
+export function opsTenantInvoiceOverdueEmail(
+  brandName: string,
+  slug: string,
+  dueAt: Date,
+  graceEndsAt: Date,
+  neverPaid: boolean,
+  invoiceId: string | null,
+): EmailTemplate {
+  const subject = `[Billing] Invoice overdue for ${brandName} (${slug})`;
+  const url = invoiceId ? `https://dashboard.stripe.com/invoices/${invoiceId}` : 'https://dashboard.stripe.com/invoices';
+  const day = (d: Date) => d.toISOString().slice(0, 10);
+  const text = [
+    `${brandName} (${slug}) pays OpenPartner by invoice, and an invoice due ${day(dueAt)} is unpaid.`,
+    ``,
+    `Stripe doesn't charge anything for these. The brand pays from the hosted invoice page`,
+    `by card or bank transfer.`,
+    neverPaid
+      ? `The brand has never paid an invoice, so it gets no grace: adding partners is already paused until this one is paid.`
+      : `Adding partners keeps working until ${day(graceEndsAt)}, then pauses until it's paid. Ops can lengthen the grace in the ops console under Invoicing.`,
+    ``,
+    url,
+  ].join('\n');
+  return { subject, text, html: wrap(text, url, 'View invoice in Stripe') };
+}
+
 /** Platform ops: the nightly hard delete failed for brands whose 30-day
  *  deletion grace window has lapsed. Their data is still on file. */
 export function opsTenantPurgeFailedEmail(
