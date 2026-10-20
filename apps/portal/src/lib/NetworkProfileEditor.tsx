@@ -79,6 +79,9 @@ export interface PlatformRow {
   /** Absent on a Network that predates account verification. */
   verifiedAt?: string | null;
   verificationMethod?: 'bio_code' | 'dns' | 'oauth' | 'post_code' | null;
+  /** followerCount is read from the platform (a verified YouTube channel)
+   *  and can't be edited. Absent on an older Network. */
+  followerCountSynced?: boolean;
 }
 
 /** POST /creators/me/platforms/:platform/verify/start on the Network. */
@@ -691,7 +694,7 @@ function ProfileChecklistCard({ profile }: { profile: NetworkProfile }) {
  *  PUT/DELETE on Network rather than a bulk PATCH, since users add /
  *  remove platforms one at a time and we want optimistic per-row save
  *  feedback. */
-function PlatformsCard({ adapter }: { adapter: NetworkProfileAdapter }) {
+export function PlatformsCard({ adapter }: { adapter: NetworkProfileAdapter }) {
   const qc = useQueryClient();
   const list = useQuery({
     queryKey: adapter.platformsKey,
@@ -705,7 +708,7 @@ function PlatformsCard({ adapter }: { adapter: NetworkProfileAdapter }) {
       <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 14px' }}>
         Where you publish + your audience size on each. Follower counts are self-reported.
         {adapter.startVerification && (
-          <> Verify your YouTube channel or website to show brands a verified badge.</>
+          <> Verify your YouTube channel or website to show brands a verified badge. A verified YouTube channel&rsquo;s subscriber count is kept up to date for you.</>
         )}
       </p>
       {list.isLoading ? (
@@ -788,9 +791,13 @@ function PlatformRowEditor({
       <Input value={handle} onChange={(e) => setHandle(e.target.value)} placeholder={placeholder} style={{ fontFamily: theme.fontMono, fontSize: 13 }} />
       <Input
         type="number"
+        aria-label={`${label} followers`}
         value={followerCount}
         onChange={(e) => setFollowerCount(e.target.value === '' ? '' : Number(e.target.value))}
         placeholder="followers"
+        // Synced from the platform: the Network ignores typed counts.
+        disabled={!!existing?.followerCountSynced}
+        title={existing?.followerCountSynced ? `Synced from ${label}` : undefined}
         style={{ fontSize: 13 }}
       />
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>

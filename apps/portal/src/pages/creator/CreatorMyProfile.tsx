@@ -12,7 +12,7 @@ import {
 } from '../../lib/NetworkProfileEditor.js';
 
 /** The creator portal talks to the Network through /api/creator-api. */
-const creatorProfileAdapter: NetworkProfileAdapter = {
+export const creatorProfileAdapter: NetworkProfileAdapter = {
   profileKey: ['creator-my-profile'],
   platformsKey: ['creator-my-platforms'],
   updateProfile: (body) => creatorApi('/creators/me', { method: 'PATCH', body }),
