@@ -258,6 +258,74 @@ Body
 Response 204
 ```
 
+### Storefront bookings (`/vendors/me/bookings`, Oct 2026)
+
+Creators on the Network list priced packages on their public profile.
+A brand books one as a **tracked deal**: when the creator accepts they
+become the brand's partner on an offering (a tracked link), they deliver
+the post URLs, and the brand's approval pays the agreed amount as a bonus
+through `POST /bonuses` on the brand's instance (see Bonuses below).
+
+```
+Headers
+  Authorization: Bearer <vendorToken>
+
+POST /vendors/me/bookings
+  { "creatorId": "crt_…", "offeringId": "off_…", "packageId": "cpk_…" | null,
+    "brief": "20–2000 chars", "amount": 500, "currency": "USD" }
+  → 201 { "booking": Booking }
+
+GET  /vendors/me/bookings?status=<status>         → 200 { "bookings": Booking[] }
+POST /vendors/me/bookings/:id/cancel              pending | accepted → cancelled
+POST /vendors/me/bookings/:id/approve             delivered → approved → paid
+POST /vendors/me/bookings/:id/retry-payout        payout_failed → approved → paid
+```
+
+- **`amount`** is whole currency units: the price the brand pays on
+  approval.
+- **Booking statuses:** `pending → accepted → delivered → approved →
+  paid`, plus `declined`, `cancelled` and `payout_failed`.
+- **A `Booking` contains:** the creator's public fields (`id`, `name`,
+  `handle`, `avatarUrl`; never their email), the package snapshot, the
+  offering, `amount` / `currency`, `deliverableUrls`, `partnerId` (the
+  creator's Partner id on the brand's instance, once accepted), `bonusId`,
+  `payoutError` and the timestamps.
+- **Booking refusals:**
+  - `403 vendor_pending_review` and `403 vendor_not_active`;
+  - `404 offering_not_found` (not the vendor's own published offering);
+  - `404 creator_not_found` (not publicly visible);
+  - `409 bookings_closed`;
+  - `409 too_many_open_bookings` (3 in flight per brand and creator);
+  - `409 bonuses_scope_missing` (the federation key lacks `bonuses:write`; the brand re-authorizes through `POST /config/network/authorize-bonuses`);
+  - `422 vendor_unreachable` (the Network couldn't introspect the key).
+- **Other refusals:** cancel, approve and retry answer
+  `409 not_cancellable`, `409 not_delivered` and `409 not_failed`
+  respectively when the booking is in the wrong state.
+
+**Accepting a booking** federates the partnership the same way an
+approved application does: `POST /partners` + `POST /partners/:id/links`
+with the offering's `programIds` and commission snapshot. A creator who
+already has an active partnership on the offering is linked to it
+instead.
+
+**This repo's side.** The brand portal reaches these routes through
+admin proxies:
+- `GET|POST /admin/network/bookings`;
+- `POST /admin/network/bookings/:id/{cancel,approve,retry-payout}`.
+
+Booking (it adds a partner) and approve / retry-payout (they pay one)
+sit behind the go-live and plan-required gates
+(`middleware/approval-gate.ts`, `middleware/trial-gate.ts`), like
+approving a Network request and `POST /bonuses`.
+
+**Delivery checks** arrive with openpartner-network#21 and openpartner#217.
+They add:
+- `deliveryChecks` / `deliveryCheckedAt` on each Booking;
+- `POST /vendors/me/bookings/:id/recheck`, proxied as
+  `POST /admin/network/bookings/:id/recheck` and not gated;
+- reads of `GET /partners/:id/timeseries` and `GET /partners/:id/breakdowns`
+  for clicks since delivery.
+
 ## Endpoints (Vendor-side, called by Network)
 
 These already exist in this repo, gated by `grantScope(...)`:
@@ -269,7 +337,9 @@ These already exist in this repo, gated by `grantScope(...)`:
 | Show a creator their accrued earnings | `GET /partners/:id/commissions` | `commissions:read` |
 | Chart a creator's activity and earnings | `GET /partners/:id/timeseries` | `partners:read` |
 | Pay a creator a Network bounty | `POST /bonuses` | `bonuses:write` |
+| Pay a creator an approved storefront booking | `POST /bonuses` | `bonuses:write` |
 | Read the bonuses it paid | `GET /bonuses`, `GET /bonuses/:id` | `commissions:read` |
+| Clicks since a booking was delivered, by referring site | `GET /partners/:id/timeseries`, `GET /partners/:id/breakdowns?dimension=referer` | `partners:read` |
 | Verify the scoped key still works | `GET /auth/introspect` | (any) |
 
 ### Bonuses (Network bounties)
@@ -286,6 +356,23 @@ same ref with a different partner, program, amount or currency is `409
 external_ref_conflict`. A brand that hasn't re-authorized its key answers
 `403 forbidden_scope` with `required: "bonuses:write"`. The brand's
 `bonus.*` webhooks fire, never `commission.*`.
+
+**Storefront bookings (Oct 2026)** pay the same way. When the brand
+approves a delivered booking, the Network calls `POST /bonuses` with:
+- the creator's partner id;
+- the offering's `programId`;
+- the agreed `amount` and `currency`;
+- `note: "Storefront booking: <package title>"`;
+- `externalRef: "booking:<bookingId>"`.
+
+How the Network handles the answer:
+- **Attempts:** the first runs inline with the approval; failures retry
+  with backoff for up to 8 attempts.
+- **A final answer:** a `4xx` other than `408` or `429`, such as a
+  revoked partner or the missing scope, marks the booking
+  `payout_failed`. The vendor's answer is shown to the brand, which can
+  retry once the cause is fixed.
+- **Retries never pay twice,** because the `externalRef` stays the same.
 
 **Commission lists and the timeseries include bonuses (Oct 2026).** A
 bonus is paid through one commission, so `GET /partners/:id/commissions`
