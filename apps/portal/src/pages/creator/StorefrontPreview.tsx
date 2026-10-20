@@ -8,6 +8,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { ExternalLink } from 'lucide-react';
 import { theme } from '../../theme.js';
 import type { NetworkProfile } from '../../lib/NetworkProfileEditor.js';
+import { ListingBanner } from './ListingBanner.js';
 import { StorefrontSection } from './StorefrontSection.js';
 import type { StorefrontChannel, StorefrontPackage } from './storefront-shared.js';
 
@@ -104,41 +105,35 @@ export function StorefrontPreview({
             Bookings are off, so brands don&rsquo;t see this section yet.
           </div>
         )}
-        <div
-          style={{
-            background: theme.surface,
-            border: `1px solid ${theme.border}`,
-            borderRadius: theme.radiusMd,
-            padding: 14,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-          }}
-        >
-          {profile?.avatarUrl ? (
-            <img src={profile.avatarUrl} alt="" style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', background: theme.surface2 }} />
-          ) : (
-            <div
-              style={{
-                width: 44,
-                height: 44,
-                borderRadius: '50%',
-                background: theme.accent,
-                color: theme.accentInk,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 18,
-                fontWeight: 600,
-                flexShrink: 0,
-              }}
-            >
-              {name.charAt(0).toUpperCase()}
+        <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: theme.radiusMd, overflow: 'hidden' }}>
+          {/* The public page's banner: the cover, else a wash of the photo. */}
+          <ListingBanner coverUrl={profile?.coverImageUrl} logoUrl={profile?.avatarUrl} style={{ aspectRatio: '4 / 1' }} />
+          <div style={{ padding: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
+            {profile?.avatarUrl ? (
+              <img src={profile.avatarUrl} alt="" style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', background: theme.surface2 }} />
+            ) : (
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: '50%',
+                  background: theme.accent,
+                  color: theme.accentInk,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 18,
+                  fontWeight: 600,
+                  flexShrink: 0,
+                }}
+              >
+                {name.charAt(0).toUpperCase()}
+              </div>
+            )}
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 15, fontWeight: 600 }}>{name}</div>
+              {handle && <div style={{ fontSize: 12, color: theme.textMuted, fontFamily: theme.fontMono }}>@{handle}</div>}
             </div>
-          )}
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 15, fontWeight: 600 }}>{name}</div>
-            {handle && <div style={{ fontSize: 12, color: theme.textMuted, fontFamily: theme.fontMono }}>@{handle}</div>}
           </div>
         </div>
         <StorefrontSection handle={handle ?? ''} creatorName={name} packages={packages} channels={channels} preview />

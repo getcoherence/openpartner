@@ -2,6 +2,7 @@
  * The /creator-api reverse proxy only forwards allowlisted Network paths.
  * Covers the account-verification POSTs under /creators/me/platforms/
  * (verify/start, verify), the creator data export, the location prompt,
+ * the avatar and cover image uploads,
  * that paths off the allowlist stay 404 without reaching the Network, and
  * the signed header that tells the Network the creator's own address. A
  * local HTTP server plays the Network.
@@ -193,6 +194,24 @@ describe('creator-api proxy: the creator address header', () => {
       .send({});
     expect(res.status).toBe(200);
     expect(clientIpHeaders).toEqual([undefined]);
+  });
+});
+
+describe('creator-api proxy: image uploads', () => {
+  it('forwards the avatar and cover uploads as raw images', async () => {
+    const cookie = 'op_network_creator_session=abc';
+    for (const path of ['/creators/me/uploads/avatar', '/creators/me/uploads/cover']) {
+      const res = await request(app)
+        .post(`/creator-api${path}`)
+        .set('Cookie', cookie)
+        .set('Content-Type', 'image/png')
+        .send(Buffer.from('89504e470d0a1a0a', 'hex'));
+      expect(res.status, path).toBe(200);
+    }
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      'POST /creators/me/uploads/avatar',
+      'POST /creators/me/uploads/cover',
+    ]);
   });
 });
 

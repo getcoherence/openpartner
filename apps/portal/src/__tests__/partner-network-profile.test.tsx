@@ -4,7 +4,8 @@
  * brand portal: the partner Network profile page renders the same editor
  * as the creator portal (checklist, categories, audience incl. size,
  * platforms, portfolio), wired to the brand's /network/me… proxies. The
- * creator page keeps using /api/creator-api.
+ * creator page keeps using /api/creator-api, and only it edits the cover
+ * image (the storefront card's banner), once the Network reports the field.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
@@ -68,9 +69,9 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-function renderWith(ui: React.ReactElement, key: string) {
+function renderWith(ui: React.ReactElement, key: string, profile: Record<string, unknown> = PROFILE) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-  qc.setQueryData([key], PROFILE);
+  qc.setQueryData([key], profile);
   return render(
     <MemoryRouter>
       <QueryClientProvider client={qc}>{ui}</QueryClientProvider>
@@ -136,5 +137,33 @@ describe('creator profile page (same editor, creator endpoints)', () => {
     await waitFor(() => expect(calls.some((c) => c.method === 'PATCH')).toBe(true));
     expect(calls.find((c) => c.method === 'PATCH')!.url).toBe('/api/creator-api/creators/me');
     expect(calls.some((c) => c.url === '/api/creator-api/creators/me/platforms')).toBe(true);
+  });
+
+  async function savedBody(page: ReturnType<typeof renderWith>): Promise<Record<string, unknown>> {
+    fireEvent.click(page.getByRole('button', { name: 'Save profile' }));
+    await waitFor(() => expect(calls.some((c) => c.method === 'PATCH')).toBe(true));
+    return calls.find((c) => c.method === 'PATCH')!.body as Record<string, unknown>;
+  }
+
+  it('edits the cover image and saves its removal as null', async () => {
+    const page = renderWith(<CreatorMyProfilePage />, 'creator-my-profile', {
+      ...PROFILE,
+      coverImageUrl: 'https://cdn.example.com/cover.png',
+    });
+    expect(page.getByText('Cover image (optional)')).toBeTruthy();
+    fireEvent.click(page.getByRole('button', { name: 'Remove' }));
+    expect(await savedBody(page)).toMatchObject({ coverImageUrl: null });
+  });
+
+  it('leaves the cover out on a Network that predates it', async () => {
+    const page = renderWith(<CreatorMyProfilePage />, 'creator-my-profile');
+    expect(page.queryByText('Cover image (optional)')).toBeNull();
+    expect(await savedBody(page)).not.toHaveProperty('coverImageUrl');
+  });
+
+  it('the partner page never edits or sends the cover', async () => {
+    const page = renderWith(<MyProfilePage />, 'network-my-profile', { ...PROFILE, coverImageUrl: null });
+    expect(page.queryByText('Cover image (optional)')).toBeNull();
+    expect(await savedBody(page)).not.toHaveProperty('coverImageUrl');
   });
 });

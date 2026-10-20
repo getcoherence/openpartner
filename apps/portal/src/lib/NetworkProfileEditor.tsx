@@ -22,6 +22,9 @@ export interface NetworkProfileAdapter {
   platformsKey: QueryKey;
   updateProfile: (body: Record<string, unknown>) => Promise<unknown>;
   uploadAvatar: (file: File) => Promise<{ avatarUrl: string }>;
+  /** The banner on the public profile and the marketplace storefront card.
+   *  Absent → no cover field, and saves never send coverImageUrl. */
+  uploadCover?: (file: File) => Promise<{ coverImageUrl: string }>;
   listPlatforms: () => Promise<{ platforms: PlatformRow[] }>;
   putPlatform: (
     platform: Platform,
@@ -42,6 +45,8 @@ export interface NetworkProfile {
   name: string;
   handle: string | null;
   avatarUrl: string | null;
+  /** Absent on a Network that predates covers. */
+  coverImageUrl?: string | null;
   bio: string | null;
   profile: Record<string, unknown> | null;
   categories: string[];
@@ -130,6 +135,7 @@ export function NetworkProfileEditor({
   const [name, setName] = useState('');
   const [handle, setHandle] = useState('');
   const [avatarUrl, setAvatarUrl] = useState('');
+  const [coverImageUrl, setCoverImageUrl] = useState('');
   const [bio, setBio] = useState('');
   const [categories, setCategories] = useState<string[]>([]);
   // Audience locations is kept as a raw text string while the user is
@@ -147,6 +153,7 @@ export function NetworkProfileEditor({
       setName(data.name ?? '');
       setHandle(data.handle ?? '');
       setAvatarUrl(data.avatarUrl ?? '');
+      setCoverImageUrl(data.coverImageUrl ?? '');
       setBio(data.bio ?? '');
       setCategories(data.categories ?? []);
       setAudienceLocationsRaw((data.audienceLocations ?? []).join(', '));
@@ -156,6 +163,9 @@ export function NetworkProfileEditor({
       setPastBrandsRaw((data.pastBrands ?? []).join(', '));
     }
   }, [data]);
+
+  // Covers need the adapter's upload and a Network that knows the field.
+  const coverUpload = data && 'coverImageUrl' in data ? adapter.uploadCover : undefined;
 
   const save = useMutation({
     mutationFn: () => {
@@ -172,6 +182,7 @@ export function NetworkProfileEditor({
         name: name || undefined,
         handle: handle || null,
         avatarUrl: avatarUrl || null,
+        ...(coverUpload ? { coverImageUrl: coverImageUrl || null } : {}),
         bio: bio || null,
         categories,
         audienceLocations,
@@ -208,6 +219,14 @@ export function NetworkProfileEditor({
           <Field label="Avatar">
             <AvatarUploader value={avatarUrl} onChange={setAvatarUrl} name={name} upload={adapter.uploadAvatar} />
           </Field>
+          {coverUpload && (
+            <Field
+              label="Cover image (optional)"
+              hint="A wide banner across the top of your public profile and your marketplace storefront card. 1500×500 (3:1) works best. Without one, the banner is made from your photo."
+            >
+              <CoverUploader value={coverImageUrl} onChange={setCoverImageUrl} avatarUrl={avatarUrl} upload={coverUpload} />
+            </Field>
+          )}
           <Field
             label="Bio"
             hint={`Required, at least ${MIN_BIO_LENGTH} characters. Brands read this first: who you create for and what you make. (${bio.trim().length}/${MIN_BIO_LENGTH})`}
@@ -411,6 +430,111 @@ function AvatarUploader({
         <p style={{ fontSize: 12, color: theme.textMuted, margin: '6px 0 0' }}>PNG, JPEG, or WebP. Max 2 MB.</p>
         {error && <p style={{ fontSize: 12, color: theme.danger, margin: '4px 0 0' }}>{error}</p>}
       </div>
+    </div>
+  );
+}
+
+function CoverUploader({
+  value,
+  onChange,
+  avatarUrl,
+  upload: uploadCover,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  avatarUrl: string;
+  upload: NonNullable<NetworkProfileAdapter['uploadCover']>;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const upload = useMutation({
+    mutationFn: (file: File) => uploadCover(file),
+    onSuccess: (r) => {
+      setError(null);
+      onChange(r.coverImageUrl);
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : 'upload failed'),
+  });
+
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      setError('Image too large — max 2 MB.');
+      return;
+    }
+    upload.mutate(file);
+  };
+
+  return (
+    <div>
+      {/* Preview: the cover, else the wash the marketplace makes from the photo. */}
+      <div
+        aria-hidden
+        style={{
+          position: 'relative',
+          maxWidth: 480,
+          aspectRatio: '3 / 1',
+          borderRadius: theme.radiusSm,
+          overflow: 'hidden',
+          border: `1px solid ${theme.borderSubtle}`,
+          background: `linear-gradient(135deg, ${theme.accentSoft}, ${theme.surface2})`,
+          marginBottom: 8,
+        }}
+      >
+        {value ? (
+          <img src={value} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+        ) : avatarUrl ? (
+          <img
+            src={avatarUrl}
+            alt=""
+            style={{
+              position: 'absolute',
+              left: '-25%',
+              top: '-25%',
+              width: '150%',
+              height: '150%',
+              objectFit: 'cover',
+              filter: 'blur(28px) saturate(1.4)',
+              opacity: 0.6,
+            }}
+          />
+        ) : null}
+      </div>
+      <label>
+        <input
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          onChange={onPick}
+          style={{ display: 'none' }}
+          disabled={upload.isPending}
+        />
+        <span
+          style={{
+            display: 'inline-block',
+            padding: '6px 12px',
+            background: theme.surface,
+            border: `1px solid ${theme.border}`,
+            borderRadius: theme.radiusSm,
+            fontSize: 13,
+            color: theme.text,
+            cursor: upload.isPending ? 'wait' : 'pointer',
+            opacity: upload.isPending ? 0.6 : 1,
+          }}
+        >
+          {upload.isPending ? 'Uploading…' : value ? 'Replace' : 'Upload'}
+        </span>
+      </label>
+      {value && (
+        <button
+          onClick={() => onChange('')}
+          style={{ marginLeft: 8, background: 'transparent', border: 'none', color: theme.textMuted, fontSize: 12, cursor: 'pointer' }}
+        >
+          Remove
+        </button>
+      )}
+      <p style={{ fontSize: 12, color: theme.textMuted, margin: '6px 0 0' }}>PNG, JPEG, or WebP. Max 2 MB.</p>
+      {error && <p style={{ fontSize: 12, color: theme.danger, margin: '4px 0 0' }}>{error}</p>}
     </div>
   );
 }

@@ -15,6 +15,7 @@ import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
 import { creatorApi, ApiError } from './creator-api.js';
 import { audienceSizeLabel } from '@openpartner/db';
 import { GetYourStorefront, StorefrontSection } from './StorefrontSection.js';
+import { ListingBanner } from './ListingBanner.js';
 import { PLATFORM_LABELS, type StorefrontChannel, type StorefrontPackage } from './storefront-shared.js';
 
 interface PublicProfile {
@@ -22,6 +23,8 @@ interface PublicProfile {
   name: string;
   handle: string;
   avatarUrl: string | null;
+  /** Wide banner; null or absent (older Network) → washed from the avatar. */
+  coverImageUrl?: string | null;
   bio: string | null;
   categories: string[];
   audienceLocations: string[];
@@ -66,20 +69,25 @@ export function CreatorPublicProfilePage() {
 
   return (
     <Shell>
-      <Card>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+      <Card style={{ overflow: 'hidden' }}>
+        {/* Cover (or a wash of the avatar), bleeding over the Card's 20px
+            padding; the avatar sits half over it, profile style. */}
+        <ListingBanner coverUrl={data.coverImageUrl} logoUrl={data.avatarUrl} style={{ margin: '-20px -20px 0' }} />
+        <div style={{ position: 'relative', marginTop: -40 }}>
           {data.avatarUrl ? (
             <img
               src={data.avatarUrl}
               alt={data.name}
-              style={{ width: 72, height: 72, borderRadius: '50%', objectFit: 'cover', background: theme.surface2 }}
+              style={{ width: 80, height: 80, borderRadius: '50%', objectFit: 'cover', background: theme.surface2, border: `4px solid ${theme.surface}`, display: 'block' }}
             />
           ) : (
-            <div style={{ width: 72, height: 72, borderRadius: '50%', background: theme.accent, color: theme.accentInk, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, fontWeight: 600 }}>
+            <div style={{ width: 80, height: 80, borderRadius: '50%', background: theme.accent, color: theme.accentInk, border: `4px solid ${theme.surface}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, fontWeight: 600 }}>
               {data.name.charAt(0).toUpperCase()}
             </div>
           )}
-          <div style={{ flex: 1, minWidth: 0 }}>
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <div style={{ minWidth: 0 }}>
             <h1 style={{ margin: 0, fontSize: 22 }}>{data.name}</h1>
             <div style={{ color: theme.textMuted, fontSize: 13, fontFamily: theme.fontMono, marginTop: 4 }}>@{data.handle}</div>
             {data.categories.length > 0 && (
