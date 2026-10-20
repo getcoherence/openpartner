@@ -17,6 +17,7 @@ const creatorProfileAdapter: NetworkProfileAdapter = {
   platformsKey: ['creator-my-platforms'],
   updateProfile: (body) => creatorApi('/creators/me', { method: 'PATCH', body }),
   uploadAvatar: (file) => creatorApi<{ avatarUrl: string }>('/creators/me/uploads/avatar', { method: 'POST', body: file }),
+  uploadCover: (file) => creatorApi<{ coverImageUrl: string }>('/creators/me/uploads/cover', { method: 'POST', body: file }),
   listPlatforms: () => creatorApi<{ platforms: PlatformRow[] }>('/creators/me/platforms'),
   putPlatform: (platform, body) => creatorApi(`/creators/me/platforms/${platform}`, { method: 'PUT', body }),
   deletePlatform: (platform) => creatorApi(`/creators/me/platforms/${platform}`, { method: 'DELETE' }),

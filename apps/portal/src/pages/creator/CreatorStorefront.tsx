@@ -129,8 +129,18 @@ export function CreatorStorefrontPage() {
   );
 }
 
+/** The public storefront directory. Listing is the Network's: a creator with
+ *  a public profile, bookings on and a published package is listed. */
+const MARKETPLACE_URL = 'https://openpartner.dev/marketplace/creators';
+
 function BookingsCard({ storefront, pending, onToggle }: { storefront: Storefront; pending: boolean; onToggle: () => void }) {
   const publicPath = storefront.handle ? `/creators/${storefront.handle}` : null;
+  const hasPublished = storefront.packages.some((p) => p.published);
+  const marketplace = (
+    <a href={MARKETPLACE_URL} target="_blank" rel="noopener noreferrer" style={{ color: theme.accentText }}>
+      OpenPartner marketplace
+    </a>
+  );
   return (
     <Card>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -140,9 +150,15 @@ function BookingsCard({ storefront, pending, onToggle }: { storefront: Storefron
             <StatusPill status={storefront.bookingsOpen ? 'active' : 'paused'} />
           </div>
           <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 4 }}>
-            {storefront.bookingsOpen
-              ? 'Your packages and a request form are on your public profile. Brands confirm their email before a request reaches you.'
-              : 'Turn on to show your packages and a request form on your public profile.'}
+            {!storefront.bookingsOpen ? (
+              <>Turn on to show your packages and a request form on your public profile, and to list your storefront in the {marketplace} for brands to find.</>
+            ) : !hasPublished ? (
+              <>Bookings are on. Publish a package to show it on your public profile and list your storefront in the {marketplace}.</>
+            ) : !storefront.profileComplete ? (
+              <>Your packages and a request form go on your public profile, and into the {marketplace}, once your profile is complete.</>
+            ) : (
+              <>Your packages and a request form are on your public profile, and your storefront is listed in the {marketplace}. Brands confirm their email before a request reaches you.</>
+            )}
           </div>
         </div>
         <Button variant={storefront.bookingsOpen ? 'secondary' : 'primary'} onClick={onToggle} disabled={pending}>

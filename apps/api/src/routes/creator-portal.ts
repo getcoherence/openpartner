@@ -76,6 +76,8 @@ const ALLOWED_EXACT = new Set([
   '/creators/me/platforms',
   '/creators/me/recommendations',
   '/creators/me/uploads/avatar',
+  // The banner on the public profile and the marketplace storefront card.
+  '/creators/me/uploads/cover',
   // Where the creator is based: the one-time prompt (GET + PUT).
   '/creators/me/location',
   // Storefront (the Network's docs/creator-storefront.md): the bookings
