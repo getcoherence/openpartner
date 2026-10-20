@@ -2177,6 +2177,75 @@ describe.skipIf(skipIntegration)('stripe webhook — tenant billing lifecycle', 
     expect((marker!.value as { subscriptionId?: string }).subscriptionId).toBe(TENANT_SUB);
   });
 
+  // Pay-by-invoice (docs/invoice-billing.md): nothing is charged, so no
+  // invoice.payment_failed ever fires. The subscription turning past_due is
+  // the overdue signal; the mirror times the stretch for the grace.
+  it('a send_invoice subscription going past_due mirrors the stretch and alerts ops once', async () => {
+    const updated = (status: string, prevStatus: string) => ({
+      id: `evt_${ulid()}`,
+      type: 'customer.subscription.updated',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: TENANT_SUB,
+          object: 'subscription',
+          customer: TENANT_CUS,
+          status,
+          collection_method: 'send_invoice',
+          cancel_at_period_end: false,
+          items: { data: [{ price: { id: 'price_unknown_plan' } }] },
+        },
+        previous_attributes: { status: prevStatus },
+      },
+    });
+
+    const res = await postWebhook(updated('past_due', 'active'));
+    expect(res.status).toBe(200);
+    expect(res.body.connect).toContain('invoice_overdue_notified');
+    const mirror = await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).first();
+    expect(mirror).toMatchObject({ subscriptionStatus: 'past_due', collectionMethod: 'send_invoice' });
+    expect(mirror!.pastDueSince).toBeInstanceOf(Date);
+    expect(sentMail.filter((m) => m.tag === 'ops_tenant_invoice_overdue')).toHaveLength(1);
+
+    // Another update inside the same stretch (a second invoice issued)
+    // keeps the start and stays quiet.
+    const again = await postWebhook(updated('past_due', 'past_due'));
+    expect(again.body.connect).toContain('invoice_overdue_duplicate');
+    const same = await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).first();
+    expect(same!.pastDueSince.getTime()).toBe(mirror!.pastDueSince.getTime());
+    expect(sentMail.filter((m) => m.tag === 'ops_tenant_invoice_overdue')).toHaveLength(1);
+
+    // Paid: the stretch ends.
+    await postWebhook(updated('active', 'past_due'));
+    const paid = await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).first();
+    expect(paid).toMatchObject({ subscriptionStatus: 'active', pastDueSince: null });
+  });
+
+  it('a card subscription going past_due sends no overdue notice (Stripe dunning owns it)', async () => {
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'customer.subscription.updated',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: TENANT_SUB,
+          object: 'subscription',
+          customer: TENANT_CUS,
+          status: 'past_due',
+          collection_method: 'charge_automatically',
+          cancel_at_period_end: false,
+          items: { data: [{ price: { id: 'price_unknown_plan' } }] },
+        },
+        previous_attributes: { status: 'active' },
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.connect).not.toContain('invoice_overdue');
+    expect(sentMail).toHaveLength(0);
+    const mirror = await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).first();
+    expect(mirror).toMatchObject({ subscriptionStatus: 'past_due', collectionMethod: 'charge_automatically' });
+  });
+
   it('subscription.updated without a cancel_at_period_end change stays quiet', async () => {
     const res = await postWebhook({
       id: `evt_${ulid()}`,

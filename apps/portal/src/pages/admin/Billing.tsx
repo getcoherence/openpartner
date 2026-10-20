@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Banknote, CreditCard, ExternalLink } from 'lucide-react';
+import { Banknote, CreditCard, ExternalLink, FileText } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
 import { alpha, theme } from '../../theme.js';
-import { Button, Card, ErrorBanner, Page } from '../../ui.js';
+import { Button, Card, ErrorBanner, Input, Label, Page } from '../../ui.js';
 
 type Plan = 'flex' | 'revshare' | 'enterprise';
 type Mode = 'selfhost' | 'flat' | 'revshare';
@@ -31,6 +31,23 @@ interface BillingStatus {
   message?: string;
   /** How the platform fee is worked out (docs/platform-fee.md). */
   fee?: FeeDescription | null;
+  /** How a new subscription is collected (docs/invoice-billing.md). */
+  collection?: Collection;
+  /** How the live subscription is collected. */
+  subscriptionCollectionMethod?: CollectionMethod | null;
+  /** Set while a pay-by-invoice subscription is past due. */
+  invoiceOverdue?: { since: string; graceEndsAt: string; graceExpired: boolean } | null;
+}
+
+type CollectionMethod = 'send_invoice' | 'charge_automatically';
+
+interface Collection {
+  method: CollectionMethod;
+  source: 'ops' | 'country' | 'default';
+  daysUntilDue: number;
+  country: string | null;
+  gstin: string | null;
+  gstinRequired: boolean;
 }
 
 interface FeeDescription {
@@ -48,8 +65,11 @@ interface Invoice {
   status: string | null;
   amountDue: number;
   amountPaid: number;
+  amountRemaining: number;
   currency: string;
   created: number;
+  /** Pay-by-invoice invoices only (unix seconds). */
+  dueDate: number | null;
   periodStart: number;
   periodEnd: number;
   hostedInvoiceUrl: string | null;
@@ -84,6 +104,15 @@ export function AdminBilling() {
       ) : status.data ? (
         <>
           <PlanCard status={status.data} />
+          {payingByInvoice(status.data) && (
+            <OpenInvoicesCard invoices={invoices.data?.invoices ?? []} overdue={status.data.invoiceOverdue ?? null} />
+          )}
+          {status.data.subscribed && status.data.collection?.country === 'IN' && (
+            <>
+              <div style={{ height: 16 }} />
+              <TaxDetailsCard gstin={status.data.collection.gstin} />
+            </>
+          )}
           {status.data.fee && (
             <>
               <div style={{ height: 16 }} />
@@ -106,9 +135,28 @@ export function AdminBilling() {
   );
 }
 
+/** Does this tenant pay by invoice: its live subscription, or the terms a
+ *  new one would get? */
+function payingByInvoice(status: BillingStatus): boolean {
+  if (status.mode === 'selfhost' || status.plan === 'enterprise') return false;
+  return status.subscribed
+    ? status.subscriptionCollectionMethod === 'send_invoice'
+    : status.collection?.method === 'send_invoice';
+}
+
+/** The server's human sentence, without the error-code prefix. */
+function errorText(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) {
+    const d = (err.detail as { detail?: unknown } | null)?.detail;
+    return typeof d === 'string' ? d : err.message;
+  }
+  return fallback;
+}
+
 function PlanCard({ status }: { status: BillingStatus }) {
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
+  const byInvoice = payingByInvoice(status);
 
   const startCheckout = useMutation({
     mutationFn: () =>
@@ -134,8 +182,9 @@ function PlanCard({ status }: { status: BillingStatus }) {
       api<{ ok: boolean; plan: Plan }>('/billing/plan', { method: 'POST', body: { plan } }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['billing-status'] });
-      // Auto-trigger Checkout once the plan stuck.
-      startCheckout.mutate();
+      // Auto-trigger Checkout once the plan stuck. Pay-by-invoice brands
+      // start from the invoice form below instead.
+      if (!byInvoice) startCheckout.mutate();
     },
     onError: (err) => setError(err instanceof ApiError ? err.message : 'failed'),
   });
@@ -204,7 +253,9 @@ function PlanCard({ status }: { status: BillingStatus }) {
       {!plan && (
         <>
           <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 14px' }}>
-            Pick a tier to start your 14-day free trial. No card required up front.
+            {byInvoice
+              ? 'Pick a tier. You’ll pay by invoice: nothing is charged automatically.'
+              : 'Pick a tier to start your 14-day free trial. No card required up front.'}
           </p>
           <PlanPicker
             disabled={pickPlan.isPending || startCheckout.isPending}
@@ -220,7 +271,11 @@ function PlanCard({ status }: { status: BillingStatus }) {
 
       {error && <ErrorBanner error={error} />}
 
-      {plan && !subscribed && (
+      {plan && !subscribed && byInvoice && status.collection && (
+        <InvoiceSubscribe collection={status.collection} trialExpired={!!status.trialExpiredWithoutSubscription} />
+      )}
+
+      {plan && !subscribed && !byInvoice && (
         <div>
           {status.trialExpiredWithoutSubscription ? (
             <>
@@ -305,7 +360,8 @@ function PlanCard({ status }: { status: BillingStatus }) {
               Stripe will email you ~3 days before it ends to add a payment method.
             </div>
           )}
-          {status.status && status.status !== 'active' && status.status !== 'trialing' && (
+          {byInvoice && status.invoiceOverdue && <OverdueBanner overdue={status.invoiceOverdue} />}
+          {!byInvoice && status.status && status.status !== 'active' && status.status !== 'trialing' && (
             <div
               style={{
                 background: alpha(theme.danger, 0.063),
@@ -325,12 +381,21 @@ function PlanCard({ status }: { status: BillingStatus }) {
               {openPortal.isPending ? 'Opening Stripe…' : 'Manage in Stripe Portal'}
             </Button>
             <span style={{ color: theme.textDim, fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
-              <ExternalLink size={12} /> Switch plans, update card, view full invoice history
+              <ExternalLink size={12} />{' '}
+              {byInvoice
+                ? 'Switch plans, update billing details, view full invoice history'
+                : 'Switch plans, update card, view full invoice history'}
             </span>
           </div>
           {status.currentPeriodEnd && (
             <p style={{ marginTop: 10, fontSize: 12, color: theme.textDim }}>
               Current period ends {new Date(status.currentPeriodEnd * 1000).toLocaleDateString()}.
+            </p>
+          )}
+          {byInvoice && (
+            <p style={{ marginTop: 6, fontSize: 12, color: theme.textDim }}>
+              You pay by invoice: Stripe emails each one, and you pay it by card or bank transfer from the
+              invoice page. Nothing is charged automatically.
             </p>
           )}
           {/* The fee card below explains the fee; on the commission-floor
@@ -343,6 +408,234 @@ function PlanCard({ status }: { status: BillingStatus }) {
         </div>
       )}
     </Card>
+  );
+}
+
+/**
+ * Start the plan on pay-by-invoice terms (docs/invoice-billing.md). An
+ * Indian brand gives its GSTIN here: it prints on every invoice, and
+ * OpenPartner invoices businesses in India only when they're registered
+ * for GST.
+ */
+function InvoiceSubscribe({ collection, trialExpired }: { collection: Collection; trialExpired: boolean }) {
+  const qc = useQueryClient();
+  const [legalName, setLegalName] = useState('');
+  const [gstin, setGstin] = useState(collection.gstin ?? '');
+  const [billingEmail, setBillingEmail] = useState('');
+  // On success the page re-renders as subscribed, and "Invoices to pay"
+  // carries the first invoice's pay link.
+  const start = useMutation({
+    mutationFn: () =>
+      api<{ ok: boolean }>('/billing/invoice-subscription', {
+        method: 'POST',
+        body: {
+          ...(legalName.trim() ? { legalName: legalName.trim() } : {}),
+          ...(billingEmail.trim() ? { billingEmail: billingEmail.trim() } : {}),
+          ...(collection.country === 'IN' && gstin.trim() ? { gstin: gstin.trim() } : {}),
+        },
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['billing-status'] });
+      void qc.invalidateQueries({ queryKey: ['billing-invoices'] });
+    },
+  });
+  const needsGstin = collection.gstinRequired && !gstin.trim();
+
+  return (
+    <div>
+      {trialExpired && (
+        <Notice tone="danger">
+          <strong style={{ color: theme.danger }}>Trial expired.</strong> New programs, partners, coupons, and
+          offerings are paused until you start your plan. Click ingestion and attribution still run, so no data is
+          being lost.
+        </Notice>
+      )}
+      <Notice tone="accent">
+        You pay OpenPartner by invoice. Each month Stripe emails an invoice, due {collection.daysUntilDue} days
+        later. Pay it from the invoice page by card or by bank transfer: ACH, a US wire, or an international SWIFT
+        wire, in US dollars. Nothing is charged automatically.
+      </Notice>
+      <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+        <div>
+          <Label>Legal business name (printed on invoices)</Label>
+          <Input value={legalName} onChange={(e) => setLegalName(e.target.value)} placeholder="Your registered company name" />
+        </div>
+        <div>
+          <Label>Send invoices to (optional)</Label>
+          <Input type="email" value={billingEmail} onChange={(e) => setBillingEmail(e.target.value)} placeholder="accounts@yourcompany.com" />
+        </div>
+      </div>
+      {collection.country === 'IN' && (
+        <div style={{ marginBottom: 12 }}>
+          <Label>GSTIN</Label>
+          <Input
+            value={gstin}
+            onChange={(e) => setGstin(e.target.value.toUpperCase())}
+            placeholder="27AAPFU0939F1ZV"
+            maxLength={20}
+            style={{ fontFamily: theme.fontMono, maxWidth: 260 }}
+          />
+          <p style={{ fontSize: 12, color: theme.textDim, margin: '6px 0 0' }}>
+            Invoices show your GSTIN and “Reverse charge applicable”: you account for GST on them yourself. We can
+            only invoice businesses in India that are registered for GST.
+          </p>
+        </div>
+      )}
+      {start.error && <ErrorBanner error={errorText(start.error, 'Could not start your plan.')} />}
+      <Button onClick={() => start.mutate()} disabled={start.isPending || needsGstin}>
+        {start.isPending ? 'Starting…' : 'Start plan, pay by invoice'}
+      </Button>
+    </div>
+  );
+}
+
+function OverdueBanner({ overdue }: { overdue: NonNullable<BillingStatus['invoiceOverdue']> }) {
+  const graceEnd = new Date(overdue.graceEndsAt).toLocaleDateString();
+  return (
+    <Notice tone="danger">
+      <strong style={{ color: theme.danger }}>Invoice overdue.</strong>{' '}
+      {overdue.graceExpired
+        ? 'New partners are paused until your overdue invoices are paid. Everything else keeps running.'
+        : `Pay it below. If it’s still unpaid on ${graceEnd}, adding new partners pauses until it is.`}
+    </Notice>
+  );
+}
+
+/** Invoices waiting to be paid, each with its hosted pay link. */
+function OpenInvoicesCard({
+  invoices,
+  overdue,
+}: {
+  invoices: Invoice[];
+  overdue: BillingStatus['invoiceOverdue'];
+}) {
+  const open = invoices.filter((i) => i.status === 'open' && i.amountRemaining > 0);
+  if (open.length === 0) return null;
+  const now = Date.now() / 1000;
+  return (
+    <>
+      <div style={{ height: 16 }} />
+      <Card>
+        <SectionHeader icon={<FileText size={18} />} title="Invoices to pay" />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {open.map((inv) => {
+            const late = !!inv.dueDate && inv.dueDate < now;
+            return (
+              <div
+                key={inv.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: 12,
+                  padding: '10px 12px',
+                  background: theme.surface2,
+                  border: `1px solid ${late ? alpha(theme.danger, 0.333) : theme.borderSubtle}`,
+                  borderRadius: theme.radiusSm,
+                }}
+              >
+                <span style={{ fontSize: 13, fontFamily: theme.fontMono, color: theme.textMuted }}>
+                  {inv.number ?? inv.id.slice(0, 8)}
+                </span>
+                <span style={{ flex: 1, fontSize: 13, color: theme.text, minWidth: 120 }}>
+                  {formatMoney(inv.amountRemaining, inv.currency)}
+                </span>
+                {inv.dueDate && (
+                  <span style={{ fontSize: 12, color: late ? theme.danger : theme.textMuted }}>
+                    {late ? 'Overdue since' : 'Due'} {new Date(inv.dueDate * 1000).toLocaleDateString()}
+                  </span>
+                )}
+                {inv.hostedInvoiceUrl && (
+                  <a
+                    href={inv.hostedInvoiceUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ fontSize: 13, fontWeight: 600, color: theme.accentText }}
+                  >
+                    Pay invoice
+                  </a>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <p style={{ margin: '10px 0 0', fontSize: 12, color: theme.textDim }}>
+          Pay by card or bank transfer from the invoice page. For a bank transfer, quote the invoice number as the
+          reference so it’s matched automatically.
+          {overdue && !overdue.graceExpired ? ` Pay by ${new Date(overdue.graceEndsAt).toLocaleDateString()} to keep adding partners.` : ''}
+        </p>
+      </Card>
+    </>
+  );
+}
+
+/** An Indian brand's GSTIN, printed on its invoices. */
+function TaxDetailsCard({ gstin }: { gstin: string | null }) {
+  const qc = useQueryClient();
+  const [value, setValue] = useState(gstin ?? '');
+  const [editing, setEditing] = useState(!gstin);
+  const save = useMutation({
+    mutationFn: () => api<{ ok: boolean; gstin: string }>('/billing/tax-details', { method: 'PUT', body: { gstin: value.trim() } }),
+    onSuccess: () => {
+      setEditing(false);
+      void qc.invalidateQueries({ queryKey: ['billing-status'] });
+    },
+  });
+  return (
+    <Card>
+      <SectionHeader title="Tax details" />
+      {!editing && gstin ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, color: theme.textMuted }}>GSTIN</span>
+          <code style={{ fontSize: 13 }}>{gstin}</code>
+          <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>
+            Change
+          </Button>
+        </div>
+      ) : (
+        <>
+          <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px' }}>
+            Your GSTIN prints on your OpenPartner invoices, with “Reverse charge applicable”.
+          </p>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Input
+              value={value}
+              onChange={(e) => setValue(e.target.value.toUpperCase())}
+              placeholder="27AAPFU0939F1ZV"
+              maxLength={20}
+              style={{ fontFamily: theme.fontMono, maxWidth: 260 }}
+            />
+            <Button onClick={() => save.mutate()} disabled={save.isPending || !value.trim()}>
+              {save.isPending ? 'Saving…' : 'Save GSTIN'}
+            </Button>
+          </div>
+        </>
+      )}
+      {save.error && <ErrorBanner error={errorText(save.error, 'Could not save the GSTIN.')} />}
+    </Card>
+  );
+}
+
+function Notice({ tone, children }: { tone: 'accent' | 'danger'; children: React.ReactNode }) {
+  const palette =
+    tone === 'danger'
+      ? { bg: alpha(theme.danger, 0.063), border: alpha(theme.danger, 0.333) }
+      : { bg: theme.accentA10, border: theme.accentA55 };
+  return (
+    <div
+      style={{
+        background: palette.bg,
+        border: `1px solid ${palette.border}`,
+        borderRadius: theme.radiusSm,
+        padding: 12,
+        marginBottom: 14,
+        fontSize: 13,
+        color: theme.text,
+        lineHeight: 1.5,
+      }}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -661,6 +954,11 @@ function InvoicesCard({ invoices }: { invoices: Invoice[] }) {
             </span>
             <span style={{ flex: 1, fontSize: 13, color: theme.text }}>
               {formatMoney(inv.amountPaid > 0 ? inv.amountPaid : inv.amountDue, inv.currency)}
+              {inv.status === 'open' && inv.dueDate && (
+                <span style={{ color: theme.textDim, fontSize: 12 }}>
+                  {' '}· due {new Date(inv.dueDate * 1000).toLocaleDateString()}
+                </span>
+              )}
             </span>
             <span
               style={{
@@ -679,7 +977,7 @@ function InvoicesCard({ invoices }: { invoices: Invoice[] }) {
                 rel="noopener noreferrer"
                 style={{ fontSize: 12, color: theme.accentText }}
               >
-                View
+                {inv.status === 'open' ? 'Pay' : 'View'}
               </a>
             )}
           </div>

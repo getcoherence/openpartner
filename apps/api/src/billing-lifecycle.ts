@@ -25,12 +25,17 @@ import { TABLES, type ConfigRow, type TenantRow } from '@openpartner/db';
 // the privileged pool, same as brand-review's ops notifications.
 import { db as privilegedDb } from './db.js';
 import { applyWhiteLabelFromSubscription } from './white-label-billing.js';
-import { mirrorHostedBillingState, type MirroredSubscriptionStatus } from './billing-plan.js';
+import {
+  INVOICE_GRACE_DAYS_DEFAULT,
+  mirrorHostedBillingState,
+  type MirroredSubscriptionStatus,
+} from './billing-plan.js';
 import { sendOpsEmail } from './platform-ops-mail.js';
 import { stripeMinorToMajorString } from './stripe-amounts.js';
 import {
   opsTenantCancellationResumedEmail,
   opsTenantCancellationScheduledEmail,
+  opsTenantInvoiceOverdueEmail,
   opsTenantInvoicePaymentFailedEmail,
   opsTenantSubscriptionEndedEmail,
 } from './email-templates.js';
@@ -51,6 +56,11 @@ const CANCEL_NOTICE_CONFIG_KEY = 'billing_cancel_scheduled_notice';
 /** Config marker for the last dunning attempt ops was told about: a Stripe
  *  redelivery of the same attempt stays silent, each NEW attempt notifies. */
 const DUNNING_NOTICE_CONFIG_KEY = 'billing_dunning_notice';
+
+/** Config marker for the last overdue stretch of a pay-by-invoice
+ *  subscription ops was told about: one notice per stretch, however many
+ *  webhooks and nightly passes see it. */
+const OVERDUE_NOTICE_CONFIG_KEY = 'billing_overdue_notice';
 
 async function tenantForOps(db: Knex, tenantId: string): Promise<{ name: string; slug: string }> {
   const t = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first(['displayName', 'slug']);
@@ -205,6 +215,42 @@ export async function notifyTenantInvoicePaymentFailed(
   return 'notified';
 }
 
+/**
+ * A pay-by-invoice subscription went past due → ops alert, once per
+ * past_due stretch (keyed by its start, HostedBillingState.pastDueSince).
+ * Card dunning has invoice.payment_failed for this; a send_invoice invoice
+ * is never attempted, so the subscription turning past_due is the only
+ * signal. Called from the webhook and the nightly reconcile; the marker is
+ * written only after a successful send, so a mail failure retries.
+ */
+export async function notifyTenantInvoiceOverdue(
+  db: Knex,
+  tenantId: string,
+  subscriptionId: string,
+  pastDueSince: Date,
+): Promise<'notified' | 'duplicate'> {
+  const since = pastDueSince.toISOString();
+  const marker = await db<ConfigRow>(TABLES.Config).where({ tenantId, key: OVERDUE_NOTICE_CONFIG_KEY }).first();
+  const prev = marker?.value as { subscriptionId?: string; pastDueSince?: string } | undefined;
+  if (prev?.subscriptionId === subscriptionId && prev.pastDueSince === since) return 'duplicate';
+  const profile = await db(TABLES.HostedBillingProfile).where({ tenantId }).first<{ graceDays: number } | undefined>('graceDays');
+  const graceEndsAt = new Date(pastDueSince.getTime() + (profile?.graceDays ?? INVOICE_GRACE_DAYS_DEFAULT) * 86_400_000);
+  const { name, slug } = await tenantForOps(db, tenantId);
+  const sent = await sendOpsEmail(
+    privilegedDb,
+    opsTenantInvoiceOverdueEmail(name, slug, graceEndsAt, stripeSubscriptionUrl(subscriptionId)),
+    'ops_tenant_invoice_overdue',
+  );
+  if (sent) {
+    const value = { subscriptionId, pastDueSince: since } as unknown as never;
+    await db<ConfigRow>(TABLES.Config)
+      .insert({ tenantId, key: OVERDUE_NOTICE_CONFIG_KEY, value, updatedAt: new Date() })
+      .onConflict(['tenantId', 'key'])
+      .merge({ value, updatedAt: new Date() });
+  }
+  return 'notified';
+}
+
 async function markCancelNoticeSent(db: Knex, tenantId: string, subscriptionId: string): Promise<void> {
   await db<ConfigRow>(TABLES.Config)
     .insert({
@@ -235,6 +281,9 @@ export interface ReconcileResult {
   ended: string[];
   /** Slugs newly discovered as cancel-scheduled (webhook missed it). */
   cancelScheduled: string[];
+  /** Slugs whose pay-by-invoice subscription is past due and ops hadn't
+   *  been told yet (webhook missed it, or the mail failed). */
+  invoiceOverdue: string[];
   errors: string[];
 }
 
@@ -256,7 +305,7 @@ export async function reconcileTenantSubscriptions(
     .whereNotNull('stripeSubscriptionId')
     .select(['id', 'slug', 'stripeSubscriptionId']);
 
-  const result: ReconcileResult = { checked: tenants.length, ended: [], cancelScheduled: [], errors: [] };
+  const result: ReconcileResult = { checked: tenants.length, ended: [], cancelScheduled: [], invoiceOverdue: [], errors: [] };
   for (const tenant of tenants) {
     try {
       let sub: Stripe.Subscription;
@@ -280,7 +329,17 @@ export async function reconcileTenantSubscriptions(
       }
       // Live subscription — refresh the status mirror (webhooks normally
       // keep this current; the poll catches drift from missed deliveries).
-      await mirrorHostedBillingState(db, tenant.id, sub.status as MirroredSubscriptionStatus);
+      const { pastDueSince } = await mirrorHostedBillingState(
+        db,
+        tenant.id,
+        sub.status as MirroredSubscriptionStatus,
+        sub.collection_method,
+      );
+      if (sub.status === 'past_due' && sub.collection_method === 'send_invoice' && pastDueSince) {
+        if ((await notifyTenantInvoiceOverdue(db, tenant.id, sub.id, pastDueSince)) === 'notified') {
+          result.invoiceOverdue.push(tenant.slug);
+        }
+      }
       if (subscriptionCancelScheduled(sub)) {
         const notified = await cancelNoticeSentFor(db, tenant.id);
         if (notified !== sub.id) {

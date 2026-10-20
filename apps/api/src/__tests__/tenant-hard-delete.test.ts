@@ -210,6 +210,7 @@ async function seedEverything(tenantId: string): Promise<void> {
   });
   await db(TABLES.HostedBillingState).insert({ tenantId });
   await db(TABLES.HostedFeeTerms).insert({ tenantId });
+  await db(TABLES.HostedBillingProfile).insert({ tenantId, collectionMethod: 'send_invoice', gstin: '27AAPFU0939F1ZV' });
   await db(TABLES.UsageLedger).insert({
     id: u(),
     tenantId,

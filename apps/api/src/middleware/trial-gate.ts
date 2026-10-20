@@ -5,7 +5,8 @@
  *   - PLAN_REQUIRED (partner onboarding): needs an ACTIVE subscription
  *     regardless of trial — a brand must pick a plan before it onboards
  *     its first partner (each brand is its own separately-billed tenant).
- *     error = 'plan_required'.
+ *     error = 'plan_required'. A pay-by-invoice plan overdue past its
+ *     grace counts as no plan too, with reason = 'invoice_overdue'.
  *   - TRIAL_GATED (program expansion): soft-blocked only once the 14-day
  *     trial lapses without a subscription. error = 'trial_expired'.
  *
@@ -127,9 +128,15 @@ export async function trialGate(req: Request, res: Response, next: NextFunction)
 
   // Onboarding a partner requires a real plan — trial or not.
   if (planRequired && !hasActivePlan(state)) {
+    // A pay-by-invoice plan past its overdue grace is still a plan: the
+    // brand needs to pay, not pick one.
+    const overdue = state.invoiceOverdue?.graceExpired === true;
     res.status(402).json({
       error: 'plan_required',
-      detail: 'Pick a plan (RevShare or Flex) at /admin/billing to start onboarding partners.',
+      ...(overdue ? { reason: 'invoice_overdue' } : {}),
+      detail: overdue
+        ? 'Your OpenPartner invoice is overdue. Pay it from /admin/billing to resume onboarding partners.'
+        : 'Pick a plan (RevShare or Flex) at /admin/billing to start onboarding partners.',
       plan: state.plan,
       trialEndsAt: state.trialEndsAt?.toISOString() ?? null,
     });

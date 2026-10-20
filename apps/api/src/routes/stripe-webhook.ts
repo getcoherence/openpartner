@@ -21,6 +21,7 @@ import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFro
 import {
   handleCancellationScheduleChanged,
   handleTenantSubscriptionEnded,
+  notifyTenantInvoiceOverdue,
   notifyTenantInvoicePaymentFailed,
   subscriptionCancelScheduled,
 } from '../billing-lifecycle.js';
@@ -733,7 +734,19 @@ async function handleConnectEvent(
       });
       // HostedBillingState mirror (spec §4 finding 13): hasActivePlan and
       // funding eligibility read this instead of live Stripe calls.
-      await mirrorHostedBillingState(trx, tenantId, sub.status as MirroredSubscriptionStatus);
+      const { pastDueSince } = await mirrorHostedBillingState(
+        trx,
+        tenantId,
+        sub.status as MirroredSubscriptionStatus,
+        sub.collection_method,
+      );
+      // A pay-by-invoice subscription turns past_due when an invoice passes
+      // its due date — the only overdue signal there is (nothing is
+      // charged, so no invoice.payment_failed).
+      let overdueNote: string | null = null;
+      if (sub.status === 'past_due' && sub.collection_method === 'send_invoice' && pastDueSince) {
+        overdueNote = `invoice_overdue_${await notifyTenantInvoiceOverdue(trx, tenantId, sub.id, pastDueSince)}`;
+      }
       // Cancellation (un)scheduling — previous_attributes carries the old
       // values only when they actually changed in this event, so this
       // fires on real transitions and alerts ops weeks before the
@@ -757,6 +770,7 @@ async function handleConnectEvent(
         newPlan ? `subscription_updated_plan_${newPlan}` : 'subscription_updated',
         ...(wl !== 'unchanged' ? [`white_label_${wl}`] : []),
         ...(cancelNote ? [cancelNote] : []),
+        ...(overdueNote ? [overdueNote] : []),
       ];
       return parts.join('+');
     }

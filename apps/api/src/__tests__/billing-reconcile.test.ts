@@ -96,6 +96,22 @@ describe.skipIf(skipIntegration)('billing-subscription-reconcile', () => {
     expect(again).toMatchObject({ checked: 0 });
   });
 
+  it('a pay-by-invoice subscription found past_due is mirrored with its stretch, and ops told once', async () => {
+    const stripe = fakeStripe(async () => liveSub({ status: 'past_due', collection_method: 'send_invoice' }));
+    const first = await reconcileTenantSubscriptions(db, stripe);
+    expect((first as { invoiceOverdue: string[] }).invoiceOverdue).toHaveLength(1);
+    const mirror = await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).first();
+    expect(mirror).toMatchObject({ subscriptionStatus: 'past_due', collectionMethod: 'send_invoice' });
+    expect(mirror!.pastDueSince).toBeInstanceOf(Date);
+    expect(sentMail.filter((m) => m.tag === 'ops_tenant_invoice_overdue')).toHaveLength(1);
+
+    const second = await reconcileTenantSubscriptions(db, stripe);
+    expect((second as { invoiceOverdue: string[] }).invoiceOverdue).toHaveLength(0);
+    expect(sentMail.filter((m) => m.tag === 'ops_tenant_invoice_overdue')).toHaveLength(1);
+    const kept = await db(TABLES.HostedBillingState).where({ tenantId: DEFAULT_TENANT_ID }).first();
+    expect(kept!.pastDueSince.getTime()).toBe(mirror!.pastDueSince.getTime());
+  });
+
   it('resource_missing NEVER heals — a wrong key/account must not mass-revoke live tenants', async () => {
     // Canceled subs stay retrievable forever, so "missing" means the key
     // cannot see the id (test-mode key, wrong account). Treating it as

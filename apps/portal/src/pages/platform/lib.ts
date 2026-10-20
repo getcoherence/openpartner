@@ -358,6 +358,45 @@ export interface FeeReviewSignals {
   };
 }
 
+export type CollectionMethod = 'send_invoice' | 'charge_automatically';
+
+export interface InvoiceBillingTenant {
+  tenantId: string;
+  slug: string;
+  name: string;
+  plan: string | null;
+  country: string | null;
+  profile: {
+    collectionMethod: CollectionMethod | null;
+    daysUntilDue: number;
+    graceDays: number;
+    gstin: string | null;
+    updatedByEmail: string | null;
+    updatedAt: string;
+  } | null;
+  terms: {
+    method: CollectionMethod;
+    source: 'ops' | 'country' | 'default';
+    daysUntilDue: number;
+    graceDays: number;
+    country: string | null;
+    gstin: string | null;
+    gstinRequired: boolean;
+  };
+  subscription: {
+    live: boolean;
+    status: string | null;
+    collectionMethod: CollectionMethod | null;
+    pastDueSince: string | null;
+  };
+}
+
+export interface InvoiceBillingState {
+  settings: { defaultCountries: string[] };
+  defaults: { daysUntilDue: number; graceDays: number };
+  tenants: InvoiceBillingTenant[];
+}
+
 export interface BlocklistEntry {
   id: string;
   type: 'email' | 'domain';
@@ -472,6 +511,12 @@ export function friendlyPlatformError(err: unknown): string {
       return 'A newer screening has replaced this one. Refresh and review the latest.';
     case 'screening_not_configured':
       return 'CSL_API_KEY isn’t set, so nothing can be screened.';
+    case 'gstin_required':
+      return 'This brand is in India and has no GSTIN on file. Ask it to add one on its Billing page first.';
+    case 'no_payment_method':
+      return 'The brand has no card on file. It can add one in the Stripe Customer Portal from its Billing page.';
+    case 'not_found':
+      return 'No brand with that id or slug.';
     default:
       return raw;
   }

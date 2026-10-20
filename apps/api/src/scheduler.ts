@@ -457,6 +457,7 @@ export const TENANT_PURGE_ORDER = [
   TABLES.UsageLedger,
   TABLES.UsageFeeShadow,
   TABLES.HostedFeeTerms,
+  TABLES.HostedBillingProfile,
   TABLES.HostedBillingState,
   TABLES.TenantStripeConnection,
   TABLES.PortalCustomDomain,

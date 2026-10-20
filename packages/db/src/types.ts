@@ -1247,6 +1247,37 @@ export interface HostedBillingStateRow {
   tenantId: string;
   subscriptionStatus: 'active' | 'trialing' | 'past_due' | 'unpaid' | 'paused' | 'canceled' | null;
   delinquentFundingCount: number;
+  /** How the live subscription is collected, as Stripe last reported it.
+   *  Null on rows mirrored before 20261019050000. */
+  collectionMethod: BillingCollectionMethod | null;
+  /** Start of the current continuous past_due stretch; null otherwise. */
+  pastDueSince: Date | null;
+  updatedAt: Date;
+}
+
+/** How a hosted tenant's OpenPartner subscription is collected: a card
+ *  charged automatically, or an invoice the brand pays from Stripe's hosted
+ *  invoice page (docs/invoice-billing.md). */
+export type BillingCollectionMethod = 'send_invoice' | 'charge_automatically';
+
+/** HOSTED BILLING SIDECAR (not exported — see docs/data-portability.md):
+ *  how one tenant pays its OpenPartner subscription. See
+ *  apps/api/src/invoice-billing.ts and docs/invoice-billing.md. */
+export interface HostedBillingProfileRow {
+  tenantId: string;
+  /** The ops choice. Null: the country default (PlatformSetting
+   *  'invoiceBilling'). */
+  collectionMethod: BillingCollectionMethod | null;
+  /** Invoice payment terms, in days. */
+  daysUntilDue: number;
+  /** Days a pay-by-invoice subscription may stay past due before partner
+   *  onboarding pauses. */
+  graceDays: number;
+  /** Indian GST registration number, upper case. Printed on invoices as
+   *  the Stripe customer tax ID in_gst. */
+  gstin: string | null;
+  updatedByEmail: string | null;
+  createdAt: Date;
   updatedAt: Date;
 }
 
