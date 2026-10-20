@@ -8,7 +8,8 @@
  *
  *   Phase 2 — hard delete: a scheduler sweep (hardDeleteExpiredTenants
  *     in scheduler.ts) finds tenants past the 30-day grace window and
- *     wipes every tenant-scoped row. Until then, an admin can call
+ *     wipes every tenant-scoped row, then the password of any admin with
+ *     no other brand left. Until then, an admin can call
  *     /account/restore to clear pendingDeletionAt and recover.
  *
  * Phase 1 also:

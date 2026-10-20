@@ -140,7 +140,7 @@ declare global {
 // Bootstrap allowlist
 // --------------------------------------------------------------------------
 
-function envAdminEmails(): Set<string> {
+export function envAdminEmails(): Set<string> {
   return new Set(
     (process.env.PLATFORM_ADMIN_EMAILS ?? '')
       .split(',')
