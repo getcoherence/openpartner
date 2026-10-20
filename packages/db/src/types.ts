@@ -428,6 +428,39 @@ export interface PartnerNetworkConsentRow {
   updatedAt: Date;
 }
 
+/**
+ * How a partner wants manual-rail payouts sent (PartnerPayoutProfile, one
+ * row per partner; docs/manual-payout-files.md). The brand sends the money
+ * itself, from its own PayPal or Wise account.
+ *
+ *   paypal — a PayPal account email (PayPal Payouts batch file)
+ *   bank   — a bank account: IBAN, or a local account number plus routing
+ *            code such as a sort code, ABA routing number or IFSC (Wise
+ *            batch file)
+ *   upi    — an Indian UPI ID, paid by the brand one at a time
+ *   other  — free-text instructions, paid by the brand one at a time
+ */
+export const PAYOUT_PROFILE_METHODS = ['paypal', 'bank', 'upi', 'other'] as const;
+export type PayoutProfileMethod = (typeof PAYOUT_PROFILE_METHODS)[number];
+
+/** Who last saved a payout profile: the partner in the portal, an admin
+ *  in the portal, or an API key. */
+export type PayoutProfileUpdatedBy = 'partner' | 'admin' | 'api';
+
+export interface PartnerPayoutProfileRow {
+  partnerId: string;
+  tenantId: string;
+  method: PayoutProfileMethod;
+  /** Where the account is held, or null where the method has none. */
+  country: string | null;
+  /** The method's details as JSON, sealed with AES-256-GCM. Read and write
+   *  it only through apps/api/src/payout-profile.ts. */
+  details: string;
+  updatedBy: PayoutProfileUpdatedBy;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export type MagicLinkPurpose =
   | 'partner_invite'
   | 'partner_signin'

@@ -72,7 +72,43 @@ export async function api<T = unknown>(
     // as a bare "500" or "400" — useless when triaging.
     throw new ApiError(res.status, friendlyMessage(res, detail), detail);
   }
+  // 204 No Content (a DELETE) has no body to parse.
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
+}
+
+/**
+ * Download an authenticated file (a CSV export) and hand it to the browser
+ * as `filename`. Same credentials and tenant prefix as api().
+ */
+export async function apiDownload(path: string, filename: string): Promise<void> {
+  const key = getApiKey();
+  const headers = new Headers();
+  if (key) headers.set('Authorization', `Bearer ${key}`);
+  const slug = currentTenantSlug();
+  const res = await fetch(`/api${slug ? `/t/${slug}` : ''}${path}`, { headers, credentials: 'include' });
+  if (!res.ok) {
+    let detail: unknown = null;
+    try {
+      detail = await res.json();
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(res.status, friendlyMessage(res, detail), detail);
+  }
+  saveBlob(await res.blob(), filename);
+}
+
+/** Hand the browser a file to save as `filename`. */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 function friendlyMessage(res: Response, detail: unknown): string {

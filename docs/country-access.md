@@ -115,7 +115,10 @@ recorded, and ops are emailed to reject it from the review console.
 
 A partner whose latest declared country is on the list is held: their
 Stripe payouts (direct Connect and the funded rail) aren't made, and a
-manual payout carries a warning. See
+manual payout carries a warning. A blocked partner, or a payout account or
+address in a blocked country, is left out of the manual rail's PayPal and
+Wise batch files, and no confirm records it as paid
+([manual-payout-files.md](manual-payout-files.md)). See
 [sanctions-screening.md](sanctions-screening.md#payout-holds), which also
 covers screening names against the US Consolidated Screening List.
 

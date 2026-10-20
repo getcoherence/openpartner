@@ -23,6 +23,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { Knex } from 'knex';
 import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 import { makeSecret } from './webhook-dispatcher.js';
+import { openForExport, sealForImport } from './payout-profile.js';
 
 /** Bundle format version. Bumped when the table set or row shape changes.
  *  v1 → v2 (Aug 2026): added PartnerProgram, PartnerCommission, Coupon;
@@ -40,8 +41,10 @@ import { makeSecret } from './webhook-dispatcher.js';
  *  v6 → v7 (Oct 2026): added Bounty (performance bounties; Bonus.bountyId
  *  references it).
  *  v7 → v8 (Oct 2026): Click rows carry `subId` (the publisher's `?sub_id=`
- *  off the partner link). */
-export const SCHEMA_VERSION = 8;
+ *  off the partner link).
+ *  v8 → v9 (Oct 2026): added PartnerPayoutProfile (where each partner wants
+ *  manual payouts sent), its `details` opened (see SealedSpec). */
+export const SCHEMA_VERSION = 9;
 /** Older bundles still import — a v1 bundle is a v2 bundle minus three
  *  tables, a v2 bundle's PartnerCommission rows are partner-wide v3 rows
  *  (see upgradeBundle), a v3 bundle is a v4 bundle minus
@@ -54,10 +57,11 @@ export const SCHEMA_VERSION = 8;
  *  an attributionId, and `bonusId` takes its default (null). A v6 bundle is
  *  a v7 bundle with no bounties: none of its bonuses name one. A v7 bundle's
  *  Click rows have no `subId`, so it takes its default (null): no click
- *  carried one before the column existed.
+ *  carried one before the column existed. A v8 bundle is a v9 bundle with no
+ *  payout details: every restored partner starts without any.
  *  Dropping support for a version people hold on disk would break the
  *  portability promise, so this list only ever grows. */
-export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
+export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
 
 /**
  * The Config keys that travel: the brand's own program and portal settings.
@@ -97,6 +101,20 @@ export interface CredentialSpec {
   sqlAfter?: (tenantExpr: string) => string[];
 }
 
+/**
+ * Columns stored sealed under this deployment's SECRETS_ENCRYPTION_KEY. A
+ * sealed value means nothing anywhere else, so it travels opened: `open`
+ * runs for every export format, and the JSON import runs `seal` to seal it
+ * again under the destination's key. A SQL restore can't encrypt (the key
+ * is the app's), so it writes the opened value, and the API seals the row
+ * the first time it reads it. Not credentials: the data is the brand's and
+ * its partners', and leaving it out would strand it on this deployment.
+ */
+export interface SealedSpec {
+  open: (row: Record<string, unknown>) => Record<string, unknown>;
+  seal: (row: Record<string, unknown>) => Record<string, unknown>;
+}
+
 export interface ExportTableSpec {
   table: string;
   /** The table's real primary key. NOT always `id` in general, so it's
@@ -114,6 +132,7 @@ export interface ExportTableSpec {
    *  and on import. */
   only?: { column: string; values: readonly string[] };
   credentials?: CredentialSpec;
+  sealed?: SealedSpec;
 }
 
 /** A token hash no plaintext matches: the restored row keeps its history
@@ -148,6 +167,15 @@ export const EXPORT_TABLES = [
   // partner. Without it a restored instance would forget who agreed to
   // have their details shared with the Network.
   { table: TABLES.PartnerNetworkConsent, primaryKey: 'partnerId' },
+  // Where each partner wants manual payouts sent: a PayPal email, bank
+  // account, UPI ID or instructions. One row per partner. Sealed at rest,
+  // so it travels opened (SealedSpec); without it every partner of a
+  // restored program would have to enter their bank details again.
+  {
+    table: TABLES.PartnerPayoutProfile,
+    primaryKey: 'partnerId',
+    sealed: { open: openForExport, seal: sealForImport },
+  },
   // Coupon-code attribution. A coupon-driven conversion can't be
   // re-derived without the code → (partner, program) mapping.
   { table: TABLES.Coupon, primaryKey: 'id' },
@@ -324,7 +352,8 @@ export async function exportTable(
   if (spec.only) query.whereIn(spec.only.column, spec.only.values);
   const rows = (await query.select('*')) as Record<string, unknown>[];
   const omit = spec.credentials?.omit;
-  return omit ? rows.map((r) => withoutColumns(r, omit)) : rows;
+  const out = omit ? rows.map((r) => withoutColumns(r, omit)) : rows;
+  return spec.sealed ? out.map(spec.sealed.open) : out;
 }
 
 /**
@@ -531,6 +560,9 @@ export function buildSqlDump(bundle: ImportBundle, opts: SqlDumpOptions = {}): s
     if (spec.credentials) {
       out.push(`-- Not exported: ${spec.credentials.omit.join(', ')}. Fresh values are generated on restore.`);
     }
+    if (spec.sealed) {
+      out.push('-- Sealed at rest, written here opened: the API seals each row again the first time it reads it.');
+    }
     for (let i = 0; i < rows.length; i += chunkSize) {
       const chunk = rows.slice(i, i + chunkSize);
       const values = chunk.map(
@@ -661,7 +693,8 @@ export async function importBundle(
     const types = await tableColumnTypes(db, table);
     const reveals = new Map<string, Record<string, unknown>>();
     const normalized = portable.map((r) => {
-      const row: Record<string, unknown> = { ...normalizeRow(r, types), tenantId };
+      const normalized = { ...normalizeRow(r, types), tenantId };
+      const row: Record<string, unknown> = spec.sealed ? spec.sealed.seal(normalized) : normalized;
       if (!spec.credentials) return row;
       // A bundle never carries credentials; a hand-made one that does is
       // ignored like any other.
