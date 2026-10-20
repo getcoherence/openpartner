@@ -20,6 +20,7 @@ import { CreatorShareLinksPage } from './CreatorShareLinks.js';
 import { CreatorDomainsPage } from './CreatorDomains.js';
 import { CreatorProgramDetailPage } from './CreatorProgramDetail.js';
 import { CreatorStorefrontPage } from './CreatorStorefront.js';
+import { CreatorStorefrontSetupPage } from './CreatorStorefrontSetup.js';
 import { CreatorBookingsPage } from './CreatorBookings.js';
 import { CreatorLocationPrompt, useCreatorLocationMissing } from './CreatorLocation.js';
 
@@ -79,6 +80,7 @@ export function CreatorShell() {
           <Route path="domains" element={<CreatorDomainsPage />} />
           <Route path="requests" element={<CreatorMyRequestsPage />} />
           <Route path="storefront" element={<CreatorStorefrontPage />} />
+          <Route path="storefront/setup" element={<CreatorStorefrontSetupPage />} />
           <Route path="bookings" element={<CreatorBookingsPage />} />
           <Route path="profile" element={<CreatorMyProfilePage />} />
           <Route path="*" element={<Navigate to="/creator/discover" replace />} />

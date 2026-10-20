@@ -1,17 +1,30 @@
 /**
- * The storefront on a creator's public profile: their packages and a
- * booking-request form. Anyone can send a request; the Network emails the
- * requester a confirmation link and only a confirmed request reaches the
- * creator (the Network's docs/creator-storefront.md).
+ * The storefront on a creator's public profile: their channels, the
+ * packages under each, and a booking-request form. Anyone can send a
+ * request; the Network emails the requester a confirmation link and only a
+ * confirmed request reaches the creator (the Network's
+ * docs/creator-storefront.md).
+ *
+ * `preview` renders the same section inside the creator's editor and setup
+ * flow: the buttons are inert and no form opens.
  */
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { useMutation } from '@tanstack/react-query';
-import { MailCheck } from 'lucide-react';
+import { ExternalLink, MailCheck, RefreshCw } from 'lucide-react';
 import { Button, Card, ErrorBanner, Input, Label, Textarea } from '../../ui.js';
 import { theme } from '../../theme.js';
+import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
 import { creatorApi } from './creator-api.js';
-import { formatPackagePrice, PLATFORM_LABELS, type StorefrontPackage } from './storefront-shared.js';
+import {
+  audienceNoun,
+  formatCompact,
+  formatPackagePrice,
+  groupByChannel,
+  PLATFORM_LABELS,
+  type StorefrontChannel,
+  type StorefrontPackage,
+} from './storefront-shared.js';
 
 /** Which request the form is for: a package, or a custom collaboration. */
 type Selection = { pkg: StorefrontPackage | null } | null;
@@ -20,50 +33,50 @@ export function StorefrontSection({
   handle,
   creatorName,
   packages,
+  channels = [],
+  preview = false,
 }: {
   handle: string;
   creatorName: string;
   packages: StorefrontPackage[];
+  /** The creator's platforms. Absent → a flat package list. */
+  channels?: StorefrontChannel[];
+  preview?: boolean;
 }) {
   const [selection, setSelection] = useState<Selection>(null);
   const firstName = creatorName.split(' ')[0] || creatorName;
+  const groups = groupByChannel(packages, channels);
+  const select = (s: Selection) => {
+    if (!preview) setSelection(s);
+  };
 
   return (
     <>
-      <div style={{ height: 14 }} />
+      {!preview && <div style={{ height: 14 }} />}
       <Card>
         <h3 style={{ marginTop: 0, marginBottom: 4, fontSize: 15, fontWeight: 500 }}>Work with {firstName}</h3>
         <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
           Pick a package and send a request. {firstName} gets back to you by email.
         </div>
-        <div style={{ display: 'grid', gap: 10 }}>
-          {packages.map((p) => (
-            <div
-              key={p.id}
-              style={{
-                border: `1px solid ${theme.border}`,
-                borderRadius: theme.radiusSm,
-                padding: '14px 16px',
-                background: theme.surface,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{p.title}</div>
-                  {p.platform && (
-                    <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>{PLATFORM_LABELS[p.platform] ?? p.platform}</div>
-                  )}
-                </div>
-                <div style={{ fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap' }}>{formatPackagePrice(p)}</div>
-              </div>
-              {p.description && (
-                <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                  {p.description}
+        <div style={{ display: 'grid', gap: 18 }}>
+          {groups.map((g) => (
+            <div key={g.key}>
+              {g.channel ? (
+                <ChannelHeader channel={g.channel} />
+              ) : (
+                (groups.length > 1 || g.platform) && (
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                    {g.platform ? (PLATFORM_LABELS[g.platform] ?? g.platform) : 'Across channels'}
+                  </div>
+                )
+              )}
+              {g.packages.length > 0 && (
+                <div style={{ display: 'grid', gap: 8, marginTop: g.channel ? 10 : 0 }}>
+                  {g.packages.map((p) => (
+                    <PackageRow key={p.id} pkg={p} onRequest={() => select({ pkg: p })} />
+                  ))}
                 </div>
               )}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
-                <Button size="sm" onClick={() => setSelection({ pkg: p })}>Request →</Button>
-              </div>
             </div>
           ))}
         </div>
@@ -72,20 +85,20 @@ export function StorefrontSection({
             display: 'flex',
             alignItems: 'center',
             gap: 12,
-            marginTop: packages.length > 0 ? 14 : 0,
+            marginTop: groups.length > 0 ? 16 : 0,
             flexWrap: 'wrap',
           }}
         >
           <span style={{ flex: 1, fontSize: 13, color: theme.textMuted }}>
             {packages.length > 0 ? 'Looking for something custom?' : `${firstName} takes collaboration requests.`}
           </span>
-          <Button size="sm" variant="secondary" onClick={() => setSelection({ pkg: null })}>
+          <Button size="sm" variant="secondary" onClick={() => select({ pkg: null })}>
             Get in touch
           </Button>
         </div>
       </Card>
 
-      {selection && (
+      {selection && !preview && (
         <RequestForm
           key={selection.pkg?.id ?? 'custom'}
           handle={handle}
@@ -95,6 +108,106 @@ export function StorefrontSection({
         />
       )}
     </>
+  );
+}
+
+/**
+ * A channel's block: platform, handle, audience and the creator's pitch.
+ * A count synced from the platform says so; anything else is the creator's
+ * own number.
+ */
+export function ChannelHeader({ channel }: { channel: StorefrontChannel }) {
+  const label = PLATFORM_LABELS[channel.platform] ?? channel.platform;
+  // Each number is followed by where it came from: the platform's API, or
+  // the creator. (A channel that hides its subscriber count has a typed
+  // count but synced views.)
+  const facts: React.ReactNode[] = [];
+  const strong = (n: number) => <strong style={{ color: theme.text, fontWeight: 600 }}>{formatCompact(n)}</strong>;
+  const synced = (
+    <span
+      key="synced"
+      title={channel.statsSyncedAt ? `Last read ${new Date(channel.statsSyncedAt).toLocaleDateString()}` : undefined}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: theme.success }}
+    >
+      <RefreshCw size={11} /> Synced from {label}
+    </span>
+  );
+  if (channel.followerCount != null) {
+    facts.push(<span key="audience">{strong(channel.followerCount)} {audienceNoun(channel.platform)}</span>);
+    if (!channel.followerCountSynced) facts.push(<span key="self" style={{ color: theme.textDim }}>Self-reported</span>);
+  }
+  if (channel.viewsPerVideo != null) {
+    facts.push(
+      <span key="views" title="Median views of the latest 10 uploads">
+        {strong(channel.viewsPerVideo)} views per video
+      </span>,
+    );
+  }
+  if (channel.followerCountSynced || channel.viewsPerVideo != null) facts.push(synced);
+  if (channel.cadence) facts.push(<span key="cadence">{channel.cadence}</span>);
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 14, fontWeight: 600 }}>{label}</span>
+        {channel.profileUrl ? (
+          <a
+            href={channel.profileUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontFamily: theme.fontMono, fontSize: 12.5, color: theme.textMuted, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          >
+            {channel.handle}
+            <ExternalLink size={11} />
+          </a>
+        ) : (
+          <span style={{ fontFamily: theme.fontMono, fontSize: 12.5, color: theme.textMuted }}>{channel.handle}</span>
+        )}
+        {channel.verified && <VerifiedBadge compact />}
+      </div>
+      {facts.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', fontSize: 12.5, color: theme.textMuted, marginTop: 4 }}>
+          {facts.map((f, i) => (
+            // The dot trails its item, so a wrapped line never starts with one.
+            <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+              {f}
+              {i < facts.length - 1 && <span aria-hidden="true" style={{ color: theme.textDim }}>·</span>}
+            </span>
+          ))}
+        </div>
+      )}
+      {channel.description && (
+        <div style={{ fontSize: 13, color: theme.text, marginTop: 6, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          {channel.description}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PackageRow({ pkg, onRequest }: { pkg: StorefrontPackage; onRequest: () => void }) {
+  return (
+    <div
+      style={{
+        border: `1px solid ${theme.border}`,
+        borderRadius: theme.radiusSm,
+        padding: '12px 14px',
+        background: theme.surface,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+        <div style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600 }}>{pkg.title}</div>
+        <div style={{ fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap' }}>{formatPackagePrice(pkg)}</div>
+      </div>
+      {pkg.description && (
+        <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          {pkg.description}
+        </div>
+      )}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
+        <Button size="sm" onClick={onRequest}>Request →</Button>
+      </div>
+    </div>
   );
 }
 

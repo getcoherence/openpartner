@@ -15,16 +15,7 @@ import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
 import { creatorApi, ApiError } from './creator-api.js';
 import { audienceSizeLabel } from '@openpartner/db';
 import { GetYourStorefront, StorefrontSection } from './StorefrontSection.js';
-import type { StorefrontPackage } from './storefront-shared.js';
-
-interface PlatformRow {
-  id: string;
-  platform: string;
-  handle: string;
-  profileUrl: string | null;
-  followerCount: number | null;
-  verified: boolean;
-}
+import { PLATFORM_LABELS, type StorefrontChannel, type StorefrontPackage } from './storefront-shared.js';
 
 interface PublicProfile {
   id: string;
@@ -39,24 +30,12 @@ interface PublicProfile {
   audienceSize?: string | null;
   portfolioLinks: string[];
   pastBrands: string[];
-  platforms: PlatformRow[];
+  platforms: StorefrontChannel[];
   /** Storefront (the Network's docs/creator-storefront.md); absent on an
    *  older Network. Packages only come back while bookings are open. */
   bookingsOpen?: boolean;
   packages?: StorefrontPackage[];
 }
-
-const PLATFORM_LABELS: Record<string, string> = {
-  tiktok: 'TikTok',
-  instagram: 'Instagram',
-  youtube: 'YouTube',
-  twitter: 'X / Twitter',
-  linkedin: 'LinkedIn',
-  substack: 'Substack',
-  twitch: 'Twitch',
-  podcast: 'Podcast',
-  website: 'Website',
-};
 
 export function CreatorPublicProfilePage() {
   const { handle } = useParams<{ handle: string }>();
@@ -82,6 +61,7 @@ export function CreatorPublicProfilePage() {
   }
 
   const totalReach = data.platforms.reduce((sum, p) => sum + (p.followerCount ?? 0), 0);
+  const allSynced = data.platforms.length > 0 && data.platforms.every((p) => p.followerCount == null || p.followerCountSynced);
   const audienceSize = audienceSizeLabel(data.audienceSize);
 
   return (
@@ -117,10 +97,11 @@ export function CreatorPublicProfilePage() {
       </Card>
 
       {data.bookingsOpen && (
-        <StorefrontSection handle={data.handle} creatorName={data.name} packages={data.packages ?? []} />
+        <StorefrontSection handle={data.handle} creatorName={data.name} packages={data.packages ?? []} channels={data.platforms} />
       )}
 
-      {(data.platforms.length > 0 || totalReach > 0) && (
+      {/* The storefront shows each channel with its packages; otherwise list them here. */}
+      {!data.bookingsOpen && (data.platforms.length > 0 || totalReach > 0) && (
         <>
           <div style={{ height: 14 }} />
           <Card>
@@ -128,7 +109,7 @@ export function CreatorPublicProfilePage() {
               <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500 }}>Platforms</h3>
               {totalReach > 0 && (
                 <span style={{ color: theme.textMuted, fontSize: 13 }}>
-                  Total self-reported reach: <strong style={{ color: theme.text }}>{totalReach.toLocaleString()}</strong>
+                  {allSynced ? 'Total reach' : 'Total self-reported reach'}: <strong style={{ color: theme.text }}>{totalReach.toLocaleString()}</strong>
                 </span>
               )}
             </div>
