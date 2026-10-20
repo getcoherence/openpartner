@@ -973,6 +973,44 @@ export async function adminUnblockCreator(networkUrl: string, creatorId: string)
   await callNetworkAdmin(networkUrl, 'POST', `/admin/creators/${encodeURIComponent(creatorId)}/unblock`, {});
 }
 
+// ---------- Country access (platform-ops console) ----------
+//
+// One list for both services: the operator edits it in the ops console and
+// we push it to the Network, which keeps its own copy for creators (and its
+// sanctions defaults until the first push). See country-access-sync.ts.
+
+export interface NetworkCountryAccessSettings {
+  enforce: boolean;
+  blocked: Array<{ code: string; basis: 'sanctions' | 'policy' }>;
+}
+
+export interface NetworkCountryAccess {
+  settings: NetworkCountryAccessSettings;
+  /** When we last pushed the list; null = never, and the Network applies
+   *  its sanctions defaults. */
+  syncedAt: string | null;
+  updatedByEmail: string | null;
+  /** Creators from before the Network asked where they're based. */
+  creatorsWithoutCountry?: number;
+}
+
+export async function adminGetCountryAccess(networkUrl: string): Promise<NetworkCountryAccess> {
+  return callNetworkAdmin<NetworkCountryAccess>(networkUrl, 'GET', '/admin/country-access');
+}
+
+/** Full replace of the Network's copy. */
+export async function adminSetCountryAccess(
+  networkUrl: string,
+  settings: NetworkCountryAccessSettings,
+  updatedByEmail: string | null,
+): Promise<{ settings: NetworkCountryAccessSettings; syncedAt: string | null }> {
+  return callNetworkAdmin(networkUrl, 'PUT', '/admin/country-access', {
+    enforce: settings.enforce,
+    blocked: settings.blocked.map((b) => ({ code: b.code, basis: b.basis })),
+    ...(updatedByEmail ? { updatedByEmail } : {}),
+  });
+}
+
 // ---------- Creator profile-completion reminders ----------
 //
 // The Network owns creators, their completeness rules, the sent log and the

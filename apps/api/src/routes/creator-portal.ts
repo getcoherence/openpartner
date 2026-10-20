@@ -18,11 +18,31 @@
  *
  * Public endpoints (no creator session needed) are also proxied so the
  * Discover/Vendor pages render before signup.
+ *
+ * The Network sees this server as the caller, so every proxied request
+ * vouches for the creator's own address with a signed header the Network
+ * uses for its country checks (docs/country-access.md; the Network's
+ * src/client-ip.ts verifies it).
  */
 
+import { createHmac } from 'node:crypto';
 import express, { Router, type Request, type Response } from 'express';
 
 export const creatorPortalRouter = Router();
+
+export const CLIENT_IP_HEADER = 'x-openpartner-client-ip';
+
+/**
+ * `<ip>;t=<unix seconds>;sig=<hex HMAC-SHA256(key, "<ip>.<t>")>`. The key is
+ * NETWORK_ADMIN_API_KEY, which the Network holds as ADMIN_API_KEY; the key
+ * itself never travels with creator traffic. The Network ignores a header
+ * older than five minutes, so it can't be replayed later.
+ */
+export function signClientIp(ip: string, key: string, nowMs = Date.now()): string {
+  const t = Math.floor(nowMs / 1000);
+  const sig = createHmac('sha256', key).update(`${ip}.${t}`).digest('hex');
+  return `${ip};t=${t};sig=${sig}`;
+}
 
 // Image-upload bodies arrive as raw binary, not JSON. The global
 // express.json() middleware ignores image content-types, so without this
@@ -56,6 +76,8 @@ const ALLOWED_EXACT = new Set([
   '/creators/me/platforms',
   '/creators/me/recommendations',
   '/creators/me/uploads/avatar',
+  // Where the creator is based: the one-time prompt (GET + PUT).
+  '/creators/me/location',
   '/offerings',
 ]);
 
@@ -119,6 +141,9 @@ creatorPortalRouter.all(/^\/creator-api(\/.*)?$/, async (req: Request, res: Resp
     if (cookie) headers['cookie'] = cookie;
     headers['user-agent'] = 'OpenPartner-CreatorPortal/1';
     headers['x-forwarded-for'] = req.ip ?? '';
+    // Without it the Network can only check this server's address.
+    const adminKey = process.env.NETWORK_ADMIN_API_KEY;
+    if (adminKey && req.ip) headers[CLIENT_IP_HEADER] = signClientIp(req.ip, adminKey);
 
     const init: RequestInit = {
       method: req.method,

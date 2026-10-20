@@ -10,11 +10,28 @@ interface BlockedCountry {
   code: string;
   basis: Basis;
 }
+/** The Network's copy of the list, which it checks creators against. */
+type NetworkCopy =
+  | { configured: false }
+  | {
+      configured: true;
+      ok: true;
+      syncedAt: string | null;
+      updatedByEmail: string | null;
+      matches: boolean;
+      creatorsWithoutCountry: number | null;
+    }
+  | { configured: true; ok: false; error: string; detail: string };
+type NetworkPush =
+  | { status: 'synced'; syncedAt: string | null }
+  | { status: 'not_configured' }
+  | { status: 'failed'; error: string; detail: string };
 interface CountryAccessState {
   settings: { enforce: boolean; blocked: BlockedCountry[] };
   defaults: { enforce: boolean; blocked: BlockedCountry[] };
   brandsWithoutCountry: number;
   geoip: 'configured' | 'db-ip-lite';
+  network: NetworkCopy;
 }
 
 const BASIS_LABEL: Record<Basis, string> = {
@@ -27,7 +44,8 @@ const BASIS_LABEL: Record<Basis, string> = {
  * every sign-in check both the country a brand or partner declares and the
  * country the request comes from. "US sanctions" entries follow the law;
  * "Company policy" entries are our own choice — kept apart so nobody
- * describes one as the other.
+ * describes one as the other. The Network applies the same list to
+ * creators from its own copy, pushed on every save and daily.
  */
 export function CountriesPage({ operator }: { operator: PlatformOperator }) {
   const canWrite = operator.role === 'admin';
@@ -38,9 +56,19 @@ export function CountriesPage({ operator }: { operator: PlatformOperator }) {
   });
   const save = useMutation({
     mutationFn: (patch: Partial<CountryAccessState['settings']>) =>
-      papi<{ settings: CountryAccessState['settings'] }>('/platform-admin/country-access', { method: 'PUT', body: patch }),
+      papi<{ settings: CountryAccessState['settings']; network: NetworkPush }>('/platform-admin/country-access', {
+        method: 'PUT',
+        body: patch,
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['platform-country-access'] }),
   });
+  const push = useMutation({
+    mutationFn: () => papi<{ network: NetworkPush }>('/platform-admin/country-access/push', { method: 'POST' }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['platform-country-access'] }),
+  });
+  // Saved here but not on the Network: say so. The daily re-push retries.
+  const lastPush = save.data?.network;
+  const pushFailed = lastPush?.status === 'failed' && !push.isSuccess ? lastPush : null;
   const [addCode, setAddCode] = useState('');
   const [addBasis, setAddBasis] = useState<Basis>('sanctions');
   const options = useMemo(() => countryOptions(), []);
@@ -55,9 +83,19 @@ export function CountriesPage({ operator }: { operator: PlatformOperator }) {
   return (
     <Page
       title="Countries"
-      subtitle="Where the hosted platform doesn't serve brands or partners. Checked at signup, partner join and every sign-in — against the country they declare and where the request comes from."
+      subtitle="Where the hosted platform and the Network don't serve brands, partners or creators. Checked at signup, partner join and every sign-in — against the country they declare and where the request comes from."
     >
-      <ErrorBanner error={save.error ? friendlyPlatformError(save.error) : state.error} />
+      <ErrorBanner
+        error={
+          save.error
+            ? friendlyPlatformError(save.error)
+            : push.error
+              ? `Couldn't push the list to the Network: ${friendlyPlatformError(push.error)}`
+              : pushFailed
+                ? `Saved, but the Network didn't get the change (${pushFailed.error}). It's re-sent daily, or push it now below.`
+                : state.error
+        }
+      />
       {state.isLoading || !state.data || !settings ? (
         <Card>Loading…</Card>
       ) : (
@@ -111,6 +149,13 @@ export function CountriesPage({ operator }: { operator: PlatformOperator }) {
               )}
             </div>
           </Card>
+
+          <NetworkCopyCard
+            network={state.data.network}
+            canWrite={canWrite}
+            pushing={push.isPending}
+            onPush={() => push.mutate()}
+          />
 
           <Card>
             <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Not served</div>
@@ -183,6 +228,83 @@ export function CountriesPage({ operator }: { operator: PlatformOperator }) {
         </div>
       )}
     </Page>
+  );
+}
+
+/** Whether the Network, which checks creators, has this list. */
+function NetworkCopyCard({
+  network,
+  canWrite,
+  pushing,
+  onPush,
+}: {
+  network: NetworkCopy | undefined;
+  canWrite: boolean;
+  pushing: boolean;
+  onPush: () => void;
+}) {
+  let label: string;
+  let tone: 'ok' | 'warn' | 'off';
+  let body: React.ReactNode;
+  if (!network || !network.configured) {
+    label = 'not connected';
+    tone = 'off';
+    body = "NETWORK_URL and NETWORK_ADMIN_API_KEY aren't both set, so this list isn't sent to the Network.";
+  } else if (!network.ok) {
+    label = 'unknown';
+    tone = 'warn';
+    body =
+      network.error === 'not_supported'
+        ? "This Network doesn't check creators' countries yet. Push the list once it has been updated."
+        : `Couldn't read the Network's copy: ${network.detail}`;
+  } else if (network.syncedAt === null) {
+    label = 'never pushed';
+    tone = 'warn';
+    body = 'Until it gets this list, the Network applies its own US sanctions defaults.';
+  } else {
+    label = network.matches ? 'in sync' : 'out of sync';
+    tone = network.matches ? 'ok' : 'warn';
+    body = (
+      <>
+        {network.matches ? 'It has this list.' : 'It has a different copy: push it now, or wait for the daily re-send.'}{' '}
+        Last pushed {new Date(network.syncedAt).toLocaleString()}
+        {network.updatedByEmail ? `, as saved by ${network.updatedByEmail}` : ''}.
+      </>
+    );
+  }
+  const badge =
+    tone === 'ok'
+      ? { color: theme.success, background: theme.successSoft }
+      : tone === 'warn'
+        ? { color: theme.warn, background: theme.surface2 }
+        : { color: theme.textMuted, background: theme.surface2 };
+  const undeclared = network?.configured && network.ok ? network.creatorsWithoutCountry : null;
+  return (
+    <Card>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 15, fontWeight: 600 }}>Network</span>
+            <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 9px', borderRadius: 999, ...badge }}>{label}</span>
+          </div>
+          <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 6, lineHeight: 1.5 }}>
+            The Network checks creators against its own copy of this list, sent on every change here and again daily.{' '}
+            {body}
+          </div>
+          {undeclared !== null && (
+            <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
+              {undeclared} creator{undeclared === 1 ? '' : 's'} haven't said where they're based yet; they're asked on
+              their next visit.
+            </div>
+          )}
+        </div>
+        {canWrite && network?.configured && (
+          <Button variant="secondary" disabled={pushing} onClick={onPush}>
+            {pushing ? 'Pushing…' : 'Push now'}
+          </Button>
+        )}
+      </div>
+    </Card>
   );
 }
 

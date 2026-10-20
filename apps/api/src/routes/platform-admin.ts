@@ -48,6 +48,7 @@ import {
   latestDeclaredCountries,
   setCountryAccessSettings,
 } from '../country-access.js';
+import { networkCountryAccessStatus, pushCountryAccessToNetwork } from '../country-access-sync.js';
 import {
   addBlocklistEntry,
   approveBrand,
@@ -877,6 +878,10 @@ platformAdminRouter.delete(
 // request's IP country against this list (country-access.ts). Sanctions
 // entries follow US law; policy entries are the company's own choice. The
 // two are labelled separately everywhere they appear.
+//
+// The Network checks creators against its own copy, which we push on every
+// save and daily from the scheduler (country-access-sync.ts). GET reads that
+// copy back so the console can show whether the two match.
 
 platformAdminRouter.get('/platform-admin/country-access', requirePlatformAdmin, async (_req, res) => {
   const settings = await getCountryAccessSettings(db);
@@ -895,6 +900,7 @@ platformAdminRouter.get('/platform-admin/country-access', requirePlatformAdmin, 
     // Brands from before country capture; they're asked on next sign-in.
     brandsWithoutCountry: Number(undeclared?.c ?? 0),
     geoip: process.env.GEOIP_COUNTRY_DB ? 'configured' : 'db-ip-lite',
+    network: await networkCountryAccessStatus(settings),
   });
 });
 
@@ -923,13 +929,41 @@ platformAdminRouter.put(
     const actor = req.platformAdminActor!;
     const before = await getCountryAccessSettings(db);
     const settings = await setCountryAccessSettings(db, body.data, actor.email);
+    // Saved here either way: a failed push is reported, and the daily
+    // re-push (or "Push now") retries it.
+    const network = await pushCountryAccessToNetwork(db);
     await writeAudit(db, {
       actor,
       action: 'country_access.settings',
       targetType: 'platform',
-      detail: { before, after: settings },
+      detail: { before, after: settings, network: network.status },
     });
-    res.json({ settings });
+    res.json({ settings, network });
+  },
+);
+
+/** Push the stored list to the Network now, e.g. once a Network that
+ *  predates country access has been updated. */
+platformAdminRouter.post(
+  '/platform-admin/country-access/push',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const network = await pushCountryAccessToNetwork(db);
+    if (network.status === 'not_configured') {
+      return res.status(503).json({
+        error: 'network_not_configured',
+        detail: 'NETWORK_URL and NETWORK_ADMIN_API_KEY must both be set to push the list to the Network.',
+      });
+    }
+    await writeAudit(db, {
+      actor: req.platformAdminActor!,
+      action: 'country_access.push',
+      targetType: 'platform',
+      detail: { network: network.status },
+    });
+    if (network.status === 'failed') return res.status(502).json({ error: network.error, detail: network.detail });
+    res.json({ network });
   },
 );
 

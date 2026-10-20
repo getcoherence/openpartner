@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { theme } from '../../theme.js';
 import { AuthFrame } from '../auth/Shared.js';
+import { countryErrorMessage } from '../../lib/CountryField.js';
 import { creatorApi } from './creator-api.js';
 import { stripQueryParamsFromAddressBar } from '../../lib/sensitive-url.js';
 
@@ -10,6 +11,8 @@ export function CreatorMagicLandingPage() {
   const nav = useNavigate();
   const [state, setState] = useState<'verifying' | 'ok' | 'failed'>('verifying');
   const [detail, setDetail] = useState<string | null>(null);
+  // Refused for where the request comes from: a new link can't help.
+  const [refused, setRefused] = useState(false);
 
   useEffect(() => {
     const token = params.get('token');
@@ -29,7 +32,9 @@ export function CreatorMagicLandingPage() {
       })
       .catch((err) => {
         setState('failed');
-        setDetail(err?.message ?? 'Link is invalid or expired.');
+        const country = countryErrorMessage(String(err?.message ?? ''));
+        setRefused(!!country);
+        setDetail(country ?? err?.message ?? 'Link is invalid or expired.');
       });
   }, [nav, params]);
 
@@ -40,9 +45,11 @@ export function CreatorMagicLandingPage() {
       {state === 'failed' && (
         <div style={{ color: theme.danger, fontSize: 14 }}>
           {detail ?? 'Could not verify.'}
-          <div style={{ color: theme.textDim, fontSize: 13, marginTop: 10 }}>
-            Ask for a new link from <a href="/creator/login" style={{ color: theme.accentText }}>the sign-in page</a>.
-          </div>
+          {!refused && (
+            <div style={{ color: theme.textDim, fontSize: 13, marginTop: 10 }}>
+              Ask for a new link from <a href="/creator/login" style={{ color: theme.accentText }}>the sign-in page</a>.
+            </div>
+          )}
         </div>
       )}
     </AuthFrame>

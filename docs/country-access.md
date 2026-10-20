@@ -51,6 +51,36 @@ portal shows a neutral message that gives no reason.
 serve brands' own visitors and servers, not our customers, so blocking
 them would break brands' links without protecting anything.
 
+## Network creators
+
+The Network applies the same list to creators (its `docs/country-access.md`):
+creator signup requires a country, and signup, sign-in, the magic-link
+verify and its one-time location prompt check it. The Network keeps its
+own copy of the list, so it never depends on this platform at request
+time; until the first push it applies the sanctions defaults above.
+
+- **The copy** (`apps/api/src/country-access-sync.ts`): every console save
+  sends the whole setting to the Network's `PUT /admin/country-access`
+  with `NETWORK_ADMIN_API_KEY`, recording the operator who saved it. The
+  daily `network-country-access-sync` job (03:45 UTC) sends it again, so a
+  failed push heals, and **Push now** in the console sends it on demand.
+  The console reads `GET /admin/country-access` back to show when the
+  Network was last synced and whether its copy matches. A failed push
+  never undoes the save here.
+- **The creator's address:** creators reach the Network through
+  `/api/creator-api/*` (`routes/creator-portal.ts`), so the Network sees
+  this server as the caller. Every proxied request carries
+  `x-openpartner-client-ip: <ip>;t=<unix seconds>;sig=<hex HMAC-SHA256(NETWORK_ADMIN_API_KEY, "<ip>.<t>")>`
+  for the address the request came from. The Network ignores it when it's
+  missing, stale (over five minutes) or wrongly signed. It isn't sent
+  when `NETWORK_ADMIN_API_KEY` is unset.
+- **The portal:** creator signup asks where they're based (with the
+  Ukraine confirmation), creators from before that are asked once in the
+  creator portal (`GET`/`PUT /creators/me/location`), and refusals show
+  the same neutral message as for brands. A brand approving the request of
+  a creator the Network no longer serves gets `409 creator_not_available`
+  and is told the creator isn't available, without a reason.
+
 ## Records
 
 Every declaration is kept in `LocationDeclaration`: subject, brand,
@@ -91,7 +121,6 @@ covers screening names against the US Consolidated Screening List.
 
 ## Not yet covered
 
-- The Network's own creator signup.
 - Re-checking live sessions. Sign-in is gated, but a session started
   elsewhere (up to 30 days) isn't re-checked on each request.
 - Payouts already in flight when a hold appears
