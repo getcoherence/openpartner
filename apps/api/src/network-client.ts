@@ -698,7 +698,7 @@ export const networkProxy = {
     ),
   createBooking: (db: Knex, tenantId: string, body: unknown) =>
     callNetwork<{ booking: unknown }>(db, tenantId, 'POST', '/vendors/me/bookings', body),
-  bookingAction: (db: Knex, tenantId: string, id: string, action: 'cancel' | 'approve' | 'retry-payout') =>
+  bookingAction: (db: Knex, tenantId: string, id: string, action: 'cancel' | 'approve' | 'retry-payout' | 'recheck') =>
     callNetwork<{ booking: unknown }>(db, tenantId, 'POST', `/vendors/me/bookings/${encodeURIComponent(id)}/${action}`),
 
   /** Invite a creator to apply to one of this vendor's offerings.
