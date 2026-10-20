@@ -114,6 +114,13 @@ async function seedEverything(tenantId: string): Promise<void> {
     source: 'portal_setting',
     consentedAt: new Date(),
   });
+  await db(TABLES.PartnerPayoutProfile).insert({
+    partnerId,
+    tenantId,
+    method: 'paypal',
+    details: 'sealed-details-placeholder',
+    updatedBy: 'partner',
+  });
   await db(TABLES.Coupon).insert({ id: u(), tenantId, partnerId, programId, code: `PURGE${short().toUpperCase()}` });
   await db(TABLES.Link).insert({ id: linkId, tenantId, linkKey: `purge-${short()}`, partnerId, programId });
   await db(TABLES.Click).insert({
@@ -210,6 +217,7 @@ async function seedEverything(tenantId: string): Promise<void> {
   });
   await db(TABLES.HostedBillingState).insert({ tenantId });
   await db(TABLES.HostedFeeTerms).insert({ tenantId });
+  await db(TABLES.HostedBillingProfile).insert({ tenantId, collectionMethod: 'send_invoice', gstin: '27AAPFU0939F1ZV' });
   await db(TABLES.UsageLedger).insert({
     id: u(),
     tenantId,

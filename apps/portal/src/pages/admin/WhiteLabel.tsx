@@ -18,6 +18,9 @@ interface WhiteLabelBilling {
   plan: string | null;
   mode: string;
   subscribed: boolean;
+  /** How the live subscription is collected: a pay-by-invoice one
+   *  invoices the add-on rather than charging a card. */
+  collectionMethod?: 'send_invoice' | 'charge_automatically' | null;
   priceConfigured: boolean;
   /** Self-host only: connected to the Network, whose access is billed
    *  separately and isn't cancelled by enabling white-label. */
@@ -134,6 +137,8 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
     onError: (err) => {
       if (err instanceof ApiError && String(err.message).includes('no_plan_chosen')) {
         setError('Pick a plan on the Billing page first — then subscribing here bundles the add-on in.');
+      } else if (err instanceof ApiError && String(err.message).startsWith('invoice_billing')) {
+        setError('You pay by invoice, so start your plan on the Billing page first. Then enable white-label here.');
       } else {
         setError(err instanceof ApiError ? err.message : 'Could not start checkout.');
       }
@@ -191,7 +196,9 @@ function AddOnCard({ billing }: { billing: WhiteLabelBilling }) {
                   !selfhost &&
                   billing.plan !== 'enterprise' &&
                   !window.confirm(
-                    'Enable the white-label add-on? Your payment method is charged now for the rest of this billing period, then monthly with your plan.',
+                    billing.collectionMethod === 'send_invoice'
+                      ? 'Enable the white-label add-on? The rest of this billing period is invoiced now, then it’s on each monthly invoice with your plan.'
+                      : 'Enable the white-label add-on? Your payment method is charged now for the rest of this billing period, then monthly with your plan.',
                   )
                 ) {
                   return;

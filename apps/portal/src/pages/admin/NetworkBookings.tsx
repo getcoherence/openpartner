@@ -6,13 +6,14 @@
  */
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CalendarCheck, ExternalLink } from 'lucide-react';
+import { CalendarCheck } from 'lucide-react';
 import { api } from '../../api.js';
 import { Button, Card, EmptyState, ErrorBanner, Page, StatusPill, formatDate } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { TenantLink } from '../../tenant-link.js';
 import { formatPackagePrice } from '../creator/storefront-shared.js';
 import { networkErrorCode } from './BookCreatorDialog.js';
+import { DeliveryChecksPanel, type DeliveryChecks } from './DeliveryChecks.js';
 
 type BookingStatus = 'pending' | 'accepted' | 'declined' | 'cancelled' | 'delivered' | 'approved' | 'paid' | 'payout_failed';
 
@@ -33,6 +34,9 @@ interface VendorBooking {
   createdAt: string;
   deliveredAt: string | null;
   paidAt: string | null;
+  /** Null until the Network's first check of the delivered posts finishes;
+   *  absent on a Network without delivery checks. */
+  deliveryChecks?: DeliveryChecks | null;
 }
 
 const FILTERS: Array<{ key: BookingStatus | 'all'; label: string }> = [
@@ -66,6 +70,10 @@ export function AdminNetworkBookings() {
     queryFn: () =>
       api<{ bookings: VendorBooking[] }>(`/admin/network/bookings${filter === 'all' ? '' : `?status=${filter}`}`),
     retry: false,
+    // Delivery checks run in the background right after delivery; poll
+    // briefly until they land so the badges appear without a reload.
+    refetchInterval: (query) =>
+      query.state.data?.bookings.some((b) => b.deliverableUrls.length > 0 && b.deliveryChecks === null) ? 5_000 : false,
   });
   return (
     <Page
@@ -107,7 +115,7 @@ export function AdminNetworkBookings() {
 function BookingCard({ booking: b }: { booking: VendorBooking }) {
   const qc = useQueryClient();
   const act = useMutation({
-    mutationFn: (action: 'approve' | 'cancel' | 'retry-payout') =>
+    mutationFn: (action: 'approve' | 'cancel' | 'retry-payout' | 'recheck') =>
       api(`/admin/network/bookings/${b.id}/${action}`, { method: 'POST', body: {} }),
     onSettled: () => qc.invalidateQueries({ queryKey: ['admin-network-bookings'] }),
   });
@@ -158,21 +166,12 @@ function BookingCard({ booking: b }: { booking: VendorBooking }) {
       )}
 
       {b.deliverableUrls.length > 0 && (
-        <div style={{ marginTop: 12, background: theme.surface2, border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm, padding: '10px 12px' }}>
-          <div style={{ fontSize: 12, color: theme.textDim, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Published</div>
-          {b.deliverableUrls.filter((u) => /^https?:\/\//i.test(u)).map((u) => (
-            <a
-              key={u}
-              href={u}
-              target="_blank"
-              rel="noopener noreferrer nofollow"
-              style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: theme.accentText, wordBreak: 'break-all', marginBottom: 4 }}
-            >
-              <ExternalLink size={12} style={{ flexShrink: 0 }} />
-              {u}
-            </a>
-          ))}
-        </div>
+        <DeliveryChecksPanel
+          urls={b.deliverableUrls}
+          checks={b.deliveryChecks}
+          onRecheck={() => act.mutate('recheck')}
+          rechecking={act.isPending && act.variables === 'recheck'}
+        />
       )}
 
       {b.status === 'payout_failed' && b.payoutError && (

@@ -21,13 +21,20 @@ import { inferPlanFromPriceIds, persistMerchantSubscription, updateTenantPlanFro
 import {
   handleCancellationScheduleChanged,
   handleTenantSubscriptionEnded,
+  notifyTenantInvoiceOverdue,
   notifyTenantInvoicePaymentFailed,
   subscriptionCancelScheduled,
 } from '../billing-lifecycle.js';
 import { applyWhiteLabelFromSubscription, subscriptionHasWhiteLabel, whiteLabelPriceId } from '../white-label-billing.js';
 import { ensureCouponClickAndIdentity, findCouponByCode } from './coupons.js';
 import { handleFundingEvent, InboxEventHeldError } from '../funding/webhook.js';
-import { mirrorHostedBillingState, type MirroredSubscriptionStatus } from '../billing-plan.js';
+import {
+  markInvoicePaid,
+  mirrorHostedBillingState,
+  type InvoiceOverdue,
+  type MirroredSubscriptionStatus,
+} from '../billing-plan.js';
+import { adoptInvoiceSubscription, invoiceDueTracked, refreshInvoiceDue } from '../invoice-billing.js';
 import { getMode } from '../stripe.js';
 import { fromStripeMinor, majorToCents, stripeMinorToCents } from '../stripe-amounts.js';
 import { getTenancyMode } from '../tenancy.js';
@@ -119,6 +126,13 @@ const PLATFORM_EVENT_TYPES = new Set([
   'customer.subscription.deleted',
   'invoice.paid',
   'invoice.payment_failed',
+  // Pay-by-invoice billing (invoice-billing.ts): each one re-reads the
+  // tenant's open invoices. Optional on the destination: the nightly
+  // reconcile catches what they would have.
+  'invoice.finalized',
+  'invoice.voided',
+  'invoice.marked_uncollectible',
+  'invoice.overdue',
   'charge.refunded',
   'charge.dispute.created',
   'payment_intent.succeeded',
@@ -246,6 +260,9 @@ stripeWebhookRouter.post(
     // commission.* webhooks fire only once runInTenant has committed, so a
     // rollback never announces a reversal that didn't happen.
     let refunds: NonNullable<MappedEvent['refund']>[] = [];
+    // Overdue pay-by-invoice notices, mailed only once the transaction has
+    // committed: an email can't be rolled back with it.
+    const billing: TenantBillingContext = { stripe, overdue: [] };
     const source: BrandStripeSource = {
       stripe,
       brandAccount: receivesBrandStripeEvents(),
@@ -253,7 +270,7 @@ stripeWebhookRouter.post(
       keyRevenueByTransaction: false,
     };
     const result = await runInTenant(tenantId, async (trx) => {
-      const connectResult = await handleConnectEvent(trx, event!, tenantId);
+      const connectResult = await handleConnectEvent(trx, event!, tenantId, billing);
       if (connectResult) return { connect: connectResult };
 
       const processed = await processBrandStripeEvent(trx, source, event!, tenantId);
@@ -262,6 +279,14 @@ stripeWebhookRouter.post(
     });
 
     for (const r of refunds) void announceRefund(tenantId, r.announce, { kind: 'refund', refundEventId: r.refundEventId });
+    for (const overdue of billing.overdue) {
+      try {
+        await notifyTenantInvoiceOverdue(db, tenantId, overdue);
+      } catch (err) {
+        // The nightly reconcile retries an unsent notice.
+        console.error('[stripe-webhook] overdue notice failed', { tenantId, err });
+      }
+    }
     res.json({ ok: true, ...result });
   },
 );
@@ -500,6 +525,10 @@ async function resolveTenantForEvent(event: Stripe.Event, family: SecretFamily):
     case 'customer.subscription.deleted':
     case 'invoice.paid':
     case 'invoice.payment_failed':
+    case 'invoice.finalized':
+    case 'invoice.voided':
+    case 'invoice.marked_uncollectible':
+    case 'invoice.overdue':
     case 'charge.refunded': {
       const customerId = extractCustomerId(event.data.object as { customer?: unknown; id?: string });
       if (!customerId) {
@@ -616,12 +645,35 @@ function isOwnBilling(
   return false;
 }
 
+/** What the tenant-billing handlers need beyond the transaction: the
+ *  platform Stripe client, and the overdue notices to send after commit. */
+interface TenantBillingContext {
+  stripe: Stripe;
+  overdue: InvoiceOverdue[];
+}
+
+/**
+ * Re-read a pay-by-invoice tenant's open invoices (invoice-billing.ts
+ * refreshInvoiceDue) and queue an overdue notice when one is past due.
+ */
+async function refreshTenantInvoices(
+  trx: Knex.Transaction,
+  ctx: TenantBillingContext,
+  tenantId: string,
+  customerId: string,
+): Promise<boolean> {
+  const overdue = await refreshInvoiceDue(trx, ctx.stripe, tenantId, customerId);
+  if (overdue) ctx.overdue.push(overdue);
+  return !!overdue;
+}
+
 // Connect-side events. These don't produce attribution Events — they update
 // Partner (onboarding progress) and Payout (transfer resolution) rows.
 async function handleConnectEvent(
   trx: Knex.Transaction,
   event: Stripe.Event,
   tenantId: string,
+  ctx: TenantBillingContext,
 ): Promise<string | null> {
   switch (event.type) {
     case 'account.updated': {
@@ -733,7 +785,15 @@ async function handleConnectEvent(
       });
       // HostedBillingState mirror (spec §4 finding 13): hasActivePlan and
       // funding eligibility read this instead of live Stripe calls.
-      await mirrorHostedBillingState(trx, tenantId, sub.status as MirroredSubscriptionStatus);
+      await mirrorHostedBillingState(trx, tenantId, sub.status as MirroredSubscriptionStatus, sub.collection_method);
+      // Pay-by-invoice: Stripe flips the subscription to past_due when its
+      // LATEST invoice passes the due date, and back on paying it, even with
+      // an older one still open. Overdue follows the open invoices instead.
+      let overdueNote: string | null = null;
+      const subCustomer = extractCustomerId(sub);
+      if (subCustomer && (sub.collection_method === 'send_invoice' || (await invoiceDueTracked(trx, tenantId)))) {
+        if (await refreshTenantInvoices(trx, ctx, tenantId, subCustomer)) overdueNote = 'invoice_overdue';
+      }
       // Cancellation (un)scheduling — previous_attributes carries the old
       // values only when they actually changed in this event, so this
       // fires on real transitions and alerts ops weeks before the
@@ -757,6 +817,7 @@ async function handleConnectEvent(
         newPlan ? `subscription_updated_plan_${newPlan}` : 'subscription_updated',
         ...(wl !== 'unchanged' ? [`white_label_${wl}`] : []),
         ...(cancelNote ? [cancelNote] : []),
+        ...(overdueNote ? [overdueNote] : []),
       ];
       return parts.join('+');
     }
@@ -775,6 +836,38 @@ async function handleConnectEvent(
       const wl = await handleTenantSubscriptionEnded(trx, tenantId, 'webhook', sub.id);
       if (wl === null) return 'subscription_deleted_stale_ignored';
       return `subscription_deleted_${sub.status}${wl !== 'unchanged' ? `+white_label_${wl}` : ''}`;
+    }
+    case 'customer.subscription.created': {
+      // A pay-by-invoice subscription the brand started (invoice-billing.ts
+      // startInvoiceSubscription) whose request died before the pointer
+      // committed: record it, so it is never invoiced unseen. Any other
+      // subscription falls through to attribution, as before. Never on a
+      // single-tenant self-host, where every subscription is an
+      // end-customer's.
+      if (receivesBrandStripeEvents()) return null;
+      const sub = event.data.object as Stripe.Subscription;
+      if (sub.metadata?.openpartner_collection !== 'send_invoice' || sub.metadata?.openpartner_tenant_id !== tenantId) {
+        return null;
+      }
+      return `invoice_subscription_${await adoptInvoiceSubscription(trx, tenantId, sub)}`;
+    }
+    case 'invoice.paid':
+    case 'invoice.finalized':
+    case 'invoice.voided':
+    case 'invoice.marked_uncollectible':
+    case 'invoice.overdue': {
+      // The tenant's OWN OpenPartner invoices only: they are never a
+      // merchant conversion, so they stop here. A merchant end-customer's
+      // invoice falls through to attribution.
+      const invoice = event.data.object as Stripe.Invoice;
+      const invoiceCustomer = extractCustomerId(invoice);
+      const ids = await tenantBillingIds(trx, tenantId);
+      if (!invoiceCustomer || !isOwnBilling(ids, invoiceCustomer)) return null;
+      const label = `tenant_${event.type.replace('.', '_')}`;
+      if (event.type === 'invoice.paid' && invoice.amount_paid > 0) await markInvoicePaid(trx, tenantId);
+      if (invoice.collection_method !== 'send_invoice' && !(await invoiceDueTracked(trx, tenantId))) return label;
+      const overdue = await refreshTenantInvoices(trx, ctx, tenantId, invoiceCustomer);
+      return overdue ? `${label}+invoice_overdue` : label;
     }
     case 'invoice.payment_failed': {
       // Dunning on the tenant's own OpenPartner invoice → ops alert (and

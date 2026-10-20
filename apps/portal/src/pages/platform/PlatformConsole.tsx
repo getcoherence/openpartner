@@ -15,6 +15,7 @@ import { BlocklistPage } from './Blocklist.js';
 import { AuditPage } from './Audit.js';
 import { NotificationsPage } from './Notifications.js';
 import { FeesPage } from './Fees.js';
+import { InvoicingPage } from './Invoicing.js';
 import { CountriesPage } from './Countries.js';
 import { ScreeningPage } from './Screening.js';
 
@@ -25,6 +26,7 @@ const TABS = [
   { to: '/platform/marketplace', label: 'Marketplace' },
   { to: '/platform/notifications', label: 'Notifications' },
   { to: '/platform/fees', label: 'Fees' },
+  { to: '/platform/invoicing', label: 'Invoicing' },
   { to: '/platform/blocklist', label: 'Blocklist' },
   { to: '/platform/countries', label: 'Countries' },
   { to: '/platform/screening', label: 'Screening' },
@@ -85,6 +87,7 @@ export function PlatformConsole() {
         <Route path="marketplace" element={<MarketplacePage operator={operator} />} />
         <Route path="notifications" element={<NotificationsPage operator={operator} />} />
         <Route path="fees" element={<FeesPage operator={operator} />} />
+        <Route path="invoicing" element={<InvoicingPage operator={operator} />} />
         <Route path="blocklist" element={<BlocklistPage operator={operator} />} />
         <Route path="countries" element={<CountriesPage operator={operator} />} />
         <Route path="screening" element={<ScreeningPage operator={operator} />} />

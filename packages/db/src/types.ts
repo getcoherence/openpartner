@@ -428,6 +428,39 @@ export interface PartnerNetworkConsentRow {
   updatedAt: Date;
 }
 
+/**
+ * How a partner wants manual-rail payouts sent (PartnerPayoutProfile, one
+ * row per partner; docs/manual-payout-files.md). The brand sends the money
+ * itself, from its own PayPal or Wise account.
+ *
+ *   paypal — a PayPal account email (PayPal Payouts batch file)
+ *   bank   — a bank account: IBAN, or a local account number plus routing
+ *            code such as a sort code, ABA routing number or IFSC (Wise
+ *            batch file)
+ *   upi    — an Indian UPI ID, paid by the brand one at a time
+ *   other  — free-text instructions, paid by the brand one at a time
+ */
+export const PAYOUT_PROFILE_METHODS = ['paypal', 'bank', 'upi', 'other'] as const;
+export type PayoutProfileMethod = (typeof PAYOUT_PROFILE_METHODS)[number];
+
+/** Who last saved a payout profile: the partner in the portal, an admin
+ *  in the portal, or an API key. */
+export type PayoutProfileUpdatedBy = 'partner' | 'admin' | 'api';
+
+export interface PartnerPayoutProfileRow {
+  partnerId: string;
+  tenantId: string;
+  method: PayoutProfileMethod;
+  /** Where the account is held, or null where the method has none. */
+  country: string | null;
+  /** The method's details as JSON, sealed with AES-256-GCM. Read and write
+   *  it only through apps/api/src/payout-profile.ts. */
+  details: string;
+  updatedBy: PayoutProfileUpdatedBy;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export type MagicLinkPurpose =
   | 'partner_invite'
   | 'partner_signin'
@@ -1247,6 +1280,46 @@ export interface HostedBillingStateRow {
   tenantId: string;
   subscriptionStatus: 'active' | 'trialing' | 'past_due' | 'unpaid' | 'paused' | 'canceled' | null;
   delinquentFundingCount: number;
+  /** How the live subscription is collected, as Stripe last reported it.
+   *  Null on rows mirrored before 20261019050000. */
+  collectionMethod: BillingCollectionMethod | null;
+  /** The oldest open pay-by-invoice invoice with an amount still due, and
+   *  its due date. Null when none is open. */
+  oldestOpenInvoiceId: string | null;
+  oldestOpenInvoiceDueAt: Date | null;
+  /** When a non-zero invoice was first seen paid. Sticky. Until then an
+   *  overdue invoice gets no grace. */
+  invoicePaidAt: Date | null;
+  updatedAt: Date;
+}
+
+/** How a hosted tenant's OpenPartner subscription is collected: a card
+ *  charged automatically, or an invoice the brand pays from Stripe's hosted
+ *  invoice page (docs/invoice-billing.md). */
+export type BillingCollectionMethod = 'send_invoice' | 'charge_automatically';
+
+/** HOSTED BILLING SIDECAR (not exported — see docs/data-portability.md):
+ *  how one tenant pays its OpenPartner subscription. See
+ *  apps/api/src/invoice-billing.ts and docs/invoice-billing.md. */
+export interface HostedBillingProfileRow {
+  tenantId: string;
+  /** The ops choice. Null: the country default (PlatformSetting
+   *  'invoiceBilling'). */
+  collectionMethod: BillingCollectionMethod | null;
+  /** Invoice payment terms, in days. */
+  daysUntilDue: number;
+  /** Days a pay-by-invoice subscription may stay past due before partner
+   *  onboarding pauses. */
+  graceDays: number;
+  /** Indian GST registration number, upper case. Printed on invoices as
+   *  the Stripe customer tax ID in_gst. */
+  gstin: string | null;
+  /** The brand admin who last set the GSTIN, and when. */
+  gstinUpdatedByEmail: string | null;
+  gstinUpdatedAt: Date | null;
+  /** The operator who last set the collection terms. */
+  updatedByEmail: string | null;
+  createdAt: Date;
   updatedAt: Date;
 }
 

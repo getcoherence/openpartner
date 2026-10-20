@@ -188,6 +188,8 @@ function PartnerTable({
           <TenantLink to={`/admin/partners/${p.id}/commission`} style={{ color: theme.accentText, fontSize: 13 }}>Commission</TenantLink>
           <span style={{ color: theme.border }}>·</span>
           <TenantLink to={`/payouts?partnerId=${p.id}`} style={{ color: theme.accentText, fontSize: 13 }}>Payouts</TenantLink>
+          <span style={{ color: theme.border }}>·</span>
+          <TenantLink to={`/payout-details?partnerId=${p.id}`} style={{ color: theme.accentText, fontSize: 13 }}>Payout details</TenantLink>
           {applicationOf(p) ? (
             <>
               <span style={{ color: theme.border }}>·</span>

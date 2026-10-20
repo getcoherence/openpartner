@@ -148,6 +148,15 @@ report" in [deploy.md](deploy.md)). Every report bills the difference
 between what each conversion is worth now and what it was billed, so
 refunds and reversals after a report are credited.
 
+### Collected by card or by invoice
+
+The meter and prices are the same however the fee is collected. Most
+brands are charged automatically on a saved card. Brands that can't be
+(Indian cards, under RBI's e-mandate rules) pay each monthly invoice from
+Stripe's hosted invoice page by card or bank transfer instead, on a
+`send_invoice` subscription with the same prices and meter. See
+[invoice-billing.md](invoice-billing.md).
+
 ### Frozen terms
 
 The terms a conversion is first billed under are stored on its ledger rows

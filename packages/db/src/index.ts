@@ -137,6 +137,7 @@ export const TABLES = {
   PartnerCommission: 'PartnerCommission',
   PartnerNetworkConsent: 'PartnerNetworkConsent',
   PartnerPostback: 'PartnerPostback',
+  PartnerPayoutProfile: 'PartnerPayoutProfile',
   BrandAsset: 'BrandAsset',
   PortalCustomDomain: 'PortalCustomDomain',
   HostedFundingBatch: 'HostedFundingBatch',
@@ -151,5 +152,6 @@ export const TABLES = {
   OperatorRecoveryRequest: 'OperatorRecoveryRequest',
   UsageLedger: 'UsageLedger',
   HostedFeeTerms: 'HostedFeeTerms',
+  HostedBillingProfile: 'HostedBillingProfile',
   UsageFeeShadow: 'UsageFeeShadow',
 } as const;
