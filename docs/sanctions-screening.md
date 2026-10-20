@@ -84,7 +84,12 @@ they post (see *Holds that appear after planning* below):
   hold lifts pays it. A held partner with an unfinished Connect account
   gets no `failed` row either.
 - **Manual rail:** the brand sends the money itself, so the payout is
-  written as usual and carries `complianceWarning`.
+  written as usual and carries `complianceWarning`. In the brand's PayPal
+  and Wise batch files ([manual-payout-files.md](manual-payout-files.md)),
+  a confirmed match is left out of every file, and every confirm refuses it
+  (`409 not_confirmable` with a `reason`), so it is never recorded as paid;
+  a match under review or a pending screening stays payable, with the
+  warning next to it.
 
 A screening error doesn't lift a partner who was screened clear before:
 the hold looks at the latest answer, and an error isn't one.

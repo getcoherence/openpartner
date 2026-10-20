@@ -181,6 +181,34 @@ export function partnerRevokedEmail(name: string, reason: string | null): EmailT
   return { subject, text, html };
 }
 
+/**
+ * Partner: their payout details were changed or removed. Sent on every
+ * change, whoever made it, because a quietly redirected payout is the
+ * classic account-takeover fraud. Carries only the masked summary
+ * (payout-profile.ts summarizeDetails), never the details.
+ */
+export function payoutDetailsChangedEmail(opts: {
+  name: string;
+  brandName: string | null;
+  /** The new destination, masked; null when the details were removed. */
+  summary: string | null;
+  changedBy: 'partner' | 'admin' | 'api';
+}): EmailTemplate {
+  const brand = opts.brandName || 'the partner program';
+  const subject = opts.summary ? `Your payout details for ${brand} were changed` : `Your payout details for ${brand} were removed`;
+  const who = opts.changedBy === 'partner' ? 'from your partner account' : `by ${brand}`;
+  const text = [
+    `Hi ${opts.name},`,
+    ``,
+    opts.summary
+      ? `Your payout details for ${brand} were changed ${who}. Payouts will now go to: ${opts.summary}.`
+      : `Your payout details for ${brand} were removed ${who}.`,
+    ``,
+    `If you didn't make or expect this change, contact ${brand} right away, before your next payout is sent.`,
+  ].join('\n');
+  return { subject, text, html: plainHtml(text) };
+}
+
 /** Brand admin: 7-day notice that a Campaign is about to end. */
 export function campaignEndingBrandEmail(
   brandName: string | null,
