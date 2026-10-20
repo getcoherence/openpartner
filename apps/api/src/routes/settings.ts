@@ -886,7 +886,7 @@ settingsRouter.post('/admin/network/bookings', requireAuth, requireAdmin, async 
   proxy(req, res, (db, tenantId) => networkProxy.createBooking(db, tenantId, req.body ?? {}), 201),
 );
 
-for (const action of ['cancel', 'approve', 'retry-payout'] as const) {
+for (const action of ['cancel', 'approve', 'retry-payout', 'recheck'] as const) {
   settingsRouter.post(`/admin/network/bookings/:id/${action}`, requireAuth, requireAdmin, async (req, res) =>
     proxy(req, res, (db, tenantId) => networkProxy.bookingAction(db, tenantId, req.params.id!, action)),
   );
