@@ -137,6 +137,7 @@ export const TABLES = {
   PartnerCommission: 'PartnerCommission',
   PartnerNetworkConsent: 'PartnerNetworkConsent',
   PartnerPostback: 'PartnerPostback',
+  PartnerPayoutProfile: 'PartnerPayoutProfile',
   BrandAsset: 'BrandAsset',
   PortalCustomDomain: 'PortalCustomDomain',
   HostedFundingBatch: 'HostedFundingBatch',

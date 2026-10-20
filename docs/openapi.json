@@ -3,7 +3,7 @@
   "info": {
     "title": "OpenPartner API",
     "version": "1.0.0",
-    "description": "The OpenPartner tenant API: partners, programs, links, attribution, commissions, payouts, reporting, webhooks and export. Use it to run a referral or affiliate program from your own backend, for example an in-app \"Refer & earn\" page with no separate OpenPartner login. Walkthrough: [Build an in-app referral page](https://github.com/getcoherence/openpartner/blob/main/docs/headless-referral.md).\n\nThis document is generated from the API's own request validators. It is served at `/openapi.json`, and the rendered reference at `/docs`, on every deployment. White-label custom domains don't serve them; use the platform host, e.g. `https://app.openpartner.dev/api/docs`.\n\n## Base URL and tenancy\n\nEvery path below is relative to your tenant's API base:\n\n| Deployment | API base | Share links |\n| --- | --- | --- |\n| OpenPartner Cloud | `https://app.openpartner.dev/api/t/<tenant-slug>` | `https://app.openpartner.dev/r/<tenant-slug>/<linkKey>` |\n| Cloud with a white-label domain | `https://<your-domain>/api` | `https://<your-domain>/r/<linkKey>` |\n| Self-hosted, single tenant | your API origin, e.g. `https://api.example.com` (or `<portal>/api` behind the bundled proxy) | `<router origin>/r/<linkKey>` |\n| Self-hosted, multi-tenant | `<api origin>/t/<tenant-slug>` (or `<portal>/api/t/<tenant-slug>`) | `<router origin>/r/<tenant-slug>/<linkKey>` |\n\nThe slug comes **after** `/api`. `https://app.openpartner.dev/t/<slug>/api/...` reaches the portal's static site, not the API, and returns HTML. On a multi-tenant deployment a request with no `/t/<slug>` prefix fails with `400 tenant_slug_missing`, and an unknown slug gets a plain `404`. Your slug is the `/t/<slug>/` segment in your admin portal's address.\n\n**Publisher sub-IDs.** A partner may add `?sub_id=<their own id>` to a share link (trimmed, at most 255 characters). The router stores it on the click and doesn't pass it to your destination. It comes back as `subId` on `commission.*` webhooks and in the partner's `{sub_id}` postback macro, so a publisher's tracking tool can match each conversion to its own click.\n\nKeys minted through the API are bound to their tenant. A key sent to another tenant's path is `401 unauthorized`.\n\n## Authentication\n\nSend a key as a bearer token: `Authorization: Bearer op_…`. Keys are server-side credentials: never ship one to a browser or mobile app. There are three kinds:\n\n- **Admin key.** Unscoped, full access to the tenant. Minted with `POST /api-keys`, or the deployment's `ADMIN_API_KEY` (self-host). The admin portal's session cookie is accepted wherever an admin key is.\n- **Scoped key.** Minted with `POST /api-keys/scoped` and a list of scopes. It can call only the operations its scopes unlock, and it acts on any partner in the tenant. Calling something it lacks the scope for returns `403 forbidden_scope` with the `required` scope; calling an operation with no scope returns `403 forbidden`. Use one for every integration so a leaked key can't do everything.\n- **Partner key.** Minted with `POST /partners/{id}/api-keys` by an admin or the partner. It acts as that one partner and can only reach that partner's own resources (`/partners/{its id}/…`). Revoking the partner revokes its keys.\n\nEach operation says which of these it accepts. Scopes:\n\n| Scope | Unlocks |\n| --- | --- |\n| `bonuses:write` | `POST /bonuses`<br>`GET /bonuses`<br>`GET /bonuses/{id}` |\n| `clicks:write` | `POST /clicks` |\n| `commissions:read` | `GET /partners/{id}/commissions`<br>`GET /commissions`<br>`GET /bonuses`<br>`GET /bonuses/{id}` |\n| `events:write` | `POST /attribution/events`<br>`POST /attribution/conversions`<br>`POST /attribution/refunds`<br>`POST /coupons/redeem` |\n| `links:read` | `GET /partners/{id}/links` |\n| `links:write` | `POST /partners/{id}/links` |\n| `partners:create` | `POST /partners` |\n| `partners:read` | `GET /partners`<br>`GET /partners/{id}`<br>`GET /partners/{id}/dashboard`<br>`GET /partners/{id}/timeseries`<br>`GET /partners/{id}/events`<br>`GET /partners/{id}/customers`<br>`GET /partners/{id}/breakdowns` |\n| `partners:write` | `POST /partners`<br>`PATCH /partners/{id}`<br>`POST /import/partners-csv`<br>`POST /partners/{id}/invite`<br>`POST /partners/{id}/revoke`<br>`POST /partners/{id}/coupons`<br>`DELETE /partners/{id}/coupons/{couponId}` |\n| `payouts:read` | `GET /partners/{id}/payouts` |\n| `webhooks:write` | `POST /webhooks`<br>`DELETE /webhooks/{id}` |\n\n`partners:read` also unlocks `GET /brand-resources` (brand logo, colours and shareable assets), which this reference doesn't cover yet. The OpenPartner Network federation key holds `partners:write`, `partners:read`, `links:write`, `commissions:read`, `clicks:write`, `bonuses:write`.\n\n**Scoped reads that don't exist yet:** `GET /partners/{id}/funnel`, `/coupons` and `/commission-snapshot` accept no scope. Read them with an admin key from your server, or use `/timeseries` (which has `partners:read`) for funnel-like counts.\n\n## Requests and responses\n\n- JSON bodies (`content-type: application/json`), up to 1 MB. `POST /import` takes up to 256 MB on single-tenant installs.\n- Errors are `{ \"error\": \"<code>\", \"detail\": … }`. Branch on `error`; `detail` is for humans.\n- **Timestamps are ISO-8601 in UTC and must end in `Z`**: `2026-10-16T10:00:00Z`. An offset such as `+00:00` (Python's `isoformat()` default) is rejected with `400 invalid_body` / `invalid_query`.\n- Money in major units. Commission and payout amounts, and `eventValue` in webhook payloads, are decimal **strings** such as `\"12.50\"`. Report endpoints (dashboard, timeseries, a partner's events list) return JSON numbers.\n- Fields may be added to any response at any time. Ignore fields you don't know.\n- Send `X-Request-Id` to correlate a call; every response echoes one back (generated if you didn't send it). Quote it in support requests.\n\n## Idempotency\n\n`POST /attribution/events`, `POST /attribution/conversions`, `POST /attribution/refunds` and `POST /coupons/redeem` take an `externalEventId`: your stable id for that one event (required on conversions and refunds). A retry with the same key replays the original result (`replayed: true`) and records nothing, even when the duplicates arrive at the same moment. A key reused for a different event is `409 external_event_id_conflict`. `POST /clicks` is idempotent on the click `id`, and `POST /bonuses` on its optional `externalRef` (reused for a different partner, program, amount or currency: `409 external_ref_conflict`). Other writes are not idempotent: `POST /partners` answers a duplicate email with `409 email_taken`, so look the partner up with `GET /partners?email=`.\n\n## Pagination\n\n`GET /partners` and the commission lists are keyset-paginated: pass the response's `nextCursor` as `cursor` until it is `null`. Cursors are opaque. `GET /partners/{id}/events` and `/customers` use `limit` + `offset`. `GET /partners/{id}/payouts` returns the 200 most recent, and `GET /webhooks/{id}/deliveries` the 100 most recent.\n\n## Rate limits\n\nThe API shares one limit of **600 requests per 5 minutes per client IP** across its routes (a few infrastructure paths are exempt). A backend calls from one IP, so that is your whole integration's budget, event ingest included: at four calls per page view, about 150 uncached page views per 5 minutes. Cache partner stats for a few minutes, don't let users force a refresh, and report events from a queue that backs off on `429`. Over the limit you get `429 rate_limited` with the IETF `RateLimit` and `RateLimit-Policy` headers.\n\n`POST /attribution/identify` has its own limit of 120 per minute per IP, answered with `429 rate_limited` and `Retry-After`. When the browser SDK calls it, that is each visitor's IP; when your backend calls it, every stitch counts against your backend's IP, so prefer the browser for identify at volume.\n\n## Webhooks\n\nSubscribe with `POST /webhooks`; the event catalogue is under **Webhook events**. Each delivery is a JSON `POST` of an envelope `{ id, event, created, data }` with:\n\n| Header | Value |\n| --- | --- |\n| `X-OpenPartner-Signature` | hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint's secret (the whole `whsec_…` string) |\n| `X-OpenPartner-Timestamp` | Unix seconds when the attempt was signed |\n| `X-OpenPartner-Event` | the event type |\n| `X-OpenPartner-Delivery` | the envelope `id` |\n\nTo verify a delivery, recompute the HMAC over the **raw** request body, before any JSON parsing, and compare it in constant time. Reject timestamps more than 5 minutes from now. Then dedupe on `id`:\n\n```js\nimport { createHmac, timingSafeEqual } from 'node:crypto';\n\nfunction verify(rawBody, headers, secret) {\n  const ts = headers['x-openpartner-timestamp'];\n  const sig = headers['x-openpartner-signature'] ?? '';\n  if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;\n  const expected = Buffer.from(createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex'));\n  const given = Buffer.from(sig);\n  return given.length === expected.length && timingSafeEqual(given, expected);\n}\n```\n\nDelivery is at most once per trigger: a non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed, and **failed deliveries are not retried automatically**. Find them with `GET /webhooks/{id}/deliveries` and resend with `POST /webhooks/{id}/deliveries/{deliveryId}/retry`. A resend carries the same `id` and a fresh signature. Treat webhooks as notifications and the list endpoints as the record: reconcile from `GET /commissions` if you can't afford to miss one.\n\nEndpoints must be publicly reachable. Private, loopback and link-local destinations are refused at delivery time, and OpenPartner Cloud delivers only to ports 80 and 443. A single-tenant self-host can allow specific private ranges with `OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS`.",
+    "description": "The OpenPartner tenant API: partners, programs, links, attribution, commissions, payouts, reporting, webhooks and export. Use it to run a referral or affiliate program from your own backend, for example an in-app \"Refer & earn\" page with no separate OpenPartner login. Walkthrough: [Build an in-app referral page](https://github.com/getcoherence/openpartner/blob/main/docs/headless-referral.md).\n\nThis document is generated from the API's own request validators. It is served at `/openapi.json`, and the rendered reference at `/docs`, on every deployment. White-label custom domains don't serve them; use the platform host, e.g. `https://app.openpartner.dev/api/docs`.\n\n## Base URL and tenancy\n\nEvery path below is relative to your tenant's API base:\n\n| Deployment | API base | Share links |\n| --- | --- | --- |\n| OpenPartner Cloud | `https://app.openpartner.dev/api/t/<tenant-slug>` | `https://app.openpartner.dev/r/<tenant-slug>/<linkKey>` |\n| Cloud with a white-label domain | `https://<your-domain>/api` | `https://<your-domain>/r/<linkKey>` |\n| Self-hosted, single tenant | your API origin, e.g. `https://api.example.com` (or `<portal>/api` behind the bundled proxy) | `<router origin>/r/<linkKey>` |\n| Self-hosted, multi-tenant | `<api origin>/t/<tenant-slug>` (or `<portal>/api/t/<tenant-slug>`) | `<router origin>/r/<tenant-slug>/<linkKey>` |\n\nThe slug comes **after** `/api`. `https://app.openpartner.dev/t/<slug>/api/...` reaches the portal's static site, not the API, and returns HTML. On a multi-tenant deployment a request with no `/t/<slug>` prefix fails with `400 tenant_slug_missing`, and an unknown slug gets a plain `404`. Your slug is the `/t/<slug>/` segment in your admin portal's address.\n\n**Publisher sub-IDs.** A partner may add `?sub_id=<their own id>` to a share link (trimmed, at most 255 characters). The router stores it on the click and doesn't pass it to your destination. It comes back as `subId` on `commission.*` webhooks and in the partner's `{sub_id}` postback macro, so a publisher's tracking tool can match each conversion to its own click.\n\nKeys minted through the API are bound to their tenant. A key sent to another tenant's path is `401 unauthorized`.\n\n## Authentication\n\nSend a key as a bearer token: `Authorization: Bearer op_…`. Keys are server-side credentials: never ship one to a browser or mobile app. There are three kinds:\n\n- **Admin key.** Unscoped, full access to the tenant. Minted with `POST /api-keys`, or the deployment's `ADMIN_API_KEY` (self-host). The admin portal's session cookie is accepted wherever an admin key is.\n- **Scoped key.** Minted with `POST /api-keys/scoped` and a list of scopes. It can call only the operations its scopes unlock, and it acts on any partner in the tenant. Calling something it lacks the scope for returns `403 forbidden_scope` with the `required` scope; calling an operation with no scope returns `403 forbidden`. Use one for every integration so a leaked key can't do everything.\n- **Partner key.** Minted with `POST /partners/{id}/api-keys` by an admin or the partner. It acts as that one partner and can only reach that partner's own resources (`/partners/{its id}/…`). Revoking the partner revokes its keys.\n\nEach operation says which of these it accepts. Scopes:\n\n| Scope | Unlocks |\n| --- | --- |\n| `bonuses:write` | `POST /bonuses`<br>`GET /bonuses`<br>`GET /bonuses/{id}` |\n| `clicks:write` | `POST /clicks` |\n| `commissions:read` | `GET /partners/{id}/commissions`<br>`GET /commissions`<br>`GET /bonuses`<br>`GET /bonuses/{id}` |\n| `events:write` | `POST /attribution/events`<br>`POST /attribution/conversions`<br>`POST /attribution/refunds`<br>`POST /coupons/redeem` |\n| `links:read` | `GET /partners/{id}/links` |\n| `links:write` | `POST /partners/{id}/links` |\n| `partners:create` | `POST /partners` |\n| `partners:read` | `GET /partners`<br>`GET /partners/{id}`<br>`GET /partners/{id}/dashboard`<br>`GET /partners/{id}/timeseries`<br>`GET /partners/{id}/events`<br>`GET /partners/{id}/customers`<br>`GET /partners/{id}/breakdowns` |\n| `partners:write` | `POST /partners`<br>`PATCH /partners/{id}`<br>`POST /import/partners-csv`<br>`POST /partners/{id}/invite`<br>`POST /partners/{id}/revoke`<br>`POST /partners/{id}/coupons`<br>`DELETE /partners/{id}/coupons/{couponId}` |\n| `payout_profiles:read` | `GET /partners/{id}/payout-profile` |\n| `payout_profiles:write` | `GET /partners/{id}/payout-profile`<br>`PUT /partners/{id}/payout-profile`<br>`DELETE /partners/{id}/payout-profile` |\n| `payouts:read` | `GET /partners/{id}/payouts` |\n| `webhooks:write` | `POST /webhooks`<br>`DELETE /webhooks/{id}` |\n\n`partners:read` also unlocks `GET /brand-resources` (brand logo, colours and shareable assets), which this reference doesn't cover yet. The OpenPartner Network federation key holds `partners:write`, `partners:read`, `links:write`, `commissions:read`, `clicks:write`, `bonuses:write`.\n\n**Scoped reads that don't exist yet:** `GET /partners/{id}/funnel`, `/coupons` and `/commission-snapshot` accept no scope. Read them with an admin key from your server, or use `/timeseries` (which has `partners:read`) for funnel-like counts.\n\n## Requests and responses\n\n- JSON bodies (`content-type: application/json`), up to 1 MB. `POST /import` takes up to 256 MB on single-tenant installs.\n- Errors are `{ \"error\": \"<code>\", \"detail\": … }`. Branch on `error`; `detail` is for humans.\n- **Timestamps are ISO-8601 in UTC and must end in `Z`**: `2026-10-16T10:00:00Z`. An offset such as `+00:00` (Python's `isoformat()` default) is rejected with `400 invalid_body` / `invalid_query`.\n- Money in major units. Commission and payout amounts, and `eventValue` in webhook payloads, are decimal **strings** such as `\"12.50\"`. Report endpoints (dashboard, timeseries, a partner's events list) return JSON numbers.\n- Fields may be added to any response at any time. Ignore fields you don't know.\n- Send `X-Request-Id` to correlate a call; every response echoes one back (generated if you didn't send it). Quote it in support requests.\n\n## Idempotency\n\n`POST /attribution/events`, `POST /attribution/conversions`, `POST /attribution/refunds` and `POST /coupons/redeem` take an `externalEventId`: your stable id for that one event (required on conversions and refunds). A retry with the same key replays the original result (`replayed: true`) and records nothing, even when the duplicates arrive at the same moment. A key reused for a different event is `409 external_event_id_conflict`. `POST /clicks` is idempotent on the click `id`, and `POST /bonuses` on its optional `externalRef` (reused for a different partner, program, amount or currency: `409 external_ref_conflict`). Other writes are not idempotent: `POST /partners` answers a duplicate email with `409 email_taken`, so look the partner up with `GET /partners?email=`.\n\n## Pagination\n\n`GET /partners` and the commission lists are keyset-paginated: pass the response's `nextCursor` as `cursor` until it is `null`. Cursors are opaque. `GET /partners/{id}/events` and `/customers` use `limit` + `offset`. `GET /partners/{id}/payouts` returns the 200 most recent, and `GET /webhooks/{id}/deliveries` the 100 most recent.\n\n## Rate limits\n\nThe API shares one limit of **600 requests per 5 minutes per client IP** across its routes (a few infrastructure paths are exempt). A backend calls from one IP, so that is your whole integration's budget, event ingest included: at four calls per page view, about 150 uncached page views per 5 minutes. Cache partner stats for a few minutes, don't let users force a refresh, and report events from a queue that backs off on `429`. Over the limit you get `429 rate_limited` with the IETF `RateLimit` and `RateLimit-Policy` headers.\n\n`POST /attribution/identify` has its own limit of 120 per minute per IP, answered with `429 rate_limited` and `Retry-After`. When the browser SDK calls it, that is each visitor's IP; when your backend calls it, every stitch counts against your backend's IP, so prefer the browser for identify at volume.\n\n## Webhooks\n\nSubscribe with `POST /webhooks`; the event catalogue is under **Webhook events**. Each delivery is a JSON `POST` of an envelope `{ id, event, created, data }` with:\n\n| Header | Value |\n| --- | --- |\n| `X-OpenPartner-Signature` | hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint's secret (the whole `whsec_…` string) |\n| `X-OpenPartner-Timestamp` | Unix seconds when the attempt was signed |\n| `X-OpenPartner-Event` | the event type |\n| `X-OpenPartner-Delivery` | the envelope `id` |\n\nTo verify a delivery, recompute the HMAC over the **raw** request body, before any JSON parsing, and compare it in constant time. Reject timestamps more than 5 minutes from now. Then dedupe on `id`:\n\n```js\nimport { createHmac, timingSafeEqual } from 'node:crypto';\n\nfunction verify(rawBody, headers, secret) {\n  const ts = headers['x-openpartner-timestamp'];\n  const sig = headers['x-openpartner-signature'] ?? '';\n  if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;\n  const expected = Buffer.from(createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex'));\n  const given = Buffer.from(sig);\n  return given.length === expected.length && timingSafeEqual(given, expected);\n}\n```\n\nDelivery is at most once per trigger: a non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed, and **failed deliveries are not retried automatically**. Find them with `GET /webhooks/{id}/deliveries` and resend with `POST /webhooks/{id}/deliveries/{deliveryId}/retry`. A resend carries the same `id` and a fresh signature. Treat webhooks as notifications and the list endpoints as the record: reconcile from `GET /commissions` if you can't afford to miss one.\n\nEndpoints must be publicly reachable. Private, loopback and link-local destinations are refused at delivery time, and OpenPartner Cloud delivers only to ports 80 and 443. A single-tenant self-host can allow specific private ranges with `OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS`.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -3868,6 +3868,638 @@
           "metadata",
           "createdAt",
           "completedAt"
+        ]
+      },
+      "BulkConfirmResult": {
+        "type": "object",
+        "properties": {
+          "confirmed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Payout"
+            }
+          },
+          "notConfirmable": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "payoutId": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": "string",
+                  "enum": [
+                    "payout_not_found",
+                    "not_confirmable"
+                  ]
+                },
+                "detail": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "payoutId",
+                "error"
+              ]
+            }
+          }
+        },
+        "required": [
+          "confirmed",
+          "notConfirmable"
+        ]
+      },
+      "ManualPayoutRuns": {
+        "type": "object",
+        "properties": {
+          "runs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "runId": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "Z$"
+                },
+                "payoutCount": {
+                  "type": "integer",
+                  "description": "Manual payouts in the run."
+                },
+                "pendingCount": {
+                  "type": "integer",
+                  "description": "Of those, not yet confirmed as sent."
+                },
+                "pendingTotals": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "currency": {
+                        "type": "string"
+                      },
+                      "amount": {
+                        "$ref": "#/components/schemas/Decimal"
+                      }
+                    },
+                    "required": [
+                      "currency",
+                      "amount"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "runId",
+                "createdAt",
+                "payoutCount",
+                "pendingCount",
+                "pendingTotals"
+              ]
+            }
+          }
+        },
+        "required": [
+          "runs"
+        ]
+      },
+      "ManualPayoutRun": {
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "payouts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "payoutId": {
+                  "type": "string"
+                },
+                "partnerId": {
+                  "type": "string"
+                },
+                "partnerName": {
+                  "type": "string"
+                },
+                "partnerEmail": {
+                  "type": "string"
+                },
+                "amount": {
+                  "$ref": "#/components/schemas/Decimal"
+                },
+                "currency": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "paid",
+                    "failed",
+                    "partially_reversed",
+                    "reversed"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "Z$"
+                },
+                "completedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "pattern": "Z$"
+                },
+                "destination": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "paypal",
+                            "bank",
+                            "upi",
+                            "other"
+                          ]
+                        },
+                        "country": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "summary": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Masked. Null when the details can't be read."
+                        },
+                        "updatedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "A change shortly before a payout is worth a second look before you send it.",
+                          "pattern": "Z$"
+                        },
+                        "updatedBy": {
+                          "type": "string",
+                          "enum": [
+                            "partner",
+                            "admin",
+                            "api"
+                          ],
+                          "description": "Who saved them last: the partner (portal), an admin (portal) or an API key."
+                        }
+                      },
+                      "required": [
+                        "method",
+                        "country",
+                        "summary",
+                        "updatedAt",
+                        "updatedBy"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The partner’s payout details, masked; null when they have none."
+                },
+                "file": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "enum": [
+                            "paypal",
+                            "wise"
+                          ]
+                        },
+                        "currency": {
+                          "type": "string"
+                        },
+                        "part": {
+                          "type": "integer"
+                        },
+                        "reference": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "What identifies this payout in the file: the PayPal Customer ID (the payout id), or the Wise payment reference (its last 10 characters; none for JPY or COP)."
+                        }
+                      },
+                      "required": [
+                        "provider",
+                        "currency",
+                        "part",
+                        "reference"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The file this pending payout is in."
+                },
+                "excluded": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "no_payout_details",
+                    "details_unreadable",
+                    "pay_individually",
+                    "currency_not_supported",
+                    "country_not_supported",
+                    "screening_confirmed",
+                    null
+                  ],
+                  "description": "Why a pending payout is in no file: `no_payout_details`, `details_unreadable`, `pay_individually` (a UPI ID or instructions: pay it yourself), `currency_not_supported` (PayPal can't send the currency, e.g. INR), and on OpenPartner Cloud `country_not_supported` (the partner's declared country, or their account's, isn't served) or `screening_confirmed` (a confirmed sanctions-list match)."
+                },
+                "complianceWarning": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "country_not_supported",
+                    "screening_confirmed",
+                    "screening_review",
+                    "screening_pending",
+                    null
+                  ],
+                  "description": "OpenPartner Cloud: the partner is on a compliance hold. A sanctions review or pending screening stays in its file; check before you send it."
+                },
+                "lastExport": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "enum": [
+                            "paypal",
+                            "wise"
+                          ]
+                        },
+                        "at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "Z$"
+                        }
+                      },
+                      "required": [
+                        "provider",
+                        "at"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "When a file holding this payout was last downloaded. Confirm it once your upload went through, so it is never paid twice."
+                }
+              },
+              "required": [
+                "payoutId",
+                "partnerId",
+                "partnerName",
+                "partnerEmail",
+                "amount",
+                "currency",
+                "status",
+                "createdAt",
+                "completedAt",
+                "destination",
+                "file",
+                "excluded",
+                "complianceWarning",
+                "lastExport"
+              ]
+            }
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "enum": [
+                    "paypal",
+                    "wise"
+                  ]
+                },
+                "currency": {
+                  "type": "string",
+                  "description": "PayPal: the payout currency. Wise: the source currency you pay in."
+                },
+                "part": {
+                  "type": "integer"
+                },
+                "count": {
+                  "type": "integer"
+                },
+                "total": {
+                  "$ref": "#/components/schemas/Decimal"
+                }
+              },
+              "required": [
+                "provider",
+                "currency",
+                "part",
+                "count",
+                "total"
+              ]
+            }
+          }
+        },
+        "required": [
+          "runId",
+          "createdAt",
+          "payouts",
+          "files"
+        ]
+      },
+      "PayoutDetails": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "method": {
+                "type": "string",
+                "enum": [
+                  "paypal"
+                ]
+              },
+              "email": {
+                "type": "string",
+                "maxLength": 254,
+                "format": "email"
+              },
+              "country": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "email"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "method": {
+                "type": "string",
+                "enum": [
+                  "bank"
+                ]
+              },
+              "accountHolderName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 140
+              },
+              "accountHolderType": {
+                "type": "string",
+                "enum": [
+                  "person",
+                  "business"
+                ],
+                "default": "person"
+              },
+              "country": {
+                "type": "string"
+              },
+              "currency": {
+                "type": "string",
+                "pattern": "^[A-Za-z]{3}$"
+              },
+              "iban": {
+                "type": "string"
+              },
+              "bic": {
+                "type": "string"
+              },
+              "accountNumber": {
+                "type": "string"
+              },
+              "sortCode": {
+                "type": "string"
+              },
+              "routingNumber": {
+                "type": "string"
+              },
+              "accountType": {
+                "type": "string",
+                "enum": [
+                  "checking",
+                  "savings"
+                ]
+              },
+              "ifsc": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string",
+                "maxLength": 254,
+                "format": "email"
+              },
+              "address": {
+                "type": "object",
+                "properties": {
+                  "line1": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 140
+                  },
+                  "city": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "postCode": {
+                    "type": "string",
+                    "maxLength": 20
+                  },
+                  "state": {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  "country": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "line1",
+                  "city",
+                  "country"
+                ]
+              }
+            },
+            "required": [
+              "method",
+              "accountHolderName",
+              "country",
+              "currency"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "method": {
+                "type": "string",
+                "enum": [
+                  "upi"
+                ]
+              },
+              "vpa": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{2,256}@[A-Za-z][A-Za-z0-9]{1,63}$"
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 140
+              }
+            },
+            "required": [
+              "method",
+              "vpa"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "method": {
+                "type": "string",
+                "enum": [
+                  "other"
+                ]
+              },
+              "instructions": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              },
+              "country": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "instructions"
+            ]
+          }
+        ],
+        "description": "Where the partner wants manual payouts sent, by `method`: `paypal` (the PayPal account email), `bank` (an IBAN, or a local account number with what routes to it: `sortCode` for GBP, `routingNumber` + `accountType` + `address` for USD, `ifsc` for INR, `bic` + `address` for any other currency), `upi` (an Indian UPI ID), or `other` (free-text instructions). Values are validated (IBAN checksum, ABA checksum, IFSC shape) and normalised (upper case, spaces removed)."
+      },
+      "PayoutProfile": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string",
+            "enum": [
+              "paypal",
+              "bank",
+              "upi",
+              "other"
+            ]
+          },
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the account is held (ISO 3166-1 alpha-2); `IN` for UPI; null for a PayPal email or instructions without one."
+          },
+          "details": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PayoutDetails"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when the stored details can't be read on this deployment (restored from an encrypted copy elsewhere): the partner has to enter them again."
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A masked one-line description, safe to show anywhere, e.g. `Bank IBAN GB •••• 5432 (GBP)`."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "updatedBy": {
+            "type": "string",
+            "enum": [
+              "partner",
+              "admin",
+              "api"
+            ],
+            "description": "Who saved them last: the partner (portal), an admin (portal) or an API key."
+          }
+        },
+        "required": [
+          "method",
+          "country",
+          "details",
+          "summary",
+          "updatedAt",
+          "updatedBy"
+        ]
+      },
+      "PartnerPayoutProfileResponse": {
+        "type": "object",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PayoutProfile"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null until the partner (or you) gives payout details."
+          },
+          "paidVia": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "stripe_connect"
+            ],
+            "description": "How this partner's payouts go out under your payout rail today. Payout details are only used for `manual`."
+          }
+        },
+        "required": [
+          "profile",
+          "paidVia"
         ]
       },
       "PartnerDashboard": {
@@ -9810,6 +10442,637 @@
         }
       }
     },
+    "/payouts/confirm": {
+      "post": {
+        "operationId": "confirmManualPayouts",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Mark many manual payouts as sent",
+        "description": "For after a PayPal or Wise batch went out (`GET /payouts/runs/{runId}/{provider}.csv`). Each id is confirmed as `POST /payouts/{id}/confirm` would, or reported in `notConfirmable`; one that can’t be confirmed doesn’t stop the rest. Up to 5,000 ids. No webhooks: `payout.created` and `commission.paid` fired when the run made the payouts.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "payoutIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "minItems": 1,
+                    "maxItems": 5000
+                  }
+                },
+                "required": [
+                  "payoutIds"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What was confirmed, and what wasn’t.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkConfirmResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/runs": {
+      "get": {
+        "operationId": "listManualPayoutRuns",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "List payout runs with manual payouts to send",
+        "description": "Runs that still have `pending` manual payouts, newest first (50 at most).\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "responses": {
+          "200": {
+            "description": "Runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualPayoutRuns"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/runs/{runId}": {
+      "get": {
+        "operationId": "getManualPayoutRun",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "See which batch file each manual payout is in",
+        "description": "A run's manual payouts. Each pending one is in a PayPal file (the partner's payout details are a PayPal email) or a Wise file (a bank account), or says why it's in neither (`excluded`). Payout details are masked here; the files carry them in full. See docs/manual-payout-files.md.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The runId."
+            },
+            "required": true,
+            "name": "runId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualPayoutRun"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`run_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/runs/{runId}/{provider}.csv": {
+      "get": {
+        "operationId": "downloadManualPayoutFile",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Download a batch file for your PayPal or Wise account",
+        "description": "A run's pending payouts in one currency, as a file you upload to your own account. The money goes from you to the partner; it never passes through OpenPartner.\n\n- **`paypal`**: PayPal Payouts (Send Money → Make a Mass Payment). No header row; ten columns: recipient, amount, currency, Customer ID (the payout id), note, `PAYPAL`, three empty Venmo columns, purpose `SERVICES`. EUR and BRL amounts use a decimal comma; HUF, JPY and TWD are whole units. Up to 5,000 rows.\n- **`wise`**: Wise batch payments, \"Send to bank accounts\". A header row; `currency` is the source currency, and each row's `targetCurrency` is the partner's account currency. Up to 1,000 rows.\n\nDownloading stamps the payouts (`lastExport` on `GET /payouts/runs/{runId}`). Once the batch went out, confirm them with `POST /payouts/confirm`.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The runId."
+            },
+            "required": true,
+            "name": "runId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "paypal",
+                "wise"
+              ]
+            },
+            "required": true,
+            "name": "provider",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z]{3}$"
+            },
+            "required": true,
+            "name": "currency",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "default": 1
+            },
+            "required": false,
+            "name": "part",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file (UTF-8 CSV).",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_query`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`unknown_provider`, `file_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/partners/{id}/payout-profile": {
+      "get": {
+        "operationId": "getPartnerPayoutProfile",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Get a partner's payout details",
+        "description": "Where the partner wants manual payouts sent, in full, and how they are paid today (`paidVia`). Sensitive: show it only to the partner and the people who pay them.\n\n**Access:** admin key, a scoped key with `payout_profiles:read` or `payout_profiles:write`, or the partner's own key (`:id` must be that partner).",
+        "security": [
+          {
+            "adminKey": []
+          },
+          {
+            "partnerKey": []
+          },
+          {
+            "scopedKey": [
+              "payout_profiles:read"
+            ]
+          },
+          {
+            "scopedKey": [
+              "payout_profiles:write"
+            ]
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "partnerOrAdmin",
+          "scopes": [
+            "payout_profiles:read",
+            "payout_profiles:write"
+          ],
+          "partner": true
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The payout details, or null.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartnerPayoutProfileResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`partner_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "setPartnerPayoutProfile",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Set a partner's payout details",
+        "description": "Replaces the partner's payout details, for the manual rail's batch files. Stored encrypted. The partner is emailed a masked notice of every change (unless they have no portal access), so a change they didn't make doesn't go unnoticed.\n\n**Access:** admin key, a scoped key with `payout_profiles:write`, or the partner's own key (`:id` must be that partner).",
+        "security": [
+          {
+            "adminKey": []
+          },
+          {
+            "partnerKey": []
+          },
+          {
+            "scopedKey": [
+              "payout_profiles:write"
+            ]
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "partnerOrAdmin",
+          "scopes": [
+            "payout_profiles:write"
+          ],
+          "partner": true
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PayoutDetails"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartnerPayoutProfileResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`partner_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deletePartnerPayoutProfile",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Remove a partner's payout details",
+        "description": "**Access:** admin key, a scoped key with `payout_profiles:write`, or the partner's own key (`:id` must be that partner).",
+        "security": [
+          {
+            "adminKey": []
+          },
+          {
+            "partnerKey": []
+          },
+          {
+            "scopedKey": [
+              "payout_profiles:write"
+            ]
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "partnerOrAdmin",
+          "scopes": [
+            "payout_profiles:write"
+          ],
+          "partner": true
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`partner_not_found`, `payout_profile_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/partners/{id}/dashboard": {
       "get": {
         "operationId": "getPartnerDashboard",
@@ -11957,6 +13220,7 @@
                 "PartnerProgram",
                 "PartnerCommission",
                 "PartnerNetworkConsent",
+                "PartnerPayoutProfile",
                 "Coupon",
                 "Link",
                 "Click",

@@ -489,6 +489,10 @@ export const TENANT_PURGE_ORDER = [
   TABLES.PartnerCommission,
   TABLES.PartnerPostback,
   TABLES.PartnerNetworkConsent,
+  // Where each partner wants manual payouts sent: bank and PayPal details,
+  // sealed (payout-profile.ts). Cascades with Partner too; named so the
+  // purge never depends on that.
+  TABLES.PartnerPayoutProfile,
   TABLES.Program,
   TABLES.Partner,
   TABLES.Admin,

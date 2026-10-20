@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { TABLES, type PayoutRow } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { db as privilegedDb } from '../db.js';
@@ -6,8 +7,29 @@ import { dispatchPayoutNotifications, runPayouts } from '../payouts.js';
 import { executePayoutTransfers } from '../payout-transfers.js';
 import { listHeldPartners, screenPayablePartners } from '../sanctions-screening.js';
 import { tenantOf, withTenantTransaction } from '../tenancy.js';
+import {
+  MANUAL_PAYOUT_PROVIDERS,
+  buildManualPayoutFile,
+  confirmManualPayouts,
+  getManualRun,
+  listManualRuns,
+} from '../manual-payout-files.js';
 
 export const payoutsRouter = Router();
+
+/** A run's batch file: one currency each (PayPal's payout currency, Wise's
+ *  source currency), split into parts past what one upload takes. */
+export const manualPayoutFileQuerySchema = z.object({
+  currency: z
+    .string()
+    .regex(/^[A-Za-z]{3}$/, 'currency must be a 3-letter ISO 4217 code')
+    .transform((c) => c.toUpperCase()),
+  part: z.coerce.number().int().min(1).max(1000).default(1),
+});
+
+export const bulkConfirmSchema = z.object({
+  payoutIds: z.array(z.string().min(1).max(64)).min(1).max(5000),
+});
 
 /**
  * Admin "run payouts". Deliberately does NOT use `req.db`: the request
@@ -111,6 +133,56 @@ payoutsRouter.post('/payouts/:id/confirm', requireAuth, requireAdmin, async (req
   // No webhook here: payout.created + commission.paid already fired when
   // runPayouts wrote the row — confirmation is bookkeeping, not a new event.
   res.json({ payout: updated[0]! });
+});
+
+/**
+ * Confirm many manual payouts at once: the brand uploaded a batch file
+ * (manual-payout-files.ts) and its PayPal or Wise batch went out. Same
+ * rule per payout as the single confirm; one that can't be confirmed is
+ * reported and doesn't stop the rest.
+ */
+payoutsRouter.post('/payouts/confirm', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = bulkConfirmSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  res.json(await confirmManualPayouts(db, tenantId, body.data.payoutIds));
+});
+
+/** Payout runs with manual payouts still waiting to be sent, newest first. */
+payoutsRouter.get('/payouts/runs', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  res.json({ runs: await listManualRuns(db, tenantId) });
+});
+
+/**
+ * One run's manual payouts: which PayPal or Wise file each pending one is
+ * in, or why it's in none, with compliance warnings and masked payout
+ * details.
+ */
+payoutsRouter.get('/payouts/runs/:runId', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const run = await getManualRun(db, tenantId, req.params.runId!);
+  if (!run) return res.status(404).json({ error: 'run_not_found' });
+  res.json(run);
+});
+
+/**
+ * A run's batch file for the brand's own PayPal or Wise account. Holds
+ * full payout details, so it is admin-only and never cached; downloading
+ * it stamps its payouts as exported.
+ */
+payoutsRouter.get('/payouts/runs/:runId/:provider.csv', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const provider = MANUAL_PAYOUT_PROVIDERS.find((p) => p === req.params.provider);
+  if (!provider) return res.status(404).json({ error: 'unknown_provider' });
+  const q = manualPayoutFileQuerySchema.safeParse(req.query);
+  if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
+  const file = await buildManualPayoutFile(db, tenantId, req.params.runId!, provider, q.data.currency, q.data.part);
+  if (!file) return res.status(404).json({ error: 'file_not_found' });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(file.body);
 });
 
 // payouts:read lets a scoped integration key (headless in-app earnings

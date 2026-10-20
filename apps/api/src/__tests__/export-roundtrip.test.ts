@@ -20,6 +20,7 @@ import { createApp } from '../app.js';
 import { generateApiKey, hashKey } from '../auth.js';
 import { verifyPostbackToken } from '../conversion-postback.js';
 import { createSession } from '../auth-sessions.js';
+import { getPayoutProfile, savePayoutProfile, type PayoutDetails } from '../payout-profile.js';
 import {
   EXPORT_TABLES,
   SCHEMA_VERSION,
@@ -42,6 +43,16 @@ const TENANT = DEFAULT_TENANT_ID;
  *  bundle, and none of them may work after a restore. */
 const SOURCE_WEBHOOK_SECRET = 'whsec_source_secret_never_exported_0001';
 const SOURCE_POSTBACK_TOKEN = `opcp_${'ab'.repeat(24)}`;
+
+/** The seeded partner's payout details. Sealed at rest; opened in a bundle. */
+const PAYOUT_DETAILS = {
+  method: 'bank',
+  accountHolderName: "Siobhán O'Hara",
+  accountHolderType: 'person',
+  country: 'GB',
+  currency: 'GBP',
+  iban: 'GB82WEST12345698765432',
+} as const satisfies PayoutDetails;
 
 interface Seeded {
   webhookEndpointId: string;
@@ -130,6 +141,8 @@ async function seedEverything(): Promise<Seeded> {
     consentedAt: new Date('2026-10-01T09:00:00.000Z'),
     withdrawnAt: new Date('2026-10-12T17:30:00.000Z'),
   });
+  // Bank details, sealed at rest like every saved profile.
+  await savePayoutProfile(db, TENANT, partnerId, PAYOUT_DETAILS, 'partner');
   await db(TABLES.Coupon).insert({
     id: couponId,
     tenantId: TENANT,
@@ -416,6 +429,8 @@ describe.skipIf(skipIntegration)('export coverage', () => {
     expect(names).toContain(TABLES.PartnerCommission);
     // Who agreed to have their details shared with the Network.
     expect(names).toContain(TABLES.PartnerNetworkConsent);
+    // Where each partner wants manual payouts sent.
+    expect(names).toContain(TABLES.PartnerPayoutProfile);
   });
 
   it('knows each table real primary key — not just `id`', () => {
@@ -424,6 +439,7 @@ describe.skipIf(skipIntegration)('export coverage', () => {
     expect(primaryKeyOf(TABLES.PartnerCommission)).toBe('id');
     expect(EXPORT_TABLES.find((s) => s.table === TABLES.PartnerCommission)).toMatchObject({ conflict: 'any' });
     expect(primaryKeyOf(TABLES.PartnerNetworkConsent)).toBe('partnerId');
+    expect(primaryKeyOf(TABLES.PartnerPayoutProfile)).toBe('partnerId');
     expect(primaryKeyOf(TABLES.Commission)).toBe('id');
   });
 
@@ -433,6 +449,7 @@ describe.skipIf(skipIntegration)('export coverage', () => {
     expect(at(TABLES.Program)).toBeLessThan(at(TABLES.PartnerProgram));
     expect(at(TABLES.Partner)).toBeLessThan(at(TABLES.PartnerCommission));
     expect(at(TABLES.Partner)).toBeLessThan(at(TABLES.PartnerNetworkConsent));
+    expect(at(TABLES.Partner)).toBeLessThan(at(TABLES.PartnerPayoutProfile));
     expect(at(TABLES.Program)).toBeLessThan(at(TABLES.Coupon));
     expect(at(TABLES.Link)).toBeLessThan(at(TABLES.Click));
     expect(at(TABLES.Click)).toBeLessThan(at(TABLES.Identity));
@@ -483,6 +500,15 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(consent.source).toBe('join_page');
     expect(new Date(consent.consentedAt).toISOString()).toBe('2026-10-01T09:00:00.000Z');
     expect(new Date(consent.withdrawnAt).toISOString()).toBe('2026-10-12T17:30:00.000Z');
+    // Payout details travel opened and are sealed again on the way in
+    // (schemaVersion 9): nothing on disk or in the table is in the clear.
+    const bundled = (bundle[TABLES.PartnerPayoutProfile] as Array<Record<string, unknown>>)[0]!;
+    const { method: _method, ...bundledDetails } = PAYOUT_DETAILS;
+    expect(bundled).toMatchObject({ method: 'bank', country: 'GB', updatedBy: 'partner', details: bundledDetails });
+    const stored = await db(TABLES.PartnerPayoutProfile).where({ partnerId: seeded.partnerId }).first();
+    expect(stored.details).not.toContain(PAYOUT_DETAILS.iban);
+    expect(stored.details).not.toMatch(/^\s*\{/);
+    expect((await getPayoutProfile(db, TENANT, seeded.partnerId))?.details).toEqual(PAYOUT_DETAILS);
     // jsonb array + text[] both survive with their own shapes.
     const program = await db(TABLES.Program).where({ id: seeded.programId }).first();
     expect(program.commissionRule).toEqual([{ trigger: 'every', type: 'percent', value: 20 }]);
@@ -863,8 +889,25 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect((await counts())[TABLES.Bounty]).toBe(1);
   }, 30_000);
 
-  it('exports at schemaVersion 8', () => {
-    expect(SCHEMA_VERSION).toBe(8);
+  it('accepts a v8 bundle — partners restore without payout details', async () => {
+    const seeded = await seedEverything();
+    const v8 = await exportAll(db, TENANT);
+    delete v8[TABLES.PartnerPayoutProfile];
+    await wipe();
+
+    const app = createApp();
+    const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+    const viaRoute = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: 8, tables: v8 });
+    expect(viaRoute.status).toBe(200);
+    expect(await db(TABLES.Partner).where({ id: seeded.partnerId }).first()).toBeTruthy();
+    expect((await counts())[TABLES.PartnerPayoutProfile]).toBe(0);
+  }, 30_000);
+
+  it('exports at schemaVersion 9', () => {
+    expect(SCHEMA_VERSION).toBe(9);
   });
 });
 
@@ -1039,6 +1082,23 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
     expect(program.categories).toEqual(['saas', 'devtools']);
     expect(program.renewalsStayWithPartner).toBe(false);
     expect((await db(TABLES.Click).first()).subId).toBe('wct_9f2a-17');
+  }, 30_000);
+
+  it('payout details restore opened, and the first read seals them', async () => {
+    const seeded = await seedEverything();
+    const dump = buildSqlDump(await exportAll(db, TENANT), { tenantId: TENANT, columnTypes: await exportColumnTypes(db) });
+    // The dump can't encrypt (the key is the app's), and says so.
+    expect(dump).toContain(PAYOUT_DETAILS.iban);
+    expect(dump).toContain('-- Sealed at rest, written here opened');
+
+    await wipe();
+    await runSql(dump);
+    const restored = await db(TABLES.PartnerPayoutProfile).where({ partnerId: seeded.partnerId }).first();
+    expect(restored.details).toContain(PAYOUT_DETAILS.iban);
+
+    expect((await getPayoutProfile(db, TENANT, seeded.partnerId))?.details).toEqual(PAYOUT_DETAILS);
+    const sealed = await db(TABLES.PartnerPayoutProfile).where({ partnerId: seeded.partnerId }).first();
+    expect(sealed.details).not.toContain(PAYOUT_DETAILS.iban);
   }, 30_000);
 
   it('generates fresh credentials on restore, and the file carries none', async () => {

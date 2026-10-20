@@ -14,7 +14,7 @@ that overstates itself is worse than one with a documented hole.
 ```json
 {
   "exportedAt": "2026-08-09T12:00:00.000Z",
-  "schemaVersion": 8,
+  "schemaVersion": 9,
   "tables": { "Partner": [ … ], "Program": [ … ], … }
 }
 ```
@@ -43,25 +43,26 @@ appears after everything it references.
 | 3 | `PartnerProgram` | `id` | **which partners may promote which programs** |
 | 4 | `PartnerCommission` | `id` | **snapshotted per-partner terms** (partner-wide or per-program) |
 | 5 | `PartnerNetworkConsent` | `partnerId` | **each partner's own OpenPartner Network opt-in** |
-| 6 | `Coupon` | `id` | **code → (partner, program) attribution** |
-| 7 | `Link` | `id` | tracking links |
-| 8 | `Click` | `id` | raw click log |
-| 9 | `Identity` | `id` | click → user stitch |
-| 10 | `Event` | `id` | raw conversion events |
-| 11 | `Attribution` | `id` | derived attribution (re-derivable) |
-| 12 | `Bounty` | `id` | **performance bounties**: goals on a program that pay a bonus |
-| 13 | `Bonus` | `id` | **rewards not tied to a sale** (manual, performance bounty, Network bounty) |
-| 14 | `Commission` | `id` | derived commission ledger |
-| 15 | `Payout` | `id` | payout ledger |
-| 16 | `PortalCustomDomain` | `id` | white-label domain history (inert on self-host) |
-| 17 | `CommissionAdjustment` | `id` | clawbacks / corrections |
-| 18 | `BrandAsset` | `id` | **the marketing-asset library** (image URLs, text snippets) |
-| 19 | `WebhookEndpoint` | `id` | **your outbound webhook endpoints** (not the signing secret) |
-| 20 | `PartnerPostback` | `id` | **each partner's own tracker callbacks** |
-| 21 | `ConversionPostbackToken` | `id` | **the GET /postback allowlist and rotation history** (not the token) |
-| 22 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy and the portal-access default** |
+| 6 | `PartnerPayoutProfile` | `partnerId` | **where each partner wants manual payouts sent** (opened; see [Payout details](#payout-details)) |
+| 7 | `Coupon` | `id` | **code → (partner, program) attribution** |
+| 8 | `Link` | `id` | tracking links |
+| 9 | `Click` | `id` | raw click log |
+| 10 | `Identity` | `id` | click → user stitch |
+| 11 | `Event` | `id` | raw conversion events |
+| 12 | `Attribution` | `id` | derived attribution (re-derivable) |
+| 13 | `Bounty` | `id` | **performance bounties**: goals on a program that pay a bonus |
+| 14 | `Bonus` | `id` | **rewards not tied to a sale** (manual, performance bounty, Network bounty) |
+| 15 | `Commission` | `id` | derived commission ledger |
+| 16 | `Payout` | `id` | payout ledger |
+| 17 | `PortalCustomDomain` | `id` | white-label domain history (inert on self-host) |
+| 18 | `CommissionAdjustment` | `id` | clawbacks / corrections |
+| 19 | `BrandAsset` | `id` | **the marketing-asset library** (image URLs, text snippets) |
+| 20 | `WebhookEndpoint` | `id` | **your outbound webhook endpoints** (not the signing secret) |
+| 21 | `PartnerPostback` | `id` | **each partner's own tracker callbacks** |
+| 22 | `ConversionPostbackToken` | `id` | **the GET /postback allowlist and rotation history** (not the token) |
+| 23 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy and the portal-access default** |
 
-Rows 3, 4 and 6 were added in schemaVersion 2 (Aug 2026). Without them a
+Rows 3, 4 and 7 were added in schemaVersion 2 (Aug 2026). Without them a
 restored instance had the roster but no grants, no coupon attribution, and
 no record of what any partnership was actually agreed at.
 
@@ -74,12 +75,12 @@ v2 or v3 bundle restores with no consent rows, so every restored partner
 starts undecided and nobody is sent to the Network until they opt in on
 the new instance.
 
-Rows 18 to 22 were added in schemaVersion 5 (Oct 2026). Before that a
+Rows 19 to 23 were added in schemaVersion 5 (Oct 2026). Before that a
 restored instance had the attribution and money ledger but none of the
 brand's configuration: no program name or support email, no join-page
 policy, no asset library, no webhooks, and no partner postbacks.
 
-Row 13 was added in schemaVersion 6 (Oct 2026). A `Bonus` is a reward paid
+Row 14 was added in schemaVersion 6 (Oct 2026). A `Bonus` is a reward paid
 to a partner that isn't tied to an attributed sale
 ([bounties.md](bounties.md)): who got it, how much, under which program,
 where it came from (`manual`, `performance_bounty`, `network`), the
@@ -91,7 +92,7 @@ it is never re-derived from the event log; it travels as recorded. A v1–v5
 bundle has no bonuses, and its `Commission` rows restore with `bonusId`
 null.
 
-Row 12 was added in schemaVersion 7 (Oct 2026). A `Bounty` is a goal on a
+Row 13 was added in schemaVersion 7 (Oct 2026). A `Bounty` is a goal on a
 program ("10 new sales by Dec 31 earns $500"): its metric, threshold,
 window, reward, partner allowlist, status, and the stamps that keep its
 partner emails from going out twice. A bonus a bounty paid names it in
@@ -110,6 +111,13 @@ below: an instance too old to store it refuses the bundle up front instead
 of failing on an unknown column. A v1–v7 bundle's clicks restore with
 `subId` null.
 
+Row 6 was added in schemaVersion 9 (Oct 2026). A `PartnerPayoutProfile` is
+where a partner wants manual-rail payouts sent: a PayPal email, a bank
+account, a UPI ID or free-text instructions
+([manual-payout-files.md](manual-payout-files.md)). It is stored sealed, so
+it travels opened; see [Payout details](#payout-details). A v1–v8 bundle
+restores with no payout details, and partners enter them again.
+
 `Partner` rows carry `portalAccess` (schemaVersion 5, Oct 2026): whether
 the partner may sign in to the partner portal. A headless program turns it
 off so its customers can't, and a restored instance keeps them out too. A
@@ -125,8 +133,8 @@ partner-wide row per partner and one row per (partner, program). Partial
 unique indexes enforce it, not the primary key. So both restore paths skip
 a `PartnerCommission` row that collides on **any** unique key, using a bare
 `ON CONFLICT DO NOTHING`, not just one that collides on `id`. Every other
-table conflicts on its primary key; `PartnerNetworkConsent` is keyed on
-**`partnerId`**, one row per partner. The importer looks the key up per
+table conflicts on its primary key; `PartnerNetworkConsent` and
+`PartnerPayoutProfile` are keyed on **`partnerId`**, one row per partner. The importer looks the key up per
 table rather than assuming `id`. `Config` (primary key `tenantId, key`) and
 `ConversionPostbackToken` (at most one live token per tenant, a partial
 unique index) skip on any unique collision too, so a setting or live token
@@ -162,6 +170,32 @@ Partner postback URLs (`PartnerPostback.url`) travel as the partner entered
 them. They hold no OpenPartner credential, but a partner's tracker may put
 its own token in the URL, so treat an export file as you would the
 partner list itself.
+
+### Payout details
+
+`PartnerPayoutProfile.details` is sealed at rest with AES-256-GCM under the
+deployment's `SECRETS_ENCRYPTION_KEY` ([manual-payout-files.md](manual-payout-files.md)).
+A sealed value means nothing under any other key, so unlike the SMTP
+password in `mail_settings` it travels **opened**: every format (JSON, CSV
+and SQL) writes `details` as the JSON object the partner entered (email,
+account holder, IBAN or account and routing numbers, address, UPI ID,
+instructions). It isn't a credential: nobody can move money with it. But it
+is your partners' bank details, so **treat an export file accordingly**.
+Leaving it out would strand the data on this deployment and make every
+partner re-enter it after a migration, which is the lock-in this bundle
+exists to prevent.
+
+On restore:
+
+- **JSON** (`POST /import`) seals each row again under the destination's
+  key as it inserts it.
+- **SQL** can't encrypt (the key is the app's), so the dump writes the
+  opened JSON and says so in a comment. The API seals each row the first
+  time it reads it (the partner's page, the admin's, or a payout run's
+  batch page). Until then the row is in the clear in your database.
+- A hand-made bundle whose `details` is still a sealed envelope from another
+  deployment restores as it came. It reads as unreadable, and that partner
+  enters their details again.
 
 ### Settings (`Config`)
 
@@ -253,7 +287,7 @@ been on the old one.
 
 `SCHEMA_VERSION` is the current bundle version; `SUPPORTED_IMPORT_VERSIONS`
 is what `POST /import` accepts. **That list only ever grows.** A v1 bundle
-sitting on someone's disk keeps importing — it is simply a v8 bundle
+sitting on someone's disk keeps importing — it is simply a v9 bundle
 without the tables and columns added later. A v4 bundle restores with no
 settings, assets, webhooks or postbacks; configure those on the destination.
 
@@ -273,6 +307,7 @@ that should attribute every event against the window alone.
 | 6 (Oct 2026) | added `Bonus`; `Commission` rows carry `bonusId`, and `attributionId` is null on a bonus's commission |
 | 7 (Oct 2026) | added `Bounty` (performance bounties; `Bonus.bountyId` references it) |
 | 8 (Oct 2026) | `Click` rows carry `subId`, the publisher's `?sub_id=` (older bundles restore it as null) |
+| 9 (Oct 2026) | added `PartnerPayoutProfile`, its `details` opened (older bundles restore no payout details) |
 
 **Importing a v1 or v2 bundle.** `POST /import` upgrades older rows before
 inserting them (`upgradeBundle` in `apps/api/src/export.ts`). A v2

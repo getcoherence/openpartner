@@ -29,8 +29,10 @@ import * as webhooks from '../routes/webhooks.js';
 import * as apiKeys from '../routes/api-keys.js';
 import * as exportRoutes from '../routes/export.js';
 import * as settings from '../routes/settings.js';
+import * as payouts from '../routes/payouts.js';
 import { EXPORTABLE_TABLES } from '../export.js';
 import { MAX_IP_ALLOWLIST } from '../conversion-postback.js';
+import { MANUAL_PAYOUT_PROVIDERS } from '../manual-payout-files.js';
 import type { OperationRegistry } from './registry.js';
 import * as S from './schemas.js';
 
@@ -959,6 +961,102 @@ Called with the brand's OpenPartner Network federation key, the bonus is recorde
     description: 'The 200 most recent, newest first.',
     access: { kind: 'partnerOrAdmin', scope: 'payouts:read' },
     responses: { 200: { description: 'Payouts.', schema: z.object({ payouts: z.array(S.Payout) }) } },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/payouts/confirm',
+    tag: 'Payouts',
+    operationId: 'confirmManualPayouts',
+    summary: 'Mark many manual payouts as sent',
+    description:
+      'For after a PayPal or Wise batch went out (`GET /payouts/runs/{runId}/{provider}.csv`). Each id is confirmed as `POST /payouts/{id}/confirm` would, or reported in `notConfirmable`; one that can’t be confirmed doesn’t stop the rest. Up to 5,000 ids. No webhooks: `payout.created` and `commission.paid` fired when the run made the payouts.',
+    access: { kind: 'admin' },
+    body: payouts.bulkConfirmSchema,
+    responses: { 200: { description: 'What was confirmed, and what wasn’t.', schema: S.BulkConfirmResult } },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/payouts/runs',
+    tag: 'Payouts',
+    operationId: 'listManualPayoutRuns',
+    summary: 'List payout runs with manual payouts to send',
+    description: 'Runs that still have `pending` manual payouts, newest first (50 at most).',
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'Runs.', schema: S.ManualPayoutRuns } },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/payouts/runs/:runId',
+    tag: 'Payouts',
+    operationId: 'getManualPayoutRun',
+    summary: 'See which batch file each manual payout is in',
+    description:
+      "A run's manual payouts. Each pending one is in a PayPal file (the partner's payout details are a PayPal email) or a Wise file (a bank account), or says why it's in neither (`excluded`). Payout details are masked here; the files carry them in full. See docs/manual-payout-files.md.",
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'The run.', schema: S.ManualPayoutRun } },
+    errors: { 404: ['run_not_found'] },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/payouts/runs/:runId/:provider.csv',
+    tag: 'Payouts',
+    operationId: 'downloadManualPayoutFile',
+    summary: 'Download a batch file for your PayPal or Wise account',
+    description: `A run's pending payouts in one currency, as a file you upload to your own account. The money goes from you to the partner; it never passes through OpenPartner.
+
+- **\`paypal\`**: PayPal Payouts (Send Money → Make a Mass Payment). No header row; ten columns: recipient, amount, currency, Customer ID (the payout id), note, \`PAYPAL\`, three empty Venmo columns, purpose \`SERVICES\`. EUR and BRL amounts use a decimal comma; HUF, JPY and TWD are whole units. Up to 5,000 rows.
+- **\`wise\`**: Wise batch payments, "Send to bank accounts". A header row; \`currency\` is the source currency, and each row's \`targetCurrency\` is the partner's account currency. Up to 1,000 rows.
+
+Downloading stamps the payouts (\`lastExport\` on \`GET /payouts/runs/{runId}\`). Once the batch went out, confirm them with \`POST /payouts/confirm\`.`,
+    access: { kind: 'admin' },
+    params: { provider: z.enum(MANUAL_PAYOUT_PROVIDERS) },
+    query: payouts.manualPayoutFileQuerySchema,
+    responses: {
+      200: { description: 'The file (UTF-8 CSV).', content: { 'text/csv': { schema: z.string() } } },
+    },
+    errors: { 404: ['unknown_provider', 'file_not_found'] },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/partners/:id/payout-profile',
+    tag: 'Payouts',
+    operationId: 'getPartnerPayoutProfile',
+    summary: "Get a partner's payout details",
+    description:
+      'Where the partner wants manual payouts sent, in full, and how they are paid today (`paidVia`). Sensitive: show it only to the partner and the people who pay them.',
+    access: { kind: 'partnerOrAdmin', scope: ['payout_profiles:read', 'payout_profiles:write'] },
+    responses: { 200: { description: 'The payout details, or null.', schema: S.PartnerPayoutProfile } },
+    errors: { 404: ['partner_not_found'] },
+  });
+
+  r.operation({
+    method: 'put',
+    path: '/partners/:id/payout-profile',
+    tag: 'Payouts',
+    operationId: 'setPartnerPayoutProfile',
+    summary: "Set a partner's payout details",
+    description:
+      "Replaces the partner's payout details, for the manual rail's batch files. Stored encrypted. The partner is emailed a masked notice of every change (unless they have no portal access), so a change they didn't make doesn't go unnoticed.",
+    access: { kind: 'partnerOrAdmin', scope: 'payout_profiles:write' },
+    body: S.PayoutDetails,
+    responses: { 200: { description: 'Saved.', schema: S.PartnerPayoutProfile } },
+    errors: { 404: ['partner_not_found'] },
+  });
+
+  r.operation({
+    method: 'delete',
+    path: '/partners/:id/payout-profile',
+    tag: 'Payouts',
+    operationId: 'deletePartnerPayoutProfile',
+    summary: "Remove a partner's payout details",
+    access: { kind: 'partnerOrAdmin', scope: 'payout_profiles:write' },
+    responses: { 204: { description: 'Removed.' } },
+    errors: { 404: ['partner_not_found', 'payout_profile_not_found'] },
   });
 
   // ------------------------------------------------------- Partner reporting

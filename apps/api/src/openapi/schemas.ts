@@ -17,6 +17,9 @@
 import { z } from 'zod';
 import { ATTRIBUTION_MODELS, BONUS_SOURCES, COMMISSION_STATUSES, PAYOUT_METHODS, PAYOUT_STATUSES } from './enums.js';
 import { commissionBandsSchema, commissionTiersSchema } from '../commission-rule-schema.js';
+import { PAYOUT_PROFILE_METHODS } from '@openpartner/db';
+import { payoutDetailsSchema } from '../payout-profile.js';
+import { MANUAL_EXCLUSION_REASONS, MANUAL_PAYOUT_PROVIDERS } from '../manual-payout-files.js';
 
 import './registry.js'; // extendZodWithOpenApi before any .openapi() call
 
@@ -610,6 +613,127 @@ export const PayoutHolds = z
     ),
   })
   .openapi('PayoutHolds');
+
+// ---------- Manual payouts: payout details and batch files ----------
+
+export const PayoutDetails = payoutDetailsSchema.openapi('PayoutDetails', {
+  description:
+    'Where the partner wants manual payouts sent, by `method`: `paypal` (the PayPal account email), `bank` (an IBAN, or a local account number with what routes to it: `sortCode` for GBP, `routingNumber` + `accountType` + `address` for USD, `ifsc` for INR, `bic` + `address` for any other currency), `upi` (an Indian UPI ID), or `other` (free-text instructions). Values are validated (IBAN checksum, ABA checksum, IFSC shape) and normalised (upper case, spaces removed).',
+});
+
+const PayoutProfileMethod = z.enum(PAYOUT_PROFILE_METHODS);
+const PayoutProfileUpdatedBy = z.enum(['partner', 'admin', 'api']).openapi({
+  description: 'Who saved them last: the partner (portal), an admin (portal) or an API key.',
+});
+
+export const PartnerPayoutProfile = z
+  .object({
+    profile: orNull(
+      z
+        .object({
+          method: PayoutProfileMethod,
+          country: z.string().nullable().openapi({ description: 'Where the account is held (ISO 3166-1 alpha-2); `IN` for UPI; null for a PayPal email or instructions without one.' }),
+          details: orNull(PayoutDetails).openapi({
+            description: "Null when the stored details can't be read on this deployment (restored from an encrypted copy elsewhere): the partner has to enter them again.",
+          }),
+          summary: z.string().nullable().openapi({ description: 'A masked one-line description, safe to show anywhere, e.g. `Bank IBAN GB •••• 5432 (GBP)`.' }),
+          updatedAt: ts,
+          updatedBy: PayoutProfileUpdatedBy,
+        })
+        .openapi('PayoutProfile'),
+    ).openapi({ description: 'Null until the partner (or you) gives payout details.' }),
+    paidVia: z.enum(['manual', 'stripe_connect']).openapi({
+      description: "How this partner's payouts go out under your payout rail today. Payout details are only used for `manual`.",
+    }),
+  })
+  .openapi('PartnerPayoutProfileResponse');
+
+const ManualPayoutProvider = z.enum(MANUAL_PAYOUT_PROVIDERS);
+
+export const ManualPayoutRuns = z
+  .object({
+    runs: z.array(
+      z.object({
+        runId: id,
+        createdAt: ts,
+        payoutCount: z.number().int().openapi({ description: 'Manual payouts in the run.' }),
+        pendingCount: z.number().int().openapi({ description: 'Of those, not yet confirmed as sent.' }),
+        pendingTotals: z.array(z.object({ currency: z.string(), amount: Decimal })),
+      }),
+    ),
+  })
+  .openapi('ManualPayoutRuns');
+
+export const ManualPayoutRun = z
+  .object({
+    runId: id,
+    createdAt: ts,
+    payouts: z.array(
+      z.object({
+        payoutId: id,
+        partnerId: id,
+        partnerName: z.string(),
+        partnerEmail: z.string(),
+        amount: Decimal,
+        currency: z.string(),
+        status: z.enum(PAYOUT_STATUSES),
+        createdAt: ts,
+        completedAt: tsNullable,
+        destination: orNull(
+          z.object({
+            method: PayoutProfileMethod,
+            country: z.string().nullable(),
+            summary: z.string().nullable().openapi({ description: "Masked. Null when the details can't be read." }),
+            updatedAt: ts.openapi({ description: 'A change shortly before a payout is worth a second look before you send it.' }),
+            updatedBy: PayoutProfileUpdatedBy,
+          }),
+        ).openapi({ description: 'The partner’s payout details, masked; null when they have none.' }),
+        file: orNull(
+          z.object({
+            provider: ManualPayoutProvider,
+            currency: z.string(),
+            part: z.number().int(),
+            reference: z.string().nullable().openapi({
+              description: 'What identifies this payout in the file: the PayPal Customer ID (the payout id), or the Wise payment reference (its last 10 characters; none for JPY or COP).',
+            }),
+          }),
+        ).openapi({ description: 'The file this pending payout is in.' }),
+        excluded: z.enum(MANUAL_EXCLUSION_REASONS).nullable().openapi({
+          description:
+            "Why a pending payout is in no file: `no_payout_details`, `details_unreadable`, `pay_individually` (a UPI ID or instructions: pay it yourself), `currency_not_supported` (PayPal can't send the currency, e.g. INR), and on OpenPartner Cloud `country_not_supported` (the partner's declared country, or their account's, isn't served) or `screening_confirmed` (a confirmed sanctions-list match).",
+        }),
+        complianceWarning: PayoutHoldReason.nullable().openapi({
+          description: 'OpenPartner Cloud: the partner is on a compliance hold. A sanctions review or pending screening stays in its file; check before you send it.',
+        }),
+        lastExport: orNull(z.object({ provider: ManualPayoutProvider, at: ts })).openapi({
+          description: 'When a file holding this payout was last downloaded. Confirm it once your upload went through, so it is never paid twice.',
+        }),
+      }),
+    ),
+    files: z.array(
+      z.object({
+        provider: ManualPayoutProvider,
+        currency: z.string().openapi({ description: 'PayPal: the payout currency. Wise: the source currency you pay in.' }),
+        part: z.number().int(),
+        count: z.number().int(),
+        total: Decimal,
+      }),
+    ),
+  })
+  .openapi('ManualPayoutRun');
+
+export const BulkConfirmResult = z
+  .object({
+    confirmed: z.array(Payout),
+    notConfirmable: z.array(
+      z.object({
+        payoutId: id,
+        error: z.enum(['payout_not_found', 'not_confirmable']),
+        detail: z.string().optional(),
+      }),
+    ),
+  })
+  .openapi('BulkConfirmResult');
 
 // ---------- Reporting ----------
 
