@@ -116,7 +116,7 @@ test clock:
 | Invoice open, not yet due | `active` | Nothing changes |
 | Due date passes unpaid | `customer.subscription.updated` → `past_due` | Mirror records `pastDueSince`; ops gets one "Invoice overdue" email for the stretch; the Billing page shows the overdue banner and the date onboarding pauses |
 | Up to `graceDays` (30) past due | still `past_due` | Service continues |
-| Grace runs out | still `past_due` | `hasActivePlan` is false: partner onboarding and bonuses answer `402 plan_required` with `reason: "invoice_overdue"`, and white-label stops being entitled. Clicks, attribution, commissions and the dashboard keep working |
+| Grace runs out | still `past_due` | `hasActivePlan` is false: every plan-required route (partner onboarding, bonuses, storefront bookings) answers `402 plan_required` with `reason: "invoice_overdue"`, and white-label stops being entitled. Clicks, attribution, commissions and the dashboard keep working |
 | Latest invoice paid | `active` | `pastDueSince` clears; everything resumes |
 
 Paying an older overdue invoice alone doesn't end the stretch: the
