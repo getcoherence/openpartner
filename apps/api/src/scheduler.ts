@@ -40,7 +40,7 @@
 
 import { Cron } from 'croner';
 import type { Knex } from 'knex';
-import { TABLES, type PayoutCadence, type TenantRow } from '@openpartner/db';
+import { DEFAULT_TENANT_ID, TABLES, type PayoutCadence, type TenantRow } from '@openpartner/db';
 import { db } from './db.js';
 import { getTenancyMode, withTenantTransaction } from './tenancy.js';
 import { reportUsageToStripe } from './usage-billing.js';
@@ -237,7 +237,8 @@ const JOBS: ScheduledJob[] = [
   {
     name: 'tenant-hard-delete',
     cronExpr: '0 4 * * *',
-    description: 'Hard-delete tenants whose 30-day deletion grace window has lapsed (daily 04:00 UTC)',
+    description:
+      'Hard-delete tenants whose 30-day deletion grace window has lapsed, then platform passwords no admin or operator holds any more (daily 04:00 UTC)',
     handler: async () => hardDeleteExpiredTenants(),
   },
   {
@@ -445,7 +446,8 @@ export const TENANT_PURGE_ORDER = [
   TABLES.MagicLinkToken,
   // The brand's partner passwords and any signup password still waiting on
   // an activation link. Platform passwords belong to an email, not a brand:
-  // they sit under DEFAULT_TENANT_ID, like platform magic-link tokens.
+  // they sit under DEFAULT_TENANT_ID, like platform magic-link tokens, and
+  // deleteOrphanedPlatformPasswords removes them once nobody holds them.
   TABLES.PasswordCredential,
   TABLES.ApiKey,
   TABLES.ConversionPostbackToken,
@@ -493,17 +495,60 @@ export const TENANT_PURGE_ORDER = [
   TABLES.BrandAsset,
 ] as const;
 
+/**
+ * Delete platform passwords nobody holds any more. A 'platform'
+ * PasswordCredential belongs to an email (principalId, lower-cased), not a
+ * brand, so the per-tenant purge never reaches it. It goes once the email
+ * has no live Admin row in any tenant and isn't an operator.
+ *
+ * Live: an Admin or PlatformAdmin row that isn't revoked or was revoked
+ * after `cutoff` (30 days ago), activated or not, or an address in
+ * PLATFORM_ADMIN_EMAILS. Removing an admin only revokes the row, so it
+ * counts as gone 30 days after the revocation. Until then the brand can
+ * reinstate them with the password intact; afterwards a reinstated admin signs
+ * in by link or resets it. A revoked admin can't sign in to that brand with
+ * the password anyway (tenantSigninCandidates skips them).
+ *
+ * So a password goes 30 days after the email's last membership ends: its
+ * last brand is hard-deleted (the tenant purge runs 30 days after the brand
+ * asked) or its last revocation turns 30 days old. The only other deletes
+ * of Admin rows are never-activated admins replaced by signup's
+ * abandoned-slug recovery or dropped by a failed /install. Those never
+ * held an account, so a password one of them set goes on the next run.
+ */
+async function deleteOrphanedPlatformPasswords(cutoff: Date): Promise<number> {
+  const { envAdminEmails } = await import('./routes/platform-admin.js');
+  const pc = TABLES.PasswordCredential;
+  const holds = (table: string) => (q: Knex.QueryBuilder) =>
+    q
+      .select(db.raw('1'))
+      .from(table)
+      .whereRaw('lower(??) = ??', [`${table}.email`, `${pc}.principalId`])
+      .where((w) => w.whereNull(`${table}.revokedAt`).orWhere(`${table}.revokedAt`, '>', cutoff));
+  return db(pc)
+    .where({ tenantId: DEFAULT_TENANT_ID, principalKind: 'platform' })
+    .whereNotExists(holds(TABLES.Admin))
+    .whereNotExists(holds(TABLES.PlatformAdmin))
+    .whereNotIn('principalId', [...envAdminEmails()])
+    .del();
+}
+
 /** Cascade-delete tenants whose pendingDeletionAt is older than the
- *  grace window. Runs in the privileged db (we need to bypass RLS to
- *  drop child rows in any tenant's slice).
+ *  grace window, then any platform password that leaves without an owner
+ *  (deleteOrphanedPlatformPasswords). Runs in the privileged db (we need
+ *  to bypass RLS to drop child rows in any tenant's slice).
  *
  *  A tenant whose purge fails rolls back and is retried on the next run.
  *  Each run that has failures sends ops one email listing them, so a
- *  stuck erasure keeps showing up in the inbox until someone fixes it. */
+ *  stuck erasure keeps showing up in the inbox until someone fixes it.
+ *  A failed password sweep is logged and retried on the next run; it
+ *  never holds up the tenant purge. */
 export async function hardDeleteExpiredTenants(): Promise<{
   purged: number;
   tenantIds: string[];
   failed: Array<{ tenantId: string; error: string }>;
+  /** Orphaned platform passwords deleted; null if the sweep failed. */
+  orphanedPasswordsDeleted: number | null;
 }> {
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const expired = await db<TenantRow>(TABLES.Tenant)
@@ -531,6 +576,12 @@ export async function hardDeleteExpiredTenants(): Promise<{
       });
     }
   }
+  let orphanedPasswordsDeleted: number | null = null;
+  try {
+    orphanedPasswordsDeleted = await deleteOrphanedPlatformPasswords(cutoff);
+  } catch (err) {
+    console.error('[scheduler] orphaned platform password sweep failed', { err });
+  }
   if (failures.length > 0) {
     const { sendOpsEmail } = await import('./platform-ops-mail.js');
     const { opsTenantPurgeFailedEmail } = await import('./email-templates.js');
@@ -540,6 +591,7 @@ export async function hardDeleteExpiredTenants(): Promise<{
     purged: tenantIds.length,
     tenantIds,
     failed: failures.map(({ tenantId, error }) => ({ tenantId, error })),
+    orphanedPasswordsDeleted,
   };
 }
 
