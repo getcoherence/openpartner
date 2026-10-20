@@ -78,6 +78,14 @@ const ALLOWED_EXACT = new Set([
   '/creators/me/uploads/avatar',
   // Where the creator is based: the one-time prompt (GET + PUT).
   '/creators/me/location',
+  // Storefront (the Network's docs/creator-storefront.md): the bookings
+  // switch, packages (list/create + reorder) and the requests inbox.
+  '/creators/me/storefront',
+  '/creators/me/packages',
+  '/creators/me/packages/order',
+  '/creators/me/bookings',
+  // A brand confirming a storefront request from the emailed link (no auth).
+  '/bookings/confirm',
   '/offerings',
 ]);
 
@@ -99,7 +107,14 @@ const ALLOWED_PREFIX: Array<{ prefix: string; methods: Set<string> }> = [
   { prefix: '/creators/me/platforms/', methods: new Set(['PUT', 'DELETE', 'POST']) },
   // Public profile lookup — no creator session required, lets brands
   // and the open web hit /creators/by-handle/<handle> on the portal.
-  { prefix: '/creators/by-handle/', methods: new Set(['GET']) },
+  // POST is the storefront request form: /creators/by-handle/<handle>/bookings
+  // (no auth; the Network confirms the requester's email before the creator
+  // sees it).
+  { prefix: '/creators/by-handle/', methods: new Set(['GET', 'POST']) },
+  // Storefront: edit/delete a package (PATCH/DELETE /creators/me/packages/:id),
+  // answer or delete a request (POST .../:id/accept|decline, DELETE .../:id).
+  { prefix: '/creators/me/packages/', methods: new Set(['PATCH', 'DELETE']) },
+  { prefix: '/creators/me/bookings/', methods: new Set(['POST', 'DELETE']) },
   // Invitation deeplink resolver (no auth) + consume (creator auth).
   // GET /invitations/:token, POST /invitations/:token/consume
   { prefix: '/invitations/', methods: new Set(['GET', 'POST']) },

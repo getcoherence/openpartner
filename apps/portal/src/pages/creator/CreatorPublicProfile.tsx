@@ -14,6 +14,8 @@ import { CookieSettingsButton } from '../../lib/ConsentBanner.js';
 import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
 import { creatorApi, ApiError } from './creator-api.js';
 import { audienceSizeLabel } from '@openpartner/db';
+import { GetYourStorefront, StorefrontSection } from './StorefrontSection.js';
+import type { StorefrontPackage } from './storefront-shared.js';
 
 interface PlatformRow {
   id: string;
@@ -38,6 +40,10 @@ interface PublicProfile {
   portfolioLinks: string[];
   pastBrands: string[];
   platforms: PlatformRow[];
+  /** Storefront (the Network's docs/creator-storefront.md); absent on an
+   *  older Network. Packages only come back while bookings are open. */
+  bookingsOpen?: boolean;
+  packages?: StorefrontPackage[];
 }
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -109,6 +115,10 @@ export function CreatorPublicProfilePage() {
         </div>
         {data.bio && <p style={{ marginTop: 16, fontSize: 14, color: theme.text, lineHeight: 1.5 }}>{data.bio}</p>}
       </Card>
+
+      {data.bookingsOpen && (
+        <StorefrontSection handle={data.handle} creatorName={data.name} packages={data.packages ?? []} />
+      )}
 
       {(data.platforms.length > 0 || totalReach > 0) && (
         <>
@@ -210,6 +220,8 @@ export function CreatorPublicProfilePage() {
           </Card>
         </>
       )}
+
+      <GetYourStorefront />
     </Shell>
   );
 }

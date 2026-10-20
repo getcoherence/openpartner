@@ -29,6 +29,7 @@ import {
   Trophy,
   KeyRound,
   Landmark,
+  CalendarCheck,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { clearApiKey, api, type Principal } from './api.js';
@@ -61,6 +62,7 @@ import { AdminNetwork } from './pages/admin/Network.js';
 import { AdminNetworkComplete } from './pages/admin/NetworkComplete.js';
 import { AdminNetworkRequests } from './pages/admin/NetworkRequests.js';
 import { AdminNetworkCreators } from './pages/admin/NetworkCreators.js';
+import { AdminNetworkBookings } from './pages/admin/NetworkBookings.js';
 import { AdminNetworkBilling } from './pages/admin/NetworkBilling.js';
 import { BrandLocationPrompt, useBrandLocationMissing } from './pages/admin/BrandLocation.js';
 import { DiscoverPage } from './pages/partner/Discover.js';
@@ -93,6 +95,7 @@ import { CreatorSigninPage } from './pages/creator/CreatorSignin.js';
 import { CreatorMagicLandingPage } from './pages/creator/CreatorMagicLanding.js';
 import { CreatorShell } from './pages/creator/CreatorShell.js';
 import { CreatorPublicProfilePage } from './pages/creator/CreatorPublicProfile.js';
+import { BookingConfirmPage } from './pages/creator/BookingConfirm.js';
 import { FraudReviewPage } from './pages/FraudReview.js';
 import { ResetPasswordPage, TenantResetPasswordPage } from './pages/auth/ResetPassword.js';
 import { AccountPage, TenantAccountPage } from './pages/Account.js';
@@ -185,6 +188,8 @@ export function App() {
             <Route path="/creator/*" element={<CreatorShell />} />
             {/* Public creator profiles — no auth, browsable from anywhere. */}
             <Route path="/creators/:handle" element={<CreatorPublicProfilePage />} />
+            {/* A brand confirming a booking request sent from a creator's storefront. */}
+            <Route path="/booking/confirm" element={<BookingConfirmPage />} />
             <Route path="/t/:slug/login" element={<LoginPage />} />
             <Route path="/t/:slug/join" element={<PartnerJoinPage />} />
             <Route path="/t/:slug/auth/magic" element={<MagicLandingPage />} />
@@ -344,6 +349,7 @@ function Shell() {
                   <Route path="admin/network/complete" element={<AdminNetworkComplete />} />
                   <Route path="admin/network/requests" element={<AdminNetworkRequests />} />
                   <Route path="admin/network/creators" element={<AdminNetworkCreators />} />
+                  <Route path="admin/network/bookings" element={<AdminNetworkBookings />} />
                   <Route path="admin/network/billing" element={<AdminNetworkBilling />} />
                 </>
               )}
@@ -1301,6 +1307,7 @@ function NetworkNav() {
         <>
           <NavItem to="/admin/network/requests" icon={<Inbox size={16} />}>Requests</NavItem>
           <NavItem to="/admin/network/creators" icon={<Users size={16} />}>Discover creators</NavItem>
+          <NavItem to="/admin/network/bookings" icon={<CalendarCheck size={16} />}>Bookings</NavItem>
           <NavItem to="/admin/network/billing" icon={<CreditCard size={16} />}>Billing</NavItem>
         </>
       )}

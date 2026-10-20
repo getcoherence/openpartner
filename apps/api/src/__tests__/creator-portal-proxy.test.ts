@@ -195,3 +195,48 @@ describe('creator-api proxy: the creator address header', () => {
     expect(clientIpHeaders).toEqual([undefined]);
   });
 });
+
+describe('creator-api proxy: storefront', () => {
+  it('forwards the creator storefront, package and bookings calls', async () => {
+    const cookie = 'op_network_creator_session=abc';
+    const steps: Array<[string, string]> = [
+      ['GET', '/creators/me/storefront'],
+      ['PUT', '/creators/me/storefront'],
+      ['POST', '/creators/me/packages'],
+      ['PATCH', '/creators/me/packages/cpk_1'],
+      ['DELETE', '/creators/me/packages/cpk_1'],
+      ['POST', '/creators/me/packages/order'],
+      ['GET', '/creators/me/bookings?status=pending'],
+      ['POST', '/creators/me/bookings/bkr_1/accept'],
+      ['POST', '/creators/me/bookings/bkr_1/decline'],
+      ['DELETE', '/creators/me/bookings/bkr_1'],
+    ];
+    for (const [method, path] of steps) {
+      const r = request(app)[method.toLowerCase() as 'get' | 'put' | 'post' | 'patch' | 'delete'](`/creator-api${path}`).set('Cookie', cookie);
+      const res = method === 'GET' || method === 'DELETE' ? await r : await r.send({});
+      expect(res.status, `${method} ${path}`).toBe(200);
+    }
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(steps.map(([m, p]) => `${m} ${p}`));
+    expect(calls.every((c) => c.cookie === cookie)).toBe(true);
+  });
+
+  it('forwards the public request form and the confirm link without a session', async () => {
+    const send = await request(app)
+      .post('/creator-api/creators/by-handle/ada/bookings')
+      .send({ contactName: 'Grace', contactEmail: 'g@example.com', brief: 'A sponsored post about our app.' });
+    expect(send.status).toBe(200);
+    const confirm = await request(app).post('/creator-api/bookings/confirm').send({ token: 'opbk_x' });
+    expect(confirm.status).toBe(200);
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      'POST /creators/by-handle/ada/bookings',
+      'POST /bookings/confirm',
+    ]);
+  });
+
+  it('keeps the methods it does not need off the allowlist', async () => {
+    expect((await request(app).put('/creator-api/creators/me/packages/cpk_1').send({})).status).toBe(404);
+    expect((await request(app).get('/creator-api/creators/me/bookings/bkr_1')).status).toBe(404);
+    expect((await request(app).get('/creator-api/bookings/confirm')).status).toBe(200); // exact paths forward any method; the Network answers
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /bookings/confirm']);
+  });
+});
