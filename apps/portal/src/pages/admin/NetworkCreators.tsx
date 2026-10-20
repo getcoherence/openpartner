@@ -15,6 +15,7 @@ import { api, ApiError } from '../../api.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
 import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
+import { BookCreatorDialog } from './BookCreatorDialog.js';
 
 interface PlatformRow {
   id: string;
@@ -261,7 +262,7 @@ function CreatorCard({ creator }: { creator: DirectoryRow }) {
           {creator.bio}
         </p>
       )}
-      <div style={{ display: 'flex', gap: 6 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         <a
           href={`/creators/${creator.handle}`}
           target="_blank"
@@ -271,6 +272,7 @@ function CreatorCard({ creator }: { creator: DirectoryRow }) {
           <Button variant="secondary" style={{ width: '100%' }}>View profile</Button>
         </a>
         <InviteButton creator={creator} />
+        <BookButton creator={creator} />
       </div>
     </Card>
   );
@@ -280,6 +282,17 @@ interface OfferingOption {
   id: string;
   title: string;
   published: boolean;
+}
+
+/** Book one of the creator's storefront packages as a tracked deal. */
+function BookButton({ creator }: { creator: DirectoryRow }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button variant="secondary" onClick={() => setOpen(true)} style={{ flex: 1 }}>Book</Button>
+      {open && <BookCreatorDialog creator={creator} onClose={() => setOpen(false)} />}
+    </>
+  );
 }
 
 function InviteButton({ creator }: { creator: DirectoryRow }) {

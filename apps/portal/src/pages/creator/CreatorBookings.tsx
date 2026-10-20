@@ -1,20 +1,33 @@
 /**
  * /creator/bookings — booking requests brands sent from the creator's
- * storefront. Only confirmed requests show (the requester proved their
- * email first). Accepting emails the brand with Reply-To set to the
+ * storefront. Only confirmed requests show (a public requester proved
+ * their email first). Accepting emails the brand with Reply-To set to the
  * creator, so the deal continues over email; declining doesn't reveal the
  * creator's address.
+ *
+ * Tracked bookings come from brands on OpenPartner: accepting makes the
+ * creator that brand's partner (a tracked link), they deliver the post
+ * URLs here, and the brand's approval pays the agreed amount through its
+ * program.
  */
 import { useState } from 'react';
 import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Inbox } from 'lucide-react';
+import { Inbox, Link2 } from 'lucide-react';
 import { Button, Card, EmptyState, ErrorBanner, Label, Page, StatusPill, Textarea, formatDate } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
 import { formatPackagePrice } from './storefront-shared.js';
 
-type BookingStatus = 'pending' | 'accepted' | 'declined';
+type BookingStatus =
+  | 'pending'
+  | 'accepted'
+  | 'declined'
+  | 'cancelled'
+  | 'delivered'
+  | 'approved'
+  | 'paid'
+  | 'payout_failed';
 
 interface Booking {
   id: string;
@@ -31,14 +44,38 @@ interface Booking {
   createdAt: string;
   confirmedAt: string | null;
   respondedAt: string | null;
+  /** A brand on OpenPartner booked: paid through its program on approval. */
+  tracked?: boolean;
+  amount?: number | null;
+  currency?: string | null;
+  deliverableUrls?: string[];
+  deliveredAt?: string | null;
+  paidAt?: string | null;
 }
 
 const FILTERS: Array<{ key: BookingStatus | 'all'; label: string }> = [
   { key: 'pending', label: 'Pending' },
   { key: 'accepted', label: 'Accepted' },
+  { key: 'delivered', label: 'Delivered' },
+  { key: 'paid', label: 'Paid' },
   { key: 'declined', label: 'Declined' },
   { key: 'all', label: 'All' },
 ];
+
+/** What the creator reads on a tracked booking's pill. */
+const TRACKED_LABEL: Partial<Record<BookingStatus, string>> = {
+  delivered: 'awaiting approval',
+  approved: 'payment processing',
+  payout_failed: 'payment processing',
+};
+
+/** Tracked statuses the Network won't let the creator delete. */
+const IN_FLIGHT: BookingStatus[] = ['pending', 'accepted', 'delivered', 'approved', 'payout_failed'];
+
+function trackedAmount(b: Booking): string | null {
+  if (!b.tracked || b.amount == null || !b.currency) return null;
+  return formatPackagePrice({ priceAmount: b.amount, priceIsFrom: false, currency: b.currency });
+}
 
 export function CreatorBookingsPage() {
   const [filter, setFilter] = useState<BookingStatus | 'all'>('pending');
@@ -90,6 +127,8 @@ function BookingCard({ booking: b }: { booking: Booking }) {
   const qc = useQueryClient();
   const [answering, setAnswering] = useState<'accept' | 'decline' | null>(null);
   const [message, setMessage] = useState('');
+  const [delivering, setDelivering] = useState(false);
+  const [urls, setUrls] = useState('');
   const invalidate = () => qc.invalidateQueries({ queryKey: ['creator-bookings'] });
 
   const respond = useMutation({
@@ -101,6 +140,18 @@ function BookingCard({ booking: b }: { booking: Booking }) {
       invalidate();
     },
   });
+  const deliver = useMutation({
+    mutationFn: () =>
+      creatorApi(`/creators/me/bookings/${b.id}/deliver`, {
+        method: 'POST',
+        body: { urls: deliverUrls(urls) },
+      }),
+    onSuccess: () => {
+      setDelivering(false);
+      setUrls('');
+      invalidate();
+    },
+  });
   const remove = useMutation({
     mutationFn: () => creatorApi(`/creators/me/bookings/${b.id}`, { method: 'DELETE' }),
     onSuccess: invalidate,
@@ -108,15 +159,28 @@ function BookingCard({ booking: b }: { booking: Booking }) {
 
   const safeWebsite = b.website && /^https?:\/\//i.test(b.website) ? b.website : null;
   const from = b.company ? `${b.contactName} · ${b.company}` : b.contactName;
+  const amount = trackedAmount(b);
+  const brand = b.company ?? b.contactName;
+  const urlList = deliverUrls(urls);
+  const urlsValid = urlList.length >= 1 && urlList.length <= 5 && urlList.every((u) => /^https?:\/\/\S+$/i.test(u));
+  const canDelete = !(b.tracked && IN_FLIGHT.includes(b.status));
 
   return (
     <Card>
-      <ErrorBanner error={respond.error ?? remove.error} />
+      <ErrorBanner error={respond.error ?? deliver.error ?? remove.error} />
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 220 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 15, fontWeight: 500 }}>{b.package?.title ?? 'Custom collaboration'}</span>
-            <StatusPill status={b.status} />
+            <StatusPill status={(b.tracked && TRACKED_LABEL[b.status]) || b.status} />
+            {b.tracked && (
+              <span
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600, color: theme.accentText }}
+                title="Booked through OpenPartner: you become their partner with a tracked link and are paid through their program."
+              >
+                <Link2 size={12} /> Tracked deal
+              </span>
+            )}
           </div>
           <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 4 }}>
             {from} ·{' '}
@@ -132,8 +196,12 @@ function BookingCard({ booking: b }: { booking: Booking }) {
           </div>
         </div>
         <div style={{ textAlign: 'right' }}>
-          {b.package && <div style={{ fontSize: 14, fontWeight: 600 }}>{formatPackagePrice(b.package)}</div>}
-          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>{formatDate(b.confirmedAt ?? b.createdAt)}</div>
+          {amount ? (
+            <div style={{ fontSize: 14, fontWeight: 600 }}>{amount}</div>
+          ) : (
+            b.package && <div style={{ fontSize: 14, fontWeight: 600 }}>{formatPackagePrice(b.package)}</div>
+          )}
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>{formatDate(b.paidAt ?? b.confirmedAt ?? b.createdAt)}</div>
         </div>
       </div>
 
@@ -163,6 +231,20 @@ function BookingCard({ booking: b }: { booking: Booking }) {
         </div>
       )}
 
+      {b.tracked && (b.deliverableUrls?.length ?? 0) > 0 && (
+        <div style={{ fontSize: 13, marginTop: 10 }}>
+          <span style={{ color: theme.textMuted }}>Delivered:</span>{' '}
+          {b.deliverableUrls!.map((u, i) => (
+            <span key={u}>
+              {i > 0 && ', '}
+              <a href={u} target="_blank" rel="noopener noreferrer" style={{ color: theme.accentText, wordBreak: 'break-all' }}>{u}</a>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {b.tracked && <TrackedNote booking={b} brand={brand} amount={amount} />}
+
       {b.status === 'pending' && answering && (
         <div style={{ marginTop: 14 }}>
           <Label>{answering === 'accept' ? 'Message to the brand (optional)' : 'Note to the brand (optional)'}</Label>
@@ -179,8 +261,23 @@ function BookingCard({ booking: b }: { booking: Booking }) {
           />
           <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
             {answering === 'accept'
-              ? `We email ${b.contactEmail}; their reply comes straight to your email.`
+              ? `We email ${b.contactEmail}; their reply comes straight to your email.${b.tracked ? ` You also become ${brand}’s partner, with a tracked link.` : ''}`
               : `We email ${b.contactEmail}. Your email address isn’t shared.`}
+          </div>
+        </div>
+      )}
+
+      {b.status === 'accepted' && b.tracked && delivering && (
+        <div style={{ marginTop: 14 }}>
+          <Label>Links to the published content (one per line, up to 5)</Label>
+          <Textarea
+            value={urls}
+            rows={3}
+            onChange={(e) => setUrls(e.target.value)}
+            placeholder="https://www.linkedin.com/posts/…"
+          />
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
+            {brand} reviews them and approves payment of {amount}.
           </div>
         </div>
       )}
@@ -206,23 +303,61 @@ function BookingCard({ booking: b }: { booking: Booking }) {
           )
         ) : (
           <>
+            {b.status === 'accepted' && b.tracked && (
+              delivering ? (
+                <>
+                  <Button onClick={() => deliver.mutate()} disabled={!urlsValid || deliver.isPending}>
+                    {deliver.isPending ? 'Sending…' : 'Mark as delivered'}
+                  </Button>
+                  <Button variant="secondary" onClick={() => setDelivering(false)}>Cancel</Button>
+                </>
+              ) : (
+                <Button onClick={() => setDelivering(true)}>Deliver</Button>
+              )
+            )}
             <a href={`mailto:${b.contactEmail}`} style={{ textDecoration: 'none' }}>
               <Button variant="secondary" size="sm">Email {b.contactName.split(' ')[0]}</Button>
             </a>
             <div style={{ flex: 1 }} />
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={remove.isPending}
-              onClick={() => {
-                if (window.confirm('Delete this request? This can’t be undone.')) remove.mutate();
-              }}
-            >
-              Delete
-            </Button>
+            {canDelete && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={remove.isPending}
+                onClick={() => {
+                  if (window.confirm('Delete this request? This can’t be undone.')) remove.mutate();
+                }}
+              >
+                Delete
+              </Button>
+            )}
           </>
         )}
       </div>
     </Card>
   );
+}
+
+/** One line on where a tracked deal stands. */
+function TrackedNote({ booking: b, brand, amount }: { booking: Booking; brand: string; amount: string | null }) {
+  const text =
+    b.status === 'pending'
+      ? `${brand} will pay ${amount} through OpenPartner once they approve your published post.`
+      : b.status === 'accepted'
+        ? `You're ${brand}'s partner now — share your tracked link from My partnerships. When the post is live, mark it as delivered.`
+        : b.status === 'delivered'
+          ? `Waiting for ${brand} to approve. You'll get an email when ${amount} is added to your earnings.`
+          : b.status === 'approved' || b.status === 'payout_failed'
+            ? `${brand} approved your work. The payment of ${amount} is being recorded.`
+            : b.status === 'paid'
+              ? `${amount} was added to your earnings with ${brand} and is paid out with their next payout run.`
+              : b.status === 'cancelled'
+                ? `${brand} cancelled this booking.`
+                : null;
+  if (!text) return null;
+  return <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 10 }}>{text}</div>;
+}
+
+function deliverUrls(raw: string): string[] {
+  return [...new Set(raw.split(/\s+/).map((u) => u.trim()).filter(Boolean))];
 }
