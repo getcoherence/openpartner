@@ -191,11 +191,18 @@ On restore:
   key as it inserts it.
 - **SQL** can't encrypt (the key is the app's), so the dump writes the
   opened JSON and says so in a comment. The API seals each row the first
-  time it reads it (the partner's page, the admin's, or a payout run's
-  batch page). Until then the row is in the clear in your database.
+  time it reads it, and a sweep seals every remaining one when the API
+  starts and hourly (the `seal-payout-details` job), so nothing stays in
+  the clear at rest for long.
 - A hand-made bundle whose `details` is still a sealed envelope from another
   deployment restores as it came. It reads as unreadable, and that partner
   enters their details again.
+
+The PayPal and Wise files a brand made from its payout runs
+([manual-payout-files.md](manual-payout-files.md)) need nothing extra: a
+file is a stamp on each of its payouts (`Payout.metadata.manualExport`),
+which travels with the `Payout` rows. On a restored instance a file's
+unconfirmed payouts still show under "Files made", to confirm or discard.
 
 ### Settings (`Config`)
 

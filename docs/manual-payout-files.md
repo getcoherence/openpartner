@@ -23,7 +23,7 @@ One `PartnerPayoutProfile` row per partner
 | `method` | What it holds | Goes in |
 |---|---|---|
 | `paypal` | the PayPal account email; optionally the account's country | the PayPal file |
-| `bank` | account holder name and type (person or business), the bank's country, the account currency, and an IBAN or a local account number plus its routing: `sortCode` (GBP), `routingNumber` + `accountType` + address (USD), `ifsc` (INR), or `bic` + address (any other currency, by SWIFT). Optional notice email. | the Wise file |
+| `bank` | account holder name and type (person or business), the bank's country, the account currency, and an IBAN or a local account number plus its routing: `sortCode` (GBP), `routingNumber` + `accountType` (USD), `ifsc` (INR), or `bic` + address (any other currency, by SWIFT). The holder's address is also required for a USD, PHP, THB or TRY account, with the state or province in the US, Canada or Brazil (Wise's rules). Optional notice email. | the Wise file |
 | `upi` | an Indian UPI ID and optional name | no file: the brand pays it one at a time |
 | `other` | free-text instructions | no file: the brand pays it one at a time |
 
@@ -71,8 +71,11 @@ schemaVersion 9 with `details` **opened**, because a sealed envelope means
 nothing on another deployment. Leaving it out would make every partner
 re-enter their bank details after a migration. A JSON import seals them
 again under the destination's key. A SQL dump can't encrypt, so it writes
-them opened and the API seals each row the first time it reads it. Treat an
-export file as you would your partners' bank details. See
+them opened; the API seals each row the first time it reads it, and a sweep
+seals every remaining one at startup and hourly
+(`sealPlaintextPayoutProfiles`, the `seal-payout-details` job), so none
+stays in the clear at rest. Treat an export file as you would your
+partners' bank details. See
 [data-portability.md](data-portability.md#payout-details).
 
 ## Batch files
@@ -80,39 +83,78 @@ export file as you would your partners' bank details. See
 Flow, on the admin Payouts page ("Manual payouts to send"):
 
 1. **Run payouts** (or let the cadence run them).
-2. Pick the run and **Download** each file.
+2. Pick the run. Under "Ready for a new file", **Make file** for each
+   provider and currency. The file downloads at once.
 3. Upload it to your own account: PayPal (Send Money → Make a Mass Payment)
    or Wise (Payments → Batch → "Send to bank accounts").
-4. Once the batch has gone out, **Mark sent** for that file. Payouts in no
+4. Once the batch has gone out, **Mark sent** for that file under "Files
+   made". If you never uploaded it, **Discard** it instead. Payouts in no
    file have their own Mark sent button once you've paid them some other
    way.
 
-Each pending manual payout lands in one file per provider and currency, or
-says why it's in none (`excluded` on `GET /payouts/runs/{runId}`):
+### A file is fixed when it's made
+
+Making a file (`POST /payouts/runs/{runId}/exports`) picks its payouts,
+stamps each one with the file's `exportId` (`Payout.metadata.manualExport`)
+and builds the CSV from those same rows, in one request. From then on:
+
+- **Mark sent confirms exactly the file's payouts**
+  (`POST /payouts/exports/{exportId}/confirm`). A partner who adds payout
+  details while you upload doesn't get recorded as paid with that file.
+- **A stamped payout is in no other file.** If a partner in an uploaded
+  PayPal file switches to a bank account before you mark it sent, they don't
+  turn up in a Wise file as well. The batch page flags it ("Payout details
+  changed since this file was made", `changedCount`).
+- **There are no live parts.** Each new file takes the next payouts no file
+  holds, in id order, up to 5,000 (PayPal) or 1,000 (Wise). A partner who
+  adds details later can't push an already-exported payout into the next
+  file.
+- **Download again** (`GET /payouts/exports/{exportId}.csv`) rebuilds the
+  file's unconfirmed payouts with the partners' current details. A payout
+  whose details no longer fit the file, or that is now on a do-not-pay hold,
+  is left out. Don't upload it if the first copy went through: mark the file
+  sent instead.
+- **Discard** (`POST /payouts/exports/{exportId}/discard`) releases the
+  file's unconfirmed payouts for a new file. It's only for a file that never
+  went out.
+
+PayPal also warns when the same file is uploaded twice within 30 days.
+Confirming stays the brand's call: only the brand knows whether its upload
+went through.
+
+### Why a payout is in no file
 
 | `excluded` | Meaning |
 |---|---|
 | `no_payout_details` | the partner hasn't given any |
 | `details_unreadable` | sealed under another deployment's key |
 | `pay_individually` | UPI or `other`: pay it yourself, then mark it sent |
-| `currency_not_supported` | PayPal can't send the payout currency (INR, for one) |
+| `currency_not_supported` | PayPal can't send the payout currency (INR, for one); Wise can't send from it, or can't pay the account's currency yet (INR) |
+| `details_incomplete` | Wise needs the holder's address for a payout sent in USD or AUD, and the bank details have none |
 | `country_not_supported` | OpenPartner Cloud: the partner's declared country, or the account's or address's country, is on the country list ([country-access.md](country-access.md)) |
 | `screening_confirmed` | OpenPartner Cloud: an operator confirmed a sanctions-list match ([sanctions-screening.md](sanctions-screening.md)) |
 
-**Compliance.** The last two are excluded from every file, and the page
-offers no Mark sent for them. A partner whose screening is waiting for
-review (`screening_review`) or hasn't run yet (`screening_pending`) stays in
-their file with `complianceWarning` shown next to them, as the manual rail
-has always done. It's the brand's own money, and pending screening usually
-clears within the hour. The country list and screening are hosted-platform
-controls, so a self-host excludes nobody for them.
+**Do not pay.** The last two are `doNotPay` on the payout. They are in no
+file, the page offers no Mark sent for them, and **every confirm path
+refuses them** with `409 not_confirmable` and a `reason`: the single
+`POST /payouts/{id}/confirm`, bulk `POST /payouts/confirm`, and a file's
+confirm, which reports them and confirms the rest. A hold that appears after
+a file was made counts too (`doNotPayCount` on the file). A partner whose
+screening is waiting for review (`screening_review`) or hasn't run yet
+(`screening_pending`) stays payable, with `complianceWarning` shown next to
+them, as the manual rail has always done: it's the brand's own money, and
+pending screening usually clears within the hour. The country list and
+screening are hosted-platform controls, so a self-host refuses nothing for
+them.
 
-**Not paying twice.** Downloading a file stamps its payouts
-(`metadata.manualExport`, shown as "In a PayPal file downloaded …"). A
-confirmed payout leaves every file, so a fresh download never repeats it.
-PayPal also warns when the same file is uploaded twice within 30 days.
-Confirming is still the brand's call: only the brand knows whether its
-upload went through.
+### Scale
+
+A run is read in id order, 1,000 payouts at a time, so no query binds more
+than 1,000 ids (Postgres caps a statement at 65,535), and only pending manual
+payouts are read: the partial index `Payout_tenantId_id_manual_pending_index`
+covers them. The run summary reads the run once per view, and the payout list
+is paged (`GET /payouts/runs/{runId}/payouts`, 100 a page by default), as is
+the run list (`GET /payouts/runs`, 50 a page).
 
 ### PayPal Payouts file
 
@@ -138,24 +180,45 @@ and [currency codes](https://developer.paypal.com/api/rest/reference/currency-co
   No INR: since April 2021 Indian PayPal accounts receive international
   payments in USD only. Pay Indian PayPal partners in USD. They need a
   verified PAN and a purpose code on their side.
-- 5,000 rows per upload. A run with more is split into parts (`part`).
-  PayPal's default per-item cap is USD 20,000. The account needs Payouts
-  enabled by PayPal.
+- 5,000 rows per file. PayPal's default per-item cap is USD 20,000. The
+  account needs Payouts enabled by PayPal.
 
 ### Wise batch file
 
-Checked 2026-10-19 against Wise's help centre:
+Checked 2026-10-19 and 2026-10-20 against Wise's help centre and API docs:
 [filling in the template](https://wise.com/help/articles/2663302/how-do-i-fill-in-my-batch-template),
 [template options](https://wise.com/help/articles/2942721/what-are-the-different-batch-template-options),
 [upload errors](https://wise.com/help/articles/2942777/why-do-i-get-an-error-when-i-upload-my-batch-file),
 [exact amounts](https://wise.com/help/articles/5iWcIUdYHyTQMnezSzx4n3/how-do-i-send-exact-amounts-with-batch-payments),
 [multiple currencies](https://wise.com/help/articles/2663303/can-i-pay-for-different-currencies-in-a-single-batch),
-[INR](https://wise.com/help/articles/2932151/guide-to-inr-transfers).
+[send to and from](https://wise.com/help/articles/2571907/what-currencies-can-i-send-to-and-from),
+[INR](https://wise.com/help/articles/2932151/guide-to-inr-transfers),
+[INR purpose codes](https://wise.com/help/articles/6hAFdOM3eAYMyvnOQ0c1g/inr-purpose-codes),
+[recipient create](https://docs.wise.com/api-reference/recipient/recipientcreate).
 
-- A header row, UTF-8 without a BOM, at most 1,000 rows (parts beyond).
+- A header row, UTF-8 without a BOM, at most 1,000 rows per file.
 - One **source** currency per file: the payout currency, what the brand
   pays in. Each row's `targetCurrency` is the partner's account currency, so
   one file can pay into several.
+- **Source currencies:** AUD, CAD, CHF, CZK, DKK, EUR, GBP, HKD, HUF, IDR,
+  ILS, JPY, MYR, NOK, NZD, PHP, PLN, RON, SEK, SGD, THB, TRY, USD. That is
+  Wise's "send to and from" list less three it rules out for a business
+  batch:
+  - INR: "You can't send INR from a business bank account".
+  - BRL: only Brazilian tax residents hold it, and batches aren't available
+    to Brazilian businesses.
+  - MXN: only Mexican citizens sending from their own Mexican account.
+
+  Wise also limits holding HKD, IDR, ILS, MYR and PHP by where the business
+  is. An ineligible brand's upload is refused by Wise, never paid wrongly.
+- **No INR targets yet.** Every INR transfer needs a purpose of payment, and
+  the file has no column for one until a real template shows how Wise takes
+  it.
+- **Addresses.** Wise needs the account holder's address when the target is
+  USD, PHP, THB or TRY, or the source is USD or AUD, with the state or
+  province for an address in the US, Canada or Brazil. The account-currency
+  and state rules are checked when the details are saved; the source side
+  when the file is made (`details_incomplete`).
 - `amountCurrency`: `target` when source and target match, so the partner
   receives exactly what they're owed and Wise's fee is the brand's.
   `source` when they differ, because the payout is denominated in what the
@@ -193,14 +256,18 @@ payment** a batch row needs, which this file doesn't send yet.
 | `GET /partners/{id}/payout-profile` | the partner, an admin, or `payout_profiles:read` / `:write` |
 | `PUT /partners/{id}/payout-profile` | the partner, an admin, or `payout_profiles:write` |
 | `DELETE /partners/{id}/payout-profile` | the partner, an admin, or `payout_profiles:write` |
-| `GET /payouts/runs` | admin |
+| `GET /payouts/runs?cursor=&limit=` | admin |
 | `GET /payouts/runs/{runId}` | admin |
-| `GET /payouts/runs/{runId}/{paypal\|wise}.csv?currency=&part=` | admin |
+| `GET /payouts/runs/{runId}/payouts?cursor=&limit=` | admin |
+| `POST /payouts/runs/{runId}/exports` (`{ provider, currency }`) | admin |
+| `GET /payouts/exports/{exportId}.csv` | admin |
+| `POST /payouts/exports/{exportId}/confirm` | admin |
+| `POST /payouts/exports/{exportId}/discard` | admin |
 | `POST /payouts/confirm` (`{ payoutIds }`, up to 5,000) | admin |
 
-The files are admin-only, `Cache-Control: no-store`, and carry full payout
-details. Bulk confirm fires no webhooks, like the single confirm:
-`payout.created` and `commission.paid` fired when the run wrote the payouts.
+The files carry full payout details, so every file route is admin-only and
+`Cache-Control: no-store`. No confirm fires webhooks: `payout.created` and
+`commission.paid` fired when the run wrote the payouts.
 
 ## Not yet
 
@@ -208,4 +275,5 @@ details. Bulk confirm fires no webhooks, like the single confirm:
   so the brand clicks once instead of uploading. It would keep the same
   money flow.
 - Letting a brand choose which methods its partners may pick.
-- The INR purpose of payment in the Wise file (see [Wise columns](#wise-columns)).
+- INR targets in the Wise file, once the purpose of payment has a column
+  (see [Wise columns](#wise-columns)).

@@ -158,6 +158,20 @@ function bankRoute(f: Form): 'iban' | 'gbp' | 'usd' | 'inr' | 'swift' {
   return 'swift';
 }
 
+/** Wise needs the holder's address for these account currencies, and for
+ *  any SWIFT transfer (the API checks the same). */
+const ADDRESS_CURRENCIES = ['USD', 'PHP', 'THB', 'TRY'];
+/** ...and the state or province in an address in these countries. */
+const STATE_COUNTRIES = ['US', 'CA', 'BR'];
+
+function addressRequired(f: Form): boolean {
+  return bankRoute(f) === 'swift' || ADDRESS_CURRENCIES.includes(f.currency);
+}
+
+function stateRequired(f: Form): boolean {
+  return (addressRequired(f) || !!f.line1.trim()) && STATE_COUNTRIES.includes(f.addressCountry || f.country);
+}
+
 function bodyFrom(f: Form): Record<string, unknown> {
   const opt = (v: string) => (v.trim() ? v.trim() : undefined);
   switch (f.method) {
@@ -169,7 +183,6 @@ function bodyFrom(f: Form): Record<string, unknown> {
       return { method: 'other', instructions: f.instructions, country: opt(f.country) };
     case 'bank': {
       const route = bankRoute(f);
-      const needsAddress = route === 'usd' || route === 'swift';
       return {
         method: 'bank',
         accountHolderName: f.accountHolderName,
@@ -185,7 +198,7 @@ function bodyFrom(f: Form): Record<string, unknown> {
         ifsc: route === 'inr' ? opt(f.ifsc) : undefined,
         email: opt(f.bankEmail),
         address:
-          needsAddress || f.line1.trim()
+          addressRequired(f) || f.line1.trim()
             ? { line1: f.line1, city: f.city, postCode: opt(f.postCode), state: opt(f.state), country: f.addressCountry || f.country }
             : undefined,
       };
@@ -414,30 +427,29 @@ export function PayoutDetailsPage({ principal }: { principal: Principal }) {
                     )}
                   </div>
                 )}
-                {(route === 'usd' || route === 'swift' || form.line1) && (
-                  <>
-                    <div style={{ fontSize: 12, color: theme.textDim }}>
-                      Account holder’s address{route === 'usd' || route === 'swift' ? ' (the bank needs it for this transfer)' : ''}
-                    </div>
-                    <Field label="Street address" error={errors.address}>
-                      <Input value={form.line1} onChange={(e) => set('line1')(e.target.value)} required={route === 'usd' || route === 'swift'} />
-                    </Field>
-                    <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-                      <Field label="City">
-                        <Input value={form.city} onChange={(e) => set('city')(e.target.value)} required={route === 'usd' || route === 'swift'} />
-                      </Field>
-                      <Field label="Postcode">
-                        <Input value={form.postCode} onChange={(e) => set('postCode')(e.target.value)} />
-                      </Field>
-                      <Field label="State or region">
-                        <Input value={form.state} onChange={(e) => set('state')(e.target.value)} />
-                      </Field>
-                    </div>
-                    <Field label="Address country">
-                      <CountrySelect value={form.addressCountry || form.country} onChange={set('addressCountry')} options={countries} />
-                    </Field>
-                  </>
-                )}
+                <div style={{ fontSize: 12, color: theme.textDim }}>
+                  Account holder’s address
+                  {addressRequired(form)
+                    ? ' (needed for this account)'
+                    : ' (optional, but payouts sent in US or Australian dollars need it)'}
+                </div>
+                <Field label="Street address" error={errors.address}>
+                  <Input value={form.line1} onChange={(e) => set('line1')(e.target.value)} required={addressRequired(form)} />
+                </Field>
+                <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+                  <Field label="City">
+                    <Input value={form.city} onChange={(e) => set('city')(e.target.value)} required={addressRequired(form) || !!form.line1.trim()} />
+                  </Field>
+                  <Field label="Postcode">
+                    <Input value={form.postCode} onChange={(e) => set('postCode')(e.target.value)} />
+                  </Field>
+                  <Field label={stateRequired(form) ? 'State or province' : 'State or region'}>
+                    <Input value={form.state} onChange={(e) => set('state')(e.target.value)} required={stateRequired(form)} />
+                  </Field>
+                </div>
+                <Field label="Address country">
+                  <CountrySelect value={form.addressCountry || form.country} onChange={set('addressCountry')} options={countries} />
+                </Field>
                 <Field label="Email for transfer notices (optional)" error={errors.email}>
                   <Input type="email" value={form.bankEmail} onChange={(e) => set('bankEmail')(e.target.value)} />
                 </Field>

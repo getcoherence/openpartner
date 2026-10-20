@@ -53,6 +53,7 @@ import { dispatchCommissionEvents } from './commission-events.js';
 import { sendBountyEmails, sweepTenantBounties } from './performance-bounties.js';
 import { reverifyPortalDomains, sweepWhiteLabelEntitlement } from './portal-domains.js';
 import { runScreeningSweep, screenPayablePartners } from './sanctions-screening.js';
+import { sealPlaintextPayoutProfiles } from './payout-profile.js';
 
 interface ScheduledJob {
   name: string;
@@ -360,6 +361,13 @@ const JOBS: ScheduledJob[] = [
     description:
       'Per tenant: measure partners against active performance bounties, pay the bonus to each who reached one, end bounties past their 7-day grace, and email partners (hourly at :20)',
     handler: runPerformanceBountiesJob,
+  },
+  {
+    name: 'seal-payout-details',
+    cronExpr: '35 * * * *',
+    description:
+      'Seal any partner payout details a SQL-dump restore left in the clear (payout-profile.ts; also runs at startup) (hourly at :35)',
+    handler: async () => ({ sealed: await sealPlaintextPayoutProfiles(db) }),
   },
 ];
 

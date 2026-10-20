@@ -20,8 +20,9 @@
  *
  * A stored `details` is one of:
  *   - a sealed envelope (base64, never starts with "{"), the normal case;
- *   - plaintext JSON ("{…}"), only between a SQL-dump restore and its first
- *     read, which seals it (the dump can't encrypt: the key is the app's);
+ *   - plaintext JSON ("{…}"), only after a SQL-dump restore (the dump can't
+ *     encrypt: the key is the app's), until the first read or the seal
+ *     sweep (sealPlaintextPayoutProfiles, at startup and hourly) seals it;
  *   - an envelope this deployment can't open (sealed under another key).
  *     It reads as unreadable, and the partner has to enter their details
  *     again.
@@ -94,6 +95,16 @@ export function isValidAbaRouting(raw: string): boolean {
   const sum = 3 * (d[0]! + d[3]! + d[6]!) + 7 * (d[1]! + d[4]! + d[7]!) + (d[2]! + d[5]! + d[8]!);
   return sum % 10 === 0;
 }
+
+/** Wise needs the account holder's address for an account in these
+ *  currencies (docs.wise.com recipient create, checked 2026-10-20:
+ *  "required only if target currency is USD, PHP, THB or TRY, or if the
+ *  source currency is USD or AUD"; the source side is the payout's,
+ *  checked when the file is made). */
+export const ADDRESS_REQUIRED_CURRENCIES: ReadonlySet<string> = new Set(['USD', 'PHP', 'THB', 'TRY']);
+/** Wise needs the state or province in a recipient address in these
+ *  countries (same page: "State (required for US, Canada, Brazil)"). */
+export const STATE_REQUIRED_COUNTRIES: ReadonlySet<string> = new Set(['US', 'CA', 'BR']);
 
 const emailSchema = z
   .string()
@@ -172,7 +183,15 @@ export const bankDetailsSchema = z
       .optional(),
   })
   .superRefine((v, ctx) => {
-    const need = (path: string, message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+    const need = (path: string | string[], message: string) =>
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: Array.isArray(path) ? path : [path], message });
+    // What Wise asks of a recipient's address, whatever the route.
+    if (!v.address && ADDRESS_REQUIRED_CURRENCIES.has(v.currency)) {
+      need('address', `a ${v.currency} account needs the holder’s address`);
+    }
+    if (v.address && STATE_REQUIRED_COUNTRIES.has(v.address.country) && !v.address.state) {
+      need(['address', 'state'], `an address in ${v.address.country} needs its state or province`);
+    }
     // An account is reachable by IBAN, or by a local account number plus
     // what routes to its bank in that currency (bankRoute).
     if (v.iban) {
@@ -188,7 +207,6 @@ export const bankDetailsSchema = z
       case 'usd_local':
         if (!v.routingNumber) need('routingNumber', 'a USD account number needs its routingNumber');
         if (!v.accountType) need('accountType', 'a USD account number needs its accountType');
-        if (!v.address) need('address', 'a USD account needs the holder’s address');
         return;
       case 'inr_local':
         if (!v.ifsc) need('ifsc', 'an INR account number needs its ifsc');
@@ -384,6 +402,13 @@ function sealFields(method: unknown, fields: Record<string, unknown>): string {
   return parsed.ok ? sealDetails(parsed.details) : encryptSecret(JSON.stringify(fields));
 }
 
+/** The sealed form of a stored plaintext value. Text that isn't even a
+ *  JSON object is sealed as it is: nothing stays in the clear. */
+function sealStored(method: unknown, stored: string): string {
+  const fields = openDetails(stored);
+  return fields ? sealFields(method, fields) : encryptSecret(stored);
+}
+
 /**
  * Seal any plaintext rows among these (a SQL-dump restore writes them; see
  * the header): one UPDATE per plaintext row, nothing for sealed ones.
@@ -391,13 +416,38 @@ function sealFields(method: unknown, fields: Record<string, unknown>): string {
 async function sealPlaintext(db: Knex, tenantId: string, rows: PartnerPayoutProfileRow[]): Promise<void> {
   for (const row of rows) {
     if (!isPlaintext(row.details)) continue;
-    const fields = openDetails(row.details);
-    if (!fields) continue;
-    const sealed = sealFields(row.method, fields);
+    const sealed = sealStored(row.method, row.details);
     await db(TABLES.PartnerPayoutProfile)
       .where({ tenantId, partnerId: row.partnerId, details: row.details })
       .update({ details: sealed });
     row.details = sealed;
+  }
+}
+
+/** SQL for "this stored value is plaintext JSON" (isPlaintext). */
+const PLAINTEXT_SQL = `"details" ~ '^\\s*\\{'`;
+
+/**
+ * Seal every plaintext row on this deployment, across tenants, `batch`
+ * rows at a time. Reads seal the rows they touch; this seals the rest, so
+ * a SQL-dump restore leaves no partner's details in the clear for long.
+ * Run at startup (server.ts) and hourly (scheduler.ts). Idempotent: a
+ * sealed value never matches again. `db` must be the privileged pool: it
+ * reads every tenant. Returns how many rows it sealed; logs nothing else.
+ */
+export async function sealPlaintextPayoutProfiles(db: Knex, batch = 500): Promise<number> {
+  let sealed = 0;
+  for (;;) {
+    const rows = (await db<PartnerPayoutProfileRow>(TABLES.PartnerPayoutProfile)
+      .whereRaw(PLAINTEXT_SQL)
+      .limit(batch)
+      .select('partnerId', 'method', 'details')) as Array<Pick<PartnerPayoutProfileRow, 'partnerId' | 'method' | 'details'>>;
+    for (const row of rows) {
+      sealed += await db(TABLES.PartnerPayoutProfile)
+        .where({ partnerId: row.partnerId, details: row.details })
+        .update({ details: sealStored(row.method, row.details) });
+    }
+    if (rows.length < batch) return sealed;
   }
 }
 

@@ -96,7 +96,12 @@ export async function apiDownload(path: string, filename: string): Promise<void>
     }
     throw new ApiError(res.status, friendlyMessage(res, detail), detail);
   }
-  const url = URL.createObjectURL(await res.blob());
+  saveBlob(await res.blob(), filename);
+}
+
+/** Hand the browser a file to save as `filename`. */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;

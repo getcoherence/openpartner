@@ -4,6 +4,8 @@ import { outboundPolicy } from './outbound-guard.js';
 import { assertAppPoolEnforcesRls } from './tenant-isolation-guard.js';
 import { warmGeoIp } from './geoip.js';
 import { getTenancyMode } from './tenancy.js';
+import { db as privilegedDb } from './db.js';
+import { sealPlaintextPayoutProfiles } from './payout-profile.js';
 
 const PORT = Number(process.env.API_PORT ?? 4601);
 const MODE = process.env.OPENPARTNER_MODE ?? 'selfhost';
@@ -73,4 +75,13 @@ app.listen(PORT, () => {
   // Country rules only apply on the hosted platform; fetch the IP database
   // now so the first sign-in doesn't wait on it.
   if (getTenancyMode() === 'multi') warmGeoIp();
+  // A SQL-dump restore writes partner payout details in the clear; seal
+  // them now rather than waiting for each to be read (payout-profile.ts).
+  // The scheduler repeats this hourly where it runs. Counts only, never
+  // the details.
+  sealPlaintextPayoutProfiles(privilegedDb)
+    .then((sealed) => {
+      if (sealed > 0) console.log(`[api] sealed ${sealed} plaintext payout profile(s)`);
+    })
+    .catch((err) => console.error('[api] payout profile seal sweep failed', err instanceof Error ? err.message : err));
 });

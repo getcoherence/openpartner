@@ -3894,6 +3894,14 @@
                     "not_confirmable"
                   ]
                 },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "country_not_supported",
+                    "screening_confirmed"
+                  ],
+                  "description": "OpenPartner Cloud: the payout must not be paid. `country_not_supported`: the partner, or their payout account, is in a country OpenPartner doesn't serve. `screening_confirmed`: a confirmed sanctions-list match. Every confirm refuses it."
+                },
                 "detail": {
                   "type": "string"
                 }
@@ -3926,13 +3934,9 @@
                   "format": "date-time",
                   "pattern": "Z$"
                 },
-                "payoutCount": {
-                  "type": "integer",
-                  "description": "Manual payouts in the run."
-                },
                 "pendingCount": {
                   "type": "integer",
-                  "description": "Of those, not yet confirmed as sent."
+                  "description": "Manual payouts in the run not yet confirmed as sent."
                 },
                 "pendingTotals": {
                   "type": "array",
@@ -3956,15 +3960,22 @@
               "required": [
                 "runId",
                 "createdAt",
-                "payoutCount",
                 "pendingCount",
                 "pendingTotals"
               ]
             }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` for the next page; null on the last."
           }
         },
         "required": [
-          "runs"
+          "runs",
+          "nextCursor"
         ]
       },
       "ManualPayoutRun": {
@@ -3978,227 +3989,10 @@
             "format": "date-time",
             "pattern": "Z$"
           },
-          "payouts": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "payoutId": {
-                  "type": "string"
-                },
-                "partnerId": {
-                  "type": "string"
-                },
-                "partnerName": {
-                  "type": "string"
-                },
-                "partnerEmail": {
-                  "type": "string"
-                },
-                "amount": {
-                  "$ref": "#/components/schemas/Decimal"
-                },
-                "currency": {
-                  "type": "string"
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "pending",
-                    "paid",
-                    "failed",
-                    "partially_reversed",
-                    "reversed"
-                  ]
-                },
-                "createdAt": {
-                  "type": "string",
-                  "format": "date-time",
-                  "pattern": "Z$"
-                },
-                "completedAt": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "format": "date-time",
-                  "pattern": "Z$"
-                },
-                "destination": {
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "method": {
-                          "type": "string",
-                          "enum": [
-                            "paypal",
-                            "bank",
-                            "upi",
-                            "other"
-                          ]
-                        },
-                        "country": {
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "summary": {
-                          "type": [
-                            "string",
-                            "null"
-                          ],
-                          "description": "Masked. Null when the details can't be read."
-                        },
-                        "updatedAt": {
-                          "type": "string",
-                          "format": "date-time",
-                          "description": "A change shortly before a payout is worth a second look before you send it.",
-                          "pattern": "Z$"
-                        },
-                        "updatedBy": {
-                          "type": "string",
-                          "enum": [
-                            "partner",
-                            "admin",
-                            "api"
-                          ],
-                          "description": "Who saved them last: the partner (portal), an admin (portal) or an API key."
-                        }
-                      },
-                      "required": [
-                        "method",
-                        "country",
-                        "summary",
-                        "updatedAt",
-                        "updatedBy"
-                      ]
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "description": "The partner’s payout details, masked; null when they have none."
-                },
-                "file": {
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "provider": {
-                          "type": "string",
-                          "enum": [
-                            "paypal",
-                            "wise"
-                          ]
-                        },
-                        "currency": {
-                          "type": "string"
-                        },
-                        "part": {
-                          "type": "integer"
-                        },
-                        "reference": {
-                          "type": [
-                            "string",
-                            "null"
-                          ],
-                          "description": "What identifies this payout in the file: the PayPal Customer ID (the payout id), or the Wise payment reference (its last 10 characters; none for JPY or COP)."
-                        }
-                      },
-                      "required": [
-                        "provider",
-                        "currency",
-                        "part",
-                        "reference"
-                      ]
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "description": "The file this pending payout is in."
-                },
-                "excluded": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "enum": [
-                    "no_payout_details",
-                    "details_unreadable",
-                    "pay_individually",
-                    "currency_not_supported",
-                    "country_not_supported",
-                    "screening_confirmed",
-                    null
-                  ],
-                  "description": "Why a pending payout is in no file: `no_payout_details`, `details_unreadable`, `pay_individually` (a UPI ID or instructions: pay it yourself), `currency_not_supported` (PayPal can't send the currency, e.g. INR), and on OpenPartner Cloud `country_not_supported` (the partner's declared country, or their account's, isn't served) or `screening_confirmed` (a confirmed sanctions-list match)."
-                },
-                "complianceWarning": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "enum": [
-                    "country_not_supported",
-                    "screening_confirmed",
-                    "screening_review",
-                    "screening_pending",
-                    null
-                  ],
-                  "description": "OpenPartner Cloud: the partner is on a compliance hold. A sanctions review or pending screening stays in its file; check before you send it."
-                },
-                "lastExport": {
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "provider": {
-                          "type": "string",
-                          "enum": [
-                            "paypal",
-                            "wise"
-                          ]
-                        },
-                        "at": {
-                          "type": "string",
-                          "format": "date-time",
-                          "pattern": "Z$"
-                        }
-                      },
-                      "required": [
-                        "provider",
-                        "at"
-                      ]
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "description": "When a file holding this payout was last downloaded. Confirm it once your upload went through, so it is never paid twice."
-                }
-              },
-              "required": [
-                "payoutId",
-                "partnerId",
-                "partnerName",
-                "partnerEmail",
-                "amount",
-                "currency",
-                "status",
-                "createdAt",
-                "completedAt",
-                "destination",
-                "file",
-                "excluded",
-                "complianceWarning",
-                "lastExport"
-              ]
-            }
+          "pendingCount": {
+            "type": "integer"
           },
-          "files": {
+          "ready": {
             "type": "array",
             "items": {
               "type": "object",
@@ -4211,11 +4005,7 @@
                   ]
                 },
                 "currency": {
-                  "type": "string",
-                  "description": "PayPal: the payout currency. Wise: the source currency you pay in."
-                },
-                "part": {
-                  "type": "integer"
+                  "type": "string"
                 },
                 "count": {
                   "type": "integer"
@@ -4227,18 +4017,405 @@
               "required": [
                 "provider",
                 "currency",
-                "part",
                 "count",
                 "total"
               ]
-            }
+            },
+            "description": "Payouts no file holds yet that a new file would take, per provider and currency (PayPal: the payout currency; Wise: the source currency). Each new file takes up to 5,000 (PayPal) or 1,000 (Wise) of them."
+          },
+          "exports": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "exportId": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string",
+                  "enum": [
+                    "paypal",
+                    "wise"
+                  ]
+                },
+                "currency": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "Z$"
+                },
+                "createdBy": {
+                  "type": "string",
+                  "enum": [
+                    "admin",
+                    "api"
+                  ]
+                },
+                "pendingCount": {
+                  "type": "integer",
+                  "description": "Payouts in the file not confirmed yet."
+                },
+                "pendingTotal": {
+                  "$ref": "#/components/schemas/Decimal"
+                },
+                "changedCount": {
+                  "type": "integer",
+                  "description": "Of those, whose partner changed or removed their payout details after the file was made. A re-download carries the new details, or leaves the payout out when they no longer fit the file."
+                },
+                "doNotPayCount": {
+                  "type": "integer",
+                  "description": "Of those, now on a do-not-pay hold. Confirming the file refuses them."
+                }
+              },
+              "required": [
+                "exportId",
+                "provider",
+                "currency",
+                "createdAt",
+                "createdBy",
+                "pendingCount",
+                "pendingTotal",
+                "changedCount",
+                "doNotPayCount"
+              ]
+            },
+            "description": "Files made from this run that still hold payouts to confirm."
+          },
+          "excluded": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "no_payout_details",
+                    "details_unreadable",
+                    "pay_individually",
+                    "currency_not_supported",
+                    "details_incomplete",
+                    "country_not_supported",
+                    "screening_confirmed"
+                  ]
+                },
+                "count": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "reason",
+                "count"
+              ]
+            },
+            "description": "Pending payouts in no file, per reason (see ManualRunPayout.excluded)."
           }
         },
         "required": [
           "runId",
           "createdAt",
+          "pendingCount",
+          "ready",
+          "exports",
+          "excluded"
+        ]
+      },
+      "ManualRunPayout": {
+        "type": "object",
+        "properties": {
+          "payoutId": {
+            "type": "string"
+          },
+          "partnerId": {
+            "type": "string"
+          },
+          "partnerName": {
+            "type": "string"
+          },
+          "partnerEmail": {
+            "type": "string"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "destination": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "method": {
+                    "type": "string",
+                    "enum": [
+                      "paypal",
+                      "bank",
+                      "upi",
+                      "other"
+                    ]
+                  },
+                  "country": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "summary": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Masked. Null when the details can't be read."
+                  },
+                  "updatedAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "A change shortly before a payout is worth a second look before you send it.",
+                    "pattern": "Z$"
+                  },
+                  "updatedBy": {
+                    "type": "string",
+                    "enum": [
+                      "partner",
+                      "admin",
+                      "api"
+                    ],
+                    "description": "Who saved them last: the partner (portal), an admin (portal) or an API key."
+                  }
+                },
+                "required": [
+                  "method",
+                  "country",
+                  "summary",
+                  "updatedAt",
+                  "updatedBy"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The partner’s payout details, masked; null when they have none."
+          },
+          "export": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "exportId": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "paypal",
+                      "wise"
+                    ]
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "Z$"
+                  },
+                  "reference": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "What identifies this payout in the file: the PayPal Customer ID (the payout id), or the Wise payment reference (its last 10 characters; none for JPY or COP)."
+                  },
+                  "destinationChanged": {
+                    "type": "boolean",
+                    "description": "The partner changed or removed their payout details after the file was made."
+                  }
+                },
+                "required": [
+                  "exportId",
+                  "provider",
+                  "createdAt",
+                  "reference",
+                  "destinationChanged"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The file this payout is in. It stays in that file, and only that file, until it is confirmed or the file is discarded."
+          },
+          "ready": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "paypal",
+              "wise",
+              null
+            ],
+            "description": "The file a new export would put this payout in."
+          },
+          "excluded": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "no_payout_details",
+              "details_unreadable",
+              "pay_individually",
+              "currency_not_supported",
+              "details_incomplete",
+              "country_not_supported",
+              "screening_confirmed",
+              null
+            ],
+            "description": "Why a payout is in no file: `no_payout_details`, `details_unreadable`, `pay_individually` (a UPI ID or instructions: pay it yourself), `currency_not_supported` (PayPal can't send INR; Wise can't send from this currency, or to INR yet), `details_incomplete` (Wise needs the holder's address for a payout sent in USD or AUD), and on OpenPartner Cloud the do-not-pay reasons `country_not_supported` and `screening_confirmed`."
+          },
+          "complianceWarning": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "country_not_supported",
+              "screening_confirmed",
+              "screening_review",
+              "screening_pending",
+              null
+            ],
+            "description": "OpenPartner Cloud: the partner is on a compliance hold. A sanctions review or pending screening stays payable; check before you send it."
+          },
+          "doNotPay": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "country_not_supported",
+              "screening_confirmed",
+              null
+            ],
+            "description": "OpenPartner Cloud: the payout must not be paid. `country_not_supported`: the partner, or their payout account, is in a country OpenPartner doesn't serve. `screening_confirmed`: a confirmed sanctions-list match. Every confirm refuses it."
+          }
+        },
+        "required": [
+          "payoutId",
+          "partnerId",
+          "partnerName",
+          "partnerEmail",
+          "amount",
+          "currency",
+          "createdAt",
+          "destination",
+          "export",
+          "ready",
+          "excluded",
+          "complianceWarning",
+          "doNotPay"
+        ]
+      },
+      "ManualRunPayoutPage": {
+        "type": "object",
+        "properties": {
+          "payouts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManualRunPayout"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` for the next page; null on the last."
+          }
+        },
+        "required": [
           "payouts",
-          "files"
+          "nextCursor"
+        ]
+      },
+      "ManualExportFile": {
+        "type": "object",
+        "properties": {
+          "export": {
+            "type": "object",
+            "properties": {
+              "exportId": {
+                "type": "string"
+              },
+              "runId": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "paypal",
+                  "wise"
+                ]
+              },
+              "currency": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "Z$"
+              },
+              "createdBy": {
+                "type": "string",
+                "enum": [
+                  "admin",
+                  "api"
+                ]
+              },
+              "payoutIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Exactly the payouts in the file, and what `POST /payouts/exports/{exportId}/confirm` confirms."
+              },
+              "count": {
+                "type": "integer"
+              },
+              "total": {
+                "$ref": "#/components/schemas/Decimal"
+              }
+            },
+            "required": [
+              "exportId",
+              "runId",
+              "provider",
+              "currency",
+              "createdAt",
+              "createdBy",
+              "payoutIds",
+              "count",
+              "total"
+            ]
+          },
+          "filename": {
+            "type": "string"
+          },
+          "csv": {
+            "type": "string",
+            "description": "The file to upload to your PayPal or Wise account (UTF-8, CRLF line endings)."
+          }
+        },
+        "required": [
+          "export",
+          "filename",
+          "csv"
         ]
       },
       "PayoutDetails": {
@@ -4411,7 +4588,7 @@
             ]
           }
         ],
-        "description": "Where the partner wants manual payouts sent, by `method`: `paypal` (the PayPal account email), `bank` (an IBAN, or a local account number with what routes to it: `sortCode` for GBP, `routingNumber` + `accountType` + `address` for USD, `ifsc` for INR, `bic` + `address` for any other currency), `upi` (an Indian UPI ID), or `other` (free-text instructions). Values are validated (IBAN checksum, ABA checksum, IFSC shape) and normalised (upper case, spaces removed)."
+        "description": "Where the partner wants manual payouts sent, by `method`: `paypal` (the PayPal account email), `bank` (an IBAN, or a local account number with what routes to it: `sortCode` for GBP, `routingNumber` + `accountType` + `address` for USD, `ifsc` for INR, `bic` + `address` for any other currency; an `address` for any USD, PHP, THB or TRY account, with its `state` in the US, Canada or Brazil), `upi` (an Indian UPI ID), or `other` (free-text instructions). Values are validated (IBAN checksum, ABA checksum, IFSC shape) and normalised (upper case, spaces removed)."
       },
       "PayoutProfile": {
         "type": "object",
@@ -10254,7 +10431,7 @@
           "Payouts"
         ],
         "summary": "Mark a manual payout as sent",
-        "description": "**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "Only a `pending` manual payout. On OpenPartner Cloud a payout on a do-not-pay hold (the partner or their payout account in a country OpenPartner doesn’t serve, or a confirmed sanctions-list match) is refused with `409 not_confirmable` and a `reason`.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -10449,7 +10626,7 @@
           "Payouts"
         ],
         "summary": "Mark many manual payouts as sent",
-        "description": "For after a PayPal or Wise batch went out (`GET /payouts/runs/{runId}/{provider}.csv`). Each id is confirmed as `POST /payouts/{id}/confirm` would, or reported in `notConfirmable`; one that can’t be confirmed doesn’t stop the rest. Up to 5,000 ids. No webhooks: `payout.created` and `commission.paid` fired when the run made the payouts.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "Each id is confirmed as `POST /payouts/{id}/confirm` would, or reported in `notConfirmable` (with a `reason` for a do-not-pay hold); one that can’t be confirmed doesn’t stop the rest. Up to 5,000 ids. To confirm a PayPal or Wise file, use `POST /payouts/exports/{exportId}/confirm`, which confirms exactly the payouts in it. No webhooks: `payout.created` and `commission.paid` fired when the run made the payouts.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -10536,7 +10713,7 @@
           "Payouts"
         ],
         "summary": "List payout runs with manual payouts to send",
-        "description": "Runs that still have `pending` manual payouts, newest first (50 at most).\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "Runs that still have `pending` manual payouts, newest first, a page at a time (`limit`, default 50, at most 200; `nextCursor`).\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -10547,9 +10724,31 @@
           "scopes": [],
           "partner": false
         },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Runs.",
+            "description": "One page of runs.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10559,7 +10758,7 @@
             }
           },
           "400": {
-            "description": "`tenant_slug_missing`",
+            "description": "`invalid_query`, `tenant_slug_missing`, `invalid_cursor`",
             "content": {
               "application/json": {
                 "schema": {
@@ -10597,8 +10796,8 @@
         "tags": [
           "Payouts"
         ],
-        "summary": "See which batch file each manual payout is in",
-        "description": "A run's manual payouts. Each pending one is in a PayPal file (the partner's payout details are a PayPal email) or a Wise file (a bank account), or says why it's in neither (`excluded`). Payout details are masked here; the files carry them in full. See docs/manual-payout-files.md.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "summary": "Summarise a run’s manual payouts to send",
+        "description": "What a new PayPal or Wise file would take (`ready`), the files already made that still hold payouts to confirm (`exports`), and why the rest are in no file (`excluded`). List the payouts themselves with `GET /payouts/runs/{runId}/payouts`. See docs/manual-payout-files.md.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -10674,14 +10873,14 @@
         }
       }
     },
-    "/payouts/runs/{runId}/{provider}.csv": {
+    "/payouts/runs/{runId}/payouts": {
       "get": {
-        "operationId": "downloadManualPayoutFile",
+        "operationId": "listManualPayoutRunPayouts",
         "tags": [
           "Payouts"
         ],
-        "summary": "Download a batch file for your PayPal or Wise account",
-        "description": "A run's pending payouts in one currency, as a file you upload to your own account. The money goes from you to the partner; it never passes through OpenPartner.\n\n- **`paypal`**: PayPal Payouts (Send Money → Make a Mass Payment). No header row; ten columns: recipient, amount, currency, Customer ID (the payout id), note, `PAYPAL`, three empty Venmo columns, purpose `SERVICES`. EUR and BRL amounts use a decimal comma; HUF, JPY and TWD are whole units. Up to 5,000 rows.\n- **`wise`**: Wise batch payments, \"Send to bank accounts\". A header row; `currency` is the source currency, and each row's `targetCurrency` is the partner's account currency. Up to 1,000 rows.\n\nDownloading stamps the payouts (`lastExport` on `GET /payouts/runs/{runId}`). Once the batch went out, confirm them with `POST /payouts/confirm`.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "summary": "List a run’s manual payouts to send",
+        "description": "Pending manual payouts in id order, a page at a time (`limit`, default 100, at most 500; `nextCursor`): each one’s file, or why it’s in none, with compliance warnings and masked payout details. Confirmed payouts leave the list.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -10705,49 +10904,37 @@
           {
             "schema": {
               "type": "string",
-              "enum": [
-                "paypal",
-                "wise"
-              ]
+              "maxLength": 200
             },
-            "required": true,
-            "name": "provider",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "pattern": "^[A-Za-z]{3}$"
-            },
-            "required": true,
-            "name": "currency",
+            "required": false,
+            "name": "cursor",
             "in": "query"
           },
           {
             "schema": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 1000,
-              "default": 1
+              "maximum": 500,
+              "default": 100
             },
             "required": false,
-            "name": "part",
+            "name": "limit",
             "in": "query"
           }
         ],
         "responses": {
           "200": {
-            "description": "The file (UTF-8 CSV).",
+            "description": "One page of payouts.",
             "content": {
-              "text/csv": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/ManualRunPayoutPage"
                 }
               }
             }
           },
           "400": {
-            "description": "`invalid_query`, `tenant_slug_missing`",
+            "description": "`invalid_query`, `tenant_slug_missing`, `invalid_cursor`",
             "content": {
               "application/json": {
                 "schema": {
@@ -10777,7 +10964,375 @@
             }
           },
           "404": {
-            "description": "`unknown_provider`, `file_not_found`",
+            "description": "`run_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/runs/{runId}/exports": {
+      "post": {
+        "operationId": "createManualPayoutFile",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Make a batch file for your PayPal or Wise account",
+        "description": "The next file of a run for one provider and currency: the first payouts no file holds yet that belong in it, in id order, up to what one upload takes. The money goes from you to the partner; it never passes through OpenPartner.\n\nThe file's payouts are fixed here: each is stamped with the `exportId`, held out of every other file, and confirmed together with `POST /payouts/exports/{exportId}/confirm` once your batch has gone out. If you never upload it, `POST /payouts/exports/{exportId}/discard` releases them.\n\n- **`paypal`**: PayPal Payouts (Send Money → Make a Mass Payment). No header row; ten columns: recipient, amount, currency, Customer ID (the payout id), note, `PAYPAL`, three empty Venmo columns, purpose `SERVICES`. `currency` is the payout currency. EUR and BRL amounts use a decimal comma; HUF, JPY and TWD are whole units. Up to 5,000 rows.\n- **`wise`**: Wise batch payments, \"Send to bank accounts\". A header row; `currency` is the source currency you pay in, and each row's `targetCurrency` is the partner's account currency. Up to 1,000 rows.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The runId."
+            },
+            "required": true,
+            "name": "runId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "paypal",
+                      "wise"
+                    ]
+                  },
+                  "currency": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z]{3}$"
+                  }
+                },
+                "required": [
+                  "provider",
+                  "currency"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The file and the payouts it holds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualExportFile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`nothing_to_export`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/exports/{exportId}.csv": {
+      "get": {
+        "operationId": "downloadManualPayoutFile",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Download a batch file again",
+        "description": "The payouts the file still holds that aren’t confirmed, with the partners’ current details. A payout whose partner has since switched to details that don’t fit the file, or that is now on a do-not-pay hold, is left out (`changedCount` and `doNotPayCount` on `GET /payouts/runs/{runId}`). If you uploaded the first copy, don’t upload this one: confirm the file instead.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The exportId."
+            },
+            "required": true,
+            "name": "exportId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file (UTF-8 CSV).",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`file_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/exports/{exportId}/confirm": {
+      "post": {
+        "operationId": "confirmManualPayoutFile",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Mark a batch file’s payouts as sent",
+        "description": "Confirms exactly the payouts the file holds that aren’t confirmed yet, whatever a fresh look at the run would put in a file now. A payout now on a do-not-pay hold is refused and reported.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The exportId."
+            },
+            "required": true,
+            "name": "exportId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What was confirmed, and what wasn’t.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkConfirmResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`export_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/exports/{exportId}/discard": {
+      "post": {
+        "operationId": "discardManualPayoutFile",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Discard a batch file you never uploaded",
+        "description": "Releases the file’s payouts that aren’t confirmed, so a new file can take them. Only for a file that never went out: once you’ve uploaded it, confirm it instead.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The exportId."
+            },
+            "required": true,
+            "name": "exportId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Released.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "released": {
+                      "type": "integer",
+                      "description": "Payouts released."
+                    }
+                  },
+                  "required": [
+                    "released"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`export_not_found`",
             "content": {
               "application/json": {
                 "schema": {

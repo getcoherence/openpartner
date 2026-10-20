@@ -170,6 +170,30 @@ describe('payout details validation', () => {
     expect(fields({ country: 'GB', currency: 'GBP' })).toEqual(['iban']);
   });
 
+  it('asks for the address and state Wise needs (finding: US state)', () => {
+    const errors = (body: Record<string, unknown>): Record<string, string[] | undefined> => {
+      const r = profiles.parsePayoutDetails({ method: 'bank', accountHolderName: 'A B', ...body });
+      return r.ok ? {} : r.error.fieldErrors;
+    };
+    const usd = { country: 'US', currency: 'USD', accountNumber: '123456789', routingNumber: '011000015', accountType: 'checking' };
+    // US, Canadian and Brazilian addresses need their state or province.
+    expect(errors({ ...usd, address: { line1: '1 Main St', city: 'Boston', country: 'US' } })).toEqual({
+      address: ['an address in US needs its state or province'],
+    });
+    expect(errors({ ...usd, address: { line1: '1 Main St', city: 'Boston', state: 'MA', country: 'US' } })).toEqual({});
+    expect(
+      errors({ country: 'CA', currency: 'CAD', accountNumber: '1234567', bic: 'ROYCCAT2', address: { line1: '1 Bay St', city: 'Toronto', country: 'CA' } }),
+    ).toEqual({ address: ['an address in CA needs its state or province'] });
+    // Elsewhere the state stays optional.
+    expect(
+      errors({ country: 'GB', currency: 'GBP', iban: 'GB82WEST12345698765432', address: { line1: '1 High St', city: 'London', country: 'GB' } }),
+    ).toEqual({});
+    // An account in USD, PHP, THB or TRY needs the address, whatever the route.
+    expect(errors({ country: 'PH', currency: 'PHP', accountNumber: '1234567', bic: 'BOPIPHMM' }).address).toEqual(
+      expect.arrayContaining(['a PHP account needs the holder’s address']),
+    );
+  });
+
   it('refuses names a spreadsheet would run as a formula', () => {
     const r = profiles.parsePayoutDetails({
       method: 'bank',
@@ -324,6 +348,33 @@ describe.skipIf(skipIntegration)('sealing', () => {
     expect(row.details).not.toContain('restored@pay.test');
   });
 
+  it('seals every plaintext row in one sweep, whether or not anyone reads it (finding: at rest)', async () => {
+    const valid = await partner('SweepValid');
+    const invalid = await partner('SweepInvalid');
+    const garbage = await partner('SweepGarbage');
+    const already = await partner('SweepSealed');
+    await db(TABLES.PartnerPayoutProfile).insert([
+      { partnerId: valid, tenantId: T, method: 'paypal', details: JSON.stringify({ email: 'valid@pay.test' }), updatedBy: 'partner' },
+      { partnerId: invalid, tenantId: T, method: 'paypal', details: JSON.stringify({ email: 'not-an-email' }), updatedBy: 'partner' },
+      { partnerId: garbage, tenantId: T, method: 'other', details: '  {garbled', updatedBy: 'partner' },
+    ]);
+    await save(already, { method: 'paypal', email: 'sealed@pay.test' });
+    const before = (await db(TABLES.PartnerPayoutProfile).where({ partnerId: already }).first()).details;
+
+    expect(await profiles.sealPlaintextPayoutProfiles(db, 2)).toBe(3);
+    const rows = await db(TABLES.PartnerPayoutProfile).whereIn('partnerId', [valid, invalid, garbage]);
+    for (const r of rows) {
+      expect(r.details).not.toMatch(/^\s*\{/);
+      expect(r.details).not.toMatch(/valid@|not-an-email|garbled/);
+    }
+    // The valid row still opens; the others read as unreadable.
+    expect((await profiles.getPayoutProfile(db, T, valid))?.details).toEqual({ method: 'paypal', email: 'valid@pay.test' });
+    expect((await profiles.getPayoutProfile(db, T, invalid))?.details).toBeNull();
+    // Sealed rows are left alone, and a second sweep finds nothing.
+    expect((await db(TABLES.PartnerPayoutProfile).where({ partnerId: already }).first()).details).toBe(before);
+    expect(await profiles.sealPlaintextPayoutProfiles(db)).toBe(0);
+  });
+
   it('reads a row sealed under another key as unreadable, without throwing', async () => {
     const id = await partner('Elsewhere');
     await db(TABLES.PartnerPayoutProfile).insert({
@@ -358,31 +409,40 @@ describe.skipIf(skipIntegration)('sealing', () => {
 // ---------------------------------------------------------------------------
 
 describe.skipIf(skipIntegration)('manual payout files', () => {
+  const tick = () => new Promise((r) => setTimeout(r, 3));
+  const gbpLocal = (name: string, extra: Record<string, unknown> = {}) => ({
+    method: 'bank',
+    accountHolderName: name,
+    country: 'GB',
+    currency: 'GBP',
+    accountNumber: '31926819',
+    sortCode: '23-14-70',
+    ...extra,
+  });
+  const address = { line1: '1 High St', city: 'London', postCode: 'E1 6AN', country: 'GB' };
+
   async function seedRun() {
     const runId = ulid();
     const p = {
       paypalUsd: await partner('Ana'),
       paypalEur: await partner('Ben'),
       bankGbp: await partner('Cleo'),
-      bankInr: await partner('Dev'),
+      usdToGbp: await partner('Dana'),
+      noAddress: await partner('Eli'),
+      inrAccount: await partner('Dev'),
       upi: await partner('Esha'),
       none: await partner('Finn'),
       paypalInr: await partner('Gita'),
       paid: await partner('Hal'),
       unreadable: await partner('Ivo'),
+      inrSource: await partner('Jo'),
     };
     await save(p.paypalUsd, { method: 'paypal', email: 'ana@pay.test' });
     await save(p.paypalEur, { method: 'paypal', email: 'ben@pay.test' });
-    await save(p.bankGbp, {
-      method: 'bank',
-      accountHolderName: 'Cleo Smith',
-      country: 'GB',
-      currency: 'GBP',
-      accountNumber: '31926819',
-      sortCode: '23-14-70',
-      email: 'cleo.bank@partner.test',
-    });
-    await save(p.bankInr, {
+    await save(p.bankGbp, gbpLocal('Cleo Smith', { email: 'cleo.bank@partner.test' }));
+    await save(p.usdToGbp, gbpLocal('Dana Jones', { address }));
+    await save(p.noAddress, { method: 'bank', accountHolderName: 'Eli Weber', country: 'DE', currency: 'EUR', iban: 'DE89370400440532013000' });
+    await save(p.inrAccount, {
       method: 'bank',
       accountHolderName: 'Dev Patel',
       country: 'IN',
@@ -393,6 +453,7 @@ describe.skipIf(skipIntegration)('manual payout files', () => {
     await save(p.upi, { method: 'upi', vpa: 'esha@okaxis' });
     await save(p.paypalInr, { method: 'paypal', email: 'gita@pay.test' });
     await save(p.paid, { method: 'paypal', email: 'hal@pay.test' });
+    await save(p.inrSource, gbpLocal('Jo Brown'));
     await db(TABLES.PartnerPayoutProfile).insert({
       partnerId: p.unreadable,
       tenantId: T,
@@ -404,78 +465,131 @@ describe.skipIf(skipIntegration)('manual payout files', () => {
       paypalUsd: await payout(p.paypalUsd, '125.50', 'USD', runId),
       paypalEur: await payout(p.paypalEur, '1234.50', 'EUR', runId),
       bankGbp: await payout(p.bankGbp, '40.00', 'GBP', runId),
-      bankInr: await payout(p.bankInr, '75.00', 'USD', runId),
+      usdToGbp: await payout(p.usdToGbp, '75.00', 'USD', runId),
+      noAddress: await payout(p.noAddress, '20.00', 'USD', runId),
+      inrAccount: await payout(p.inrAccount, '30.00', 'USD', runId),
       upi: await payout(p.upi, '10.00', 'USD', runId),
       none: await payout(p.none, '5.00', 'USD', runId),
       paypalInr: await payout(p.paypalInr, '500.00', 'INR', runId),
       paid: await payout(p.paid, '9.00', 'USD', runId, 'paid'),
       unreadable: await payout(p.unreadable, '7.00', 'USD', runId),
+      inrSource: await payout(p.inrSource, '100.00', 'INR', runId),
     };
     return { runId, p, ids };
   }
 
-  it('sorts each pending payout into a file, or says why not', async () => {
+  async function allPayouts(runId: string, limit = 500): Promise<Array<Record<string, unknown>>> {
+    const out: Array<Record<string, unknown>> = [];
+    let cursor: string | null = null;
+    do {
+      const res = await admin.get(`/payouts/runs/${runId}/payouts?limit=${limit}${cursor ? `&cursor=${cursor}` : ''}`);
+      expect(res.status).toBe(200);
+      out.push(...res.body.payouts);
+      cursor = res.body.nextCursor;
+    } while (cursor);
+    return out;
+  }
+
+  const makeFile = (runId: string, provider: string, currency: string) =>
+    admin.post(`/payouts/runs/${runId}/exports`, { provider, currency });
+
+  it('summarises what each new file would take, and why the rest are in none', async () => {
     const { runId, ids } = await seedRun();
 
     const runs = await admin.get('/payouts/runs');
     expect(runs.status).toBe(200);
-    expect(runs.body.runs).toEqual([
-      expect.objectContaining({ runId, payoutCount: 9, pendingCount: 8 }),
-    ]);
-    expect(runs.body.runs[0].pendingTotals).toContainEqual({ currency: 'USD', amount: '222.50' });
+    expect(runs.body).toEqual({
+      runs: [expect.objectContaining({ runId, pendingCount: 11 })],
+      nextCursor: null,
+    });
+    expect(runs.body.runs[0].pendingTotals).toContainEqual({ currency: 'USD', amount: '272.50' });
 
-    const res = await admin.get(`/payouts/runs/${runId}`);
-    expect(res.status).toBe(200);
-    const by = Object.fromEntries((res.body.payouts as Array<{ payoutId: string }>).map((x) => [x.payoutId, x])) as Record<string, Record<string, unknown>>;
-    expect(by[ids.paypalUsd]).toMatchObject({ file: { provider: 'paypal', currency: 'USD', part: 1, reference: ids.paypalUsd }, excluded: null });
-    expect(by[ids.paypalEur]).toMatchObject({ file: { provider: 'paypal', currency: 'EUR' } });
-    expect(by[ids.bankGbp]).toMatchObject({ file: { provider: 'wise', currency: 'GBP', reference: ids.bankGbp.slice(-10) } });
-    expect(by[ids.bankInr]).toMatchObject({ file: { provider: 'wise', currency: 'USD' } });
-    expect(by[ids.upi]).toMatchObject({ file: null, excluded: 'pay_individually', destination: { method: 'upi', summary: 'UPI e•••@okaxis' } });
-    expect(by[ids.none]).toMatchObject({ file: null, excluded: 'no_payout_details', destination: null });
-    expect(by[ids.paypalInr]).toMatchObject({ file: null, excluded: 'currency_not_supported' });
-    expect(by[ids.paid]).toMatchObject({ status: 'paid', file: null, excluded: null });
-    expect(by[ids.unreadable]).toMatchObject({ file: null, excluded: 'details_unreadable', destination: { summary: null } });
-    // Masked everywhere on this page: no full email or account number.
-    expect(JSON.stringify(res.body)).not.toContain('ana@pay.test');
-    expect(JSON.stringify(res.body)).not.toContain('31926819');
-    expect(res.body.files).toEqual(
-      expect.arrayContaining([
-        { provider: 'paypal', currency: 'USD', part: 1, count: 1, total: '125.50' },
-        { provider: 'paypal', currency: 'EUR', part: 1, count: 1, total: '1234.50' },
-        { provider: 'wise', currency: 'GBP', part: 1, count: 1, total: '40.00' },
-        { provider: 'wise', currency: 'USD', part: 1, count: 1, total: '75.00' },
-      ]),
-    );
-    expect(res.body.files).toHaveLength(4);
+    const run = await admin.get(`/payouts/runs/${runId}`);
+    expect(run.status).toBe(200);
+    expect(run.body).toMatchObject({ runId, pendingCount: 11, exports: [] });
+    expect(run.body.ready).toEqual([
+      { provider: 'paypal', currency: 'EUR', count: 1, total: '1234.50' },
+      { provider: 'paypal', currency: 'USD', count: 1, total: '125.50' },
+      { provider: 'wise', currency: 'GBP', count: 1, total: '40.00' },
+      { provider: 'wise', currency: 'USD', count: 1, total: '75.00' },
+    ]);
+    expect(Object.fromEntries((run.body.excluded as Array<{ reason: string; count: number }>).map((e) => [e.reason, e.count]))).toEqual({
+      // INR to PayPal; USD into an INR account (no purpose of payment); INR out of Wise.
+      currency_not_supported: 3,
+      details_incomplete: 1,
+      pay_individually: 1,
+      no_payout_details: 1,
+      details_unreadable: 1,
+    });
+
+    const list = await allPayouts(runId, 5);
+    const by = Object.fromEntries(list.map((x) => [x.payoutId, x]));
+    expect(list).toHaveLength(11);
+    expect(by[ids.paid]).toBeUndefined();
+    expect(by[ids.paypalUsd]).toMatchObject({ ready: 'paypal', export: null, excluded: null, doNotPay: null });
+    expect(by[ids.noAddress]).toMatchObject({ ready: null, excluded: 'details_incomplete' });
+    expect(by[ids.inrAccount]).toMatchObject({ excluded: 'currency_not_supported' });
+    expect(by[ids.inrSource]).toMatchObject({ excluded: 'currency_not_supported' });
+    expect(by[ids.upi]).toMatchObject({ excluded: 'pay_individually', destination: { method: 'upi', summary: 'UPI e•••@okaxis' } });
+    expect(by[ids.unreadable]).toMatchObject({ excluded: 'details_unreadable', destination: { summary: null } });
+    // Masked everywhere on these pages: no full email or account number.
+    expect(JSON.stringify(list)).not.toContain('ana@pay.test');
+    expect(JSON.stringify(list)).not.toContain('31926819');
+
+    expect((await admin.get(`/payouts/runs/${runId}/payouts?cursor=%25%25`)).body.error).toBe('invalid_cursor');
+    expect((await admin.get('/payouts/runs/missing')).body.error).toBe('run_not_found');
+    expect((await admin.get('/payouts/runs/missing/payouts')).body.error).toBe('run_not_found');
   });
 
-  it('writes the PayPal Payouts format: no header, ten columns, one currency', async () => {
+  it('reads a run in chunks without changing the answer', async () => {
+    const { runId } = await seedRun();
+    const whole = (await admin.get(`/payouts/runs/${runId}`)).body;
+    const saved = files.CHUNK.size;
+    files.CHUNK.size = 2;
+    try {
+      expect((await admin.get(`/payouts/runs/${runId}`)).body).toEqual(whole);
+      expect(await allPayouts(runId)).toHaveLength(11);
+      const file = await makeFile(runId, 'wise', 'USD');
+      expect(file.body.export.count).toBe(1);
+    } finally {
+      files.CHUNK.size = saved;
+    }
+  });
+
+  it('makes a PayPal file: no header, ten columns, one currency', async () => {
     const { runId, ids } = await seedRun();
-    const usd = await admin.get(`/payouts/runs/${runId}/paypal.csv?currency=usd`);
-    expect(usd.status).toBe(200);
-    expect(usd.headers['content-type']).toMatch(/^text\/csv/);
+    const usd = await makeFile(runId, 'paypal', 'usd');
+    expect(usd.status).toBe(201);
     expect(usd.headers['cache-control']).toBe('no-store');
-    expect(usd.headers['content-disposition']).toBe(`attachment; filename="paypal-payouts-${runId}-USD.csv"`);
-    expect(usd.text).toMatch(
+    const exportId = usd.body.export.exportId as string;
+    expect(usd.body.export).toMatchObject({ runId, provider: 'paypal', currency: 'USD', payoutIds: [ids.paypalUsd], count: 1, total: '125.50', createdBy: 'api' });
+    expect(usd.body.filename).toBe(`paypal-payouts-${exportId}-USD.csv`);
+    expect(usd.body.csv).toMatch(
       new RegExp(`^ana@pay\\.test,125\\.50,USD,${ids.paypalUsd},Commission payout( from [^,\\r\\n]+)?,PAYPAL,,,,SERVICES\\r\\n$`),
     );
 
-    const eur = await admin.get(`/payouts/runs/${runId}/paypal.csv?currency=EUR`);
-    expect(eur.text.startsWith(`ben@pay.test,"1234,50",EUR,${ids.paypalEur},`)).toBe(true);
-    expect(eur.text.trimEnd().split('\r\n')).toHaveLength(1);
+    const eur = await makeFile(runId, 'paypal', 'EUR');
+    expect(eur.body.csv.startsWith(`ben@pay.test,"1234,50",EUR,${ids.paypalEur},`)).toBe(true);
+
+    // Nothing left for PayPal USD: the one payout is in its file.
+    expect((await makeFile(runId, 'paypal', 'USD')).body.error).toBe('nothing_to_export');
+    // Downloading again gives the same file.
+    const again = await admin.get(`/payouts/exports/${exportId}.csv`);
+    expect(again.status).toBe(200);
+    expect(again.headers['content-type']).toMatch(/^text\/csv/);
+    expect(again.headers['content-disposition']).toBe(`attachment; filename="paypal-payouts-${exportId}-USD.csv"`);
+    expect(again.text).toBe(usd.body.csv);
   });
 
-  it('writes the Wise bank-account template: one source currency, targets per row', async () => {
-    const { runId, ids, p } = await seedRun();
-    const gbp = await admin.get(`/payouts/runs/${runId}/wise.csv?currency=GBP`);
-    expect(gbp.status).toBe(200);
+  it('makes a Wise file: one source currency, targets and addresses per row', async () => {
+    const { runId, ids } = await seedRun();
+    const gbp = await makeFile(runId, 'wise', 'GBP');
     // Pinned: Wise rejects a renamed column, so a change here is deliberate
     // (docs/manual-payout-files.md "Wise columns").
-    expect(gbp.text.split('\r\n')[0]).toBe(
+    expect(gbp.body.csv.split('\r\n')[0]).toBe(
       'name,recipientEmail,paymentReference,recipientType,amountCurrency,amount,sourceCurrency,targetCurrency,IBAN,BIC,accountNumber,sortCode,abartn,accountType,ifscCode,addressCountryCode,addressCity,addressFirstLine,addressPostCode,addressState',
     );
-    expect(parseCsv(gbp.text)).toEqual([
+    expect(parseCsv(gbp.body.csv)).toEqual([
       expect.objectContaining({
         name: 'Cleo Smith',
         recipientEmail: 'cleo.bank@partner.test',
@@ -488,103 +602,169 @@ describe.skipIf(skipIntegration)('manual payout files', () => {
         IBAN: '',
         accountNumber: '31926819',
         sortCode: '231470',
-        ifscCode: '',
       }),
     ]);
 
-    const usd = await admin.get(`/payouts/runs/${runId}/wise.csv?currency=USD`);
-    const partnerEmail = (await db(TABLES.Partner).where({ id: p.bankInr }).first()).email as string;
-    expect(parseCsv(usd.text)).toEqual([
+    const usd = await makeFile(runId, 'wise', 'USD');
+    expect(usd.body.export.payoutIds).toEqual([ids.usdToGbp]);
+    expect(parseCsv(usd.body.csv)).toEqual([
       expect.objectContaining({
-        name: 'Dev Patel',
-        // No account email given: Wise notifies the partner's own address.
-        recipientEmail: partnerEmail,
-        // USD paid into an INR account: the amount is what the brand sends.
+        name: 'Dana Jones',
+        // USD paid into a GBP account: the amount is what the brand sends.
         amountCurrency: 'source',
         amount: '75.00',
         sourceCurrency: 'USD',
-        targetCurrency: 'INR',
-        accountNumber: '50100123456789',
-        ifscCode: 'HDFC0001234',
-        sortCode: '',
+        targetCurrency: 'GBP',
+        // Wise needs the address for anything sent in USD.
+        addressFirstLine: '1 High St',
+        addressCity: 'London',
+        addressCountryCode: 'GB',
       }),
     ]);
   });
 
-  it('stamps what was downloaded, and refuses files that don’t exist', async () => {
+  it('confirms a file’s own payouts, never what a fresh look would add (finding: Mark sent)', async () => {
     const { runId, ids } = await seedRun();
-    await admin.get(`/payouts/runs/${runId}/paypal.csv?currency=USD`);
-    const run = await admin.get(`/payouts/runs/${runId}`);
-    const usd = (run.body.payouts as Array<{ payoutId: string; lastExport: unknown }>).find((x) => x.payoutId === ids.paypalUsd);
-    expect(usd?.lastExport).toMatchObject({ provider: 'paypal', at: expect.any(String) });
-    const eur = (run.body.payouts as Array<{ payoutId: string; lastExport: unknown }>).find((x) => x.payoutId === ids.paypalEur);
-    expect(eur?.lastExport).toBeNull();
+    const file = await makeFile(runId, 'paypal', 'USD');
+    const exportId = file.body.export.exportId as string;
+    // While the brand uploads, another partner adds PayPal details and is
+    // now ready for a PayPal USD file too.
+    const kim = await partner('Kim');
+    await save(kim, { method: 'paypal', email: 'kim@pay.test' });
+    const kimPayout = await payout(kim, '60.00', 'USD', runId);
 
-    expect((await admin.get(`/payouts/runs/${runId}/wise.csv?currency=EUR`)).body.error).toBe('file_not_found');
-    expect((await admin.get(`/payouts/runs/${runId}/venmo.csv?currency=USD`)).body.error).toBe('unknown_provider');
-    expect((await admin.get(`/payouts/runs/${runId}/paypal.csv?currency=dollars`)).body.error).toBe('invalid_query');
-    expect((await admin.get(`/payouts/runs/missing`)).body.error).toBe('run_not_found');
+    const run = (await admin.get(`/payouts/runs/${runId}`)).body;
+    expect(run.exports).toEqual([
+      expect.objectContaining({ exportId, provider: 'paypal', currency: 'USD', pendingCount: 1, pendingTotal: '125.50', changedCount: 0 }),
+    ]);
+    expect(run.ready).toContainEqual({ provider: 'paypal', currency: 'USD', count: 1, total: '60.00' });
+
+    const confirmed = await admin.post(`/payouts/exports/${exportId}/confirm`, {});
+    expect(confirmed.status).toBe(200);
+    expect(confirmed.body.confirmed.map((x: { id: string }) => x.id)).toEqual([ids.paypalUsd]);
+    expect((await db(TABLES.Payout).where({ id: kimPayout }).first()).status).toBe('pending');
+    // The file holds nothing pending now.
+    expect((await admin.post(`/payouts/exports/${exportId}/confirm`, {})).body.error).toBe('export_not_found');
+    expect((await admin.get(`/payouts/exports/${exportId}.csv`)).body.error).toBe('file_not_found');
   });
 
-  it('keeps the files admin-only', async () => {
+  it('keeps an exported payout in its file when the partner switches method (finding: pinning)', async () => {
+    const { runId, ids, p } = await seedRun();
+    const paypalFile = await makeFile(runId, 'paypal', 'USD');
+    const exportId = paypalFile.body.export.exportId as string;
+    await tick();
+    // After the PayPal file was uploaded, Ana switches to a bank account
+    // that the Wise USD file could pay.
+    await save(p.paypalUsd, gbpLocal('Ana Silva', { address }));
+
+    const list = await allPayouts(runId);
+    expect(list.find((x) => x.payoutId === ids.paypalUsd)).toMatchObject({
+      ready: null,
+      export: { exportId, provider: 'paypal', destinationChanged: true },
+    });
+    const run = (await admin.get(`/payouts/runs/${runId}`)).body;
+    expect(run.exports[0]).toMatchObject({ exportId, changedCount: 1 });
+
+    // She is in no Wise file: only Dana is.
+    const wise = await makeFile(runId, 'wise', 'USD');
+    expect(wise.body.export.payoutIds).toEqual([ids.usdToGbp]);
+    // A new download of the PayPal file can't carry her any more.
+    expect((await admin.get(`/payouts/exports/${exportId}.csv`)).body.error).toBe('file_not_found');
+    // But the file that went out held her, so confirming it confirms her.
+    const confirmed = await admin.post(`/payouts/exports/${exportId}/confirm`, {});
+    expect(confirmed.body.confirmed.map((x: { id: string }) => x.id)).toEqual([ids.paypalUsd]);
+  });
+
+  it('takes each new file from payouts no file holds, so files never overlap (finding: parts)', async () => {
+    const runId = ulid();
+    const late = await partner('Late');
+    const latePayout = await payout(late, '1.00', 'EUR', runId);
+    await tick();
+    const early: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const id = await partner(`Many${i}`);
+      await save(id, { method: 'bank', accountHolderName: `Many ${i}`, country: 'DE', currency: 'EUR', iban: 'DE89370400440532013000' });
+      early.push(await payout(id, '1.00', 'EUR', runId));
+      await tick();
+    }
+    const saved = files.MAX_ROWS.wise;
+    files.MAX_ROWS.wise = 2;
+    try {
+      const first = (await makeFile(runId, 'wise', 'EUR')).body.export;
+      expect(first.payoutIds).toEqual(early.slice(0, 2));
+      // A partner earlier in id order adds details after the first file.
+      await save(late, { method: 'bank', accountHolderName: 'Late One', country: 'DE', currency: 'EUR', iban: 'DE89370400440532013000' });
+      const second = (await makeFile(runId, 'wise', 'EUR')).body.export;
+      expect(second.payoutIds).toEqual([latePayout, early[2]]);
+      expect((await makeFile(runId, 'wise', 'EUR')).body.error).toBe('nothing_to_export');
+    } finally {
+      files.MAX_ROWS.wise = saved;
+    }
+  });
+
+  it('discards a file that never went out, so a new file can take its payouts', async () => {
+    const { runId, ids } = await seedRun();
+    const exportId = (await makeFile(runId, 'paypal', 'USD')).body.export.exportId as string;
+    const discarded = await admin.post(`/payouts/exports/${exportId}/discard`, {});
+    expect(discarded.body).toEqual({ released: 1 });
+    expect((await admin.post(`/payouts/exports/${exportId}/discard`, {})).body.error).toBe('export_not_found');
+    expect((await makeFile(runId, 'paypal', 'USD')).body.export.payoutIds).toEqual([ids.paypalUsd]);
+  });
+
+  it('keeps every file route admin-only', async () => {
     const { runId, p } = await seedRun();
+    const exportId = (await makeFile(runId, 'paypal', 'USD')).body.export.exportId as string;
     const key = (await createApiKeyRow(db, { tenantId: T, partnerId: p.paypalUsd })).plaintext;
-    expect((await as(key).get(`/payouts/runs/${runId}/paypal.csv?currency=USD`)).status).toBe(403);
-    expect((await as(key).get(`/payouts/runs/${runId}`)).status).toBe(403);
-    expect((await as(key).get('/payouts/runs')).status).toBe(403);
+    const partnerReq = (method: 'get' | 'post', path: string) =>
+      request(app)[method](path).set('Authorization', `Bearer ${key}`).send({ provider: 'paypal', currency: 'EUR' });
+    for (const [method, path] of [
+      ['get', '/payouts/runs'],
+      ['get', `/payouts/runs/${runId}`],
+      ['get', `/payouts/runs/${runId}/payouts`],
+      ['post', `/payouts/runs/${runId}/exports`],
+      ['get', `/payouts/exports/${exportId}.csv`],
+      ['post', `/payouts/exports/${exportId}/confirm`],
+      ['post', `/payouts/exports/${exportId}/discard`],
+    ] as const) {
+      expect((await partnerReq(method, path)).status, `${method} ${path}`).toBe(403);
+    }
   });
 
   it('confirms in bulk and reports what it couldn’t', async () => {
     const { runId, ids } = await seedRun();
-    const res = await admin.post('/payouts/confirm', { payoutIds: [ids.paypalUsd, ids.paypalEur, ids.paid, 'missing'] });
+    const res = await admin.post('/payouts/confirm', { payoutIds: [ids.upi, ids.none, ids.paid, 'missing'] });
     expect(res.status).toBe(200);
-    expect((res.body.confirmed as Array<{ id: string; status: string }>).map((x) => x.id).sort()).toEqual([ids.paypalUsd, ids.paypalEur].sort());
-    expect(res.body.confirmed.every((x: { status: string; completedAt: string }) => x.status === 'paid' && x.completedAt)).toBe(true);
+    expect((res.body.confirmed as Array<{ id: string }>).map((x) => x.id).sort()).toEqual([ids.upi, ids.none].sort());
     expect(res.body.notConfirmable).toEqual(
       expect.arrayContaining([
         { payoutId: ids.paid, error: 'not_confirmable', detail: expect.stringContaining('manual/paid') },
         { payoutId: 'missing', error: 'payout_not_found' },
       ]),
     );
-    // Confirmed payouts leave their file.
-    expect((await admin.get(`/payouts/runs/${runId}/paypal.csv?currency=USD`)).status).toBe(404);
     expect((await admin.post('/payouts/confirm', { payoutIds: [] })).status).toBe(400);
+    expect((await admin.get(`/payouts/runs/${runId}`)).body.pendingCount).toBe(9);
   });
 
-  it('splits a currency past one upload’s limit into parts', async () => {
-    const runId = ulid();
-    const ids: string[] = [];
+  it('pages the runs list (finding: run cursor)', async () => {
+    const pid = await partner('Runner');
+    const runIds: string[] = [];
     for (let i = 0; i < 3; i += 1) {
-      const id = await partner(`Many${i}`);
-      await save(id, {
-        method: 'bank',
-        accountHolderName: `Many ${i}`,
-        country: 'DE',
-        currency: 'EUR',
-        iban: 'DE89370400440532013000',
-      });
-      ids.push(await payout(id, '1.00', 'EUR', runId));
+      const runId = ulid();
+      runIds.push(runId);
+      await payout(pid, '1.00', 'USD', runId);
+      await tick();
     }
-    const limits = files.MAX_ROWS as Record<string, number>;
-    const saved = limits.wise!;
-    limits.wise = 2;
-    try {
-      const run = await files.getManualRun(db, T, runId);
-      expect(run?.files).toEqual([
-        { provider: 'wise', currency: 'EUR', part: 1, count: 2, total: '2.00' },
-        { provider: 'wise', currency: 'EUR', part: 2, count: 1, total: '1.00' },
-      ]);
-      const second = await files.buildManualPayoutFile(db, T, runId, 'wise', 'EUR', 2);
-      expect(second?.filename).toBe(`wise-payouts-${runId}-EUR-part2.csv`);
-      expect(parseCsv(second!.body)).toHaveLength(1);
-    } finally {
-      limits.wise = saved;
-    }
+    const first = await admin.get('/payouts/runs?limit=2');
+    expect(first.body.runs.map((r: { runId: string }) => r.runId)).toEqual([runIds[2], runIds[1]]);
+    expect(first.body.nextCursor).toEqual(expect.any(String));
+    const second = await admin.get(`/payouts/runs?limit=2&cursor=${first.body.nextCursor}`);
+    expect(second.body).toEqual({ runs: [expect.objectContaining({ runId: runIds[0] })], nextCursor: null });
+    expect((await admin.get('/payouts/runs?cursor=bm9wZQ')).body.error).toBe('invalid_cursor');
   });
 });
 
 describe.skipIf(skipIntegration)('compliance on OpenPartner Cloud', () => {
-  it('keeps blocked countries and confirmed matches out of every file; a review stays in, flagged', async () => {
+  async function seedHolds() {
     const runId = ulid();
     const declaredIran = await partner('Declared');
     const accountInRussia = await partner('Account');
@@ -608,39 +788,79 @@ describe.skipIf(skipIntegration)('compliance on OpenPartner Cloud', () => {
       country: 'IR',
       source: 'join',
     });
-    const screening = (subjectId: string, decision: string | null) => ({
-      id: ulid(),
-      subjectKind: 'partner',
-      subjectId,
-      tenantId: T,
-      screenedName: subjectId === underReview ? 'Review' : 'Confirmed',
-      result: 'possible_match',
-      matches: JSON.stringify([]),
-      trigger: 'first_payable',
-      decision,
-    });
-    await db(TABLES.SanctionsScreening).insert([screening(underReview, null), screening(confirmed, 'confirmed_match')]);
+    await db(TABLES.SanctionsScreening).insert([screening(underReview, 'Review', null), screening(confirmed, 'Confirmed', 'confirmed_match')]);
     const ids = {
       declaredIran: await payout(declaredIran, '10.00', 'USD', runId),
       accountInRussia: await payout(accountInRussia, '10.00', 'USD', runId),
       underReview: await payout(underReview, '10.00', 'USD', runId),
       confirmed: await payout(confirmed, '10.00', 'USD', runId),
     };
+    return { runId, ids, partners: { underReview } };
+  }
 
+  function screening(subjectId: string, name: string, decision: string | null) {
+    return {
+      id: ulid(),
+      subjectKind: 'partner',
+      subjectId,
+      tenantId: T,
+      screenedName: name,
+      result: 'possible_match',
+      matches: JSON.stringify([]),
+      trigger: 'first_payable',
+      decision,
+    };
+  }
+
+  it('keeps blocked countries and confirmed matches out of every file; a review stays in, flagged', async () => {
+    const { runId, ids } = await seedHolds();
     process.env.OPENPARTNER_TENANCY = 'multi';
     const run = await files.getManualRun(db, T, runId);
-    const by = new Map(run!.payouts.map((x) => [x.payoutId, x]));
-    expect(by.get(ids.declaredIran)).toMatchObject({ file: null, excluded: 'country_not_supported', complianceWarning: 'country_not_supported' });
-    expect(by.get(ids.accountInRussia)).toMatchObject({ file: null, excluded: 'country_not_supported', complianceWarning: null });
-    expect(by.get(ids.underReview)).toMatchObject({ file: { provider: 'paypal' }, excluded: null, complianceWarning: 'screening_review' });
-    expect(by.get(ids.confirmed)).toMatchObject({ file: null, excluded: 'screening_confirmed', complianceWarning: 'screening_confirmed' });
+    expect(Object.fromEntries(run!.excluded.map((e) => [e.reason, e.count]))).toEqual({ country_not_supported: 2, screening_confirmed: 1 });
+    expect(run!.ready).toEqual([{ provider: 'paypal', currency: 'USD', count: 1, total: '10.00' }]);
+    const page = await files.listManualRunPayouts(db, T, runId, { limit: 100 });
+    const by = new Map((page as { payouts: Array<{ payoutId: string }> }).payouts.map((x) => [x.payoutId, x]));
+    expect(by.get(ids.declaredIran)).toMatchObject({ excluded: 'country_not_supported', doNotPay: 'country_not_supported', complianceWarning: 'country_not_supported' });
+    expect(by.get(ids.accountInRussia)).toMatchObject({ excluded: 'country_not_supported', doNotPay: 'country_not_supported', complianceWarning: null });
+    expect(by.get(ids.underReview)).toMatchObject({ ready: 'paypal', doNotPay: null, complianceWarning: 'screening_review' });
+    expect(by.get(ids.confirmed)).toMatchObject({ excluded: 'screening_confirmed', doNotPay: 'screening_confirmed' });
 
-    const file = await files.buildManualPayoutFile(db, T, runId, 'paypal', 'USD', 1);
-    expect(file?.payoutIds).toEqual([ids.underReview]);
+    const file = await files.createManualExport(db, T, runId, 'paypal', 'USD', 'admin');
+    expect(file?.export.payoutIds).toEqual([ids.underReview]);
 
     // A self-host applies its own rules: nothing is held back there.
     process.env.OPENPARTNER_TENANCY = 'single';
     const selfhost = await files.getManualRun(db, T, runId);
-    expect(selfhost!.payouts.filter((x) => x.excluded)).toEqual([]);
+    expect(selfhost!.excluded).toEqual([]);
+  });
+
+  it('refuses to confirm a do-not-pay payout on every path (finding: confirm)', async () => {
+    const { runId, ids, partners } = await seedHolds();
+    process.env.OPENPARTNER_TENANCY = 'multi';
+    const file = await files.createManualExport(db, T, runId, 'paypal', 'USD', 'admin');
+    // After the file is made, the review becomes a confirmed match.
+    await db(TABLES.SanctionsScreening).insert(screening(partners.underReview, 'Review', 'confirmed_match'));
+
+    const run = await files.getManualRun(db, T, runId);
+    expect(run!.exports[0]).toMatchObject({ exportId: file!.export.exportId, doNotPayCount: 1 });
+    const viaFile = await files.confirmManualExport(db, T, file!.export.exportId);
+    expect(viaFile!.confirmed).toEqual([]);
+    expect(viaFile!.notConfirmable).toEqual([
+      { payoutId: ids.underReview, error: 'not_confirmable', reason: 'screening_confirmed', detail: expect.stringContaining('do not pay') },
+    ]);
+    // Re-downloading leaves it out, so the file holds nothing to pay.
+    expect(await files.rebuildManualExportFile(db, T, file!.export.exportId)).toBeNull();
+
+    const bulk = await files.confirmManualPayouts(db, T, [ids.declaredIran, ids.accountInRussia, ids.confirmed]);
+    expect(bulk.confirmed).toEqual([]);
+    expect(bulk.notConfirmable.map((n) => [n.payoutId, n.reason])).toEqual([
+      [ids.declaredIran, 'country_not_supported'],
+      [ids.accountInRussia, 'country_not_supported'],
+      [ids.confirmed, 'screening_confirmed'],
+    ]);
+    // The single-payout route asks the same question.
+    const row = await db(TABLES.Payout).where({ id: ids.confirmed }).first();
+    expect(await files.doNotPayReason(db, T, row)).toBe('screening_confirmed');
+    expect(await db(TABLES.Payout).where({ status: 'paid' })).toHaveLength(0);
   });
 });

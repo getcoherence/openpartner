@@ -445,15 +445,27 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     );
     expect(saved).toMatchObject({ profile: { summary: 'PayPal r•••@pay.example.com' }, paidVia: 'manual' });
     check('getPartnerPayoutProfile', await admin.get('/partners/missing/payout-profile'));
-    const runs = check<{ runs: Array<{ runId: string }> }>('listManualPayoutRuns', await admin.get('/payouts/runs'));
+    const runs = check<{ runs: Array<{ runId: string }> }>('listManualPayoutRuns', await admin.get('/payouts/runs?limit=10'));
     expect(runs.runs.map((r) => r.runId)).toContain(run.runId);
-    const manual = check<{ files: Array<{ provider: string; currency: string }> }>('getManualPayoutRun', await admin.get(`/payouts/runs/${run.runId}`));
-    expect(manual.files).toEqual([expect.objectContaining({ provider: 'paypal', count: 1 })]);
+    check('listManualPayoutRuns', await admin.get('/payouts/runs?cursor=bm9wZQ'));
+    const manual = check<{ ready: Array<{ provider: string; currency: string }> }>('getManualPayoutRun', await admin.get(`/payouts/runs/${run.runId}`));
+    expect(manual.ready).toEqual([expect.objectContaining({ provider: 'paypal', count: 1 })]);
     check('getManualPayoutRun', await admin.get('/payouts/runs/missing'));
-    const file = await admin.get(`/payouts/runs/${run.runId}/paypal.csv?currency=${manual.files[0]!.currency}`);
-    check('downloadManualPayoutFile', file);
-    expect(file.text).toMatch(/^referrer@pay\.example\.com,/);
-    check('downloadManualPayoutFile', await admin.get(`/payouts/runs/${run.runId}/wise.csv?currency=USD`));
+    check('listManualPayoutRunPayouts', await admin.get(`/payouts/runs/${run.runId}/payouts?limit=1`));
+    check('listManualPayoutRunPayouts', await admin.get(`/payouts/runs/${run.runId}/payouts?cursor=%25`));
+    check('listManualPayoutRunPayouts', await admin.get('/payouts/runs/missing/payouts'));
+    // A file that never went out is discarded, then made again.
+    const fileOf = (runId: string) => admin.post(`/payouts/runs/${runId}/exports`, { provider: 'paypal', currency: manual.ready[0]!.currency });
+    const draft = check<{ export: { exportId: string } }>('createManualPayoutFile', await fileOf(run.runId));
+    check('discardManualPayoutFile', await admin.post(`/payouts/exports/${draft.export.exportId}/discard`));
+    check('discardManualPayoutFile', await admin.post(`/payouts/exports/${draft.export.exportId}/discard`));
+    const made = check<{ export: { exportId: string }; csv: string }>('createManualPayoutFile', await fileOf(run.runId));
+    expect(made.csv).toMatch(/^referrer@pay\.example\.com,/);
+    check('createManualPayoutFile', await admin.post(`/payouts/runs/${run.runId}/exports`, { provider: 'wise', currency: 'USD' }));
+    const redownload = await admin.get(`/payouts/exports/${made.export.exportId}.csv`);
+    check('downloadManualPayoutFile', redownload);
+    expect(redownload.text).toBe(made.csv);
+    check('downloadManualPayoutFile', await admin.get('/payouts/exports/missing.csv'));
     // The manual rail: the commission is `paid` while its payout is still `pending` (docs, step 5).
     const planned = check<{ payouts: Array<{ id: string; status: string }> }>('listPartnerPayouts', await integration.get(`/partners/${partner.id}/payouts`));
     expect(planned.payouts[0]!.status).toBe('pending');
@@ -490,14 +502,19 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       await integration.get(`/partners/${partner.id}/commissions`),
     );
     expect(withBonus.commissions.find((c) => c.id === awarded.commission.id)?.source).toBe('bonus');
-    const bonusRun = check<{ payouts: Array<{ payoutId: string; amount: number }> }>('runPayouts', await admin.post('/payouts/run'));
+    const bonusRun = check<{ runId: string; payouts: Array<{ payoutId: string; amount: number }> }>('runPayouts', await admin.post('/payouts/run'));
     expect(bonusRun.payouts.map((p) => p.amount)).toEqual([25]);
-    // The brand's PayPal batch went out: confirm what's in it.
+    // The brand's PayPal batch went out: confirm exactly what's in the file.
+    const bonusFile = check<{ export: { exportId: string; payoutIds: string[] } }>('createManualPayoutFile', await fileOf(bonusRun.runId));
+    expect(bonusFile.export.payoutIds).toEqual([bonusRun.payouts[0]!.payoutId]);
+    const sent = check<{ confirmed: Array<{ id: string }> }>('confirmManualPayoutFile', await admin.post(`/payouts/exports/${bonusFile.export.exportId}/confirm`));
+    expect(sent.confirmed.map((p) => p.id)).toEqual(bonusFile.export.payoutIds);
+    check('confirmManualPayoutFile', await admin.post(`/payouts/exports/${bonusFile.export.exportId}/confirm`));
     const bulk = check<{ confirmed: unknown[]; notConfirmable: unknown[] }>(
       'confirmManualPayouts',
       await admin.post('/payouts/confirm', { payoutIds: [bonusRun.payouts[0]!.payoutId, 'missing'] }),
     );
-    expect([bulk.confirmed.length, bulk.notConfirmable.length]).toEqual([1, 1]);
+    expect([bulk.confirmed.length, bulk.notConfirmable.length]).toEqual([0, 2]);
     check('confirmManualPayouts', await admin.post('/payouts/confirm', { payoutIds: [] }));
     check('deletePartnerPayoutProfile', await payoutDetails.delete(`/partners/${partner.id}/payout-profile`));
     check('deletePartnerPayoutProfile', await payoutDetails.delete(`/partners/${partner.id}/payout-profile`));
