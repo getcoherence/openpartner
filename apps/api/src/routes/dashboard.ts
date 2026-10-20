@@ -397,6 +397,7 @@ dashboardRouter.get(
         'cl.referer as clickReferer',
         'cl.landingUrl as clickLandingUrl',
         'cl.ts as clickTs',
+        'cl.subId as clickSubId',
         'l.linkKey as linkKey',
       )) as Array<{
         attributionId: string;
@@ -412,6 +413,7 @@ dashboardRouter.get(
         clickReferer: string | null;
         clickLandingUrl: string | null;
         clickTs: Date | null;
+        clickSubId: string | null;
         linkKey: string | null;
       }>;
 
@@ -434,6 +436,7 @@ dashboardRouter.get(
               referer: r.clickReferer,
               landingUrl: r.clickLandingUrl,
               ts: r.clickTs?.toISOString() ?? null,
+              subId: r.clickSubId,
             }
           : null,
       })),

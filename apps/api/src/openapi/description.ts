@@ -42,6 +42,8 @@ Every path below is relative to your tenant's API base:
 
 The slug comes **after** \`/api\`. \`https://app.openpartner.dev/t/<slug>/api/...\` reaches the portal's static site, not the API, and returns HTML. On a multi-tenant deployment a request with no \`/t/<slug>\` prefix fails with \`400 tenant_slug_missing\`, and an unknown slug gets a plain \`404\`. Your slug is the \`/t/<slug>/\` segment in your admin portal's address.
 
+**Publisher sub-IDs.** A partner may add \`?sub_id=<their own id>\` to a share link (trimmed, at most 255 characters). The router stores it on the click and doesn't pass it to your destination. It comes back as \`subId\` on \`commission.*\` webhooks and in the partner's \`{sub_id}\` postback macro, so a publisher's tracking tool can match each conversion to its own click.
+
 Keys minted through the API are bound to their tenant. A key sent to another tenant's path is \`401 unauthorized\`.
 
 ## Authentication

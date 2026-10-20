@@ -349,6 +349,8 @@ export async function attributeEvent(
         currency,
         eventType: event.type,
         eventValue: event.value,
+        // The publisher's sub-ID → {sub_id}, for trackers that match on it.
+        subId: click.subId,
       } satisfies WebhookPayload<'commission.accrued'>;
       onCommit(db, 'commission.accrued webhook', () => dispatchEvent(event.tenantId, 'commission.accrued', accruedPayload));
     }

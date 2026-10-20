@@ -687,7 +687,14 @@ export const PartnerEventList = z
         ts,
         userId: z.string(),
         click: z
-          .object({ id, linkKey: z.string().nullable(), referer: z.string().nullable(), landingUrl: z.string().nullable(), ts: tsNullable })
+          .object({
+            id,
+            linkKey: z.string().nullable(),
+            referer: z.string().nullable(),
+            landingUrl: z.string().nullable(),
+            ts: tsNullable,
+            subId: z.string().nullable().openapi({ description: 'The `sub_id` on the partner link the click came through, or null.' }),
+          })
           .nullable(),
       }),
     ),

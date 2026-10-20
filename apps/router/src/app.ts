@@ -173,6 +173,11 @@ export function createRouterApp(db: Db): Hono {
     // on source/medium/campaign in the analytics UI today.
     const inbound = new URL(c.req.url, 'http://placeholder');
     const utm = extractUtm(inbound.searchParams);
+    // The publisher's own sub-ID: tracking tools (wecantrack and the like)
+    // put their click id here and match conversions on it when it comes
+    // back on the commission webhooks and the {sub_id} postback macro.
+    // Stored, never forwarded: the destination only gets our click id.
+    const subId = boundedParam(inbound.searchParams, 'sub_id');
     // Cloudflare populates cf-ipcountry on every request when the router
     // sits behind their proxy. Free on every CF plan; null when the
     // router is hit directly (dev, self-host without CF in front).
@@ -196,6 +201,7 @@ export function createRouterApp(db: Db): Hono {
       utmCampaign: utm.campaign,
       utmTerm: utm.term,
       utmContent: utm.content,
+      subId,
       country,
       fraudFlag,
     });
@@ -216,10 +222,17 @@ function hashIp(ip: string): string | null {
   return createHash('sha256').update(ip).digest('hex').slice(0, 32);
 }
 
-/** Pull the standard UTM params off a URLSearchParams. Trims +
- *  truncates to the column length (255) so a malformed inbound URL
- *  with a 10KB utm_source can't blow up the insert. Empty string →
- *  null so the column stays sparse. */
+/** One query param, trimmed and cut to the column length (255) so a
+ *  malformed inbound URL with a 10KB utm_source can't blow up the insert.
+ *  Empty string → null so the column stays sparse. */
+function boundedParam(qs: URLSearchParams, key: string): string | null {
+  const raw = qs.get(key);
+  if (raw == null) return null;
+  const trimmed = raw.trim().slice(0, 255);
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/** Pull the standard UTM params off a URLSearchParams (see boundedParam). */
 function extractUtm(qs: URLSearchParams): {
   source: string | null;
   medium: string | null;
@@ -227,17 +240,11 @@ function extractUtm(qs: URLSearchParams): {
   term: string | null;
   content: string | null;
 } {
-  const get = (k: string): string | null => {
-    const raw = qs.get(k);
-    if (raw == null) return null;
-    const trimmed = raw.trim().slice(0, 255);
-    return trimmed.length > 0 ? trimmed : null;
-  };
   return {
-    source: get('utm_source'),
-    medium: get('utm_medium'),
-    campaign: get('utm_campaign'),
-    term: get('utm_term'),
-    content: get('utm_content'),
+    source: boundedParam(qs, 'utm_source'),
+    medium: boundedParam(qs, 'utm_medium'),
+    campaign: boundedParam(qs, 'utm_campaign'),
+    term: boundedParam(qs, 'utm_term'),
+    content: boundedParam(qs, 'utm_content'),
   };
 }

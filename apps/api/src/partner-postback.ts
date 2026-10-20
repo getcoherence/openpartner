@@ -73,10 +73,45 @@ export interface PostbackContext {
    *  "transaction_id" / "tid". */
   transaction_id?: string;
   /** bonus.* only. A bonus has no click or event, so {click_id},
-   *  {event_id} and {transaction_id} stay literal on its postbacks. */
+   *  {event_id}, {transaction_id}, {sub_id} and {sale_amount} stay
+   *  literal on its postbacks. */
   bonus_id?: string;
   bounty_id?: string;
   bonus_amount?: string;
+  /** The publisher's own sub-ID from the partner link (`?sub_id=`), so a
+   *  tracking tool can match the conversion to its click. Empty when the
+   *  link carried none. */
+  sub_id?: string;
+  /** Which status change fired this postback (see postbackStatus), so one
+   *  URL subscribed to several events can tell them apart. */
+  status?: PostbackStatus;
+  /** The conversion's value in major units (Event.value), in the sale's
+   *  currency. Empty when the event has no value. */
+  sale_amount?: string;
+}
+
+export type PostbackStatus = 'pending' | 'approved' | 'reversed' | 'paid';
+
+/**
+ * {status} for an event. commission.accrued is `pending` (awaiting approval
+ * or the holdback). bonus.awarded is `approved` when the bonus goes straight
+ * to the next payout run and `pending` while it sits out the holdback (its
+ * payload's `status`).
+ */
+export function postbackStatus(event: PartnerPostbackEvent, bonusStatus?: unknown): PostbackStatus {
+  switch (event) {
+    case 'commission.accrued':
+      return 'pending';
+    case 'commission.approved':
+      return 'approved';
+    case 'commission.reversed':
+      return 'reversed';
+    case 'commission.paid':
+    case 'bonus.paid':
+      return 'paid';
+    case 'bonus.awarded':
+      return bonusStatus === 'approved' ? 'approved' : 'pending';
+  }
 }
 
 /** Replace {name} placeholders with URL-encoded values from ctx.

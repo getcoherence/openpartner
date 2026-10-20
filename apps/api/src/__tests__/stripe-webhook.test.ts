@@ -1401,6 +1401,8 @@ describe.skipIf(skipIntegration)('stripe webhook — refund + reversal flow', ()
         eventId: invoicePaidEvent!.id,
         eventType: 'invoice_paid',
         programId: attribution.programId,
+        eventValue: invoicePaidEvent!.value,
+        subId: null,
         reason: 'refund',
         refundEventId: expect.any(String),
       });

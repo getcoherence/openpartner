@@ -14,7 +14,7 @@ that overstates itself is worse than one with a documented hole.
 ```json
 {
   "exportedAt": "2026-08-09T12:00:00.000Z",
-  "schemaVersion": 7,
+  "schemaVersion": 8,
   "tables": { "Partner": [ … ], "Program": [ … ], … }
 }
 ```
@@ -99,6 +99,16 @@ partner emails from going out twice. A bonus a bounty paid names it in
 stored: it is re-derived from the exported Attribution, Event and
 Commission rows. A v6 bundle has no bounties, and none of its bonuses name
 one.
+
+`Click` rows carry `subId` (schemaVersion 8, Oct 2026): the publisher's own
+sub-ID, from `?sub_id=` on the partner link. Tracking tools that pull a
+publisher's conversions from many programs into one dashboard put their
+click id there, and it comes back on the `commission.*` webhooks and in the
+`{sub_id}` partner postback macro. It is raw click data that nothing can
+re-derive, so the column bumps the version, unlike the nullable columns
+below: an instance too old to store it refuses the bundle up front instead
+of failing on an unknown column. A v1–v7 bundle's clicks restore with
+`subId` null.
 
 `Partner` rows carry `portalAccess` (schemaVersion 5, Oct 2026): whether
 the partner may sign in to the partner portal. A headless program turns it
@@ -243,7 +253,7 @@ been on the old one.
 
 `SCHEMA_VERSION` is the current bundle version; `SUPPORTED_IMPORT_VERSIONS`
 is what `POST /import` accepts. **That list only ever grows.** A v1 bundle
-sitting on someone's disk keeps importing — it is simply a v7 bundle
+sitting on someone's disk keeps importing — it is simply a v8 bundle
 without the tables and columns added later. A v4 bundle restores with no
 settings, assets, webhooks or postbacks; configure those on the destination.
 
@@ -262,6 +272,7 @@ that should attribute every event against the window alone.
 | 5 (Oct 2026) | added `BrandAsset`, `WebhookEndpoint`, `PartnerPostback`, `ConversionPostbackToken` (credentials excluded) and `Config` (portable keys only); `Program` rows carry `renewalsStayWithPartner` and `Partner` gains `portalAccess` (older bundles restore both as `true`) |
 | 6 (Oct 2026) | added `Bonus`; `Commission` rows carry `bonusId`, and `attributionId` is null on a bonus's commission |
 | 7 (Oct 2026) | added `Bounty` (performance bounties; `Bonus.bountyId` references it) |
+| 8 (Oct 2026) | `Click` rows carry `subId`, the publisher's `?sub_id=` (older bundles restore it as null) |
 
 **Importing a v1 or v2 bundle.** `POST /import` upgrades older rows before
 inserting them (`upgradeBundle` in `apps/api/src/export.ts`). A v2

@@ -22,11 +22,19 @@ const id = z.string();
 /** Event.value as stored: a decimal string, or null for valueless events. */
 const eventValue = orNull(Decimal).openapi({ description: "The triggering event's `value` (decimal string), or null." });
 
+/** The publisher's `?sub_id=` off the partner link (Click.subId). */
+const subId = orNull(z.string()).openapi({
+  description:
+    "The publisher's own sub-ID from the partner link (`?sub_id=`), so a tracking tool can match the commission to its own click. Null when the link carried none.",
+});
+
 const commissionOrigin = {
   clickId: id.optional().openapi({ description: 'The click the commission traces back to. Omitted only if the origin lookup failed.' }),
   eventId: id.optional(),
   eventType: z.string().optional(),
   programId: id.optional(),
+  subId: subId.optional(),
+  eventValue: eventValue.optional(),
 };
 
 /** How a partner was added, on the partner.* events. A third way in (a CSV
@@ -103,6 +111,7 @@ export const WEBHOOK_PAYLOADS = {
     currency: z.string(),
     eventType: z.string(),
     eventValue,
+    subId,
     replacesCommissionId: id.optional().openapi({
       description:
         'Set when a partial refund reduced a commission: this one carries the amount the partner keeps, and replaces the commission named here (reversed in the `commission.reversed` sent just before).',

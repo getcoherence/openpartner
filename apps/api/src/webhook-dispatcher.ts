@@ -32,7 +32,7 @@ import {
   type WebhookEventType,
 } from '@openpartner/db';
 import { db } from './db.js';
-import { dispatchPartnerPostbacks, isPostbackEvent } from './partner-postback.js';
+import { dispatchPartnerPostbacks, isPostbackEvent, postbackStatus } from './partner-postback.js';
 import { safeFetch } from './outbound-guard.js';
 
 const SIGNATURE_HEADER = 'x-openpartner-signature';
@@ -91,6 +91,10 @@ async function runDispatch(tenantId: string, event: WebhookEventType, data: unkn
   if (isPostbackEvent(event)) {
     const d = (data ?? {}) as Record<string, unknown>;
     const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+    // A null field is known to be empty (a click without a sub-ID, a
+    // valueless event) → ''. An absent one (a bonus has no click, or the
+    // origin lookup failed) → undefined, so its macro stays literal.
+    const strOrEmpty = (v: unknown) => (v === null ? '' : str(v));
     const partnerId = str(d.partnerId) ?? null;
     if (partnerId) {
       dispatchPartnerPostbacks(tenantId, partnerId, event, {
@@ -107,6 +111,9 @@ async function runDispatch(tenantId: string, event: WebhookEventType, data: unkn
         bonus_id: str(d.bonusId),
         bounty_id: str(d.bountyId),
         bonus_amount: event.startsWith('bonus.') ? str(d.amount) : undefined,
+        sub_id: strOrEmpty(d.subId),
+        status: postbackStatus(event, d.status),
+        sale_amount: strOrEmpty(d.eventValue),
       });
     }
   }
@@ -190,6 +197,7 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     currency: 'USD',
     eventType: 'invoice_paid',
     eventValue: '60.00',
+    subId: 'sample-sub-id',
   }),
   // Lifecycle events share commission-events.ts's payload shape.
   'commission.approved': () => sampleLifecyclePayload(),
@@ -246,6 +254,8 @@ function sampleLifecyclePayload(extra: Record<string, unknown> = {}): Record<str
     eventId: `01J${'3'.repeat(23)}`,
     eventType: 'invoice_paid',
     programId: 'cmp_default',
+    eventValue: '60.00',
+    subId: 'sample-sub-id',
     ...extra,
   };
 }

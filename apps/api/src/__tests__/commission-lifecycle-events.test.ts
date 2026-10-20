@@ -140,6 +140,8 @@ function expectedPayload(s: Seeded, extra: Record<string, unknown> = {}) {
     eventId: s.eventId,
     eventType: 'invoice_paid',
     programId: s.programId,
+    eventValue: '100.00',
+    subId: null,
     ...extra,
   };
 }

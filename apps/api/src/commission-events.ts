@@ -8,12 +8,12 @@
  * shape no matter which path did the move.
  *
  * The payload carries the commission's origin — clickId / eventId /
- * eventType / programId, looked up via Attribution → Event — so partner
- * postback macros ({click_id}, {event_id}, {transaction_id},
- * {event_type}, {program_id}) resolve on every lifecycle event, not just
- * commission.accrued. Trackers key conversions on the click id; without
- * it an approval or reversal can't be matched to the conversion it
- * updates.
+ * eventType / programId / eventValue / subId, looked up via Attribution →
+ * Event and Click — so partner postback macros ({click_id}, {event_id},
+ * {transaction_id}, {event_type}, {program_id}, {sale_amount}, {sub_id})
+ * resolve on every lifecycle event, not just commission.accrued. Trackers
+ * key conversions on the click id (or their own sub-ID); without it an
+ * approval or reversal can't be matched to the conversion it updates.
  *
  * A bonus's commission (bonusId set, no attribution) fires the matching
  * bonus.* event instead (bonus.approved / .paid / .reversed, see
@@ -50,6 +50,10 @@ export interface CommissionOrigin {
   eventId: string;
   eventType: string | null;
   programId: string;
+  /** Event.value: the sale amount, or null for a valueless event. */
+  eventValue: string | null;
+  /** Click.subId: the publisher's `?sub_id=`, or null. */
+  subId: string | null;
 }
 
 /** Bind-parameter headroom: a holdback sweep can approve thousands of
@@ -99,6 +103,8 @@ export async function dispatchCommissionEvents(
             eventId: origin.eventId,
             ...(origin.eventType ? { eventType: origin.eventType } : {}),
             programId: origin.programId,
+            eventValue: origin.eventValue,
+            subId: origin.subId,
           }
         : {}),
       ...extra,
@@ -112,13 +118,27 @@ async function loadOrigins(tenantId: string, attributionIds: string[]): Promise<
   for (let i = 0; i < ids.length; i += LOOKUP_CHUNK) {
     const rows = (await db(`${TABLES.Attribution} as a`)
       .leftJoin(`${TABLES.Event} as e`, 'e.id', 'a.eventId')
+      .leftJoin(`${TABLES.Click} as c`, (j) => j.on('c.id', 'a.clickId').andOn('c.tenantId', 'a.tenantId'))
       .where('a.tenantId', tenantId)
       .whereIn('a.id', ids.slice(i, i + LOOKUP_CHUNK))
-      .select('a.id', 'a.clickId', 'a.eventId', 'a.programId', 'e.type as eventType')) as Array<
-      { id: string } & CommissionOrigin
-    >;
+      .select(
+        'a.id',
+        'a.clickId',
+        'a.eventId',
+        'a.programId',
+        'e.type as eventType',
+        'e.value as eventValue',
+        'c.subId as subId',
+      )) as Array<{ id: string } & CommissionOrigin>;
     for (const r of rows) {
-      out.set(r.id, { clickId: r.clickId, eventId: r.eventId, eventType: r.eventType, programId: r.programId });
+      out.set(r.id, {
+        clickId: r.clickId,
+        eventId: r.eventId,
+        eventType: r.eventType,
+        programId: r.programId,
+        eventValue: r.eventValue,
+        subId: r.subId,
+      });
     }
   }
   return out;

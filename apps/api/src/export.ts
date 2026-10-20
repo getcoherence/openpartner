@@ -38,8 +38,10 @@ import { makeSecret } from './webhook-dispatcher.js';
  *  v5 → v6 (Oct 2026): added Bonus. Commission rows carry `bonusId` (set on
  *  a bonus's commission, whose `attributionId` is then null).
  *  v6 → v7 (Oct 2026): added Bounty (performance bounties; Bonus.bountyId
- *  references it). */
-export const SCHEMA_VERSION = 7;
+ *  references it).
+ *  v7 → v8 (Oct 2026): Click rows carry `subId` (the publisher's `?sub_id=`
+ *  off the partner link). */
+export const SCHEMA_VERSION = 8;
 /** Older bundles still import — a v1 bundle is a v2 bundle minus three
  *  tables, a v2 bundle's PartnerCommission rows are partner-wide v3 rows
  *  (see upgradeBundle), a v3 bundle is a v4 bundle minus
@@ -50,10 +52,12 @@ export const SCHEMA_VERSION = 7;
  *  gets true (every partner had portal access before the column existed).
  *  A v5 bundle is a v6 bundle with no bonuses: its Commission rows all have
  *  an attributionId, and `bonusId` takes its default (null). A v6 bundle is
- *  a v7 bundle with no bounties: none of its bonuses name one.
+ *  a v7 bundle with no bounties: none of its bonuses name one. A v7 bundle's
+ *  Click rows have no `subId`, so it takes its default (null): no click
+ *  carried one before the column existed.
  *  Dropping support for a version people hold on disk would break the
  *  portability promise, so this list only ever grows. */
-export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4, 5, 6, 7] as const;
+export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
 
 /**
  * The Config keys that travel: the brand's own program and portal settings.
