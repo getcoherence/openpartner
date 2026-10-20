@@ -443,6 +443,10 @@ export const TENANT_PURGE_ORDER = [
   TABLES.WebhookEndpoint,
   TABLES.Session,
   TABLES.MagicLinkToken,
+  // The brand's partner passwords and any signup password still waiting on
+  // an activation link. Platform passwords belong to an email, not a brand:
+  // they sit under DEFAULT_TENANT_ID, like platform magic-link tokens.
+  TABLES.PasswordCredential,
   TABLES.ApiKey,
   TABLES.ConversionPostbackToken,
   TABLES.Config,

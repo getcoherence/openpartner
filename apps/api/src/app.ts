@@ -61,6 +61,8 @@ import { platformAuthRouter } from './routes/platform-auth.js';
 import { platformAdminRouter } from './routes/platform-admin.js';
 import { emailPreferencesRouter } from './routes/email-preferences.js';
 import { openapiRouter } from './routes/openapi.js';
+import { passwordPlatformRouter, passwordTenantRouter } from './routes/password-auth.js';
+import { googleAuthRouter } from './routes/google-auth.js';
 import { tenantMiddleware } from './tenancy.js';
 import { trialGate } from './middleware/trial-gate.js';
 import { approvalGate } from './middleware/approval-gate.js';
@@ -230,6 +232,11 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   // Platform-ops console (brand review). Cross-tenant, privileged-pool,
   // its own operator auth — must sit before tenantMiddleware.
   app.use(platformAdminRouter);
+  // Password + Google sign-in for platform identities and ops (the tenant
+  // half of password sign-in is mounted with partnerAuthRouter below).
+  // Both end in the magic-link verify endpoints (signin-handoff.ts).
+  app.use(passwordPlatformRouter);
+  app.use(googleAuthRouter);
   // Signed one-click unsubscribe for platform reminder mail.
   app.use(emailPreferencesRouter);
   app.use(metricsRouter);
@@ -272,6 +279,7 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(openapiRouter);
   app.use(authRouter);
   app.use(partnerAuthRouter);
+  app.use(passwordTenantRouter);
   app.use(portalDomainsRouter);
   app.use(partnerSignupRouter);
   app.use(adminsRouter);

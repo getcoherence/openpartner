@@ -4,6 +4,15 @@ import { ApiError } from '../api.js';
 import { alpha, softText, theme } from '../theme.js';
 import { AuthFrame, SignupTabs } from './auth/Shared.js';
 import { CountryField, countryErrorMessage } from '../lib/CountryField.js';
+import {
+  GoogleButton,
+  googleStartHref,
+  MIN_PASSWORD_LENGTH,
+  OrDivider,
+  PasswordInput,
+  SIGNUP_PLAN_KEY,
+  useAuthProviders,
+} from './auth/PasswordAuth.js';
 
 type SignupPlan = 'flex' | 'revshare' | 'enterprise';
 const PLAN_LABELS: Record<SignupPlan, { name: string; tagline: string }> = {
@@ -30,6 +39,8 @@ export function SignupPage() {
   const [displayName, setDisplayName] = useState('');
   const [adminEmail, setAdminEmail] = useState('');
   const [adminName, setAdminName] = useState('');
+  const [password, setPassword] = useState('');
+  const providers = useAuthProviders();
   const [country, setCountry] = useState('');
   const [outsideOccupiedRegions, setOutsideOccupiedRegions] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -53,6 +64,8 @@ export function SignupPage() {
           displayName: displayName.trim(),
           adminEmail: adminEmail.trim().toLowerCase(),
           adminName: adminName.trim(),
+          // Starts working once the activation link is redeemed.
+          password,
           country,
           ...(country === 'UA' ? { outsideOccupiedRegions } : {}),
           // Enterprise is sales-led: the API refuses self-declared
@@ -76,11 +89,12 @@ export function SignupPage() {
 
   if (result) {
     return (
-      <AuthFrame title="Check your inbox" subtitle={`We just emailed ${adminEmail} a sign-in link.`}>
+      <AuthFrame title="Confirm your email" subtitle={`We just emailed ${adminEmail} a link to confirm it’s yours.`}>
         <div style={{ background: theme.successSoft, border: `1px solid ${alpha(theme.success, 0.333)}`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
           <div style={{ fontWeight: 500, marginBottom: 6 }}>Account created.</div>
           <div style={{ color: softText(theme.success) }}>
-            Your slug is <code>{result.tenant.slug}</code>. The activation link is good for 15 minutes.
+            Your slug is <code>{result.tenant.slug}</code>. Click the link (it&rsquo;s good for 15 minutes) and you&rsquo;re in;
+            after that, sign in with your email and password.
           </div>
         </div>
         {result.mailDelivered === false && (
@@ -93,7 +107,7 @@ export function SignupPage() {
   }
 
   return (
-    <AuthFrame title="Sign up as a brand" subtitle="Create your brand account. We'll email you a sign-in link.">
+    <AuthFrame title="Sign up as a brand" subtitle="Create your brand account.">
       <SignupTabs active="brand" />
       {plan && (
         <div
@@ -112,6 +126,25 @@ export function SignupPage() {
             {PLAN_LABELS[plan].tagline}
           </div>
         </div>
+      )}
+      {providers.googleStartUrl && (
+        <>
+          {/* Google signs the person in first; with no brand yet,
+              /workspaces sends them to /brands/new, which picks the plan
+              chosen here back up. */}
+          <span
+            onClickCapture={() => {
+              try {
+                if (plan && plan !== 'enterprise') sessionStorage.setItem(SIGNUP_PLAN_KEY, plan);
+              } catch {
+                /* storage blocked — the plan is just not preselected */
+              }
+            }}
+          >
+            <GoogleButton href={googleStartHref(providers.googleStartUrl, 'account')}>Sign up with Google</GoogleButton>
+          </span>
+          <OrDivider />
+        </>
       )}
       <form onSubmit={submit}>
         <Field label="Brand name" hint="What partners see — e.g. Acme.">
@@ -155,7 +188,7 @@ export function SignupPage() {
             style={inputStyle}
           />
         </Field>
-        <Field label="Your email" hint="We'll send the activation link here.">
+        <Field label="Your email" hint="We'll send a link here to confirm it's yours.">
           <input
             type="email"
             name="email"
@@ -166,6 +199,9 @@ export function SignupPage() {
             required
             style={inputStyle}
           />
+        </Field>
+        <Field label="Password" hint={`At least ${MIN_PASSWORD_LENGTH} characters. A few unrelated words works well.`}>
+          <PasswordInput value={password} onChange={setPassword} autoComplete="new-password" style={inputStyle} />
         </Field>
         {err && <div style={{ color: theme.danger, fontSize: 13, marginTop: 4, marginBottom: 8 }}>{err}</div>}
         <button type="submit" disabled={busy} style={primaryBtnStyle(busy)}>
@@ -194,7 +230,8 @@ function friendlyError(code: string): string {
   if (country) return country;
   if (code.includes('slug_taken')) return 'That slug is already taken. Pick another.';
   if (code.includes('slug_reserved')) return 'That slug is reserved. Try a different one.';
-  if (code.includes('invalid_body')) return 'Some fields look invalid — check the slug format and email.';
+  if (code.includes('invalid_body'))
+    return `Some fields look invalid — check the slug format, the email, and that the password has at least ${MIN_PASSWORD_LENGTH} characters.`;
   if (code.includes('signup_not_available')) return 'Public signup is disabled on this deployment.';
   return 'Something went wrong. Try again or contact support.';
 }

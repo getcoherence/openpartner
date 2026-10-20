@@ -3,10 +3,10 @@
  * NODE_ENV around the test-env bypass and exercise the real code path.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
-import { ipRateLimit } from '../middleware/rate-limit.js';
+import { ipRateLimit, KeyedLimiter } from '../middleware/rate-limit.js';
 
 describe('ipRateLimit', () => {
   const original = process.env.NODE_ENV;
@@ -56,5 +56,34 @@ describe('ipRateLimit', () => {
     await request(app).get('/').expect(200);
     await request(app).get('/').expect(200);
     await request(app).get('/').expect(200);
+  });
+});
+
+describe('KeyedLimiter', () => {
+  it('counts hits per key, blocks at max, and resets', () => {
+    const limiter = new KeyedLimiter(2, 60_000);
+    expect(limiter.blocked('a')).toBe(false);
+    expect(limiter.hit('a')).toBe(true);
+    expect(limiter.hit('a')).toBe(true);
+    expect(limiter.blocked('a')).toBe(true);
+    expect(limiter.hit('a')).toBe(false);
+    // Other keys are untouched.
+    expect(limiter.blocked('b')).toBe(false);
+    limiter.reset('a');
+    expect(limiter.blocked('a')).toBe(false);
+  });
+
+  it('forgets a key once its window has passed', () => {
+    vi.useFakeTimers();
+    try {
+      const limiter = new KeyedLimiter(1, 1_000);
+      limiter.hit('k');
+      expect(limiter.blocked('k')).toBe(true);
+      vi.advanceTimersByTime(1_001);
+      expect(limiter.blocked('k')).toBe(false);
+      expect(limiter.hit('k')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

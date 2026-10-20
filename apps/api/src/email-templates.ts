@@ -148,6 +148,25 @@ export function adminSigninEmail(name: string, link: string): EmailTemplate {
   return { subject, text, html: wrap(text, link, 'Sign in') };
 }
 
+/** "Forgot password" mail. `brandName` names the portal for a partner
+ *  reset; a brand admin's or operator's reset is the OpenPartner account
+ *  and leaves it null. Also how someone who has only ever used emailed
+ *  links sets a first password. */
+export function passwordResetEmail(link: string, brandName: string | null = null): EmailTemplate {
+  const where = brandName ? `${brandName}` : 'OpenPartner';
+  const subject = `Set your ${where} password`;
+  const text = [
+    `Hi,`,
+    ``,
+    `Someone asked to set a new password for this address on ${where}. Click the link below to choose one:`,
+    ``,
+    link,
+    ``,
+    `This link is good for 15 minutes. If you didn't ask for it, ignore this email — your password hasn't changed.`,
+  ].join('\n');
+  return { subject, text, html: wrap(text, link, 'Choose a password') };
+}
+
 export function partnerRevokedEmail(name: string, reason: string | null): EmailTemplate {
   const subject = `Your partner account has been suspended`;
   const text = [

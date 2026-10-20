@@ -36,6 +36,7 @@ import type { WebhookPayload } from '../openapi/webhook-events.js';
 // app role can't read. Used for that lookup only.
 import { db as platformDb } from '../db.js';
 import { requireServedCountry } from '../country-access.js';
+import { claimSignupPassword } from '../passwords.js';
 
 export const partnerAuthRouter = Router();
 
@@ -127,6 +128,9 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, requireServedCountry(p
   // tenants' tokens from req.db; on a pool that bypasses RLS, another
   // tenant's admin link would otherwise open a session here.
   if (token.tenantId !== tenantId) return res.status(400).json({ error: 'invalid_or_expired_token' });
+  // A reset link sets a password (POST /auth/password/reset); it isn't a
+  // sign-in link.
+  if (token.purpose === 'password_reset') return res.status(400).json({ error: 'wrong_token_kind' });
 
   if (token.principalKind === 'admin') {
     const admin = await db<AdminRow>(TABLES.Admin).where({ id: token.principalId, tenantId }).first();
@@ -138,6 +142,8 @@ partnerAuthRouter.post('/auth/magic/verify', verifyLimit, requireServedCountry(p
         .where({ id: admin.id, tenantId })
         .update({ activatedAt: new Date(), updatedAt: new Date() });
     }
+    // A password typed on the signup form waits on this very link.
+    if (token.purpose === 'admin_invite') await claimSignupPassword(platformDb, token);
     await db<AdminRow>(TABLES.Admin).where({ id: admin.id, tenantId }).update({ lastSignInAt: new Date() });
 
     const session = await createSession(db, { tenantId, principalKind: 'admin', principalId: admin.id });

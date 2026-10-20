@@ -26,7 +26,7 @@ import {
   recordLocationDeclaration,
   requireServedCountry,
 } from '../country-access.js';
-import { notifyOpsNewBrand } from '../brand-review.js';
+import { findBlockingEntry, notifyOpsNewBrand } from '../brand-review.js';
 import { screenTenantInBackground } from '../sanctions-screening.js';
 import {
   attachSessionToBundle,
@@ -252,6 +252,15 @@ platformAuthRouter.post('/me/brands', addBrandLimit, async (req, res) => {
   }
 
   const email = platform.email;
+  // Same anti-spam gate as public /signup. Google sign-in gives any
+  // verified address a platform identity, and this is where it creates its
+  // first brand. Generic 403, as there.
+  const blocked = await findBlockingEntry(db, email);
+  if (blocked) {
+    console.warn('[add-brand] blocked', { email, rule: `${blocked.type}:${blocked.value}` });
+    return res.status(403).json({ error: 'signup_unavailable' });
+  }
+
   // Reuse the person's display name from any brand they already admin;
   // fall back to the mailbox name.
   const prior = await db<AdminRow>(TABLES.Admin)

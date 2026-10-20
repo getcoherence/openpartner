@@ -126,6 +126,7 @@ export const TABLES = {
   Config: 'Config',
   Admin: 'Admin',
   MagicLinkToken: 'MagicLinkToken',
+  PasswordCredential: 'PasswordCredential',
   Session: 'Session',
   PlatformSession: 'PlatformSession',
   PlatformSessionBundle: 'PlatformSessionBundle',

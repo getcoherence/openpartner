@@ -101,6 +101,8 @@ import {
 } from '../fee-review.js';
 import { FxUnavailableError } from '../fx.js';
 import { resolveBrandName } from '../brand-name.js';
+import { checkPassword, failureKey, passwordFailures, platformCredential } from '../passwords.js';
+import { opsSigninToken } from '../signin-handoff.js';
 import {
   createPlatformAdminSession,
   PLATFORM_ADMIN_SESSION_COOKIE,
@@ -247,6 +249,35 @@ platformAdminRouter.post('/platform-admin/signin', signinLimit, async (req, res)
     }
   }
   res.json({ ok: true });
+});
+
+const passwordSigninSchema = z.object({
+  email: z.string().trim().email().max(254),
+  password: z.string().min(1).max(200),
+});
+
+/**
+ * Operator sign-in with the platform password (passwords.ts) — the same
+ * password the person uses at /signin. Returns the token the sign-in mail
+ * would carry; the SPA redeems it at /auth/platform-admin-verify, which
+ * still decides whether this is an operator (signin-handoff.ts).
+ */
+platformAdminRouter.post('/platform-admin/signin/password', signinLimit, async (req, res) => {
+  const body = passwordSigninSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body' });
+  const email = body.data.email.toLowerCase();
+
+  const failures = failureKey('platform', email);
+  if (passwordFailures.blocked(failures)) return res.status(429).json({ error: 'too_many_attempts' });
+  const operator = await isAllowedOperator(email);
+  // A non-operator still pays for one hash: the response can't say which
+  // addresses are operators.
+  if (!(await checkPassword(db, operator ? platformCredential(email) : null, body.data.password))) {
+    passwordFailures.hit(failures);
+    return res.status(401).json({ error: 'invalid_credentials' });
+  }
+  passwordFailures.reset(failures);
+  res.json({ ok: true, token: await opsSigninToken(db, email) });
 });
 
 const verifySchema = z.object({ token: z.string().min(8) });
