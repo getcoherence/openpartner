@@ -471,7 +471,7 @@ describe.skipIf(skipIntegration)('tenant-hard-delete', () => {
     await admin(live, at('invited'), { activatedAt: null });
     // The credential key is lower-cased; an Admin row may not be.
     await admin(live, at('MixedCase'));
-    // Removed from the brand: kept for 30 days, so a restore brings the
+    // Removed from the brand: kept for 30 days, so reinstating brings the
     // password back with the membership; gone after that.
     await admin(live, at('removed-recently'), { revokedAt: daysAgo(1) });
     await admin(live, at('removed-long-ago'), { revokedAt: daysAgo(31) });

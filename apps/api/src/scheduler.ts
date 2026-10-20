@@ -505,7 +505,7 @@ export const TENANT_PURGE_ORDER = [
  * after `cutoff` (30 days ago), activated or not, or an address in
  * PLATFORM_ADMIN_EMAILS. Removing an admin only revokes the row, so it
  * counts as gone 30 days after the revocation. Until then the brand can
- * restore them with the password intact; afterwards a restored admin signs
+ * reinstate them with the password intact; afterwards a reinstated admin signs
  * in by link or resets it. A revoked admin can't sign in to that brand with
  * the password anyway (tenantSigninCandidates skips them).
  *
