@@ -9,14 +9,19 @@
  * every table that has a tenantId column (read from the catalog, so a new
  * table fails here until it joins TENANT_PURGE_ORDER or TENANT_PURGE_KEEP).
  * The kept compliance records must outlive the purge.
+ *
+ * The same job then drops platform passwords (keyed by email, outside any
+ * tenant) once no admin membership or operator account holds them.
  */
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { ulid } from 'ulid';
 
+const ENV_OPERATOR = 'ops-purge@openpartner.test';
 process.env.PLATFORM_OPS_EMAIL = 'ops@openpartner.test';
+process.env.PLATFORM_ADMIN_EMAILS = `someone@openpartner.test, ${ENV_OPERATOR.toUpperCase()}`;
 
-const { TABLES } = await import('@openpartner/db');
+const { DEFAULT_TENANT_ID, TABLES } = await import('@openpartner/db');
 const { db } = await import('../db.js');
 const { __setMailerForTests } = await import('../mailer.js');
 const { hardDeleteExpiredTenants, TENANT_PURGE_KEEP, TENANT_PURGE_ORDER } = await import('../scheduler.js');
@@ -313,14 +318,35 @@ async function seedEverything(tenantId: string): Promise<void> {
 describe.skipIf(skipIntegration)('tenant-hard-delete', () => {
   const sentMail: Array<{ to: string; subject: string; text: string; tag?: string }> = [];
   const created: string[] = [];
+  // Rows outside any seeded tenant: platform-scoped credentials (under
+  // DEFAULT_TENANT_ID) and PlatformAdmin rows.
+  const credentialIds: string[] = [];
+  const operatorEmails: string[] = [];
 
   /** Remove whatever a test left behind, cross-tenant references first. */
   async function wipe(): Promise<void> {
+    await db(TABLES.PasswordCredential).whereIn('id', credentialIds).del();
+    await db(TABLES.PlatformAdmin).whereIn('email', operatorEmails).del();
+    credentialIds.length = 0;
+    operatorEmails.length = 0;
     if (created.length === 0) return;
     for (const tbl of TENANT_PURGE_ORDER) await db(tbl).whereIn('tenantId', created).del();
     await db(TABLES.LocationDeclaration).whereIn('tenantId', created).del();
     await db(TABLES.Tenant).whereIn('id', created).del();
     created.length = 0;
+  }
+
+  async function credential(tenantId: string, principalKind: string, principalId: string): Promise<string> {
+    const id = ulid();
+    credentialIds.push(id);
+    await db(TABLES.PasswordCredential).insert({
+      id,
+      tenantId,
+      principalKind,
+      principalId,
+      passwordHash: 'scrypt$32768$8$1$c2FsdA==$aGFzaA==',
+    });
+    return id;
   }
 
   beforeEach(async () => {
@@ -419,5 +445,72 @@ describe.skipIf(skipIntegration)('tenant-hard-delete', () => {
     expect(alerts[0]!.to).toBe('ops@openpartner.test');
     expect(alerts[0]!.text).toContain(`tenant ${expired}`);
     expect(alerts[0]!.text).toContain(failure!.error);
+  });
+
+  it('deletes platform passwords no admin or operator holds any more, and nothing else', async () => {
+    const expired = ulid();
+    const live = ulid();
+    created.push(expired, live);
+    await insertTenant(expired, daysAgo(31));
+    await insertTenant(live, null);
+    const tag = ulid().slice(-8).toLowerCase();
+    const at = (who: string) => `${who}-${tag}@purge.test`;
+    const admin = (tenantId: string, email: string, extra: Record<string, unknown> = {}) =>
+      db(TABLES.Admin).insert({ id: ulid(), tenantId, email, name: 'Admin', activatedAt: new Date(), ...extra });
+    const operator = async (email: string, revokedAt: Date | null = null) => {
+      operatorEmails.push(email);
+      await db(TABLES.PlatformAdmin).insert({ id: ulid(), email, name: 'Operator', role: 'admin', revokedAt });
+    };
+
+    // Its only brand is purged by this run.
+    await admin(expired, at('last-brand'));
+    // Purged here, but still admins another brand.
+    await admin(expired, at('other-brand'));
+    await admin(live, at('other-brand'));
+    // Invited and never activated still counts.
+    await admin(live, at('invited'), { activatedAt: null });
+    // The credential key is lower-cased; an Admin row may not be.
+    await admin(live, at('MixedCase'));
+    // Removed from the brand: kept for 30 days, so reinstating brings the
+    // password back with the membership; gone after that.
+    await admin(live, at('removed-recently'), { revokedAt: daysAgo(1) });
+    await admin(live, at('removed-long-ago'), { revokedAt: daysAgo(31) });
+    // Operators: a live PlatformAdmin row, or PLATFORM_ADMIN_EMAILS (which
+    // outranks a revoked row, as it does at sign-in). The same 30 days
+    // apply to a revoked operator.
+    await operator(at('operator'));
+    await operator(ENV_OPERATOR, daysAgo(90));
+    await operator(at('operator-removed-long-ago'), daysAgo(31));
+
+    const platform = (email: string) => credential(DEFAULT_TENANT_ID, 'platform', email.toLowerCase());
+    const gone = {
+      lastBrand: await platform(at('last-brand')),
+      removedLongAgo: await platform(at('removed-long-ago')),
+      operatorRemovedLongAgo: await platform(at('operator-removed-long-ago')),
+      // No Admin row anywhere (its brand was purged before this sweep).
+      noAdmin: await platform(at('no-admin')),
+    };
+    const kept = {
+      otherBrand: await platform(at('other-brand')),
+      invited: await platform(at('invited')),
+      mixedCase: await platform(at('MixedCase')),
+      removedRecently: await platform(at('removed-recently')),
+      operator: await platform(at('operator')),
+      envOperator: await platform(ENV_OPERATOR),
+      // Other kinds are never the sweep's, even under DEFAULT_TENANT_ID
+      // (single-tenant partners) where no Admin row matches.
+      livePartner: await credential(live, 'partner', ulid()),
+      defaultTenantPartner: await credential(DEFAULT_TENANT_ID, 'partner', ulid()),
+      defaultTenantSignup: await credential(DEFAULT_TENANT_ID, 'signup', ulid()),
+      liveSignup: await credential(live, 'signup', ulid()),
+    };
+
+    const result = await hardDeleteExpiredTenants();
+
+    expect(result.tenantIds).toContain(expired);
+    expect(result.orphanedPasswordsDeleted).toBeGreaterThanOrEqual(Object.keys(gone).length);
+    const remaining = new Set<string>(await db(TABLES.PasswordCredential).whereIn('id', credentialIds).pluck('id'));
+    for (const [name, id] of Object.entries(gone)) expect(remaining.has(id), `${name} deleted`).toBe(false);
+    for (const [name, id] of Object.entries(kept)) expect(remaining.has(id), `${name} kept`).toBe(true);
   });
 });
