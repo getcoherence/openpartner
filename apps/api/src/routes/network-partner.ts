@@ -287,6 +287,14 @@ const updateProfileSchema = z.object({
     .nullable()
     .optional(),
   avatarUrl: z.string().url().nullable().optional(),
+  // http(s) only: the Network's dev file storage serves http://localhost.
+  coverImageUrl: z
+    .string()
+    .url()
+    .max(500)
+    .regex(/^https?:\/\//i, 'expected an http(s) URL')
+    .nullable()
+    .optional(),
   bio: z.string().max(2000).nullable().optional(),
   profile: z.record(z.unknown()).optional(),
   categories: z.array(z.string().trim().toLowerCase().min(1).max(40)).max(12).optional(),
@@ -369,22 +377,30 @@ networkPartnerRouter.post('/network/me/platforms/:platform/verify', requireAuth,
   );
 });
 
-const AVATAR_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
-networkPartnerRouter.post(
-  '/network/me/uploads/avatar',
-  // Same types + 2 MB cap as the Network's own endpoint (and the
-  // /api/creator-api proxy). express.json() ignores image bodies.
-  express.raw({ type: AVATAR_TYPES, limit: 2 * 1024 * 1024 }),
-  requireAuth,
-  async (req, res) => {
-    const partnerId = requirePartnerPrincipal(req, res);
-    if (!partnerId) return;
-    if (!(await requireConsent(req, res, partnerId))) return;
-    const contentType = String(req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
-    if (!AVATAR_TYPES.includes(contentType)) return res.status(400).json({ error: 'unsupported_type' });
-    if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: 'empty_body' });
-    const image = req.body;
-    return proxy(req, res, (db, tenantId) => partnerProxy.uploadMyAvatar(db, tenantId, partnerId, image, contentType));
-  },
-);
+/** Forward a raw image body to one of the Network's /creators/me/uploads/… */
+function imageUpload(
+  upload: (db: Knex, tenantId: string, partnerId: string, image: Buffer, contentType: string) => Promise<unknown>,
+) {
+  return [
+    // Same types + 2 MB cap as the Network's own endpoints (and the
+    // /api/creator-api proxy). express.json() ignores image bodies.
+    express.raw({ type: IMAGE_TYPES, limit: 2 * 1024 * 1024 }),
+    requireAuth,
+    async (req: Request, res: Response) => {
+      const partnerId = requirePartnerPrincipal(req, res);
+      if (!partnerId) return;
+      if (!(await requireConsent(req, res, partnerId))) return;
+      const contentType = String(req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
+      if (!IMAGE_TYPES.includes(contentType)) return res.status(400).json({ error: 'unsupported_type' });
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: 'empty_body' });
+      const image = req.body;
+      return proxy(req, res, (db, tenantId) => upload(db, tenantId, partnerId, image, contentType));
+    },
+  ];
+}
+
+networkPartnerRouter.post('/network/me/uploads/avatar', ...imageUpload(partnerProxy.uploadMyAvatar));
+// The banner on the public profile and the marketplace storefront card.
+networkPartnerRouter.post('/network/me/uploads/cover', ...imageUpload(partnerProxy.uploadMyCover));

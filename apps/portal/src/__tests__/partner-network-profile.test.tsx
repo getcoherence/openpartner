@@ -4,8 +4,8 @@
  * brand portal: the partner Network profile page renders the same editor
  * as the creator portal (checklist, categories, audience incl. size,
  * platforms, portfolio), wired to the brand's /network/me… proxies. The
- * creator page keeps using /api/creator-api, and only it edits the cover
- * image (the storefront card's banner), once the Network reports the field.
+ * creator page keeps using /api/creator-api. Both edit the cover image (the
+ * storefront card's banner), once the Network reports the field.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
@@ -64,6 +64,7 @@ beforeEach(() => {
     if (url.endsWith('/platforms') && method === 'GET') return json(200, { platforms: [] });
     // Refetch after a save: the profile endpoints answer with the profile.
     if ((url.endsWith('/network/me/profile') || url.endsWith('/creators/me')) && method === 'GET') return json(200, PROFILE);
+    if (url.endsWith('/uploads/cover')) return json(200, { coverImageUrl: 'https://cdn.example.com/new-cover.png' });
     return json(200, { ok: true });
   }) as typeof fetch;
 });
@@ -161,8 +162,22 @@ describe('creator profile page (same editor, creator endpoints)', () => {
     expect(await savedBody(page)).not.toHaveProperty('coverImageUrl');
   });
 
-  it('the partner page never edits or sends the cover', async () => {
+  it('the partner page uploads the cover through the brand proxy and saves it', async () => {
     const page = renderWith(<MyProfilePage />, 'network-my-profile', { ...PROFILE, coverImageUrl: null });
+    expect(page.getByText('Cover image (optional)')).toBeTruthy();
+    const cover = page.getByText('Cover image (optional)').parentElement!;
+    const file = new File([new Uint8Array([1, 2, 3])], 'cover.png', { type: 'image/png' });
+    fireEvent.change(cover.querySelector('input[type="file"]')!, { target: { files: [file] } });
+    await waitFor(() => expect(cover.querySelector('img')?.getAttribute('src')).toBe('https://cdn.example.com/new-cover.png'));
+    const upload = calls.find((c) => c.url.endsWith('/uploads/cover'))!;
+    expect(upload).toMatchObject({ method: 'POST', url: '/api/network/me/uploads/cover' });
+    const body = await savedBody(page);
+    expect(calls.find((c) => c.method === 'PATCH')!.url).toBe('/api/network/me/profile');
+    expect(body).toMatchObject({ coverImageUrl: 'https://cdn.example.com/new-cover.png' });
+  });
+
+  it('the partner page leaves the cover out on a Network that predates it', async () => {
+    const page = renderWith(<MyProfilePage />, 'network-my-profile');
     expect(page.queryByText('Cover image (optional)')).toBeNull();
     expect(await savedBody(page)).not.toHaveProperty('coverImageUrl');
   });
