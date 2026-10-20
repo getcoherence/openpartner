@@ -398,6 +398,27 @@ describe.skipIf(skipIntegration)('ops console — notifications', () => {
     expect(audit).toBeDefined();
     await db(TABLES.PlatformAuditLog).where({ targetId: 'crt_1' }).del();
   });
+
+  it('releases a storefront import claim on the Network, admins only, audited', async () => {
+    process.env.NETWORK_URL = netUrl;
+    process.env.NETWORK_ADMIN_API_KEY = 'netadm_test_key_0123456789abcdef';
+    const support = await makeOperator('support');
+    expect((await request(app).delete('/platform-admin/storefront-imports/sim_1').set('Cookie', support)).status).toBe(403);
+    expect(netCalls).toHaveLength(0);
+
+    const admin = await makeOperator('admin');
+    netReply = { status: 404, body: { error: 'not_found' } };
+    expect((await request(app).delete('/platform-admin/storefront-imports/sim_gone').set('Cookie', admin)).status).toBe(404);
+
+    netReply = { status: 200, body: { ok: true, released: { source: 'passionfroot', sourceKey: 'mira', creatorId: 'crt_9' } } };
+    const res = await request(app).delete('/platform-admin/storefront-imports/sim_1').set('Cookie', admin);
+    expect(res.status).toBe(200);
+    expect(res.body.released).toEqual({ source: 'passionfroot', sourceKey: 'mira', creatorId: 'crt_9' });
+    expect(netCalls.at(-1)).toMatchObject({ method: 'DELETE', path: '/admin/storefront-imports/sim_1' });
+    const audit = await db(TABLES.PlatformAuditLog).where({ action: 'storefront_import.release', targetId: 'crt_9' }).first();
+    expect(audit).toBeDefined();
+    await db(TABLES.PlatformAuditLog).where({ targetId: 'crt_9' }).del();
+  });
 });
 
 describe.skipIf(skipIntegration)('ops console — marketplace policy warning', () => {

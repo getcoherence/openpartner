@@ -86,6 +86,10 @@ const ALLOWED_EXACT = new Set([
   '/creators/me/packages',
   '/creators/me/packages/order',
   '/creators/me/bookings',
+  // Import a storefront from Passionfroot: read and plan, then apply the
+  // chosen items (the Network's docs/creator-storefront.md §7.3).
+  '/creators/me/storefront/import/preview',
+  '/creators/me/storefront/import/apply',
   // A brand confirming a storefront request from the emailed link (no auth).
   '/bookings/confirm',
   '/offerings',

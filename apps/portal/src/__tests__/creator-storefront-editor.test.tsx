@@ -201,7 +201,7 @@ describe('storefront editor', () => {
 describe('guided setup', () => {
   it('creates the ticked templates with their prices in one currency', async () => {
     storefront.packages = [pkg('existing', 'youtube', { title: 'Shoutout' })];
-    renderAt('/creator/storefront/setup?step=3', '/creator/storefront/setup', <CreatorStorefrontSetupPage />);
+    renderAt('/creator/storefront/setup?step=packages', '/creator/storefront/setup', <CreatorStorefrontSetupPage />);
 
     // An existing package's template is already ticked and locked.
     const shoutout = (await screen.findByLabelText('Shoutout on YouTube')) as HTMLInputElement;
@@ -224,7 +224,7 @@ describe('guided setup', () => {
   });
 
   it('blocks a price over the cap', async () => {
-    renderAt('/creator/storefront/setup?step=3', '/creator/storefront/setup', <CreatorStorefrontSetupPage />);
+    renderAt('/creator/storefront/setup?step=packages', '/creator/storefront/setup', <CreatorStorefrontSetupPage />);
     fireEvent.click(await screen.findByLabelText('Dedicated video on YouTube'));
     fireEvent.change(screen.getByLabelText('Dedicated video price'), { target: { value: '45004500' } });
     const add = screen.getByRole('button', { name: 'Add 1 package and continue' }) as HTMLButtonElement;

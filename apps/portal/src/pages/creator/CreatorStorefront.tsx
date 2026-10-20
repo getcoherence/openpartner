@@ -10,7 +10,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowDown, ArrowUp, ExternalLink, Plus, Sparkles } from 'lucide-react';
+import { ArrowDown, ArrowUp, Download, ExternalLink, Plus, Sparkles } from 'lucide-react';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, StatusPill, Textarea } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { useMediaQuery } from '../../lib/useMediaQuery.js';
@@ -161,9 +161,14 @@ export function CreatorStorefrontPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <Sparkles size={20} style={{ color: theme.accentText, flexShrink: 0 }} />
             <div style={{ flex: 1, minWidth: 200 }}>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>Set up your storefront in five steps</div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Set up your storefront step by step</div>
               <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 2 }}>
                 Add your channels, pick packages from templates, set your prices and preview it before brands see it.
+                On Passionfroot already?{' '}
+                <Link to="/creator/storefront/setup?step=import" style={{ color: theme.accentText }}>
+                  Import your storefront
+                </Link>
+                .
               </div>
             </div>
             <Link to="/creator/storefront/setup" style={{ textDecoration: 'none' }}>
@@ -220,9 +225,14 @@ export function CreatorStorefrontPage() {
       title="Storefront"
       subtitle="Pitch your channels, list what you offer brands with your prices, and take booking requests from your public profile."
       actions={
-        <Link to="/creator/storefront/setup" style={{ textDecoration: 'none' }}>
-          <Button variant="secondary" icon={<Sparkles size={14} />}>Guided setup</Button>
-        </Link>
+        <>
+          <Link to="/creator/storefront/setup?step=import" style={{ textDecoration: 'none' }}>
+            <Button variant="ghost" icon={<Download size={14} />}>Import from Passionfroot</Button>
+          </Link>
+          <Link to="/creator/storefront/setup" style={{ textDecoration: 'none' }}>
+            <Button variant="secondary" icon={<Sparkles size={14} />}>Guided setup</Button>
+          </Link>
+        </>
       }
     >
       <ErrorBanner error={sf.error ?? toggle.error ?? reorder.error} />
