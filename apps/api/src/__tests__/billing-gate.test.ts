@@ -142,6 +142,11 @@ describe('plan-required route matching', () => {
     // creator self-signup without ever activating a plan.
     expect(isPlanRequiredRoute('POST', '/partner-signup')).toBe(true);
     expect(isPlanRequiredRoute('POST', '/admin/network/requests/abc123/approve')).toBe(true);
+    // Storefront bookings: booking adds a partner, approving pays one.
+    expect(isPlanRequiredRoute('POST', '/admin/network/bookings')).toBe(true);
+    expect(isPlanRequiredRoute('POST', '/admin/network/bookings/bkr_1/approve')).toBe(true);
+    expect(isPlanRequiredRoute('POST', '/admin/network/bookings/bkr_1/retry-payout')).toBe(true);
+    expect(isPlanRequiredRoute('POST', '/admin/network/bookings/bkr_1/cancel')).toBe(false);
   });
 
   it('leaves attribution ingest and reads open (never lose data)', () => {

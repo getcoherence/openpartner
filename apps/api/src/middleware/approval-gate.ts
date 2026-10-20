@@ -60,6 +60,10 @@ const GO_LIVE_ROUTES: GatedRoute[] = [
   { method: 'POST', test: (p) => p === '/config/network/complete-connect' },
   // Moves money to a partner.
   { method: 'POST', test: (p) => p === '/bonuses' },
+  // Storefront bookings: booking leads to a new partner, approving pays one
+  // (through POST /bonuses).
+  { method: 'POST', test: (p) => p === '/admin/network/bookings' },
+  { method: 'POST', test: (p) => /^\/admin\/network\/bookings\/[^/]+\/(approve|retry-payout)$/.test(p) },
   {
     method: 'POST',
     test: (p) => p === '/config/network',

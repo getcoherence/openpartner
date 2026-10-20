@@ -873,6 +873,25 @@ settingsRouter.post('/admin/network/offerings/:id/invite-creator', requireAuth, 
   proxy(req, res, (db, tenantId) => networkProxy.inviteCreator(db, tenantId, req.params.id!, req.body ?? {}), 201),
 );
 
+// Tracked storefront bookings — the brand books a creator's package from
+// Discover creators, then approves the delivered work here; the Network pays
+// it as a bonus through POST /bonuses. Bodies go through verbatim; the
+// Network validates them.
+settingsRouter.get('/admin/network/bookings', requireAuth, requireAdmin, async (req, res) => {
+  const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  return proxy(req, res, (db, tenantId) => networkProxy.listBookings(db, tenantId, status));
+});
+
+settingsRouter.post('/admin/network/bookings', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.createBooking(db, tenantId, req.body ?? {}), 201),
+);
+
+for (const action of ['cancel', 'approve', 'retry-payout'] as const) {
+  settingsRouter.post(`/admin/network/bookings/:id/${action}`, requireAuth, requireAdmin, async (req, res) =>
+    proxy(req, res, (db, tenantId) => networkProxy.bookingAction(db, tenantId, req.params.id!, action)),
+  );
+}
+
 // ---------- Network billing proxy ----------
 // Self-hosted vendors subscribe to Network access ($29/mo + 3% metered)
 // from this admin surface. Hosted vendors get bundled with their main
