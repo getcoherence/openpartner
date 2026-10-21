@@ -1152,7 +1152,9 @@ export interface CouponRow {
   code: string;
   /** Stripe Coupon ID provisioned alongside the OpenPartner Coupon when
    *  the bound Campaign has a customerReward. Null = no customer-side
-   *  reward, OR Stripe wasn't configured at mint time. */
+   *  reward, OR no promo in the brand's Stripe yet (Stripe wasn't reachable
+   *  at mint time; on hosted, a connect and an hourly sweep backfill it —
+   *  apps/api/src/customer-rewards.ts backfillCustomerRewards). */
   stripeCouponId: string | null;
   /** Stripe PromotionCode ID — what the customer types at checkout. */
   stripePromotionCodeId: string | null;
@@ -1356,6 +1358,11 @@ export interface TenantStripeConnectionRow {
   refreshFailedAt: Date | null;
   refreshError: string | null;
   lastEventAt: Date | null;
+  /** When a reward backfill last finished checking every partner code's
+   *  promotion code against this account. Cleared by every connect; the
+   *  hourly sweep re-runs the check while it's null (migration
+   *  20261021010000). */
+  rewardsVerifiedAt: Date | null;
   disconnectedAt: Date | null;
   disconnectReason: 'admin' | 'deauthorized' | 'replaced' | null;
   updatedAt: Date;

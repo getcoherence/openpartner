@@ -202,7 +202,26 @@ interface StripeAppStatus {
     refreshError: string | null;
     permissionsOutdated: boolean;
     rewards: boolean;
+    /** Partner codes with a customer discount that have no promotion code
+     *  in the connected account yet. */
+    rewardCodesNotInStripe: number;
+    /** A pass creating them is running now. */
+    rewardCodesSyncing: boolean;
+    /** Codes created before this connection have been checked against this
+     *  account (an earlier account's promotion codes don't carry over). */
+    rewardCodesChecked: boolean;
   } | null;
+}
+
+/** The connection line's word on customer discounts. */
+function rewardsSummary(conn: NonNullable<StripeAppStatus['connection']>): string {
+  if (!conn.rewards) return 'customer discounts set up by you';
+  if (conn.rewardCodesSyncing) return 'creating customer discounts in Stripe…';
+  // A pass stopped early; the hourly retry finishes the check.
+  if (!conn.rewardCodesChecked) return 'customer discounts being checked in Stripe';
+  const missing = conn.rewardCodesNotInStripe;
+  if (missing > 0) return `customer discounts created in Stripe, except ${missing} partner code${missing === 1 ? '' : 's'}`;
+  return 'customer discounts created in Stripe';
 }
 
 /**
@@ -221,6 +240,9 @@ function StripeAppCard() {
   const status = useQuery({
     queryKey: ['stripe-app'],
     queryFn: () => api<StripeAppStatus>('/stripe-app/connection'),
+    // Right after a connect, partner codes get their promotion codes in the
+    // background: follow along until that's done.
+    refetchInterval: (query) => (query.state.data?.connection?.rewardCodesSyncing ? 3000 : false),
   });
   const [notice, setNotice] = useState<string | null>(null);
   const refresh = () => qc.invalidateQueries({ queryKey: ['stripe-app'] });
@@ -384,7 +406,7 @@ function StripeAppCard() {
                 {' · '}
                 {conn.lastEventAt ? `last event ${new Date(conn.lastEventAt).toLocaleString()}` : 'no events yet'}
                 {' · '}
-                {conn.rewards ? 'customer discounts created in Stripe' : 'customer discounts set up by you'}
+                {rewardsSummary(conn)}
               </div>
               {(conn.needsReconnect || conn.permissionsOutdated) && (
                 <Button onClick={() => start.mutate(conn.livemode ? 'live' : 'test')} disabled={busy}>
@@ -404,6 +426,15 @@ function StripeAppCard() {
                 Disconnect
               </button>
             </div>
+            {conn.rewards && !conn.rewardCodesSyncing && conn.rewardCodesNotInStripe > 0 && (
+              <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 8, lineHeight: 1.5 }}>
+                {conn.rewardCodesNotInStripe === 1
+                  ? '1 partner code with a customer discount has no promotion code in your Stripe yet, so customers can’t use it'
+                  : `${conn.rewardCodesNotInStripe} partner codes with a customer discount have no promotion code in your Stripe yet, so customers can’t use them`}{' '}
+                at Stripe Checkout. {STRIPE_APP_NAME} retries every hour. A code that is already one of your own
+                Stripe promotion codes or coupon IDs is left alone: give that partner a new code instead.
+              </div>
+            )}
             <StripeCheckoutGuide rewards={conn.rewards} />
           </>
         )}
