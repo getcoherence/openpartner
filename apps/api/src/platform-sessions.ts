@@ -112,21 +112,50 @@ export function platformBundleCookieOptions(): CookieOptions {
 }
 
 // ---------- Bundle helpers ----------
+//
+// The op_bundle_id cookie is a bearer credential: /identities/switch mints a
+// session for any identity in the bundle on that cookie alone. So, like the
+// session tokens above, it is never stored. PlatformSessionBundle.id is
+// sha256(cookie), and PlatformSession.bundleId references that hash. A
+// database read yields ids that don't work as cookies. Migration
+// 20261020030000_platform_session_bundle_hashed_id explains why bundles from
+// before the hash were deleted rather than hashed in place.
 
-/** Create a fresh bundle row and return the id. The id IS the cookie value. */
-export async function createPlatformBundle(db: Knex): Promise<string> {
-  const id = ulid();
-  await db<PlatformSessionBundleRow>(TABLES.PlatformSessionBundle).insert({ id });
-  return id;
+const BUNDLE_COOKIE_PREFIX = 'opbundle_';
+
+export interface IssuedPlatformBundle {
+  /** PlatformSessionBundle.id — the hash. Safe to store and pass around. */
+  id: string;
+  /** The op_bundle_id cookie value. Goes to the browser and nowhere else. */
+  cookie: string;
 }
 
-/** Verify the bundle id exists + isn't expired-by-association (we don't
- *  expire bundles themselves; sessions inside them carry the TTL).
- *  Returns the row when valid, null otherwise. */
-export async function resolveBundle(db: Knex, bundleId: string | null): Promise<PlatformSessionBundleRow | null> {
-  if (!bundleId) return null;
-  const row = await db<PlatformSessionBundleRow>(TABLES.PlatformSessionBundle).where({ id: bundleId }).first();
+/** Create a fresh bundle row. Returns its id (the hash) and the cookie
+ *  value it hashes from. */
+export async function createPlatformBundle(db: Knex): Promise<IssuedPlatformBundle> {
+  const cookie = `${BUNDLE_COOKIE_PREFIX}${randomBytes(24).toString('hex')}`;
+  const id = hash(cookie);
+  await db<PlatformSessionBundleRow>(TABLES.PlatformSessionBundle).insert({ id });
+  return { id, cookie };
+}
+
+/** Resolve an op_bundle_id cookie to its bundle row (we don't expire
+ *  bundles themselves; sessions inside them carry the TTL). Returns null
+ *  for a missing or unknown cookie — including a pre-hash ULID cookie, whose
+ *  row the migration deleted. */
+export async function resolveBundle(db: Knex, cookie: string | null): Promise<PlatformSessionBundleRow | null> {
+  if (!cookie || !cookie.startsWith(BUNDLE_COOKIE_PREFIX)) return null;
+  const row = await db<PlatformSessionBundleRow>(TABLES.PlatformSessionBundle).where({ id: hash(cookie) }).first();
   return row ?? null;
+}
+
+/** Delete bundles whose id isn't a sha256 — rows the pre-hash code wrote,
+ *  where the id was the cookie. The migration deleted the ones that existed;
+ *  this catches any a rolling deploy's previous build wrote while both were
+ *  serving. This code never resolves them, but each one is a working cookie
+ *  for that older build, so they don't stay. Returns how many it deleted. */
+export async function deletePreHashBundles(db: Knex): Promise<number> {
+  return db<PlatformSessionBundleRow>(TABLES.PlatformSessionBundle).whereRaw(`id !~ '^[0-9a-f]{64}$'`).del();
 }
 
 /** Bump lastUsedAt — drives the future "stale bundle" hygiene job. */
