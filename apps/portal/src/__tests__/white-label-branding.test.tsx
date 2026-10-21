@@ -109,6 +109,14 @@ describe('the assertions can fail (inverse case)', () => {
   });
 });
 
+describe('admin sidebar section order', () => {
+  it('puts the Admin section last, below Network', () => {
+    const { container } = renderWithProviders(<Sidebar principal={adminPrincipal} />, false);
+    const headers = Array.from(container.querySelectorAll('button[aria-expanded]')).map((b) => b.textContent);
+    expect(headers).toEqual(['Network', 'Admin']);
+  });
+});
+
 describe('partner Network visibility preference', () => {
   it('hides partner Network navigation while preserving admin Network access', () => {
     const client = makeClient(false);
