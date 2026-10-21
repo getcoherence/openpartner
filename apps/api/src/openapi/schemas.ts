@@ -461,12 +461,17 @@ const CommissionRowShape = z.object({
 export const Commission = CommissionRowShape.openapi('Commission');
 
 export const CommissionListItem = CommissionRowShape.extend({
+  partnerName: z.string().nullable().openapi({ description: "The partner's name. Null only if the partner record is gone." }),
   holdbackDays: z.number().int().nullable(),
   programId: z.string().nullable(),
   campaignName: z.string().nullable().openapi({ description: 'The program\'s name (kept under its pre-rename key).' }),
   matureAt: tsNullable.openapi({ description: 'When the holdback ends and the commission becomes approvable. Null = no holdback.' }),
   source: z.enum(['attribution', 'bonus']).openapi({
     description: '`attribution`: earned on an attributed sale. `bonus`: pays a bonus, with no event or click behind it.',
+  }),
+  eventType: z.string().nullable().openapi({
+    description:
+      "The type of the attributed event the commission was earned on: `signup`, `trial_started`, `subscription_created`, `invoice_paid`, or one of your custom types. Null on a bonus's commission.",
   }),
   bonus: z
     .object({
@@ -543,7 +548,15 @@ export const Payout = z
   })
   .openapi('Payout');
 
-const moneyGroup = z.object({ partnerId: id, currency: z.string(), amount: z.number() });
+const partnerName = z.string().nullable().openapi({ description: "The partner's name. Null only if the partner record is gone." });
+
+export const PayoutListItem = Payout.extend({ partnerName }).openapi('PayoutListItem');
+
+export const PayoutPage = z
+  .object({ payouts: z.array(PayoutListItem), nextCursor: z.string().nullable() })
+  .openapi('PayoutPage');
+
+const moneyGroup = z.object({ partnerId: id, partnerName, currency: z.string(), amount: z.number() });
 
 const PayoutHoldReason = z.enum(['country_not_supported', 'screening_confirmed', 'screening_review', 'screening_pending']).openapi({
   description:
@@ -568,6 +581,7 @@ export const PayoutRunResult = z
       z.object({
         payoutId: id,
         partnerId: id,
+        partnerName,
         amount: z.number(),
         currency: z.string(),
         method: z.enum(PAYOUT_METHODS),

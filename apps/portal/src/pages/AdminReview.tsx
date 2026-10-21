@@ -1,12 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ShieldCheck } from 'lucide-react';
 import { api } from '../api.js';
+import type { CommissionSourceFields } from '../lib/commission-source.js';
 import { theme } from '../theme.js';
-import { Button, Card, EmptyState, ErrorBanner, Page, StatusPill, Table, formatDate, money, shortId } from '../ui.js';
+import { Button, Card, EmptyState, ErrorBanner, Page, StatusPill, Table, formatDate, money } from '../ui.js';
+import { CommissionPartnerCell, CommissionSourceCell } from './Commissions.js';
 
-interface Commission {
+interface Commission extends CommissionSourceFields {
   id: string;
   partnerId: string;
+  partnerName?: string | null;
   amount: string;
   currency: string;
   status: string;
@@ -59,12 +62,13 @@ export function AdminReview() {
         <EmptyState title="Queue's clear" hint="New commissions will land here as events attribute." icon={<ShieldCheck size={28} strokeWidth={1.25} />} />
       ) : (
         <Table
-          columns={['Partner', { label: 'Amount', align: 'right' }, 'Status', 'Accrued', 'Actions']}
+          columns={['Partner', 'Source', { label: 'Amount', align: 'right' }, 'Status', 'Accrued', 'Actions']}
           rows={rows.map((c) => {
             const inHoldback = c.matureAt ? Date.parse(c.matureAt) > Date.now() : false;
             const daysLeft = c.matureAt ? daysFromNow(c.matureAt) : 0;
             return [
-              <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(c.partnerId)}</code>,
+              <CommissionPartnerCell c={c} />,
+              <CommissionSourceCell c={c} />,
               <span style={{ fontWeight: 500 }}>{money(c.amount, c.currency)}</span>,
               inHoldback ? (
                 <span

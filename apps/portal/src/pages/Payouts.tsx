@@ -1,10 +1,13 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Banknote, Play } from 'lucide-react';
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { ArrowLeft, Banknote, Play } from 'lucide-react';
+import { useSearchParams } from 'react-router';
 import { api, type Principal } from '../api.js';
+import { TenantLink } from '../tenant-link.js';
 import { alpha, theme } from '../theme.js';
-import { Button, Card, EmptyState, ErrorBanner, Page, StatusPill, Table, formatDate, money, shortId } from '../ui.js';
+import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, SectionHeading, StatusPill, Table, formatDate, money, shortId } from '../ui.js';
 import { HOLD_REASON, type HoldReason } from './payout-holds.js';
 import { ManualPayoutFiles } from './ManualPayoutFiles.js';
+import { PayoutRunSummary, payoutMethodLabel, type PayoutRunResult } from './PayoutRunSummary.js';
 
 interface Payout {
   id: string;
@@ -18,6 +21,13 @@ interface Payout {
   stripeTransferId: string | null;
 }
 
+/** GET /payouts: every partner's payouts, with the partner's name. */
+interface PayoutListItem extends Payout {
+  partnerName: string | null;
+}
+
+const PAGE_SIZE = 50;
+
 /** GET /payouts/holds: partners on a compliance hold (OpenPartner Cloud). */
 interface PayoutHold {
   partnerId: string;
@@ -30,17 +40,12 @@ interface PayoutHold {
 
 export function PayoutsPage({ principal }: { principal: Principal }) {
   const qc = useQueryClient();
-  const queryPartnerId = new URLSearchParams(window.location.search).get('partnerId');
-  const partnerId = principal.partnerId ?? queryPartnerId;
+  const [searchParams] = useSearchParams();
+  const partnerId = principal.partnerId ?? searchParams.get('partnerId');
+  const isAdmin = principal.role === 'admin';
 
   const runPayouts = useMutation({
-    mutationFn: () =>
-      api<{
-        runId: string;
-        payouts: unknown[];
-        skippedBelowThreshold: Array<{ partnerId: string; currency: string; amount: number }>;
-        heldForCompliance?: Array<{ partnerId: string; currency: string; amount: number; reason: HoldReason }>;
-      }>('/payouts/run', { method: 'POST' }),
+    mutationFn: () => api<PayoutRunResult>('/payouts/run', { method: 'POST' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['payouts'] });
       qc.invalidateQueries({ queryKey: ['payout-holds'] });
@@ -56,26 +61,33 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
     enabled: !!partnerId,
   });
 
+  // An admin looking at one partner's history: whose it is.
+  const partner = useQuery({
+    queryKey: ['partner', partnerId],
+    queryFn: () => api<{ id: string; name: string }>(`/partners/${partnerId}`),
+    enabled: isAdmin && !!partnerId,
+  });
+
   const holds = useQuery({
     queryKey: ['payout-holds'],
     queryFn: () => api<{ holds: PayoutHold[] }>('/payouts/holds'),
-    enabled: principal.role === 'admin',
+    enabled: isAdmin,
   });
   const shownHolds = (holds.data?.holds ?? []).filter((h) => !partnerId || h.partnerId === partnerId);
 
-  const subtitle =
-    principal.role === 'admin'
-      ? partnerId
-        ? 'History for this partner.'
-        : 'Kick off a batch to pay out every approved commission.'
-      : 'Your payout history.';
+  const subtitle = isAdmin
+    ? partnerId
+      ? partner.data
+        ? `Payout history for ${partner.data.name}.`
+        : 'Payout history for this partner.'
+      : 'Run a payout to pay every partner their approved commissions.'
+    : 'Your payout history.';
 
-  const actions =
-    principal.role === 'admin' ? (
-      <Button icon={<Play size={14} />} onClick={() => runPayouts.mutate()} disabled={runPayouts.isPending}>
-        {runPayouts.isPending ? 'Running…' : 'Run payouts'}
-      </Button>
-    ) : undefined;
+  const actions = isAdmin ? (
+    <Button icon={<Play size={14} />} onClick={() => runPayouts.mutate()} disabled={runPayouts.isPending}>
+      {runPayouts.isPending ? 'Running…' : 'Run payouts'}
+    </Button>
+  ) : undefined;
 
   return (
     <Page title="Payouts" subtitle={subtitle} actions={actions}>
@@ -108,61 +120,21 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
         </Card>
       )}
 
-      {runPayouts.data && (
-        <Card style={{ marginBottom: 14, borderColor: `${theme.accentA55}` }}>
-          <div style={{ fontSize: 13, color: theme.accentText, fontWeight: 500, marginBottom: 8 }}>
-            Run #{shortId(runPayouts.data.runId)} — {runPayouts.data.payouts.length} payout
-            {runPayouts.data.payouts.length === 1 ? '' : 's'}
-            {runPayouts.data.skippedBelowThreshold?.length > 0 && (
-              <span style={{ color: theme.textMuted, fontWeight: 400 }}>
-                {' '}
-                · {runPayouts.data.skippedBelowThreshold.length} skipped below threshold
-              </span>
-            )}
-            {(runPayouts.data.heldForCompliance?.length ?? 0) > 0 && (
-              <span style={{ color: theme.warn, fontWeight: 400 }}>
-                {' '}
-                · {runPayouts.data.heldForCompliance!.length} on compliance hold
-              </span>
-            )}
-          </div>
-          <pre
-            style={{
-              margin: 0,
-              background: theme.bg,
-              color: theme.text,
-              padding: 14,
-              borderRadius: theme.radiusSm,
-              fontSize: 12,
-              overflow: 'auto',
-              maxHeight: 280,
-            }}
-          >
-            {JSON.stringify(
-              {
-                payouts: runPayouts.data.payouts,
-                ...(runPayouts.data.skippedBelowThreshold?.length
-                  ? { skippedBelowThreshold: runPayouts.data.skippedBelowThreshold }
-                  : {}),
-                ...(runPayouts.data.heldForCompliance?.length
-                  ? { heldForCompliance: runPayouts.data.heldForCompliance }
-                  : {}),
-              },
-              null,
-              2,
-            )}
-          </pre>
-        </Card>
+      {runPayouts.data && <PayoutRunSummary result={runPayouts.data} onDismiss={() => runPayouts.reset()} />}
+
+      {isAdmin && !partnerId && <ManualPayoutFiles />}
+
+      {isAdmin && partnerId && (
+        <TenantLink
+          to="/payouts"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: theme.accentText, fontSize: 13, marginBottom: 12, textDecoration: 'none' }}
+        >
+          <ArrowLeft size={14} /> All payouts
+        </TenantLink>
       )}
 
-      {principal.role === 'admin' && !partnerId && <ManualPayoutFiles />}
-
       {!partnerId ? (
-        <EmptyState
-          title="Pick a partner"
-          hint="Open a partner from Admin → Partners to see their payout history."
-          icon={<Banknote size={28} strokeWidth={1.25} />}
-        />
+        isAdmin ? <RecentPayouts /> : null
       ) : payouts.isLoading ? (
         <Card>Loading…</Card>
       ) : (payouts.data?.payouts ?? []).length === 0 ? (
@@ -177,7 +149,7 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
           rows={(payouts.data?.payouts ?? []).map((p) => [
             <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(p.id)}</code>,
             <span style={{ fontWeight: 500 }}>{money(p.amount, p.currency)}</span>,
-            <span style={{ color: theme.textMuted }}>{p.method.replace('_', ' ')}</span>,
+            <span style={{ color: theme.textMuted }}>{payoutMethodLabel(p.method)}</span>,
             <StatusPill status={p.status} />,
             <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
             <span style={{ color: theme.textMuted }}>{formatDate(p.completedAt, { relative: true })}</span>,
@@ -185,5 +157,68 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
         />
       )}
     </Page>
+  );
+}
+
+/** Every partner's payouts, newest first: the admin page with no partner picked. */
+function RecentPayouts() {
+  const { data, error, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
+    queryKey: ['payouts', 'all'],
+    queryFn: ({ pageParam }) => {
+      const qs = new URLSearchParams({ limit: String(PAGE_SIZE) });
+      if (pageParam) qs.set('cursor', pageParam);
+      return api<{ payouts: PayoutListItem[]; nextCursor: string | null }>(`/payouts?${qs}`);
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor,
+  });
+  const rows = data?.pages.flatMap((p) => p.payouts) ?? [];
+
+  return (
+    <>
+      <SectionHeading>Recent payouts</SectionHeading>
+      <ErrorBanner error={error} />
+      {isLoading ? (
+        <Card>Loading…</Card>
+      ) : rows.length === 0 ? (
+        <EmptyState
+          title="No payouts yet"
+          hint="Approved commissions become payouts on the next run."
+          icon={<Banknote size={28} strokeWidth={1.25} />}
+        />
+      ) : (
+        <>
+          <Table
+            columns={['Partner', { label: 'Amount', align: 'right' }, 'Method', 'Status', 'Created', 'Completed']}
+            rows={rows.map((p) => [
+              <TenantLink
+                to={`/payouts?partnerId=${p.partnerId}`}
+                title="Payout history"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 10, color: theme.text, textDecoration: 'none' }}
+              >
+                <Avatar name={p.partnerName ?? '?'} size={26} />
+                {p.partnerName ? (
+                  <span style={{ fontWeight: 500 }}>{p.partnerName}</span>
+                ) : (
+                  <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(p.partnerId)}</code>
+                )}
+              </TenantLink>,
+              <span style={{ fontWeight: 500 }}>{money(p.amount, p.currency)}</span>,
+              <span style={{ color: theme.textMuted }}>{payoutMethodLabel(p.method)}</span>,
+              <StatusPill status={p.status} />,
+              <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
+              <span style={{ color: theme.textMuted }}>{formatDate(p.completedAt, { relative: true })}</span>,
+            ])}
+          />
+          {hasNextPage && (
+            <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16 }}>
+              <Button variant="secondary" size="sm" onClick={() => void fetchNextPage()} disabled={isFetchingNextPage}>
+                {isFetchingNextPage ? 'Loading…' : `Load ${PAGE_SIZE} more`}
+              </Button>
+            </div>
+          )}
+        </>
+      )}
+    </>
   );
 }
