@@ -19,7 +19,7 @@ import { api, type Principal } from '../api.js';
 import { useTenantBase } from '../tenant-base.js';
 import { TenantLink } from '../tenant-link.js';
 import { alpha, theme } from '../theme.js';
-import { useBrand, useDefaultCurrency } from '../lib/useBrand.js';
+import { useBrand, useConnectPayouts, useDefaultCurrency } from '../lib/useBrand.js';
 import {
   Avatar,
   Button,
@@ -97,12 +97,16 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
     queryKey: ['funnel', partnerId],
     queryFn: () => api<Funnel>(`/partners/${partnerId}/funnel`),
   });
+  // Whether the brand can pay through Stripe Connect at all (/config/program).
+  // Where it can't, a Connect account would never be paid.
+  const connectPayouts = useConnectPayouts();
   // Non-critical — render the rest of the dashboard even if this 503s
   // (Stripe not configured on a selfhost instance, for instance).
   const connect = useQuery({
     queryKey: ['connect-status', partnerId],
     queryFn: () => api<ConnectStatus>(`/partners/${partnerId}/connect/status`),
     retry: false,
+    enabled: connectPayouts,
   });
   // Says whether the brand pays partners itself (the manual rail), where
   // Stripe Connect isn't used and the partner's payout details are.
@@ -123,9 +127,12 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
   const linkCount = links.data?.links.length ?? 0;
   const hasLink = linkCount > 0;
   const hasActiveConnect = !!connect.data?.connected && !!connect.data?.payoutsEnabled;
-  // On the manual rail the brand pays from the partner's payout details
-  // (bank transfer, PayPal or Wise files): that's the step, not Stripe.
-  const paysManually = payoutProfile.data?.rail === 'manual';
+  // On the manual rail, or wherever the brand can't pay through Connect
+  // (hosted without payout funding), the brand pays from the partner's
+  // payout details (bank transfer, PayPal or Wise files): that's the step,
+  // not Stripe. Details that can't be opened come back as `details: null`,
+  // so the partner still has to enter them.
+  const paysManually = !connectPayouts || payoutProfile.data?.rail === 'manual';
   const hasPayoutDetails = !!payoutProfile.data?.profile?.details;
   const payoutReady = paysManually ? hasPayoutDetails : hasActiveConnect;
 

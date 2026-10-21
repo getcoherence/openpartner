@@ -47,6 +47,7 @@ import { createApiKeyRow } from '../auth.js';
 import { getTenancyMode, tenantOf } from '../tenancy.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
 import { getTenantBillingState } from '../billing-plan.js';
+import { connectPayoutsAvailable } from '../payout-method.js';
 import { isWhiteLabelEntitled, getWhiteLabelState } from '../white-label.js';
 import { currencyInputSchema } from '../currency.js';
 
@@ -105,6 +106,11 @@ export interface ProgramSettings extends PersistedProgramSettings {
    *  platform partner Network discovery is part of the product, and hiding
    *  it is what the paid white-label add-on does. */
   partnerNetworkToggleAvailable: boolean;
+  /** Whether this brand can pay partners through Stripe Connect
+   *  (payout-method.ts connectPayoutsAvailable). The partner portal
+   *  offers Connect only when it can: elsewhere partners give payout
+   *  details and the brand pays them directly. */
+  connectPayoutsAvailable: boolean;
 }
 
 /** See ProgramSettings.partnerNetworkToggleAvailable. */
@@ -125,7 +131,17 @@ async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings
   // there so the cached Config row never lags the actual values.
   const tenant = await db<TenantRow>(TABLES.Tenant)
     .where({ id: tenantId })
-    .first(['displayName', 'logoUrl', 'faviconUrl', 'brandColor', 'programTermsUrl', 'whiteLabel', 'status', 'defaultCurrency']);
+    .first([
+      'displayName',
+      'logoUrl',
+      'faviconUrl',
+      'brandColor',
+      'programTermsUrl',
+      'whiteLabel',
+      'status',
+      'defaultCurrency',
+      'payoutRailPreference',
+    ]);
   if (!programName && tenant?.displayName) programName = tenant.displayName as string;
   // Effective white-label: the provisioned flag AND an entitling billing
   // state. Computed here so any authenticated caller (admin or partner)
@@ -149,6 +165,7 @@ async function readSettings(db: Knex, tenantId: string): Promise<ProgramSettings
     defaultCurrency: tenant?.defaultCurrency ?? 'USD',
     whiteLabel,
     partnerNetworkToggleAvailable: partnerNetworkToggleAvailable(),
+    connectPayoutsAvailable: await connectPayoutsAvailable(db, tenantId, tenant?.payoutRailPreference ?? 'auto', billing.mode),
   };
 }
 

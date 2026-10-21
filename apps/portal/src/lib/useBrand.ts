@@ -18,6 +18,9 @@ export interface ProgramSettings {
   /** The brand's currency (ISO 4217). Absent from an API that predates it. */
   defaultCurrency?: string;
   whiteLabel: boolean;
+  /** Whether the brand can pay partners through Stripe Connect. Absent
+   *  from an API that predates it. */
+  connectPayoutsAvailable?: boolean;
 }
 
 /** Platform fallback applied whenever the tenant hasn't set a brand name. */
@@ -84,6 +87,24 @@ export function useDefaultCurrency(): string {
     staleTime: 60_000,
   });
   return data?.defaultCurrency ?? 'USD';
+}
+
+/**
+ * Whether the brand pays partners through Stripe Connect, from the same
+ * cached `/config/program` fetch. When it doesn't (a hosted brand without
+ * payout funding, or a brand on the manual rail), a connected account
+ * would never be paid, so the portal points partners at Payout details
+ * instead of offering Connect. An API that predates the field keeps the
+ * old behaviour; a failed fetch doesn't offer Connect, since on hosted
+ * that would put the prompts back for every partner.
+ */
+export function useConnectPayouts(): boolean {
+  const { data } = useQuery({
+    queryKey: ['program-settings'],
+    queryFn: () => api<ProgramSettings>('/config/program'),
+    staleTime: 60_000,
+  });
+  return data ? (data.connectPayoutsAvailable ?? true) : false;
 }
 
 /** Shape of the public `GET /branding` bootstrap (no auth). */
