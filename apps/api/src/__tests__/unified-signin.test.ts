@@ -103,6 +103,24 @@ describe.skipIf(skipIntegration)('unified /signin', () => {
     expect(latest?.purpose).toBe('platform_add_account');
   });
 
+  it('carries a safe ?next= into the emailed link, and drops an unsafe one', async () => {
+    const next = '/admin/network/creators/jane-doe';
+    const res = await request(app).post('/signin').send({ email: ADMIN_EMAIL, next });
+    expect(res.status).toBe(200);
+    expect(mailer.sent).toHaveLength(1);
+    const link = mailer.sent[0]!.msg.text.match(/http\S+\/auth\/magic\?\S+/)![0];
+    expect(new URL(link).searchParams.get('next')).toBe(next);
+    expect(mailer.sent[0]!.msg.html).toContain(`&amp;next=${encodeURIComponent(next)}"`);
+
+    for (const unsafe of ['https://evil.example/admin/x', '//evil.example/admin/x', '/platform/vendors']) {
+      mailer.sent.length = 0;
+      const again = await request(app).post('/signin').send({ email: ADMIN_EMAIL, next: unsafe });
+      expect(again.status).toBe(200);
+      expect(mailer.sent).toHaveLength(1);
+      expect(mailer.sent[0]!.msg.text).not.toContain('next=');
+    }
+  });
+
   it('points an ops-console address with no brand at /platform/login', async () => {
     const res = await request(app).post('/signin').send({ email: OPS_EMAIL });
     expect(res.status).toBe(200);

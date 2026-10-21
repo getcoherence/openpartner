@@ -115,6 +115,10 @@ interface UnmatchedEventType {
 const STRIPE_GUIDE_URL =
   'https://github.com/getcoherence/openpartner/blob/main/docs/headless-referral.md#stripe-payment-links-on-openpartner-cloud';
 
+/** What reads the brand's Stripe: the app their Stripe Dashboard lists as
+ *  installed. Never the brand's program name — this admin is that brand. */
+const STRIPE_APP_NAME = 'OpenPartner';
+
 /** Conversions a sender reported under a type no commission rule takes,
  *  e.g. `funded` for `loan_funded`. They're recorded and credited, and pay
  *  nothing, so the sender never hears an error. Renders nothing when the
@@ -214,7 +218,6 @@ interface StripeAppStatus {
  */
 function StripeAppCard() {
   const qc = useQueryClient();
-  const { programName } = useBrand();
   const status = useQuery({
     queryKey: ['stripe-app'],
     queryFn: () => api<StripeAppStatus>('/stripe-app/connection'),
@@ -286,10 +289,10 @@ function StripeAppCard() {
       <Card>
         <h3 style={{ marginTop: 0, marginBottom: 4, fontSize: 15, fontWeight: 500 }}>Stripe</h3>
         <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 12px', lineHeight: 1.55 }}>
-          Bill with Stripe? Connect your Stripe account and {programName} reads it directly: Checkout and
+          Bill with Stripe? Connect your Stripe account and {STRIPE_APP_NAME} reads it directly: Checkout and
           Payment Link purchases, invoices, refunds and disputes credit the partner who referred the customer,
           with nothing forwarded from your server. Partner codes with a customer discount get their promotion
-          code created in your Stripe. {programName} can read your payments but never move money.
+          code created in your Stripe. {STRIPE_APP_NAME} can read your payments but never move money.
         </p>
         <ErrorBanner error={status.error ?? complete.error ?? start.error ?? disconnect.error} />
         {notice && (
@@ -340,7 +343,7 @@ function StripeAppCard() {
                   lineHeight: 1.5,
                 }}
               >
-                <strong>Reconnect needed.</strong> Stripe stopped accepting {programName}&rsquo;s access
+                <strong>Reconnect needed.</strong> Stripe stopped accepting {STRIPE_APP_NAME}&rsquo;s access
                 {conn.refreshError ? <> ({conn.refreshError})</> : null}, so new Stripe payments aren&rsquo;t
                 being recorded. Reconnect to pick up from here.
               </div>
@@ -393,7 +396,7 @@ function StripeAppCard() {
                 style={{ ...mutedButton, border: `1px solid ${alpha(theme.danger, 0.333)}`, color: theme.danger }}
                 disabled={busy}
                 onClick={() => {
-                  if (confirm(`Disconnect Stripe? ${programName} stops reading your Stripe account. Payments already recorded stay.`)) {
+                  if (confirm(`Disconnect Stripe? ${STRIPE_APP_NAME} stops reading your Stripe account. Payments already recorded stay.`)) {
                     disconnect.mutate();
                   }
                 }}
@@ -984,7 +987,6 @@ function PayloadGuide() {
  *  partner link's destination and comes back with the conversion. */
 function ClickIdGuide() {
   const { apiBase } = useApiBase();
-  const { programName } = useBrand();
   return (
     <Card>
       <h3 style={{ marginTop: 0, marginBottom: 4, fontSize: 15, fontWeight: 500 }}>
@@ -1004,7 +1006,7 @@ function ClickIdGuide() {
       </p>
       <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 10px', lineHeight: 1.55 }}>
         With your Stripe account connected (above), or on a self-hosted install whose Stripe
-        webhook points at {programName}, that purchase is then recorded automatically: a signup,
+        webhook points at {STRIPE_APP_NAME}, that purchase is then recorded automatically: a signup,
         plus its amount as <code>invoice_paid</code>. Don&rsquo;t also report it here. Without a
         connection, forward Stripe&rsquo;s checkout events to the call below from a small handler of
         your own:{' '}
