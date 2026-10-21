@@ -304,6 +304,9 @@ couponsRouter.post('/partners/:id/coupons', requireAuth, async (req, res) => {
       code,
       stripeCouponId: provisioned?.stripeCouponId ?? null,
       stripePromotionCodeId: provisioned?.stripePromotionCodeId ?? null,
+      // Recorded so the Stripe webhook keeps crediting a brand promo this
+      // code was chosen to map (stripe-webhook.ts discountMadeForCoupon).
+      brandChosen: adminChosen,
     });
     const row = await db<CouponRow>(TABLES.Coupon).where({ id, tenantId }).first();
     return res.status(201).json({ ...row, canEdit: program.partnersMayCustomizeCode });

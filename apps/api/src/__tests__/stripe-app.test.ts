@@ -924,6 +924,107 @@ describe.skipIf(skipIntegration)('/webhooks/stripe-app', () => {
     expect(commission).toMatchObject({ partnerId: ids.partnerId, amount: '6.00' });
   });
 
+  describe("a partner code that equals one of the brand's own promos", () => {
+    const DAY_S = 24 * 60 * 60;
+    const nowS = () => Math.floor(Date.now() / 1000);
+
+    /** A partner code minted a day before the connect: never checked
+     *  against the brand's Stripe, and without a promotion code there. */
+    async function seedCodeMintedBeforeConnect(fields: { brandChosen?: boolean } = {}): Promise<Seeded> {
+      const ids = await seedClick();
+      await db(TABLES.Click).where({ id: ids.clickId }).del();
+      await db(TABLES.Coupon).insert({
+        id: `cpn_${ulid()}`,
+        tenantId: DEFAULT_TENANT_ID,
+        partnerId: ids.partnerId,
+        programId: ids.programId,
+        code: 'WELCOME10',
+        createdAt: new Date((nowS() - DAY_S) * 1000),
+        ...fields,
+      });
+      await seedConnection();
+      return ids;
+    }
+
+    /** The brand's promotion code WELCOME10, as promotionCodes.retrieve returns it. */
+    function welcomePromo(fields: { created?: number; metadata?: Record<string, string> } = {}) {
+      const promo = {
+        id: 'promo_brand_welcome',
+        object: 'promotion_code',
+        code: 'WELCOME10',
+        active: true,
+        // The brand's sitewide promo, running for a year.
+        created: nowS() - 365 * DAY_S,
+        metadata: {},
+        ...fields,
+      };
+      stripeApi.impl['promotionCodes.retrieve'] = async () => promo;
+      return promo;
+    }
+
+    const checkoutWith = (promoId: string) =>
+      appEvent(
+        'checkout.session.completed',
+        paymentLinkSession(null, {
+          customer: 'cus_welcome_1',
+          amount_total: 3000,
+          discounts: [{ promotion_code: promoId }],
+          total_details: { amount_discount: 300 },
+        }),
+      );
+
+    it("the brand's own sitewide promo credits no partner", async () => {
+      await seedCodeMintedBeforeConnect();
+      const promo = welcomePromo();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const res = await postAppEvent(checkoutWith(promo.id));
+        expect(res.status).toBe(200);
+        expect(await db(TABLES.Click).where({ landingUrl: 'coupon://WELCOME10' })).toHaveLength(0);
+        expect(await db(TABLES.Identity)).toHaveLength(0);
+        expect(await db(TABLES.Commission)).toHaveLength(0);
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining("brand's own promo"),
+          expect.objectContaining({ code: 'WELCOME10', stripeObject: promo.id }),
+        );
+      } finally {
+        warn.mockRestore();
+      }
+      expect(keysUsed()).toEqual([BRAND_TOKEN]);
+    });
+
+    it('a promotion code OpenPartner minted for the code credits the partner, by its string', async () => {
+      const ids = await seedCodeMintedBeforeConnect();
+      // Minted in this account, but its id isn't on the row (an earlier
+      // connection's, say).
+      const promo = welcomePromo({ metadata: { source: 'openpartner', openpartner_code: 'WELCOME10' } });
+      const res = await postAppEvent(checkoutWith(promo.id));
+      expect(res.status).toBe(200);
+      const [commission] = await db(TABLES.Commission);
+      expect(commission).toMatchObject({ partnerId: ids.partnerId, amount: '6.00' });
+    });
+
+    it("a code the brand's admin chose to map its own promo still credits the partner", async () => {
+      const ids = await seedCodeMintedBeforeConnect({ brandChosen: true });
+      const promo = welcomePromo();
+      const res = await postAppEvent(checkoutWith(promo.id));
+      expect(res.status).toBe(200);
+      const [commission] = await db(TABLES.Commission);
+      expect(commission).toMatchObject({ partnerId: ids.partnerId, amount: '6.00' });
+    });
+
+    it('a promotion code the brand made for the code after it was minted credits the partner', async () => {
+      // The setup the portal asks for when a program's discount isn't minted
+      // for the brand: a promotion code with the partner's string.
+      const ids = await seedCodeMintedBeforeConnect();
+      const promo = welcomePromo({ created: nowS() - 60 });
+      const res = await postAppEvent(checkoutWith(promo.id));
+      expect(res.status).toBe(200);
+      const [commission] = await db(TABLES.Commission);
+      expect(commission).toMatchObject({ partnerId: ids.partnerId, amount: '6.00' });
+    });
+  });
+
   it('an uninstall closes the connection in that mode only, and later events are skipped', async () => {
     const connId = await seedConnection();
     const testUninstall = await postAppEvent(

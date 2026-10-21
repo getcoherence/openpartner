@@ -1156,6 +1156,11 @@ export interface CouponRow {
   stripeCouponId: string | null;
   /** Stripe PromotionCode ID — what the customer types at checkout. */
   stripePromotionCodeId: string | null;
+  /** The brand's admin typed this code (not generated, not the partner's
+   *  pick). Lets the Stripe webhook credit the partner for a promo the
+   *  brand already had in Stripe under this string; any other code matches
+   *  only promos made for it (migration 20261021020000). */
+  brandChosen: boolean;
   /** When the partner / admin retired this code. NULL = active (still
    *  redeemable at checkout, still attributes). Non-null = deactivated:
    *  the Stripe PromotionCode is disabled too, so customers entering the

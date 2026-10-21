@@ -14,7 +14,7 @@ that overstates itself is worse than one with a documented hole.
 ```json
 {
   "exportedAt": "2026-08-09T12:00:00.000Z",
-  "schemaVersion": 9,
+  "schemaVersion": 10,
   "tables": { "Partner": [ … ], "Program": [ … ], … }
 }
 ```
@@ -117,6 +117,17 @@ account, a UPI ID or free-text instructions
 ([manual-payout-files.md](manual-payout-files.md)). It is stored sealed, so
 it travels opened; see [Payout details](#payout-details). A v1–v8 bundle
 restores with no payout details, and partners enter them again.
+
+`Coupon` rows carry `brandChosen` (schemaVersion 10, Oct 2026): the
+brand's admin typed the code, rather than it being generated or picked by
+the partner. The Stripe webhook matches a discount to a partner code by
+its string, and only for a code the admin chose does a promotion code or
+coupon the brand already had under that string credit the partner. Any
+other code matches only Stripe promos made for it. It is raw data about
+who picked the code, which nothing can re-derive, so the column bumps the
+version. A v1–v9 bundle's coupons restore with `brandChosen` false, the
+value the migration `20261021020000_coupon_brand_chosen` gave every
+existing code.
 
 `Partner` rows carry `portalAccess` (schemaVersion 5, Oct 2026): whether
 the partner may sign in to the partner portal. A headless program turns it
@@ -376,6 +387,7 @@ that should attribute every event against the window alone.
 | 7 (Oct 2026) | added `Bounty` (performance bounties; `Bonus.bountyId` references it) |
 | 8 (Oct 2026) | `Click` rows carry `subId`, the publisher's `?sub_id=` (older bundles restore it as null) |
 | 9 (Oct 2026) | added `PartnerPayoutProfile`, its `details` opened (older bundles restore no payout details) |
+| 10 (Oct 2026) | `Coupon` rows carry `brandChosen`, whether the brand's admin typed the code (older bundles restore it as false) |
 
 **Importing a v1 or v2 bundle.** `POST /import` upgrades older rows before
 inserting them (`upgradeBundle` in `apps/api/src/export.ts`). A v2

@@ -231,6 +231,35 @@ The portal's build produces `/op.js` from `packages/sdk/src/auto.ts`
 the platform origin and on every white-label domain, with no npm release
 needed.
 
+### Partner codes and the brand's own promos
+
+A discount at the brand's checkout credits a partner when its promotion code
+is the one stored on the partner's code (`Coupon.stripePromotionCodeId`).
+Failing that, it falls back to the string: the promotion code's customer-facing
+code, or the Stripe coupon id (`stripe-webhook.ts findCouponByDiscountCode`).
+A string match credits the partner only when the brand meant that promo for
+the code (`discountMadeForCoupon`):
+
+- a promotion code OpenPartner created for the code (metadata
+  `source: openpartner` and `openpartner_code`), even one the row doesn't
+  store, such as one minted under an earlier connection;
+- any promo or coupon, when the brand's admin typed the code
+  (`Coupon.brandChosen`). Mapping a promo the brand already runs onto a
+  partner is allowed;
+- otherwise, a promo or coupon created no earlier than the partner's code: the
+  brand made it for that code, as the portal asks when a program's discount
+  isn't minted for them.
+
+A promo that predates the code is the brand's own, for example a sitewide
+`WELCOME10` that a partner code minted before the connect happens to equal.
+The mint-time check (`codeExistsInStripe`) refuses exactly those codes when it
+can reach the brand's Stripe, and the webhook applies the same rule to the
+codes it couldn't check. The discount then credits no partner, and a warning
+naming the code and the Stripe object is logged. If the brand did map that
+promo on purpose with a code created before `brandChosen` existed, set it on
+that code's row (there's no setting for it in the portal yet). The same rule
+applies to a single-tenant self-host's `/webhooks/stripe`.
+
 ### Customer rewards
 
 `customer-rewards.ts rewardStripe(tenantId)` returns the brand's own client on
@@ -260,7 +289,7 @@ money (CLAUDE.md principle 4), and nothing edits customers.
 | `dispute_read` | Flag commissions on disputed payments for your review. | `charge.dispute.created` |
 | `promotion_code_read` | Match promotion codes used at checkout to your partners' codes. | `promotionCodes.retrieve` (`resolveDiscountCode`); `promotionCodes.list` (`codeExistsInStripe`); expanding a discount's promotion code |
 | `promotion_code_write` | Create each partner's customer-discount promotion code in your account, and deactivate it when the code is retired. | `provisionCustomerReward`, `deactivateCustomerReward` |
-| `coupon_read` | Check that a new partner code doesn't collide with one of your own coupons. | `coupons.retrieve` (`codeExistsInStripe`) |
+| `coupon_read` | Check that a new partner code doesn't collide with one of your own coupons. | `coupons.retrieve` (`codeExistsInStripe`; `discountMadeForCoupon`, when a coupon id matched a code) |
 | `coupon_write` | Create the coupon behind each partner's customer discount. | `provisionCustomerReward` |
 
 `STRIPE_APP_PERMISSIONS` in `stripe-app.ts` is the source of truth, and a test

@@ -1818,7 +1818,8 @@ async function stitchFromCompletedCheckouts(
  * (Coupon.stripePromotionCodeId, no Stripe read), else by the
  * customer-facing promotion_code.code, else by the Stripe Coupon id —
  * brands setting their Stripe Coupon IDs to match OpenPartner codes works
- * without an extra Stripe API call.
+ * that way. A match by string holds only when that promo or coupon was
+ * meant for the partner's code (findCouponByDiscountCode).
  */
 async function maybeRedeemStripeCoupons(
   trx: Knex.Transaction,
@@ -1842,12 +1843,8 @@ async function maybeRedeemStripeCoupons(
   let firstStitch = false;
   const codes: string[] = [];
   for (const d of await collectDiscounts(stripe, event)) {
-    let coupon = await findCouponByPromotionCodeId(trx, tenantId, d);
-    if (!coupon) {
-      const code = await resolveDiscountCode(stripe, d);
-      if (!code) continue;
-      coupon = await findCouponByCode(trx, tenantId, code);
-    }
+    const coupon =
+      (await findCouponByPromotionCodeId(trx, tenantId, d)) ?? (await findCouponByDiscountCode(trx, stripe, tenantId, d));
     if (!coupon || codes.includes(coupon.code)) continue;
     if (!userId) {
       userId = customerId ? await couponUserId(stripe, customerId) : guestEmail!;
@@ -1882,12 +1879,20 @@ async function couponUserId(stripe: Stripe, customerId: string): Promise<string>
   return (customer && !customer.deleted && customer.metadata?.openpartner_user_id) || customerId;
 }
 
+/** The parts of a Stripe PromotionCode or Coupon a string match is judged
+ *  on (discountMadeForCoupon). */
+interface StripeDiscountObject {
+  id: string;
+  created?: number;
+  metadata?: Record<string, string> | null;
+}
+
 interface DiscountRef {
   id?: string;
-  coupon?: string | { id: string } | null;
-  promotion_code?: string | { id: string; code?: string } | null;
+  coupon?: string | StripeDiscountObject | null;
+  promotion_code?: string | (StripeDiscountObject & { code?: string }) | null;
   // Discount objects name their coupon here (API 2025-03-31 onward).
-  source?: { coupon?: string | { id: string } | null } | null;
+  source?: { coupon?: string | StripeDiscountObject | null } | null;
 }
 
 /**
@@ -1988,23 +1993,104 @@ async function findCouponByPromotionCodeId(
   return row ?? null;
 }
 
-async function resolveDiscountCode(stripe: Stripe, d: DiscountRef): Promise<string | null> {
+/**
+ * The partner coupon a discount names by string: its promotion code's
+ * customer-facing code, else its Stripe Coupon id (resolveDiscountCode).
+ *
+ * A string alone doesn't make the discount the partner's. A partner code
+ * minted while the brand's Stripe was out of reach (on hosted, before the
+ * Stripe App connect), or before codes were checked at all, was never
+ * checked against it, so it can equal a
+ * promo the brand already runs, a sitewide WELCOME10, and would be
+ * credited with every order using it. The match holds only when the brand
+ * meant that promo or coupon for the code (discountMadeForCoupon).
+ * Otherwise the discount credits no partner, as an unknown code wouldn't.
+ */
+async function findCouponByDiscountCode(
+  trx: Knex.Transaction,
+  stripe: Stripe,
+  tenantId: string,
+  d: DiscountRef,
+): Promise<CouponRow | null> {
+  const found = await resolveDiscountCode(stripe, d);
+  if (!found) return null;
+  const coupon = await findCouponByCode(trx, tenantId, found.code);
+  if (!coupon) return null;
+  if (await discountMadeForCoupon(stripe, coupon, found)) return coupon;
+  console.warn("[stripe-webhook] a discount matches a partner code by string but is the brand's own promo; not credited", {
+    tenantId,
+    couponId: coupon.id,
+    code: coupon.code,
+    stripeObject: 'promotionCode' in found ? found.promotionCode.id : stripeObjectId(found.coupon),
+  });
+  return null;
+}
+
+/** A discount's customer-facing code and the Stripe object it is: the
+ *  PromotionCode as read, else the Coupon whose id is the code, by id or
+ *  as the payload carried it. */
+type DiscountCode =
+  | { code: string; promotionCode: StripeDiscountObject }
+  | { code: string; coupon: string | StripeDiscountObject };
+
+async function resolveDiscountCode(stripe: Stripe, d: DiscountRef): Promise<DiscountCode | null> {
   // Prefer the customer-facing PromotionCode string.
   if (d.promotion_code) {
     if (typeof d.promotion_code === 'object' && d.promotion_code.code) {
-      return d.promotion_code.code;
+      return { code: d.promotion_code.code, promotionCode: d.promotion_code };
     }
     const id = typeof d.promotion_code === 'string' ? d.promotion_code : d.promotion_code.id;
     // A transient failure is a 500, so Stripe redelivers the event rather
     // than dropping the redemption for good.
     const promo = await stripeReadOrNull('promotionCodes.retrieve', id, () => stripe.promotionCodes.retrieve(id));
-    if (promo?.code) return promo.code;
+    if (promo?.code) return { code: promo.code, promotionCode: promo };
   }
-  // Fallback: use the Coupon's Stripe ID directly. Brands who set their
-  // Stripe Coupon IDs to match OpenPartner codes don't need the API call.
+  // Fallback: the Coupon's Stripe ID, for brands who set their Stripe
+  // Coupon IDs to match OpenPartner codes.
   const coupon = d.coupon ?? d.source?.coupon;
-  if (coupon) {
-    return typeof coupon === 'string' ? coupon : coupon.id;
-  }
+  if (coupon) return { code: stripeObjectId(coupon), coupon };
   return null;
+}
+
+/**
+ * Did the brand mean this promotion code or coupon for the partner code it
+ * names?
+ *
+ *   - A promotion code we created for that code: metadata source
+ *     'openpartner' and openpartner_code (provisionCustomerReward). Also
+ *     one whose id the Coupon row doesn't hold, such as one minted under an
+ *     earlier connection.
+ *   - Anything, when the brand's admin typed the code (Coupon.brandChosen):
+ *     mapping a promo the brand already runs onto a partner is theirs to
+ *     do (routes/coupons.ts).
+ *   - Otherwise, one created no earlier than the partner's code: the brand
+ *     made it for that code. That's the setup the portal asks for when we
+ *     can't mint the promo ("create a promotion code with the same
+ *     string"), and a self-host brand setting a Stripe Coupon id to match.
+ *
+ * Anything older is the brand's own promo, which the code merely shadows:
+ * the mint-time check (codeExistsInStripe) refuses exactly those codes
+ * whenever it can reach the brand's Stripe. Compared in whole seconds,
+ * Stripe's resolution. A coupon the payload names by id is read back
+ * (transient failure: a 500, so Stripe redelivers; permanent: no match).
+ */
+async function discountMadeForCoupon(stripe: Stripe, coupon: CouponRow, found: DiscountCode): Promise<boolean> {
+  if ('promotionCode' in found) {
+    const meta = found.promotionCode.metadata;
+    if (meta?.source === 'openpartner' && meta.openpartner_code?.toLowerCase() === coupon.code.toLowerCase()) return true;
+  }
+  if (coupon.brandChosen) return true;
+  const object = 'promotionCode' in found ? found.promotionCode : await stripeCouponObject(stripe, found.coupon);
+  if (typeof object?.created !== 'number') return false;
+  return object.created >= Math.floor(coupon.createdAt.getTime() / 1000);
+}
+
+async function stripeCouponObject(stripe: Stripe, coupon: string | StripeDiscountObject): Promise<StripeDiscountObject | null> {
+  if (typeof coupon === 'object' && typeof coupon.created === 'number') return coupon;
+  const id = stripeObjectId(coupon);
+  return stripeReadOrNull('coupons.retrieve', id, () => stripe.coupons.retrieve(id));
+}
+
+function stripeObjectId(object: string | { id: string }): string {
+  return typeof object === 'string' ? object : object.id;
 }

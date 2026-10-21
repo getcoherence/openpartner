@@ -44,8 +44,11 @@ import { openPostbackForExport, sealPostbackForImport } from './postback-url.js'
  *  v7 → v8 (Oct 2026): Click rows carry `subId` (the publisher's `?sub_id=`
  *  off the partner link).
  *  v8 → v9 (Oct 2026): added PartnerPayoutProfile (where each partner wants
- *  manual payouts sent), its `details` opened (see SealedSpec). */
-export const SCHEMA_VERSION = 9;
+ *  manual payouts sent), its `details` opened (see SealedSpec).
+ *  v9 → v10 (Oct 2026): Coupon rows carry `brandChosen` (the brand's admin
+ *  typed the code; the Stripe webhook credits a promo the brand already had
+ *  under it only then). */
+export const SCHEMA_VERSION = 10;
 /** Older bundles still import — a v1 bundle is a v2 bundle minus three
  *  tables, a v2 bundle's PartnerCommission rows are partner-wide v3 rows
  *  (see upgradeBundle), a v3 bundle is a v4 bundle minus
@@ -59,10 +62,12 @@ export const SCHEMA_VERSION = 9;
  *  a v7 bundle with no bounties: none of its bonuses name one. A v7 bundle's
  *  Click rows have no `subId`, so it takes its default (null): no click
  *  carried one before the column existed. A v8 bundle is a v9 bundle with no
- *  payout details: every restored partner starts without any.
+ *  payout details: every restored partner starts without any. A v9 bundle's
+ *  Coupon rows have no `brandChosen`, so it takes its default (false), the
+ *  value the migration gave every existing code.
  *  Dropping support for a version people hold on disk would break the
  *  portability promise, so this list only ever grows. */
-export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
+export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
 
 /**
  * The Config keys that travel: the brand's own program and portal settings.
