@@ -7,6 +7,7 @@ import { getTenancyMode } from './tenancy.js';
 import { db as privilegedDb } from './db.js';
 import { sealPlaintextPayoutProfiles } from './payout-profile.js';
 import { sealDelaySeconds, sealPlaintextWebhookSecrets } from './webhook-secret.js';
+import { sealPlaintextPostbackUrls } from './postback-url.js';
 
 const PORT = Number(process.env.API_PORT ?? 4601);
 const MODE = process.env.OPENPARTNER_MODE ?? 'selfhost';
@@ -95,5 +96,12 @@ app.listen(PORT, () => {
         if (sealed > 0) console.log(`[api] sealed ${sealed} plaintext webhook signing secret(s)`);
       })
       .catch((err) => console.error('[api] webhook secret seal sweep failed', err instanceof Error ? err.message : err));
+    // Partner postback URLs, for the same reason: a build from before
+    // sealing fires whatever `url` holds (postback-url.ts).
+    sealPlaintextPostbackUrls(privilegedDb)
+      .then((sealed) => {
+        if (sealed > 0) console.log(`[api] sealed ${sealed} plaintext partner postback URL(s)`);
+      })
+      .catch((err) => console.error('[api] postback URL seal sweep failed', err instanceof Error ? err.message : err));
   }, sealDelaySeconds() * 1000).unref();
 });

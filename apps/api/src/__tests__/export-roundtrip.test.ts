@@ -19,6 +19,7 @@ import { db } from '../db.js';
 import { createApp } from '../app.js';
 import { generateApiKey, hashKey } from '../auth.js';
 import { verifyPostbackToken } from '../conversion-postback.js';
+import { openPostbackUrl } from '../postback-url.js';
 import { createSession } from '../auth-sessions.js';
 import { getPayoutProfile, savePayoutProfile, type PayoutDetails } from '../payout-profile.js';
 import { isPlaintextSecret, openSecret, sealPlaintextWebhookSecrets, sealSecret } from '../webhook-secret.js';
@@ -551,8 +552,9 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(settings.value).toMatchObject({ programName: "O'Hara Partners", supportEmail: 'partners@x.test' });
     const asset = await db(TABLES.BrandAsset).first();
     expect(asset.url).toBe('https://cdn.x.test/tenants/t/brand-assets/0123abcd.png');
+    // Sealed again on import (once past the deploy grace), so read it opened.
     const postback = await db(TABLES.PartnerPostback).first();
-    expect(postback.url).toBe('https://tracker.x.test/pb?cid={click_id}&amt={commission_amount}');
+    expect(openPostbackUrl(postback.url)).toBe('https://tracker.x.test/pb?cid={click_id}&amt={commission_amount}');
     expect(postback.events).toEqual(['commission.accrued']);
   }, 30_000);
 

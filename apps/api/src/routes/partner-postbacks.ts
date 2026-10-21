@@ -10,9 +10,16 @@
  * (the conversion ledger) or bonus.awarded / bonus.paid. partner-state
  * events stay tenant-scoped via the WebhookEndpoint surface and don't make
  * sense to send to an affiliate tracker.
+ *
+ * The URL holds the partner's tracker secret, so it is sealed at rest
+ * (postback-url.ts) and no response here carries it, except GET
+ * …/:postbackId/url, which answers the partner who owns it and nobody
+ * else, for the edit form. Everything else shows `urlPreview`, the URL
+ * with its path and query values masked. An admin can still replace a
+ * partner's URL, without seeing the one it replaces.
  */
 
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { z } from 'zod';
 import { ulid } from 'ulid';
 import {
@@ -24,6 +31,7 @@ import { requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { isPostbackEvent, postbackEventsList } from '../partner-postback.js';
 import { checkOutboundDestination } from '../outbound-guard.js';
+import { openPostbackUrl, postbackUrlPreview, storedPostbackUrl } from '../postback-url.js';
 
 const URL_MAX = 2048;
 
@@ -43,6 +51,23 @@ const updateSchema = z.object({
   enabled: z.boolean().optional(),
 });
 
+/** A postback as every response shows it: `url` swapped for its preview.
+ *  `url` is left out rather than masked, so a client that sends a row it
+ *  read back can't overwrite the real URL with the masked one. */
+export type PostbackView = Omit<PartnerPostbackRow, 'url' | 'urlPreview'> & { urlPreview: string | null };
+
+export function postbackView(row: PartnerPostbackRow): PostbackView {
+  const { url: _sealed, urlPreview: _stored, ...rest } = row;
+  return { ...rest, urlPreview: postbackUrlPreview(row) };
+}
+
+/** The partner named in the route, signed in as themselves (not an
+ *  admin acting for them). */
+function isOwningPartner(req: Request): boolean {
+  const p = req.principal;
+  return p?.role === 'partner' && p.partnerId === req.params.id;
+}
+
 export const partnerPostbacksRouter = Router();
 
 partnerPostbacksRouter.get(
@@ -54,7 +79,31 @@ partnerPostbacksRouter.get(
     const rows = await db<PartnerPostbackRow>(TABLES.PartnerPostback)
       .where({ tenantId, partnerId: req.params.id })
       .orderBy('createdAt', 'desc');
-    res.json({ postbacks: rows, supportedEvents: postbackEventsList() });
+    res.json({ postbacks: rows.map(postbackView), supportedEvents: postbackEventsList() });
+  },
+);
+
+/**
+ * The URL itself, for the partner's edit form. Only the partner who owns
+ * it: an admin managing a partner's postbacks sees the preview and can
+ * replace the URL, but never reads it. 409 `url_unreadable` when it was
+ * sealed under another deployment's key; the partner enters it again.
+ */
+partnerPostbacksRouter.get(
+  '/partners/:id/postbacks/:postbackId/url',
+  requireAuth,
+  requirePartnerOrAdmin('id'),
+  async (req, res) => {
+    if (!isOwningPartner(req)) return res.status(403).json({ error: 'partner_only' });
+    const { db, tenantId } = tenantOf(req);
+    const row = await db<PartnerPostbackRow>(TABLES.PartnerPostback)
+      .where({ id: req.params.postbackId, tenantId, partnerId: req.params.id })
+      .first('url');
+    if (!row) return res.status(404).json({ error: 'postback_not_found' });
+    const url = openPostbackUrl(row.url);
+    res.set('cache-control', 'no-store');
+    if (!url) return res.status(409).json({ error: 'url_unreadable' });
+    res.json({ url });
   },
 );
 
@@ -80,12 +129,12 @@ partnerPostbacksRouter.post(
         id,
         tenantId,
         partnerId: req.params.id,
-        url: body.data.url,
+        ...storedPostbackUrl(body.data.url),
         events: JSON.stringify(body.data.events) as unknown as PartnerPostbackEvent[],
         enabled: body.data.enabled ?? true,
       })
       .returning('*');
-    res.status(201).json(row);
+    res.status(201).json(postbackView(row!));
   },
 );
 
@@ -104,7 +153,7 @@ partnerPostbacksRouter.patch(
     }
 
     const patch: Partial<PartnerPostbackRow> = { updatedAt: new Date() };
-    if (body.data.url !== undefined) patch.url = body.data.url;
+    if (body.data.url !== undefined) Object.assign(patch, storedPostbackUrl(body.data.url));
     if (body.data.events !== undefined) {
       patch.events = JSON.stringify(body.data.events) as unknown as PartnerPostbackEvent[];
     }
@@ -115,7 +164,7 @@ partnerPostbacksRouter.patch(
       .update(patch)
       .returning('*');
     if (updated.length === 0) return res.status(404).json({ error: 'postback_not_found' });
-    res.json(updated[0]);
+    res.json(postbackView(updated[0]!));
   },
 );
 

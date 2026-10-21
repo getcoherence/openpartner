@@ -106,7 +106,7 @@ Anything user-facing and runtime-adjustable lives in the `Config` table, editabl
 - **Program settings** — program name + support email (plaintext, identifiers not secrets)
 - **Mail settings** — SMTP or Postmark selection + credentials
 
-Credentials inside `Config` (SMTP password, Postmark server token) are AES-256-GCM encrypted at rest using `SECRETS_ENCRYPTION_KEY` — the one env-level secret required in production. The same envelope seals the Stripe App's OAuth tokens, partner payout details and outbound webhook signing secrets, which the dispatcher opens only to sign a delivery. Public readers of the Settings API get a sanitized view (`hasPassword: true/false`) so the UI can show "saved ✓" without ever exposing plaintext.
+Credentials inside `Config` (SMTP password, Postmark server token) are AES-256-GCM encrypted at rest using `SECRETS_ENCRYPTION_KEY` — the one env-level secret required in production. The same envelope seals the Stripe App's OAuth tokens, partner payout details, outbound webhook signing secrets, which the dispatcher opens only to sign a delivery, and partner postback URLs (which carry the partner's tracker secret), opened only to fire the postback. Public readers of the Settings API get a sanitized view (`hasPassword: true/false`) so the UI can show "saved ✓" without ever exposing plaintext.
 
 Env vars like `SMTP_HOST` / `POSTMARK_SERVER_TOKEN` / `MAIL_FROM` remain as **fallbacks** — the mailer resolves UI config first, env second, console stdout last (dev only). Hosted deployments can force a transport via env; self-hosters who want to rotate credentials without a redeploy do so from the Settings page.
 
