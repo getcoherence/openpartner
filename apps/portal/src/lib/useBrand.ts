@@ -95,7 +95,8 @@ export function useDefaultCurrency(): string {
  * payout funding, or a brand on the manual rail), a connected account
  * would never be paid, so the portal points partners at Payout details
  * instead of offering Connect. An API that predates the field keeps the
- * old behaviour.
+ * old behaviour; a failed fetch doesn't offer Connect, since on hosted
+ * that would put the prompts back for every partner.
  */
 export function useConnectPayouts(): boolean {
   const { data } = useQuery({
@@ -103,7 +104,7 @@ export function useConnectPayouts(): boolean {
     queryFn: () => api<ProgramSettings>('/config/program'),
     staleTime: 60_000,
   });
-  return data?.connectPayoutsAvailable ?? true;
+  return data ? (data.connectPayoutsAvailable ?? true) : false;
 }
 
 /** Shape of the public `GET /branding` bootstrap (no auth). */

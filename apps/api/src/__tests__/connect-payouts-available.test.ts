@@ -155,9 +155,13 @@ describe.skipIf(skipIntegration)('GET /config/program connectPayoutsAvailable', 
     expect(await available()).toBe(true);
   });
 
-  it('a partner reads the same answer as the admin', async () => {
+  it('a partner reads the same answer as the admin, including the funding authorization', async () => {
     expect(await available({ Cookie: partnerCookie })).toBe(true);
     await hosted();
     expect(await available({ Cookie: partnerCookie })).toBe(false);
+    process.env.HOSTED_FUNDING_ENABLED = '1';
+    expect(await available({ Cookie: partnerCookie })).toBe(false);
+    await authorizeFunding();
+    expect(await available({ Cookie: partnerCookie })).toBe(true);
   });
 });

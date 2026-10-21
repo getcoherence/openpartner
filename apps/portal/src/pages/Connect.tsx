@@ -59,8 +59,8 @@ export function ConnectPage({ principal }: { principal: Principal }) {
             {programName} doesn’t pay through Stripe Connect
           </div>
           <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 16, maxWidth: 560 }}>
-            {programName} pays you directly. Add your PayPal or bank details on the Payout details page so they know
-            where to send your payouts.
+            Add your PayPal or bank details on the Payout details page so {programName} knows where to send your
+            payouts.
           </div>
           <TenantLink to="/payout-details" style={{ textDecoration: 'none' }}>
             <Button icon={<Landmark size={14} />}>Go to Payout details</Button>

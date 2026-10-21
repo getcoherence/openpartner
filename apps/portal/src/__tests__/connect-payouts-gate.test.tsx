@@ -72,11 +72,16 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+let qc: QueryClient;
+
 /** The app shell loads /config/program before rendering anything, so the
- *  settings are already cached when these components mount. */
-function renderWith(ui: React.ReactElement, connectPayoutsAvailable: boolean | undefined) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-  qc.setQueryData(['program-settings'], { ...BRAND, connectPayoutsAvailable });
+ *  settings are already cached when these components mount. Pass 'failed'
+ *  to leave them uncached, with the endpoint erroring. */
+function renderWith(ui: React.ReactElement, connectPayoutsAvailable: boolean | undefined | 'failed') {
+  qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  if (connectPayoutsAvailable !== 'failed') {
+    qc.setQueryData(['program-settings'], { ...BRAND, connectPayoutsAvailable });
+  }
   qc.setQueryData(['network-consent'], { offered: false, status: null });
   return render(
     <MemoryRouter>
@@ -84,6 +89,10 @@ function renderWith(ui: React.ReactElement, connectPayoutsAvailable: boolean | u
     </MemoryRouter>,
   );
 }
+
+/** Wait until the dashboard's payout-profile fetch has actually settled. */
+const payoutProfileSettled = () =>
+  waitFor(() => expect(qc.getQueryState(['payout-profile', 'p1'])?.status).toBe('success'));
 
 const connectStatusCalls = () => requested.filter((p) => p.endsWith('/connect/status'));
 
@@ -103,6 +112,12 @@ describe('partner sidebar', () => {
   it('keeps it for an API that predates the field', () => {
     const page = renderWith(<Sidebar principal={PARTNER} />, undefined);
     expect(page.getByText('Stripe Connect')).toBeTruthy();
+  });
+
+  it('leaves it out when the settings fetch fails, rather than offering Connect to every partner', async () => {
+    const page = renderWith(<Sidebar principal={PARTNER} />, 'failed');
+    await waitFor(() => expect(qc.getQueryState(['program-settings'])?.status).toBe('error'));
+    expect(page.queryByText('Stripe Connect')).toBeNull();
   });
 });
 
@@ -140,15 +155,24 @@ describe('partner dashboard getting-started', () => {
 
   it('drops the card once the link and payout details are both in place', async () => {
     routes['/api/partners/p1/payout-profile'] = {
-      profile: { method: 'paypal', summary: 'PayPal · p•••@example.com' },
+      profile: { method: 'paypal', details: { email: 'pat@example.com' }, summary: 'PayPal · p•••@example.com' },
       paidVia: 'manual',
     };
     const page = renderWith(<Dashboard principal={PARTNER} />, false);
     expect(await page.findByText('Attributed events')).toBeTruthy();
-    await waitFor(() => expect(requested).toContain('/api/partners/p1/payout-profile'));
-    // Let the profile response settle before asserting the card stays away.
-    await new Promise((r) => setTimeout(r, 20));
+    await payoutProfileSettled();
     expect(page.queryByText('Getting started')).toBeNull();
     expect(page.container.textContent).not.toMatch(/Connect Stripe/);
+  });
+
+  it('keeps asking when saved details can no longer be read', async () => {
+    routes['/api/partners/p1/payout-profile'] = {
+      profile: { method: 'paypal', details: null, summary: null },
+      paidVia: 'manual',
+    };
+    const page = renderWith(<Dashboard principal={PARTNER} />, false);
+    await payoutProfileSettled();
+    expect(await page.findByText('Add your payout details')).toBeTruthy();
+    expect(page.getByRole('link', { name: 'Add details' })).toBeTruthy();
   });
 });

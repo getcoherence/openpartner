@@ -104,7 +104,7 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
   // finish instead. Same cache entry as the Payout details page.
   const payoutProfile = useQuery({
     queryKey: ['payout-profile', partnerId],
-    queryFn: () => api<{ profile: unknown }>(`/partners/${partnerId}/payout-profile`),
+    queryFn: () => api<{ profile: { details: unknown } | null }>(`/partners/${partnerId}/payout-profile`),
     retry: false,
     enabled: !connectPayouts,
   });
@@ -119,7 +119,9 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
   const linkCount = links.data?.links.length ?? 0;
   const hasLink = linkCount > 0;
   const hasActiveConnect = !!connect.data?.connected && !!connect.data?.payoutsEnabled;
-  const payoutReady = connectPayouts ? hasActiveConnect : !!payoutProfile.data?.profile;
+  // Saved details that can't be opened come back as `details: null`: the
+  // partner has to enter them again, so the step isn't done.
+  const payoutReady = connectPayouts ? hasActiveConnect : !!payoutProfile.data?.profile?.details;
 
   const owed = amounts ? statusAmounts(amounts.commissions, 'approved', 'accrued') : {};
   const needsConnect =
