@@ -62,12 +62,14 @@ function view(profile: OpenedPayoutProfile | null) {
 }
 
 /** How this partner is paid today: a manual payout (these details) or
- *  Stripe Connect (these details aren't used). */
-async function paidVia(req: Request, partner: Pick<PartnerRow, 'stripeConnectAccountId'>) {
+ *  Stripe Connect (these details aren't used). `rail` is the brand's
+ *  setting behind that, so the partner portal can tell "connect Stripe"
+ *  from "the brand pays you itself". */
+async function payoutRail(req: Request, partner: Pick<PartnerRow, 'stripeConnectAccountId'>) {
   const { db, tenantId } = tenantOf(req);
   const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first(['payoutRailPreference']);
   const rail: PayoutRailPreference = tenant?.payoutRailPreference ?? 'auto';
-  return resolvePayoutMethod(rail, partner);
+  return { paidVia: resolvePayoutMethod(rail, partner), rail };
 }
 
 async function findPartner(req: Request) {
@@ -120,7 +122,7 @@ payoutProfilesRouter.get(
     const partner = await findPartner(req);
     if (!partner) return res.status(404).json({ error: 'partner_not_found' });
     const profile = await getPayoutProfile(db, tenantId, partner.id);
-    res.json({ profile: view(profile), paidVia: await paidVia(req, partner) });
+    res.json({ profile: view(profile), ...(await payoutRail(req, partner)) });
   },
 );
 
@@ -138,7 +140,7 @@ payoutProfilesRouter.put(
     const updatedBy = updatedByOf(req);
     const profile = await savePayoutProfile(db, tenantId, partner.id, parsed.details, updatedBy);
     notifyPartner(req, partner, summarizeDetails(parsed.details), updatedBy);
-    res.json({ profile: view(profile), paidVia: await paidVia(req, partner) });
+    res.json({ profile: view(profile), ...(await payoutRail(req, partner)) });
   },
 );
 
