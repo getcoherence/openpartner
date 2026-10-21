@@ -407,6 +407,19 @@ async function recordMappedEvent(
     // Retry of a previously-processed event — the first delivery
     // already attributed it. Return 2xx so Stripe stops retrying.
     const existing = await trx<EventRow>(TABLES.Event).where({ tenantId, externalEventId }).first();
+    // Unless the brand's own call took the key first. recordedFromStripe
+    // refuses a forwarded Checkout Session or invoice id now, but an Event
+    // recorded before that (or forwarded while a connection was down) still
+    // holds it, and this conversion goes unrecorded. Redelivery can't help.
+    if (existing && existing.metadata?.stripeEventId == null) {
+      console.warn('[stripe-webhook] key already taken by a forwarded conversion; not recorded', {
+        stripeEventId: event.id,
+        externalEventId,
+        type: mapped.type,
+        value: mapped.value ?? null,
+        heldBy: { eventId: existing.id, type: existing.type, value: existing.value },
+      });
+    }
     return { idempotent: true, eventId: existing?.id };
   }
 

@@ -3419,3 +3419,233 @@ describe.skipIf(skipIntegration)('stripe webhook — one-time (mode=payment) Che
     expect(await aggregateAttributedGmv(db, DEFAULT_TENANT_ID, null, new Date(Date.now() + 60_000))).toEqual({ EUR: 129 });
   });
 });
+
+describe.skipIf(skipIntegration)('stripe webhook — a forwarded conversion keyed on a Checkout Session (single-tenant self-host)', () => {
+  // POST /coupons/redeem was documented to take the Checkout Session id as its
+  // key, and the webhook records a one-time Checkout's revenue under that same
+  // key. A redemption that arrived first took it, and the revenue insert then
+  // read as a replay of it: the purchase's revenue and commission were silently
+  // lost. The forwarded call is refused now, whichever arrives first, as on
+  // OpenPartner Cloud with the Stripe App connected.
+
+  const ADMIN = 'op_test_stripe_session_key_0123456789abcd';
+  const auth = { Authorization: `Bearer ${ADMIN}` };
+  let previousAdminKey: string | undefined;
+  beforeAll(() => {
+    previousAdminKey = process.env.ADMIN_API_KEY;
+    process.env.ADMIN_API_KEY = ADMIN;
+  });
+  afterAll(async () => {
+    if (previousAdminKey === undefined) delete process.env.ADMIN_API_KEY;
+    else process.env.ADMIN_API_KEY = previousAdminKey;
+    if (!skipIntegration) {
+      await db(TABLES.ConversionPostbackToken).del();
+      await db(TABLES.Tenant).where({ id: DEFAULT_TENANT_ID }).update({ couponIntegrationVerifiedAt: null });
+    }
+  });
+
+  async function seedPromoCoupon() {
+    const { partnerId, programId, clickId } = await seedClick();
+    const code = `CREATOR${ulid().slice(-6)}`;
+    const promotionCodeId = `promo_${ulid()}`;
+    await db(TABLES.Coupon).insert({
+      id: ulid(),
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId,
+      programId,
+      code,
+      stripePromotionCodeId: promotionCodeId,
+    });
+    return { partnerId, clickId, code, promotionCodeId };
+  }
+
+  /** A paid one-time Checkout with the partner's promotion code applied. */
+  function paidCheckout(sessionId: string, customerId: string, promotionCodeId: string) {
+    return {
+      id: `evt_${ulid()}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: sessionId,
+          object: 'checkout.session',
+          mode: 'payment',
+          status: 'complete',
+          payment_status: 'paid',
+          amount_total: 12900,
+          currency: 'eur',
+          client_reference_id: null,
+          customer: customerId,
+          payment_intent: `pi_${ulid()}`,
+          invoice: null,
+          discounts: [{ promotion_code: promotionCodeId }],
+        },
+      },
+    };
+  }
+
+  function redeem(code: string, externalEventId: string, fields: Record<string, unknown> = {}) {
+    return request(app)
+      .post('/coupons/redeem')
+      .set(auth)
+      .send({ code, eventType: 'signup', userId: 'user_42', externalEventId, ...fields });
+  }
+
+  it('a redemption keyed on the session is refused, and checkout.session.completed still records the revenue', async () => {
+    const { partnerId, code, promotionCodeId } = await seedPromoCoupon();
+    const sessionId = `cs_test_a1${ulid()}`;
+    const customerId = `cus_${ulid()}`;
+    // The brand links the Customer to its own user, as the 409 detail says.
+    stripeApi.customersRetrieve.mockResolvedValue({ id: customerId, metadata: { openpartner_user_id: 'user_42' }, deleted: false });
+
+    // The brand's checkout reports the code before Stripe's webhook arrives.
+    const bySession = await redeem(code, sessionId);
+    expect(bySession.status).toBe(409);
+    expect(bySession.body.error).toBe('recorded_from_stripe');
+    expect(bySession.body.detail).toMatch(/own order id/);
+    expect(await db(TABLES.Event)).toHaveLength(0);
+    expect(await db(TABLES.Click).where({ landingUrl: `coupon://${code}` })).toHaveLength(0);
+
+    // Under its own order id it records, as before.
+    const byOrder = await redeem(code, 'order-1001');
+    expect(byOrder.status).toBe(201);
+
+    const res = await postWebhook(paidCheckout(sessionId, customerId, promotionCodeId));
+    expect(res.status).toBe(200);
+
+    const revenue = await db(TABLES.Event).where({ type: 'invoice_paid' });
+    expect(revenue).toHaveLength(1);
+    expect(revenue[0]).toMatchObject({ userId: 'user_42', value: '129.00', currency: 'EUR', externalEventId: sessionId });
+    const attribution = await db(TABLES.Attribution).where({ eventId: revenue[0]!.id }).first();
+    expect(attribution?.partnerId).toBe(partnerId);
+    // seedClick's program pays 20% of value.
+    expect(await db(TABLES.Commission).where({ attributionId: attribution!.id }).pluck('amount')).toEqual(['25.80']);
+    // The redemption's signup is the user's one signup: the webhook adds none.
+    expect(await db(TABLES.Event).where({ type: 'signup' }).pluck('externalEventId')).toEqual(['order-1001']);
+  });
+
+  it("a code the brand's own app took, redeemed under its order id, is credited with the checkout's revenue", async () => {
+    // What the 409 detail tells the brand to do: no promotion code reaches
+    // Stripe, so the Customer's openpartner_user_id is the only link.
+    const { partnerId, code } = await seedPromoCoupon();
+    const sessionId = `cs_test_a1${ulid()}`;
+    const customerId = `cus_${ulid()}`;
+    stripeApi.customersRetrieve.mockResolvedValue({ id: customerId, metadata: { openpartner_user_id: 'user_42' }, deleted: false });
+
+    expect((await redeem(code, 'order-1002')).status).toBe(201);
+    const checkout = paidCheckout(sessionId, customerId, 'unused');
+    delete (checkout.data.object as { discounts?: unknown }).discounts;
+    expect((await postWebhook(checkout)).status).toBe(200);
+
+    const [revenue] = await db(TABLES.Event).where({ type: 'invoice_paid', externalEventId: sessionId });
+    expect(revenue).toMatchObject({ userId: 'user_42', value: '129.00' });
+    const attribution = await db(TABLES.Attribution).where({ eventId: revenue!.id }).first();
+    expect(attribution?.partnerId).toBe(partnerId);
+  });
+
+  it('is refused after the webhook too, on every route that shares the key (and /postback)', async () => {
+    const { clickId, code, promotionCodeId } = await seedPromoCoupon();
+    const sessionId = `cs_live_a1${ulid()}`;
+    await postWebhook(paidCheckout(sessionId, `cus_${ulid()}`, promotionCodeId));
+    const [revenue] = await db(TABLES.Event).where({ type: 'invoice_paid', externalEventId: sessionId });
+    expect(revenue).toBeTruthy();
+
+    const forwarded = { type: 'invoice_paid', value: 129, currency: 'EUR', externalEventId: sessionId };
+    const answers = [
+      await redeem(code, sessionId, { eventType: 'invoice_paid', value: 129, currency: 'EUR' }),
+      await request(app).post('/attribution/events').set(auth).send({ userId: 'user_42', ...forwarded }),
+      await request(app).post('/attribution/conversions').set(auth).send({ clickId, ...forwarded }),
+    ];
+    for (const res of answers) {
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('recorded_from_stripe');
+    }
+    const token = await request(app).post('/conversion-postback/token').set(auth).send({});
+    expect(token.status).toBe(201);
+    const postback = await request(app)
+      .get('/postback')
+      .query({ token: token.body.plaintext, click_id: clickId, type: 'invoice_paid', amount: '129', txn_id: sessionId });
+    expect(postback.status).toBe(409);
+    expect(postback.text).toContain('recorded_from_stripe');
+    // Stripe's record stays the only one.
+    expect(await db(TABLES.Event).where({ type: 'invoice_paid' }).pluck('id')).toEqual([revenue!.id]);
+    expect(await db(TABLES.Commission)).toHaveLength(1);
+  });
+
+  it('is accepted where the webhook records no checkouts, and an invoice id always is', async () => {
+    const { code } = await seedPromoCoupon();
+    const saved = {
+      STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET,
+      STRIPE_WEBHOOK_SECRET_PLATFORM: process.env.STRIPE_WEBHOOK_SECRET_PLATFORM,
+      STRIPE_WEBHOOK_SECRET_CONNECT: process.env.STRIPE_WEBHOOK_SECRET_CONNECT,
+    };
+    try {
+      // A Connect-only secret verifies account.updated, never a checkout, so
+      // forwarding is this brand's only way to record one. (The gate reads
+      // the env per call; the route read it at startup.)
+      process.env.STRIPE_WEBHOOK_SECRET = '';
+      process.env.STRIPE_WEBHOOK_SECRET_PLATFORM = ' , ';
+      process.env.STRIPE_WEBHOOK_SECRET_CONNECT = 'whsec_connect_only';
+      expect((await redeem(code, `cs_test_a1${ulid()}`)).status).toBe(201);
+
+      // A platform secret alone does verify checkouts.
+      process.env.STRIPE_WEBHOOK_SECRET_PLATFORM = 'whsec_platform_old,whsec_platform_new';
+      expect((await redeem(code, `cs_test_a1${ulid()}`)).status).toBe(409);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+
+    // The self-host webhook keys an invoice's revenue on the Stripe event id,
+    // so an invoice id can't take its key.
+    expect((await redeem(code, `in_1${ulid()}`, { userId: 'user_43' })).status).toBe(201);
+  });
+
+  it('a session key a forwarded conversion already holds is logged, not dropped silently', async () => {
+    const { code, promotionCodeId } = await seedPromoCoupon();
+    const sessionId = `cs_test_a1${ulid()}`;
+    // A redemption recorded under the session id before the 409 existed.
+    const heldId = ulid();
+    await db(TABLES.Event).insert({
+      id: heldId,
+      tenantId: DEFAULT_TENANT_ID,
+      userId: 'user_42',
+      type: 'signup',
+      value: null,
+      currency: 'USD',
+      externalEventId: sessionId,
+      metadata: { source: 'coupon', code },
+      ts: new Date(),
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const collision = '[stripe-webhook] key already taken by a forwarded conversion; not recorded';
+    try {
+      // A plain redelivery, and the same checkout reported again under a new
+      // Stripe event id, replay what the webhook itself recorded: no warning.
+      const own = paidCheckout(`cs_test_a1${ulid()}`, `cus_${ulid()}`, promotionCodeId);
+      await postWebhook(own);
+      await postWebhook(own);
+      await postWebhook({ ...own, id: `evt_${ulid()}` });
+      expect(warn).not.toHaveBeenCalledWith(collision, expect.anything());
+      expect(await db(TABLES.Event).where({ type: 'invoice_paid' })).toHaveLength(1);
+
+      const res = await postWebhook(paidCheckout(sessionId, `cus_${ulid()}`, promotionCodeId));
+      expect(res.status).toBe(200);
+      expect(warn).toHaveBeenCalledWith(
+        collision,
+        expect.objectContaining({
+          externalEventId: sessionId,
+          type: 'invoice_paid',
+          value: 129,
+          heldBy: expect.objectContaining({ eventId: heldId, type: 'signup' }),
+        }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+    // Still lost: the warning makes it visible, it doesn't repair it.
+    expect(await db(TABLES.Event).where({ type: 'invoice_paid', externalEventId: sessionId })).toHaveLength(0);
+  });
+});

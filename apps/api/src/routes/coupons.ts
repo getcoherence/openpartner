@@ -50,7 +50,7 @@ import { attributeEvent } from '../attribution.js';
 import { sameConversion } from '../conversion-ingest.js';
 import { currencyInputSchema, ingestCurrency } from '../currency.js';
 import { codeExistsInStripe, deactivateCustomerReward, provisionCustomerReward } from '../customer-rewards.js';
-import { RECORDED_FROM_STRIPE_DETAIL, recordedFromStripe } from '../stripe-app.js';
+import { recordedFromStripe, recordedFromStripeDetail } from '../stripe-app.js';
 
 export const couponsRouter = Router();
 
@@ -405,8 +405,9 @@ export const redeemSchema = z.object({
   value: z.number().nonnegative().optional(),
   /** Any case; stored upper case. Omitted → the tenant's default currency. */
   currency: currencyInputSchema.optional(),
-  /** Required so we can dedup retries. Use the brand's checkout-session
-   *  ID, order ID, or whatever's stable. */
+  /** Required so we can dedup retries. Use the brand's order ID, or
+   *  whatever's stable. Not a Stripe Checkout Session id where Stripe
+   *  reports that checkout itself (recordedFromStripe). */
   externalEventId: z.string().min(1).max(120),
   /** The brand's internal user ID. Identity row links userId ↔
    *  synthetic clickId so subsequent events from the same user
@@ -430,12 +431,14 @@ couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), r
   if (!coupon) return res.status(404).json({ error: 'coupon_not_found' });
 
   const { userId, eventType, value, currency, externalEventId } = body.data;
-  // Keyed on a Checkout Session or invoice while the brand's Stripe account
-  // is connected: the app records that checkout, and redeems a partner code
-  // entered at Stripe Checkout itself. A redemption under the same key would
-  // take it first and the checkout's revenue would be dropped as a replay.
+  // Keyed on a Checkout Session (or, connected, an invoice) whose payment
+  // Stripe reports to us itself: the brand's connected account on hosted, or
+  // a single-tenant self-host's own /webhooks/stripe. That records the
+  // checkout under the session id and redeems a partner code entered at
+  // Stripe Checkout. A redemption under the same key would take it first and
+  // the checkout's revenue would be dropped as a replay.
   if (await recordedFromStripe(db, tenantId, externalEventId)) {
-    return res.status(409).json({ error: 'recorded_from_stripe', detail: RECORDED_FROM_STRIPE_DETAIL });
+    return res.status(409).json({ error: 'recorded_from_stripe', detail: recordedFromStripeDetail() });
   }
   const ts = body.data.ts ? new Date(body.data.ts) : new Date();
   const row = {

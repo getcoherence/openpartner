@@ -167,8 +167,9 @@ export type ClickConversionResult =
  * A retry with the same externalEventId replays the original result, even if
  * the click has been flagged since. Reusing the key for a different click or
  * conversion is a 409, and so is a Stripe invoice or Checkout Session id while
- * the brand's Stripe account is connected (recorded_from_stripe): that payment
- * is recorded from Stripe itself.
+ * the brand's Stripe account is connected, or a Checkout Session id on a
+ * single-tenant self-host whose /webhooks/stripe is set up
+ * (recorded_from_stripe): that payment is recorded from Stripe itself.
  */
 export async function recordClickConversion(
   db: Knex,

@@ -46,7 +46,7 @@ import { decryptSecret, encryptSecret, macValue, verifyMac } from './crypto.js';
 import { opsStripeAppReconnectEmail } from './email-templates.js';
 import { sendOpsEmail } from './platform-ops-mail.js';
 import { getMode } from './stripe.js';
-import { withTenantTransaction } from './tenancy.js';
+import { getTenancyMode, withTenantTransaction } from './tenancy.js';
 
 // ---------------------------------------------------------------------------
 // Permissions — keep in step with stripe-app/stripe-app.json (a test holds
@@ -781,23 +781,34 @@ export async function brandStripeForRewards(tenantId: string): Promise<Stripe | 
 /** Stripe ids the app records revenue under: an invoice (invoice.paid) or
  *  a Checkout Session (a one-time Checkout / Payment Link purchase). */
 const STRIPE_TRANSACTION_KEY = /^(in|cs_(live|test))_[A-Za-z0-9]+$/;
+/** The one of those a single-tenant self-host's /webhooks/stripe keys on:
+ *  it records an invoice's revenue under the Stripe event id instead
+ *  (BrandStripeSource.keyRevenueByTransaction). */
+const CHECKOUT_SESSION_KEY = /^cs_(live|test)_[A-Za-z0-9]+$/;
 
 /**
- * Is this externalEventId a Stripe transaction the brand's connected
- * Stripe account reports to us itself? Then a forwarded conversion under
- * that key is refused (409 recorded_from_stripe), whichever arrives first:
- * the Stripe-sourced Event — Stripe's amount, Stripe's customer — is the
- * one record of that payment, and the forwarded copy can neither pay the
+ * Is this externalEventId a Stripe transaction the brand's Stripe account
+ * reports to us itself? Then a forwarded conversion under that key is
+ * refused (409 recorded_from_stripe), whichever arrives first: the
+ * Stripe-sourced Event — Stripe's amount, Stripe's customer — is the one
+ * record of that payment, and the forwarded copy can neither pay the
  * partner twice nor understate the amount the platform fee is billed on.
  *
- * Only while the connection is healthy: a connection waiting for a
+ * Hosted: only while the connection is healthy. A connection waiting for a
  * reconnect isn't recording anything, so forwarding is the brand's only
  * path. A conversion forwarded under the brand's own order id can't be
  * matched to a Stripe payment; docs/stripe-app.md tells brands to stop
  * forwarding Stripe-billed revenue once connected.
+ *
+ * A single-tenant self-host whose /webhooks/stripe receives the brand's
+ * checkouts: a Checkout Session id only. Without this, a coupon redemption
+ * (or a signup) keyed on the session took the key first, and the webhook
+ * then dropped that checkout's revenue as a replay of it.
  */
 export async function recordedFromStripe(knex: Knex, tenantId: string, externalEventId: string | null | undefined): Promise<boolean> {
-  if (!externalEventId || !STRIPE_TRANSACTION_KEY.test(externalEventId) || !isHostedMode()) return false;
+  if (!externalEventId) return false;
+  if (!isHostedMode()) return CHECKOUT_SESSION_KEY.test(externalEventId) && selfHostRecordsCheckouts();
+  if (!STRIPE_TRANSACTION_KEY.test(externalEventId)) return false;
   const row = await knex<TenantStripeConnectionRow>(TABLES.TenantStripeConnection)
     .where({ tenantId })
     .whereNull('disconnectedAt')
@@ -806,5 +817,24 @@ export async function recordedFromStripe(knex: Knex, tenantId: string, externalE
   return row != null;
 }
 
-export const RECORDED_FROM_STRIPE_DETAIL =
-  "Your Stripe account is connected, so Stripe invoices and Checkout payments (and partner codes entered at Stripe Checkout) are recorded from Stripe directly. Don't report them here: link the Stripe customer to your user instead (client_reference_id at Checkout, or metadata.openpartner_user_id on the Customer).";
+/**
+ * Does /webhooks/stripe record this self-host's Checkout payments? Only on a
+ * single-tenant self-host, where STRIPE_SECRET_KEY is the brand's own
+ * account (receivesBrandStripeEvents in routes/stripe-webhook.ts), and only
+ * with a signing secret that verifies its checkout events: the platform
+ * destination's, or the legacy combined one. A Connect-only secret carries
+ * account.updated and nothing else.
+ */
+function selfHostRecordsCheckouts(): boolean {
+  if (getMode() !== 'selfhost' || getTenancyMode() !== 'single' || !process.env.STRIPE_SECRET_KEY) return false;
+  return [process.env.STRIPE_WEBHOOK_SECRET_PLATFORM, process.env.STRIPE_WEBHOOK_SECRET].some((v) =>
+    (v ?? '').split(',').some((s) => s.trim() !== ''),
+  );
+}
+
+/** The 409 recorded_from_stripe detail for this deployment. */
+export function recordedFromStripeDetail(): string {
+  return isHostedMode()
+    ? "Your Stripe account is connected, so Stripe invoices and Checkout payments (and partner codes entered at Stripe Checkout) are recorded from Stripe directly. Don't report them here: link the Stripe customer to your user instead (client_reference_id at Checkout, or metadata.openpartner_user_id on the Customer)."
+    : "This OpenPartner receives your Stripe webhooks, which record a one-time Checkout's payment under its Checkout Session id, so that id is reserved for them. Key this call on your own order id instead, and redeem a partner code when the customer applies it, before they pay. The webhook credits the payment when it can tie the checkout to a partner: client_reference_id, a code entered at Stripe Checkout, or a Customer whose metadata.openpartner_user_id is your userId. Report the payment yourself only when it can't, as for a guest checkout with a code your own app took.";
+}

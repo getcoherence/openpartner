@@ -195,6 +195,11 @@ The order of arrival doesn't matter:
 - A `/coupons/redeem` keyed on a Checkout Session can't claim the key first and
   turn the checkout's revenue into a dropped "replay".
 
+A single-tenant self-host whose `/webhooks/stripe` has a platform (or legacy)
+signing secret refuses a Checkout Session id the same way, for the same reason.
+Its webhook keys invoices on the Stripe event id, so an invoice id is accepted
+there.
+
 Two limits:
 
 - A connection waiting for a reconnect records nothing, so forwarding works
@@ -517,6 +522,3 @@ so approve it first. Once published:
 - **Per-account Coupon provenance**: deactivating a promo minted under a
   previously connected account. Needs a hosted sidecar, because Coupon is a core
   table.
-- **The same `/coupons/redeem` key collision on self-host**: a redemption keyed
-  on a Checkout Session id can take the key before `/webhooks/stripe` records
-  that checkout's revenue.
