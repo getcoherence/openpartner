@@ -150,6 +150,7 @@ With a key, a retry returns `200` with `"replayed": true` and the original `even
 - **One key per event, not per order.** An order's `subscription_created` and its `invoice_paid` need different keys, for example `sub_123:created` and `in_456`.
 - **Reusing a key for a different event** (another `userId`, `type`, `value` or `currency`) returns `409 external_event_id_conflict`. Nothing is recorded.
 - **Keys are unique across your whole tenant**, not per program, and can be up to 120 characters. They share one namespace with `/attribution/conversions`, `/postback`, `/coupons/redeem` and the Stripe webhook, so don't reuse a key across them for different events. When several systems send events, prefix each one's keys (`acme:loan-881:funded`).
+- **Not a Stripe Checkout Session id** on a single-tenant self-host whose Stripe webhook points at `/webhooks/stripe`. The webhook records a one-time Checkout's payment under its session id, so session ids are reserved for it: a `cs_live_…` or `cs_test_…` key sent to any of these calls returns `409 recorded_from_stripe`. Key a coupon redemption or signup for that checkout on your own order id, and redeem the code when the customer applies it, before they pay. The webhook then credits the payment if it can tie the checkout to the user (`client_reference_id`, a code entered at Stripe Checkout, or a Customer whose `metadata.openpartner_user_id` is your userId). Report the payment yourself only when it can't, such as a guest checkout with a code your own app took.
 
 ```bash
 # The commission is 'accrued'; approve it.
