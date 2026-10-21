@@ -68,7 +68,7 @@ import { tenantMiddleware } from './tenancy.js';
 import { trialGate } from './middleware/trial-gate.js';
 import { approvalGate } from './middleware/approval-gate.js';
 import { corsOriginDecider } from './cors-origins.js';
-import { redactRequest, redactUrl } from './request-log.js';
+import { redactRequest, redactResponse, redactUrl } from './request-log.js';
 
 export function createApp(options: { enableLogger?: boolean; logDestination?: DestinationStream } = {}) {
   const app = express();
@@ -189,9 +189,9 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
       pinoHttp(
         {
           genReqId: (req) => (req as Request & { id?: string }).id ?? ulid(),
-          // URL-borne tokens (GET /postback) and auth headers never reach
-          // the log store. See request-log.ts.
-          serializers: { req: redactRequest },
+          // URL-borne tokens (GET /postback), auth headers and the cookies a
+          // response sets never reach the log store. See request-log.ts.
+          serializers: { req: redactRequest, res: redactResponse },
         },
         options.logDestination,
       ),

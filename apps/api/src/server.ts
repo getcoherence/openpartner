@@ -6,6 +6,7 @@ import { warmGeoIp } from './geoip.js';
 import { getTenancyMode } from './tenancy.js';
 import { db as privilegedDb } from './db.js';
 import { sealPlaintextPayoutProfiles } from './payout-profile.js';
+import { deletePreHashBundles } from './platform-sessions.js';
 import { sealDelaySeconds, sealPlaintextWebhookSecrets } from './webhook-secret.js';
 import { sealPlaintextPostbackUrls } from './postback-url.js';
 
@@ -96,8 +97,15 @@ app.listen(PORT, () => {
         if (sealed > 0) console.log(`[api] sealed ${sealed} plaintext webhook signing secret(s)`);
       })
       .catch((err) => console.error('[api] webhook secret seal sweep failed', err instanceof Error ? err.message : err));
-    // Partner postback URLs, for the same reason: a build from before
-    // sealing fires whatever `url` holds (postback-url.ts).
+    // Identity bundles that build wrote with the cookie as the id
+    // (platform-sessions.ts). Same wait, so it has stopped writing them.
+    deletePreHashBundles(privilegedDb)
+      .then((deleted) => {
+        if (deleted > 0) console.log(`[api] deleted ${deleted} pre-hash identity bundle(s)`);
+      })
+      .catch((err) => console.error('[api] pre-hash bundle sweep failed', err instanceof Error ? err.message : err));
+    // Partner postback URLs, for the same reason as the webhook secrets: a
+    // build from before sealing fires whatever `url` holds (postback-url.ts).
     sealPlaintextPostbackUrls(privilegedDb)
       .then((sealed) => {
         if (sealed > 0) console.log(`[api] sealed ${sealed} plaintext partner postback URL(s)`);

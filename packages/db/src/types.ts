@@ -548,6 +548,9 @@ export interface PlatformSessionRow {
  * token in place and rewrites the cookie.
  */
 export interface PlatformSessionBundleRow {
+  /** sha256 (hex) of the op_bundle_id cookie. The cookie itself is never
+   *  stored: it is a bearer credential for every identity in the bundle.
+   *  See migration 20261020030000_platform_session_bundle_hashed_id. */
   id: string;
   createdAt: Date;
   lastUsedAt: Date;
