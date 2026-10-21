@@ -132,7 +132,7 @@ describe('partner Network profile page', () => {
 describe('creator profile page (same editor, creator endpoints)', () => {
   it('still saves to /api/creator-api and keeps its public-profile link', async () => {
     const page = renderWith(<CreatorMyProfilePage />, 'creator-my-profile');
-    expect(page.getByRole('link', { name: /View public profile/ }).getAttribute('href')).toBe('/creators/pat');
+    expect(page.getByRole('link', { name: /View public profile/ }).getAttribute('href')).toBe('https://openpartner.dev/creators/pat');
     fireEvent.click(page.getByRole('button', { name: 'tech' }));
     fireEvent.click(page.getByRole('button', { name: 'Save profile' }));
     await waitFor(() => expect(calls.some((c) => c.method === 'PATCH')).toBe(true));

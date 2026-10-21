@@ -140,9 +140,9 @@ function BookingCard({ booking: b }: { booking: VendorBooking }) {
           <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 3 }}>
             {b.creator ? (
               b.creator.handle ? (
-                <a href={`/creators/${b.creator.handle}`} target="_blank" rel="noopener noreferrer" style={{ color: theme.accentText }}>
+                <TenantLink to={`/admin/network/creators/${encodeURIComponent(b.creator.handle)}`} style={{ color: theme.accentText }}>
                   {b.creator.name}
-                </a>
+                </TenantLink>
               ) : (
                 b.creator.name
               )
