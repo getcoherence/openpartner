@@ -14,14 +14,15 @@
  *
  * No HMAC: classic postbacks aren't signed. Partners that want
  * verification put a shared secret in the URL template
- * (?secret=...&clickid={click_id}) and check it on their end.
+ * (?secret=...&clickid={click_id}) and check it on their end. That makes
+ * the URL a secret: it is sealed at rest (postback-url.ts) and opened here
+ * only to fire, and nothing here logs it or stores it in an error.
  *
  * Audit lives in rolling counters on PartnerPostback (lastFiredAt /
  * lastStatus / successCount / failureCount). Per-delivery rows would
  * blow up at any reasonable partner volume.
  */
 
-import type { Knex } from 'knex';
 import {
   TABLES,
   type PartnerPostbackEvent,
@@ -29,8 +30,24 @@ import {
 } from '@openpartner/db';
 import { db } from './db.js';
 import { safeFetch } from './outbound-guard.js';
+import { openPostbackUrl, type POSTBACK_MACROS } from './postback-url.js';
 
 const POSTBACK_TIMEOUT_MS = 5_000;
+
+/** PartnerPostback.lastError for a postback whose URL can't be opened.
+ *  Says what to do, never anything about the URL. */
+export const URL_UNREADABLE_ERROR =
+  "Postback URL can't be opened on this deployment (sealed under another SECRETS_ENCRYPTION_KEY). Enter the URL again.";
+
+/** lastError for a failure whose message quotes the fired URL. */
+const REQUEST_FAILED_ERROR = 'request_failed';
+
+/** Does `message` contain this URL, or its query string? */
+function quotesUrl(message: string, url: string): boolean {
+  const q = url.indexOf('?');
+  const query = q === -1 ? '' : url.slice(q + 1);
+  return message.includes(url) || (query !== '' && message.includes(query));
+}
 
 /** Subset of WebhookEventType — events partners can postback on. */
 const POSTBACK_EVENTS: readonly PartnerPostbackEvent[] = [
@@ -89,6 +106,15 @@ export interface PostbackContext {
    *  currency. Empty when the event has no value. */
   sale_amount?: string;
 }
+
+/** The URL preview (postback-url.ts) shows exactly the macros filled here;
+ *  this stops compiling when the two lists drift apart. */
+type MacroName = (typeof POSTBACK_MACROS)[number];
+const _macroListsMatch: [keyof PostbackContext] extends [MacroName]
+  ? [MacroName] extends [keyof PostbackContext]
+    ? true
+    : never
+  : never = true;
 
 export type PostbackStatus = 'pending' | 'approved' | 'reversed' | 'paid';
 
@@ -164,28 +190,40 @@ async function runPostbackDispatch(
 }
 
 async function fireOne(row: PartnerPostbackRow, ctx: PostbackContext): Promise<void> {
-  const url = substituteMacros(row.url, ctx);
   const now = new Date();
   let status = 0;
   let error: string | null = null;
-  try {
-    // Validate AFTER macro substitution (the fired URL is what matters).
-    // safeFetch enforces the SSRF policy and throws OutboundBlockedError
-    // (a stable code, safe to store in the partner-visible lastError) for
-    // any non-public destination.
-    const res = await safeFetch(url, {
-      method: 'GET',
-      headers: { 'user-agent': 'OpenPartner-Postback/1' },
-      timeoutMs: POSTBACK_TIMEOUT_MS,
-      // Partner-controlled URL: hardened policy — never the escape hatch.
-      trust: 'partner',
-    });
-    status = res.status;
-    if (!res.ok) {
-      error = `http_${res.status}`;
+  // Sealed or (until the sweep gets to it) plaintext; null when this
+  // deployment can't open it, and then nothing is sent. Firing doesn't
+  // seal a plaintext URL: the sweep waits out a rolling deploy first
+  // (postback-url.ts).
+  const template = openPostbackUrl(row.url);
+  if (!template) {
+    error = URL_UNREADABLE_ERROR;
+  } else {
+    const url = substituteMacros(template, ctx);
+    try {
+      // Validate AFTER macro substitution (the fired URL is what matters).
+      // safeFetch enforces the SSRF policy and throws OutboundBlockedError
+      // (a stable code, safe to store in the partner-visible lastError) for
+      // any non-public destination.
+      const res = await safeFetch(url, {
+        method: 'GET',
+        headers: { 'user-agent': 'OpenPartner-Postback/1' },
+        timeoutMs: POSTBACK_TIMEOUT_MS,
+        // Partner-controlled URL: hardened policy — never the escape hatch.
+        trust: 'partner',
+      });
+      status = res.status;
+      if (!res.ok) {
+        error = `http_${res.status}`;
+      }
+    } catch (err) {
+      // Network errors carry no URL today, but lastError is shown to the
+      // brand's admins too, so one that ever quotes it is replaced.
+      const message = err instanceof Error ? err.message : String(err);
+      error = quotesUrl(message, url) || quotesUrl(message, template) ? REQUEST_FAILED_ERROR : message;
     }
-  } catch (err) {
-    error = err instanceof Error ? err.message : String(err);
   }
 
   const success = !error;

@@ -24,6 +24,7 @@ import type { Knex } from 'knex';
 import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
 import { mintSecret } from './webhook-secret.js';
 import { openForExport, sealForImport } from './payout-profile.js';
+import { openPostbackForExport, sealPostbackForImport } from './postback-url.js';
 
 /** Bundle format version. Bumped when the table set or row shape changes.
  *  v1 → v2 (Aug 2026): added PartnerProgram, PartnerCommission, Coupon;
@@ -106,9 +107,10 @@ export interface CredentialSpec {
  * sealed value means nothing anywhere else, so it travels opened: `open`
  * runs for every export format, and the JSON import runs `seal` to seal it
  * again under the destination's key. A SQL restore can't encrypt (the key
- * is the app's), so it writes the opened value, and the API seals the row
- * the first time it reads it. Not credentials: the data is the brand's and
- * its partners', and leaving it out would strand it on this deployment.
+ * is the app's), so it writes the opened value, and the API seals it: a
+ * sweep at startup and hourly, and for payout details also the first read.
+ * Not credentials: the data is the brand's and its partners', and leaving
+ * it out would strand it on this deployment.
  */
 export interface SealedSpec {
   open: (row: Record<string, unknown>) => Record<string, unknown>;
@@ -231,9 +233,17 @@ export const EXPORT_TABLES = [
       ],
     },
   },
-  // Each partner's own tracker callbacks. No credential of ours; the URL
-  // travels as the partner entered it.
-  { table: TABLES.PartnerPostback, primaryKey: 'id' },
+  // Each partner's own tracker callbacks. No credential of ours, but the
+  // URL often holds the partner's tracker secret, so it is sealed at rest
+  // (postback-url.ts) and travels opened (SealedSpec), as the partner
+  // entered it: it is their data, and leaving it out would make every
+  // partner set up their tracker again. `urlPreview` is derived from it,
+  // so it stays out and the import derives it again.
+  {
+    table: TABLES.PartnerPostback,
+    primaryKey: 'id',
+    sealed: { open: openPostbackForExport, seal: sealPostbackForImport },
+  },
   // The inbound GET /postback credential: allowlist and rotation history
   // travel, the token hash doesn't. A restored live token matches no URL
   // until it is rotated (Integrations page), which keeps its allowlist.
@@ -567,7 +577,7 @@ export function buildSqlDump(bundle: ImportBundle, opts: SqlDumpOptions = {}): s
       out.push(`-- Not exported: ${spec.credentials.omit.join(', ')}. Fresh values are generated on restore.`);
     }
     if (spec.sealed) {
-      out.push('-- Sealed at rest, written here opened: the API seals each row again the first time it reads it.');
+      out.push('-- Sealed at rest, written here opened: the API seals each row again (a sweep soon after startup, then hourly).');
     }
     for (let i = 0; i < rows.length; i += chunkSize) {
       const chunk = rows.slice(i, i + chunkSize);

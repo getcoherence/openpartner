@@ -55,6 +55,7 @@ import { reverifyPortalDomains, sweepWhiteLabelEntitlement } from './portal-doma
 import { runScreeningSweep, screenPayablePartners } from './sanctions-screening.js';
 import { sealPlaintextPayoutProfiles } from './payout-profile.js';
 import { runSealWebhookSecretsJob } from './webhook-secret.js';
+import { runSealPostbackUrlsJob } from './postback-url.js';
 
 interface ScheduledJob {
   name: string;
@@ -376,6 +377,13 @@ const JOBS: ScheduledJob[] = [
     description:
       'Seal any webhook signing secret a SQL-dump restore left in the clear (webhook-secret.ts; also runs 10 minutes after startup, and skips until then) (hourly at :40)',
     handler: () => runSealWebhookSecretsJob(db),
+  },
+  {
+    name: 'seal-postback-urls',
+    cronExpr: '45 * * * *',
+    description:
+      'Seal any partner postback URL a SQL-dump restore (or a write during deploy grace) left in the clear (postback-url.ts; also runs 10 minutes after startup, and skips until then) (hourly at :45)',
+    handler: () => runSealPostbackUrlsJob(db),
   },
 ];
 

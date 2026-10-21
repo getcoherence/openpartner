@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Webhook as WebhookIcon, Trash2 } from 'lucide-react';
-import { api, type Principal } from '../../api.js';
+import { Pencil, Plus, Webhook as WebhookIcon, Trash2 } from 'lucide-react';
+import { ApiError, api, type Principal } from '../../api.js';
 import { theme } from '../../theme.js';
 import {
   Button,
@@ -26,10 +26,13 @@ const POSTBACK_EVENTS = [
 
 type PostbackEvent = (typeof POSTBACK_EVENTS)[number];
 
+/** As the API lists it: the URL itself never comes back here, only
+ *  `urlPreview` (path and query values masked), because it may hold the
+ *  tracker's secret. The edit form fetches the URL on its own. */
 interface PostbackRow {
   id: string;
   partnerId: string;
-  url: string;
+  urlPreview: string | null;
   events: PostbackEvent[];
   enabled: boolean;
   createdAt: string;
@@ -45,6 +48,7 @@ export function PartnerPostbacksPage({ principal }: { principal: Principal }) {
   const qc = useQueryClient();
   const partnerId = principal.role === 'partner' ? principal.partnerId : null;
   const [showCreate, setShowCreate] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const list = useQuery({
     queryKey: ['partner-postbacks', partnerId],
@@ -53,15 +57,6 @@ export function PartnerPostbacksPage({ principal }: { principal: Principal }) {
         `/partners/${partnerId}/postbacks`,
       ),
     enabled: !!partnerId,
-  });
-
-  const create = useMutation({
-    mutationFn: (body: { url: string; events: PostbackEvent[] }) =>
-      api<PostbackRow>(`/partners/${partnerId}/postbacks`, { method: 'POST', body }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['partner-postbacks', partnerId] });
-      setShowCreate(false);
-    },
   });
 
   const toggleEnabled = useMutation({
@@ -100,15 +95,9 @@ export function PartnerPostbacksPage({ principal }: { principal: Principal }) {
         </Button>
       }
     >
-      <ErrorBanner error={list.error ?? create.error ?? toggleEnabled.error ?? remove.error} />
+      <ErrorBanner error={list.error ?? toggleEnabled.error ?? remove.error} />
 
-      {showCreate && (
-        <CreateForm
-          onCancel={() => setShowCreate(false)}
-          onSubmit={(body) => create.mutate(body)}
-          pending={create.isPending}
-        />
-      )}
+      {showCreate && <CreatePostback partnerId={partnerId} onDone={() => setShowCreate(false)} />}
 
       {list.isLoading ? (
         <Card>Loading…</Card>
@@ -120,14 +109,19 @@ export function PartnerPostbacksPage({ principal }: { principal: Principal }) {
         />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {rows.map((p) => (
-            <PostbackCard
-              key={p.id}
-              row={p}
-              onToggle={() => toggleEnabled.mutate({ id: p.id, enabled: !p.enabled })}
-              onDelete={() => remove.mutate(p.id)}
-            />
-          ))}
+          {rows.map((p) =>
+            editingId === p.id ? (
+              <EditPostback key={p.id} partnerId={partnerId} row={p} onDone={() => setEditingId(null)} />
+            ) : (
+              <PostbackCard
+                key={p.id}
+                row={p}
+                onEdit={() => setEditingId(p.id)}
+                onToggle={() => toggleEnabled.mutate({ id: p.id, enabled: !p.enabled })}
+                onDelete={() => remove.mutate(p.id)}
+              />
+            ),
+          )}
         </div>
       )}
 
@@ -138,22 +132,28 @@ export function PartnerPostbacksPage({ principal }: { principal: Principal }) {
 
 function PostbackCard({
   row,
+  onEdit,
   onToggle,
   onDelete,
 }: {
   row: PostbackRow;
+  onEdit: () => void;
   onToggle: () => void;
   onDelete: () => void;
 }) {
   const totalFires = row.successCount + row.failureCount;
   return (
     <Card>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 10 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: 12, marginBottom: 10 }}>
+        {/* Below ~240px of room for the URL, the buttons wrap under it. */}
+        <div style={{ flex: '1 1 240px', minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
             <StatusPill status={row.enabled ? 'active' : 'paused'} />
-            <code style={{ fontSize: 12, color: theme.textMuted, wordBreak: 'break-all' }}>
-              {row.url}
+            <code
+              style={{ fontSize: 12, color: theme.textMuted, wordBreak: 'break-all' }}
+              title="The path and query values are hidden. Edit to see the full URL."
+            >
+              {row.urlPreview ?? "This URL can't be read here. Edit it to enter it again."}
             </code>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
@@ -174,6 +174,9 @@ function PostbackCard({
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
+          <Button size="sm" variant="secondary" icon={<Pencil size={13} />} onClick={onEdit}>
+            Edit
+          </Button>
           <Button size="sm" variant="secondary" onClick={onToggle}>
             {row.enabled ? 'Pause' : 'Resume'}
           </Button>
@@ -222,17 +225,123 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CreateForm({
+/**
+ * Add a postback. The mutation lives here, not on the page, so the URL in
+ * its variables goes when the form closes: gcTime 0 only drops a mutation
+ * nothing observes any more.
+ */
+function CreatePostback({ partnerId, onDone }: { partnerId: string; onDone: () => void }) {
+  const qc = useQueryClient();
+  const create = useMutation({
+    mutationFn: (body: { url: string; events: PostbackEvent[] }) =>
+      api<PostbackRow>(`/partners/${partnerId}/postbacks`, { method: 'POST', body }),
+    gcTime: 0,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['partner-postbacks', partnerId] });
+      onDone();
+    },
+  });
+  return (
+    <PostbackForm
+      title="New postback URL"
+      submitLabel="Create"
+      pendingLabel="Creating…"
+      error={create.error}
+      onCancel={onDone}
+      onSubmit={(body) => create.mutate(body)}
+      pending={create.isPending}
+    />
+  );
+}
+
+/**
+ * Edit one postback. The URL comes from the one route that returns it,
+ * which answers this partner only. Neither it nor the URL a save sends is
+ * kept once the form closes (gcTime 0 on both). Saving sends `url` only
+ * when it changed.
+ */
+function EditPostback({
+  partnerId,
+  row,
+  onDone,
+}: {
+  partnerId: string;
+  row: PostbackRow;
+  onDone: () => void;
+}) {
+  const qc = useQueryClient();
+  const current = useQuery({
+    queryKey: ['partner-postback-url', partnerId, row.id],
+    queryFn: () => api<{ url: string }>(`/partners/${partnerId}/postbacks/${row.id}/url`),
+    gcTime: 0,
+    staleTime: 0,
+    retry: false,
+  });
+  const save = useMutation({
+    mutationFn: (body: { url?: string; events: PostbackEvent[] }) =>
+      api<PostbackRow>(`/partners/${partnerId}/postbacks/${row.id}`, { method: 'PATCH', body }),
+    gcTime: 0,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['partner-postbacks', partnerId] });
+      onDone();
+    },
+  });
+
+  if (current.isLoading) return <Card>Loading…</Card>;
+  // Sealed under another deployment's key: the partner types it again.
+  const unreadable = current.error instanceof ApiError && current.error.status === 409;
+  if (current.error && !unreadable) {
+    return (
+      <Card>
+        <ErrorBanner error={current.error} />
+        <Button variant="ghost" onClick={onDone}>
+          Close
+        </Button>
+      </Card>
+    );
+  }
+  const original = current.data?.url ?? '';
+  return (
+    <PostbackForm
+      title="Edit postback URL"
+      submitLabel="Save"
+      pendingLabel="Saving…"
+      initialUrl={original}
+      initialEvents={row.events}
+      hint={unreadable ? "This URL can't be read on this deployment. Enter it again." : undefined}
+      error={save.error}
+      onCancel={onDone}
+      onSubmit={({ url, events }) => save.mutate(url === original ? { events } : { url, events })}
+      pending={save.isPending}
+    />
+  );
+}
+
+function PostbackForm({
+  title,
+  submitLabel,
+  pendingLabel,
+  initialUrl = '',
+  initialEvents = ['commission.accrued'],
+  hint,
+  error,
   onCancel,
   onSubmit,
   pending,
 }: {
+  title: string;
+  submitLabel: string;
+  pendingLabel: string;
+  initialUrl?: string;
+  initialEvents?: PostbackEvent[];
+  hint?: string;
+  error?: unknown;
   onCancel: () => void;
   onSubmit: (body: { url: string; events: PostbackEvent[] }) => void;
   pending: boolean;
 }) {
-  const [url, setUrl] = useState('');
-  const [events, setEvents] = useState<PostbackEvent[]>(['commission.accrued']);
+  const [url, setUrl] = useState(initialUrl);
+  const [events, setEvents] = useState<PostbackEvent[]>(initialEvents);
 
   const submit = () => {
     if (!url || events.length === 0) return;
@@ -241,7 +350,9 @@ function CreateForm({
 
   return (
     <Card style={{ marginBottom: 14, borderColor: theme.accent }}>
-      <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 10 }}>New postback URL</div>
+      <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 10 }}>{title}</div>
+      <ErrorBanner error={error} />
+      {hint && <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 8 }}>{hint}</div>}
       <Label>URL with macros</Label>
       <Input
         value={url}
@@ -282,7 +393,7 @@ function CreateForm({
       </div>
       <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
         <Button onClick={submit} disabled={pending || !url || events.length === 0}>
-          {pending ? 'Creating…' : 'Create'}
+          {pending ? pendingLabel : submitLabel}
         </Button>
         <Button variant="ghost" onClick={onCancel}>
           Cancel

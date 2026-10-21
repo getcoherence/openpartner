@@ -76,6 +76,8 @@ export function openSecret(stored: string): string | null {
  * is stored: a secret sealed under it would sign deliveries no receiver
  * can verify. Ten minutes outlasts that overlap. Until then plaintext
  * secrets stay as they are, and this build signs with either form.
+ * Partner postback URLs wait out the same grace (postback-url.ts): a build
+ * from before they were sealed fires whatever `url` holds.
  */
 export const SEAL_AFTER_UPTIME_S = 600;
 

@@ -58,7 +58,7 @@ appears after everything it references.
 | 18 | `CommissionAdjustment` | `id` | clawbacks / corrections |
 | 19 | `BrandAsset` | `id` | **the marketing-asset library** (image URLs, text snippets) |
 | 20 | `WebhookEndpoint` | `id` | **your outbound webhook endpoints** (not the signing secret) |
-| 21 | `PartnerPostback` | `id` | **each partner's own tracker callbacks** |
+| 21 | `PartnerPostback` | `id` | **each partner's own tracker callbacks** (the URL opened) |
 | 22 | `ConversionPostbackToken` | `id` | **the GET /postback allowlist and rotation history** (not the token) |
 | 23 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy and the portal-access default** |
 
@@ -156,9 +156,10 @@ ignores them if a hand-made bundle has them:
 Oct 2026 the signing secret is sealed at rest with AES-256-GCM under the
 deployment's `SECRETS_ENCRYPTION_KEY`, the same envelope as
 [payout details](#payout-details), and a sealed value means nothing
-anywhere else. Payout details travel opened anyway, because they are your
-partners' data: leaving them out would make every partner enter their bank
-details again. A signing secret is different on both counts:
+anywhere else. Payout details and partner postback URLs travel opened
+anyway, because they are your partners' data: leaving them out would make
+every partner enter their bank details, or set up their tracker, again. A
+signing secret is different on both counts:
 
 - It is a credential. Whoever holds the file could sign deliveries your
   receivers would accept as genuine (`commission.paid`, `payout.created`,
@@ -186,10 +187,8 @@ To finish a restore:
   network or lender that fires it. The host changes on a hosted to
   self-host move anyway.
 
-Partner postback URLs (`PartnerPostback.url`) travel as the partner entered
-them. They hold no OpenPartner credential, but a partner's tracker may put
-its own token in the URL, so treat an export file as you would the
-partner list itself.
+Partner postback URLs travel opened; see
+[Partner postback URLs](#partner-postback-urls).
 
 ### Payout details
 
@@ -218,6 +217,47 @@ On restore:
 - A hand-made bundle whose `details` is still a sealed envelope from another
   deployment restores as it came. It reads as unreadable, and that partner
   enters their details again.
+
+### Partner postback URLs
+
+`PartnerPostback.url` is a partner's own tracker callback, and partners put
+their tracker's shared secret in it (`?secret=…`), because postbacks aren't
+signed. Since Oct 2026 it is sealed at rest with AES-256-GCM under the
+deployment's `SECRETS_ENCRYPTION_KEY`, like [payout details](#payout-details),
+and opened only to fire the postback. The API shows it masked
+(`urlPreview`: the scheme and host and each `name={macro}` pair, with the
+path and every other query pair as `•••`) to everyone but the partner who
+owns it, who sees it in full when editing.
+
+It holds no OpenPartner credential: nobody can sign a webhook or record a
+conversion with it. It is the partner's data, so like payout details it
+travels **opened**: every format (JSON, CSV and SQL) writes `url` as the
+partner entered it, macros and all. A partner's tracker secret is in there,
+so **treat an export file as you would the partner list itself**.
+`urlPreview` is left out of every format: it is derived from the URL, and
+the import derives it again, so the row has the shape it had before
+sealing and the bundle version is unchanged.
+
+On restore:
+
+- **JSON** (`POST /import`) seals each URL again under the destination's
+  key and writes its preview. A bundle from before sealing (no
+  `urlPreview`) imports the same way.
+- **SQL** can't encrypt (the key is the app's), so the dump writes the URL
+  opened and says so in a comment. Until the API seals it, it fires and
+  lists (masked) as it is. A sweep seals every plaintext URL ten minutes
+  after the API starts and hourly after that (the `seal-postback-urls`
+  job), so nothing stays in the clear at rest for long.
+- A hand-made bundle whose `url` is still a sealed envelope from another
+  deployment restores as it came. Its postback fails every fire, with an
+  error saying so, until the partner enters the URL again.
+
+**Why ten minutes.** During a rolling deploy the previous build keeps
+serving until the new one is healthy, and a build from before sealing fires
+whatever `url` holds. So for its first ten minutes a process neither seals
+the sweep's rows nor seals the URLs partners save: those are stored as
+entered, and the sweep that runs at the ten-minute mark seals them. Webhook
+signing secrets wait out the same window.
 
 The PayPal and Wise files a brand made from its payout runs
 ([manual-payout-files.md](manual-payout-files.md)) need nothing extra: a

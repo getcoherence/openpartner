@@ -1107,7 +1107,12 @@ export interface PartnerPostbackRow {
   id: string;
   tenantId: string;
   partnerId: string;
+  /** Sealed (apps/api/src/postback-url.ts), or plaintext until the seal
+   *  sweep reaches the row. Never returned by the API as stored. */
   url: string;
+  /** The URL with its path and query values masked, in the clear for
+   *  display. Null on a row the sweep hasn't sealed yet. */
+  urlPreview: string | null;
   events: PartnerPostbackEvent[];
   enabled: boolean;
   createdAt: Date;
