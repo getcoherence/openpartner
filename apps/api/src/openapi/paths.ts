@@ -1259,6 +1259,21 @@ The file's payouts are fixed here: each is stamped with the \`exportId\`, held o
   });
 
   r.operation({
+    method: 'post',
+    path: '/webhooks/:id/secret',
+    tag: 'Webhooks',
+    operationId: 'rotateWebhookSecret',
+    summary: "Rotate an endpoint's signing secret",
+    description:
+      'Returns the new `secret` once; the old one stops working immediately. Deliveries fail until your receiver has the new secret: retry them from the delivery log afterwards (`retryWebhookDelivery` signs with the current secret). Also how an endpoint restored from a SQL dump gets a secret you know.',
+    access: { kind: 'admin' },
+    responses: {
+      200: { description: 'Rotated.', schema: z.object({ endpoint: S.WebhookEndpoint, secret: z.string().openapi({ description: '`whsec_…`. Shown once.' }) }) },
+    },
+    errors: { 404: ['not_found'] },
+  });
+
+  r.operation({
     method: 'delete',
     path: '/webhooks/:id',
     tag: 'Webhooks',

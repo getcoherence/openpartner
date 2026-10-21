@@ -22,7 +22,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { Knex } from 'knex';
 import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
-import { makeSecret } from './webhook-dispatcher.js';
+import { mintSecret } from './webhook-secret.js';
 import { openForExport, sealForImport } from './payout-profile.js';
 
 /** Bundle format version. Bumped when the table set or row shape changes.
@@ -93,7 +93,7 @@ export interface CredentialSpec {
   omit: readonly string[];
   /** JSON import: values for one restored row (`omit` and anything derived
    *  from it). `reveal` is handed back once to the admin who ran the import
-   *  — the only way to learn a secret that is stored in plaintext. */
+   *  — the only time the API shows that secret, which it stores sealed. */
   fresh: (row: Record<string, unknown>) => { values: Record<string, unknown>; reveal?: Record<string, unknown> };
   /** SQL dump: column → expression the restoring Postgres evaluates per row. */
   sql: Record<string, string>;
@@ -204,18 +204,24 @@ export const EXPORT_TABLES = [
   // docs/data-portability.md "Brand asset files".
   { table: TABLES.BrandAsset, primaryKey: 'id' },
   // The brand's outbound webhook endpoints (the delivery log stays out).
-  // The signing secret is a credential: a restored endpoint gets a fresh
-  // one and comes back paused, because its receiver doesn't know the new
-  // secret yet. The JSON import report shows the new secrets once.
+  // The signing secret is a credential, so unlike PartnerPayoutProfile it
+  // does NOT travel opened even though it is sealed at rest: whoever holds
+  // the file could sign deliveries the brand's receivers would trust, and a
+  // fresh secret costs the brand one receiver setting per endpoint, not
+  // anyone's data (docs/data-portability.md "Credentials"). A restored
+  // endpoint gets a fresh secret, sealed, and comes back paused, because
+  // its receiver doesn't know it yet. The JSON import report shows the new
+  // secrets once; after a SQL restore the admin rotates each one
+  // (POST /webhooks/:id/secret), since the sweep seals what the dump wrote.
   {
     table: TABLES.WebhookEndpoint,
     primaryKey: 'id',
     credentials: {
       omit: ['secret', 'secretPrefix'],
       fresh: (row) => {
-        const secret = makeSecret();
+        const secret = mintSecret();
         return {
-          values: { secret: secret.plaintext, secretPrefix: secret.prefix, active: false },
+          values: { secret: secret.sealed, secretPrefix: secret.prefix, active: false },
           reveal: { id: row.id, url: row.url, secret: secret.plaintext },
         };
       },

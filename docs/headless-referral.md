@@ -356,6 +356,8 @@ curl -s -X POST $OP/webhooks -H "Authorization: Bearer $ADMIN" -H 'content-type:
 # → { "endpoint": {...}, "secret": "whsec_..." }   the secret is shown once
 ```
 
+OpenPartner stores the secret encrypted and never shows it again. If you lose it, or it leaks, rotate it (admin key): `POST $OP/webhooks/{id}/secret` returns a new one, once. The old secret stops working immediately, so deliveries fail until your receiver has the new one; redeliver those from the endpoint's delivery log.
+
 Events: `attribution.created`, `commission.accrued`, `commission.approved`, `commission.paid`, `commission.reversed`, `partner.created`, `partner.activated`, `partnership.approved`, `payout.created`, or `*` for all. Payload schemas are under **Webhook events** in the API reference. Every `POST /partners` with `sendInvite: false` fires both `partner.created` and `partner.activated` (`"invited": false`, `"source": "api"`); see step 3.
 
 Each delivery is `POST {id, event, created, data}`, signed with HMAC-SHA256 over `<X-OpenPartner-Timestamp>.<raw body>`, keyed with the whole `whsec_…` secret:

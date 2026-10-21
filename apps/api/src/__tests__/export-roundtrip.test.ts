@@ -21,6 +21,7 @@ import { generateApiKey, hashKey } from '../auth.js';
 import { verifyPostbackToken } from '../conversion-postback.js';
 import { createSession } from '../auth-sessions.js';
 import { getPayoutProfile, savePayoutProfile, type PayoutDetails } from '../payout-profile.js';
+import { isPlaintextSecret, openSecret, sealPlaintextWebhookSecrets, sealSecret } from '../webhook-secret.js';
 import {
   EXPORT_TABLES,
   SCHEMA_VERSION,
@@ -42,6 +43,8 @@ const TENANT = DEFAULT_TENANT_ID;
 /** The source instance's credentials. None of them may appear in a
  *  bundle, and none of them may work after a restore. */
 const SOURCE_WEBHOOK_SECRET = 'whsec_source_secret_never_exported_0001';
+/** As the source stores it: sealed (webhook-secret.ts). */
+const SOURCE_WEBHOOK_SECRET_SEALED = sealSecret(SOURCE_WEBHOOK_SECRET);
 const SOURCE_POSTBACK_TOKEN = `opcp_${'ab'.repeat(24)}`;
 
 /** The seeded partner's payout details. Sealed at rest; opened in a bundle. */
@@ -289,7 +292,7 @@ async function seedEverything(): Promise<Seeded> {
     tenantId: TENANT,
     url: 'https://hooks.x.test/openpartner',
     secretPrefix: SOURCE_WEBHOOK_SECRET.slice(0, 12),
-    secret: SOURCE_WEBHOOK_SECRET,
+    secret: SOURCE_WEBHOOK_SECRET_SEALED,
     events: JSON.stringify(['commission.paid', 'partner.created']),
     label: 'CRM sync',
     active: true,
@@ -557,7 +560,10 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     const seeded = await seedEverything();
     const bundle = await exportAll(db, TENANT);
     const text = JSON.stringify(bundle);
+    // Neither opened (a bundle never carries a credential, unlike sealed
+    // payout details) nor as the sealed envelope.
     expect(text).not.toContain(SOURCE_WEBHOOK_SECRET);
+    expect(text).not.toContain(SOURCE_WEBHOOK_SECRET_SEALED);
     expect(text).not.toContain(SOURCE_WEBHOOK_SECRET.slice(0, 12));
     expect(text).not.toContain(hashKey(SOURCE_POSTBACK_TOKEN));
     expect(bundle[TABLES.WebhookEndpoint]![0]).not.toHaveProperty('secret');
@@ -571,11 +577,14 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     const endpoint = await db(TABLES.WebhookEndpoint).where({ id: seeded.webhookEndpointId }).first();
     expect(endpoint).toMatchObject({ url: 'https://hooks.x.test/openpartner', label: 'CRM sync', active: false });
     expect(endpoint.events).toEqual(['commission.paid', 'partner.created']);
-    expect(endpoint.secret).toMatch(/^whsec_/);
-    expect(endpoint.secret).not.toBe(SOURCE_WEBHOOK_SECRET);
-    expect(endpoint.secretPrefix).toBe(endpoint.secret.slice(0, 12));
+    // Stored sealed under this deployment's key; the report has it opened.
+    expect(isPlaintextSecret(endpoint.secret)).toBe(false);
+    const fresh = openSecret(endpoint.secret)!;
+    expect(fresh).toMatch(/^whsec_/);
+    expect(fresh).not.toBe(SOURCE_WEBHOOK_SECRET);
+    expect(endpoint.secretPrefix).toBe(fresh.slice(0, 12));
     expect(report.credentials[TABLES.WebhookEndpoint]).toEqual([
-      { id: seeded.webhookEndpointId, url: 'https://hooks.x.test/openpartner', secret: endpoint.secret },
+      { id: seeded.webhookEndpointId, url: 'https://hooks.x.test/openpartner', secret: fresh },
     ]);
 
     // The postback token keeps its allowlist and history, but no URL works
@@ -832,7 +841,9 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(res.status).toBe(200);
     const shown = res.body.report.credentials[TABLES.WebhookEndpoint] as Array<{ secret: string }>;
     expect(shown).toHaveLength(1);
-    expect((await db(TABLES.WebhookEndpoint).first()).secret).toBe(shown[0]!.secret);
+    const stored = (await db(TABLES.WebhookEndpoint).first()).secret as string;
+    expect(stored).not.toBe(shown[0]!.secret);
+    expect(openSecret(stored)).toBe(shown[0]!.secret);
   }, 30_000);
 
   it('accepts a v5 bundle — no bonuses; its commissions are all attributed sales', async () => {
@@ -1105,6 +1116,7 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
     const seeded = await seedEverything();
     const dump = buildSqlDump(await exportAll(db, TENANT), { columnTypes: await exportColumnTypes(db) });
     expect(dump).not.toContain(SOURCE_WEBHOOK_SECRET.slice(0, 12));
+    expect(dump).not.toContain(SOURCE_WEBHOOK_SECRET_SEALED);
     expect(dump).not.toContain(hashKey(SOURCE_POSTBACK_TOKEN));
     expect(dump).toContain('-- Not exported: secret, secretPrefix.');
 
@@ -1113,8 +1125,16 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
 
     const endpoint = await db(TABLES.WebhookEndpoint).where({ id: seeded.webhookEndpointId }).first();
     expect(endpoint.active).toBe(false);
+    // Postgres can't seal (the key is the app's), so the restore writes a
+    // plaintext secret; the sweep the API runs at startup seals it, prefix
+    // untouched. Nobody learns it: the admin rotates it to get one.
     expect(endpoint.secret).toMatch(/^whsec_[0-9a-f]{64}$/);
     expect(endpoint.secretPrefix).toBe(endpoint.secret.slice(0, 12));
+    expect(await sealPlaintextWebhookSecrets(db)).toBe(1);
+    const swept = await db(TABLES.WebhookEndpoint).where({ id: seeded.webhookEndpointId }).first();
+    expect(isPlaintextSecret(swept.secret)).toBe(false);
+    expect(openSecret(swept.secret)).toBe(endpoint.secret);
+    expect(swept.secretPrefix).toBe(endpoint.secretPrefix);
     const token = await db(TABLES.ConversionPostbackToken).where({ id: seeded.postbackTokenId }).first();
     expect(token.tokenHash).toMatch(/^[0-9a-f]{64}$/);
     expect(token.ipAllowlist).toEqual(['203.0.113.0/24']);

@@ -941,7 +941,7 @@ export const WebhookEndpoint = z
     id,
     tenantId: id,
     url: z.string().url(),
-    secretPrefix: z.string().openapi({ description: 'First characters of the signing secret, to tell secrets apart. The secret itself is only returned at creation.' }),
+    secretPrefix: z.string().openapi({ description: 'First characters of the signing secret, to tell secrets apart. The secret itself is stored encrypted and only returned at creation and rotation.' }),
     events: z.array(z.string()),
     active: z.boolean(),
     label: z.string().nullable(),

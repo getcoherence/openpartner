@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Webhook as WebhookIcon, Copy, Check, Trash2, Play } from 'lucide-react';
+import { Plus, Webhook as WebhookIcon, Copy, Check, Trash2, Play, KeyRound } from 'lucide-react';
 import { api } from '../../api.js';
 import { alpha, theme } from '../../theme.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
@@ -83,7 +83,7 @@ export function WebhooksPage() {
         <Card style={{ marginBottom: 14, borderColor: alpha(theme.warn, 0.333) }}>
           <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>Signing secret</div>
           <div style={{ color: theme.textMuted, fontSize: 13, marginBottom: 10 }}>
-            Save this now — it's the HMAC key you'll verify incoming deliveries with. It won't be shown again.
+            Save this now — it's the HMAC key you'll verify incoming deliveries with. It's stored encrypted and won't be shown again.
           </div>
           <SecretReveal plaintext={newSecret.plaintext} />
           <Button variant="secondary" size="sm" style={{ marginTop: 10 }} onClick={() => setNewSecret(null)}>
@@ -119,6 +119,7 @@ export function WebhooksPage() {
               endpoint={e}
               expanded={selectedId === e.id}
               onToggle={() => setSelectedId(selectedId === e.id ? null : e.id)}
+              onSecret={(plaintext) => setNewSecret({ endpointId: e.id, plaintext })}
             />
           ))}
         </div>
@@ -171,10 +172,13 @@ function EndpointCard({
   endpoint,
   expanded,
   onToggle,
+  onSecret,
 }: {
   endpoint: Endpoint;
   expanded: boolean;
   onToggle: () => void;
+  /** A rotated secret, to show once. */
+  onSecret: (plaintext: string) => void;
 }) {
   const qc = useQueryClient();
   const isMobile = useIsMobile();
@@ -185,6 +189,15 @@ function EndpointCard({
   const del = useMutation({
     mutationFn: () => api(`/webhooks/${endpoint.id}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['webhooks'] }),
+  });
+  // New signing secret, shown once. The old one stops working at once, so
+  // deliveries fail until the receiver has it (retry them from the log).
+  const rotate = useMutation({
+    mutationFn: () => api<{ endpoint: Endpoint; secret: string }>(`/webhooks/${endpoint.id}/secret`, { method: 'POST' }),
+    onSuccess: (data) => {
+      onSecret(data.secret);
+      qc.invalidateQueries({ queryKey: ['webhooks'] });
+    },
   });
   // Synthetic test fire — sends a realistic-looking sample payload
   // for the chosen event type to this endpoint, bypassing
@@ -209,6 +222,7 @@ function EndpointCard({
 
   return (
     <Card>
+      <ErrorBanner error={rotate.error} />
       <div
         style={{
           display: 'flex',
@@ -259,6 +273,19 @@ function EndpointCard({
           </Button>
           <Button size="sm" variant="secondary" onClick={() => toggleActive.mutate()} disabled={toggleActive.isPending}>
             {endpoint.active ? 'Disable' : 'Enable'}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={<KeyRound size={12} />}
+            onClick={() => {
+              if (confirm('Rotate the signing secret? The current one stops working immediately — deliveries fail until your receiver has the new one.')) {
+                rotate.mutate();
+              }
+            }}
+            disabled={rotate.isPending}
+          >
+            Rotate secret
           </Button>
           <Button size="sm" variant="danger" icon={<Trash2 size={12} />} onClick={() => del.mutate()} disabled={del.isPending} />
         </div>

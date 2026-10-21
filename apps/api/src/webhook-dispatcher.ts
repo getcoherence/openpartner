@@ -10,7 +10,9 @@
  * endpoint's signing secret — the same pattern Stripe uses. Receivers
  * verify by reading X-OpenPartner-Timestamp + X-OpenPartner-Signature,
  * recomputing, and rejecting timestamps drifting more than 5 minutes
- * to mitigate replay attacks.
+ * to mitigate replay attacks. The secret is sealed at rest
+ * (webhook-secret.ts) and opened here, only to sign; a delivery whose
+ * secret can't be opened is recorded as failed and never sent.
  *
  * MVP does not auto-retry. WebhookDelivery rows capture every failure
  * with attempts + error, and admins can hit POST /webhooks/:id/
@@ -23,7 +25,7 @@
  * every query by `tenantId` explicitly.
  */
 
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import { ulid } from 'ulid';
 import {
   TABLES,
@@ -34,6 +36,7 @@ import {
 import { db } from './db.js';
 import { dispatchPartnerPostbacks, isPostbackEvent, postbackStatus } from './partner-postback.js';
 import { safeFetch } from './outbound-guard.js';
+import { openSecret } from './webhook-secret.js';
 
 const SIGNATURE_HEADER = 'x-openpartner-signature';
 const TIMESTAMP_HEADER = 'x-openpartner-timestamp';
@@ -47,10 +50,10 @@ export interface WebhookEnvelope<T = unknown> {
   data: T;
 }
 
-export function makeSecret(): { plaintext: string; prefix: string } {
-  const plaintext = `whsec_${randomBytes(24).toString('base64url')}`;
-  return { plaintext, prefix: plaintext.slice(0, 12) };
-}
+/** WebhookDelivery.error for a delivery whose signing secret can't be
+ *  opened. Says what to do, never anything about the secret. */
+export const SECRET_UNREADABLE_ERROR =
+  "Signing secret can't be opened on this deployment (sealed under another SECRETS_ENCRYPTION_KEY). Rotate the endpoint's secret.";
 
 export function signPayload(secret: string, timestamp: string, rawBody: string): string {
   return createHmac('sha256', secret).update(`${timestamp}.${rawBody}`).digest('hex');
@@ -308,10 +311,25 @@ async function deliverOne(tenantId: string, endpoint: WebhookEndpointRow, envelo
 
 async function attemptDelivery(deliveryId: string, endpoint: WebhookEndpointRow, body: string): Promise<void> {
   const timestamp = Math.floor(Date.now() / 1000).toString();
-  const signature = signPayload(endpoint.secret, timestamp, body);
   const envelope = JSON.parse(body) as WebhookEnvelope;
 
   const attemptAt = new Date();
+  // Sealed or (until the sweep gets to it) plaintext; null when this
+  // deployment can't open it. Signing doesn't seal a plaintext secret:
+  // the sweep waits out a rolling deploy first (webhook-secret.ts).
+  const key = openSecret(endpoint.secret);
+  if (!key) {
+    await db<WebhookDeliveryRow>(TABLES.WebhookDelivery)
+      .where({ id: deliveryId })
+      .update({
+        status: 'failed',
+        error: SECRET_UNREADABLE_ERROR,
+        attempts: db.raw('attempts + 1'),
+        lastAttemptAt: attemptAt,
+      });
+    return;
+  }
+  const signature = signPayload(key, timestamp, body);
   try {
     // safeFetch enforces the SSRF policy (public-unicast destination, DNS
     // pinning, no redirects) and throws OutboundBlockedError — caught below
