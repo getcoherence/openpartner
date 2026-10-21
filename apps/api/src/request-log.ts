@@ -8,6 +8,10 @@
  *     Stripe redirect back with (/auth/google/callback,
  *     /stripe-app/oauth/callback)
  *   - Authorization and Cookie headers: Bearer API keys, session cookies
+ *   - Set-Cookie on the response: every sign-in hands the browser a session
+ *     token (op_session, op_platform_session, op_platform_admin_session) and
+ *     the op_bundle_id cookie this way. The values are replaced; cookie
+ *     names and attributes stay, so a log still shows what was set or cleared.
  */
 
 const REDACTED = '[REDACTED]';
@@ -64,4 +68,27 @@ export function redactRequest(req: SerializedRequest): SerializedRequest {
     for (const h of SECRET_HEADERS) if (h in out.headers) out.headers[h] = REDACTED;
   }
   return out;
+}
+
+interface SerializedResponse {
+  headers?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/** `name=value; Path=/…` → `name=[REDACTED]; Path=/…` */
+function redactSetCookie(line: unknown): unknown {
+  return typeof line === 'string' ? line.replace(/=[^;]*/, `=${REDACTED}`) : REDACTED;
+}
+
+/** pino-http `res` serializer, the response-side twin of `redactRequest`. */
+export function redactResponse(res: SerializedResponse): SerializedResponse {
+  const setCookie = res.headers?.['set-cookie'];
+  if (setCookie === undefined) return res;
+  return {
+    ...res,
+    headers: {
+      ...res.headers,
+      'set-cookie': Array.isArray(setCookie) ? setCookie.map(redactSetCookie) : redactSetCookie(setCookie),
+    },
+  };
 }

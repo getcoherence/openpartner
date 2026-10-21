@@ -94,11 +94,13 @@ platformAuthRouter.post('/auth/platform-verify', platformVerifyCountry, async (r
   //                         Prevents a second person at the same device
   //                         from silently inheriting the previous user's
   //                         stacked accounts.
-  const existingBundleId = readBundleCookie(req);
-  const existingBundle = await resolveBundle(db, existingBundleId);
+  const existingBundle = await resolveBundle(db, readBundleCookie(req));
 
   let bundleId: string;
-  let bundleCookieChanged = false;
+  // Set only when a new bundle is created; otherwise the browser keeps the
+  // cookie it has. Only the bundle's hash is stored, so this is the one
+  // place the cookie value exists server-side.
+  let newBundleCookie: string | null = null;
   if (existingBundle) {
     if (isAddIntent) {
       bundleId = existingBundle.id;
@@ -121,13 +123,15 @@ platformAuthRouter.post('/auth/platform-verify', platformVerifyCountry, async (r
             .whereIn('id', priorSessions.map((s) => s.id))
             .update({ revokedAt: new Date() });
         }
-        bundleId = await createPlatformBundle(db);
-        bundleCookieChanged = true;
+        const fresh = await createPlatformBundle(db);
+        bundleId = fresh.id;
+        newBundleCookie = fresh.cookie;
       }
     }
   } else {
-    bundleId = await createPlatformBundle(db);
-    bundleCookieChanged = true;
+    const fresh = await createPlatformBundle(db);
+    bundleId = fresh.id;
+    newBundleCookie = fresh.cookie;
   }
 
   const created = await db<PlatformSessionRow>(TABLES.PlatformSession)
@@ -138,8 +142,8 @@ platformAuthRouter.post('/auth/platform-verify', platformVerifyCountry, async (r
   }
 
   res.cookie(PLATFORM_SESSION_COOKIE, session.plaintext, platformSessionCookieOptions());
-  if (bundleCookieChanged) {
-    res.cookie(PLATFORM_BUNDLE_COOKIE, bundleId, platformBundleCookieOptions());
+  if (newBundleCookie) {
+    res.cookie(PLATFORM_BUNDLE_COOKIE, newBundleCookie, platformBundleCookieOptions());
   }
 
   res.json({ ok: true, kind: 'platform', email });
@@ -417,8 +421,7 @@ platformAuthRouter.post('/workspaces/enter', async (req, res) => {
  *  cookie points at; included with isActive=true so the UI can highlight
  *  it. Returns empty when there's no bundle cookie (legacy sessions). */
 platformAuthRouter.get('/me/identities', async (req, res) => {
-  const bundleId = readBundleCookie(req);
-  const bundle = await resolveBundle(db, bundleId);
+  const bundle = await resolveBundle(db, readBundleCookie(req));
   if (!bundle) return res.json({ bundleId: null, identities: [] });
 
   // The active session = whatever the current platform-session cookie
@@ -454,8 +457,7 @@ platformAuthRouter.post('/identities/switch', async (req, res) => {
   const body = switchSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body' });
 
-  const bundleId = readBundleCookie(req);
-  const bundle = await resolveBundle(db, bundleId);
+  const bundle = await resolveBundle(db, readBundleCookie(req));
   if (!bundle) return res.status(401).json({ error: 'no_bundle' });
 
   const target = await findPlatformSessionById(db, body.data.sessionId);
@@ -480,8 +482,7 @@ platformAuthRouter.post('/identities/switch', async (req, res) => {
  *  recently-used session in the bundle (rotates + sets cookie); if the
  *  bundle is now empty, clears both cookies. */
 platformAuthRouter.delete('/identities/:sessionId', async (req, res) => {
-  const bundleId = readBundleCookie(req);
-  const bundle = await resolveBundle(db, bundleId);
+  const bundle = await resolveBundle(db, readBundleCookie(req));
   if (!bundle) return res.status(401).json({ error: 'no_bundle' });
 
   const target = await findPlatformSessionById(db, req.params.sessionId);
@@ -532,8 +533,7 @@ platformAuthRouter.post('/auth/platform-signout', async (req, res) => {
 
   const cookie = readPlatformCookie(req);
   const current = cookie ? await resolvePlatformSession(db, cookie) : null;
-  const bundleId = readBundleCookie(req);
-  const bundle = await resolveBundle(db, bundleId);
+  const bundle = await resolveBundle(db, readBundleCookie(req));
 
   if (all && bundle) {
     // Sign out every identity in the bundle. Revoke all rows + drop both
