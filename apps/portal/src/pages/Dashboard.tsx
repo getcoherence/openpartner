@@ -13,12 +13,13 @@ import {
   CheckCircle2,
   Circle,
   ArrowRight,
+  Landmark,
 } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { useTenantBase } from '../tenant-base.js';
 import { TenantLink } from '../tenant-link.js';
 import { alpha, theme } from '../theme.js';
-import { useBrand, useDefaultCurrency } from '../lib/useBrand.js';
+import { useBrand, useConnectPayouts, useDefaultCurrency } from '../lib/useBrand.js';
 import {
   Avatar,
   Button,
@@ -89,12 +90,23 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
     queryKey: ['funnel', partnerId],
     queryFn: () => api<Funnel>(`/partners/${partnerId}/funnel`),
   });
+  const connectPayouts = useConnectPayouts();
   // Non-critical — render the rest of the dashboard even if this 503s
   // (Stripe not configured on a selfhost instance, for instance).
   const connect = useQuery({
     queryKey: ['connect-status', partnerId],
     queryFn: () => api<ConnectStatus>(`/partners/${partnerId}/connect/status`),
     retry: false,
+    enabled: connectPayouts,
+  });
+  // A brand that doesn't pay through Connect pays the partner directly,
+  // to the details they give on Payout details, so that's the step to
+  // finish instead. Same cache entry as the Payout details page.
+  const payoutProfile = useQuery({
+    queryKey: ['payout-profile', partnerId],
+    queryFn: () => api<{ profile: unknown }>(`/partners/${partnerId}/payout-profile`),
+    retry: false,
+    enabled: !connectPayouts,
   });
   const links = useQuery({
     queryKey: ['links', partnerId],
@@ -107,19 +119,21 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
   const linkCount = links.data?.links.length ?? 0;
   const hasLink = linkCount > 0;
   const hasActiveConnect = !!connect.data?.connected && !!connect.data?.payoutsEnabled;
+  const payoutReady = connectPayouts ? hasActiveConnect : !!payoutProfile.data?.profile;
 
   const owed = amounts ? statusAmounts(amounts.commissions, 'approved', 'accrued') : {};
   const needsConnect =
+    connectPayouts &&
     !!amounts &&
     Object.keys(owed).length > 0 &&
     connect.data != null &&
     (!connect.data.connected || !connect.data.payoutsEnabled);
 
   // Getting-started card shows while EITHER onboarding task is outstanding.
-  // We only render it once we know the state of both (connect + links),
-  // otherwise the card can flash during initial load.
+  // We only render it once we know the state of both (payout setup +
+  // links), otherwise the card can flash during initial load.
   const showGettingStarted =
-    !links.isLoading && !connect.isLoading && (!hasLink || !hasActiveConnect);
+    !links.isLoading && !connect.isLoading && !payoutProfile.isLoading && (!hasLink || !payoutReady);
 
   return (
     <Page
@@ -128,7 +142,7 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
     >
       <ErrorBanner error={error} />
       {showGettingStarted && (
-        <GettingStarted hasLink={hasLink} connectReady={hasActiveConnect} />
+        <GettingStarted hasLink={hasLink} payoutReady={payoutReady} connectPayouts={connectPayouts} />
       )}
       {needsConnect && !showGettingStarted && (
         <ConnectNudge owed={moneyByCurrency(owed, amounts!.currency)} connected={connect.data!.connected} />
@@ -183,7 +197,16 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
   );
 }
 
-function GettingStarted({ hasLink, connectReady }: { hasLink: boolean; connectReady: boolean }) {
+function GettingStarted({
+  hasLink,
+  payoutReady,
+  connectPayouts,
+}: {
+  hasLink: boolean;
+  payoutReady: boolean;
+  connectPayouts: boolean;
+}) {
+  const { programName } = useBrand();
   return (
     <Card>
       <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Getting started</div>
@@ -199,14 +222,25 @@ function GettingStarted({ hasLink, connectReady }: { hasLink: boolean; connectRe
           cta="Create link"
           to="/links"
         />
-        <ChecklistRow
-          done={connectReady}
-          icon={<CreditCard size={16} />}
-          title="Connect Stripe to get paid"
-          hint="Commissions you earn land directly in your Stripe balance."
-          cta={connectReady ? 'Manage' : 'Connect Stripe'}
-          to="/connect"
-        />
+        {connectPayouts ? (
+          <ChecklistRow
+            done={payoutReady}
+            icon={<CreditCard size={16} />}
+            title="Connect Stripe to get paid"
+            hint="Commissions you earn land directly in your Stripe balance."
+            cta={payoutReady ? 'Manage' : 'Connect Stripe'}
+            to="/connect"
+          />
+        ) : (
+          <ChecklistRow
+            done={payoutReady}
+            icon={<Landmark size={16} />}
+            title="Add your payout details"
+            hint={`Tell ${programName} where to send your payouts: PayPal or a bank account.`}
+            cta="Add details"
+            to="/payout-details"
+          />
+        )}
       </div>
     </Card>
   );

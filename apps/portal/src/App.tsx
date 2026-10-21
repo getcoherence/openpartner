@@ -36,7 +36,7 @@ import { clearApiKey, api, type Principal } from './api.js';
 import { useTenantBase } from './tenant-base.js';
 import { alpha, theme } from './theme.js';
 import { useIsMobile } from './lib/useMediaQuery.js';
-import { useBrand, usePublicBrand } from './lib/useBrand.js';
+import { useBrand, useConnectPayouts, usePublicBrand } from './lib/useBrand.js';
 import { Dashboard } from './pages/Dashboard.js';
 import { LinksPage } from './pages/Links.js';
 import { CommissionsPage } from './pages/Commissions.js';
@@ -449,6 +449,7 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
   const nav = useNavigate();
   const tenantBase = useTenantBase();
   const { programName, supportEmail, logoUrl, whiteLabel } = useBrand();
+  const connectPayouts = useConnectPayouts();
   const partnerNetwork = usePartnerNetworkAccess(principal.role === 'partner');
   const isDrawer = variant === 'drawer';
 
@@ -492,7 +493,11 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
           <NavItem to="/commissions" icon={<Receipt size={16} />}>Commissions</NavItem>
           <NavItem to="/payouts" icon={<Banknote size={16} />}>Payouts</NavItem>
           {principal.role === 'partner' && <NavItem to="/payout-details" icon={<Landmark size={16} />}>Payout details</NavItem>}
-          {principal.role === 'partner' && <NavItem to="/connect" icon={<CreditCard size={16} />}>Stripe Connect</NavItem>}
+          {/* Only where the brand pays through Connect; /connect itself
+              still answers a bookmark (pages/Connect.tsx). */}
+          {principal.role === 'partner' && connectPayouts && (
+            <NavItem to="/connect" icon={<CreditCard size={16} />}>Stripe Connect</NavItem>
+          )}
           {principal.role === 'partner' && <NavItem to="/postbacks" icon={<Webhook size={16} />}>Postbacks</NavItem>}
           {principal.role === 'partner' && <NavItem to="/account" icon={<KeyRound size={16} />}>Sign-in &amp; password</NavItem>}
         </div>
