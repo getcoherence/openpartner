@@ -31,7 +31,7 @@ import { z } from 'zod';
 import { ulid } from 'ulid';
 import { TABLES, type CouponRow, type ProgramRow, type PartnerProgramRow, type PartnerRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
-import { tenantOf } from '../tenancy.js';
+import { afterCommit, tenantOf } from '../tenancy.js';
 import { deactivateCustomerReward } from '../customer-rewards.js';
 import { autoMintCouponsForGrants } from './coupons.js';
 import { PARTNER_COMMISSION_COLUMNS } from '../partner-commission.js';
@@ -126,20 +126,20 @@ partnerCampaignsRouter.delete('/partners/:id/programs/:programId', requireAuth, 
   if (deleted === 0) return res.status(404).json({ error: 'grant_not_found' });
 
   // Retire the partner's codes on this program, as the coupon DELETE
-  // does: Stripe PromotionCode first (best-effort, never throws), then
-  // our own flag, which is what redemption checks.
-  const coupons = await db<CouponRow>(TABLES.Coupon)
+  // does: our own flag first, which is what redemption checks, then each
+  // Stripe PromotionCode once that has committed (best-effort, never
+  // throws). The promo ids come back from the flip, so one a reward
+  // backfill recorded meanwhile is retired too.
+  const coupons = (await db<CouponRow>(TABLES.Coupon)
     .where({ tenantId, partnerId: req.params.id, programId: req.params.programId })
     .whereNull('deactivatedAt')
-    .select('id', 'code', 'stripePromotionCodeId');
-  for (const c of coupons) {
-    if (c.stripePromotionCodeId) await deactivateCustomerReward(tenantId, c.stripePromotionCodeId);
-  }
-  if (coupons.length > 0) {
-    await db<CouponRow>(TABLES.Coupon)
-      .where({ tenantId })
-      .whereIn('id', coupons.map((c) => c.id))
-      .update({ deactivatedAt: new Date() });
+    .update({ deactivatedAt: new Date() })
+    .returning(['id', 'code', 'stripePromotionCodeId'])) as Array<Pick<CouponRow, 'id' | 'code' | 'stripePromotionCodeId'>>;
+  const promos = coupons.map((c) => c.stripePromotionCodeId).filter((id): id is string => id != null);
+  if (promos.length > 0) {
+    afterCommit(req, 'deactivate customer rewards', async () => {
+      for (const id of promos) await deactivateCustomerReward(tenantId, id);
+    });
   }
   res.json({ ok: true, retiredCoupons: coupons.map((c) => c.code) });
 });

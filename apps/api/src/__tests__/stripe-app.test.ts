@@ -13,7 +13,9 @@
  *     end — Payment Link checkout, invoice.paid, a full refund, a promo
  *     code redemption.
  *   - A forwarded conversion for a Stripe transaction the app records.
- *   - Customer rewards minted in the BRAND's account, never the platform's.
+ *   - Customer rewards minted in the BRAND's account, never the platform's,
+ *     including for codes minted before the brand connected (the backfill a
+ *     connect starts, and the hourly sweep that retries it).
  *   - Self-host keeps its own path (the stripe-webhook suites cover the
  *     mapping itself).
  *
@@ -172,7 +174,13 @@ const {
   signOAuthState,
   verifyOAuthState,
 } = await import('../stripe-app.js');
-const { customerRewardDelivery, provisionCustomerReward } = await import('../customer-rewards.js');
+const {
+  __settleCustomerRewardBackfillsForTests,
+  backfillCustomerRewards,
+  customerRewardDelivery,
+  provisionCustomerReward,
+  runRewardBackfillSweep,
+} = await import('../customer-rewards.js');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
@@ -1117,6 +1125,459 @@ describe.skipIf(skipIntegration)('customer rewards on hosted', () => {
     expect(await customerRewardDelivery(DEFAULT_TENANT_ID)).toBe('brand');
     expect(await provisionCustomerReward(DEFAULT_TENANT_ID, reward, 'BRAND15', 'Spring')).toBeNull();
     expect(stripeApi.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Codes minted before the brand connected (the usual order: partners are
+// granted programs, and so get their codes, before Stripe is connected).
+// ---------------------------------------------------------------------------
+
+interface FakePromo {
+  id: string;
+  object: 'promotion_code';
+  code: string;
+  active: boolean;
+  metadata: Record<string, string>;
+  promotion: { type: 'coupon'; coupon: string };
+}
+
+/**
+ * Promotion codes and coupons kept per access token, so each connected
+ * account has its own, the way Stripe scopes them. The API key of the call
+ * being served is the one stripeApi.calls just recorded.
+ */
+function fakeRewardAccounts() {
+  const accounts = new Map<string, { promos: Map<string, FakePromo>; coupons: Set<string> }>();
+  const account = (key: string) => {
+    if (!accounts.has(key)) accounts.set(key, { promos: new Map(), coupons: new Set() });
+    return accounts.get(key)!;
+  };
+  const current = () => account(stripeApi.calls.at(-1)!.key);
+  const missing = (what: string) =>
+    Object.assign(new Error(`No such ${what}`), { type: 'StripeInvalidRequestError', code: 'resource_missing' });
+  let next = 0;
+  Object.assign(stripeApi.impl, {
+    'coupons.create': async (p: unknown) => {
+      const id = `co_fake_${++next}`;
+      current().coupons.add(id);
+      return { id, object: 'coupon', ...(p as object) };
+    },
+    'coupons.retrieve': async (id: unknown) => {
+      if (!current().coupons.has(id as string)) throw missing('coupon');
+      return { id, object: 'coupon' };
+    },
+    'promotionCodes.create': async (p: unknown) => {
+      const params = p as { code: string; metadata?: Record<string, string>; promotion: FakePromo['promotion'] };
+      const promos = current().promos;
+      if ([...promos.values()].some((x) => x.active && x.code.toLowerCase() === params.code.toLowerCase())) {
+        throw Object.assign(new Error('An active promotion code with that code already exists.'), {
+          type: 'StripeInvalidRequestError',
+        });
+      }
+      const promo: FakePromo = {
+        id: `promo_fake_${++next}`,
+        object: 'promotion_code',
+        code: params.code,
+        active: true,
+        metadata: params.metadata ?? {},
+        promotion: params.promotion,
+      };
+      promos.set(promo.id, promo);
+      return promo;
+    },
+    'promotionCodes.retrieve': async (id: unknown) => {
+      const promo = current().promos.get(id as string);
+      if (!promo) throw missing('promotion code');
+      return promo;
+    },
+    'promotionCodes.list': async (p: unknown) => {
+      const code = (p as { code: string }).code.toLowerCase();
+      return { object: 'list', data: [...current().promos.values()].filter((x) => x.code.toLowerCase() === code), has_more: false };
+    },
+    'promotionCodes.update': async (id: unknown, p: unknown) => Object.assign(current().promos.get(id as string)!, p),
+  });
+  return {
+    promos: (key: string) => [...account(key).promos.values()],
+    /** One of the brand's own promotion codes, created in its Dashboard. */
+    seedBrandPromo(key: string, code: string) {
+      const id = `promo_brand_${++next}`;
+      account(key).promos.set(id, { id, object: 'promotion_code', code, active: true, metadata: {}, promotion: { type: 'coupon', coupon: 'co_brand' } });
+    },
+  };
+}
+
+const PERCENT_15 = JSON.stringify({ type: 'percent_off', value: 15, duration: 'once' });
+
+/** A partner on a program, holding `codes` with no Stripe ids, as minted
+ *  before any connection. */
+async function seedRewardCodes(codes: string[], o: { reward?: string | null } = {}) {
+  const partnerId = ulid();
+  const programId = ulid();
+  await db(TABLES.Partner).insert({ id: partnerId, tenantId: DEFAULT_TENANT_ID, name: 'Code partner', email: `c-${partnerId}@x.test` });
+  await db(TABLES.Program).insert({
+    id: programId,
+    tenantId: DEFAULT_TENANT_ID,
+    name: 'Spring',
+    attributionModel: 'last_click',
+    attributionWindowDays: 60,
+    commissionRule: JSON.stringify({ type: 'percent', value: 20 }),
+    destinationUrl: 'https://brand.test/buy',
+    customerReward: o.reward === undefined ? PERCENT_15 : o.reward,
+  });
+  for (const code of codes) {
+    await db(TABLES.Coupon).insert({ id: `cpn_${ulid()}`, tenantId: DEFAULT_TENANT_ID, partnerId, programId, code });
+  }
+  return { partnerId, programId };
+}
+
+const couponByCode = (code: string) => db(TABLES.Coupon).where({ tenantId: DEFAULT_TENANT_ID, code }).first();
+const callsTo = (method: string) => stripeApi.calls.filter((c) => c.method === method);
+
+describe.skipIf(skipIntegration)('connecting backfills partner codes minted before it', () => {
+  it('creates each code’s promotion code once, leaves the brand’s own codes alone, and a reconnect adds none', async () => {
+    const brand = fakeRewardAccounts();
+    await seedRewardCodes(['ALPHA15', 'BRAVO15', 'WELCOME10']);
+    await seedRewardCodes(['PLAIN20'], { reward: null });
+    await seedRewardCodes(['RETIRED15']);
+    await db(TABLES.Coupon).where({ code: 'RETIRED15' }).update({ deactivatedAt: new Date() });
+    const suspended = await seedRewardCodes(['SUSPENDED15']);
+    await db(TABLES.Partner).where({ id: suspended.partnerId }).update({ revokedAt: new Date() });
+    // The brand's own sitewide promo already has one of the strings.
+    brand.seedBrandPromo(BRAND_TOKEN, 'WELCOME10');
+
+    const { cookie } = await adminCookie();
+    const res = await connect(cookie);
+    expect(res.status).toBe(200);
+    await __settleCustomerRewardBackfillsForTests();
+
+    const created = brand.promos(BRAND_TOKEN).filter((p) => p.metadata.source === 'openpartner');
+    expect(created.map((p) => p.code).sort()).toEqual(['ALPHA15', 'BRAVO15']);
+    for (const code of ['ALPHA15', 'BRAVO15']) {
+      const row = await couponByCode(code);
+      const promo = created.find((p) => p.code === code)!;
+      expect(row).toMatchObject({ stripePromotionCodeId: promo.id, stripeCouponId: promo.promotion.coupon });
+      expect(promo.metadata).toEqual({ source: 'openpartner', openpartner_code: code });
+    }
+    const couponParams = callsTo('coupons.create').map((c) => c.args[0] as { name: string });
+    expect(couponParams.map((p) => p.name).sort()).toEqual(['OpenPartner — Spring (ALPHA15)', 'OpenPartner — Spring (BRAVO15)']);
+    for (const p of couponParams) expect(p).toMatchObject({ percent_off: 15, duration: 'once' });
+    for (const code of ['WELCOME10', 'PLAIN20', 'RETIRED15', 'SUSPENDED15']) {
+      expect((await couponByCode(code)).stripePromotionCodeId).toBeNull();
+    }
+    expect(keysUsed()).toEqual([BRAND_TOKEN]);
+
+    // Integrations says one code isn't in Stripe, instead of claiming all are.
+    const status = await request(app).get('/stripe-app/connection').set('Cookie', cookie);
+    expect(status.body.connection).toMatchObject({
+      rewards: true,
+      rewardCodesNotInStripe: 1,
+      rewardCodesSyncing: false,
+      rewardCodesChecked: true,
+    });
+
+    // Reconnecting the same account checks what's there and creates nothing.
+    stripeApi.calls.length = 0;
+    expect((await connect(cookie, { refresh: 'rt_again' })).status).toBe(200);
+    await __settleCustomerRewardBackfillsForTests();
+    expect(callsTo('coupons.create')).toHaveLength(0);
+    expect(callsTo('promotionCodes.create')).toHaveLength(0);
+    expect(callsTo('promotionCodes.retrieve').map((c) => c.args[0]).sort()).toEqual(created.map((p) => p.id).sort());
+
+    // A pass whose write was lost: the promo is found by its code and
+    // recorded, not created a second time.
+    const alpha = created.find((p) => p.code === 'ALPHA15')!;
+    await db(TABLES.Coupon).where({ code: 'ALPHA15' }).update({ stripeCouponId: null, stripePromotionCodeId: null });
+    stripeApi.calls.length = 0;
+    expect((await connect(cookie, { refresh: 'rt_third' })).status).toBe(200);
+    await __settleCustomerRewardBackfillsForTests();
+    expect(callsTo('promotionCodes.create')).toHaveLength(0);
+    expect(await couponByCode('ALPHA15')).toMatchObject({ stripePromotionCodeId: alpha.id, stripeCouponId: alpha.promotion.coupon });
+    expect(brand.promos(BRAND_TOKEN).filter((p) => p.code === 'ALPHA15')).toHaveLength(1);
+  });
+
+  it('a different Stripe account gets promotion codes of its own; switching back reuses the first account’s', async () => {
+    const brand = fakeRewardAccounts();
+    await seedRewardCodes(['ALPHA15']);
+    const { cookie } = await adminCookie();
+
+    await connect(cookie);
+    await __settleCustomerRewardBackfillsForTests();
+    const [first] = brand.promos(BRAND_TOKEN);
+    expect((await couponByCode('ALPHA15')).stripePromotionCodeId).toBe(first!.id);
+
+    // Live → another account (or test mode): the stored promo isn't there.
+    const swapped = await connect(cookie, { account: 'acct_1OtherBrandAccount', access: 'at_other_account' });
+    expect(swapped.body.replaced).toBe(true);
+    await __settleCustomerRewardBackfillsForTests();
+    const [other] = brand.promos('at_other_account');
+    expect(other).toMatchObject({ code: 'ALPHA15', active: true });
+    expect((await couponByCode('ALPHA15')).stripePromotionCodeId).toBe(other!.id);
+
+    // Back to the first account: its promo is still there and ours.
+    stripeApi.calls.length = 0;
+    await connect(cookie);
+    await __settleCustomerRewardBackfillsForTests();
+    expect(callsTo('promotionCodes.create')).toHaveLength(0);
+    expect((await couponByCode('ALPHA15')).stripePromotionCodeId).toBe(first!.id);
+    expect(brand.promos(BRAND_TOKEN)).toHaveLength(1);
+  });
+
+  it('touches nothing when the install withheld the write permissions', async () => {
+    fakeRewardAccounts();
+    await seedRewardCodes(['ALPHA15']);
+    await seedConnection({ permissionsGranted: ['event_read', 'invoice_read', 'promotion_code_read'] });
+    const { cookie } = await adminCookie();
+
+    // A reconnect keeps the grant list Stripe sent for the install.
+    const res = await connect(cookie);
+    expect(res.status).toBe(200);
+    expect(res.body.connection).toMatchObject({ rewards: false, rewardCodesNotInStripe: 0 });
+    await __settleCustomerRewardBackfillsForTests();
+    expect(stripeApi.calls).toHaveLength(0);
+    expect((await couponByCode('ALPHA15')).stripePromotionCodeId).toBeNull();
+    // Nor does the hourly sweep look at this tenant.
+    expect(await runRewardBackfillSweep()).toEqual([]);
+    expect(stripeApi.calls).toHaveLength(0);
+  });
+
+  it('a Stripe outage never fails the connect; the pass stops and the hourly sweep finishes it', async () => {
+    fakeRewardAccounts();
+    await seedRewardCodes(['ALPHA15', 'BRAVO15']);
+    const create = stripeApi.impl['coupons.create']!;
+    stripeApi.impl['coupons.create'] = async () => {
+      throw Object.assign(new Error('Stripe is having trouble'), { type: 'StripeAPIError' });
+    };
+    const { cookie } = await adminCookie();
+
+    const res = await connect(cookie);
+    expect(res.status).toBe(200);
+    await __settleCustomerRewardBackfillsForTests();
+    // One try, not one per code: an outage would fail every one of them.
+    expect(callsTo('coupons.create')).toHaveLength(1);
+    const status = await request(app).get('/stripe-app/connection').set('Cookie', cookie);
+    expect(status.body.connection).toMatchObject({ rewardCodesNotInStripe: 2, rewardCodesChecked: false });
+
+    stripeApi.impl['coupons.create'] = create;
+    const swept = await runRewardBackfillSweep();
+    expect(swept).toEqual([
+      expect.objectContaining({
+        tenantId: DEFAULT_TENANT_ID,
+        pending: 2,
+        verified: false,
+        result: expect.objectContaining({ provisioned: 2, stopped: null, verified: true }),
+      }),
+    ]);
+    expect((await couponByCode('ALPHA15')).stripePromotionCodeId).toMatch(/^promo_fake_/);
+    expect((await couponByCode('BRAVO15')).stripePromotionCodeId).toMatch(/^promo_fake_/);
+
+    // Nothing left: the next sweep makes no Stripe call at all.
+    stripeApi.calls.length = 0;
+    expect(await runRewardBackfillSweep()).toEqual([]);
+    expect(stripeApi.calls).toHaveLength(0);
+  });
+
+  it('a code Stripe refuses is skipped, and the rest still get theirs', async () => {
+    fakeRewardAccounts();
+    await seedRewardCodes(['ALPHA15', 'BRAVO15']);
+    const create = stripeApi.impl['promotionCodes.create']!;
+    stripeApi.impl['promotionCodes.create'] = async (p: unknown) => {
+      if ((p as { code: string }).code === 'ALPHA15') {
+        throw Object.assign(new Error('Invalid code'), { type: 'StripeInvalidRequestError' });
+      }
+      return create(p);
+    };
+    const { cookie } = await adminCookie();
+
+    expect((await connect(cookie)).status).toBe(200);
+    await __settleCustomerRewardBackfillsForTests();
+    expect((await couponByCode('ALPHA15')).stripePromotionCodeId).toBeNull();
+    expect((await couponByCode('BRAVO15')).stripePromotionCodeId).toMatch(/^promo_fake_/);
+  });
+
+  it('a switch whose check stopped early is finished by the sweep, against the new account', async () => {
+    const brand = fakeRewardAccounts();
+    await seedRewardCodes(['ALPHA15']);
+    const { cookie } = await adminCookie();
+    await connect(cookie);
+    await __settleCustomerRewardBackfillsForTests();
+    const [first] = brand.promos(BRAND_TOKEN);
+
+    const retrieve = stripeApi.impl['promotionCodes.retrieve']!;
+    stripeApi.impl['promotionCodes.retrieve'] = async () => {
+      throw Object.assign(new Error('Rate limited'), { type: 'StripeRateLimitError' });
+    };
+    await connect(cookie, { account: 'acct_1OtherBrandAccount', access: 'at_other_account' });
+    await __settleCustomerRewardBackfillsForTests();
+    // Still the first account's promo, which this checkout doesn't have, and
+    // the card doesn't claim otherwise.
+    expect((await couponByCode('ALPHA15')).stripePromotionCodeId).toBe(first!.id);
+    const status = await request(app).get('/stripe-app/connection').set('Cookie', cookie);
+    expect(status.body.connection).toMatchObject({ rewardCodesNotInStripe: 0, rewardCodesChecked: false });
+
+    stripeApi.impl['promotionCodes.retrieve'] = retrieve;
+    const swept = await runRewardBackfillSweep();
+    expect(swept).toEqual([expect.objectContaining({ verified: false, result: expect.objectContaining({ provisioned: 1, verified: true }) })]);
+    const [other] = brand.promos('at_other_account');
+    expect((await couponByCode('ALPHA15')).stripePromotionCodeId).toBe(other!.id);
+    expect(await runRewardBackfillSweep()).toEqual([]);
+  });
+
+  /** Holds the first call to `method` (made with `key`, if given) once it
+   *  has done its work, until released. */
+  function pauseFirst(method: string, key?: string) {
+    const real = stripeApi.impl[method]!;
+    let release!: () => void;
+    let reached!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const arrived = new Promise<void>((r) => (reached = r));
+    let paused = false;
+    stripeApi.impl[method] = async (...args: unknown[]) => {
+      const matches = key === undefined || stripeApi.calls.at(-1)!.key === key;
+      const out = await real(...args);
+      if (!paused && matches) {
+        paused = true;
+        reached();
+        await gate;
+      }
+      return out;
+    };
+    return { arrived, release };
+  }
+
+  it('a pass that outlives a switch to another account can’t record the old account’s promo under it', async () => {
+    // Two processes: one still provisioning through the old connection, the
+    // other checking the new one. Neither is queued behind the other.
+    const brand = fakeRewardAccounts();
+    await seedRewardCodes(['ALPHA15']);
+    const oldConnection = await seedConnection();
+    const oldPass = pauseFirst('promotionCodes.create', BRAND_TOKEN);
+    const stale = backfillCustomerRewards(DEFAULT_TENANT_ID, { verifyExisting: false });
+    await oldPass.arrived; // the old account's promo exists, not yet recorded
+
+    await db(TABLES.TenantStripeConnection)
+      .where({ id: oldConnection })
+      .update({ disconnectedAt: new Date(), disconnectReason: 'replaced', refreshTokenEnc: null, accessTokenEnc: null });
+    await seedConnection({ account: 'acct_1OtherBrandAccount', access: 'at_other_account' });
+    const newPass = pauseFirst('promotionCodes.list', 'at_other_account');
+    const checking = backfillCustomerRewards(DEFAULT_TENANT_ID, { verifyExisting: true });
+    await newPass.arrived; // read the code as having no promo
+
+    oldPass.release();
+    expect(await stale).toMatchObject({ provisioned: 0, skipped: 1 });
+    newPass.release();
+    expect(await checking).toMatchObject({ provisioned: 1, verified: true });
+
+    const [other] = brand.promos('at_other_account');
+    expect((await couponByCode('ALPHA15')).stripePromotionCodeId).toBe(other!.id);
+    // The old account's promo stays there, like any promo minted under a
+    // previous connection.
+    expect(brand.promos(BRAND_TOKEN)).toEqual([expect.objectContaining({ active: true })]);
+  });
+
+  it('a pass that outlives a disconnect and reconnect of the same account: the next pass adopts its promo', async () => {
+    const brand = fakeRewardAccounts();
+    await seedRewardCodes(['ALPHA15']);
+    const { cookie } = await adminCookie();
+    const paused = pauseFirst('promotionCodes.create');
+
+    await connect(cookie);
+    await paused.arrived;
+    // Disconnect closes the row; connecting again opens a new one.
+    expect((await request(app).delete('/stripe-app/connection').set('Cookie', cookie)).body.disconnected).toBe(true);
+    expect((await connect(cookie)).status).toBe(200);
+    paused.release();
+    await __settleCustomerRewardBackfillsForTests();
+
+    const promos = brand.promos(BRAND_TOKEN);
+    expect(promos).toEqual([expect.objectContaining({ code: 'ALPHA15', active: true })]);
+    expect((await couponByCode('ALPHA15')).stripePromotionCodeId).toBe(promos[0]!.id);
+  });
+
+  it('a suspended partner’s code loses another account’s promo id, and gets one of its own once reinstated', async () => {
+    const brand = fakeRewardAccounts();
+    const { partnerId } = await seedRewardCodes(['ALPHA15']);
+    const { cookie } = await adminCookie();
+    await connect(cookie);
+    await __settleCustomerRewardBackfillsForTests();
+    expect(brand.promos(BRAND_TOKEN)).toHaveLength(1);
+
+    await db(TABLES.Partner).where({ id: partnerId }).update({ revokedAt: new Date() });
+    await connect(cookie, { account: 'acct_1OtherBrandAccount', access: 'at_other_account' });
+    await __settleCustomerRewardBackfillsForTests();
+    // Checked and cleared, but nothing created while suspended.
+    expect((await couponByCode('ALPHA15')).stripePromotionCodeId).toBeNull();
+    expect(brand.promos('at_other_account')).toHaveLength(0);
+
+    await db(TABLES.Partner).where({ id: partnerId }).update({ revokedAt: null });
+    expect(await runRewardBackfillSweep()).toEqual([expect.objectContaining({ verified: true, result: expect.objectContaining({ provisioned: 1 }) })]);
+    const [other] = brand.promos('at_other_account');
+    expect((await couponByCode('ALPHA15')).stripePromotionCodeId).toBe(other!.id);
+  });
+
+  it('two passes at once: the one that finds the other’s promo records it, and it isn’t released', async () => {
+    const brand = fakeRewardAccounts();
+    await seedRewardCodes(['ALPHA15']);
+    await seedConnection();
+    const paused = pauseFirst('promotionCodes.create');
+
+    const slow = backfillCustomerRewards(DEFAULT_TENANT_ID, { verifyExisting: false });
+    await paused.arrived;
+    expect(await backfillCustomerRewards(DEFAULT_TENANT_ID, { verifyExisting: false })).toMatchObject({ linked: 1 });
+    paused.release();
+    expect(await slow).toMatchObject({ provisioned: 0, skipped: 1 });
+
+    const [promo] = brand.promos(BRAND_TOKEN);
+    expect(brand.promos(BRAND_TOKEN)).toHaveLength(1);
+    expect(promo!.active).toBe(true);
+    expect((await couponByCode('ALPHA15')).stripePromotionCodeId).toBe(promo!.id);
+  });
+
+  it('a code deactivated mid-pass keeps no live promo', async () => {
+    const brand = fakeRewardAccounts();
+    const { partnerId } = await seedRewardCodes(['ALPHA15']);
+    await seedConnection();
+    const paused = pauseFirst('promotionCodes.create');
+
+    const pass = backfillCustomerRewards(DEFAULT_TENANT_ID, { verifyExisting: false });
+    await paused.arrived;
+    const coupon = await couponByCode('ALPHA15');
+    const retired = await request(app)
+      .delete(`/partners/${partnerId}/coupons/${coupon.id}`)
+      .set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(retired.status).toBe(200);
+    paused.release();
+    expect(await pass).toMatchObject({ skipped: 1 });
+
+    expect(brand.promos(BRAND_TOKEN)).toEqual([expect.objectContaining({ code: 'ALPHA15', active: false })]);
+    expect((await couponByCode('ALPHA15')).stripePromotionCodeId).toBeNull();
+  });
+
+  it('retiring a code deactivates the promo a backfill recorded', async () => {
+    const brand = fakeRewardAccounts();
+    const { partnerId } = await seedRewardCodes(['ALPHA15']);
+    await seedConnection();
+    expect(await backfillCustomerRewards(DEFAULT_TENANT_ID, { verifyExisting: false })).toMatchObject({ provisioned: 1 });
+
+    const coupon = await couponByCode('ALPHA15');
+    await request(app).delete(`/partners/${partnerId}/coupons/${coupon.id}`).set('Authorization', `Bearer ${ADMIN_KEY}`);
+    expect(brand.promos(BRAND_TOKEN)).toEqual([expect.objectContaining({ id: coupon.stripePromotionCodeId, active: false })]);
+  });
+
+  it('reads every page of a code’s promotion codes before deciding it is free', async () => {
+    fakeRewardAccounts();
+    await seedRewardCodes(['ALPHA15']);
+    await seedConnection();
+    const oursRetired = { id: 'promo_ours_old', code: 'ALPHA15', active: false, metadata: { source: 'openpartner', openpartner_code: 'ALPHA15' } };
+    const brandOwn = { id: 'promo_brand_old', code: 'ALPHA15', active: false, metadata: {} };
+    stripeApi.impl['promotionCodes.list'] = async (p: unknown) =>
+      (p as { starting_after?: string }).starting_after === oursRetired.id
+        ? { object: 'list', data: [brandOwn], has_more: false }
+        : { object: 'list', data: [oursRetired], has_more: true };
+
+    expect(await backfillCustomerRewards(DEFAULT_TENANT_ID, { verifyExisting: false })).toMatchObject({ taken: 1, provisioned: 0 });
+    expect(callsTo('promotionCodes.list')).toHaveLength(2);
+    expect(callsTo('promotionCodes.create')).toHaveLength(0);
   });
 });
 

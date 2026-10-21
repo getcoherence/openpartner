@@ -44,7 +44,7 @@ import {
   type PartnerRow,
 } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
-import { getTenancyMode, tenantOf } from '../tenancy.js';
+import { afterCommit, getTenancyMode, tenantOf } from '../tenancy.js';
 import { getMode } from '../stripe.js';
 import { attributeEvent } from '../attribution.js';
 import { sameConversion } from '../conversion-ingest.js';
@@ -365,19 +365,25 @@ couponsRouter.delete('/partners/:id/coupons/:couponId', requireAuth, async (req,
     return res.json({ ...coupon, canEdit: program.partnersMayCustomizeCode });
   }
 
-  // Disable the Stripe PromotionCode (best-effort). If Stripe is down
-  // or the code was never provisioned, we still flip our own flag —
-  // the OpenPartner attribution path is the source of truth for "is
-  // this code redeemable in OpenPartner," and a stale active Stripe
-  // code without a matching active OpenPartner Coupon would just
-  // discount the customer without attributing.
-  if (coupon.stripePromotionCodeId) {
-    await deactivateCustomerReward(coupon.tenantId, coupon.stripePromotionCodeId);
-  }
-
-  await db<CouponRow>(TABLES.Coupon)
+  // Flip our own flag, then disable the Stripe PromotionCode
+  // (best-effort). If Stripe is down or the code was never provisioned,
+  // the flag still stands — the OpenPartner attribution path is the
+  // source of truth for "is this code redeemable in OpenPartner," and a
+  // stale active Stripe code without a matching active OpenPartner Coupon
+  // would just discount the customer without attributing. The promo id
+  // comes back from the flip itself: a reward backfill may have recorded
+  // one since `coupon` was read, and none can after (it only writes
+  // active codes). Stripe is called once the flip has committed, so the
+  // row lock isn't held across the call.
+  const [retired] = (await db<CouponRow>(TABLES.Coupon)
     .where({ id: coupon.id, tenantId })
-    .update({ deactivatedAt: new Date() });
+    .whereNull('deactivatedAt')
+    .update({ deactivatedAt: new Date() })
+    .returning(['stripePromotionCodeId'])) as Array<Pick<CouponRow, 'stripePromotionCodeId'>>;
+  const retiredPromo = retired?.stripePromotionCodeId;
+  if (retiredPromo) {
+    afterCommit(req, 'deactivate customer reward', () => deactivateCustomerReward(tenantId, retiredPromo));
+  }
 
   const updated = await db<CouponRow>(TABLES.Coupon).where({ id: coupon.id, tenantId }).first();
   return res.json({ ...updated, canEdit: program.partnersMayCustomizeCode });

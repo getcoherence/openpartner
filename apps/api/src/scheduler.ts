@@ -365,6 +365,17 @@ const JOBS: ScheduledJob[] = [
     handler: runPerformanceBountiesJob,
   },
   {
+    name: 'stripe-app-reward-backfill',
+    cronExpr: '50 * * * *',
+    description:
+      'Hosted: give partner codes with a customer discount their promotion code in the brand’s connected Stripe where it is still missing — a connect-time pass that failed, a mint whose Stripe call failed, a program that gained a reward later (customer-rewards.ts; hourly at :50)',
+    handler: async () => {
+      if (getMode() === 'selfhost') return { skipped: 'selfhost' };
+      const { runRewardBackfillSweep } = await import('./customer-rewards.js');
+      return runRewardBackfillSweep();
+    },
+  },
+  {
     name: 'seal-payout-details',
     cronExpr: '35 * * * *',
     description:

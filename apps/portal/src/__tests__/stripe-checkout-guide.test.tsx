@@ -24,7 +24,7 @@ beforeEach(() => {
   vi.mocked(api).mockResolvedValue({});
 });
 
-function renderConnected(rewards = true) {
+function renderConnected(rewards = true, codes: { notInStripe?: number; syncing?: boolean; checked?: boolean } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   qc.setQueryData(['stripe-app'], {
     available: true,
@@ -38,6 +38,9 @@ function renderConnected(rewards = true) {
       refreshError: null,
       permissionsOutdated: false,
       rewards,
+      rewardCodesNotInStripe: codes.notInStripe ?? 0,
+      rewardCodesSyncing: codes.syncing ?? false,
+      rewardCodesChecked: codes.checked ?? true,
     },
   });
   qc.setQueryData(['integration-keys'], { apiKeys: [] });
@@ -100,5 +103,35 @@ describe('the Stripe checkout guide', () => {
     renderConnected(false);
     choose(/partner’s promo code/i);
     expect(text()).toMatch(/Reconnect\s+Stripe and accept them/);
+  });
+});
+
+describe('the connection line on customer discounts', () => {
+  it('only claims they are in Stripe when every partner code is', () => {
+    renderConnected(true);
+    expect(text()).toContain('customer discounts created in Stripe');
+    expect(text()).not.toMatch(/no promotion code in your Stripe/);
+    cleanup();
+
+    renderConnected(true, { notInStripe: 3 });
+    expect(text()).toContain('customer discounts created in Stripe, except 3 partner codes');
+    expect(text()).toMatch(/3 partner codes with a customer discount have no promotion code in your Stripe yet/);
+    expect(text()).toMatch(/retries every hour/);
+    cleanup();
+
+    renderConnected(true, { notInStripe: 3, syncing: true });
+    expect(text()).toContain('creating customer discounts in Stripe…');
+    expect(text()).not.toMatch(/no promotion code in your Stripe/);
+    cleanup();
+
+    // A pass that stopped early: codes from an earlier account aren't
+    // counted until they're checked, so no "created" claim yet.
+    renderConnected(true, { checked: false });
+    expect(text()).toContain('customer discounts being checked in Stripe');
+    expect(text()).not.toContain('customer discounts created in Stripe');
+    cleanup();
+
+    renderConnected(false, { notInStripe: 0 });
+    expect(text()).toContain('customer discounts set up by you');
   });
 });
