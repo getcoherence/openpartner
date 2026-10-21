@@ -422,6 +422,9 @@ export async function completeConnection(input: {
     lastRefreshedAt: now,
     refreshFailedAt: null,
     refreshError: null,
+    // Partner codes' promos are checked against the account again: the
+    // route starts that pass once this commits (customer-rewards.ts).
+    rewardsVerifiedAt: null,
     updatedAt: now,
   };
 
@@ -567,6 +570,40 @@ export async function activeConnectionForTenant(knex: Knex, tenantId: string): P
 export async function tenantAcceptsStripeEvents(tenantId: string): Promise<boolean> {
   const tenant = await db<TenantRow>(TABLES.Tenant).where({ id: tenantId }).first(['status', 'pendingDeletionAt']);
   return tenant != null && tenant.status === 'active' && tenant.pendingDeletionAt == null;
+}
+
+/** Connections brandRewardsTarget would use (live, not waiting for a
+ *  reconnect, granting the reward writes), of tenants still accepting
+ *  Stripe events. Privileged pool, across tenants: the reward backfill
+ *  sweep's list. */
+export async function rewardConnections(): Promise<Array<{ tenantId: string; connectionId: string; verified: boolean }>> {
+  if (configuredKeyModes().length === 0) return [];
+  const rows = (await db(TABLES.TenantStripeConnection)
+    .join(TABLES.Tenant, `${TABLES.Tenant}.id`, `${TABLES.TenantStripeConnection}.tenantId`)
+    .whereNull(`${TABLES.TenantStripeConnection}.disconnectedAt`)
+    .whereNull(`${TABLES.TenantStripeConnection}.refreshFailedAt`)
+    .where(`${TABLES.Tenant}.status`, 'active')
+    .whereNull(`${TABLES.Tenant}.pendingDeletionAt`)
+    .orderBy(`${TABLES.TenantStripeConnection}.tenantId`)
+    .select(
+      `${TABLES.TenantStripeConnection}.id`,
+      `${TABLES.TenantStripeConnection}.tenantId`,
+      `${TABLES.TenantStripeConnection}.permissionsGranted`,
+      `${TABLES.TenantStripeConnection}.rewardsVerifiedAt`,
+    )) as Array<Pick<TenantStripeConnectionRow, 'id' | 'tenantId' | 'permissionsGranted' | 'rewardsVerifiedAt'>>;
+  return rows
+    .filter(grantsRewardWrites)
+    .map((r) => ({ tenantId: r.tenantId, connectionId: r.id, verified: r.rewardsVerifiedAt != null }));
+}
+
+/** A reward backfill finished checking every code against this connection's
+ *  account. Only while it's still the live connection. */
+export async function markRewardsVerified(knex: Knex, connectionId: string, tenantId: string): Promise<boolean> {
+  const updated = await knex(TABLES.TenantStripeConnection)
+    .where({ id: connectionId, tenantId })
+    .whereNull('disconnectedAt')
+    .update({ rewardsVerifiedAt: new Date() });
+  return updated > 0;
 }
 
 /** Best-effort "last event received" stamp for the portal. */
@@ -763,11 +800,17 @@ export async function stripeAppRewardsAvailable(tenantId: string): Promise<boole
  * checkout (customer-rewards.ts).
  */
 export async function brandStripeForRewards(tenantId: string): Promise<Stripe | null> {
+  return (await brandRewardsTarget(tenantId))?.stripe ?? null;
+}
+
+/** brandStripeForRewards, plus the connection the client acts through: a
+ *  reward backfill only records ids while that connection is still live. */
+export async function brandRewardsTarget(tenantId: string): Promise<{ stripe: Stripe; connectionId: string } | null> {
   if (configuredKeyModes().length === 0) return null;
   const conn = await activeConnectionForTenant(db, tenantId);
   if (!conn || conn.refreshFailedAt || !grantsRewardWrites(conn)) return null;
   try {
-    return await brandStripe(conn);
+    return { stripe: await brandStripe(conn), connectionId: conn.id };
   } catch (err) {
     if (err instanceof StripeConnectionUnavailableError) return null;
     throw err;

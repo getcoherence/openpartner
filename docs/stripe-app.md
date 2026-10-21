@@ -11,7 +11,7 @@ drive attribution, the way a single-tenant self-host's do through its own
 | Stripe-billed SaaS brands reported every invoice from their server | `invoice.paid` is recorded directly, for any customer linked to a click |
 | A refund needed an admin to reverse the commission | `charge.refunded` reverses the commissions on a full refund and prorates them on a partial one, exactly as on self-host (see *Refunds and disputes*) |
 | Disputes were invisible | `charge.dispute.created` is recorded. It reverses nothing until the brand reports a lost dispute as a chargeback |
-| Customer-reward promo codes were created by hand in the brand's Stripe | They're created in the brand's account automatically, and redemptions at Stripe Checkout attribute with no `POST /coupons/redeem` call |
+| Customer-reward promo codes were created by hand in the brand's Stripe | They're created in the brand's account automatically, including for codes minted before the brand connected, and redemptions at Stripe Checkout attribute with no `POST /coupons/redeem` call |
 | The platform fee was computed from self-reported amounts | Stripe-sourced amounts win over self-reported ones for the same transaction (see *Stripe wins*) |
 
 Self-host is unchanged: it never connects anything, and `/webhooks/stripe`
@@ -21,7 +21,7 @@ Code: `apps/api/src/stripe-app.ts` (tokens, rules), `routes/stripe-app.ts`
 (install + admin API), `routes/stripe-app-webhook.ts` (events),
 `routes/stripe-webhook.ts` (`processBrandStripeEvent`, the mapping both
 routes share). Manifest: `stripe-app/`. Table: `TenantStripeConnection`
-(migration `20261017000000`).
+(migration `20261017000000`; `rewardsVerifiedAt` from `20261021010000`).
 
 ---
 
@@ -242,6 +242,87 @@ partner code gets its Coupon + PromotionCode in the brand's account. Deactivatin
 a code deactivates its promo there. That's best-effort, and a promo minted under
 a previously connected account is out of reach.
 
+#### Codes minted before the connection
+
+A code gets its promo when it's minted, and codes are minted when a partner is
+granted a program. Brands usually add partners first and connect Stripe later,
+so most codes exist before there's an account to put them in. Without a
+backfill they kept `Coupon.stripePromotionCodeId = null`, and a customer typing
+one at the brand's Stripe Checkout got "invalid code".
+
+`customer-rewards.ts backfillCustomerRewards` gives them their promos:
+
+- **When.** `POST /stripe-app/connection/complete` starts a pass in the
+  background once the connection has committed, on every connect and
+  reconnect. A failure is logged and never fails the connect. The hourly
+  scheduler job `stripe-app-reward-backfill` retries:
+  - a connection whose check never finished (`TenantStripeConnection.rewardsVerifiedAt`
+    is null: the pass stopped early, or the process running it died). The
+    sweep runs the full check again. Connections from before this change start
+    unchecked, so the first sweep after deploy checks every connected brand once.
+  - a checked connection whose tenant still has codes without a promo: a
+    pass that couldn't provision them, a mint whose Stripe call failed, or a
+    program that gained a customer reward after its codes were minted.
+- **Which codes.** Active codes (`deactivatedAt` null) on programs with a
+  `customerReward`, held by partners who aren't suspended (`revokedAt` null).
+- **Permissions.** It goes through the same client as `rewardStripe`, so a
+  connection without `coupon_write` + `promotion_code_write` (or one waiting for
+  a reconnect) gets no Stripe calls at all, and the sweep skips that tenant. The
+  client is fetched again for each code, so a disconnect stops the pass at the
+  next code.
+- **Idempotent.** A code whose promo is in the account is left alone, even one
+  the brand deactivated in its Dashboard. A code without one is first looked up
+  by its string (`promotionCodes.list`, every page):
+  - an active promo with `metadata.source = 'openpartner'` and the same
+    `openpartner_code` is ours. A pass whose write didn't land, or an earlier
+    connection to this account, created it. It's recorded, not created again.
+  - any other promo with that string, active or not, or a Stripe coupon with
+    it as its id, is the brand's own (as in `codeExistsInStripe`). The code is
+    left without a promo, and an `ALERT` is logged. Codes minted before the
+    connection were never checked against the brand's Stripe, so this can
+    happen. **It also means the webhook credits that partner for purchases
+    using the brand's own promo**, because a discount matches a partner code by
+    its string. That was already true before this change; see *Follow-ups*. The
+    brand gives the partner a new code.
+- **Safe across processes.** The write to `Coupon` only lands if the code is
+  still active, still holds what the pass read, and (hosted) the connection the
+  promo came through is still live. That connection row is held `FOR SHARE`
+  while the write commits. A pass that outlives a reconnect can't write the old
+  account's ids under the new one. Its promo stays in the old account like any
+  other minted there, or, when the same account was reconnected, the next pass
+  adopts it by its code. A promo created for a code retired meanwhile is
+  deactivated again, as the mint path does: no pass adopts a promo for a
+  retired code. Stripe keeps active codes unique, so two passes can't both
+  create one. Retiring a
+  code (`DELETE /partners/:id/coupons/:couponId`, or revoking the program
+  grant) sets `deactivatedAt` first and reads the promo id back from that
+  update. A promo a pass recorded a moment earlier is deactivated in Stripe
+  too, once the retirement has committed. The pass locks the Coupon row before
+  the connection row, which is the order that can't wait in a cycle.
+- **Another account.** A connect also checks the promo ids already stored
+  (`promotionCodes.retrieve`). A promo from a previous connection, the other
+  mode (test then live is the common case), a self-host's key, or OpenPartner's
+  own billing account before #97 isn't in the new account. Its id is cleared,
+  then the code is handled like one without a promo. Switching back to an
+  earlier account finds that account's promos by their string and reuses them.
+  The old account's promos stay active there, out of reach, as before. The
+  check covers every active code that holds a promo id, including a suspended
+  partner's and one on a program whose customer reward was switched off. Their
+  stale ids are cleared too, but only codes eligible for a discount get a new
+  promo, so a reinstated partner or a reward switched back on gets one from the
+  next sweep. A pass that checks every code against one connection, without
+  stopping, sets `rewardsVerifiedAt`. A connect clears it.
+- **Stops early** on a Stripe error that isn't about one code (auth,
+  permission, rate limit, outage), so the rest wait for the next pass. A
+  refused request (`StripeInvalidRequestError`) only skips that code.
+
+Integrations reports the result. `GET /stripe-app/connection` returns
+`rewardCodesNotInStripe` (codes with no promo yet), `rewardCodesSyncing` (a
+pass is running in this API process) and `rewardCodesChecked` (the connection
+is verified). The card says "customer discounts created in Stripe" only when
+the connection is checked and the count is zero. Otherwise it says the check
+is pending, or names the count and explains why. It polls while a pass runs.
+
 ---
 
 ## Permissions (version 1)
@@ -258,10 +339,10 @@ money (CLAUDE.md principle 4), and nothing edits customers.
 | `invoice_read` | Record paid invoices for referred customers so partners earn commission on them, including the promo code used. | `invoice.paid`, `invoice.payment_failed`; `invoices.retrieve` with expanded discounts (`collectDiscounts`); `invoicePayments.list`, the invoice a refunded charge paid on API versions from 2025-03-31.basil (`invoicePaidBy`) |
 | `charge_read` | Read refunds and disputed charges so commissions on refunded revenue are reversed or flagged. | `charge.refunded`; `charges.retrieve` (a dispute's customer) |
 | `dispute_read` | Flag commissions on disputed payments for your review. | `charge.dispute.created` |
-| `promotion_code_read` | Match promotion codes used at checkout to your partners' codes. | `promotionCodes.retrieve` (`resolveDiscountCode`); `promotionCodes.list` (`codeExistsInStripe`); expanding a discount's promotion code |
-| `promotion_code_write` | Create each partner's customer-discount promotion code in your account, and deactivate it when the code is retired. | `provisionCustomerReward`, `deactivateCustomerReward` |
-| `coupon_read` | Check that a new partner code doesn't collide with one of your own coupons. | `coupons.retrieve` (`codeExistsInStripe`) |
-| `coupon_write` | Create the coupon behind each partner's customer discount. | `provisionCustomerReward` |
+| `promotion_code_read` | Match promotion codes used at checkout to your partners' codes. | `promotionCodes.retrieve` (`resolveDiscountCode`, and `backfillCustomerRewards` checking a stored promo is in this account); `promotionCodes.list` (`codeExistsInStripe`, `backfillCustomerRewards`); expanding a discount's promotion code |
+| `promotion_code_write` | Create each partner's customer-discount promotion code in your account, and deactivate it when the code is retired. | `provisionCustomerReward`, `backfillCustomerRewards`, `deactivateCustomerReward` |
+| `coupon_read` | Check that a new partner code doesn't collide with one of your own coupons. | `coupons.retrieve` (`codeExistsInStripe`, `backfillCustomerRewards`) |
+| `coupon_write` | Create the coupon behind each partner's customer discount. | `provisionCustomerReward`, `backfillCustomerRewards` |
 
 `STRIPE_APP_PERMISSIONS` in `stripe-app.ts` is the source of truth, and a test
 holds the manifest to it. Changing the list:
@@ -521,4 +602,15 @@ so approve it first. Once published:
   needed reconnecting, through the Events API (`event_read` allows 30 days).
 - **Per-account Coupon provenance**: deactivating a promo minted under a
   previously connected account. Needs a hosted sidecar, because Coupon is a core
-  table.
+  table. (A new account does get its own promos: see *Codes minted before the
+  connection*.)
+- **Partner codes that equal the brand's own promo**: a Stripe discount matches
+  a partner coupon by its promotion code id, then by its code string, then by
+  coupon id. A partner code minted before the brand connected was never
+  checked against the brand's Stripe. If it equals one of the brand's own promo
+  codes, every purchase using that promo credits the partner. The backfill
+  logs an `ALERT` and leaves such codes without a promo, but attribution
+  doesn't exclude them yet.
+- **Changed reward terms**: editing a program's `customerReward` doesn't
+  touch promos already created. Their Stripe coupons keep the old terms. A fix
+  would create a new coupon + promo per code and deactivate the old promo.

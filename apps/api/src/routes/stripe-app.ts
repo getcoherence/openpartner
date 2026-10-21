@@ -31,10 +31,16 @@
  */
 
 import { Router } from 'express';
+import type { Knex } from 'knex';
 import { z } from 'zod';
 import type { TenantStripeConnectionRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { decryptSecret, encryptSecret } from '../crypto.js';
+import {
+  customerRewardBackfillRunning,
+  rewardCodesNotInStripe,
+  scheduleCustomerRewardBackfill,
+} from '../customer-rewards.js';
 import {
   STRIPE_APP_KEY_MODES,
   STRIPE_APP_PERMISSIONS_VERSION,
@@ -61,7 +67,8 @@ export const stripeAppCallbackRouter = Router();
 const UNINSTALL_HINT =
   'OpenPartner no longer reads your Stripe account. To remove the app from Stripe too, uninstall OpenPartner under Settings → Installed apps in your Stripe Dashboard.';
 
-function summarize(conn: TenantStripeConnectionRow) {
+async function summarize(knex: Knex, conn: TenantStripeConnectionRow) {
+  const rewards = conn.refreshFailedAt == null && grantsRewardWrites(conn);
   return {
     stripeAccountId: conn.stripeAccountId,
     livemode: conn.livemode,
@@ -71,7 +78,14 @@ function summarize(conn: TenantStripeConnectionRow) {
     refreshError: conn.refreshError,
     // The manifest has gained permissions since this brand accepted it.
     permissionsOutdated: conn.permissionsVersion < STRIPE_APP_PERMISSIONS_VERSION,
-    rewards: conn.refreshFailedAt == null && grantsRewardWrites(conn),
+    rewards,
+    // Partner codes with a customer discount and no promotion code in this
+    // account yet (customer-rewards.ts backfillCustomerRewards), whether a
+    // pass creating them is under way in this process, and whether codes
+    // already holding a promo id have been checked against this account.
+    rewardCodesNotInStripe: rewards ? await rewardCodesNotInStripe(knex, conn.tenantId) : 0,
+    rewardCodesSyncing: rewards && customerRewardBackfillRunning(conn.tenantId),
+    rewardCodesChecked: conn.rewardsVerifiedAt != null,
   };
 }
 
@@ -88,7 +102,7 @@ stripeAppRouter.get('/stripe-app/connection', requireAuth, requireAdmin, async (
     available: modes.length > 0,
     ...(modes.length === 0 ? { reason: 'not_configured' } : {}),
     modes,
-    connection: conn ? summarize(conn) : null,
+    connection: conn ? await summarize(db, conn) : null,
   });
 });
 
@@ -164,7 +178,7 @@ stripeAppCallbackRouter.get(CALLBACK_PATH, (req, res) => {
 const completeSchema = z.object({ grant: z.string().min(1).max(4000) });
 
 stripeAppRouter.post('/stripe-app/connection/complete', requireAuth, requireAdmin, async (req, res) => {
-  const { tenantId } = tenantOf(req);
+  const { db, tenantId } = tenantOf(req);
   const principal = req.principal;
   if (principal?.role !== 'admin' || principal.source !== 'session') {
     return res.status(403).json({ error: 'session_required', detail: 'Sign in to the admin portal with your email, not an API key, to connect Stripe.' });
@@ -196,7 +210,13 @@ stripeAppRouter.post('/stripe-app/connection/complete', requireAuth, requireAdmi
     keyMode: state.m,
   });
   if (!result.ok) return res.status(result.status).json({ error: result.error, detail: completeErrorDetail(result) });
-  res.json({ connection: summarize(result.connection), replaced: result.replaced });
+  // The connection has committed. Partner codes minted before it (the usual
+  // order: partners first, Stripe later) get their promotion codes now, in
+  // the background. A failure there is logged and retried hourly; it never
+  // fails the connect. Every connect checks the promo ids already stored,
+  // which may belong to an account connected before this one.
+  void scheduleCustomerRewardBackfill(tenantId, { verifyExisting: true });
+  res.json({ connection: await summarize(db, result.connection), replaced: result.replaced });
 });
 
 function completeErrorDetail(result: Extract<CompleteConnectionResult, { ok: false }>): string {
