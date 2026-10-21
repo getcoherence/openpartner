@@ -1579,6 +1579,25 @@ describe.skipIf(skipIntegration)('connecting backfills partner codes minted befo
     expect(callsTo('promotionCodes.list')).toHaveLength(2);
     expect(callsTo('promotionCodes.create')).toHaveLength(0);
   });
+
+  it("a code the brand's admin chose to map its own promo raises no ALERT", async () => {
+    const brand = fakeRewardAccounts();
+    await seedRewardCodes(['WELCOME10', 'SHADOW10']);
+    await db(TABLES.Coupon).where({ code: 'WELCOME10' }).update({ brandChosen: true });
+    brand.seedBrandPromo(BRAND_TOKEN, 'WELCOME10');
+    brand.seedBrandPromo(BRAND_TOKEN, 'SHADOW10');
+    await seedConnection();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await backfillCustomerRewards(DEFAULT_TENANT_ID, { verifyExisting: false })).toMatchObject({ taken: 2, provisioned: 0 });
+      const alerts = error.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('ALERT'));
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0]).toContain('SHADOW10');
+    } finally {
+      error.mockRestore();
+    }
+    expect((await couponByCode('WELCOME10')).stripePromotionCodeId).toBeNull();
+  });
 });
 
 describe('the app manifest', () => {
