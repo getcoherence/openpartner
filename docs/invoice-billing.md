@@ -186,9 +186,10 @@ with a second invoice issued, it was still `past_due`. In Stripe, under
 cancellation ends the plan (the normal `customer.subscription.deleted`
 path) and stops new invoices. Do switch on Stripe's **reminder emails** for
 invoices that are about to fall due and for overdue ones: they are the
-brand's only reminders. Subscribing destination A to the four extra
-invoice events is optional: without them, a voided or overdue invoice is
-picked up by the nightly reconcile within a day.
+brand's only reminders. Destination A carries the four extra invoice
+events (live since Oct 20 2026, [deploy-production.md](deploy-production.md));
+if they ever go missing, the nightly reconcile still picks up a voided or
+overdue invoice within a day.
 
 Card subscriptions are unchanged: they never have a `send_invoice`
 invoice open, so `past_due` keeps service while Stripe retries, and its
