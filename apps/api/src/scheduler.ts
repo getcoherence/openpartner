@@ -54,6 +54,7 @@ import { sendBountyEmails, sweepTenantBounties } from './performance-bounties.js
 import { reverifyPortalDomains, sweepWhiteLabelEntitlement } from './portal-domains.js';
 import { runScreeningSweep, screenPayablePartners } from './sanctions-screening.js';
 import { sealPlaintextPayoutProfiles } from './payout-profile.js';
+import { sealPlaintextWebhookSecrets } from './webhook-secret.js';
 
 interface ScheduledJob {
   name: string;
@@ -368,6 +369,13 @@ const JOBS: ScheduledJob[] = [
     description:
       'Seal any partner payout details a SQL-dump restore left in the clear (payout-profile.ts; also runs at startup) (hourly at :35)',
     handler: async () => ({ sealed: await sealPlaintextPayoutProfiles(db) }),
+  },
+  {
+    name: 'seal-webhook-secrets',
+    cronExpr: '40 * * * *',
+    description:
+      'Seal any webhook signing secret a SQL-dump restore left in the clear (webhook-secret.ts; also runs at startup) (hourly at :40)',
+    handler: async () => ({ sealed: await sealPlaintextWebhookSecrets(db) }),
   },
 ];
 

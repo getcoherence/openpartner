@@ -5184,7 +5184,7 @@
           },
           "secretPrefix": {
             "type": "string",
-            "description": "First characters of the signing secret, to tell secrets apart. The secret itself is only returned at creation."
+            "description": "First characters of the signing secret, to tell secrets apart. The secret itself is stored encrypted and only returned at creation and rotation."
           },
           "events": {
             "type": "array",
@@ -12778,6 +12778,102 @@
           },
           "403": {
             "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/{id}/secret": {
+      "post": {
+        "operationId": "rotateWebhookSecret",
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Rotate an endpoint's signing secret",
+        "description": "Returns the new `secret` once; the old one stops working immediately. Deliveries fail until your receiver has the new secret: retry them from the delivery log afterwards (`retryWebhookDelivery` signs with the current secret). Also how an endpoint restored from a SQL dump gets a secret you know.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rotated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "endpoint": {
+                      "$ref": "#/components/schemas/WebhookEndpoint"
+                    },
+                    "secret": {
+                      "type": "string",
+                      "description": "`whsec_…`. Shown once."
+                    }
+                  },
+                  "required": [
+                    "endpoint",
+                    "secret"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
             "content": {
               "application/json": {
                 "schema": {

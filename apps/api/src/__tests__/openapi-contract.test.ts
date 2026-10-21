@@ -836,11 +836,16 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     // partner accepting their magic link, for partner.activated, and a
     // join-page applicant approved automatically, for the join_page shape
     // of both partner events.
-    const hook = check<{ secret: string }>(
+    const hook = check<{ endpoint: { id: string }; secret: string }>(
       'createWebhookEndpoint',
       await admin.post('/webhooks', { url: `${receiverBase}/hook/second`, events: ['partner.created', 'partner.activated'] }),
     );
-    secrets['/hook/second'] = hook.secret;
+    // Rotate it before anything fires: every delivery below must verify
+    // with the new secret, and none with the one creation returned.
+    const rotated = check<{ secret: string }>('rotateWebhookSecret', await admin.post(`/webhooks/${hook.endpoint.id}/secret`));
+    expect(rotated.secret).not.toBe(hook.secret);
+    check('rotateWebhookSecret', await admin.post('/webhooks/missing/secret'));
+    secrets['/hook/second'] = rotated.secret;
     const id = ulid();
     await db(TABLES.Partner).insert({ id, tenantId: DEFAULT_TENANT_ID, email: 'invitee@example.com', name: 'Invitee', metadata: {}, activatedAt: null });
     const link = await issueMagicLink(db, {

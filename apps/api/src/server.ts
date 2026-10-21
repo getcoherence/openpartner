@@ -6,6 +6,7 @@ import { warmGeoIp } from './geoip.js';
 import { getTenancyMode } from './tenancy.js';
 import { db as privilegedDb } from './db.js';
 import { sealPlaintextPayoutProfiles } from './payout-profile.js';
+import { sealPlaintextWebhookSecrets } from './webhook-secret.js';
 
 const PORT = Number(process.env.API_PORT ?? 4601);
 const MODE = process.env.OPENPARTNER_MODE ?? 'selfhost';
@@ -84,4 +85,11 @@ app.listen(PORT, () => {
       if (sealed > 0) console.log(`[api] sealed ${sealed} plaintext payout profile(s)`);
     })
     .catch((err) => console.error('[api] payout profile seal sweep failed', err instanceof Error ? err.message : err));
+  // The same for webhook signing secrets (webhook-secret.ts): what a SQL
+  // restore wrote, and every row from before secrets were sealed.
+  sealPlaintextWebhookSecrets(privilegedDb)
+    .then((sealed) => {
+      if (sealed > 0) console.log(`[api] sealed ${sealed} plaintext webhook signing secret(s)`);
+    })
+    .catch((err) => console.error('[api] webhook secret seal sweep failed', err instanceof Error ? err.message : err));
 });

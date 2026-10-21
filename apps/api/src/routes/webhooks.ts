@@ -7,7 +7,8 @@ import {
   type WebhookEndpointRow,
 } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth } from '../auth.js';
-import { makeSecret, redeliver } from '../webhook-dispatcher.js';
+import { redeliver } from '../webhook-dispatcher.js';
+import { mintSecret } from '../webhook-secret.js';
 import { checkOutboundDestination } from '../outbound-guard.js';
 import { tenantOf } from '../tenancy.js';
 
@@ -52,14 +53,16 @@ webhooksRouter.post('/webhooks', requireAuth, grantScope('webhooks:write'), requ
   const refused = await checkOutboundDestination(body.data.url, 'admin');
   if (refused) return res.status(400).json({ error: 'destination_not_allowed', ...refused });
 
-  const secret = makeSecret();
+  // Stored sealed (webhook-secret.ts); this response is the only place the
+  // plaintext appears.
+  const secret = mintSecret();
   const id = ulid();
   await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).insert({
     id,
     tenantId,
     url: body.data.url,
     secretPrefix: secret.prefix,
-    secret: secret.plaintext,
+    secret: secret.sealed,
     events: JSON.stringify(body.data.events) as unknown as never,
     label: body.data.label ?? null,
     active: true,
@@ -101,6 +104,24 @@ webhooksRouter.patch('/webhooks/:id', requireAuth, requireAdmin, async (req, res
   await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: existing.id, tenantId }).update(patch);
   const fresh = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: existing.id, tenantId }).first();
   res.json({ endpoint: strip(fresh!) });
+});
+
+// Replace the signing secret. The old one stops working at once, so
+// deliveries fail until the receiver has the new one; retry them from the
+// delivery log after (a retry is signed with the current secret). Also how
+// an endpoint restored from a SQL dump, or whose secret this deployment
+// can't open, gets a secret anyone knows. Admin only, like PATCH: a
+// `webhooks:write` key learns the secrets of endpoints it creates, and must
+// not be able to take over one an admin set up.
+webhooksRouter.post('/webhooks/:id/secret', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const secret = mintSecret();
+  const n = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint)
+    .where({ id: req.params.id, tenantId })
+    .update({ secret: secret.sealed, secretPrefix: secret.prefix });
+  if (n === 0) return res.status(404).json({ error: 'not_found' });
+  const endpoint = await db<WebhookEndpointRow>(TABLES.WebhookEndpoint).where({ id: req.params.id, tenantId }).first();
+  res.json({ endpoint: strip(endpoint!), secret: secret.plaintext });
 });
 
 webhooksRouter.delete('/webhooks/:id', requireAuth, grantScope('webhooks:write'), requireAdmin, async (req, res) => {
