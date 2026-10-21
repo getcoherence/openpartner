@@ -19,7 +19,7 @@
 
 import { Router, type Request } from 'express';
 import { z } from 'zod';
-import { TABLES, type AdminRow, DEFAULT_TENANT_ID } from '@openpartner/db';
+import { TABLES, type AdminRow, DEFAULT_TENANT_ID, safeNextPath } from '@openpartner/db';
 import { db } from '../db.js';
 import { issueMagicLink } from '../auth-sessions.js';
 import { adminSigninEmail, buildMagicLinkUrl, signinNoAccountEmail } from '../email-templates.js';
@@ -43,6 +43,9 @@ const schema = z.object({
    *  account". Without it, the verify path treats a different-email
    *  sign-in as a fresh login that REPLACES the bundle on this device. */
   add: z.boolean().optional(),
+  /** Where the link's landing goes after the user enters a workspace
+   *  (?next= on /signin). Dropped unless safeNextPath accepts it. */
+  next: z.string().optional(),
 });
 
 signinRouter.post('/signin', signinLimit, requireServedCountry(db, 'signin'), async (req, res) => {
@@ -76,7 +79,7 @@ signinRouter.post('/signin', signinLimit, requireServedCountry(db, 'signin'), as
       // Tenant-less link — verify will issue a PlatformSession, the SPA
       // routes through /workspaces to let the user pick which brand to
       // enter.
-      const link = buildMagicLinkUrl(issued.plaintext);
+      const link = buildMagicLinkUrl(issued.plaintext, null, safeNextPath(body.data.next));
       const tmpl = adminSigninEmail(anyAdmin.name, link);
       // Platform mail context, not the matched Admin row's tenant: workspace
       // sign-in spans every brand the person admins, and a brand that wired
