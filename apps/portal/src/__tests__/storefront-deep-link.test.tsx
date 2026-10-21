@@ -39,6 +39,8 @@ interface Sent {
 let sent: Sent[];
 /** null = no platform session (401). */
 let workspaces: Workspace[] | null;
+/** The emailed link has expired. */
+let verifyFails: boolean;
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -47,6 +49,7 @@ function json(status: number, body: unknown): Response {
 beforeEach(() => {
   sent = [];
   workspaces = null;
+  verifyFails = false;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? 'GET';
@@ -64,6 +67,7 @@ beforeEach(() => {
     }
     if (url === '/api/signin/password' && method === 'POST') return json(200, { ok: true, token: 'op_pml_pw' });
     if (url === '/api/auth/platform-verify' && method === 'POST') {
+      if (verifyFails) return json(400, { error: 'invalid_or_expired_token' });
       // Verifying signs the browser in.
       workspaces = [ACME];
       return json(200, { ok: true, email: 'ada@acme.test' });
@@ -166,6 +170,13 @@ describe('/go/creators/:handle', () => {
     // The link the API mails: /auth/magic?token=…&next=….
     renderAt(`/auth/magic?token=op_pml_mailed${NEXT.replace('?', '&')}`);
     await landsOn(`/t/acme${STOREFRONT}`);
+  });
+
+  it('an expired emailed link: asking for a new one keeps the destination', async () => {
+    verifyFails = true;
+    renderAt(`/auth/magic?token=op_pml_expired${NEXT.replace('?', '&')}`);
+    const retry = await screen.findByText('the sign-in page');
+    expect(retry.getAttribute('href')).toBe(`/signin${NEXT}`);
   });
 
   it('an unsafe next is dropped: the workspace opens at its home', async () => {
