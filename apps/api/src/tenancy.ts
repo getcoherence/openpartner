@@ -41,6 +41,19 @@ export class TenantPendingDeletionError extends Error {
   }
 }
 
+/** Thrown when a request names a workspace, /t/<slug>/ or /api/t/<slug>/,
+ *  that doesn't exist or isn't active. The middleware answers 404 JSON
+ *  instead of letting the request fall through to Express's HTML "Cannot
+ *  POST" page: no router after the middleware matches a /t/ path that
+ *  wasn't stripped. Suspended and rejected brands get the same answer as
+ *  unknown ones, so the response doesn't reveal which slugs exist. */
+export class TenantNotFoundError extends Error {
+  constructor(public slug: string) {
+    super(`tenant_not_found:${slug}`);
+    this.name = 'TenantNotFoundError';
+  }
+}
+
 export function getTenancyMode(): TenancyMode {
   const m = process.env.OPENPARTNER_TENANCY ?? 'single';
   if (m !== 'single' && m !== 'multi') {
@@ -320,6 +333,10 @@ export async function tenantMiddleware(
         res.status(410).json({ error: 'tenant_pending_deletion', slug: err.slug });
         return;
       }
+      if (err instanceof TenantNotFoundError) {
+        res.status(404).json({ error: 'tenant_not_found' });
+        return;
+      }
       throw err;
     }
   }
@@ -461,7 +478,7 @@ async function resolveTenantFromPath(
   // on the appDb pool.
   const { db } = await import('./db.js');
   const row = await db('Tenant').where({ slug, status: 'active' }).first(['id', 'slug', 'pendingDeletionAt', 'customDomain']);
-  if (!row) return null;
+  if (!row) throw new TenantNotFoundError(slug);
   // Tenants in the deletion grace window are accessible only via the
   // explicit recovery routes — anything else 410s on the way out so a
   // browser cookie hanging around can't keep working against a deleted

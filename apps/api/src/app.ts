@@ -321,6 +321,13 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(payoutProfilesRouter);
   app.use(onboardingRouter);
 
+  // Nothing matched: answer in the API's own error shape, not Express's
+  // default HTML "Cannot GET /…" page. A /t/<slug>/ path whose workspace
+  // doesn't exist is answered earlier, by tenantMiddleware.
+  app.use((_req: Request, res: Response) => {
+    res.status(404).json({ error: 'not_found' });
+  });
+
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
     req.log?.error({ err }, 'request_failed');
     // Echo message + stack to stderr so CI logs surface 500s that the
