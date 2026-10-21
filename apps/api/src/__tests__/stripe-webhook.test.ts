@@ -3410,7 +3410,9 @@ describe.skipIf(skipIntegration)('stripe webhook — one-time (mode=payment) Che
     const funnel = await request(app).get(`/partners/${partnerId}/funnel`).set('Authorization', `Bearer ${ADMIN}`);
     expect(funnel.status).toBe(200);
     expect(funnel.body.stages).toMatchObject({ signups: 1, paid: 1 });
-    expect(funnel.body.revenue).toBe(129);
+    // EUR in a USD brand: kept in its own currency, not added to `revenue`.
+    expect(funnel.body.revenueByCurrency).toEqual({ EUR: 129 });
+    expect(funnel.body.revenue).toBe(0);
 
     const { aggregateAttributedGmv } = await import('../usage-billing.js');
     // The session is in EUR: it is EUR GMV, not 129 dollars.

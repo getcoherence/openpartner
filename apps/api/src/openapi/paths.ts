@@ -494,7 +494,7 @@ Server-to-server conversion ingest. The event is attributed to the partner whose
 **Renewals.** Send each renewal as its own event with the same \`userId\` and \`type\` (one \`invoice_paid\` per payment). Once the customer has an attributed event of that type, each later one keeps that event's partners and weights, however old the click, while the program has \`renewalsStayWithPartner\` on (the default).
 
 **Event types.** Any string is accepted. Two have built-in meaning:
-- \`signup\` is the funnel's *signups* stage (\`signup\` and \`trial_started\` are *leads* in the timeseries).
+- \`signup\` is the funnel's *signups* stage, as are \`trial_started\`, \`subscription_created\` and \`invoice_paid\` (\`signup\` and \`trial_started\` are *leads* in the timeseries).
 - \`invoice_paid\` is the funnel's *paid* stage, and on OpenPartner Cloud it is billable GMV, as is \`subscription_created\`. Report payments as \`invoice_paid\`. Other types with a value still accrue commission but are not counted as GMV.
 
 \`value\` is a JSON number in major units (\`49.99\`), not a string. Omit it for an event with no value; \`null\` is refused. \`currency\` is an ISO 4217 code in any case, stored upper case (\`inr\` is \`INR\`). Without one the event is stored in the brand's default currency (Settings → Program; USD unless changed), so send it whenever the brand takes more than one currency.
@@ -1085,7 +1085,7 @@ The file's payouts are fixed here: each is stamped with the \`exportId\`, held o
     operationId: 'getPartnerPayoutProfile',
     summary: "Get a partner's payout details",
     description:
-      'Where the partner wants manual payouts sent, in full, and how they are paid today (`paidVia`). Sensitive: show it only to the partner and the people who pay them.',
+      "Where the partner wants manual payouts sent, in full, how they are paid today (`paidVia`), and the brand's payout rail (`rail`). Sensitive: show it only to the partner and the people who pay them.",
     access: { kind: 'partnerOrAdmin', scope: ['payout_profiles:read', 'payout_profiles:write'] },
     responses: { 200: { description: 'The payout details, or null.', schema: S.PartnerPayoutProfile } },
     errors: { 404: ['partner_not_found'] },
@@ -1187,7 +1187,7 @@ The file's payouts are fixed here: each is stamped with the \`exportId\`, held o
     operationId: 'getPartnerFunnel',
     summary: 'Click → identity → signup → paid funnel',
     description:
-      'Stages count distinct users. `signups` counts only `signup` events and `paid` only `invoice_paid` events, so report conversions under those types for this view to fill in. Rates are step over step.',
+      "One cohort: the partner's clicks since `since` (default: the last 30 days), and the users those clicks produced. Later stages count distinct users whose conversion was attributed to one of those clicks, so a customer won by an older click is never in it, renewals included. `signups` counts `signup`, `trial_started`, `subscription_created` and `invoice_paid` events and `paid` only `invoice_paid`, so report conversions under those types for this view to fill in. Each stage is a subset of the one before; rates are step over step.",
     access: { kind: 'partnerOrAdmin' },
     query: sinceQuery,
     responses: { 200: { description: 'Funnel.', schema: S.PartnerFunnel } },
