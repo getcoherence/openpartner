@@ -14,6 +14,7 @@ import { ArrowDown, ArrowUp, Download, ExternalLink, Plus, Sparkles } from 'luci
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, StatusPill, Textarea } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { useMediaQuery } from '../../lib/useMediaQuery.js';
+import { MARKETPLACE_CREATORS_URL, publicStorefrontUrl } from '../../lib/public-site.js';
 import type { NetworkProfile } from '../../lib/NetworkProfileEditor.js';
 import { creatorApi } from './creator-api.js';
 import { ChannelHeader } from './StorefrontSection.js';
@@ -259,15 +260,14 @@ export function CreatorStorefrontPage() {
   );
 }
 
-/** The public storefront directory. Listing is the Network's: a creator with
- *  a public profile, bookings on and a published package is listed. */
-const MARKETPLACE_URL = 'https://openpartner.dev/marketplace/creators';
-
 function BookingsCard({ storefront, pending, onToggle }: { storefront: Storefront; pending: boolean; onToggle: () => void }) {
-  const publicPath = storefront.handle ? `/creators/${storefront.handle}` : null;
+  // The storefront lives on the public site; the marketplace lists it there
+  // while the creator has a public profile, bookings on and a published
+  // package (the Network decides).
+  const publicUrl = storefront.handle ? publicStorefrontUrl(storefront.handle) : null;
   const hasPublished = storefront.packages.some((p) => p.published);
   const marketplace = (
-    <a href={MARKETPLACE_URL} target="_blank" rel="noopener noreferrer" style={{ color: theme.accentText }}>
+    <a href={MARKETPLACE_CREATORS_URL} target="_blank" rel="noopener noreferrer" style={{ color: theme.accentText }}>
       OpenPartner marketplace
     </a>
   );
@@ -301,17 +301,16 @@ function BookingsCard({ storefront, pending, onToggle }: { storefront: Storefron
           <Link to="/creator/profile" style={{ color: theme.warn, fontWeight: 600 }}>Finish your profile</Link>
         </div>
       ) : (
-        publicPath && (
+        publicUrl && (
           <div style={{ marginTop: 14, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ color: theme.textMuted }}>Your public page:</span>
             <a
-              href={publicPath}
+              href={publicUrl}
               target="_blank"
               rel="noopener noreferrer"
               style={{ fontFamily: theme.fontMono, color: theme.accentText, display: 'inline-flex', alignItems: 'center', gap: 4 }}
             >
-              {window.location.host}
-              {publicPath}
+              {publicUrl.replace(/^https?:\/\//, '')}
               <ExternalLink size={12} />
             </a>
           </div>

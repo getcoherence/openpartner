@@ -62,6 +62,7 @@ import { AdminNetwork } from './pages/admin/Network.js';
 import { AdminNetworkComplete } from './pages/admin/NetworkComplete.js';
 import { AdminNetworkRequests } from './pages/admin/NetworkRequests.js';
 import { AdminNetworkCreators } from './pages/admin/NetworkCreators.js';
+import { NetworkCreatorStorefrontPage } from './pages/admin/NetworkCreatorStorefront.js';
 import { AdminNetworkBookings } from './pages/admin/NetworkBookings.js';
 import { AdminNetworkBilling } from './pages/admin/NetworkBilling.js';
 import { BrandLocationPrompt, useBrandLocationMissing } from './pages/admin/BrandLocation.js';
@@ -349,6 +350,7 @@ function Shell() {
                   <Route path="admin/network/complete" element={<AdminNetworkComplete />} />
                   <Route path="admin/network/requests" element={<AdminNetworkRequests />} />
                   <Route path="admin/network/creators" element={<AdminNetworkCreators />} />
+                  <Route path="admin/network/creators/:handle" element={<NetworkCreatorStorefrontPage />} />
                   <Route path="admin/network/bookings" element={<AdminNetworkBookings />} />
                   <Route path="admin/network/billing" element={<AdminNetworkBilling />} />
                 </>

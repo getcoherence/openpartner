@@ -3,13 +3,16 @@
  * The storefront editor (the Network's docs/creator-storefront.md §6, §7.2):
  * packages grouped under the creator's channels, templates per platform,
  * channel stats marked synced or self-reported, the live preview beside
- * the editor, and the guided setup creating packages from templates.
+ * the editor, and the guided setup creating packages from templates. Plus
+ * the brand's in-app view of a storefront (each package books a tracked
+ * deal) and the app's old public route forwarding to the public site.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { CreatorPublicProfilePage } from '../pages/creator/CreatorPublicProfile.js';
+import { NetworkCreatorStorefrontPage } from '../pages/admin/NetworkCreatorStorefront.js';
 import { CreatorStorefrontPage } from '../pages/creator/CreatorStorefront.js';
 import { CreatorStorefrontSetupPage } from '../pages/creator/CreatorStorefrontSetup.js';
 import {
@@ -146,9 +149,12 @@ describe('storefront helpers', () => {
   });
 });
 
-describe('public storefront', () => {
+describe('brand storefront', () => {
+  const at = () =>
+    renderAt('/admin/network/creators/mayabuilds', '/admin/network/creators/:handle', <NetworkCreatorStorefrontPage />);
+
   it('shows each channel with its stats and packages, and drops the separate Platforms card', async () => {
-    renderAt('/creators/mayabuilds', '/creators/:handle', <CreatorPublicProfilePage />);
+    at();
     await screen.findByText('Work with Maya');
     expect(screen.getByText('Synced from YouTube')).toBeTruthy();
     expect(screen.getByText('12.4K')).toBeTruthy();
@@ -157,6 +163,24 @@ describe('public storefront', () => {
     expect(screen.getByText('A weekly teardown of one developer tool.')).toBeTruthy();
     expect(screen.getByText('Across channels')).toBeTruthy();
     expect(screen.queryByText('Platforms')).toBeNull();
+    expect(screen.getByRole('link', { name: /Public page/ }).getAttribute('href')).toBe('https://openpartner.dev/creators/mayabuilds');
+  });
+
+  it('books a package as a tracked deal, starting on that package', async () => {
+    at();
+    await screen.findByText('Dedicated video');
+    expect(screen.queryByRole('button', { name: /Request/ })).toBeNull();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Book →' })[0]!);
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect((within(dialog).getByDisplayValue(/Dedicated video/) as HTMLSelectElement).value).toBe('a'));
+  });
+});
+
+describe("the app's old public route", () => {
+  it('forwards to the storefront on the public site', () => {
+    renderAt('/creators/mayabuilds', '/creators/:handle', <CreatorPublicProfilePage />);
+    expect(screen.getByRole('link', { name: /storefront/ }).getAttribute('href')).toBe('https://openpartner.dev/creators/mayabuilds');
+    expect(requests).toEqual([]);
   });
 });
 

@@ -8,6 +8,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { ExternalLink } from 'lucide-react';
 import { theme } from '../../theme.js';
 import type { NetworkProfile } from '../../lib/NetworkProfileEditor.js';
+import { publicStorefrontUrl } from '../../lib/public-site.js';
 import { ListingBanner } from './ListingBanner.js';
 import { StorefrontSection } from './StorefrontSection.js';
 import type { StorefrontChannel, StorefrontPackage } from './storefront-shared.js';
@@ -71,7 +72,7 @@ export function StorefrontPreview({
   const name = profile?.name || 'Your name';
   const handle = profile?.handle ?? null;
   const brands = pastBrands ?? profile?.pastBrands ?? [];
-  const publicPath = handle ? `/creators/${handle}` : null;
+  const publicPath = handle ? publicStorefrontUrl(handle) : null;
 
   return (
     <div>
@@ -136,7 +137,7 @@ export function StorefrontPreview({
             </div>
           </div>
         </div>
-        <StorefrontSection handle={handle ?? ''} creatorName={name} packages={packages} channels={channels} preview />
+        <StorefrontSection creatorName={name} packages={packages} channels={channels} preview />
         {brands.length > 0 && (
           <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: theme.radiusMd, padding: 14 }}>
             <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Past collaborations</div>

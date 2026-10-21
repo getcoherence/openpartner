@@ -10,6 +10,7 @@ import {
   type PlatformRow,
   type VerificationStart,
 } from '../../lib/NetworkProfileEditor.js';
+import { publicStorefrontUrl } from '../../lib/public-site.js';
 
 /** The creator portal talks to the Network through /api/creator-api. */
 export const creatorProfileAdapter: NetworkProfileAdapter = {
@@ -43,7 +44,7 @@ export function CreatorMyProfilePage() {
         <NetworkProfileEditor
           adapter={creatorProfileAdapter}
           data={data}
-          publicProfileHref={data.handle ? `/creators/${data.handle}` : null}
+          publicProfileHref={data.handle ? publicStorefrontUrl(data.handle) : null}
         />
       ) : null}
       <div style={{ height: 18 }} />

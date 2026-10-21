@@ -15,6 +15,7 @@ import { api, ApiError } from '../../api.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 import { alpha, theme } from '../../theme.js';
 import { VerifiedBadge } from '../../lib/VerifiedBadge.js';
+import { TenantLink } from '../../tenant-link.js';
 import { BookCreatorDialog } from './BookCreatorDialog.js';
 
 interface PlatformRow {
@@ -263,14 +264,9 @@ function CreatorCard({ creator }: { creator: DirectoryRow }) {
         </p>
       )}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        <a
-          href={`/creators/${creator.handle}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ textDecoration: 'none', flex: 1 }}
-        >
-          <Button variant="secondary" style={{ width: '100%' }}>View profile</Button>
-        </a>
+        <TenantLink to={`/admin/network/creators/${encodeURIComponent(creator.handle)}`} style={{ textDecoration: 'none', flex: 1 }}>
+          <Button variant="secondary" style={{ width: '100%' }}>View storefront</Button>
+        </TenantLink>
         <InviteButton creator={creator} />
         <BookButton creator={creator} />
       </div>

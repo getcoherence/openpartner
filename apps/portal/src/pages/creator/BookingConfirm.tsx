@@ -3,11 +3,12 @@
  * lands. Confirming takes a click on purpose: mail scanners that prefetch
  * links would otherwise confirm requests on the requester's behalf.
  */
-import { Link, useSearchParams } from 'react-router';
+import { useSearchParams } from 'react-router';
 import { useMutation } from '@tanstack/react-query';
 import { MailCheck } from 'lucide-react';
 import { Button, Card } from '../../ui.js';
 import { theme } from '../../theme.js';
+import { publicStorefrontUrl } from '../../lib/public-site.js';
 import { creatorApi, ApiError } from './creator-api.js';
 
 interface Confirmed {
@@ -52,9 +53,9 @@ export function BookingConfirmPage() {
                 </div>
                 {confirm.data.creatorHandle && (
                   <div style={{ marginTop: 14 }}>
-                    <Link to={`/creators/${confirm.data.creatorHandle}`} style={{ color: theme.accentText, fontSize: 14 }}>
+                    <a href={publicStorefrontUrl(confirm.data.creatorHandle)} style={{ color: theme.accentText, fontSize: 14 }}>
                       Back to {confirm.data.creatorName}&rsquo;s page
-                    </Link>
+                    </a>
                   </div>
                 )}
               </div>

@@ -1,5 +1,5 @@
 /**
- * Book a creator from Discover creators: pick one of their storefront
+ * Book a creator from Discover creators or their storefront page: pick one of their storefront
  * packages (or a custom collaboration), the offering it's for, and the
  * amount you'll pay. The creator accepts in their inbox (becoming your
  * partner on that offering, with a tracked link), delivers the post, and
@@ -53,9 +53,12 @@ const ERROR_TEXT: Record<string, string> = {
 
 export function BookCreatorDialog({
   creator,
+  initialPackageId = null,
   onClose,
 }: {
   creator: { id: string; name: string; handle: string };
+  /** Opened from a package's Book button: start on that package. */
+  initialPackageId?: string | null;
   onClose: () => void;
 }) {
   const storefront = useQuery({
@@ -69,7 +72,7 @@ export function BookCreatorDialog({
     retry: false,
   });
   const published = useMemo(() => (offerings.data?.offerings ?? []).filter((o) => o.published), [offerings.data]);
-  const packages = storefront.data?.packages ?? [];
+  const packages = useMemo(() => storefront.data?.packages ?? [], [storefront.data]);
   const open = storefront.data?.bookingsOpen === true;
 
   const [packageId, setPackageId] = useState('');
@@ -81,6 +84,18 @@ export function BookCreatorDialog({
   useEffect(() => {
     if (!offeringId && published.length === 1) setOfferingId(published[0]!.id);
   }, [offeringId, published]);
+
+  // Packages arrive after the dialog opens; apply the starting one once.
+  const [preselected, setPreselected] = useState(false);
+  useEffect(() => {
+    if (preselected || !initialPackageId || packages.length === 0) return;
+    setPreselected(true);
+    const p = packages.find((x) => x.id === initialPackageId);
+    if (!p) return;
+    setPackageId(p.id);
+    setCurrency(p.currency);
+    if (p.priceAmount != null) setAmount(String(p.priceAmount));
+  }, [preselected, initialPackageId, packages]);
 
   // Picking a package fills in its price as the starting amount.
   function pickPackage(id: string) {
