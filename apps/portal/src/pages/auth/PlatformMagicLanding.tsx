@@ -1,15 +1,18 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
+import { safeNextPath } from '@openpartner/db';
 import { theme } from '../../theme.js';
 import { countryErrorMessage } from '../../lib/CountryField.js';
 import { AuthFrame } from './Shared.js';
 import { stripQueryParamsFromAddressBar } from '../../lib/sensitive-url.js';
+import { withNext } from '../../lib/signin-next.js';
 
 /**
  * Multi-tenant magic-link landing for platform-identity tokens (the
  * tokens issued by the unified /signin). Verify creates a
  * PlatformSession; we then push the user to /workspaces, which decides
- * whether to show the picker or auto-enter their single workspace.
+ * whether to show the picker or auto-enter their single workspace. A
+ * ?next= the link carries (lib/signin-next.ts) goes along.
  */
 export function PlatformMagicLandingPage() {
   const [params] = useSearchParams();
@@ -19,6 +22,7 @@ export function PlatformMagicLandingPage() {
 
   useEffect(() => {
     const token = params.get('token');
+    const next = safeNextPath(params.get('next'));
     // The token signs in whoever holds it until verify spends it: take it
     // out of the address bar (and so out of history, Referer headers and
     // analytics pageviews) before anything else runs.
@@ -40,7 +44,7 @@ export function PlatformMagicLandingPage() {
           throw new Error((j as { error?: string }).error ?? `${r.status}`);
         }
         setState('ok');
-        setTimeout(() => nav('/workspaces', { replace: true }), 300);
+        setTimeout(() => nav(withNext('/workspaces', next), { replace: true }), 300);
       })
       .catch((err) => {
         setState('failed');

@@ -42,10 +42,13 @@ export function googleStartHref(
   startUrl: string,
   flow: 'account' | 'account_add' | 'ops' | 'portal',
   slug?: string | null,
+  /** account flows: where to land after entering a workspace (lib/signin-next.ts). */
+  next?: string | null,
 ): string {
   const url = new URL(startUrl, window.location.origin);
   url.searchParams.set('flow', flow);
   if (slug) url.searchParams.set('slug', slug);
+  if (next) url.searchParams.set('next', next);
   return url.toString();
 }
 

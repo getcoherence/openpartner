@@ -82,6 +82,7 @@ import { LandingPage } from './pages/Landing.js';
 import { SignupPage } from './pages/Signup.js';
 import { SigninPage } from './pages/Signin.js';
 import { WorkspacesPage } from './pages/Workspaces.js';
+import { GoCreatorPage } from './pages/GoLinks.js';
 import { AddBrandPage } from './pages/AddBrand.js';
 import { PartnerJoinPage } from './pages/PartnerJoin.js';
 import { BrandDocument } from './lib/BrandDocument.js';
@@ -163,6 +164,7 @@ export function App() {
             <Route path="/join" element={<PartnerJoinPage />} />
             <Route path="/auth/magic" element={<MagicLandingPage />} />
             <Route path="/reset-password" element={<ResetPasswordPage loginPath="/login" />} />
+            <Route path="/go/creators/:handle" element={<GoCreatorPage multiTenant={false} />} />
             <Route path="/*" element={<Shell />} />
           </>
         ) : isMultiTenant ? (
@@ -191,6 +193,9 @@ export function App() {
             <Route path="/creators/:handle" element={<CreatorPublicProfilePage />} />
             {/* A brand confirming a booking request sent from a creator's storefront. */}
             <Route path="/booking/confirm" element={<BookingConfirmPage />} />
+            {/* A creator's in-app storefront in whichever workspace the brand
+                signs in to — the public storefront links here. */}
+            <Route path="/go/creators/:handle" element={<GoCreatorPage multiTenant />} />
             <Route path="/t/:slug/login" element={<LoginPage />} />
             <Route path="/t/:slug/join" element={<PartnerJoinPage />} />
             <Route path="/t/:slug/auth/magic" element={<MagicLandingPage />} />
@@ -211,6 +216,7 @@ export function App() {
             <Route path="/join" element={<PartnerJoinPage />} />
             <Route path="/auth/magic" element={<MagicLandingPage />} />
             <Route path="/reset-password" element={<ResetPasswordPage loginPath="/login" />} />
+            <Route path="/go/creators/:handle" element={<GoCreatorPage multiTenant={false} />} />
             <Route path="/*" element={<Shell />} />
           </>
         )}
