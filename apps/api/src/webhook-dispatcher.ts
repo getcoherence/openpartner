@@ -36,7 +36,7 @@ import {
 import { db } from './db.js';
 import { dispatchPartnerPostbacks, isPostbackEvent, postbackStatus } from './partner-postback.js';
 import { safeFetch } from './outbound-guard.js';
-import { isPlaintextSecret, openSecret, sealStoredSecret } from './webhook-secret.js';
+import { openSecret } from './webhook-secret.js';
 
 const SIGNATURE_HEADER = 'x-openpartner-signature';
 const TIMESTAMP_HEADER = 'x-openpartner-timestamp';
@@ -309,28 +309,15 @@ async function deliverOne(tenantId: string, endpoint: WebhookEndpointRow, envelo
   await attemptDelivery(deliveryId, endpoint, body);
 }
 
-/**
- * The endpoint's signing key, or null when its secret can't be opened. A
- * plaintext secret (from before sealing, or a SQL-dump restore) is sealed
- * on the way; failing to seal it doesn't stop the delivery, and the sweep
- * (webhook-secret.ts) tries again. Logs the endpoint id only.
- */
-async function signingKey(endpoint: WebhookEndpointRow): Promise<string | null> {
-  const key = openSecret(endpoint.secret);
-  if (key && isPlaintextSecret(endpoint.secret)) {
-    await sealStoredSecret(db, endpoint.id, endpoint.secret).catch(() => {
-      console.error(`[webhook] couldn't seal the signing secret of endpoint ${endpoint.id}; the seal sweep will retry`);
-    });
-  }
-  return key;
-}
-
 async function attemptDelivery(deliveryId: string, endpoint: WebhookEndpointRow, body: string): Promise<void> {
   const timestamp = Math.floor(Date.now() / 1000).toString();
   const envelope = JSON.parse(body) as WebhookEnvelope;
 
   const attemptAt = new Date();
-  const key = await signingKey(endpoint);
+  // Sealed or (until the sweep gets to it) plaintext; null when this
+  // deployment can't open it. Signing doesn't seal a plaintext secret:
+  // the sweep waits out a rolling deploy first (webhook-secret.ts).
+  const key = openSecret(endpoint.secret);
   if (!key) {
     await db<WebhookDeliveryRow>(TABLES.WebhookDelivery)
       .where({ id: deliveryId })

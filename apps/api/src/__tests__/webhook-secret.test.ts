@@ -19,7 +19,14 @@ import { generateApiKey } from '../auth.js';
 import { __resetCryptoKeyForTests, encryptSecret } from '../crypto.js';
 import { exportAll, importBundle } from '../export.js';
 import { SECRET_UNREADABLE_ERROR } from '../webhook-dispatcher.js';
-import { isPlaintextSecret, openSecret, sealPlaintextWebhookSecrets, sealSecret } from '../webhook-secret.js';
+import {
+  SEAL_AFTER_UPTIME_S,
+  isPlaintextSecret,
+  openSecret,
+  runSealWebhookSecretsJob,
+  sealPlaintextWebhookSecrets,
+  sealSecret,
+} from '../webhook-secret.js';
 
 const ADMIN_KEY = 'op_test_webhook_secret_admin_0123456789abcd';
 process.env.ADMIN_API_KEY = ADMIN_KEY;
@@ -213,7 +220,7 @@ describe.skipIf(skipIntegration)('webhook signing secrets at rest', () => {
     expect(rotated.body).not.toHaveProperty('secret');
   });
 
-  it('signs with a plaintext secret left from before sealing, and seals it on the way', async () => {
+  it('signs with a plaintext secret left from before sealing, before and after the sweep seals it', async () => {
     const legacy = 'whsec_legacy_plaintext_secret_00000001';
     const id = await insertEndpoint(legacy);
     const output = await consoleDuring(async () => {
@@ -221,11 +228,33 @@ describe.skipIf(skipIntegration)('webhook signing secrets at rest', () => {
       expect(fired.body.delivery.status).toBe('delivered');
     });
     expect(verifies(receiver!.captures[0]!, legacy)).toBe(true);
+    // Signing leaves it alone: sealing waits for the sweep (deploy grace).
+    expect((await stored(id)).secret).toBe(legacy);
+
+    expect(await sealPlaintextWebhookSecrets(db)).toBe(1);
     const row = await stored(id);
     expect(isPlaintextSecret(row.secret)).toBe(false);
     expect(openSecret(row.secret)).toBe(legacy);
     expect(row.secretPrefix).toBe(legacy.slice(0, 12));
+    await request(app).post(`/webhooks/${id}/test`).set(auth);
+    expect(verifies(receiver!.captures[1]!, legacy)).toBe(true);
     expect(output).not.toContain(legacy);
+  });
+
+  it("the hourly job doesn't seal while a rolling deploy's previous build may still be signing", async () => {
+    const legacy = 'whsec_legacy_plaintext_secret_00000002';
+    const id = await insertEndpoint(legacy);
+    const uptime = vi.spyOn(process, 'uptime');
+    try {
+      uptime.mockReturnValue(30);
+      expect(await runSealWebhookSecretsJob(db)).toEqual({ skipped: 'deploy_grace' });
+      expect((await stored(id)).secret).toBe(legacy);
+      uptime.mockReturnValue(SEAL_AFTER_UPTIME_S + 1);
+      expect(await runSealWebhookSecretsJob(db)).toEqual({ sealed: 1 });
+      expect(openSecret((await stored(id)).secret)).toBe(legacy);
+    } finally {
+      uptime.mockRestore();
+    }
   });
 
   it("never sends a delivery whose secret it can't open, and says to rotate", async () => {

@@ -175,12 +175,13 @@ To finish a restore:
 - **Webhooks.** `POST /import` returns each restored endpoint's new secret
   once, in `report.credentials.WebhookEndpoint` as `{ id, url, secret }`.
   A SQL restore writes a random secret nobody is shown, and the API seals
-  it at startup, so **rotate** each restored endpoint to get one: **Rotate
-  secret** on the admin Webhooks page, or `POST /webhooks/{id}/secret`,
-  which returns the new secret once. Give each receiver its new secret,
-  then turn the endpoint back on (admin Webhooks page, or
-  `PATCH /webhooks/{id}` with `{"active": true}`). Endpoints that already
-  existed on the destination are skipped and keep their own secret.
+  it within ten minutes of starting, so **rotate** each restored endpoint
+  to get one: **Rotate secret** on the admin Webhooks page, or
+  `POST /webhooks/{id}/secret`, which returns the new secret once. Give
+  each receiver its new secret, then turn the endpoint back on (admin
+  Webhooks page, or `PATCH /webhooks/{id}` with `{"active": true}`).
+  Endpoints that already existed on the destination are skipped and keep
+  their own secret.
 - **Conversion postbacks.** Rotate the token, then update the URL at every
   network or lender that fires it. The host changes on a hosted to
   self-host move anyway.

@@ -18,10 +18,11 @@
  * A stored `secret` is one of:
  *   - a sealed envelope (base64), the normal case;
  *   - plaintext `whsec_…`: a row from before sealing, or one a SQL-dump
- *     restore wrote (the dump can't encrypt: the key is the app's). It is
- *     sealed the next time the dispatcher signs with it, or by the sweep
- *     (sealPlaintextWebhookSecrets, at startup and hourly). Base64 has no
- *     `_`, so no envelope starts with `whsec_`;
+ *     restore wrote (the dump can't encrypt: the key is the app's). The
+ *     dispatcher signs with it as it is, and the sweep seals it
+ *     (sealPlaintextWebhookSecrets: ten minutes after startup, then
+ *     hourly; see SEAL_AFTER_UPTIME_S). Base64 has no `_`, so no envelope
+ *     starts with `whsec_`;
  *   - an envelope this deployment can't open (sealed under another key).
  *     Deliveries to that endpoint fail until the brand rotates its secret.
  */
@@ -69,6 +70,21 @@ export function openSecret(stored: string): string | null {
 }
 
 /**
+ * How long this process waits after starting before it seals plaintext
+ * secrets. In a rolling deploy the previous build keeps serving until the
+ * new one is healthy, and a build from before sealing signs with whatever
+ * is stored: a secret sealed under it would sign deliveries no receiver
+ * can verify. Ten minutes outlasts that overlap. Until then plaintext
+ * secrets stay as they are, and this build signs with either form.
+ */
+export const SEAL_AFTER_UPTIME_S = 600;
+
+/** Seconds left before this process may seal (0 once it may). */
+export function sealDelaySeconds(): number {
+  return Math.max(0, SEAL_AFTER_UPTIME_S - process.uptime());
+}
+
+/**
  * Seal one endpoint's plaintext secret in place. Conditional on the value
  * still being `stored`, so a rotation that landed in between is kept.
  * Returns how many rows it sealed (0 or 1).
@@ -82,12 +98,12 @@ export async function sealStoredSecret(db: Knex, endpointId: string, stored: str
 
 /**
  * Seal every plaintext secret on this deployment, across tenants, `batch`
- * rows at a time. The dispatcher seals a secret when it next signs with
- * it; this seals the rest, so no endpoint's secret stays in the clear for
- * long after a SQL-dump restore (or the deploy that introduced sealing).
- * Run at startup (server.ts) and hourly (scheduler.ts). Idempotent: a
- * sealed value never matches again. `db` must be the privileged pool: it
- * reads every tenant. Returns how many rows it sealed; logs nothing.
+ * rows at a time, so no endpoint's secret stays in the clear for long
+ * after a SQL-dump restore (or the deploy that introduced sealing). Run
+ * ten minutes after startup (server.ts) and hourly (scheduler.ts, via
+ * runSealWebhookSecretsJob). Idempotent: a sealed value never matches
+ * again. `db` must be the privileged pool: it reads every tenant. Returns
+ * how many rows it sealed; logs nothing.
  */
 export async function sealPlaintextWebhookSecrets(db: Knex, batch = 500): Promise<number> {
   let sealed = 0;
@@ -99,4 +115,11 @@ export async function sealPlaintextWebhookSecrets(db: Knex, batch = 500): Promis
     for (const row of rows) sealed += await sealStoredSecret(db, row.id, row.secret);
     if (rows.length < batch) return sealed;
   }
+}
+
+/** The hourly `seal-webhook-secrets` job: the sweep, unless this process
+ *  is too young to seal (SEAL_AFTER_UPTIME_S). */
+export async function runSealWebhookSecretsJob(db: Knex): Promise<{ sealed: number } | { skipped: 'deploy_grace' }> {
+  if (sealDelaySeconds() > 0) return { skipped: 'deploy_grace' };
+  return { sealed: await sealPlaintextWebhookSecrets(db) };
 }
