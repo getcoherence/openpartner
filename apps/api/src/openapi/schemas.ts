@@ -15,7 +15,7 @@
  */
 
 import { z } from 'zod';
-import { ATTRIBUTION_MODELS, BONUS_SOURCES, COMMISSION_STATUSES, PAYOUT_METHODS, PAYOUT_STATUSES } from './enums.js';
+import { ATTRIBUTION_MODELS, BONUS_SOURCES, COMMISSION_STATUSES, PAYOUT_METHODS, PAYOUT_RAILS, PAYOUT_STATUSES } from './enums.js';
 import { commissionBandsSchema, commissionTiersSchema } from '../commission-rule-schema.js';
 import { PAYOUT_PROFILE_METHODS } from '@openpartner/db';
 import { payoutDetailsSchema } from '../payout-profile.js';
@@ -659,6 +659,10 @@ export const PartnerPayoutProfile = z
     paidVia: z.enum(['manual', 'stripe_connect']).openapi({
       description: "How this partner's payouts go out under your payout rail today. Payout details are only used for `manual`.",
     }),
+    rail: z.enum(PAYOUT_RAILS).openapi({
+      description:
+        "The brand's payout rail setting. `manual`: the brand pays every partner itself (bank transfer, PayPal or Wise batch files) from these details, and Stripe Connect isn't used. `stripe_connect`: every partner is paid through Stripe Connect. `auto`: Stripe Connect when the partner has connected an account, otherwise manual.",
+    }),
   })
   .openapi('PartnerPayoutProfileResponse');
 
@@ -913,13 +917,20 @@ export const PartnerFunnel = z
     partnerId: id,
     since: ts,
     stages: z.object({
-      clicks: z.number().int().openapi({ description: 'Clicks, excluding fraud-flagged ones.' }),
+      clicks: z.number().int().openapi({ description: "The partner's clicks since `since`, excluding fraud-flagged ones. Every later stage follows these clicks." }),
       identities: z.number().int().openapi({ description: 'Distinct users stitched to those clicks.' }),
-      signups: z.number().int().openapi({ description: 'Distinct users with an attributed `signup` event.' }),
-      paid: z.number().int().openapi({ description: 'Distinct users with an attributed `invoice_paid` event.' }),
+      signups: z.number().int().openapi({
+        description:
+          'Of those users, the ones with a `signup`, `trial_started`, `subscription_created` or `invoice_paid` event attributed to this partner through one of those clicks.',
+      }),
+      paid: z.number().int().openapi({ description: 'Of those, the ones with an attributed `invoice_paid` event.' }),
     }),
     rates: z.object({ stitchRate: z.number(), signupRate: z.number(), paidRate: z.number(), overall: z.number() }),
-    revenue: z.number().openapi({ description: 'Attributed `invoice_paid` revenue.' }),
+    currency: z.string().openapi({ description: "The brand's default currency: the currency of `revenue`.", example: 'USD' }),
+    revenue: z.number().openapi({
+      description: "What the paying users in `paid` have paid so far (attributed `invoice_paid`, the partner's weighted share), in `currency` only.",
+    }),
+    revenueByCurrency: amountsByCurrency,
   })
   .openapi('PartnerFunnel');
 

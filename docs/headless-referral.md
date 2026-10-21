@@ -293,9 +293,9 @@ Or use the server SDK, `@openpartner/sdk/server`: `await op.trackEvent({ userId,
 | Type | Meaning in OpenPartner |
 | --- | --- |
 | `signup` | The funnel's *signups* stage. A *lead* in the timeseries. |
-| `trial_started` | A *lead* in the timeseries. |
-| `invoice_paid` | The funnel's *paid* stage. Billable GMV on Cloud. Use for every payment. |
-| `subscription_created` | Billable GMV on Cloud. |
+| `trial_started` | Counts toward the funnel's *signups*. A *lead* in the timeseries. |
+| `invoice_paid` | The funnel's *paid* stage (and counts toward *signups*). Billable GMV on Cloud. Use for every payment. |
+| `subscription_created` | Counts toward the funnel's *signups*. Billable GMV on Cloud. |
 | anything else (`demo_booked`, `lead_qualified`, ...) | Recorded, and commissionable if a rule names it. Not in the funnel or lead counts, and not GMV. |
 
 For example, if you track clicks, signups, leads, demos and paid customers: clicks come from the router, signups are `signup`, payments are `invoice_paid`, and leads and demos are custom types. To pay a flat bounty for a booked demo, add a sub-rule such as `{ "trigger": "first", "eventType": "demo_booked", "type": "fixed", "value": 10 }`.

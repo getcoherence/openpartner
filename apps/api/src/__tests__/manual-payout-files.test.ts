@@ -255,6 +255,7 @@ describe.skipIf(skipIntegration)('payout details API', () => {
     expect(res.body).toMatchObject({
       profile: { method: 'paypal', details: { method: 'paypal', email: 'jane.pay@pay.test' }, summary: 'PayPal j•••@pay.test', updatedBy: 'partner' },
       paidVia: 'manual',
+      rail: 'auto',
     });
 
     const row = await db(TABLES.PartnerPayoutProfile).where({ partnerId: id }).first();
@@ -285,6 +286,19 @@ describe.skipIf(skipIntegration)('payout details API', () => {
     expect(res.body.detail.fieldErrors.sortCode).toBeTruthy();
     expect(JSON.stringify(res.body)).not.toContain('31926819');
     expect(await db(TABLES.PartnerPayoutProfile).where({ partnerId: id })).toHaveLength(0);
+  });
+
+  it("reports the brand's rail, so the portal asks for these details instead of Stripe", async () => {
+    const id = await partner('Rail', { stripeConnectAccountId: 'acct_rail_test' });
+    const key = (await createApiKeyRow(db, { tenantId: T, partnerId: id })).plaintext;
+    try {
+      expect((await as(key).get(`/partners/${id}/payout-profile`)).body).toMatchObject({ paidVia: 'stripe_connect', rail: 'auto' });
+      await db(TABLES.Tenant).where({ id: T }).update({ payoutRailPreference: 'manual' });
+      // Connected or not, a manual-rail brand pays from the payout details.
+      expect((await as(key).get(`/partners/${id}/payout-profile`)).body).toMatchObject({ profile: null, paidVia: 'manual', rail: 'manual' });
+    } finally {
+      await db(TABLES.Tenant).where({ id: T }).update({ payoutRailPreference: null });
+    }
   });
 
   it('keeps a partner key to its own partner', async () => {
