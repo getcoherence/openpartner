@@ -59,18 +59,6 @@ export function PartnerPostbacksPage({ principal }: { principal: Principal }) {
     enabled: !!partnerId,
   });
 
-  const create = useMutation({
-    mutationFn: (body: { url: string; events: PostbackEvent[] }) =>
-      api<PostbackRow>(`/partners/${partnerId}/postbacks`, { method: 'POST', body }),
-    // The URL rides in the mutation's variables; don't keep it once the
-    // page is gone.
-    gcTime: 0,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['partner-postbacks', partnerId] });
-      setShowCreate(false);
-    },
-  });
-
   const toggleEnabled = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       api<PostbackRow>(`/partners/${partnerId}/postbacks/${id}`, { method: 'PATCH', body: { enabled } }),
@@ -107,18 +95,9 @@ export function PartnerPostbacksPage({ principal }: { principal: Principal }) {
         </Button>
       }
     >
-      <ErrorBanner error={list.error ?? create.error ?? toggleEnabled.error ?? remove.error} />
+      <ErrorBanner error={list.error ?? toggleEnabled.error ?? remove.error} />
 
-      {showCreate && (
-        <PostbackForm
-          title="New postback URL"
-          submitLabel="Create"
-          pendingLabel="Creating…"
-          onCancel={() => setShowCreate(false)}
-          onSubmit={(body) => create.mutate(body)}
-          pending={create.isPending}
-        />
-      )}
+      {showCreate && <CreatePostback partnerId={partnerId} onDone={() => setShowCreate(false)} />}
 
       {list.isLoading ? (
         <Card>Loading…</Card>
@@ -165,8 +144,9 @@ function PostbackCard({
   const totalFires = row.successCount + row.failureCount;
   return (
     <Card>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 10 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: 12, marginBottom: 10 }}>
+        {/* Below ~240px of room for the URL, the buttons wrap under it. */}
+        <div style={{ flex: '1 1 240px', minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
             <StatusPill status={row.enabled ? 'active' : 'paused'} />
             <code
@@ -242,6 +222,35 @@ function Stat({ label, value }: { label: string; value: string }) {
         {value}
       </div>
     </div>
+  );
+}
+
+/**
+ * Add a postback. The mutation lives here, not on the page, so the URL in
+ * its variables goes when the form closes: gcTime 0 only drops a mutation
+ * nothing observes any more.
+ */
+function CreatePostback({ partnerId, onDone }: { partnerId: string; onDone: () => void }) {
+  const qc = useQueryClient();
+  const create = useMutation({
+    mutationFn: (body: { url: string; events: PostbackEvent[] }) =>
+      api<PostbackRow>(`/partners/${partnerId}/postbacks`, { method: 'POST', body }),
+    gcTime: 0,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['partner-postbacks', partnerId] });
+      onDone();
+    },
+  });
+  return (
+    <PostbackForm
+      title="New postback URL"
+      submitLabel="Create"
+      pendingLabel="Creating…"
+      error={create.error}
+      onCancel={onDone}
+      onSubmit={(body) => create.mutate(body)}
+      pending={create.isPending}
+    />
   );
 }
 

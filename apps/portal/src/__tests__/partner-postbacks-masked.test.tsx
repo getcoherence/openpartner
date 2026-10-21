@@ -34,6 +34,7 @@ const ROW = {
 let requests: Array<{ method: string; path: string; body: unknown }> = [];
 let urlResponse: { status: number; body: unknown } = { status: 200, body: { url: FULL_URL } };
 let rows: Array<typeof ROW | (Omit<typeof ROW, 'urlPreview'> & { urlPreview: string | null })> = [ROW];
+let createStatus = 201;
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -43,6 +44,7 @@ beforeEach(() => {
   requests = [];
   urlResponse = { status: 200, body: { url: FULL_URL } };
   rows = [ROW];
+  createStatus = 201;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost');
     const method = init?.method ?? 'GET';
@@ -50,6 +52,9 @@ beforeEach(() => {
     const path = url.pathname.replace(/^\/api/, '');
     requests.push({ method, path, body });
     if (path === '/partners/p1/postbacks' && method === 'GET') return json(200, { postbacks: rows, supportedEvents: [] });
+    if (path === '/partners/p1/postbacks' && method === 'POST') {
+      return createStatus === 201 ? json(201, { ...ROW, id: 'pb2' }) : json(createStatus, { error: 'destination_not_allowed' });
+    }
     if (path === '/partners/p1/postbacks/pb1/url') return json(urlResponse.status, urlResponse.body);
     if (path === '/partners/p1/postbacks/pb1' && method === 'PATCH') return json(200, { ...ROW, ...body });
     return json(404, { error: 'not_found' });
@@ -128,6 +133,27 @@ describe('partner postbacks: masked URLs', () => {
     expect(cached(page.qc)).toContain(SECRET);
     fireEvent.click(page.getByText('Cancel'));
     await waitFor(() => expect(cached(page.qc)).not.toContain(SECRET));
+  });
+
+  it('Add postback: nothing keeps the URL once the form closes, after a create or a failed one', async () => {
+    const page = show();
+    const typeAndCreate = async () => {
+      fireEvent.click(await page.findByText('Add postback'));
+      fireEvent.change(page.getByPlaceholderText(/tracker\.example\.com/), { target: { value: FULL_URL } });
+      fireEvent.click(page.getByText('Create'));
+    };
+
+    await typeAndCreate();
+    await waitFor(() => expect(page.queryByText('New postback URL')).toBeNull());
+    await waitFor(() => expect(cached(page.qc)).not.toContain(SECRET));
+
+    createStatus = 400;
+    await typeAndCreate();
+    expect(await page.findByText(/destination_not_allowed|400/)).toBeTruthy();
+    expect(cached(page.qc)).toContain(SECRET);
+    fireEvent.click(page.getByText('Cancel'));
+    await waitFor(() => expect(cached(page.qc)).not.toContain(SECRET));
+    expect(requests.filter((r) => r.method === 'POST')).toHaveLength(2);
   });
 
   it("a URL this deployment can't open: the list says so, and Edit asks for it again", async () => {

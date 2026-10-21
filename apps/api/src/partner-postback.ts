@@ -23,7 +23,6 @@
  * blow up at any reasonable partner volume.
  */
 
-import type { Knex } from 'knex';
 import {
   TABLES,
   type PartnerPostbackEvent,
