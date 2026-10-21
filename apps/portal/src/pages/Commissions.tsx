@@ -22,8 +22,9 @@ interface Commission extends CommissionSourceFields {
 
 const PAGE_SIZE = 200;
 
-/** The partner's avatar and name; the start of their id if the record is gone. */
-function PartnerCell({ c }: { c: Commission }) {
+/** The partner's avatar and name; the start of their id if the record is
+ *  gone. Shared with the review queue (AdminReview.tsx). */
+export function CommissionPartnerCell({ c }: { c: Pick<Commission, 'partnerId' | 'partnerName'> }) {
   if (!c.partnerName) return <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(c.partnerId)}</code>;
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
@@ -34,8 +35,9 @@ function PartnerCell({ c }: { c: Commission }) {
 }
 
 /** What it was earned on, with the program underneath. A bonus's note is
- *  the brand's own words to the partner, so it wraps rather than truncates. */
-function SourceCell({ c }: { c: Commission }) {
+ *  the brand's own words to the partner, so it wraps rather than truncates.
+ *  Shared with the review queue (AdminReview.tsx). */
+export function CommissionSourceCell({ c }: { c: CommissionSourceFields & { campaignName?: string | null } }) {
   const bonus = isBonusCommission(c);
   return (
     <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 2, maxWidth: 320, whiteSpace: 'normal' }}>
@@ -71,8 +73,8 @@ export function CommissionsPage({ principal }: { principal: Principal }) {
   const rows = (data?.pages.flatMap((p) => p.commissions) ?? []).map((c) => {
     const base = [
       <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(c.id)}</code>,
-      isAdminView ? <PartnerCell c={c} /> : null,
-      <SourceCell c={c} />,
+      isAdminView ? <CommissionPartnerCell c={c} /> : null,
+      <CommissionSourceCell c={c} />,
       <span style={{ fontWeight: 500 }}>{money(c.amount, c.currency)}</span>,
       <StatusPill status={c.status} />,
       <span style={{ color: theme.textMuted }}>{formatDate(c.accruedAt, { relative: true })}</span>,

@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 /**
- * The admin Commissions and Payouts pages in words a brand admin can read:
- *   - a commission names its partner and the event it was earned on;
+ * The admin Commissions, Review queue and Payouts pages in words a brand
+ * admin can read:
+ *   - a commission names its partner and the event it was earned on, in the
+ *     list and in the review queue;
  *   - "Run payouts" reports each payout, who carried over and who is held,
  *     by name, not as JSON;
  *   - with no partner picked, the page lists every partner's recent
@@ -12,6 +14,7 @@ import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/re
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactElement } from 'react';
+import { AdminReview } from '../pages/AdminReview.js';
 import { CommissionsPage } from '../pages/Commissions.js';
 import { PayoutsPage } from '../pages/Payouts.js';
 import { commissionSourceLabel, eventTypeLabel } from '../lib/commission-source.js';
@@ -97,6 +100,7 @@ function renderAt(ui: ReactElement, path: string) {
       <QueryClientProvider client={qc}>
         <Routes>
           <Route path="/commissions" element={ui} />
+          <Route path="/admin/review" element={ui} />
           <Route path="/payouts" element={ui} />
         </Routes>
       </QueryClientProvider>
@@ -113,6 +117,14 @@ describe('admin Commissions: who and what for', () => {
     // A partner whose record is gone falls back to the start of the id.
     const invoice = within(page.getByText('Invoice paid').closest('tr') as HTMLElement);
     expect(invoice.getByText('01GONE00')).toBeTruthy();
+  });
+
+  it('names the partner and the event in the review queue', async () => {
+    const page = renderAt(<AdminReview />, '/admin/review');
+    const trial = within((await page.findByText('Trial started')).closest('tr') as HTMLElement);
+    expect(trial.getByText('Maya Chen')).toBeTruthy();
+    expect(trial.getByRole('button', { name: 'Approve' })).toBeTruthy();
+    expect(requests.find((r) => r.path === '/commissions')?.search).toBe('?status=accrued&limit=500');
   });
 
   it('words event types, and keeps "Sale" when the type is unknown', () => {
