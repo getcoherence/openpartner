@@ -1,8 +1,9 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { CreditCard, CheckCircle2, XCircle } from 'lucide-react';
+import { CreditCard, CheckCircle2, Landmark, XCircle } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { theme } from '../theme.js';
-import { useBrand } from '../lib/useBrand.js';
+import { TenantLink } from '../tenant-link.js';
+import { useBrand, useConnectPayouts } from '../lib/useBrand.js';
 import { Button, Card, EmptyState, ErrorBanner, Page } from '../ui.js';
 
 interface ConnectStatus {
@@ -16,12 +17,13 @@ interface ConnectStatus {
 export function ConnectPage({ principal }: { principal: Principal }) {
   const partnerId = principal.role === 'partner' ? principal.partnerId : null;
   const { programName } = useBrand();
+  const connectPayouts = useConnectPayouts();
 
   const status = useQuery({
     queryKey: ['connect-status', partnerId],
     queryFn: () => api<ConnectStatus>(`/partners/${partnerId}/connect/status`),
     retry: false,
-    enabled: !!partnerId,
+    enabled: !!partnerId && connectPayouts,
   });
 
   const start = useMutation({
@@ -42,6 +44,28 @@ export function ConnectPage({ principal }: { principal: Principal }) {
     return (
       <Page title="Stripe Connect">
         <EmptyState title="Partners only" hint="Stripe Connect onboarding is a partner-side flow." icon={<CreditCard size={28} strokeWidth={1.25} />} />
+      </Page>
+    );
+  }
+
+  // The nav hides this page when the brand can't pay through Connect; a
+  // bookmark still lands here, so say where payouts go instead of
+  // offering an account that would never be paid.
+  if (!connectPayouts) {
+    return (
+      <Page title="Stripe Connect">
+        <Card>
+          <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>
+            {programName} doesn’t pay through Stripe Connect
+          </div>
+          <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 16, maxWidth: 560 }}>
+            Add your PayPal or bank details on the Payout details page so {programName} knows where to send your
+            payouts.
+          </div>
+          <TenantLink to="/payout-details" style={{ textDecoration: 'none' }}>
+            <Button icon={<Landmark size={14} />}>Go to Payout details</Button>
+          </TenantLink>
+        </Card>
       </Page>
     );
   }

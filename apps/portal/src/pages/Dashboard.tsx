@@ -13,12 +13,13 @@ import {
   CheckCircle2,
   Circle,
   ArrowRight,
+  Landmark,
 } from 'lucide-react';
 import { api, type Principal } from '../api.js';
 import { useTenantBase } from '../tenant-base.js';
 import { TenantLink } from '../tenant-link.js';
 import { alpha, theme } from '../theme.js';
-import { useBrand, useDefaultCurrency } from '../lib/useBrand.js';
+import { useBrand, useConnectPayouts, useDefaultCurrency } from '../lib/useBrand.js';
 import {
   Avatar,
   Button,
@@ -80,6 +81,13 @@ interface ConnectStatus {
   payoutsEnabled?: boolean;
 }
 
+/** GET /partners/:id/payout-profile, the parts the dashboard reads. `rail`
+ *  is absent from an API that predates it. */
+interface PayoutProfileStatus {
+  profile: { details: unknown } | null;
+  rail?: 'auto' | 'stripe_connect' | 'manual';
+}
+
 function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string }) {
   const { data, error, isLoading } = useQuery({
     queryKey: ['dashboard', partnerId],
@@ -89,11 +97,23 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
     queryKey: ['funnel', partnerId],
     queryFn: () => api<Funnel>(`/partners/${partnerId}/funnel`),
   });
+  // Whether the brand can pay through Stripe Connect at all (/config/program).
+  // Where it can't, a Connect account would never be paid.
+  const connectPayouts = useConnectPayouts();
   // Non-critical — render the rest of the dashboard even if this 503s
   // (Stripe not configured on a selfhost instance, for instance).
   const connect = useQuery({
     queryKey: ['connect-status', partnerId],
     queryFn: () => api<ConnectStatus>(`/partners/${partnerId}/connect/status`),
+    retry: false,
+    enabled: connectPayouts,
+  });
+  // Says whether the brand pays partners itself (the manual rail), where
+  // Stripe Connect isn't used and the partner's payout details are.
+  // Non-critical too: without it the card falls back to Stripe.
+  const payoutProfile = useQuery({
+    queryKey: ['payout-profile', partnerId],
+    queryFn: () => api<PayoutProfileStatus>(`/partners/${partnerId}/payout-profile`),
     retry: false,
   });
   const links = useQuery({
@@ -107,19 +127,29 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
   const linkCount = links.data?.links.length ?? 0;
   const hasLink = linkCount > 0;
   const hasActiveConnect = !!connect.data?.connected && !!connect.data?.payoutsEnabled;
+  // On the manual rail, or wherever the brand can't pay through Connect
+  // (hosted without payout funding), the brand pays from the partner's
+  // payout details (bank transfer, PayPal or Wise files): that's the step,
+  // not Stripe. Details that can't be opened come back as `details: null`,
+  // so the partner still has to enter them.
+  const paysManually = !connectPayouts || payoutProfile.data?.rail === 'manual';
+  const hasPayoutDetails = !!payoutProfile.data?.profile?.details;
+  const payoutReady = paysManually ? hasPayoutDetails : hasActiveConnect;
 
   const owed = amounts ? statusAmounts(amounts.commissions, 'approved', 'accrued') : {};
   const needsConnect =
     !!amounts &&
     Object.keys(owed).length > 0 &&
+    !payoutProfile.isLoading &&
+    !paysManually &&
     connect.data != null &&
     (!connect.data.connected || !connect.data.payoutsEnabled);
 
   // Getting-started card shows while EITHER onboarding task is outstanding.
-  // We only render it once we know the state of both (connect + links),
+  // We only render it once we know the state of both (payouts + links),
   // otherwise the card can flash during initial load.
   const showGettingStarted =
-    !links.isLoading && !connect.isLoading && (!hasLink || !hasActiveConnect);
+    !links.isLoading && !connect.isLoading && !payoutProfile.isLoading && (!hasLink || !payoutReady);
 
   return (
     <Page
@@ -128,7 +158,7 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
     >
       <ErrorBanner error={error} />
       {showGettingStarted && (
-        <GettingStarted hasLink={hasLink} connectReady={hasActiveConnect} />
+        <GettingStarted hasLink={hasLink} payoutStep={paysManually ? 'details' : 'stripe'} payoutReady={payoutReady} />
       )}
       {needsConnect && !showGettingStarted && (
         <ConnectNudge owed={moneyByCurrency(owed, amounts!.currency)} connected={connect.data!.connected} />
@@ -183,7 +213,17 @@ function PartnerDashboard({ partnerId, name }: { partnerId: string; name: string
   );
 }
 
-function GettingStarted({ hasLink, connectReady }: { hasLink: boolean; connectReady: boolean }) {
+function GettingStarted({
+  hasLink,
+  payoutStep,
+  payoutReady,
+}: {
+  hasLink: boolean;
+  /** `details`: the brand pays partners itself, from their payout details. */
+  payoutStep: 'stripe' | 'details';
+  payoutReady: boolean;
+}) {
+  const { programName } = useBrand();
   return (
     <Card>
       <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Getting started</div>
@@ -199,14 +239,25 @@ function GettingStarted({ hasLink, connectReady }: { hasLink: boolean; connectRe
           cta="Create link"
           to="/links"
         />
-        <ChecklistRow
-          done={connectReady}
-          icon={<CreditCard size={16} />}
-          title="Connect Stripe to get paid"
-          hint="Commissions you earn land directly in your Stripe balance."
-          cta={connectReady ? 'Manage' : 'Connect Stripe'}
-          to="/connect"
-        />
+        {payoutStep === 'details' ? (
+          <ChecklistRow
+            done={payoutReady}
+            icon={<Landmark size={16} />}
+            title="Add your payout details"
+            hint={`Tell ${programName} where to send your commissions: PayPal, a bank account or another way.`}
+            cta="Add details"
+            to="/payout-details"
+          />
+        ) : (
+          <ChecklistRow
+            done={payoutReady}
+            icon={<CreditCard size={16} />}
+            title="Connect Stripe to get paid"
+            hint="Commissions you earn land directly in your Stripe balance."
+            cta={payoutReady ? 'Manage' : 'Connect Stripe'}
+            to="/connect"
+          />
+        )}
       </div>
     </Card>
   );
@@ -281,11 +332,14 @@ function ConnectNudge({ owed, connected }: { owed: string; connected: boolean })
   );
 }
 
+/** One cohort, top to bottom (routes/funnel.ts): the clicks in the window
+ *  and what those visitors went on to do, so each stage is a subset of the
+ *  last. Renewals from customers won earlier aren't in it. */
 function FunnelChart({ funnel }: { funnel: Funnel }) {
   const stages = [
     { key: 'clicks', label: 'Clicks', value: funnel.stages.clicks, icon: <MousePointerClick size={14} />, rate: null },
-    { key: 'identities', label: 'Stitched', value: funnel.stages.identities, icon: <UserCheck size={14} />, rate: funnel.rates.stitchRate },
-    { key: 'signups', label: 'Signups', value: funnel.stages.signups, icon: <Receipt size={14} />, rate: funnel.rates.signupRate },
+    { key: 'identities', label: 'Identified', value: funnel.stages.identities, icon: <UserCheck size={14} />, rate: funnel.rates.stitchRate },
+    { key: 'signups', label: 'Signed up', value: funnel.stages.signups, icon: <Receipt size={14} />, rate: funnel.rates.signupRate },
     { key: 'paid', label: 'Paid', value: funnel.stages.paid, icon: <CreditCard size={14} />, rate: funnel.rates.paidRate },
   ];
   const max = Math.max(1, ...stages.map((s) => s.value));
@@ -295,6 +349,9 @@ function FunnelChart({ funnel }: { funnel: Funnel }) {
     <>
       <SectionHeading>Funnel</SectionHeading>
       <Card>
+        <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
+          Your clicks in the last 30 days, and what those visitors went on to do.
+        </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {stages.map((s, i) => {
             const width = `${Math.max(6, (s.value / max) * 100)}%`;

@@ -1,9 +1,12 @@
 import { Router, type Request } from 'express';
+import type { Knex } from 'knex';
 import { z } from 'zod';
-import { TABLES, type PayoutRow } from '@openpartner/db';
+import { TABLES, type PartnerRow, type PayoutRow } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { db as privilegedDb } from '../db.js';
-import { dispatchPayoutNotifications, runPayouts } from '../payouts.js';
+import { PAYOUT_STATUSES } from '../openapi/enums.js';
+import { cursorTimestamp, decodeCursor, takePage, whereAfterCursor } from '../pagination.js';
+import { dispatchPayoutNotifications, runPayouts, type PayoutRunResult } from '../payouts.js';
 import { executePayoutTransfers } from '../payout-transfers.js';
 import { listHeldPartners, screenPayablePartners } from '../sanctions-screening.js';
 import { tenantOf, withTenantTransaction } from '../tenancy.js';
@@ -35,6 +38,18 @@ export const manualRunsQuerySchema = z.object({
 export const manualRunPayoutsQuerySchema = z.object({
   cursor: z.string().max(200).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
+});
+
+/**
+ * GET /payouts: every partner's payouts, newest first.
+ *   - ?status=…  — filter to one status
+ *   - ?limit=N   — page size (1-200, default 50)
+ *   - ?cursor=…  — opaque cursor returned by the previous page
+ */
+export const listPayoutsQuerySchema = z.object({
+  status: z.enum(PAYOUT_STATUSES).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional().default(50),
+  cursor: z.string().max(200).optional(),
 });
 
 export const createManualExportSchema = z.object({
@@ -96,7 +111,72 @@ payoutsRouter.post('/payouts/run', requireAuth, requireAdmin, async (req, res) =
       p.error = canceled.reason;
     }
   }
-  res.json({ ...result, transfers });
+  res.json({ ...(await withPartnerNames(privilegedDb, tenantId, result)), transfers });
+});
+
+/**
+ * The run's report with each partner's name on every row, so the admin
+ * sees who was paid, carried over or held rather than an id. Read on the
+ * privileged pool like the transfers above, scoped to this tenant. No
+ * foreign key holds a payout's partner, so a missing one is named null.
+ */
+async function withPartnerNames(db: Knex, tenantId: string, result: Omit<PayoutRunResult, 'pendingNotifications'>) {
+  const ids = [
+    ...new Set(
+      [
+        ...result.payouts,
+        ...result.skippedBelowThreshold,
+        ...result.skippedUnfunded,
+        ...result.heldForClawback,
+        ...result.heldForCompliance,
+      ].map((r) => r.partnerId),
+    ),
+  ];
+  const partners =
+    ids.length > 0
+      ? await db<PartnerRow>(TABLES.Partner).where({ tenantId }).whereRaw('id = any(?::text[])', [ids]).select('id', 'name')
+      : [];
+  const names = new Map(partners.map((p) => [p.id, p.name]));
+  const named = <T extends { partnerId: string }>(rows: T[]) =>
+    rows.map((r) => ({ ...r, partnerName: names.get(r.partnerId) ?? null }));
+  return {
+    ...result,
+    payouts: named(result.payouts),
+    skippedBelowThreshold: named(result.skippedBelowThreshold),
+    skippedUnfunded: named(result.skippedUnfunded),
+    heldForClawback: named(result.heldForClawback),
+    heldForCompliance: named(result.heldForCompliance),
+  };
+}
+
+/**
+ * Every partner's payouts, newest first, each with the partner's name: the
+ * admin Payouts page's history. Keyset-paginated over (createdAt, id) like
+ * GET /commissions (see pagination.ts).
+ */
+payoutsRouter.get('/payouts', requireAuth, grantScope('payouts:read'), requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const q = listPayoutsQuerySchema.safeParse(req.query);
+  if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
+
+  const query = db(`${TABLES.Payout} as po`)
+    .where('po.tenantId', tenantId)
+    .leftJoin(`${TABLES.Partner} as p`, (j) => j.on('p.id', 'po.partnerId').andOn('p.tenantId', 'po.tenantId'))
+    .select('po.*', 'p.name as partnerName', cursorTimestamp(db, 'po.createdAt'))
+    .orderBy([
+      { column: 'po.createdAt', order: 'desc' },
+      { column: 'po.id', order: 'desc' },
+    ])
+    .limit(q.data.limit + 1);
+  if (q.data.status) query.andWhere('po.status', q.data.status);
+  if (q.data.cursor) {
+    const cursor = decodeCursor(q.data.cursor);
+    if (!cursor) return res.status(400).json({ error: 'invalid_cursor' });
+    whereAfterCursor(query, 'po.createdAt', 'po.id', cursor);
+  }
+  const rows = (await query) as Array<PayoutRow & { partnerName: string | null; _cursorTs: string }>;
+  const { page, nextCursor } = takePage(rows, q.data.limit);
+  res.json({ payouts: page, nextCursor });
 });
 
 /**

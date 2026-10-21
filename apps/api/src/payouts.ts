@@ -74,7 +74,7 @@ import {
 } from '@openpartner/db';
 import { REVSHARE_FEE_BPS, type OpenPartnerMode } from './stripe.js';
 import { db as platformDb } from './db.js';
-import { resolvePayoutMethod } from './payout-method.js';
+import { connectNeedsFunding, resolvePayoutMethod } from './payout-method.js';
 import { partnerPayoutHolds, type PayoutHoldReason } from './sanctions-screening.js';
 import { centsToStripeMinor, fromStripeMinor, majorToCents } from './stripe-amounts.js';
 import type { PayoutTransferMeta } from './payout-transfers.js';
@@ -291,10 +291,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
     }
 
     // Hosted Connect goes through the funding pipeline (below) or nowhere.
-    const fundedRail =
-      method === 'stripe_connect' &&
-      mode !== 'selfhost' &&
-      process.env.OPENPARTNER_ALLOW_UNFUNDED_CONNECT_PAYOUTS !== '1';
+    const fundedRail = method === 'stripe_connect' && connectNeedsFunding(mode);
 
     // Preflight: a linked Connect account that hasn't finished onboarding
     // will 400 on transfers.create. Decide up front and take a path that
