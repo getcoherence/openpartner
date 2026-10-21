@@ -511,6 +511,8 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
           </NavSection>
         )}
 
+        {principal.role === 'admin' && !whiteLabel && <NetworkNav />}
+
         {principal.role === 'admin' && (
           <NavSection title="Admin" collapsible storageKey="admin-admin">
             <NavItem to="/admin/partners" icon={<Users size={16} />}>Partners</NavItem>
@@ -526,8 +528,6 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
             <NavItem to="/admin/white-label" icon={<Palette size={16} />}>White label</NavItem>
           </NavSection>
         )}
-
-        {principal.role === 'admin' && !whiteLabel && <NetworkNav />}
       </div>
 
       <ThemeToggle labels style={{ marginTop: 14 }} />
