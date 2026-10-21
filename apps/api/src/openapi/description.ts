@@ -77,7 +77,7 @@ ${scopeTable(operations)}
 
 ## Pagination
 
-\`GET /partners\` and the commission lists are keyset-paginated: pass the response's \`nextCursor\` as \`cursor\` until it is \`null\`. Cursors are opaque. \`GET /partners/{id}/events\` and \`/customers\` use \`limit\` + \`offset\`. \`GET /partners/{id}/payouts\` returns the 200 most recent, and \`GET /webhooks/{id}/deliveries\` the 100 most recent.
+\`GET /partners\`, the commission lists and \`GET /payouts\` are keyset-paginated: pass the response's \`nextCursor\` as \`cursor\` until it is \`null\`. Cursors are opaque. \`GET /partners/{id}/events\` and \`/customers\` use \`limit\` + \`offset\`. \`GET /partners/{id}/payouts\` returns the 200 most recent, and \`GET /webhooks/{id}/deliveries\` the 100 most recent.
 
 ## Rate limits
 
