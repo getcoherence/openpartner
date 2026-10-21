@@ -14,9 +14,13 @@ import { getPortalBaseUrl, type PortalLinkTenant } from './portal-url.js';
  * platform/single-host case gets a bare PORTAL_URL link. Note that a
  * freshly-signed-up white-label tenant has no customDomain yet — its first
  * admin invite is necessarily path-based until the domain verifies.
+ *
+ * `next` (platform sign-in only) is where the landing goes once the user
+ * enters a workspace; callers pass it through safeNextPath first.
  */
-export function buildMagicLinkUrl(token: string, tenant?: PortalLinkTenant | null): string {
-  return `${getPortalBaseUrl(tenant)}/auth/magic?token=${encodeURIComponent(token)}`;
+export function buildMagicLinkUrl(token: string, tenant?: PortalLinkTenant | null, next?: string | null): string {
+  const link = `${getPortalBaseUrl(tenant)}/auth/magic?token=${encodeURIComponent(token)}`;
+  return next ? `${link}&next=${encodeURIComponent(next)}` : link;
 }
 
 export interface EmailTemplate {
@@ -956,11 +960,14 @@ export function plainHtml(text: string): string {
 }
 
 function wrap(text: string, cta: string, ctaLabel: string): string {
+  // The link goes into HTML: a second query param's & (a sign-in link's
+  // &next=) is &amp; there.
+  const href = cta.replace(/&/g, '&amp;');
   const escaped = text
     .split('\n')
     .map((line) =>
       line.startsWith('http')
-        ? `<a href="${cta}" data-op-email="link" style="color:#2dd4bf">${cta}</a>`
+        ? `<a href="${href}" data-op-email="link" style="color:#2dd4bf">${href}</a>`
         : line.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
     )
     .join('<br>');
@@ -973,7 +980,7 @@ function wrap(text: string, cta: string, ctaLabel: string): string {
           <tr><td style="padding:28px 32px; color:#1f2937; font-size:14px; line-height:1.6;">
             ${escaped}
             <br><br>
-            <a href="${cta}" data-op-email="button" style="display:inline-block; background:#2dd4bf; color:#041115; padding:10px 18px; border-radius:6px; text-decoration:none; font-weight:600;">${ctaLabel}</a>
+            <a href="${href}" data-op-email="button" style="display:inline-block; background:#2dd4bf; color:#041115; padding:10px 18px; border-radius:6px; text-decoration:none; font-weight:600;">${ctaLabel}</a>
           </td></tr>
         </table>
       </td></tr>

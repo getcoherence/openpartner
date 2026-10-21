@@ -646,6 +646,36 @@ describe.skipIf(skipIntegration)('Google sign-in', () => {
     }
   });
 
+  it('account flow: ?next= rides the state cookie onto the magic link, and back to /signin on a cancel', async () => {
+    const restore = withGoogle();
+    try {
+      const next = '/admin/network/creators/jane-doe';
+      const q = `flow=account&next=${encodeURIComponent(next)}`;
+      const res = await googleCallback(await googleStart(q), { email: address('gnext') });
+      expect(res.status).toBe(302);
+      const landing = new URL(res.headers.location as string);
+      expect(landing.pathname).toBe('/auth/magic');
+      expect(landing.searchParams.get('next')).toBe(next);
+
+      const started = await googleStart(q);
+      const cancelled = await request(app).get(`/auth/google/callback?error=access_denied&state=${started.state}`).set('Cookie', started.cookie);
+      expect(cancelled.headers.location).toBe(
+        `http://localhost:5673/signin?error=google_cancelled&next=${encodeURIComponent(next)}`,
+      );
+
+      // Anything but a path under /admin/ is dropped, not carried.
+      for (const unsafe of ['https://evil.example/admin/x', '//evil.example/admin/x', '/platform/vendors']) {
+        const dropped = await googleCallback(
+          await googleStart(`flow=account&next=${encodeURIComponent(unsafe)}`),
+          { email: address('gnext') },
+        );
+        expect(new URL(dropped.headers.location as string).searchParams.has('next')).toBe(false);
+      }
+    } finally {
+      restore();
+    }
+  });
+
   it('refuses a mismatched state, an unverified address, a wrong audience, and a cancel', async () => {
     const restore = withGoogle();
     try {

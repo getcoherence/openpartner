@@ -4,16 +4,20 @@ import { theme } from '../../theme.js';
 import { countryErrorMessage } from '../../lib/CountryField.js';
 import { AuthFrame } from './Shared.js';
 import { stripQueryParamsFromAddressBar } from '../../lib/sensitive-url.js';
+import { useNextPath, withNext } from '../../lib/signin-next.js';
 
 /**
  * Multi-tenant magic-link landing for platform-identity tokens (the
  * tokens issued by the unified /signin). Verify creates a
  * PlatformSession; we then push the user to /workspaces, which decides
- * whether to show the picker or auto-enter their single workspace.
+ * whether to show the picker or auto-enter their single workspace. A
+ * ?next= the link carries (lib/signin-next.ts) goes along.
  */
 export function PlatformMagicLandingPage() {
   const [params] = useSearchParams();
   const nav = useNavigate();
+  // Kept for a retry too: an expired link's "sign-in page" carries it.
+  const next = useNextPath();
   const [state, setState] = useState<'verifying' | 'ok' | 'failed'>('verifying');
   const [detail, setDetail] = useState<string | null>(null);
 
@@ -40,14 +44,14 @@ export function PlatformMagicLandingPage() {
           throw new Error((j as { error?: string }).error ?? `${r.status}`);
         }
         setState('ok');
-        setTimeout(() => nav('/workspaces', { replace: true }), 300);
+        setTimeout(() => nav(withNext('/workspaces', next), { replace: true }), 300);
       })
       .catch((err) => {
         setState('failed');
         const message = err instanceof Error ? err.message : 'Link is invalid or expired.';
         setDetail(countryErrorMessage(message) ?? message);
       });
-  }, [nav, params]);
+  }, [nav, params, next]);
 
   return (
     <AuthFrame title="Signing you in" subtitle="One moment…">
@@ -57,7 +61,11 @@ export function PlatformMagicLandingPage() {
         <div style={{ color: theme.danger, fontSize: 14 }}>
           {detail ?? 'Could not verify.'}
           <div style={{ color: theme.textDim, fontSize: 13, marginTop: 10 }}>
-            Ask for a new link from <a href="/signin" style={{ color: theme.accentText }}>the sign-in page</a>.
+            Ask for a new link from{' '}
+            <a href={withNext('/signin', next)} style={{ color: theme.accentText }}>
+              the sign-in page
+            </a>
+            .
           </div>
         </div>
       )}

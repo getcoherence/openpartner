@@ -16,7 +16,10 @@
  *   account / account_add   brand admin, platform identity (multi-tenant).
  *                           Any verified Google address may sign in; with no
  *                           brand yet, /workspaces sends them to create one —
- *                           which is "sign up with Google".
+ *                           which is "sign up with Google". ?next= (a path
+ *                           inside the workspace, safeNextPath) rides the
+ *                           state cookie onto the magic link, as it rides
+ *                           /signin's emailed one.
  *   ops                     ops console; operators only.
  *   portal                  one brand's admin or partner (?slug= on multi-tenant).
  *
@@ -37,7 +40,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { Router, type CookieOptions, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { DEFAULT_TENANT_ID, TABLES, type TenantRow } from '@openpartner/db';
+import { DEFAULT_TENANT_ID, TABLES, safeNextPath, type TenantRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { clearSessionCookie } from '../auth-sessions.js';
 import { buildMagicLinkUrl } from '../email-templates.js';
@@ -84,6 +87,7 @@ const startSchema = z.object({
     .string()
     .regex(/^[a-z0-9-]{1,63}$/)
     .optional(),
+  next: z.string().optional(),
 });
 
 interface OAuthState {
@@ -94,6 +98,8 @@ interface OAuthState {
   f: Flow;
   /** tenant slug, portal flow on multi-tenant */
   t?: string;
+  /** next path, account flows (checked again with safeNextPath on use) */
+  x?: string;
 }
 
 /**
@@ -126,8 +132,9 @@ function sameString(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
-/** Where a failed attempt goes back to, with ?error= for the page to show. */
-async function failureUrl(flow: Flow | null, slug: string | undefined, error: string): Promise<string> {
+/** Where a failed attempt goes back to, with ?error= for the page to show
+ *  (and ?next= back to /signin, so trying again still lands there). */
+async function failureUrl(flow: Flow | null, slug: string | undefined, error: string, next?: string | null): Promise<string> {
   const base = getPortalBaseUrl();
   const q = `?error=${encodeURIComponent(error)}`;
   if (flow === 'ops') return `${base}/platform/login${q}`;
@@ -135,7 +142,7 @@ async function failureUrl(flow: Flow | null, slug: string | undefined, error: st
     const tenant = slug ? await db<TenantRow>(TABLES.Tenant).where({ slug }).first(['slug', 'customDomain']) : null;
     return `${getPortalBaseUrl(tenant ?? (slug ? { slug } : null))}/login${q}`;
   }
-  return `${base}/signin${q}`;
+  return `${base}/signin${q}${next ? `&next=${encodeURIComponent(next)}` : ''}`;
 }
 
 // -------- Which providers are on --------
@@ -158,7 +165,8 @@ googleAuthRouter.get('/auth/google/start', startLimit, async (req, res) => {
   const parsed = startSchema.safeParse(req.query);
   const flow = parsed.success ? parsed.data.flow : null;
   const slug = parsed.success ? parsed.data.slug : undefined;
-  if (!config) return res.redirect(await failureUrl(flow, slug, 'google_unavailable'));
+  const next = parsed.success && (flow === 'account' || flow === 'account_add') ? safeNextPath(parsed.data.next) : null;
+  if (!config) return res.redirect(await failureUrl(flow, slug, 'google_unavailable', next));
   if (!parsed.success) return res.redirect(await failureUrl(null, undefined, 'google_failed'));
 
   const multi = getTenancyMode() === 'multi';
@@ -174,6 +182,7 @@ googleAuthRouter.get('/auth/google/start', startLimit, async (req, res) => {
     n: randomBytes(16).toString('base64url'),
     f: parsed.data.flow,
     ...(parsed.data.flow === 'portal' && multi && slug ? { t: slug } : {}),
+    ...(next ? { x: next } : {}),
   };
   res.cookie(GOOGLE_STATE_COOKIE, Buffer.from(JSON.stringify(state)).toString('base64url'), {
     httpOnly: true,
@@ -271,13 +280,14 @@ googleAuthRouter.get('/auth/google/callback', async (req: Request, res: Response
   clearSessionCookie(res, GOOGLE_STATE_COOKIE, STATE_COOKIE_SCOPE);
   const flow = state?.f ?? null;
   const slug = state?.t;
+  const next = safeNextPath(state?.x);
 
   const query = callbackSchema.safeParse(req.query);
-  if (!config || !state || !query.success) return res.redirect(await failureUrl(flow, slug, 'google_failed'));
+  if (!config || !state || !query.success) return res.redirect(await failureUrl(flow, slug, 'google_failed', next));
   // Cancelled on Google's screen.
-  if (query.data.error) return res.redirect(await failureUrl(flow, slug, 'google_cancelled'));
+  if (query.data.error) return res.redirect(await failureUrl(flow, slug, 'google_cancelled', next));
   if (!query.data.code || !query.data.state || !sameString(query.data.state, state.s)) {
-    return res.redirect(await failureUrl(flow, slug, 'google_failed'));
+    return res.redirect(await failureUrl(flow, slug, 'google_failed', next));
   }
 
   let email: string;
@@ -285,13 +295,13 @@ googleAuthRouter.get('/auth/google/callback', async (req: Request, res: Response
     email = await verifiedEmailFromCode(config, query.data.code, state.n);
   } catch (err) {
     if (!(err instanceof GoogleAuthError)) console.error('[google-auth] callback failed', err);
-    return res.redirect(await failureUrl(flow, slug, err instanceof GoogleAuthError ? err.code : 'google_failed'));
+    return res.redirect(await failureUrl(flow, slug, err instanceof GoogleAuthError ? err.code : 'google_failed', next));
   }
 
   if (state.f === 'account' || state.f === 'account_add') {
     // → /auth/magic → POST /auth/platform-verify → /workspaces.
     const token = await platformSigninToken(db, email, state.f === 'account_add');
-    return res.redirect(buildMagicLinkUrl(token));
+    return res.redirect(buildMagicLinkUrl(token, null, next));
   }
 
   if (state.f === 'ops') {
