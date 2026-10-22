@@ -18,6 +18,11 @@
  * never as the top rate alone: a headline "15%" would promise every
  * partner a rate most of them won't reach.
  *
+ * A fixed amount with no currency of its own pays in the event's currency,
+ * which for a conversion sent without one is the brand's default — so it
+ * renders in `defaultCurrency` (Tenant.defaultCurrency), not USD: an INR
+ * brand's "100 per lead" reads "₹100", not "$100".
+ *
  * Rendering this from the rule (rather than an admin-typed freeform string)
  * is the anti-fraud guarantee: brands can't make claims the engine won't
  * actually pay out on. See the May 2026 offering refactor for context.
@@ -52,15 +57,16 @@ export interface CustomerRewardLike {
 export function renderCommissionSummary(
   rules: CommissionSubRuleLike[] | null | undefined,
   customerReward: CustomerRewardLike | null | undefined = null,
+  defaultCurrency = 'USD',
 ): string {
   if (!rules || rules.length === 0) return '—';
-  const partner = rules.map(formatSubRule).join(' + ');
+  const partner = rules.map((rule) => formatSubRule(rule, defaultCurrency)).join(' + ');
   const customer = customerReward ? formatCustomerReward(customerReward) : null;
   return customer ? `${partner} — customers get ${customer}` : partner;
 }
 
-function formatSubRule(rule: CommissionSubRuleLike): string {
-  const amount = formatAmount(rule);
+function formatSubRule(rule: CommissionSubRuleLike, defaultCurrency: string): string {
+  const amount = formatAmount(rule, defaultCurrency);
   const eventPhrase = formatEventPhrase(rule.trigger, rule.eventType);
   const recurringPhrase = rule.recurring
     ? rule.recurringMonths
@@ -71,7 +77,7 @@ function formatSubRule(rule: CommissionSubRuleLike): string {
   return `${amount}${recurringPrefix}${eventPhrase}${recurringPhrase}${formatSlabPhrase(rule)}`;
 }
 
-function formatAmount(rule: CommissionSubRuleLike): string {
+function formatAmount(rule: CommissionSubRuleLike, defaultCurrency: string): string {
   const levels = (rule.bands ?? rule.tiers)?.levels;
   const steps = [rule.value, ...(Array.isArray(levels) ? levels.map((l) => l.value) : [])];
   const lo = Math.min(...steps);
@@ -79,7 +85,8 @@ function formatAmount(rule: CommissionSubRuleLike): string {
   if (rule.type === 'percent') {
     return lo === hi ? `${trimNumber(lo)}%` : `${trimNumber(lo)}–${trimNumber(hi)}%`;
   }
-  return lo === hi ? money(lo, rule.currency) : `${money(lo, rule.currency)}–${money(hi, rule.currency)}`;
+  const currency = rule.currency || defaultCurrency;
+  return lo === hi ? money(lo, currency) : `${money(lo, currency)}–${money(hi, currency)}`;
 }
 
 /** A fixed amount in its own currency: "$100", "₹100", "€99.50". Unknown

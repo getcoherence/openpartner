@@ -4,7 +4,7 @@ import { HelpCircle, Plus, Tag } from 'lucide-react';
 import { api } from '../api.js';
 import { alpha, theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
-import { useBrand } from '../lib/useBrand.js';
+import { useBrand, useDefaultCurrency } from '../lib/useBrand.js';
 import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
 import { CompoundRuleEditor, ruleEventTypeMissing, ruleSlabProblem, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
@@ -66,8 +66,8 @@ function normalizeRules(raw: Program['commissionRule']): CommissionSubRule[] {
   return [{ trigger: 'every', type: raw.type, value: raw.value, recurring: raw.recurring }];
 }
 
-function summarizeRules(raw: Program['commissionRule'], reward: CustomerReward | null): string {
-  return renderCommissionSummary(normalizeRules(raw), reward);
+function summarizeRules(raw: Program['commissionRule'], reward: CustomerReward | null, defaultCurrency: string): string {
+  return renderCommissionSummary(normalizeRules(raw), reward, defaultCurrency);
 }
 
 type ProgramStatus = 'scheduled' | 'active' | 'ended';
@@ -79,6 +79,7 @@ function statusOf(c: Pick<Program, 'startsAt' | 'endsAt'>, at: Date = new Date()
 
 export function AdminPrograms() {
   const qc = useQueryClient();
+  const defaultCurrency = useDefaultCurrency();
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState<Program | null>(null);
   const campaigns = useQuery({
@@ -153,7 +154,7 @@ export function AdminPrograms() {
                   <span style={{ color: theme.accentText, fontSize: 11, marginLeft: 8 }}>+ deep links</span>
                 )}
               </span>,
-              <span style={{ fontSize: 13 }}>{summarizeRules(c.commissionRule, c.customerReward)}</span>,
+              <span style={{ fontSize: 13 }}>{summarizeRules(c.commissionRule, c.customerReward, defaultCurrency)}</span>,
               <span style={{ color: theme.textMuted }}>{c.attributionWindowDays}d</span>,
               <span style={{ color: c.holdbackDays ? theme.text : theme.textDim }}>
                 {c.holdbackDays ? `${c.holdbackDays}d` : '—'}

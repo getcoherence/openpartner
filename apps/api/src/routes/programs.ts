@@ -25,6 +25,7 @@ import { customerRewardDelivery } from '../customer-rewards.js';
 import { getStorage } from '../storage.js';
 import { commissionSlabFields, currencyCodeSchema, refineCommissionSubRule } from '../commission-rule-schema.js';
 import { destinationUrlSchema, destinationWarnings } from '../destination-url.js';
+import { tenantDefaultCurrency } from '../currency.js';
 
 /**
  * Commission rule schema. The wire format is an array of triggered sub-rules.
@@ -443,6 +444,7 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
   const summary = renderCommissionSummary(
     body.data.commissionRule as CommissionSubRuleLike[],
     (body.data.customerReward ?? null) as CustomerRewardLike | null,
+    await tenantDefaultCurrency(db, tenantId),
   );
   const offeringId = await syncCampaignToMarketplace(db, tenantId, campaign as ProgramRow, summary);
   if (offeringId && offeringId !== (campaign as ProgramRow).networkOfferingId) {
@@ -535,6 +537,7 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
   const summary = renderCommissionSummary(
     updated.commissionRule as unknown as CommissionSubRuleLike[],
     updated.customerReward as CustomerRewardLike | null,
+    await tenantDefaultCurrency(db, tenantId),
   );
   const offeringId = await syncCampaignToMarketplace(db, tenantId, updated, summary);
   if (offeringId && offeringId !== updated.networkOfferingId) {
