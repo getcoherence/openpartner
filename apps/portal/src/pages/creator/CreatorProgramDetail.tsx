@@ -1193,9 +1193,10 @@ function CommissionsList({ rows }: { rows: CommissionRow[] }) {
             {isBonusCommission(c) && (
               <span style={{ fontSize: 11, color: theme.accentText, overflowWrap: 'anywhere' }}>{commissionSourceLabel(c)}</span>
             )}
+            {/* Approval is a daily sweep, so a matured commission can stay accrued for up to a day. */}
             {c.matureAt && c.status === 'accrued' && (
               <span style={{ fontSize: 11, color: theme.textDim }}>
-                Matures {formatDate(c.matureAt, { relative: true })}
+                {Date.parse(c.matureAt) > Date.now() ? 'Matures' : 'Matured'} {formatDate(c.matureAt, { relative: true })}
               </span>
             )}
           </span>
