@@ -86,6 +86,11 @@ export const PORTABLE_CONFIG_KEYS = [
   // (partner-portal-access.ts). A headless program keeps its customers out
   // of the portal, and a restored instance must keep doing so.
   'partner_access',
+  // "Not now" to the Network listing on the Getting started card
+  // (onboarding-settings.ts). A key, not a table or column, so no version
+  // bump: an instance that predates it skips the key on import, and the
+  // brand just sees the Network step again.
+  'onboarding',
 ] as const;
 
 /**

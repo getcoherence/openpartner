@@ -60,7 +60,7 @@ appears after everything it references.
 | 20 | `WebhookEndpoint` | `id` | **your outbound webhook endpoints** (not the signing secret) |
 | 21 | `PartnerPostback` | `id` | **each partner's own tracker callbacks** (the URL opened) |
 | 22 | `ConversionPostbackToken` | `id` | **the GET /postback allowlist and rotation history** (not the token) |
-| 23 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy and the portal-access default** |
+| 23 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy, the portal-access default and the onboarding Network skip** |
 
 Rows 3, 4 and 7 were added in schemaVersion 2 (Aug 2026). Without them a
 restored instance had the roster but no grants, no coupon attribution, and
@@ -285,6 +285,13 @@ Only these keys are exported, and only these are imported:
 | `program_settings` | program name, support email, router URL, whether partners see the Network |
 | `partner_signup` | the join page: auto-approve or review, or closed |
 | `partner_access` | whether partners created without an invite may sign in to the partner portal (a headless program turns it off) |
+| `onboarding` | whether the brand said "Not now" to listing on the OpenPartner Network (the dashboard's Getting started card) |
+
+`onboarding` was added in Oct 2026 without a version bump. It is a new
+key in a table the bundle already carries, not a new table or column. An
+instance from before it skips the key on import (Config import takes only
+the keys it knows), and the restored brand sees the Network step on its
+Getting started card again.
 
 Every other key stays out, on purpose:
 
