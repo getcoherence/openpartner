@@ -316,6 +316,7 @@ interface RewardCodeRow {
   id: string;
   code: string;
   stripePromotionCodeId: string | null;
+  brandChosen: boolean;
   programName: string;
   customerReward: CustomerReward | null;
   partnerRevokedAt: Date | null;
@@ -416,6 +417,7 @@ export async function backfillCustomerRewards(
         `${TABLES.Coupon}.id`,
         `${TABLES.Coupon}.code`,
         `${TABLES.Coupon}.stripePromotionCodeId`,
+        `${TABLES.Coupon}.brandChosen`,
         `${TABLES.Program}.name as programName`,
         `${TABLES.Program}.customerReward`,
         `${TABLES.Partner}.revokedAt as partnerRevokedAt`,
@@ -510,10 +512,16 @@ async function backfillCode(
 
   const found = await findCodeInStripe(client, row.code);
   if (found.kind === 'taken') {
+    if (row.brandChosen) {
+      // The admin typed this code to map the brand's own promo onto the
+      // partner: that promo carries the discount, and the webhook credits it.
+      console.info(`[customer-rewards] partner code ${row.code} (coupon ${row.id}, tenant ${tenantId}) maps the brand's own ${found.what}, as its admin chose; no promotion code created`);
+      return 'taken';
+    }
     // Codes minted before the connection were never checked against the
     // brand's Stripe (codeExistsInStripe had nothing to ask).
     console.error(
-      `[customer-rewards] ALERT: partner code ${row.code} (coupon ${row.id}, tenant ${tenantId}) is also a ${found.what} in the brand's own Stripe. It was left without a promotion code, and Stripe purchases using the brand's ${found.what} match this partner code by its string — the brand should give the partner a new code`,
+      `[customer-rewards] ALERT: partner code ${row.code} (coupon ${row.id}, tenant ${tenantId}) is also a ${found.what} in the brand's own Stripe. It was left without a promotion code. Stripe purchases using the brand's ${found.what} credit this partner only if the brand made it for the code, after the code existed (stripe-webhook.ts discountMadeForCoupon); if it is the brand's own promo, the brand should give the partner a new code`,
     );
     return 'taken';
   }

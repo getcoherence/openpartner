@@ -153,6 +153,8 @@ async function seedEverything(): Promise<Seeded> {
     partnerId,
     programId,
     code: 'CREATOR15',
+    // The brand's admin typed it (schemaVersion 10).
+    brandChosen: true,
   });
   await db(TABLES.Link).insert({
     id: linkId,
@@ -496,6 +498,8 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(terms.holdbackDays).toBe(30);
     const coupon = await db(TABLES.Coupon).where({ id: seeded.couponId }).first();
     expect(coupon.code).toBe('CREATOR15');
+    // Who chose the code travels with it (schemaVersion 10).
+    expect(coupon.brandChosen).toBe(true);
     // The publisher's sub-ID stays on its click (schemaVersion 8).
     expect((await db(TABLES.Click).where({ id: seeded.clickId }).first()).subId).toBe('wct_9f2a-17');
     // The Network consent record keeps how and when, not just the status.
@@ -919,8 +923,25 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect((await counts())[TABLES.PartnerPayoutProfile]).toBe(0);
   }, 30_000);
 
-  it('exports at schemaVersion 9', () => {
-    expect(SCHEMA_VERSION).toBe(9);
+  it('accepts a v9 bundle — coupons restore as not chosen by the brand', async () => {
+    const seeded = await seedEverything();
+    const v9 = await exportAll(db, TENANT);
+    v9[TABLES.Coupon] = (v9[TABLES.Coupon] as Record<string, unknown>[]).map(({ brandChosen: _dropped, ...row }) => row);
+    await wipe();
+
+    const app = createApp();
+    const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+    const viaRoute = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: 9, tables: v9 });
+    expect(viaRoute.status).toBe(200);
+    const coupon = await db(TABLES.Coupon).where({ id: seeded.couponId }).first();
+    expect(coupon).toMatchObject({ code: 'CREATOR15', brandChosen: false });
+  }, 30_000);
+
+  it('exports at schemaVersion 10', () => {
+    expect(SCHEMA_VERSION).toBe(10);
   });
 });
 
@@ -1095,6 +1116,7 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
     expect(program.categories).toEqual(['saas', 'devtools']);
     expect(program.renewalsStayWithPartner).toBe(false);
     expect((await db(TABLES.Click).first()).subId).toBe('wct_9f2a-17');
+    expect((await db(TABLES.Coupon).first()).brandChosen).toBe(true);
   }, 30_000);
 
   it('payout details restore opened, and the first read seals them', async () => {
