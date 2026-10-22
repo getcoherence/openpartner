@@ -172,6 +172,19 @@ describe('renderCommissionSummary with slabs', () => {
     ).toBe('$200 on first subscription + 20% recurring on every invoice for 12 months');
   });
 
+  it('writes a fixed amount with no currency in the brand default, not USD', () => {
+    expect(
+      renderCommissionSummary(
+        [
+          { trigger: 'every', eventType: 'lead_created', type: 'fixed', value: 100 },
+          { trigger: 'every', eventType: 'demo_booked', type: 'fixed', value: 500, currency: 'EUR' },
+        ],
+        null,
+        'INR',
+      ),
+    ).toBe('₹100 on every lead created + €500 on every demo booked');
+  });
+
   it('shows a band rule as the range it pays, never the top rate alone', () => {
     expect(
       renderCommissionSummary([{ trigger: 'every', eventType: 'invoice_paid', ...tenToFifteen }]),

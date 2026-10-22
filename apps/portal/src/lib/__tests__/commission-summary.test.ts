@@ -107,4 +107,18 @@ describe('renderCommissionSummary', () => {
     expect(renderCommissionSummary([{ trigger: 'every', type: 'fixed', value: 25 }])).toBe('$25');
     expect(renderCommissionSummary([{ trigger: 'every', type: 'fixed', value: 99.5, currency: 'EUR' }])).toBe('€99.50');
   });
+
+  it('writes a fixed amount with no currency in the brand default', () => {
+    expect(renderCommissionSummary([{ trigger: 'every', type: 'fixed', value: 100 }], null, 'INR')).toBe('₹100');
+    expect(
+      renderCommissionSummary(
+        [{ trigger: 'every', type: 'fixed', value: 100, bands: { mode: 'whole', levels: [{ above: 50000, value: 200 }] } }],
+        null,
+        'INR',
+      ),
+    ).toBe('₹100–₹200 (slabs by event value)');
+    // The rule's own currency still wins, and a percent has none to change.
+    expect(renderCommissionSummary([{ trigger: 'every', type: 'fixed', value: 99.5, currency: 'EUR' }], null, 'INR')).toBe('€99.50');
+    expect(renderCommissionSummary([{ trigger: 'every', type: 'percent', value: 20 }], null, 'INR')).toBe('20%');
+  });
 });
