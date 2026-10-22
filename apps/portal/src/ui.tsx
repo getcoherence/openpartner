@@ -571,12 +571,15 @@ export function formatDate(d: string | Date | null, opts: { relative?: boolean }
   if (!d) return '—';
   const date = typeof d === 'string' ? new Date(d) : d;
   if (opts.relative) {
+    // Future dates (a commission's matureAt) read "in 3d", past "3d ago".
     const diff = Date.now() - date.getTime();
+    const abs = Math.abs(diff);
+    const rel = (n: number, unit: string) => (diff < 0 ? `in ${n}${unit}` : `${n}${unit} ago`);
     const min = 60_000;
-    if (diff < min) return 'just now';
-    if (diff < 60 * min) return `${Math.floor(diff / min)}m ago`;
-    if (diff < 24 * 60 * min) return `${Math.floor(diff / (60 * min))}h ago`;
-    if (diff < 30 * 24 * 60 * min) return `${Math.floor(diff / (24 * 60 * min))}d ago`;
+    if (abs < min) return 'just now';
+    if (abs < 60 * min) return rel(Math.floor(abs / min), 'm');
+    if (abs < 24 * 60 * min) return rel(Math.floor(abs / (60 * min)), 'h');
+    if (abs < 30 * 24 * 60 * min) return rel(Math.floor(abs / (24 * 60 * min)), 'd');
   }
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
