@@ -9,6 +9,7 @@ import { Button, Card, ErrorBanner, Input, Label, Page, SectionHeading } from '.
 import { CompoundRuleEditor, ruleEventTypeMissing, ruleSlabProblem, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
 import { rulesLeftUnpaid, sharedRules } from '../lib/commission-override.js';
+import { useDefaultCurrency } from '../lib/useBrand.js';
 import { useIsMobile } from '../lib/useMediaQuery.js';
 import { PartnerBonusSection } from './AdminPartnerBonus.js';
 
@@ -160,6 +161,7 @@ export function AdminPartnerCommission() {
 }
 
 function CurrentSnapshotCard({ snapshot }: { snapshot: Snapshot | null }) {
+  const defaultCurrency = useDefaultCurrency();
   if (!snapshot) {
     return (
       <Card>
@@ -177,7 +179,7 @@ function CurrentSnapshotCard({ snapshot }: { snapshot: Snapshot | null }) {
     <Card>
       <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 8 }}>Current snapshot</div>
       <div style={{ marginBottom: 14 }}>
-        <Stat label="Terms" value={renderCommissionSummary(snapshotRules(snapshot))} />
+        <Stat label="Terms" value={renderCommissionSummary(snapshotRules(snapshot), null, defaultCurrency)} />
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 14 }}>
         <Stat label="Holdback" value={snapshot.holdbackDays != null ? `${snapshot.holdbackDays} days` : '—'} />
@@ -235,6 +237,7 @@ function ProgramTermsList({
   onSaved: () => void;
 }) {
   const isMobile = useIsMobile();
+  const defaultCurrency = useDefaultCurrency();
   const [editing, setEditing] = useState<string | null>(null);
   // Granted programs, plus any program that still has terms after its
   // grant was revoked — so those can be seen and cleared.
@@ -292,7 +295,7 @@ function ProgramTermsList({
                   </div>
                   <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 2, lineHeight: 1.4 }}>
                     <span style={{ color: theme.textDim }}>{EFFECTIVE_LABEL[eff.source]}:</span>{' '}
-                    {renderCommissionSummary(eff.rules)}
+                    {renderCommissionSummary(eff.rules, null, defaultCurrency)}
                     {' · '}
                     {eff.holdbackDays ? `${eff.holdbackDays}-day holdback` : 'no holdback'}
                   </div>
@@ -339,12 +342,13 @@ function UnpaidStages({
   replaces: Array<{ label: string; rules: CommissionSubRule[] }>;
   rules: CommissionSubRule[];
 }) {
+  const defaultCurrency = useDefaultCurrency();
   const lines = replaces.flatMap(({ label, rules: replaced }) =>
     rulesLeftUnpaid(replaced, rules).map((rule) => ({
       key: `${label}:${rule.eventType ?? '*'}:${rule.trigger}`,
       stage: rule.eventType ?? 'any other event',
       label,
-      summary: renderCommissionSummary([rule]),
+      summary: renderCommissionSummary([rule], null, defaultCurrency),
     })),
   );
   if (lines.length === 0) return null;

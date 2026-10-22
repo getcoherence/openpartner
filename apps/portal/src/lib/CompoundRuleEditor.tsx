@@ -9,6 +9,7 @@ import { Trash2 } from 'lucide-react';
 import type { CommissionBands, CommissionTiers } from '@openpartner/db';
 import { theme } from '../theme.js';
 import { Input, Label, Select } from '../ui.js';
+import { useDefaultCurrency } from './useBrand.js';
 
 export interface CommissionSubRule {
   trigger: 'every' | 'first' | 'subsequent';
@@ -94,6 +95,7 @@ export function CompoundRuleEditor({
   rules: CommissionSubRule[];
   onChange: (rules: CommissionSubRule[]) => void;
 }) {
+  const defaultCurrency = useDefaultCurrency();
   const update = (i: number, patch: Partial<CommissionSubRule>) => {
     onChange(rules.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   };
@@ -117,6 +119,7 @@ export function CompoundRuleEditor({
           <SubRuleRow
             key={i}
             rule={rule}
+            defaultCurrency={defaultCurrency}
             onChange={(patch) => update(i, patch)}
             onRemove={rules.length > 1 ? () => remove(i) : undefined}
           />
@@ -154,12 +157,25 @@ const STANDARD_EVENT_TYPES = [
 ] as const;
 const STANDARD_EVENT_VALUES: ReadonlySet<string> = new Set(STANDARD_EVENT_TYPES.map((e) => e.value));
 
+/**
+ * The currency a fixed amount is shown in: the rule's own, else the brand's
+ * default. A fixed rule with no currency pays in each event's currency
+ * (commissionCurrency in apps/api/src/attribution.ts), and a conversion
+ * sent without one is stored in the brand's default, so that's the
+ * currency nearly all of them pay in — not "$".
+ */
+function fixedCurrency(rule: CommissionSubRule, defaultCurrency: string): string {
+  return rule.currency || defaultCurrency;
+}
+
 function SubRuleRow({
   rule,
+  defaultCurrency,
   onChange,
   onRemove,
 }: {
   rule: CommissionSubRule;
+  defaultCurrency: string;
   onChange: (patch: Partial<CommissionSubRule>) => void;
   onRemove?: () => void;
 }) {
@@ -245,7 +261,7 @@ function SubRuleRow({
         }}
       >
         <option value="percent">Percent</option>
-        <option value="fixed">Fixed $</option>
+        <option value="fixed">Fixed {fixedCurrency(rule, defaultCurrency)}</option>
       </Select>
       <Input
         type="number"
@@ -318,7 +334,7 @@ function SubRuleRow({
           </span>
         </div>
       )}
-      {(rule.bands || rule.tiers) && <SlabPanel rule={rule} onChange={onChange} />}
+      {(rule.bands || rule.tiers) && <SlabPanel rule={rule} defaultCurrency={defaultCurrency} onChange={onChange} />}
       {/* A flat rule's only possible slab problem is a currency the API
           refuses (stored via the API before the 3-letter check). The slab
           panel isn't there to show it, so say it here with a way out. */}
@@ -386,9 +402,11 @@ const hintStyle = { fontSize: 12, color: theme.textMuted } as const;
  */
 function SlabPanel({
   rule,
+  defaultCurrency,
   onChange,
 }: {
   rule: CommissionSubRule;
+  defaultCurrency: string;
   onChange: (patch: Partial<CommissionSubRule>) => void;
 }) {
   const { bands, tiers } = rule;
@@ -409,8 +427,8 @@ function SlabPanel({
     ]);
   };
 
-  const unit = rule.type === 'percent' ? '%' : rule.currency || '$';
-  const baseRate = rule.type === 'percent' ? `${rule.value}%` : rule.currency ? `${rule.value} ${rule.currency}` : `$${rule.value}`;
+  const unit = rule.type === 'percent' ? '%' : fixedCurrency(rule, defaultCurrency);
+  const baseRate = rule.type === 'percent' ? `${rule.value}%` : `${rule.value} ${unit}`;
   const moneyThresholds = Boolean(bands) || tiers?.metric === 'revenue';
   const thresholdLabel = bands ? 'Value above' : tiers?.metric === 'conversions' ? 'Conversions ≥' : 'Revenue ≥';
   const problem = ruleSlabProblem(rule);
