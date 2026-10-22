@@ -32,6 +32,7 @@ import {
 import { getMailer } from '../mailer.js';
 import {
   completeNetworkConnect,
+  getNetworkMembership,
   getPublicNetworkMembership,
   grantFederationScope,
   NETWORK_BONUS_SCOPE,
@@ -43,6 +44,7 @@ import {
 } from '../network-client.js';
 import { isNetworkOfferedToPartners, resyncConsentedPartners, summarizeNetworkConsent } from '../network-consent.js';
 import { readPartnerAccessSettings, savePartnerAccessSettings } from '../partner-portal-access.js';
+import { clearNetworkListingSkip } from '../onboarding-settings.js';
 import { createApiKeyRow } from '../auth.js';
 import { getTenancyMode, tenantOf } from '../tenancy.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
@@ -511,6 +513,11 @@ async function blockNetworkForWhiteLabel(
   return false;
 }
 
+/** Same test as the onboarding status's `networkConnected`. */
+function isConnected(m: { enabled: boolean; vendorTokenCiphertext: string } | null): boolean {
+  return !!(m?.enabled && m.vendorTokenCiphertext);
+}
+
 export const networkMembershipSchema = z.object({
   enabled: z.boolean().optional(),
   networkUrl: z.string().url().optional().or(z.literal('')),
@@ -532,6 +539,7 @@ settingsRouter.post('/config/network', requireAuth, requireAdmin, async (req, re
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
   if (body.data.enabled === true && (await blockNetworkForWhiteLabel(db, tenantId, res))) return;
+  const wasConnected = isConnected(await getNetworkMembership(db, tenantId));
   await saveNetworkMembership(db, tenantId, {
     enabled: body.data.enabled,
     networkUrl: body.data.networkUrl === '' ? '' : body.data.networkUrl,
@@ -539,6 +547,11 @@ settingsRouter.post('/config/network', requireAuth, requireAdmin, async (req, re
     scopedKeyId: body.data.scopedKeyId,
     autoEnroll: body.data.autoEnroll,
   });
+  // Only an actual join counts. Toggling autoEnroll ("Offer the Network
+  // to your partners") on a brand that skipped the listing leaves the skip.
+  if (!wasConnected && isConnected(await getNetworkMembership(db, tenantId))) {
+    await clearNetworkListingSkip(db, tenantId);
+  }
   res.json(await getPublicNetworkMembership(db, tenantId));
 });
 
@@ -753,6 +766,8 @@ settingsRouter.post('/config/network/auto-enroll', requireAuth, requireAdmin, as
     autoEnroll: true,
     vendorId: signup.vendorId,
   });
+  // Joining brings the listing back if the brand had said "Not now".
+  await clearNetworkListingSkip(db, tenantId);
 
   res.json({ ok: true, vendorId: signup.vendorId });
 });
@@ -787,6 +802,7 @@ settingsRouter.post('/config/network/complete-connect', requireAuth, requireAdmi
     vendorToken: result.vendorToken,
     vendorId: result.vendorId,
   });
+  await clearNetworkListingSkip(db, tenantId);
 
   res.json({ ok: true, vendorId: result.vendorId, displayName: result.displayName });
 });

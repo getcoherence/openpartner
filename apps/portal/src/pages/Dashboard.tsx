@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useState, type ReactNode } from 'react';
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router';
 import {
   MousePointerClick,
@@ -12,6 +12,7 @@ import {
   Link2,
   CheckCircle2,
   Circle,
+  CircleMinus,
   ArrowRight,
   Landmark,
 } from 'lucide-react';
@@ -600,6 +601,9 @@ interface BrandOnboardingStatus {
   campaignCount: number;
   networkConnected: boolean;
   offeringPublishedCount: number;
+  /** "Not now" to the Network listing. Absent on an older API, which
+   *  doesn't know the setting (the control stays hidden). */
+  networkListingSkipped?: boolean;
   partnerCount: number;
   pendingPartnershipRequests: number;
   billingReady: boolean;
@@ -667,14 +671,42 @@ function PendingApprovalsBanner() {
 function BrandOnboarding() {
   const tenantBase = useTenantBase();
   const { programName, whiteLabel } = useBrand();
+  const qc = useQueryClient();
   const { data } = useQuery({
     queryKey: ['admin-onboarding-status'],
     queryFn: () => api<BrandOnboardingStatus>('/admin/onboarding-status'),
     staleTime: 30_000,
     retry: false,
   });
+  // "Not now" on the Network step. The Network is optional: once every
+  // other step is done, skipping it clears the card.
+  const skipNetwork = useMutation({
+    mutationFn: (networkListingSkipped: boolean) =>
+      api('/config/onboarding', { method: 'POST', body: { networkListingSkipped } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-onboarding-status'] }),
+  });
   if (!data || data.complete) return null;
-  const items = [
+  // Only the open Network step (join, or publish once joined) carries the
+  // control. Joining after a skip clears it server-side, so a brand that
+  // comes back to the Network sees the publish step again.
+  const networkSkipped = data.networkListingSkipped === true;
+  const networkStep = (done: boolean): Pick<OnboardingStep, 'skipped' | 'action'> => {
+    if (done || data.networkListingSkipped === undefined) return {};
+    return {
+      skipped: networkSkipped,
+      action: (
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => skipNetwork.mutate(!networkSkipped)}
+          disabled={skipNetwork.isPending}
+        >
+          {networkSkipped ? 'Undo' : 'Not now'}
+        </Button>
+      ),
+    };
+  };
+  const items: OnboardingStep[] = [
     { done: true, label: 'Brand account created', href: null as string | null },
     {
       done: data.brandInfoComplete,
@@ -695,8 +727,11 @@ function BrandOnboarding() {
           {
             done: data.networkConnected,
             label: 'List your brand on the OpenPartner Network',
-            hint: 'Lets creators across the federation discover and apply.',
+            hint: networkSkipped
+              ? 'Skipped. Join any time from Network in the sidebar.'
+              : 'Optional. Lets creators across the federation discover and apply.',
             href: `${tenantBase}/admin/network`,
+            ...networkStep(data.networkConnected),
           },
         ]),
     // Listing = a program shared to the marketplace (the "Share on the
@@ -707,11 +742,13 @@ function BrandOnboarding() {
           {
             done: data.offeringPublishedCount > 0,
             label: 'Publish a program on the marketplace',
-            hint:
-              data.approvalStatus === 'pending'
+            hint: networkSkipped
+              ? 'Skipped. Turn on "Share on the OpenPartner Network" for a program any time.'
+              : data.approvalStatus === 'pending'
                 ? 'Turn on "Share on the OpenPartner Network" for a program. It appears to creators once your brand is approved.'
                 : 'Turn on "Share on the OpenPartner Network" for a program so creators can find and apply to it.',
             href: `${tenantBase}/admin/programs`,
+            ...networkStep(data.offeringPublishedCount > 0),
           },
         ]
       : []),
@@ -738,9 +775,10 @@ function BrandOnboarding() {
       <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
         A few one-clicks to get your brand fully set up. The card disappears when you&rsquo;re done.
       </div>
+      <ErrorBanner error={skipNetwork.error} />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {items.map((it, i) => (
-          <BrandStep key={i} done={it.done} label={it.label} hint={it.hint} href={it.href} tone={it.tone} />
+          <BrandStep key={i} {...it} />
         ))}
       </div>
     </Card>
@@ -751,10 +789,14 @@ type StepTone = 'default' | 'warning' | 'danger';
 
 interface OnboardingStep {
   done: boolean;
+  /** Set aside by the brand ("Not now"): it no longer holds the card up. */
+  skipped?: boolean;
   label: string;
   hint?: string;
   href: string | null;
   tone?: StepTone;
+  /** A control beside the step, outside its link ("Not now" / "Undo"). */
+  action?: ReactNode;
 }
 
 /** The billing step doubles as the trial-deadline pressure. Once
@@ -798,39 +840,61 @@ function formatTrialDate(iso: string): string {
     : { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function BrandStep({ done, label, hint, href, tone = 'default' }: OnboardingStep) {
-  const palette = stepPalette(done, tone);
-  const inner = (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 12,
-        padding: '10px 12px',
-        background: palette.bg,
-        border: `1px solid ${palette.border}`,
-        borderRadius: theme.radiusSm,
-      }}
-    >
+function BrandStep({ done, skipped = false, label, hint, href, tone = 'default', action }: OnboardingStep) {
+  const palette = stepPalette(done, tone, skipped);
+  // The link fills the box, padding included, and the action sits beside
+  // it rather than inside it (a button inside a link is invalid HTML).
+  const rowStyle = { display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', flex: 1, minWidth: 0 };
+  const content = (
+    <>
       <div style={{ color: palette.icon, display: 'inline-flex' }}>
-        {done ? <CheckCircle2 size={18} /> : <Circle size={18} />}
+        {done ? <CheckCircle2 size={18} /> : skipped ? <CircleMinus size={18} /> : <Circle size={18} />}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 500, color: theme.text, textDecoration: done ? 'line-through' : 'none' }}>
+        <div
+          style={{
+            fontSize: 14,
+            fontWeight: 500,
+            color: skipped ? theme.textMuted : theme.text,
+            textDecoration: done ? 'line-through' : 'none',
+          }}
+        >
           {label}
         </div>
         {hint && !done && <div style={{ fontSize: 12, color: palette.hint, marginTop: 2 }}>{hint}</div>}
       </div>
-      {!done && href && <ArrowRight size={14} style={{ color: theme.textDim }} />}
+      {!done && !skipped && href && <ArrowRight size={14} style={{ color: theme.textDim }} />}
+    </>
+  );
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        paddingRight: action ? 8 : 0,
+        background: palette.bg,
+        border: `1px ${skipped ? 'dashed' : 'solid'} ${palette.border}`,
+        borderRadius: theme.radiusSm,
+      }}
+    >
+      {done || !href ? (
+        <div style={rowStyle}>{content}</div>
+      ) : (
+        <Link to={href} style={{ ...rowStyle, textDecoration: 'none' }}>
+          {content}
+        </Link>
+      )}
+      {action}
     </div>
   );
-  if (done || !href) return inner;
-  return <Link to={href} style={{ textDecoration: 'none' }}>{inner}</Link>;
 }
 
-function stepPalette(done: boolean, tone: StepTone) {
+function stepPalette(done: boolean, tone: StepTone, skipped = false) {
   if (done) {
     return { bg: theme.successSoft, border: alpha(theme.success, 0.267), icon: theme.success, hint: theme.textDim };
+  }
+  if (skipped) {
+    return { bg: 'transparent', border: theme.borderSubtle, icon: theme.textDim, hint: theme.textDim };
   }
   if (tone === 'danger') {
     return { bg: theme.dangerSoft, border: alpha(theme.danger, 0.4), icon: theme.danger, hint: theme.danger };
