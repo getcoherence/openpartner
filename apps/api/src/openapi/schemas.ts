@@ -411,6 +411,10 @@ const CouponRowShape = z.object({
   code: z.string(),
   stripeCouponId: z.string().nullable(),
   stripePromotionCodeId: z.string().nullable(),
+  brandChosen: z.boolean().openapi({
+    description:
+      "The brand's admin typed this code. Only then does a Stripe promotion code or coupon the brand already had under the same string credit the partner.",
+  }),
   deactivatedAt: tsNullable,
   createdAt: ts,
   canEdit: z.boolean().openapi({ description: "The program lets partners rename their own codes." }),

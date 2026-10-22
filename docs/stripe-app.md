@@ -231,6 +231,35 @@ The portal's build produces `/op.js` from `packages/sdk/src/auto.ts`
 the platform origin and on every white-label domain, with no npm release
 needed.
 
+### Partner codes and the brand's own promos
+
+A discount at the brand's checkout credits a partner when its promotion code
+is the one stored on the partner's code (`Coupon.stripePromotionCodeId`).
+Failing that, it falls back to the string: the promotion code's customer-facing
+code, or the Stripe coupon id (`stripe-webhook.ts findCouponByDiscountCode`).
+A string match credits the partner only when the brand meant that promo for
+the code (`discountMadeForCoupon`):
+
+- a promotion code OpenPartner created for the code (metadata
+  `source: openpartner` and `openpartner_code`), even one the row doesn't
+  store, such as one minted under an earlier connection;
+- any promo or coupon, when the brand's admin typed the code
+  (`Coupon.brandChosen`). Mapping a promo the brand already runs onto a
+  partner is allowed;
+- otherwise, a promo or coupon created no earlier than the partner's code: the
+  brand made it for that code, as the portal asks when a program's discount
+  isn't minted for them.
+
+A promo that predates the code is the brand's own, for example a sitewide
+`WELCOME10` that a partner code minted before the connect happens to equal.
+The mint-time check (`codeExistsInStripe`) refuses exactly those codes when it
+can reach the brand's Stripe, and the webhook applies the same rule to the
+codes it couldn't check. The discount then credits no partner, and a warning
+naming the code and the Stripe object is logged. If the brand did map that
+promo on purpose with a code created before `brandChosen` existed, set it on
+that code's row (there's no setting for it in the portal yet). The same rule
+applies to a single-tenant self-host's `/webhooks/stripe`.
+
 ### Customer rewards
 
 `customer-rewards.ts rewardStripe(tenantId)` returns the brand's own client on
@@ -280,10 +309,10 @@ one at the brand's Stripe Checkout got "invalid code".
     it as its id, is the brand's own (as in `codeExistsInStripe`). The code is
     left without a promo, and an `ALERT` is logged. Codes minted before the
     connection were never checked against the brand's Stripe, so this can
-    happen. **It also means the webhook credits that partner for purchases
-    using the brand's own promo**, because a discount matches a partner code by
-    its string. That was already true before this change; see *Follow-ups*. The
-    brand gives the partner a new code.
+    happen. Whether a purchase with that promo credits the partner depends on
+    whether the brand meant it for the code (see *Partner codes and the
+    brand's own promos*). One older than the code credits nobody, so the brand
+    gives the partner a new code.
 - **Safe across processes.** The write to `Coupon` only lands if the code is
   still active, still holds what the pass read, and (hosted) the connection the
   promo came through is still live. That connection row is held `FOR SHARE`
@@ -341,7 +370,7 @@ money (CLAUDE.md principle 4), and nothing edits customers.
 | `dispute_read` | Flag commissions on disputed payments for your review. | `charge.dispute.created` |
 | `promotion_code_read` | Match promotion codes used at checkout to your partners' codes. | `promotionCodes.retrieve` (`resolveDiscountCode`, and `backfillCustomerRewards` checking a stored promo is in this account); `promotionCodes.list` (`codeExistsInStripe`, `backfillCustomerRewards`); expanding a discount's promotion code |
 | `promotion_code_write` | Create each partner's customer-discount promotion code in your account, and deactivate it when the code is retired. | `provisionCustomerReward`, `backfillCustomerRewards`, `deactivateCustomerReward` |
-| `coupon_read` | Check that a new partner code doesn't collide with one of your own coupons. | `coupons.retrieve` (`codeExistsInStripe`, `backfillCustomerRewards`) |
+| `coupon_read` | Check that a new partner code doesn't collide with one of your own coupons. | `coupons.retrieve` (`codeExistsInStripe`, `backfillCustomerRewards`; `discountMadeForCoupon`, when a coupon id matched a code) |
 | `coupon_write` | Create the coupon behind each partner's customer discount. | `provisionCustomerReward`, `backfillCustomerRewards` |
 
 `STRIPE_APP_PERMISSIONS` in `stripe-app.ts` is the source of truth, and a test
@@ -604,13 +633,6 @@ so approve it first. Once published:
   previously connected account. Needs a hosted sidecar, because Coupon is a core
   table. (A new account does get its own promos: see *Codes minted before the
   connection*.)
-- **Partner codes that equal the brand's own promo**: a Stripe discount matches
-  a partner coupon by its promotion code id, then by its code string, then by
-  coupon id. A partner code minted before the brand connected was never
-  checked against the brand's Stripe. If it equals one of the brand's own promo
-  codes, every purchase using that promo credits the partner. The backfill
-  logs an `ALERT` and leaves such codes without a promo, but attribution
-  doesn't exclude them yet.
 - **Changed reward terms**: editing a program's `customerReward` doesn't
   touch promos already created. Their Stripe coupons keep the old terms. A fix
   would create a new coupon + promo per code and deactivate the old promo.
