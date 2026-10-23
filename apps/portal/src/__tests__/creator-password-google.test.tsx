@@ -123,6 +123,9 @@ describe('creator sign-in with a password', () => {
     const blocked = renderAt('/creator/login?error=creator_not_active', <CreatorSigninPage />, '/creator/login');
     expect(blocked.getByText(/This creator account can’t sign in/)).toBeTruthy();
     cleanup();
+    const notGoogle = renderAt('/creator/login?error=google_not_authoritative', <CreatorSigninPage />, '/creator/login');
+    expect(notGoogle.getByText(/Google can’t vouch for that address/)).toBeTruthy();
+    cleanup();
     const country = renderAt('/creator/login?error=country_not_supported', <CreatorSigninPage />, '/creator/login');
     expect(country.getByText("Sorry — OpenPartner isn't available in your country.")).toBeTruthy();
   });
@@ -228,6 +231,18 @@ describe('creator signup with Google', () => {
     await waitFor(() => expect(page.getByText(/Google sign-in timed out/)).toBeTruthy());
     expect(page.getByPlaceholderText('ada@example.com')).toBeTruthy();
     expect((page.getByPlaceholderText('Ada Lovelace') as HTMLInputElement).value).toBe('Ada');
+  });
+
+  it('an address that has an account by now is sent to sign in, not signed up', async () => {
+    routes['GET /auth/google/creator-signup'] = () => json(200, { email: 'new@example.com' });
+    routes['POST /auth/google/creator-signup'] = () => json(409, { error: 'creator_exists' });
+    const page = renderAt('/creator/signup?google=1', <CreatorSignupPage />, '/creator/signup');
+    await waitFor(() => expect(page.getByText('new@example.com')).toBeTruthy());
+    fireEvent.change(page.getByPlaceholderText('Ada Lovelace'), { target: { value: 'Ada' } });
+    fireEvent.change(page.getByRole('combobox'), { target: { value: 'GB' } });
+    fireEvent.click(page.getByRole('button', { name: 'Create my account' }));
+    await waitFor(() => expect(page.getByText(/You already have a creator account/)).toBeTruthy());
+    expect(posts('/api/creator-api/creators/verify')).toHaveLength(0);
   });
 
   it('an expired Google round trip says so; “Use a different email” goes back to the emailed-link signup', async () => {

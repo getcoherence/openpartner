@@ -97,6 +97,9 @@ export function authErrorMessage(code: string): string {
   if (code.includes('pending_deletion'))
     return 'Your account is scheduled for deletion. Sign in with an emailed link and recover it first.';
   if (code.includes('google_signup_expired')) return 'Your Google sign-in timed out. Continue with Google again.';
+  if (code.includes('google_not_authoritative'))
+    return 'Google can’t vouch for that address on its own. Sign in with your password or an emailed link instead.';
+  if (code.includes('creator_exists')) return 'You already have a creator account with this address. Sign in instead.';
   if (code.includes('invalid_body')) return `Check the fields — passwords need at least ${MIN_PASSWORD_LENGTH} characters.`;
   return code || 'Something went wrong. Try again.';
 }

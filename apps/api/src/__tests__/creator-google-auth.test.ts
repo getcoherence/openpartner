@@ -10,6 +10,10 @@
  * verified address in a signed cookie, and POST /auth/google/creator-signup
  * has the Network create the creator (POST /admin/creators/signup).
  *
+ * Google counts as proof only where it is authoritative for the address: a
+ * Gmail address, or a Workspace account (`hd`). The stubbed ID tokens carry
+ * `hd: 'example.com'` unless a test says otherwise.
+ *
  * A local HTTP server plays the Network; Google's token endpoint is a fetch
  * stub. No database needed.
  */
@@ -140,6 +144,7 @@ async function googleCallback(started: Started, claims: Record<string, unknown>,
         exp: Math.floor(Date.now() / 1000) + 300,
         nonce: started.nonce,
         email_verified: true,
+        hd: 'example.com',
         sub: 'google-sub-123',
         name: 'Ada From Google',
         picture: 'https://lh3.googleusercontent.com/a/photo',
@@ -214,6 +219,28 @@ describe('Google sign-in for creators: an existing creator', () => {
     expect(setCookieLine(res, GOOGLE_CREATOR_SIGNUP_COOKIE)).toBeUndefined();
   });
 
+  it('takes Google’s word only where Google is authoritative: Gmail, or a Workspace domain', async () => {
+    answers['POST /admin/creators/signin-token'] = { status: 200, body: { ok: true, token: 'opmlcreator_t' } };
+    // A Google account opened on another provider's address: verified once,
+    // but the address may have changed hands since.
+    const elsewhere = await googleCallback(await googleStart(), { email: 'ada@yahoo.example', hd: undefined });
+    expect(elsewhere.headers.location).toBe('http://localhost:5673/creator/login?error=google_not_authoritative');
+    expect(calls).toHaveLength(0);
+
+    const gmail = await googleCallback(await googleStart(), { email: 'ada@gmail.com', hd: undefined });
+    expect(gmail.headers.location).toBe('http://localhost:5673/creator/auth/magic?token=opmlcreator_t');
+    const workspace = await googleCallback(await googleStart(), { email: 'ada@studio.example', hd: 'studio.example' });
+    expect(workspace.headers.location).toBe('http://localhost:5673/creator/auth/magic?token=opmlcreator_t');
+    expect(calls.map((c) => c.body.email)).toEqual(['ada@gmail.com', 'ada@studio.example']);
+  });
+
+  it('a non-authoritative address never reaches signup either', async () => {
+    answers['POST /admin/creators/signin-token'] = { status: 404, body: { error: 'no_creator' } };
+    const res = await googleCallback(await googleStart(), { email: 'new@outlook.example', hd: undefined });
+    expect(res.headers.location).toBe('http://localhost:5673/creator/login?error=google_not_authoritative');
+    expect(setCookieLine(res, GOOGLE_CREATOR_SIGNUP_COOKIE)).toBeUndefined();
+  });
+
   it('turns an unverified Google address away without asking the Network', async () => {
     const res = await googleCallback(await googleStart(), { email: 'ada@example.com', email_verified: false });
     expect(res.headers.location).toBe('http://localhost:5673/creator/login?error=google_unverified');
@@ -281,7 +308,7 @@ describe('Google sign-in for creators: no creator yet', () => {
 
   it('finishing signup has the Network create the creator for the cookie’s address, and returns its token', async () => {
     const { cookie } = await landOnSignup();
-    answers['POST /admin/creators/signup'] = { status: 201, body: { ok: true, created: true, token: 'opmlcreator_signup' } };
+    answers['POST /admin/creators/signup'] = { status: 201, body: { ok: true, token: 'opmlcreator_signup' } };
     calls.length = 0;
 
     const res = await request(app)
@@ -325,6 +352,15 @@ describe('Google sign-in for creators: no creator yet', () => {
     expect(refused.body).toEqual({ error: 'country_not_supported' });
     // The cookie survives a refusal, so the creator can fix the form.
     expect(setCookieLine(refused, GOOGLE_CREATOR_SIGNUP_COOKIE)).toBeUndefined();
+  });
+
+  it('an address that has an account by now gets no token, and the proof is spent', async () => {
+    const { cookie } = await landOnSignup();
+    answers['POST /admin/creators/signup'] = { status: 409, body: { error: 'creator_exists' } };
+    const res = await request(app).post('/auth/google/creator-signup').set('Cookie', cookie).send({ name: 'Ada', country: 'GB' });
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: 'creator_exists' });
+    expect(setCookieLine(res, GOOGLE_CREATOR_SIGNUP_COOKIE)).toMatch(/^op_creator_google_signup=;/);
   });
 
   it('refuses a missing, tampered or expired cookie', async () => {

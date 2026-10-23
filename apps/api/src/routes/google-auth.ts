@@ -38,7 +38,12 @@
  *                           /auth/google/creator-signup has the Network create
  *                           the creator without a confirmation email — which
  *                           the Network accepts only over the admin key
- *                           (docs/creator-sign-in.md).
+ *                           (docs/creator-sign-in.md). Only for addresses
+ *                           Google is authoritative for (Gmail, or a Workspace
+ *                           account's `hd`): a Google account opened on another
+ *                           provider's address proves only who owned that inbox
+ *                           when it was opened, so those creators are sent to
+ *                           a password or an emailed link instead.
  *
  * One redirect URI for the whole deployment, on the platform origin
  * (GOOGLE_OAUTH_REDIRECT_URI, default PORTAL_URL/api/auth/google/callback):
@@ -238,6 +243,23 @@ export interface GoogleIdClaims {
   nonce?: string;
   email?: string;
   email_verified?: boolean | string;
+  /** Google Workspace hosted domain — present only for Workspace accounts. */
+  hd?: string;
+}
+
+interface VerifiedGoogleEmail {
+  email: string;
+  /** Google owns the address (Gmail) or hosts its domain (Workspace, `hd`),
+   *  so `email_verified` means the address is the account holder's now. For
+   *  any other domain it only means they could read that inbox once. */
+  authoritative: boolean;
+}
+
+/** Google's own rule for when it is authoritative for an address
+ *  (developers.google.com/identity/sign-in/web/backend-auth). */
+function googleIsAuthoritative(email: string, hd: unknown): boolean {
+  const domain = email.slice(email.lastIndexOf('@') + 1);
+  return domain === 'gmail.com' || domain === 'googlemail.com' || (typeof hd === 'string' && hd.length > 0);
 }
 
 class GoogleAuthError extends Error {
@@ -247,7 +269,7 @@ class GoogleAuthError extends Error {
 }
 
 /** Exchange the code and return the verified, lower-cased address. */
-async function verifiedEmailFromCode(config: GoogleConfig, code: string, nonce: string): Promise<string> {
+async function verifiedEmailFromCode(config: GoogleConfig, code: string, nonce: string): Promise<VerifiedGoogleEmail> {
   const response = await fetch(GOOGLE_TOKEN_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -288,7 +310,8 @@ async function verifiedEmailFromCode(config: GoogleConfig, code: string, nonce: 
     throw new GoogleAuthError('google_failed');
   }
   if (claims.email_verified !== true && claims.email_verified !== 'true') throw new GoogleAuthError('google_unverified');
-  return claims.email.trim().toLowerCase();
+  const email = claims.email.trim().toLowerCase();
+  return { email, authoritative: googleIsAuthoritative(email, claims.hd) };
 }
 
 const callbackSchema = z.object({
@@ -315,8 +338,9 @@ googleAuthRouter.get('/auth/google/callback', async (req: Request, res: Response
   }
 
   let email: string;
+  let authoritative: boolean;
   try {
-    email = await verifiedEmailFromCode(config, query.data.code, state.n);
+    ({ email, authoritative } = await verifiedEmailFromCode(config, query.data.code, state.n));
   } catch (err) {
     if (!(err instanceof GoogleAuthError)) console.error('[google-auth] callback failed', err);
     return res.redirect(await failureUrl(flow, slug, err instanceof GoogleAuthError ? err.code : 'google_failed', next));
@@ -328,7 +352,10 @@ googleAuthRouter.get('/auth/google/callback', async (req: Request, res: Response
     return res.redirect(buildMagicLinkUrl(token, null, next));
   }
 
-  if (state.f === 'creator') return res.redirect(await creatorLanding(req, res, email));
+  if (state.f === 'creator') {
+    if (!authoritative) return res.redirect(await failureUrl('creator', undefined, 'google_not_authoritative'));
+    return res.redirect(await creatorLanding(req, res, email));
+  }
 
   if (state.f === 'ops') {
     if (!(await isAllowedOperator(email))) return res.redirect(await failureUrl('ops', undefined, 'not_an_operator'));
@@ -452,7 +479,11 @@ googleAuthRouter.post('/auth/google/creator-signup', creatorSignupLimit, async (
     res.json({ ok: true, token });
   } catch (err) {
     // The Network's own answer (handle_taken, country_not_supported, …).
+    // creator_exists: the address has an account now; this proof is spent.
+    // The Network never signs an existing account in from here, so a
+    // replayed cookie can't open one.
     if (err instanceof NetworkAdminError && err.code && err.status >= 400 && err.status < 500) {
+      if (err.code === 'creator_exists') clearSessionCookie(res, GOOGLE_CREATOR_SIGNUP_COOKIE, CREATOR_SIGNUP_COOKIE_SCOPE);
       return res.status(err.status).json({ error: err.code });
     }
     console.error('[google-auth] creator signup failed', err);

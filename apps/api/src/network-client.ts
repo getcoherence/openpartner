@@ -853,14 +853,14 @@ export interface AdminCreatorSignupInput {
 
 /** Create the creator for a Google-verified address (the Network accepts a
  *  signup without its confirmation email only over this admin key) and
- *  return the token to sign them in with. An address that became a creator
- *  meanwhile is signed in unchanged (`created: false`). */
+ *  return the token to sign them in with. Throws NetworkAdminError code
+ *  'creator_exists' (409, no token) when the address already has one. */
 export async function adminCreatorSignup(
   networkUrl: string,
   input: AdminCreatorSignupInput,
   clientIp: string | null | undefined,
-): Promise<{ token: string; created: boolean }> {
-  return callNetworkAdmin<{ token: string; created: boolean }>(
+): Promise<{ token: string }> {
+  return callNetworkAdmin<{ token: string }>(
     networkUrl,
     'POST',
     '/admin/creators/signup',

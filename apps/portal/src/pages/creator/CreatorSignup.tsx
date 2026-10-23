@@ -130,8 +130,9 @@ export function CreatorSignupPage() {
         nav('/creator', { replace: true });
       } catch (e) {
         const message = e instanceof ApiError ? ((e.detail as { error?: string } | null)?.error ?? e.message) : (e as Error).message;
-        // The Google proof timed out: back to the emailed-link signup, form kept.
-        if (message.includes('google_signup_expired')) setGoogleEmail(null);
+        // The Google proof is gone (timed out, or the address has an account
+        // now): back to the emailed-link signup, form kept.
+        if (message.includes('google_signup_expired') || message.includes('creator_exists')) setGoogleEmail(null);
         setErr(signupErrorMessage(message));
         setBusy(false);
       }

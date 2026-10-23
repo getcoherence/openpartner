@@ -72,7 +72,18 @@ the single redirect URI on the platform origin as the other flows
 leads back to `/creator/login?error=google_unavailable`.
 
 After the usual ID-token checks (issuer, audience, expiry, nonce,
-`email_verified`), the callback calls the Network server-to-server:
+`email_verified`), the creator flow adds one more. **Google must be
+authoritative for the address**: a `@gmail.com` / `@googlemail.com` address,
+or a Workspace account (the ID token carries `hd`). A Google account opened on
+another provider's address (say a Yahoo address added to a Google account)
+proves only who could read that inbox when it was opened. If the address
+has since changed hands, the former owner would get in. Google documents
+this limit, so those creators land on
+`/creator/login?error=google_not_authoritative` and use their password or an
+emailed link instead. The brand flows from #211 don't apply this check yet
+(see the PR's follow-up note).
+
+Then the callback calls the Network server-to-server:
 
 ```
 POST {NETWORK_URL}/admin/creators/signin-token     Authorization: Bearer NETWORK_ADMIN_API_KEY
@@ -81,6 +92,7 @@ POST {NETWORK_URL}/admin/creators/signin-token     Authorization: Bearer NETWORK
 
 | Network answer | Where the browser goes |
 |---|---|
+| *(not authoritative)* | `/creator/login?error=google_not_authoritative`; the Network isn't asked |
 | `200 { token }` | `/creator/auth/magic?token=…` → `POST /creators/verify` → `/creator` |
 | `404 no_creator` | `/creator/signup?google=1`, with the address in a signed cookie |
 | `403 creator_not_active` / `country_not_supported` | `/creator/login?error=<code>` |
@@ -110,6 +122,11 @@ email. This is how it works:
 4. The page redeems the token at `/creators/verify`, the same as any other
    sign-in. The cookie is cleared once signup succeeds. A refusal (handle
    taken, country refused) leaves the cookie in place so the form can be fixed.
+5. If the address has become a creator since the callback, the Network
+   answers `409 creator_exists` with **no token**. The cookie is then
+   cleared and the page tells the creator to sign in. This endpoint only
+   ever signs in the account it just created, so a copied or replayed
+   cookie can't open an existing account.
 
 **Decision.** A Google-verified address may skip the confirmation email,
 because Google has just done what that email does. The Network accepts this
@@ -137,7 +154,7 @@ token in the callback's `Location` header (`request-log.ts`).
 - `invalid_or_expired_token`
 - `creator_not_active`
 - `pending_deletion`
-- `google_signup_expired`
+- `google_signup_expired`, `google_not_authoritative`, `creator_exists`
 - the Google round-trip codes
 - the country codes, through `countryErrorMessage`
 
