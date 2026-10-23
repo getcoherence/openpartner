@@ -141,6 +141,21 @@ describe('creator Events tab', () => {
     expect(requests.at(-1)!.search).toContain('type=demo_booked');
   });
 
+  it('loads more with the Network cursor', async () => {
+    routes['/creators/me/partnerships/pt_ada/events'] = (q) =>
+      q.get('cursor') === 'c2'
+        ? json(200, { stages: STAGES, events: [event(2, 'signup', 'Signed up', 'ref_222222222222')], limit: 100, nextCursor: null })
+        : json(200, { stages: STAGES, events: [event(1, 'invoice_paid', 'Paid', 'ref_111111111111')], limit: 100, nextCursor: 'c2' });
+    const page = renderTab('events');
+    await page.findByText('referral ref_111111111111');
+    fireEvent.click(page.getByRole('button', { name: 'Load 100 more' }));
+    await page.findByText('referral ref_222222222222');
+    expect(page.getByText('referral ref_111111111111')).toBeTruthy();
+    expect(page.queryByRole('button', { name: /Load 100 more/ })).toBeNull();
+    const eventCalls = requests.filter((r) => r.path === `${BASE}/pt_ada/events`);
+    expect(eventCalls.map((r) => new URLSearchParams(r.search).get('cursor'))).toEqual([null, 'c2']);
+  });
+
   it('shows an event without a customer id when the brand has none to give', async () => {
     routes['/creators/me/partnerships/pt_ada/events'] = () =>
       json(200, { stages: STAGES, events: [event(1, 'signup', 'Signed up', null)], limit: 100, offset: 0, nextOffset: null });
@@ -217,6 +232,13 @@ describe('creator Customers tab', () => {
     const page = renderTab('customers');
     await page.findByText("Referral details aren't available yet");
     expect(page.queryByText('No referrals yet')).toBeNull();
+  });
+
+  it('a Network from before referral relays reads as not available yet, not an error', async () => {
+    // No route registered: the fetch mock answers 404 not_found, as an old Network would.
+    const page = renderTab('customers');
+    await page.findByText("Referral details aren't available yet");
+    expect(page.queryByText(/not_found|404/)).toBeNull();
   });
 
   it('with no referrals yet, says how they appear', async () => {

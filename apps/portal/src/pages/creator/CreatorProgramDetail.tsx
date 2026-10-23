@@ -18,12 +18,12 @@
  */
 
 import { useMemo, useState, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { Link, NavLink, Outlet, Route, Routes, useNavigate, useOutletContext, useParams } from 'react-router';
 import { ArrowLeft, ArrowUpRight } from 'lucide-react';
-import { Card, EmptyState, ErrorBanner, Page, formatDate, money } from '../../ui.js';
+import { Button, Card, EmptyState, ErrorBanner, Page, formatDate, money } from '../../ui.js';
 import { theme } from '../../theme.js';
-import { creatorApi } from './creator-api.js';
+import { ApiError, creatorApi } from './creator-api.js';
 import {
   commissionSourceLabel,
   eventTypeLabel,
@@ -104,7 +104,11 @@ interface EventPage {
   /** The stages the brand shows, in its order. */
   stages?: ReferralStageDefinition[];
   events: PartnerEvent[];
+  /** Absent from a Network that predates stage filtering. */
+  nextCursor?: string | null;
 }
+
+const EVENTS_PAGE = 100;
 
 /** GET /creators/me/partnerships/:id/referrals: the brand's referral page,
  *  minus every userId. */
@@ -521,27 +525,33 @@ function EarningsTab() {
 function EventsTab() {
   const partnership = useOutletPartnership();
   const [typeFilter, setTypeFilter] = useState<string>('');
-  const events = useQuery({
+  const events = useInfiniteQuery({
     queryKey: ['creator-program-events', partnership.id, typeFilter],
-    queryFn: () =>
-      creatorApi<EventPage>(
-        `/creators/me/partnerships/${partnership.id}/events?limit=100${typeFilter ? `&type=${encodeURIComponent(typeFilter)}` : ''}`,
-      ),
+    queryFn: ({ pageParam }) => {
+      const qs = new URLSearchParams({ limit: String(EVENTS_PAGE) });
+      if (typeFilter) qs.set('type', typeFilter);
+      if (pageParam) qs.set('cursor', pageParam);
+      return creatorApi<EventPage>(`/creators/me/partnerships/${partnership.id}/events?${qs}`);
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor ?? null,
     retry: false,
     staleTime: 30_000,
   });
+  const stages = events.data?.pages[0]?.stages;
+  const rows = useMemo(() => events.data?.pages.flatMap((p) => p.events) ?? [], [events.data]);
 
   // The filter chips are the brand's stages, in its order: the only types
   // the Network relays. A Network from before stage filtering sends none,
   // so fall back to the types in the data.
   const typeOptions = useMemo(() => {
-    if (events.data?.stages) return events.data.stages.map((s) => ({ value: s.eventType, label: s.label }));
+    if (stages) return stages.map((s) => ({ value: s.eventType, label: s.label }));
     const set = new Set<string>();
-    for (const e of events.data?.events ?? []) set.add(e.type);
+    for (const e of rows) set.add(e.type);
     return Array.from(set)
       .sort()
       .map((t) => ({ value: t, label: eventTypeLabel(t) }));
-  }, [events.data]);
+  }, [stages, rows]);
 
   return (
     <>
@@ -559,7 +569,7 @@ function EventsTab() {
         </div>
         {events.isLoading ? (
           <p style={{ color: theme.textMuted, fontSize: 12 }}>Loading…</p>
-        ) : (events.data?.events ?? []).length === 0 ? (
+        ) : rows.length === 0 ? (
           <EmptyState
             title="No events recorded"
             hint="Events appear here when customers click your link or convert."
@@ -572,7 +582,7 @@ function EventsTab() {
               <span style={{ width: 100 }}>Source</span>
               <span style={{ width: 140, textAlign: 'right' }}>When</span>
             </Row>
-            {(events.data?.events ?? []).map((e) => (
+            {rows.map((e) => (
               <Row key={e.attributionId}>
                 <span style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <span style={{ fontSize: 13, color: theme.text }}>{e.label ?? eventTypeLabel(e.type)}</span>
@@ -593,6 +603,13 @@ function EventsTab() {
                 </span>
               </Row>
             ))}
+            {events.hasNextPage && (
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 12 }}>
+                <Button variant="secondary" size="sm" onClick={() => void events.fetchNextPage()} disabled={events.isFetchingNextPage}>
+                  {events.isFetchingNextPage ? 'Loading…' : `Load ${EVENTS_PAGE} more`}
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </Card>
@@ -611,7 +628,16 @@ function CustomersTab() {
     <ReferralList
       queryKey={['creator-program-referrals', partnership.id]}
       fetchPage={async (qs) => {
-        const page = await creatorApi<CreatorReferralPage>(`/creators/me/partnerships/${partnership.id}/referrals?${qs}`);
+        let page: CreatorReferralPage;
+        try {
+          page = await creatorApi<CreatorReferralPage>(`/creators/me/partnerships/${partnership.id}/referrals?${qs}`);
+        } catch (err) {
+          // A Network from before referral relays has no such route. Say
+          // "not available yet" rather than show an error until it's updated.
+          if (!(err instanceof ApiError) || err.status !== 404) throw err;
+          if ((err.detail as { error?: string } | null)?.error === 'partnership_not_found') throw err;
+          page = { available: false, stages: [], currency: null, referrals: [], total: 0, nextCursor: null };
+        }
         // currency is null only on an unavailable page, which lists nobody.
         return { ...page, currency: page.currency ?? 'USD' };
       }}
