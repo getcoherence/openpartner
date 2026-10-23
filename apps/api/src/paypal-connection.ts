@@ -162,7 +162,10 @@ export async function listPaypalConnections(db: Knex, tenantId: string): Promise
     .where({ tenantId })
     .whereNull('disconnectedAt')
     .orderBy('environment', 'asc')) as PaypalConnectionRow[];
-  return Promise.all(rows.map(async (r) => toView(r, await openBatchCount(db, tenantId, r.id))));
+  // One at a time: `db` is usually the request's transaction, one connection.
+  const views: PaypalConnectionView[] = [];
+  for (const r of rows) views.push(toView(r, await openBatchCount(db, tenantId, r.id)));
+  return views;
 }
 
 export async function liveConnection(db: Knex, tenantId: string, environment: PaypalEnvironment): Promise<PaypalConnectionRow | null> {

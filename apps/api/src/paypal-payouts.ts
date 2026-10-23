@@ -795,13 +795,10 @@ export async function cancelUnclaimedPayout(tenantId: string, payoutId: string, 
     return { ok: false, error: 'paypal_unreachable' };
   }
   const st = itemStamp(item);
-  if (ITEM_RETURNED.has(st.status)) {
-    const released = await releaseOne(db, b, payout, st, 'unclaimed_canceled');
-    await updateSummary(db, b);
-    return { ok: true, released, status: st.status };
-  }
+  const released = ITEM_RETURNED.has(st.status) && (await releaseOne(db, b, payout, st, 'unclaimed_canceled'));
+  // Read the batch back either way: it may now be finished.
   await syncBatch(db, tenantId, b.id, now, emptyResult());
-  return { ok: true, released: false, status: st.status };
+  return { ok: true, released, status: st.status };
 }
 
 export type ResolveAction = { action: 'retry' } | { action: 'release' } | { action: 'link'; payoutBatchId: string };

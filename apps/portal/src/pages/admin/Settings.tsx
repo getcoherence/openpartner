@@ -4,6 +4,7 @@ import { Settings as SettingsIcon, Mail, Wallet, Palette, Image as ImageIcon, Tr
 import { api, ApiError } from '../../api.js';
 import { alpha, theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
+import { PaypalPayoutsCard } from './PaypalPayoutsCard.js';
 
 type PayoutRail = 'auto' | 'stripe_connect' | 'manual';
 type PayoutCadence = 'weekly' | 'biweekly' | 'monthly' | 'manual';
@@ -92,6 +93,8 @@ export function AdminSettings() {
       <PartnerPortalAccessSection />
       <div style={{ height: 18 }} />
       <PayoutSection />
+      <div style={{ height: 18 }} />
+      <PaypalPayoutsCard />
       <div style={{ height: 18 }} />
       <MailSection />
       <div style={{ height: 18 }} />

@@ -48,6 +48,9 @@ const { getDocumentedOperations, getOpenApiDocument } = await import('../openapi
 const { ErrorResponse, accessExtension } = await import('../openapi/registry.js');
 const { WEBHOOK_PAYLOADS, envelopeSchema } = await import('../openapi/webhook-events.js');
 const { issueMagicLink } = await import('../auth-sessions.js');
+const { __setPaypalFetchForTests } = await import('../paypal-api.js');
+const { parsePayoutDetails, savePayoutProfile } = await import('../payout-profile.js');
+const { FakePaypal } = await import('./fake-paypal.js');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
@@ -55,6 +58,8 @@ const operations = new Map(getDocumentedOperations().map((op) => [op.operationId
 const exercised = new Set<string>();
 
 const TABLES_TO_CLEAN = [
+  TABLES.PaypalPayoutBatch,
+  TABLES.PaypalConnection,
   TABLES.WebhookDelivery,
   TABLES.WebhookEndpoint,
   TABLES.Commission,
@@ -726,6 +731,63 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     check('retryWebhookDelivery', await admin.post(`/webhooks/${hookId}/deliveries/${tested.delivery.id}/retry`));
     check('deleteWebhookEndpoint', await admin.delete(`/webhooks/${hookId}`));
     check('testWebhookEndpoint', await admin.post(`/webhooks/${hookId}/test`));
+
+    // Pay with PayPal, against a fake PayPal.
+    const fake = new FakePaypal();
+    fake.addApp({ env: 'sandbox', clientId: 'ContractClientId0123456789', secret: 'ContractSecret0123456789' });
+    __setPaypalFetchForTests(fake.fetch);
+    try {
+      check('listPaypalConnections', await admin.get('/config/paypal'));
+      check('connectPaypal', await admin.post('/config/paypal', { environment: 'sandbox', clientId: 'x' }));
+      check('connectPaypal', await admin.post('/config/paypal', { environment: 'sandbox', clientId: 'ContractClientId0123456789', clientSecret: 'WrongSecret0123456789' }));
+      check('connectPaypal', await admin.post('/config/paypal', { environment: 'sandbox', clientId: 'ContractClientId0123456789', clientSecret: 'ContractSecret0123456789' }));
+      check('verifyPaypalConnection', await admin.post('/config/paypal/sandbox/verify'));
+      check('verifyPaypalConnection', await admin.post('/config/paypal/live/verify'));
+      check('activatePaypalEnvironment', await admin.post('/config/paypal/sandbox/activate'));
+      check('activatePaypalEnvironment', await admin.post('/config/paypal/live/activate'));
+
+      const ppRun = ulid();
+      const ppPartner = ulid();
+      await db(TABLES.Partner).insert({ id: ppPartner, tenantId: DEFAULT_TENANT_ID, name: 'PayPal partner', email: 'pp@example.com', activatedAt: new Date() });
+      const details = parsePayoutDetails({ method: 'paypal', email: 'pp@pay.example.com' });
+      if (!details.ok) throw new Error('bad fixture');
+      await savePayoutProfile(db, DEFAULT_TENANT_ID, ppPartner, details.details, 'admin');
+      const ppPayout = ulid();
+      await db(TABLES.Payout).insert({
+        id: ppPayout,
+        tenantId: DEFAULT_TENANT_ID,
+        partnerId: ppPartner,
+        amount: '12.00',
+        currency: 'USD',
+        method: 'manual',
+        status: 'pending',
+        metadata: { runId: ppRun, commissionCount: 1 },
+      });
+      check('sendRunWithPaypal', await admin.post(`/payouts/runs/${ppRun}/paypal-batches`, { currency: 'nope' }));
+      check('sendRunWithPaypal', await admin.post(`/payouts/runs/${ppRun}/paypal-batches`, { currency: 'INR' }));
+      check('sendRunWithPaypal', await admin.post('/payouts/runs/missing/paypal-batches', { currency: 'USD' }));
+      const ppSent = check<{ batch: { batchId: string } }>('sendRunWithPaypal', await admin.post(`/payouts/runs/${ppRun}/paypal-batches`, { currency: 'USD' }));
+      const ppBatch = ppSent.batch.batchId;
+      check('listRunPaypalBatches', await admin.get(`/payouts/runs/${ppRun}/paypal-batches`));
+      check('getPaypalBatch', await admin.get(`/payouts/paypal-batches/${ppBatch}`));
+      check('getPaypalBatch', await admin.get('/payouts/paypal-batches/missing'));
+      check('disconnectPaypal', await admin.delete('/config/paypal/sandbox')); // 409: in flight
+      fake.setItem(ppBatch, ppPayout, 'UNCLAIMED', 'RECEIVER_UNREGISTERED');
+      check('syncPaypalBatch', await admin.post(`/payouts/paypal-batches/${ppBatch}/sync`));
+      check('syncPaypalBatch', await admin.post('/payouts/paypal-batches/missing/sync'));
+      check('getManualPayoutRun', await admin.get(`/payouts/runs/${ppRun}`));
+      check('listManualPayoutRunPayouts', await admin.get(`/payouts/runs/${ppRun}/payouts`));
+      check('resolvePaypalBatch', await admin.post(`/payouts/paypal-batches/${ppBatch}/resolve`, { action: 'release' })); // 409: PayPal has it
+      check('resolvePaypalBatch', await admin.post(`/payouts/paypal-batches/${ppBatch}/resolve`, { action: 'nope' }));
+      check('resolvePaypalBatch', await admin.post('/payouts/paypal-batches/missing/resolve', { action: 'release' }));
+      check('cancelUnclaimedPaypalPayout', await admin.post(`/payouts/${ppPayout}/paypal-cancel`));
+      check('cancelUnclaimedPaypalPayout', await admin.post(`/payouts/${ppPayout}/paypal-cancel`));
+      check('disconnectPaypal', await admin.delete('/config/paypal/sandbox'));
+      check('disconnectPaypal', await admin.delete('/config/paypal/sandbox'));
+      await db(TABLES.Payout).where({ id: ppPayout }).del();
+    } finally {
+      __setPaypalFetchForTests(null);
+    }
 
     // Export round trip.
     const bundle = check<Record<string, unknown>>('exportAllJson', await admin.get('/export.json'));
