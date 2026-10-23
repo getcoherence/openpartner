@@ -587,8 +587,9 @@ on the payouts, which are exported: each paid payout's
 `metadata.manualExport` carries `via: "api"`, PayPal's `payoutBatchId`,
 item id, transaction id and status, and a released one carries
 `metadata.paypalReleases`. A restored payout still stamped with a batch
-that didn't travel can be marked sent, or released with
-`POST /payouts/exports/{batchId}/discard`, once checked in PayPal.
+that didn't travel is never released, because PayPal may still pay that
+batch: once checked in PayPal it can be marked sent. Settle every PayPal
+batch before you migrate.
 
 **Not exported yet — known gaps, not decisions:**
 

@@ -4797,6 +4797,33 @@
               "processing"
             ]
           },
+          "rehearsal": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "paid": {
+                    "type": "integer"
+                  },
+                  "unclaimed": {
+                    "type": "integer"
+                  },
+                  "failed": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "paid",
+                  "unclaimed",
+                  "failed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A finished **sandbox** batch: what PayPal’s sandbox did with its test money. A sandbox batch never marks a payout paid; once PayPal settles every item its payouts go back to pending, ready for a live batch or a file."
+          },
           "lastError": {
             "type": [
               "string",
@@ -4843,6 +4870,7 @@
           "payoutBatchId",
           "batchStatus",
           "summary",
+          "rehearsal",
           "lastError",
           "createdAt",
           "createdBy",
@@ -12413,7 +12441,7 @@
           "Payouts"
         ],
         "summary": "Pay a run’s PayPal partners through your PayPal app",
-        "description": "Sends the next PayPal Payouts batch of a run, in one currency, with your active PayPal app: the same payouts a PayPal file would take (partners whose payout details are a PayPal email, a currency PayPal sends, under PayPal's per-payment limit, nothing on a do-not-pay hold), up to 5,000. The money goes from your PayPal balance to the partners; it never passes through OpenPartner.\n\nThe payouts are stamped with the batch id (`exportId`, `via: \"api\"`) before anything is sent, so they are in no other file or batch. The batch id is also PayPal's `sender_batch_id` and `PayPal-Request-Id`: a re-send after a timeout or crash reaches the same batch, and PayPal never pays one twice.\n\nPayPal pays asynchronously. Follow the batch with `GET /payouts/paypal-batches/{batchId}`: paid items confirm their payouts; failed, returned or refunded ones go back to pending (and your admins are emailed); unclaimed ones wait for the partner to claim them. No INR: PayPal pays Indian PayPal accounts in USD only.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "Sends the next PayPal Payouts batch of a run, in one currency, with your active PayPal app: the same payouts a PayPal file would take (partners whose payout details are a PayPal email, a currency PayPal sends, under PayPal's per-payment limit, nothing on a do-not-pay hold), up to 5,000. The money goes from your PayPal balance to the partners; it never passes through OpenPartner.\n\nThe payouts are stamped with the batch id (`exportId`, `via: \"api\"`) before anything is sent, so they are in no other file or batch. The batch id is also PayPal's `sender_batch_id` and `PayPal-Request-Id`: a re-send after a timeout or crash reaches the same batch, and PayPal never pays one twice.\n\nPayPal pays asynchronously. Follow the batch with `GET /payouts/paypal-batches/{batchId}`: paid items confirm their payouts; failed, returned or refunded ones go back to pending (and your admins are emailed); unclaimed ones wait for the partner to claim them. No INR: PayPal pays Indian PayPal accounts in USD only.\n\nWith your **sandbox** app active, the batch is a rehearsal: PayPal's sandbox moves test money, so no payout is marked paid, and once PayPal settles every item the payouts go back to pending (`rehearsal` on the batch says what happened).\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -12807,7 +12835,7 @@
           "Payouts"
         ],
         "summary": "Settle a PayPal batch OpenPartner can’t",
-        "description": "For a batch in `reconcile_required` (OpenPartner can't tell whether it went out), after you've looked in your PayPal account:\n\n- `{\"action\": \"link\", \"payoutBatchId\": \"…\"}`: PayPal shows the batch. It is read back and adopted only if its sender_batch_id is this batch's id.\n- `{\"action\": \"retry\"}`: send the same request again. Only within 29 days of the first send, while PayPal still refuses a duplicate.\n- `{\"action\": \"release\"}`: no such batch went out. The payouts go back to pending. Also abandons a batch still in `intent`.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "For a batch in `reconcile_required` (OpenPartner can't tell whether it went out), after you've looked in your PayPal account:\n\n- `{\"action\": \"link\", \"payoutBatchId\": \"…\"}`: PayPal shows the batch. It is read back and adopted only if its sender_batch_id is this batch's id.\n- `{\"action\": \"retry\"}`: send the same request again. Only within 29 days of the first send, while PayPal still refuses a duplicate.\n- `{\"action\": \"release\"}`: no such batch went out. The payouts go back to pending. Also abandons a batch still in `intent`, and a **sandbox** batch in any open state (it moves test money only).\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []

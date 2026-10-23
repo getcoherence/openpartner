@@ -734,17 +734,17 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
 
     // Pay with PayPal, against a fake PayPal.
     const fake = new FakePaypal();
-    fake.addApp({ env: 'sandbox', clientId: 'ContractClientId0123456789', secret: 'ContractSecret0123456789' });
+    fake.addApp({ env: 'live', clientId: 'ContractClientId0123456789', secret: 'ContractSecret0123456789' });
     __setPaypalFetchForTests(fake.fetch);
     try {
       check('listPaypalConnections', await admin.get('/config/paypal'));
-      check('connectPaypal', await admin.post('/config/paypal', { environment: 'sandbox', clientId: 'x' }));
-      check('connectPaypal', await admin.post('/config/paypal', { environment: 'sandbox', clientId: 'ContractClientId0123456789', clientSecret: 'WrongSecret0123456789' }));
-      check('connectPaypal', await admin.post('/config/paypal', { environment: 'sandbox', clientId: 'ContractClientId0123456789', clientSecret: 'ContractSecret0123456789' }));
-      check('verifyPaypalConnection', await admin.post('/config/paypal/sandbox/verify'));
+      check('connectPaypal', await admin.post('/config/paypal', { environment: 'live', clientId: 'x' }));
+      check('connectPaypal', await admin.post('/config/paypal', { environment: 'live', clientId: 'ContractClientId0123456789', clientSecret: 'WrongSecret0123456789' }));
+      check('connectPaypal', await admin.post('/config/paypal', { environment: 'live', clientId: 'ContractClientId0123456789', clientSecret: 'ContractSecret0123456789' }));
       check('verifyPaypalConnection', await admin.post('/config/paypal/live/verify'));
-      check('activatePaypalEnvironment', await admin.post('/config/paypal/sandbox/activate'));
+      check('verifyPaypalConnection', await admin.post('/config/paypal/sandbox/verify'));
       check('activatePaypalEnvironment', await admin.post('/config/paypal/live/activate'));
+      check('activatePaypalEnvironment', await admin.post('/config/paypal/sandbox/activate'));
 
       const ppRun = ulid();
       const ppPartner = ulid();
@@ -771,7 +771,7 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       check('listRunPaypalBatches', await admin.get(`/payouts/runs/${ppRun}/paypal-batches`));
       check('getPaypalBatch', await admin.get(`/payouts/paypal-batches/${ppBatch}`));
       check('getPaypalBatch', await admin.get('/payouts/paypal-batches/missing'));
-      check('disconnectPaypal', await admin.delete('/config/paypal/sandbox')); // 409: in flight
+      check('disconnectPaypal', await admin.delete('/config/paypal/live')); // 409: in flight
       fake.setItem(ppBatch, ppPayout, 'UNCLAIMED', 'RECEIVER_UNREGISTERED');
       check('syncPaypalBatch', await admin.post(`/payouts/paypal-batches/${ppBatch}/sync`));
       check('syncPaypalBatch', await admin.post('/payouts/paypal-batches/missing/sync'));
@@ -782,8 +782,8 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       check('resolvePaypalBatch', await admin.post('/payouts/paypal-batches/missing/resolve', { action: 'release' }));
       check('cancelUnclaimedPaypalPayout', await admin.post(`/payouts/${ppPayout}/paypal-cancel`));
       check('cancelUnclaimedPaypalPayout', await admin.post(`/payouts/${ppPayout}/paypal-cancel`));
-      check('disconnectPaypal', await admin.delete('/config/paypal/sandbox'));
-      check('disconnectPaypal', await admin.delete('/config/paypal/sandbox'));
+      check('disconnectPaypal', await admin.delete('/config/paypal/live'));
+      check('disconnectPaypal', await admin.delete('/config/paypal/live'));
       await db(TABLES.Payout).where({ id: ppPayout }).del();
     } finally {
       __setPaypalFetchForTests(null);

@@ -870,6 +870,12 @@ export const PaypalBatch = z
       unclaimed: z.number().int().openapi({ description: 'PayPal emailed the partner to claim it (no PayPal account at that email). Returned after 30 days unless claimed.' }),
       processing: z.number().int(),
     }),
+    rehearsal: orNull(
+      z.object({ paid: z.number().int(), unclaimed: z.number().int(), failed: z.number().int() }),
+    ).openapi({
+      description:
+        'A finished **sandbox** batch: what PayPal’s sandbox did with its test money. A sandbox batch never marks a payout paid; once PayPal settles every item its payouts go back to pending, ready for a live batch or a file.',
+    }),
     lastError: z.string().nullable(),
     createdAt: ts,
     createdBy: z.enum(['admin', 'api']),

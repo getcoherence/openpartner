@@ -96,6 +96,8 @@ interface PaypalBatch {
   state: BatchState;
   payoutBatchId: string | null;
   summary: { paid: number; released: number; unclaimed: number; processing: number };
+  /** A finished sandbox batch: what PayPal's sandbox did with test money. */
+  rehearsal?: { paid: number; unclaimed: number; failed: number } | null;
   lastError: string | null;
   createdAt: string;
   lastSyncedAt: string | null;
@@ -297,11 +299,15 @@ export function ManualPayoutFiles() {
         Partners you pay yourself (the manual rail) land here after each payout run. Make a file and upload it to your own
         PayPal (Send Money → Make a Mass Payment) or Wise (Payments → Batch) account, then mark it as sent once the batch
         has gone out.{' '}
-        {activePaypal ? (
+        {activePaypal?.environment === 'live' ? (
           <>
-            Or pay PayPal partners in one click: <strong>Pay with PayPal</strong> sends the batch from your{' '}
-            {activePaypal.environment === 'sandbox' ? 'sandbox' : 'live'} PayPal app and marks each payout paid as PayPal
-            pays it.
+            Or pay PayPal partners in one click: <strong>Pay with PayPal</strong> sends the batch from your PayPal app and
+            marks each payout paid as PayPal pays it.
+          </>
+        ) : activePaypal ? (
+          <>
+            Your PayPal <strong>sandbox</strong> app is the one connected for sending, so PayPal batches are tests with
+            test money: nothing is marked paid. Switch to your live app in Settings to pay for real.
           </>
         ) : (
           <>
@@ -428,15 +434,16 @@ export function ManualPayoutFiles() {
                         icon={<Send size={13} />}
                         onClick={() => {
                           const n = Math.min(g.count, 5000);
-                          const env = activePaypal.environment === 'sandbox' ? 'sandbox (test money)' : 'live';
                           const what = n === g.count ? `${plural(n, 'payout')} totalling ${money(g.total, g.currency)}` : `the first ${n.toLocaleString()} of these payouts`;
-                          if (window.confirm(`Send ${what} from your ${env} PayPal account now? PayPal moves the money as soon as it accepts the batch.`)) {
-                            payWithPaypal.mutate(g.currency);
-                          }
+                          const ask =
+                            activePaypal.environment === 'sandbox'
+                              ? `Test ${what} with your PayPal sandbox app? PayPal’s sandbox moves test money only: nothing is marked paid, and the payouts come back to send when it’s done.`
+                              : `Send ${what} from your live PayPal account now? PayPal moves the money as soon as it accepts the batch.`;
+                          if (window.confirm(ask)) payWithPaypal.mutate(g.currency);
                         }}
                         disabled={busy}
                       >
-                        {payWithPaypal.isPending ? 'Sending…' : `Pay with PayPal${activePaypal.environment === 'sandbox' ? ' (sandbox)' : ''}`}
+                        {payWithPaypal.isPending ? 'Sending…' : activePaypal.environment === 'sandbox' ? 'Test with PayPal sandbox' : 'Pay with PayPal'}
                       </Button>
                     )}
                   </Row>
@@ -529,6 +536,17 @@ function BatchRow({
             </span>
           )}
         </div>
+        {b.rehearsal && (
+          <Warn>
+            Sandbox test: {b.rehearsal.paid} paid, {b.rehearsal.unclaimed} unclaimed, {b.rehearsal.failed} failed, with
+            PayPal’s test money. Nothing was marked paid; these payouts are back to send.
+          </Warn>
+        )}
+        {b.environment === 'sandbox' && open && (
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>
+            A sandbox test: no payout is marked paid, and they all go back to send when PayPal is done.
+          </div>
+        )}
         {b.lastError && <Warn danger={b.state !== 'posted' && b.state !== 'submitted'}>{b.lastError}</Warn>}
         {b.state === 'reconcile_required' && (
           <Warn>
@@ -560,14 +578,16 @@ function BatchRow({
           </Button>
         </>
       )}
-      {(b.state === 'reconcile_required' || b.state === 'intent') && (
+      {(b.state === 'reconcile_required' || b.state === 'intent' || (b.environment === 'sandbox' && open)) && (
         <Button
           size="sm"
           variant="danger"
           onClick={() => {
-            if (window.confirm('Release these payouts? Only do this if you checked your PayPal account and this batch never went out. They go back to “to send”.')) {
-              onResolve({ action: 'release' });
-            }
+            const ask =
+              b.environment === 'sandbox'
+                ? 'Release these payouts from the sandbox test now? They go back to “to send”.'
+                : 'Release these payouts? Only do this if you checked your PayPal account and this batch never went out. They go back to “to send”.';
+            if (window.confirm(ask)) onResolve({ action: 'release' });
           }}
           disabled={busy}
         >

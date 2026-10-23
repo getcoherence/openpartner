@@ -51,6 +51,13 @@ The admin pastes the app's client id and secret for one environment.
   first one connected is the one Pay with PayPal sends with; switching is
   the admin's explicit choice ("Send from live"), never automatic, so a
   sandbox setup can't quietly turn into live payments.
+- **Sandbox sends are rehearsals.** PayPal's sandbox moves test money, so a
+  sandbox batch never marks a payout paid. It runs the real flow (the same
+  payouts, PayPal's real sandbox API, statuses, alerts), and once PayPal
+  has settled every item the outcome is kept on the batch (`rehearsal`:
+  paid, unclaimed, failed) and every payout goes back to send. A sandbox
+  batch can also be released at any time. The button reads **Test with
+  PayPal sandbox** and asks first in those words.
 - **Webhook.** On connect, OpenPartner registers a webhook on the brand's
   app for the Payouts events (`PAYMENT.PAYOUTSBATCH.*`,
   `PAYMENT.PAYOUTS-ITEM.*`) at
@@ -62,7 +69,8 @@ The admin pastes the app's client id and secret for one environment.
   with the app that sent it. So disconnecting, or connecting a different
   app for the same environment, is refused (`409 open_batches`) while a
   batch sent with the current one is in flight. A new secret for the
-  **same** app (a rotation) is accepted and takes those batches over.
+  **same** app (a rotation) is accepted and takes every batch over,
+  finished ones included (a paid item can still be refunded).
 - **Disconnect** removes OpenPartner's webhook from the app (best effort)
   and wipes the secret, token and webhook id. The row stays as history.
 
@@ -114,10 +122,11 @@ Every send mirrors the care `payout-transfers.ts` takes with Stripe.
    batch it already made. A duplicate sender_batch_id comes back as an
    error linking the original batch, which is read back and adopted only if
    its sender_batch_id is ours.
-3. **Unknown means unknown.** A timeout, a reset, a 5xx, a 429 or a 409 may
-   have created the batch. It stays `posted`, and the next pass (every 5
-   minutes, or **Check status**) re-sends it, which can only reach the same
-   batch. Nothing is released on an unknown outcome.
+3. **Unknown means unknown.** A timeout, a reset, a 5xx, a 429, a 409, or a
+   2xx whose body can't be read may have created the batch. It stays
+   `posted`, and the next pass (every 5 minutes, or **Check status**)
+   re-sends it, which can only reach the same batch. Nothing is released on
+   an unknown outcome.
 4. **Never past the window.** A `posted` batch is re-sent only within 29
    days of its first send (a day's margin on PayPal's 30). Past that a
    re-send could create a second batch, so it is held for the admin
@@ -131,7 +140,10 @@ Every send mirrors the care `payout-transfers.ts` takes with Stripe.
 6. **Lease.** Every post or sync takes a compare-and-set lease, so the
    scheduler, a webhook and an admin click never act on one batch at once.
    The batch's state moves before its payouts are released; a crash in
-   between is repaired by the next pass.
+   between is repaired by the next pass, however long ago it was.
+7. **Marking sent by hand can't overtake a batch.** The confirm decides on
+   the payout row as it updates it: a batch that stamped the payout after
+   the confirm read it (or is stamping it at that moment) wins.
 
 | State | Meaning |
 |---|---|
@@ -149,7 +161,9 @@ Every send mirrors the care `payout-transfers.ts` takes with Stripe.
 PayPal pays a batch in the background. Two things prompt OpenPartner to
 read it back: the webhook (when registered) and a poll every few minutes
 (2 minutes for the first hour, then 15, then hourly; every 6 hours once
-only unclaimed items are left). **Nothing acts on a webhook's payload.** A
+only unclaimed items are left). A finished live batch with paid items is
+still read once a day for 90 days, so a later refund or reversal is caught
+even without webhooks. **Nothing acts on a webhook's payload.** A
 verified event only names the batch, which is then read back in full from
 PayPal and applied to that batch's own payouts, matched by
 `sender_item_id`, in that brand's workspace only.
@@ -196,10 +210,11 @@ until the admin settles it, after looking in the PayPal account
   `payoutBatchId`, `paypal.itemId`, `paypal.transactionId`,
   `paypal.status`) and `paypalReleases`.
 - A bundle restored onto another deployment carries payouts stamped with a
-  batch that doesn't exist there. Once checked in PayPal, they can be marked
-  sent (`POST /payouts/confirm`), or released with
-  `POST /payouts/exports/{batchId}/discard`, which refuses an API batch only
-  while its batch row exists.
+  batch that doesn't exist there. PayPal may still pay that batch, so those
+  payouts are never released: they stay out of files and new batches, and
+  once checked in PayPal they can be marked sent (`POST /payouts/confirm`);
+  one PayPal didn't pay is paid another way and then marked sent. Settle
+  every batch before you migrate to avoid this.
 - The tenant purge deletes both tables (`TENANT_PURGE_ORDER`).
 
 See [data-portability.md](data-portability.md#credentials).
@@ -284,18 +299,22 @@ sandbox:
 4. Create a partner whose payout details are the sandbox Personal email,
    give them an approved commission in USD, set the payout rail to manual
    (or leave them without Stripe Connect) and **Run payouts**.
-5. On **Payouts**, press **Pay with PayPal (sandbox)**. The batch shows
+5. On **Payouts**, press **Test with PayPal sandbox**. The batch shows
    "PayPal is paying". Within a few minutes (or after **Check status**) the
-   payout reads paid, and the sandbox Personal account (sandbox.paypal.com)
-   shows the payment.
+   item reads paid, the sandbox Personal account (sandbox.paypal.com) shows
+   the payment, and, once every item is settled, the batch reads "Sandbox
+   test: 1 paid…" and the payout is back to send, **not** marked paid.
 6. Unclaimed: a second partner with an email that has no sandbox account.
-   Expect "Unclaimed", an admin email, and **Cancel and get it back**
-   releasing it.
+   Expect "Unclaimed" and an admin email. (In sandbox the batch settles and
+   releases it; on live it waits, and **Cancel and get it back** releases
+   it.)
 7. Refusal: send more than the sandbox Business balance. Expect the batch
    to fail (or its item to fail), the payouts to come back to send, and an
    admin email naming PayPal's error.
-8. Webhook (staging): in the dashboard's webhook simulator, send a
+8. To see paid payouts recorded, repeat with a small **live** batch to an
+   account you control, after switching to the live app.
+9. Webhook (staging): in the dashboard's webhook simulator, send a
    `PAYMENT.PAYOUTSBATCH.SUCCESS` to the registered URL. Expect `200`. A
    request with a changed body must answer `400 invalid_signature`.
-9. Check `GET /export.json` contains no `PaypalConnection` and not the
-   secret, and that the secret appears nowhere in the API logs.
+10. Check `GET /export.json` contains no `PaypalConnection` and not the
+    secret, and that the secret appears nowhere in the API logs.

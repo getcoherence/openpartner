@@ -156,12 +156,12 @@ describe('Manual payouts to send', () => {
 
   it('offers Pay with PayPal for a ready PayPal group once an app is connected, and asks first', async () => {
     withRun();
-    connections = [CONNECTED];
+    connections = [{ ...CONNECTED, environment: 'live' }];
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
-    const button = await view.findByRole('button', { name: 'Pay with PayPal (sandbox)' });
+    const button = await view.findByRole('button', { name: 'Pay with PayPal' });
     fireEvent.click(button);
-    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/Send 2 payouts totalling \$35\.50 from your sandbox \(test money\) PayPal account/));
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/Send 2 payouts totalling \$35\.50 from your live PayPal account now\?/));
     expect(requests.some((r) => r.method === 'POST' && r.path.endsWith('/paypal-batches'))).toBe(false);
 
     confirm.mockReturnValue(true);
@@ -171,6 +171,16 @@ describe('Manual payouts to send', () => {
     );
     // Making a file stays available either way.
     expect(view.getByRole('button', { name: 'Make file' })).toBeTruthy();
+  });
+
+  it('calls a sandbox send what it is: a test that marks nothing paid', async () => {
+    withRun();
+    connections = [CONNECTED];
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
+    fireEvent.click(await view.findByRole('button', { name: 'Test with PayPal sandbox' }));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('nothing is marked paid'));
+    expect(view.getByText(/batches are tests with test money/)).toBeTruthy();
   });
 
   it('has no Pay with PayPal button without a connected app', async () => {

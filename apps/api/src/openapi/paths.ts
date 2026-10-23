@@ -1176,7 +1176,9 @@ OpenPartner also registers a webhook on the app for the Payouts events, when the
 
 The payouts are stamped with the batch id (\`exportId\`, \`via: "api"\`) before anything is sent, so they are in no other file or batch. The batch id is also PayPal's \`sender_batch_id\` and \`PayPal-Request-Id\`: a re-send after a timeout or crash reaches the same batch, and PayPal never pays one twice.
 
-PayPal pays asynchronously. Follow the batch with \`GET /payouts/paypal-batches/{batchId}\`: paid items confirm their payouts; failed, returned or refunded ones go back to pending (and your admins are emailed); unclaimed ones wait for the partner to claim them. No INR: PayPal pays Indian PayPal accounts in USD only.`,
+PayPal pays asynchronously. Follow the batch with \`GET /payouts/paypal-batches/{batchId}\`: paid items confirm their payouts; failed, returned or refunded ones go back to pending (and your admins are emailed); unclaimed ones wait for the partner to claim them. No INR: PayPal pays Indian PayPal accounts in USD only.
+
+With your **sandbox** app active, the batch is a rehearsal: PayPal's sandbox moves test money, so no payout is marked paid, and once PayPal settles every item the payouts go back to pending (\`rehearsal\` on the batch says what happened).`,
     access: { kind: 'admin' },
     body: paypal.sendWithPaypalSchema,
     responses: { 201: { description: 'The batch, as it stands after the first send.', schema: batchResponse } },
@@ -1228,7 +1230,7 @@ PayPal pays asynchronously. Follow the batch with \`GET /payouts/paypal-batches/
 
 - \`{"action": "link", "payoutBatchId": "…"}\`: PayPal shows the batch. It is read back and adopted only if its sender_batch_id is this batch's id.
 - \`{"action": "retry"}\`: send the same request again. Only within 29 days of the first send, while PayPal still refuses a duplicate.
-- \`{"action": "release"}\`: no such batch went out. The payouts go back to pending. Also abandons a batch still in \`intent\`.`,
+- \`{"action": "release"}\`: no such batch went out. The payouts go back to pending. Also abandons a batch still in \`intent\`, and a **sandbox** batch in any open state (it moves test money only).`,
     access: { kind: 'admin' },
     body: paypal.resolvePaypalBatchSchema,
     responses: { 200: { description: 'The batch.', schema: batchResponse } },
