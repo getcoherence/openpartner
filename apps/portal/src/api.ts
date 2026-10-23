@@ -99,6 +99,47 @@ export async function apiDownload(path: string, filename: string): Promise<void>
   saveBlob(await res.blob(), filename);
 }
 
+/** Where the API serves `path` for the current tenant, for a plain link. A
+ *  link carries the session cookie, but not a pasted API key: open those
+ *  with apiOpen. */
+export function apiHref(path: string): string {
+  const slug = currentTenantSlug();
+  return `/api${slug ? `/t/${slug}` : ''}${path}`;
+}
+
+/**
+ * Open an authenticated page (a payout statement) in a new tab with
+ * api()'s credentials. The tab opens first, inside the click, so a popup
+ * blocker allows it; the page then loads into it from a blob.
+ */
+export async function apiOpen(path: string): Promise<void> {
+  const tab = window.open('', '_blank');
+  if (tab) tab.opener = null;
+  try {
+    const key = getApiKey();
+    const headers = new Headers();
+    if (key) headers.set('Authorization', `Bearer ${key}`);
+    const res = await fetch(apiHref(path), { headers, credentials: 'include' });
+    if (!res.ok) {
+      let detail: unknown = null;
+      try {
+        detail = await res.json();
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(res.status, friendlyMessage(res, detail), detail);
+    }
+    const url = URL.createObjectURL(new Blob([await res.text()], { type: 'text/html;charset=utf-8' }));
+    if (tab) tab.location.href = url;
+    else window.location.assign(url);
+    // The tab keeps the page; the blob only has to outlive the load.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch (err) {
+    tab?.close();
+    throw err;
+  }
+}
+
 /** Hand the browser a file to save as `filename`. */
 export function saveBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);

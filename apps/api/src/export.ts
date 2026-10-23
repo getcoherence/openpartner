@@ -91,6 +91,11 @@ export const PORTABLE_CONFIG_KEYS = [
   // bump: an instance that predates it skips the key on import, and the
   // brand just sees the Network step again.
   'onboarding',
+  // What payout statements print: legal name, address, footer, number
+  // prefix, the tax-lines stub (payout-statements.ts). No version bump,
+  // as for 'onboarding': an older instance skips it and prints statements
+  // under the brand name until the settings are entered again.
+  'payout_statements',
 ] as const;
 
 /**

@@ -235,7 +235,7 @@ beforeAll(async () => {
   if (skipIntegration) return;
   await db.raw('select 1');
   for (const t of TABLES_TO_CLEAN) await db(t).del();
-  await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access']).del();
+  await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access', 'payout_statements']).del();
   savedTenant = await db(TABLES.Tenant)
     .where({ id: DEFAULT_TENANT_ID })
     .first('payoutThresholdCents', 'couponIntegrationVerifiedAt');
@@ -260,7 +260,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (!skipIntegration) {
     for (const t of TABLES_TO_CLEAN) await db(t).del();
-    await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access']).del();
+    await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access', 'payout_statements']).del();
     await db(TABLES.Tenant)
       .where({ id: DEFAULT_TENANT_ID })
       .update({
@@ -486,6 +486,26 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     expect(afterRun.commissions.find((c) => c.id === toApprove!.id)?.status).toBe('paid');
     check('confirmManualPayout', await admin.post(`/payouts/${run.payouts[0]!.payoutId}/confirm`));
     check('confirmManualPayout', await admin.post(`/payouts/${run.payouts[0]!.payoutId}/confirm`));
+
+    // Its statement: a printable page for the brand, its data for the integration.
+    check('getPayoutStatementSettings', await admin.get('/config/payout-statements'));
+    const statementSettings = check<{ numberPrefix: string | null }>(
+      'updatePayoutStatementSettings',
+      await admin.post('/config/payout-statements', { legalName: 'Referral Co Pvt Ltd', numberPrefix: 'PS-', footer: '' }),
+    );
+    expect(statementSettings.numberPrefix).toBe('PS-');
+    check('updatePayoutStatementSettings', await admin.post('/config/payout-statements', { numberPrefix: 'no spaces' }));
+    const statementPage = await admin.get(`/payouts/${run.payouts[0]!.payoutId}/statement`);
+    check('getPayoutStatement', statementPage);
+    expect(statementPage.type).toBe('text/html');
+    expect(statementPage.text).toContain(`PS-${run.payouts[0]!.payoutId}`);
+    const statement = check<{ statement: { payout: { status: string } } }>(
+      'getPayoutStatement',
+      await integration.get(`/payouts/${run.payouts[0]!.payoutId}/statement?format=json`),
+    );
+    expect(statement.statement.payout.status).toBe('paid');
+    check('getPayoutStatement', await admin.get(`/payouts/${run.payouts[0]!.payoutId}/statement?format=pdf`));
+    check('getPayoutStatement', await admin.get('/payouts/missing/statement'));
 
     // --- A bonus for the referrer: a reward with no sale behind it.
     const bonusKey = check<{ plaintext: string }>(
@@ -836,6 +856,26 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     status('deactivatePartnerCoupon', await writer.delete(`/partners/${own.id}/coupons/${viaScope.id}`), 200);
     status('deactivatePartnerCoupon', await ownPartner.delete(`/partners/${own.id}/coupons/${viaPartner.id}`), 200);
     status('deactivatePartnerCoupon', await scopedOnly.delete(`/partners/${own.id}/coupons/${viaPartner.id}`), 403);
+
+    // A payout statement: any payout for an admin or a payouts:read key, a partner's own only.
+    const ownPayout = ulid();
+    await db(TABLES.Payout).insert({
+      id: ownPayout,
+      tenantId: DEFAULT_TENANT_ID,
+      partnerId: own.id,
+      amount: '10.00',
+      currency: 'USD',
+      method: 'manual',
+      status: 'pending',
+      metadata: {},
+    });
+    const statementOf = `/payouts/${ownPayout}/statement?format=json`;
+    status('getPayoutStatement', await ownPartner.get(statementOf), 200);
+    status('getPayoutStatement', await as(scopeKey['payouts:read']!, target).get(statementOf), 200);
+    const otherPartner = as((await adm.post(`/partners/${other.id}/api-keys`)).body.plaintext as string, target);
+    status('getPayoutStatement', await otherPartner.get(statementOf), 404);
+    status('getPayoutStatement', await scopedOnly.get(statementOf), 403);
+    status('getPayoutStatement', await as(null, target).get(statementOf), 401);
 
     const othersKey = (await adm.post(`/partners/${other.id}/api-keys`)).body as { id: string };
     const ownSpare = (await adm.post(`/partners/${own.id}/api-keys`)).body as { id: string };

@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Banknote, Play } from 'lucide-react';
+import { ArrowLeft, Banknote, FileText, Play } from 'lucide-react';
 import { useSearchParams } from 'react-router';
-import { api, type Principal } from '../api.js';
+import { api, apiHref, apiOpen, getApiKey, type Principal } from '../api.js';
 import { TenantLink } from '../tenant-link.js';
 import { alpha, theme } from '../theme.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, SectionHeading, StatusPill, Table, formatDate, money, shortId } from '../ui.js';
@@ -145,7 +145,7 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
         />
       ) : (
         <Table
-          columns={['ID', { label: 'Amount', align: 'right' }, 'Method', 'Status', 'Created', 'Completed']}
+          columns={['ID', { label: 'Amount', align: 'right' }, 'Method', 'Status', 'Created', 'Completed', 'Statement']}
           rows={(payouts.data?.payouts ?? []).map((p) => [
             <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(p.id)}</code>,
             <span style={{ fontWeight: 500 }}>{money(p.amount, p.currency)}</span>,
@@ -153,10 +153,37 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
             <StatusPill status={p.status} />,
             <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
             <span style={{ color: theme.textMuted }}>{formatDate(p.completedAt, { relative: true })}</span>,
+            <StatementLink payoutId={p.id} />,
           ])}
         />
       )}
     </Page>
+  );
+}
+
+/**
+ * Opens the payout's statement (GET /payouts/:id/statement) in a new tab:
+ * a printable page of what the payout paid and what for. A plain link, so
+ * the session cookie signs it in; when a pasted API key signs requests in
+ * instead, the click fetches the page with it.
+ */
+export function StatementLink({ payoutId }: { payoutId: string }) {
+  const path = `/payouts/${encodeURIComponent(payoutId)}/statement`;
+  return (
+    <a
+      href={apiHref(path)}
+      target="_blank"
+      rel="noopener"
+      aria-label="Payout statement"
+      onClick={(e) => {
+        if (!getApiKey()) return;
+        e.preventDefault();
+        apiOpen(path).catch((err: unknown) => window.alert(err instanceof Error ? err.message : String(err)));
+      }}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: theme.accentText, fontSize: 13, textDecoration: 'none' }}
+    >
+      <FileText size={13} /> View
+    </a>
   );
 }
 
@@ -189,7 +216,7 @@ function RecentPayouts() {
       ) : (
         <>
           <Table
-            columns={['Partner', { label: 'Amount', align: 'right' }, 'Method', 'Status', 'Created', 'Completed']}
+            columns={['Partner', { label: 'Amount', align: 'right' }, 'Method', 'Status', 'Created', 'Completed', 'Statement']}
             rows={rows.map((p) => [
               <TenantLink
                 to={`/payouts?partnerId=${p.partnerId}`}
@@ -208,6 +235,7 @@ function RecentPayouts() {
               <StatusPill status={p.status} />,
               <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
               <span style={{ color: theme.textMuted }}>{formatDate(p.completedAt, { relative: true })}</span>,
+              <StatementLink payoutId={p.id} />,
             ])}
           />
           {hasNextPage && (

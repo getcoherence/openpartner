@@ -672,6 +672,20 @@ function reference(provider: ManualPayoutProvider, payoutId: string, details: Pa
   return WISE_NO_REFERENCE.has(target) ? null : payoutId.slice(-WISE_REFERENCE_LENGTH);
 }
 
+/**
+ * The PayPal or Wise file a payout is in, and what identifies the payout
+ * in it, for the payout's statement (payout-statements.ts). Null when no
+ * file holds it.
+ */
+export function manualExportOf(
+  payout: Pick<PayoutRow, 'id' | 'metadata'>,
+  details: PayoutDetails | null,
+): { exportId: string; provider: ManualPayoutProvider; at: string; reference: string | null } | null {
+  const stamp = stampOf(payout);
+  if (!stamp) return null;
+  return { exportId: stamp.exportId, provider: stamp.provider, at: stamp.at, reference: reference(stamp.provider, payout.id, details) };
+}
+
 // ---------------------------------------------------------------------------
 // Exports (files)
 // ---------------------------------------------------------------------------

@@ -43,6 +43,7 @@ import { dispatchCommissionEvents } from '../commission-events.js';
 import { casBatch, minorToMajorString, TRANSFER_DEADLINE_DAYS } from './state.js';
 import { partnerPayoutHolds, type PayoutHold, type PayoutHoldReason } from '../sanctions-screening.js';
 import { sendOpsEmail } from '../platform-ops-mail.js';
+import { payoutStatementUrl } from '../portal-url.js';
 import { opsFundedTransfersHeldEmail } from '../email-templates.js';
 import { getPortalBaseUrl } from '../portal-url.js';
 import { isDefiniteStripeError, listTransferGroup, readGeneration } from '../payout-transfers.js';
@@ -591,6 +592,7 @@ async function finalizeTransfer(
   // After commit only (spec §6 step 4) — the dispatcher POSTs async and a
   // subscriber can immediately re-fetch consistent rows.
   const commissions = (await db(TABLES.Commission).whereIn('id', commissionIds)) as CommissionRow[];
+  const linkTenant = await db<TenantRow>(TABLES.Tenant).where({ id: batch.tenantId }).first('slug', 'customDomain');
   dispatchEvent(batch.tenantId, 'payout.created', {
     payoutId,
     partnerId: intent.partnerId,
@@ -598,6 +600,7 @@ async function finalizeTransfer(
     currency: intent.currency.toUpperCase(),
     method: 'stripe_connect',
     commissionIds,
+    statementUrl: payoutStatementUrl(linkTenant, payoutId),
   } satisfies WebhookPayload<'payout.created'>);
   void dispatchCommissionEvents(batch.tenantId, 'commission.paid', commissions, { payoutId });
   return true;

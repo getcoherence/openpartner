@@ -43,6 +43,28 @@ export function getPortalBaseUrl(tenant?: PortalLinkTenant | null): string {
 }
 
 /**
+ * The tenant's API as a caller outside the portal reaches it: through the
+ * portal's origin, which proxies /api/* to the API in every deployment
+ * (apps/portal/nginx.conf.template). Same resolution as getPortalBaseUrl,
+ * and the same addresses as the servers in the OpenAPI spec: the custom
+ * domain names the tenant by its host, single-tenant needs no slug, and
+ * the slug goes right after /api.
+ */
+export function getApiBaseUrl(tenant?: PortalLinkTenant | null): string {
+  const env = (process.env.PORTAL_URL ?? 'http://localhost:5673').replace(/\/$/, '');
+  if (tenant?.customDomain) return `https://${tenant.customDomain}/api`;
+  if ((process.env.OPENPARTNER_TENANCY ?? 'single') === 'single') return `${env}/api`;
+  if (tenant?.slug) return `${env}/api/t/${tenant.slug}`;
+  return `${env}/api`;
+}
+
+/** Where a payout's statement is (GET /payouts/:id/statement), for the
+ *  payout.created webhook. Fetched with an API key, like any API call. */
+export function payoutStatementUrl(tenant: PortalLinkTenant | null | undefined, payoutId: string): string {
+  return `${getApiBaseUrl(tenant)}/payouts/${encodeURIComponent(payoutId)}/statement`;
+}
+
+/**
  * The link-tenant for the current request. tenantMiddleware stashes the
  * Tenant row's customDomain during resolution (host- AND path-based), so
  * links built inside a tenant-scoped handler always target the tenant's
