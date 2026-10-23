@@ -2,7 +2,7 @@
  * The /creator-api reverse proxy only forwards allowlisted Network paths.
  * Covers the account-verification POSTs under /creators/me/platforms/
  * (verify/start, verify), the creator data export, the location prompt,
- * the avatar and cover image uploads,
+ * the avatar and cover image uploads, the password routes,
  * that paths off the allowlist stay 404 without reaching the Network, and
  * the signed header that tells the Network the creator's own address. A
  * local HTTP server plays the Network.
@@ -259,5 +259,43 @@ describe('creator-api proxy: storefront', () => {
     expect((await request(app).get('/creator-api/creators/me/bookings/bkr_1')).status).toBe(404);
     expect((await request(app).get('/creator-api/bookings/confirm')).status).toBe(200); // exact paths forward any method; the Network answers
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /bookings/confirm']);
+  });
+});
+
+describe('creator-api proxy: passwords', () => {
+  it('forwards password sign-in, forgot, reset and set/change, with the creator cookie and address', async () => {
+    process.env.NETWORK_ADMIN_API_KEY = 'netadm_test_proxy_0123456789abcdef';
+    const cookie = 'op_network_creator_session=opscreator_abc';
+    const steps: Array<[string, string]> = [
+      ['POST', '/creators/signin/password'],
+      ['POST', '/creators/password/forgot'],
+      ['POST', '/creators/password/reset'],
+      ['GET', '/creators/me/password'],
+      ['PUT', '/creators/me/password'],
+    ];
+    for (const [method, path] of steps) {
+      const r = request(app)[method.toLowerCase() as 'get' | 'put' | 'post'](`/creator-api${path}`).set('Cookie', cookie);
+      const res = method === 'GET' ? await r : await r.send({ email: 'ada@example.com', password: 'correct horse battery' });
+      expect(res.status, `${method} ${path}`).toBe(200);
+    }
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(steps.map(([m, p]) => `${m} ${p}`));
+    expect(calls.every((c) => c.cookie === cookie)).toBe(true);
+    // The Network's country gate sees the creator, not this server.
+    expect(clientIpHeaders.every((h) => typeof h === 'string' && /;sig=[0-9a-f]{64}$/.test(h))).toBe(true);
+  });
+
+  it('forwards nothing next to them', async () => {
+    for (const path of [
+      '/creators/password',
+      '/creators/password/forgot/extra',
+      '/creators/signin/password/extra',
+      '/creators/me/password/history',
+      '/admin/creators/signin-token',
+      '/admin/creators/signup',
+    ]) {
+      const res = await request(app).post(`/creator-api${path}`).send({});
+      expect(res.status, path).toBe(404);
+    }
+    expect(calls).toHaveLength(0);
   });
 });

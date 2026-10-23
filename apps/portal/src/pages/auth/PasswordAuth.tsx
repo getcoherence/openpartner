@@ -40,7 +40,7 @@ export function useAuthProviders(): AuthProviders {
 
 export function googleStartHref(
   startUrl: string,
-  flow: 'account' | 'account_add' | 'ops' | 'portal',
+  flow: 'account' | 'account_add' | 'ops' | 'portal' | 'creator',
   slug?: string | null,
   /** account flows: where to land after entering a workspace (lib/signin-next.ts). */
   next?: string | null,
@@ -92,6 +92,11 @@ export function authErrorMessage(code: string): string {
   if (code.includes('google_unavailable')) return 'Google sign-in isn’t set up on this deployment.';
   if (code.includes('google_failed')) return 'Google sign-in didn’t work. Try again.';
   if (code.includes('not_an_operator')) return 'That account isn’t an OpenPartner operator.';
+  // Creator portal (the Network's answers).
+  if (code.includes('creator_not_active')) return 'This creator account can’t sign in. Contact support if you think that’s a mistake.';
+  if (code.includes('pending_deletion'))
+    return 'Your account is scheduled for deletion. Sign in with an emailed link and recover it first.';
+  if (code.includes('google_signup_expired')) return 'Your Google sign-in timed out. Continue with Google again.';
   if (code.includes('invalid_body')) return `Check the fields — passwords need at least ${MIN_PASSWORD_LENGTH} characters.`;
   return code || 'Something went wrong. Try again.';
 }

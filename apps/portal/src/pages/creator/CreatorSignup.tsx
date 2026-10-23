@@ -1,13 +1,57 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import { alpha, softText, theme } from '../../theme.js';
 import { AuthFrame, SignupTabs } from '../auth/Shared.js';
 import { CountryField, countryErrorMessage } from '../../lib/CountryField.js';
+import { useIsMobile } from '../../lib/useMediaQuery.js';
+import {
+  authErrorMessage,
+  GoogleButton,
+  googleStartHref,
+  OrDivider,
+  TextButton,
+  useAuthProviders,
+} from '../auth/PasswordAuth.js';
 import { creatorApi, ApiError } from './creator-api.js';
 
 type HandleStatus = 'idle' | 'checking' | 'available' | 'taken';
 
+/** The Google-verified-signup endpoints (routes/google-auth.ts). Throws
+ *  Error(code). */
+async function googleSignup<T>(method: 'GET' | 'POST' | 'DELETE', body?: unknown): Promise<T> {
+  const r = await fetch('/api/auth/google/creator-signup', {
+    method,
+    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    credentials: 'include',
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!r.ok) throw new Error(typeof data.error === 'string' ? data.error : `${r.status}`);
+  return data as T;
+}
+
+function signupErrorMessage(code: string): string {
+  if (code.includes('handle_taken')) return 'That handle is already taken — pick another.';
+  return countryErrorMessage(code) ?? authErrorMessage(code);
+}
+
+/**
+ * Creator signup. Two ways to prove the address:
+ *   - the emailed confirmation link (POST /creators/signup through the proxy);
+ *   - Google. "Sign up with Google" (or "Continue with Google" on the sign-in
+ *     page, for an address with no creator yet) lands here as ?google=1 with
+ *     the verified address held server-side in a signed cookie. The form
+ *     still asks for a name, handle and country; submitting it has the
+ *     Network create the creator with no confirmation email, and the token
+ *     that comes back is redeemed at /creators/verify like the link's.
+ */
 export function CreatorSignupPage() {
+  const nav = useNavigate();
+  const [params] = useSearchParams();
+  const isMobile = useIsMobile();
+  const providers = useAuthProviders();
+  // The Google-verified address, when this signup came back from Google.
+  const [googleEmail, setGoogleEmail] = useState<string | null>(null);
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [handle, setHandle] = useState('');
@@ -19,6 +63,24 @@ export function CreatorSignupPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
+  const fromGoogle = params.get('google') === '1';
+
+  useEffect(() => {
+    if (!fromGoogle) return;
+    let live = true;
+    googleSignup<{ email: string }>('GET')
+      .then((r) => live && setGoogleEmail(r.email))
+      .catch((e: Error) => live && setErr(signupErrorMessage(e.message)));
+    return () => {
+      live = false;
+    };
+  }, [fromGoogle]);
+
+  async function switchToOtherEmail() {
+    setGoogleEmail(null);
+    setErr(null);
+    await googleSignup('DELETE').catch(() => undefined);
+  }
 
   // Debounced handle availability lookup. Fires 350ms after the last
   // keystroke; bails if handle is empty (it's optional) or too short.
@@ -56,6 +118,23 @@ export function CreatorSignupPage() {
     if (countryMissing) return;
     setBusy(true);
     setErr(null);
+    if (googleEmail) {
+      try {
+        const { token } = await googleSignup<{ token: string }>('POST', {
+          name: name.trim(),
+          handle: handle.trim() || undefined,
+          country,
+          ...(country === 'UA' ? { outsideOccupiedRegions } : {}),
+        });
+        await creatorApi('/creators/verify', { method: 'POST', body: { token } });
+        nav('/creator', { replace: true });
+      } catch (e) {
+        const message = e instanceof ApiError ? ((e.detail as { error?: string } | null)?.error ?? e.message) : (e as Error).message;
+        setErr(signupErrorMessage(message));
+        setBusy(false);
+      }
+      return;
+    }
     try {
       await creatorApi('/creators/signup', {
         method: 'POST',
@@ -97,13 +176,44 @@ export function CreatorSignupPage() {
   return (
     <AuthFrame title="Sign up as a creator" subtitle="Browse and apply to partner programs across the OpenPartner Network.">
       <SignupTabs active="creator" />
+      {!googleEmail && providers.googleStartUrl && (
+        <>
+          <GoogleButton href={googleStartHref(providers.googleStartUrl, 'creator')}>Sign up with Google</GoogleButton>
+          <OrDivider />
+        </>
+      )}
       <form onSubmit={submit}>
         <Field label="Your name">
           <input name="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ada Lovelace" required style={inputStyle} />
         </Field>
-        <Field label="Email" hint="We'll send your sign-in link here.">
-          <input type="email" name="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ada@example.com" required style={inputStyle} />
-        </Field>
+        {googleEmail ? (
+          <Field label="Email">
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: isMobile ? 'column' : 'row',
+                alignItems: isMobile ? 'flex-start' : 'center',
+                justifyContent: 'space-between',
+                gap: isMobile ? 6 : 10,
+                padding: '10px 12px',
+                background: theme.surface2,
+                border: `1px solid ${theme.border}`,
+                borderRadius: theme.radiusSm,
+                fontSize: 14,
+              }}
+            >
+              <span style={{ wordBreak: 'break-all' }}>
+                {googleEmail}{' '}
+                <span style={{ fontSize: 11, color: theme.success, whiteSpace: 'nowrap' }}>✓ Verified by Google</span>
+              </span>
+              <TextButton onClick={switchToOtherEmail}>Use a different email</TextButton>
+            </div>
+          </Field>
+        ) : (
+          <Field label="Email" hint="We'll send your sign-in link here.">
+            <input type="email" name="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ada@example.com" required style={inputStyle} />
+          </Field>
+        )}
         <Field
           label="Handle (you can add it later)"
           hint={
@@ -139,7 +249,7 @@ export function CreatorSignupPage() {
           disabled={cannotSubmit}
           style={primaryBtnStyle(cannotSubmit)}
         >
-          {busy ? 'Creating creator…' : 'Become a creator'}
+          {busy ? 'Creating creator…' : googleEmail ? 'Create my account' : 'Become a creator'}
         </button>
         <div style={{ marginTop: 12, fontSize: 12, color: theme.textDim, textAlign: 'center' }}>
           Already have an account? <Link to="/creator/login" style={{ color: theme.accentText }}>Sign in</Link>

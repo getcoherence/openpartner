@@ -61,6 +61,14 @@ const ALLOWED_EXACT = new Set([
   '/creators/signup',
   '/creators/signin',
   '/creators/verify',
+  // Passwords (the Network's docs/creator-auth.md): a correct password
+  // returns the token /creators/signin would mail, redeemed at
+  // /creators/verify; "forgot" mails a reset link to /creator/reset-password.
+  // /creators/me/password is GET (has one?) + PUT (set / change).
+  '/creators/signin/password',
+  '/creators/password/forgot',
+  '/creators/password/reset',
+  '/creators/me/password',
   '/creators/signout',
   '/creators/whoami',
   '/creators/me',

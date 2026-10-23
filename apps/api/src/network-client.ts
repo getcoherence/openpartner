@@ -29,6 +29,7 @@ import type { Knex } from 'knex';
 import { TABLES, type AudienceSize, type NetworkOutboxRow } from '@openpartner/db';
 import { decryptSecret, encryptSecret } from './crypto.js';
 import { getWhiteLabelState } from './white-label.js';
+import { CLIENT_IP_HEADER, signClientIp } from './routes/creator-portal.js';
 
 const CONFIG_KEY = 'network_membership';
 // Outbox / fire-and-forget pushes — short timeout, the scheduler retries.
@@ -774,6 +775,7 @@ async function callNetworkAdmin<T = void>(
   method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
   body?: Record<string, unknown>,
+  extraHeaders: Record<string, string> = {},
 ): Promise<T> {
   const adminKey = process.env.NETWORK_ADMIN_API_KEY;
   if (!adminKey) throw new Error('NETWORK_ADMIN_API_KEY not set — cannot moderate on the Network');
@@ -781,6 +783,7 @@ async function callNetworkAdmin<T = void>(
   const res = await fetch(url, {
     method,
     headers: {
+      ...extraHeaders,
       'content-type': 'application/json',
       authorization: `Bearer ${adminKey}`,
       'user-agent': 'OpenPartner-Vendor/1',
@@ -807,6 +810,63 @@ async function callNetworkAdmin<T = void>(
 export function platformNetworkUrl(): string | null {
   const v = (process.env.NETWORK_URL ?? '').trim();
   return v.length > 0 ? v : null;
+}
+
+// ---------- Creator "Continue with Google" (docs/creator-sign-in.md) ----------
+//
+// routes/google-auth.ts has verified the address with Google. The Network
+// hands back the token its sign-in email would have carried (the signup
+// confirmation's, for a new creator), and the browser redeems it at
+// /creators/verify through the creator-portal proxy — so the session, the
+// country check and takedowns stay the Network's. The browser's address
+// rides along, signed, for the Network's country checks, as on every
+// proxied creator request.
+
+function creatorClientIpHeader(clientIp: string | null | undefined): Record<string, string> {
+  const key = process.env.NETWORK_ADMIN_API_KEY;
+  return key && clientIp ? { [CLIENT_IP_HEADER]: signClientIp(clientIp, key) } : {};
+}
+
+/** A sign-in token for the creator with this verified address. Throws
+ *  NetworkAdminError: code 'no_creator' (404) when there's none — the
+ *  Network never creates one here — 'creator_not_active', or a country
+ *  refusal. */
+export async function adminCreatorSigninToken(networkUrl: string, email: string, clientIp: string | null | undefined): Promise<string> {
+  const r = await callNetworkAdmin<{ token: string }>(
+    networkUrl,
+    'POST',
+    '/admin/creators/signin-token',
+    { email },
+    creatorClientIpHeader(clientIp),
+  );
+  return r.token;
+}
+
+export interface AdminCreatorSignupInput {
+  /** Verified by Google — never taken from the browser. */
+  email: string;
+  name: string;
+  handle?: string;
+  country: string;
+  outsideOccupiedRegions?: boolean;
+}
+
+/** Create the creator for a Google-verified address (the Network accepts a
+ *  signup without its confirmation email only over this admin key) and
+ *  return the token to sign them in with. An address that became a creator
+ *  meanwhile is signed in unchanged (`created: false`). */
+export async function adminCreatorSignup(
+  networkUrl: string,
+  input: AdminCreatorSignupInput,
+  clientIp: string | null | undefined,
+): Promise<{ token: string; created: boolean }> {
+  return callNetworkAdmin<{ token: string; created: boolean }>(
+    networkUrl,
+    'POST',
+    '/admin/creators/signup',
+    { ...input },
+    creatorClientIpHeader(clientIp),
+  );
 }
 
 /** Suspend the brand's Vendor on the Network — pulls every offering it has
