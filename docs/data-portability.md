@@ -60,7 +60,7 @@ appears after everything it references.
 | 20 | `WebhookEndpoint` | `id` | **your outbound webhook endpoints** (not the signing secret) |
 | 21 | `PartnerPostback` | `id` | **each partner's own tracker callbacks** (the URL opened) |
 | 22 | `ConversionPostbackToken` | `id` | **the GET /postback allowlist and rotation history** (not the token) |
-| 23 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy, the portal-access default and the onboarding Network skip** |
+| 23 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy, the portal-access default, the onboarding Network skip and the Pay with PayPal INR setting** |
 
 Rows 3, 4 and 7 were added in schemaVersion 2 (Aug 2026). Without them a
 restored instance had the roster but no grants, no coupon attribution, and
@@ -290,12 +290,14 @@ Only these keys are exported, and only these are imported:
 | `partner_signup` | the join page: auto-approve or review, or closed |
 | `partner_access` | whether partners created without an invite may sign in to the partner portal (a headless program turns it off) |
 | `onboarding` | whether the brand said "Not now" to listing on the OpenPartner Network (the dashboard's Getting started card) |
+| `paypal_payouts` | whether Pay with PayPal sends INR balances in USD (`sendUnsupportedAs`), [paypal-payouts.md](paypal-payouts.md#balances-paypal-cant-send-inr) |
 
 `onboarding` was added in Oct 2026 without a version bump. It is a new
 key in a table the bundle already carries, not a new table or column. An
 instance from before it skips the key on import (Config import takes only
 the keys it knows), and the restored brand sees the Network step on its
-Getting started card again.
+Getting started card again. `paypal_payouts` (Oct 2026) was added the
+same way: an older instance skips it, and the setting reads as off.
 
 Every other key stays out, on purpose:
 
@@ -586,7 +588,10 @@ instance the brand connects its PayPal app again. What the batches did is
 on the payouts, which are exported: each paid payout's
 `metadata.manualExport` carries `via: "api"`, PayPal's `payoutBatchId`,
 item id, transaction id and status, and a released one carries
-`metadata.paypalReleases`. A restored payout still stamped with a batch
+`metadata.paypalReleases`. A payout whose INR balance was sent in USD
+keeps `amount` and `currency` in INR; its stamp's `conversion` holds the
+INR amount, the USD amount sent, the ECB rate and its date, and a released
+one keeps that `conversion` in its `paypalReleases` entry. A restored payout still stamped with a batch
 that didn't travel is never released, because PayPal may still pay that
 batch: once checked in PayPal it can be marked sent. Settle every PayPal
 batch before you migrate.

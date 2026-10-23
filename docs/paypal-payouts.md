@@ -16,8 +16,9 @@ OpenPartner's.
 
 Code: `apps/api/src/paypal-api.ts` (the PayPal client),
 `paypal-connection.ts` (credentials), `paypal-payouts.ts` (batches),
-`routes/paypal.ts`, `routes/paypal-webhook.ts`; portal
-`pages/admin/PaypalPayoutsCard.tsx` and `pages/ManualPayoutFiles.tsx`.
+`paypal-send-as.ts` (INR sent in USD), `routes/paypal.ts`,
+`routes/paypal-webhook.ts`; portal `pages/admin/PaypalPayoutsCard.tsx`,
+`pages/ManualPayoutFiles.tsx` and `pages/payout-sent.tsx`.
 
 ## What the brand needs
 
@@ -90,7 +91,9 @@ A batch takes exactly the payouts a PayPal file would
 ([manual-payout-files.md](manual-payout-files.md#why-a-payout-is-in-no-file)):
 
 - the partner's details are a PayPal email that can be read;
-- the currency is one PayPal sends (the file's list: no INR);
+- the currency is one PayPal sends (the file's list: no INR), or, with
+  [INR in USD](#balances-paypal-cant-send-inr) turned on, INR sent in USD
+  at a quoted rate;
 - the amount is within PayPal's per-payment limit for that currency
   (`over_paypal_limit` otherwise; USD 60,000, EUR 55,000, GBP 50,000…, the
   "Payout transaction limits" table on developer.paypal.com/payouts/fees,
@@ -213,7 +216,10 @@ until the admin settles it, after looking in the PayPal account
   `WebhookDelivery`: not exported either. Everything worth keeping is on the
   payouts, which are exported: `manualExport` (`via: "api"`,
   `payoutBatchId`, `paypal.itemId`, `paypal.transactionId`,
-  `paypal.status`) and `paypalReleases`.
+  `paypal.status`, and `conversion` for INR sent in USD) and
+  `paypalReleases`.
+- The INR-in-USD setting is the `paypal_payouts` Config key, exported
+  with the brand's other settings.
 - A bundle restored onto another deployment carries payouts stamped with a
   batch that doesn't exist there. PayPal may still pay that batch, so those
   payouts are never released: they stay out of files and new batches, and
@@ -224,24 +230,88 @@ until the admin settles it, after looking in the PayPal account
 
 See [data-portability.md](data-portability.md#credentials).
 
-## INR and other currencies PayPal can't send
+## Balances PayPal can't send (INR)
 
 PayPal can't send INR: since April 2021 Indian PayPal accounts receive
 international payments in USD only. A payout's currency is its
-commissions' currency, so **an INR program can't use Pay with PayPal (or
-the PayPal file) today**. Its INR payouts show `currency_not_supported`.
-What an INR program can do today:
+commissions' currency, so an INR program's payouts are
+`currency_not_supported` for PayPal files and batches, unless the brand
+turns on **Pay INR balances with PayPal in USD** (Settings → Pay with
+PayPal; `POST /config/paypal-payouts` `{"sendUnsupportedAs": "USD"}`; the
+`paypal_payouts` Config key, off by default). Code:
+`apps/api/src/paypal-send-as.ts` and `quotePaypalConversion` /
+`sendRunWithPaypal` in `paypal-payouts.ts`.
 
-- partners give a **UPI ID** or bank details (or free-text instructions),
-  the brand pays each one from its own bank, and marks it sent
-  (`pay_individually`);
-- the Wise file can't help yet: Wise doesn't send from INR, and INR
-  targets need a purpose-of-payment column the file doesn't have.
+With it on:
 
-Paying an INR balance in a PayPal currency the brand picks (USD, fixed at
-the ECB reference rate when the batch is made, both amounts stored on the
-payout and shown to the brand before sending and to the partner after) is
-a follow-up; the design is in the pull request that added this page.
+- **Ready, for PayPal only.** An INR payout whose partner gave a PayPal
+  email is ready for a PayPal batch "INR → USD" (`ready[].sendAs` and
+  `sendAs` on the run's payouts). No file takes it: a file would need the
+  rate too, and the brand's PayPal would then convert it again.
+- **Quote first.** **Pay with PayPal in USD** asks for a quote
+  (`POST /payouts/runs/{runId}/paypal-batches/quote`
+  `{"currency": "INR", "sendAs": "USD"}`): the European Central Bank
+  reference rate (`fx.ts`, the same feed as the usage meter, crossed
+  through EUR), its date, each payout's USD amount, the INR and USD totals,
+  and a signed `quoteId` valid for 15 minutes. Nothing is held.
+- **Rounded per payout.** Each payout's USD amount is its INR amount × the
+  rate, rounded half up to the cent on its own (integer arithmetic on the
+  12-decimal rate, so the same inputs always give the same cents). The USD
+  total is the sum of those, which can differ by a few cents from the INR
+  total × the rate. PayPal's per-payment limit (USD 60,000) applies to the
+  USD amount; a payout over it, or under a cent, is listed in `leftOut`
+  and stays out of the batch.
+- **Confirm, then send at that rate.** The confirm names both totals, the
+  rate and its date, and says whose the conversion at withdrawal is. The
+  send (`POST …/paypal-batches` `{"currency": "INR", "sendAs": "USD",
+  "quoteId": "…"}`) freezes exactly the quoted rate into the batch and
+  each payout, and sends exactly the quoted payouts. Refused, with nothing
+  stamped: an expired quote (`409 quote_expired`), one whose payouts or
+  amounts changed since (`409 quote_changed`: another batch took one, a
+  partner changed their details, PayPal gave one back), a forged or other
+  run's quote (`400 invalid_quote`), or the setting turned off in between
+  (`409 conversion_not_enabled`). Quote again. A quote can't be spent
+  twice: its payouts are stamped by the first send.
+- **Fails closed.** If the ECB feed can't be read, or has no INR rate,
+  there is no quote (`503 fx_unavailable`). No rate is ever guessed, and a
+  send never reads the feed: the quote's rate is the rate.
+- **The ledger stays INR.** `Payout.amount` and `currency` don't change,
+  so commissions, clawback netting and reporting are unchanged. The batch
+  is in USD (`currency`, `total`) with `conversion` (`sourceCurrency`,
+  `sourceTotal`, `rate`, `rateSource: "ecb"`, `rateDate`, `quotedAt`).
+  Each payout's stamp records its own (`manualExport.conversion`:
+  `sourceAmount`, `sourceCurrency`, `sentAmount`, `sentCurrency`, `rate`,
+  `rateSource`, `rateDate`), which travels in exports. The PayPal item's
+  note says the same: "INR 1,500.00, sent as USD 17.94 at the ECB
+  reference rate of 22 Oct 2026".
+- **The partner sees both.** `GET /partners/{id}/payouts` and
+  `GET /payouts` add `sent` (`amount`, `currency`, `rate`, `rateSource`,
+  `rateDate`), and the partner's Payouts page reads "₹1,500.00, sent as
+  $17.94 at the ECB rate of 22 Oct".
+- **Returned money is re-quoted.** A converted payout PayPal fails,
+  returns, refunds or reverses goes back to pending like any other, its
+  conversion kept in `metadata.paypalReleases`. Its next send takes a fresh
+  quote at the day's rate: a quote made before the release no longer
+  matches (`quote_changed`).
+- **Sandbox** batches are rehearsals as before: converted payouts come
+  back to send, never paid.
+
+**Whose conversion is whose.** The brand pays the ECB mid-market amount in
+USD from its PayPal balance (PayPal charges the brand its usual Payouts
+fee, and a currency-conversion fee if the brand's balance isn't in USD).
+When the partner withdraws USD to an Indian bank, PayPal converts it at
+its own rate; that is between the partner and PayPal, and every place
+that shows a converted amount says so. Indian PayPal recipients may also
+need a verified PAN and a purpose code on their side to receive.
+
+Other currencies PayPal can't send are not converted:
+`PAYPAL_CONVERTIBLE_CURRENCIES` lists INR only. Add one only after
+checking that PayPal really can't send it, how its recipients' accounts
+receive, and that the ECB publishes it. Without the setting, an INR
+program pays partners who give a UPI ID or bank details from its own bank
+and marks them sent (`pay_individually`); the Wise file can't help yet
+(Wise doesn't send from INR, and INR targets need a purpose-of-payment
+column the file doesn't have).
 
 ## API
 
@@ -254,7 +324,9 @@ All admin-only (no scope grants them); see `/docs` for the schemas.
 | `POST /config/paypal/{environment}/verify` | a fresh token call |
 | `POST /config/paypal/{environment}/activate` | send with this environment |
 | `DELETE /config/paypal/{environment}` | disconnect |
-| `POST /payouts/runs/{runId}/paypal-batches` (`{ currency }`) | send the next batch of a run |
+| `POST /payouts/runs/{runId}/paypal-batches` (`{ currency }`, or `{ currency, sendAs, quoteId }`) | send the next batch of a run |
+| `POST /payouts/runs/{runId}/paypal-batches/quote` (`{ currency: "INR", sendAs: "USD" }`) | quote sending INR balances in USD |
+| `GET /config/paypal-payouts`, `POST /config/paypal-payouts` (`{ sendUnsupportedAs: "USD" \| null }`) | INR in USD on or off |
 | `GET /payouts/runs/{runId}/paypal-batches` | a run's batches |
 | `GET /payouts/paypal-batches/{batchId}` | one batch |
 | `POST /payouts/paypal-batches/{batchId}/sync` | read it from PayPal now |
@@ -323,3 +395,12 @@ sandbox:
    request with a changed body must answer `400 invalid_signature`.
 10. Check `GET /export.json` contains no `PaypalConnection` and not the
     secret, and that the secret appears nowhere in the API logs.
+11. INR in USD: turn on **Pay INR balances with PayPal in USD**, give a
+    partner an approved INR commission and the sandbox Personal email,
+    **Run payouts**. The group reads "PayPal · INR → USD". Press **Test
+    with PayPal sandbox in USD**: the confirm shows the ECB rate and date
+    and both totals (compare with the ECB's own page for that date). The
+    sandbox Personal account receives the USD amount, with a note naming
+    both amounts; the payout comes back to send once settled. Leave a
+    quote open for more than 15 minutes before confirming: the send says
+    the quote expired.

@@ -51,6 +51,7 @@ const { issueMagicLink } = await import('../auth-sessions.js');
 const { __setPaypalFetchForTests } = await import('../paypal-api.js');
 const { parsePayoutDetails, savePayoutProfile } = await import('../payout-profile.js');
 const { FakePaypal } = await import('./fake-paypal.js');
+const { stubEcbFetch } = await import('./ecb-fixture.js');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
@@ -782,6 +783,56 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
       check('resolvePaypalBatch', await admin.post('/payouts/paypal-batches/missing/resolve', { action: 'release' }));
       check('cancelUnclaimedPaypalPayout', await admin.post(`/payouts/${ppPayout}/paypal-cancel`));
       check('cancelUnclaimedPaypalPayout', await admin.post(`/payouts/${ppPayout}/paypal-cancel`));
+
+      // INR through Pay with PayPal in USD, at a quoted ECB rate.
+      const ecb = stubEcbFetch('ok');
+      const inrRun = ulid();
+      const inrPayout = ulid();
+      try {
+        check('getPaypalPayoutSettings', await admin.get('/config/paypal-payouts'));
+        check('updatePaypalPayoutSettings', await admin.post('/config/paypal-payouts', { sendUnsupportedAs: 'EUR' }));
+        await db(TABLES.Payout).insert({
+          id: inrPayout,
+          tenantId: DEFAULT_TENANT_ID,
+          partnerId: ppPartner,
+          amount: '1500.00',
+          currency: 'INR',
+          method: 'manual',
+          status: 'pending',
+          metadata: { runId: inrRun, commissionCount: 1 },
+        });
+        check('quotePaypalConversion', await admin.post(`/payouts/runs/${inrRun}/paypal-batches/quote`, { currency: 'INR', sendAs: 'USD' })); // 409: off
+        check('updatePaypalPayoutSettings', await admin.post('/config/paypal-payouts', { sendUnsupportedAs: 'USD' }));
+        check('getManualPayoutRun', await admin.get(`/payouts/runs/${inrRun}`));
+        check('listManualPayoutRunPayouts', await admin.get(`/payouts/runs/${inrRun}/payouts`));
+        check('quotePaypalConversion', await admin.post(`/payouts/runs/${inrRun}/paypal-batches/quote`, { currency: 'INR' }));
+        check('quotePaypalConversion', await admin.post(`/payouts/runs/${inrRun}/paypal-batches/quote`, { currency: 'USD', sendAs: 'USD' }));
+        check('quotePaypalConversion', await admin.post(`/payouts/runs/${ulid()}/paypal-batches/quote`, { currency: 'INR', sendAs: 'USD' }));
+        const quoted = check<{ quote: { quoteId: string } }>(
+          'quotePaypalConversion',
+          await admin.post(`/payouts/runs/${inrRun}/paypal-batches/quote`, { currency: 'INR', sendAs: 'USD' }),
+        );
+        check('sendRunWithPaypal', await admin.post(`/payouts/runs/${inrRun}/paypal-batches`, { currency: 'INR', sendAs: 'USD' }));
+        check('sendRunWithPaypal', await admin.post(`/payouts/runs/${inrRun}/paypal-batches`, { currency: 'USD', sendAs: 'USD', quoteId: quoted.quote.quoteId }));
+        const inrSent = check<{ batch: { batchId: string } }>(
+          'sendRunWithPaypal',
+          await admin.post(`/payouts/runs/${inrRun}/paypal-batches`, { currency: 'INR', sendAs: 'USD', quoteId: quoted.quote.quoteId }),
+        );
+        check('sendRunWithPaypal', await admin.post(`/payouts/runs/${inrRun}/paypal-batches`, { currency: 'INR', sendAs: 'USD', quoteId: quoted.quote.quoteId })); // 409: spent
+        check('getPaypalBatch', await admin.get(`/payouts/paypal-batches/${inrSent.batch.batchId}`));
+        check('listManualPayoutRunPayouts', await admin.get(`/payouts/runs/${inrRun}/payouts`));
+        check('listPartnerPayouts', await admin.get(`/partners/${ppPartner}/payouts`));
+        check('listPayouts', await admin.get('/payouts'));
+        ecb.serve('down');
+        check('quotePaypalConversion', await admin.post(`/payouts/runs/${inrRun}/paypal-batches/quote`, { currency: 'INR', sendAs: 'USD' })); // 503
+        check('updatePaypalPayoutSettings', await admin.post('/config/paypal-payouts', { sendUnsupportedAs: null }));
+      } finally {
+        ecb.restore();
+        // The batch is in flight at the fake PayPal; leave nothing pinning the app.
+        await db(TABLES.Payout).where({ id: inrPayout }).del();
+        await db(TABLES.PaypalPayoutBatch).where({ runId: inrRun }).del();
+        await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID, key: 'paypal_payouts' }).del();
+      }
       check('disconnectPaypal', await admin.delete('/config/paypal/live'));
       check('disconnectPaypal', await admin.delete('/config/paypal/live'));
       await db(TABLES.Payout).where({ id: ppPayout }).del();

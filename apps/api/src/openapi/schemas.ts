@@ -554,7 +554,30 @@ export const Payout = z
 
 const partnerName = z.string().nullable().openapi({ description: "The partner's name. Null only if the partner record is gone." });
 
-export const PayoutListItem = Payout.extend({ partnerName }).openapi('PayoutListItem');
+const rateString = z.string().regex(/^\d+(\.\d+)?$/).openapi({
+  description: 'Units of the sent currency per unit of the payout’s currency, as a decimal string (ECB reference rates, crossed through EUR).',
+  example: '0.011958904110',
+});
+
+export const PayoutSent = z
+  .object({
+    amount: Decimal.openapi({ description: 'What PayPal was asked to send.' }),
+    currency: z.string(),
+    rate: rateString,
+    rateSource: z.literal('ecb'),
+    rateDate: z.string().openapi({ description: 'The ECB reference date of the rate (YYYY-MM-DD).' }),
+  })
+  .openapi('PayoutSent', {
+    description:
+      'A payout PayPal can’t send in its own currency (INR), sent through Pay with PayPal in another (USD) at the ECB reference rate frozen when the batch was made. `amount` and `currency` on the payout stay its own. What PayPal later charges the partner to convert it at withdrawal is between the partner and PayPal.',
+  });
+
+const sent = orNull(PayoutSent).openapi({ description: 'Set while (or once) a PayPal batch sends this payout in another currency; gone if PayPal returns it.' });
+
+/** A payout in the payout lists: with what PayPal sent, if converted. */
+export const PayoutWithSent = Payout.extend({ sent }).openapi('PayoutWithSent');
+
+export const PayoutListItem = Payout.extend({ partnerName, sent }).openapi('PayoutListItem');
 
 export const PayoutPage = z
   .object({ payouts: z.array(PayoutListItem), nextCursor: z.string().nullable() })
@@ -676,6 +699,20 @@ const DoNotPayReason = z.enum(DO_NOT_PAY_REASONS).openapi({
   description:
     "OpenPartner Cloud: the payout must not be paid. `country_not_supported`: the partner, or their payout account, is in a country OpenPartner doesn't serve. `screening_confirmed`: a confirmed sanctions-list match. Every confirm refuses it.",
 });
+const PaypalConversion = z
+  .object({
+    sourceAmount: Decimal.openapi({ description: 'The payout’s own amount.' }),
+    sourceCurrency: z.string(),
+    sentAmount: Decimal.openapi({ description: 'What PayPal was asked to send: sourceAmount × rate, rounded to the cent on its own.' }),
+    sentCurrency: z.string(),
+    rate: rateString,
+    rateSource: z.literal('ecb'),
+    rateDate: z.string().openapi({ description: 'The ECB reference date of the rate (YYYY-MM-DD).' }),
+  })
+  .openapi('PaypalConversion', {
+    description: 'Stamped on a payout a PayPal batch sends in another currency (`metadata.manualExport.conversion`); exported with the payout.',
+  });
+
 const PaypalItemStatus = z
   .object({
     itemId: z.string().openapi({ description: 'PayPal’s payout_item_id.' }),
@@ -707,7 +744,18 @@ export const ManualPayoutRun = z
     createdAt: ts,
     pendingCount: z.number().int(),
     ready: z
-      .array(z.object({ provider: ManualPayoutProvider, currency: z.string(), count: z.number().int(), total: Decimal }))
+      .array(
+        z.object({
+          provider: ManualPayoutProvider,
+          currency: z.string(),
+          sendAs: z.string().nullable().openapi({
+            description:
+              'Balances PayPal can’t send in `currency` (INR) that Pay with PayPal sends in this currency instead (the `paypal_payouts` setting): quote with `POST /payouts/runs/{runId}/paypal-batches/quote`, then send. No file takes them. Null for every other group.',
+          }),
+          count: z.number().int(),
+          total: Decimal.openapi({ description: 'In `currency`.' }),
+        }),
+      )
       .openapi({
         description:
           'Payouts no file holds yet that a new file would take, per provider and currency (PayPal: the payout currency; Wise: the source currency). Each new file takes up to 5,000 (PayPal) or 1,000 (Wise) of them.',
@@ -771,9 +819,15 @@ export const ManualRunPayout = z
         }),
         destinationChanged: z.boolean().openapi({ description: 'The partner changed or removed their payout details after the file was made.' }),
         paypal: orNull(PaypalItemStatus).openapi({ description: 'A PayPal Payouts batch: this payout’s item, once PayPal has listed it.' }),
+        conversion: orNull(PaypalConversion).openapi({
+          description: 'A PayPal Payouts batch sending this payout in another currency (an INR balance sent in USD): its amounts and the rate, frozen when the batch was made.',
+        }),
       }),
     ).openapi({ description: 'The file (or PayPal Payouts batch) this payout is in. It stays there, and only there, until it is confirmed, the file is discarded, or PayPal reports it failed or returned.' }),
     ready: ManualPayoutProvider.nullable().openapi({ description: 'The file a new export would put this payout in.' }),
+    sendAs: z.string().nullable().openapi({
+      description: 'Ready for a Pay with PayPal batch only, sent in this currency at a quoted rate (a balance PayPal can’t send in its own). No file takes it.',
+    }),
     excluded: z.enum(MANUAL_EXCLUSION_REASONS).nullable().openapi({
       description:
         "Why a payout is in no file: `no_payout_details`, `details_unreadable`, `pay_individually` (a UPI ID or instructions: pay it yourself), `currency_not_supported` (PayPal can't send INR; Wise can't send from this currency, or to INR yet), `details_incomplete` (Wise needs the holder's address for a payout sent in USD or AUD), `over_paypal_limit` (more than PayPal sends in one payment in this currency, e.g. USD 60,000), and on OpenPartner Cloud the do-not-pay reasons `country_not_supported` and `screening_confirmed`.",
@@ -855,9 +909,19 @@ export const PaypalBatch = z
     batchId: id.openapi({ description: 'Also the `sender_batch_id` PayPal shows, and each payout’s `exportId`.' }),
     runId: id,
     environment: PaypalEnvironment,
-    currency: z.string(),
+    currency: z.string().openapi({ description: 'What PayPal sends: the payouts’ currency, or the one their balances were converted to (`conversion`).' }),
     itemCount: z.number().int(),
-    total: Decimal,
+    total: Decimal.openapi({ description: 'In `currency`: what PayPal is asked to send.' }),
+    conversion: orNull(
+      z.object({
+        sourceCurrency: z.string().openapi({ description: 'The payouts’ own currency (INR).' }),
+        sourceTotal: Decimal,
+        rate: rateString,
+        rateSource: z.literal('ecb'),
+        rateDate: z.string().openapi({ description: 'The ECB reference date of the rate (YYYY-MM-DD).' }),
+        quotedAt: ts.openapi({ description: 'When the quote this batch was sent with was made.' }),
+      }),
+    ).openapi({ description: 'A batch sending balances PayPal can’t send in their own currency, at a quoted rate. Null otherwise.' }),
     state: z.enum(['intent', 'posted', 'submitted', 'completed', 'failed', 'denied', 'released', 'reconcile_required']).openapi({
       description:
         '`intent`: committed, not sent yet. `posted`: sent, PayPal’s answer not in yet (re-sent automatically; PayPal never makes a second batch for the same id). `submitted`: PayPal has it and is paying. `completed`: every payout paid or released. `failed`: PayPal refused it outright; nothing was sent and the payouts are back to pending. `denied`: PayPal denied the batch; payouts released. `released`: you released it after checking PayPal. `reconcile_required`: OpenPartner can’t tell whether it went out; check PayPal, then `POST /payouts/paypal-batches/{batchId}/resolve`.',
@@ -883,6 +947,44 @@ export const PaypalBatch = z
     lastSyncedAt: tsNullable,
   })
   .openapi('PaypalBatch');
+
+const quoteItem = z.object({
+  payoutId: id,
+  partnerId: id,
+  partnerName: z.string(),
+  amount: Decimal.openapi({ description: 'The payout’s own amount, in `currency`.' }),
+  sentAmount: Decimal.openapi({ description: 'What PayPal would send for it, in `sendAs`: amount × rate, rounded half up to the cent on its own.' }),
+});
+
+export const PaypalConversionQuote = z
+  .object({
+    quoteId: z.string().openapi({ description: 'Send with it (`POST /payouts/runs/{runId}/paypal-batches` with `currency`, `sendAs` and `quoteId`) before `expiresAt`. Signed; it reserves nothing.' }),
+    runId: id,
+    currency: z.string().openapi({ description: 'The payouts’ own currency (INR).' }),
+    sendAs: z.enum(['USD']),
+    rate: rateString,
+    rateSource: z.literal('ecb'),
+    rateDate: z.string().openapi({ description: 'The ECB reference date (YYYY-MM-DD). The ECB publishes once a business day, around 16:00 CET.' }),
+    quotedAt: ts,
+    expiresAt: ts.openapi({ description: '15 minutes after `quotedAt`.' }),
+    count: z.number().int(),
+    sourceTotal: Decimal.openapi({ description: 'What the quoted payouts add up to, in `currency`.' }),
+    sentTotal: Decimal.openapi({ description: 'What PayPal would send, in `sendAs`: the sum of the per-item amounts, which can differ by a few cents from sourceTotal × rate.' }),
+    items: z.array(quoteItem),
+    leftOut: z
+      .array(quoteItem.extend({ reason: z.enum(['over_paypal_limit', 'below_minimum']) }))
+      .openapi({ description: 'Payouts this batch can’t take at this rate: over PayPal’s per-payment limit in `sendAs` (USD 60,000), or under a cent in it. Pay them another way.' }),
+  })
+  .openapi('PaypalConversionQuote');
+
+export const PaypalPayoutSettings = z
+  .object({
+    sendUnsupportedAs: z.enum(['USD']).nullable().openapi({
+      description:
+        'Pay balances PayPal can’t send in their own currency (INR) through Pay with PayPal in this currency, at the ECB reference rate quoted before each batch. Null (the default): off, and those payouts stay `currency_not_supported`.',
+    }),
+  })
+  .openapi('PaypalPayoutSettings');
 
 // ---------- Reporting ----------
 

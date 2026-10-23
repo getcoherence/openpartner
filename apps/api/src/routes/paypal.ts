@@ -3,9 +3,12 @@
  *
  *   /config/paypal…               the brand's PayPal REST app, per
  *                                 environment (paypal-connection.ts)
+ *   /config/paypal-payouts        "pay balances PayPal can't send in"
+ *                                 (paypal-send-as.ts)
  *   /payouts/runs/:runId/paypal-batches, /payouts/paypal-batches/…
- *                                 sending a run's payouts and following
- *                                 the batches (paypal-payouts.ts)
+ *                                 sending a run's payouts (quoting a
+ *                                 conversion first, for INR) and
+ *                                 following the batches (paypal-payouts.ts)
  *
  * Admin only; no scope grants it. The secret is accepted once, on
  * connect, and never returned: no response, log line or error carries
@@ -35,10 +38,12 @@ import {
   cancelUnclaimedPayout,
   getPaypalBatch,
   listRunPaypalBatches,
+  quotePaypalConversion,
   resolvePaypalBatch,
   sendRunWithPaypal,
   syncPaypalBatchNow,
 } from '../paypal-payouts.js';
+import { PAYPAL_SEND_AS_CURRENCIES, readPaypalPayoutSettings, savePaypalPayoutSettings } from '../paypal-send-as.js';
 
 export const paypalRouter = Router();
 
@@ -52,11 +57,42 @@ export const connectPaypalSchema = z.object({
 
 export const paypalEnvironmentParam = z.enum(PAYPAL_ENVIRONMENTS);
 
+const currencyCode = z
+  .string()
+  .regex(/^[A-Za-z]{3}$/, 'currency must be a 3-letter ISO 4217 code')
+  .transform((c) => c.toUpperCase());
+
+const sendAs = z.enum(PAYPAL_SEND_AS_CURRENCIES);
+
+/** `sendAs` and `quoteId` go together; one without the other is
+ *  `400 invalid_quote` (sendRunWithPaypal) rather than a schema rule, so
+ *  the published schema says exactly what the route accepts. */
 export const sendWithPaypalSchema = z.object({
-  currency: z
+  currency: currencyCode,
+  sendAs: sendAs
+    .optional()
+    .describe('Send balances PayPal can’t send in `currency` (INR) in this currency instead, at the rate of `quoteId`. Needs the `paypal_payouts` setting.'),
+  quoteId: z
     .string()
-    .regex(/^[A-Za-z]{3}$/, 'currency must be a 3-letter ISO 4217 code')
-    .transform((c) => c.toUpperCase()),
+    .min(1)
+    .max(2048)
+    .optional()
+    .describe(
+      'With `sendAs`: from `POST /payouts/runs/{runId}/paypal-batches/quote`, within 15 minutes. The batch is sent at exactly its rate, and only if the payouts are still exactly the quoted ones.',
+    ),
+});
+
+export const quotePaypalConversionSchema = z.object({
+  currency: currencyCode,
+  sendAs,
+});
+
+/** POST /config/paypal-payouts. Omitted fields keep their value. */
+export const paypalPayoutSettingsSchema = z.object({
+  sendUnsupportedAs: sendAs
+    .nullable()
+    .optional()
+    .describe('Pay balances PayPal can’t send (INR) through Pay with PayPal in this currency, at the ECB reference rate quoted before each batch. `null` turns it off.'),
 });
 
 export const resolvePaypalBatchSchema = z.discriminatedUnion('action', [
@@ -138,15 +174,51 @@ paypalRouter.delete('/config/paypal/:environment', requireAuth, requireAdmin, as
   }
 });
 
+paypalRouter.get('/config/paypal-payouts', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  res.json(await readPaypalPayoutSettings(db, tenantId));
+});
+
+paypalRouter.post('/config/paypal-payouts', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = paypalPayoutSettingsSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  res.json(await savePaypalPayoutSettings(db, tenantId, body.data));
+});
+
+const SEND_STATUS = {
+  nothing_to_send: 404,
+  paypal_not_connected: 409,
+  conversion_not_enabled: 409,
+  quote_expired: 409,
+  quote_changed: 409,
+  invalid_quote: 400,
+  currency_not_supported: 422,
+  conversion_not_needed: 422,
+  fx_unavailable: 503,
+} as const;
+
+/** Quote a conversion: reads the ECB rate on the request (no DB
+ *  transaction is open while it does), holds nothing. */
+paypalRouter.post('/payouts/runs/:runId/paypal-batches/quote', requireAuth, requireAdmin, async (req, res) => {
+  const { tenantId } = tenantOf(req);
+  const body = quotePaypalConversionSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const out = await quotePaypalConversion(tenantId, req.params.runId!, body.data.currency, body.data.sendAs);
+  res.setHeader('Cache-Control', 'no-store');
+  if (!out.ok) return res.status(SEND_STATUS[out.error]).json({ error: out.error, ...(out.detail ? { detail: out.detail } : {}) });
+  res.json({ quote: out.quote });
+});
+
 paypalRouter.post('/payouts/runs/:runId/paypal-batches', requireAuth, requireAdmin, async (req, res) => {
   const { tenantId } = tenantOf(req);
   const body = sendWithPaypalSchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
-  const out = await sendRunWithPaypal(tenantId, req.params.runId!, body.data.currency, sentBy(req));
-  if (!out.ok) {
-    const status = out.error === 'paypal_not_connected' ? 409 : out.error === 'currency_not_supported' ? 422 : 404;
-    return res.status(status).json({ error: out.error });
-  }
+  const out = await sendRunWithPaypal(tenantId, req.params.runId!, body.data.currency, sentBy(req), {
+    sendAs: body.data.sendAs,
+    quoteId: body.data.quoteId,
+  });
+  if (!out.ok) return res.status(SEND_STATUS[out.error]).json({ error: out.error });
   res.status(201).json({ batch: out.batch });
 });
 

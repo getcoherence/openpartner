@@ -1440,7 +1440,28 @@ export interface PaypalPayoutBatchRow {
   createdAt: Date;
   completedAt: Date | null;
   resolution: 'released' | 'linked' | null;
+  /** A batch that sends a balance PayPal can't send in its own currency
+   *  (INR) in `currency` (USD), at the rate quoted before sending
+   *  (migration 20261023010000). Null when the payouts are sent in their
+   *  own currency. */
+  conversion: PaypalBatchConversion | null;
   updatedAt: Date;
+}
+
+export interface PaypalBatchConversion {
+  /** The payouts' own currency (INR). */
+  sourceCurrency: string;
+  /** What the payouts add up to in it. */
+  sourceTotal: string;
+  /** Units of the batch currency per unit of sourceCurrency, a decimal
+   *  string: each item's sent amount is its source amount times this,
+   *  rounded per item. */
+  rate: string;
+  rateSource: 'ecb';
+  /** The ECB reference date the rate is from (YYYY-MM-DD). */
+  rateDate: string;
+  /** When the brand was shown the rate. */
+  quotedAt: string;
 }
 
 export interface StripeWebhookInboxRow {

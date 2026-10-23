@@ -21,6 +21,7 @@ import {
   listManualRuns,
   rebuildManualExportFile,
 } from '../manual-payout-files.js';
+import { withSent } from '../paypal-send-as.js';
 
 export const payoutsRouter = Router();
 
@@ -174,7 +175,7 @@ payoutsRouter.get('/payouts', requireAuth, grantScope('payouts:read'), requireAd
   }
   const rows = (await query) as Array<PayoutRow & { partnerName: string | null; _cursorTs: string }>;
   const { page, nextCursor } = takePage(rows, q.data.limit);
-  res.json({ payouts: page, nextCursor });
+  res.json({ payouts: page.map(withSent), nextCursor });
 });
 
 /**
@@ -337,6 +338,8 @@ payoutsRouter.get(
       .where({ tenantId, partnerId: req.params.id })
       .orderBy('createdAt', 'desc')
       .limit(200);
-    res.json({ payouts });
+    // `sent`: what a PayPal batch sent for a payout PayPal can't send in
+    // its own currency (paypal-send-as.ts). The amount stays the payout's.
+    res.json({ payouts: payouts.map(withSent) });
   },
 );
