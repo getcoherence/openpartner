@@ -217,6 +217,19 @@ describe('creator signup with Google', () => {
     expect(page.getByText('new@example.com')).toBeTruthy();
   });
 
+  it('a Google proof that expires before submitting drops back to the emailed-link signup, keeping the form', async () => {
+    routes['GET /auth/google/creator-signup'] = () => json(200, { email: 'new@example.com' });
+    routes['POST /auth/google/creator-signup'] = () => json(401, { error: 'google_signup_expired' });
+    const page = renderAt('/creator/signup?google=1', <CreatorSignupPage />, '/creator/signup');
+    await waitFor(() => expect(page.getByText('new@example.com')).toBeTruthy());
+    fireEvent.change(page.getByPlaceholderText('Ada Lovelace'), { target: { value: 'Ada' } });
+    fireEvent.change(page.getByRole('combobox'), { target: { value: 'GB' } });
+    fireEvent.click(page.getByRole('button', { name: 'Create my account' }));
+    await waitFor(() => expect(page.getByText(/Google sign-in timed out/)).toBeTruthy());
+    expect(page.getByPlaceholderText('ada@example.com')).toBeTruthy();
+    expect((page.getByPlaceholderText('Ada Lovelace') as HTMLInputElement).value).toBe('Ada');
+  });
+
   it('an expired Google round trip says so; “Use a different email” goes back to the emailed-link signup', async () => {
     routes['GET /auth/google/creator-signup'] = () => json(404, { error: 'google_signup_expired' });
     const expired = renderAt('/creator/signup?google=1', <CreatorSignupPage />, '/creator/signup');
