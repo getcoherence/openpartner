@@ -481,7 +481,11 @@ export type MagicLinkPurpose =
    *  resets a brand admin's / operator's password and is redeemed by
    *  POST /password/reset; principalKind 'partner' resets one brand's
    *  partner password via POST /auth/password/reset. */
-  | 'password_reset';
+  | 'password_reset'
+  /** Minted by the brand's backend (POST /partners/{id}/signin-link) and
+   *  handed to the partner's browser, never emailed. Verifies like
+   *  partner_signin; each one has a PartnerSigninLinkLog row. */
+  | 'partner_signin_link';
 
 export type PrincipalKind = 'partner' | 'admin' | 'platform';
 
@@ -626,6 +630,22 @@ export interface PlatformAuditLogRow {
   targetType: string | null;
   targetId: string | null;
   detail: Record<string, unknown>;
+  createdAt: Date;
+}
+
+/** One sign-in link a brand's backend minted for a partner (migration
+ *  20261022000000_partner_signin_link_log). Append-only. */
+export interface PartnerSigninLinkLogRow {
+  id: string;
+  tenantId: string;
+  partnerId: string;
+  magicLinkTokenId: string;
+  /** 'api_key': an ApiKey row (actorId); 'operator_key': ADMIN_API_KEY. */
+  actorKind: 'api_key' | 'operator_key';
+  actorId: string | null;
+  returnTo: string | null;
+  ip: string | null;
+  expiresAt: Date;
   createdAt: Date;
 }
 

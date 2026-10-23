@@ -51,6 +51,7 @@ import { accountDeletionRouter } from './routes/account-deletion.js';
 import { accountLocationRouter } from './routes/account-location.js';
 import { partnerCampaignsRouter } from './routes/partner-campaigns.js';
 import { partnerPostbacksRouter } from './routes/partner-postbacks.js';
+import { partnerSigninLinkRouter } from './routes/partner-signin-link.js';
 import { payoutProfilesRouter } from './routes/payout-profiles.js';
 import { onboardingRouter } from './routes/onboarding.js';
 import { creatorPortalRouter } from './routes/creator-portal.js';
@@ -295,6 +296,7 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(conversionsRouter);
   app.use(refundsRouter);
   app.use(partnersRouter);
+  app.use(partnerSigninLinkRouter);
   app.use(programsRouter);
   app.use(linksRouter);
   app.use(clicksRouter);

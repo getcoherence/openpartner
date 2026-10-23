@@ -176,6 +176,8 @@ Verify the emailed link points at `https://<DOMAIN>/auth/magic?...` (not
 custom domain. Sessions are host-only by design: being signed in on
 `<DOMAIN>` does not sign you in on `app.openpartner.dev`, and vice versa.
 
+**Brands that link to the portal from their own app** (an in-app "Refer & earn" button) sign users in with `POST /partners/{id}/signin-link` from their backend ([headless-referral.md](headless-referral.md#send-customers-to-the-hosted-portal-instead)). Before the domain verifies those links point at `app.openpartner.dev/t/<slug>/…`; after, at `https://<DOMAIN>/auth/magic?…`. Once step 4 passes, have the brand mint one and confirm it lands signed-in on `<DOMAIN>`.
+
 ## 7. Post-launch behavior
 
 - **Daily jobs** (api scheduler): `billing-subscription-reconcile`

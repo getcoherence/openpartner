@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
+import { safePortalPath } from '@openpartner/db';
 import { api, clearApiKey } from '../../api.js';
 import { theme } from '../../theme.js';
 import { countryErrorMessage } from '../../lib/CountryField.js';
@@ -16,6 +17,10 @@ import { stripQueryParamsFromAddressBar } from '../../lib/sensitive-url.js';
  * link (slug pulled from the URL we landed on), or / for single-tenant.
  * Without this, multi-tenant brand admins were getting bounced back to
  * the public Landing because / is the Landing in multi-tenant mode.
+ *
+ * A link the brand's backend minted (POST /partners/{id}/signin-link) may
+ * carry ?next=<portal path> (its `returnTo`): we land there instead, under
+ * the same /t/<slug> prefix, if safePortalPath accepts it.
  */
 export function MagicLandingPage() {
   const [params] = useSearchParams();
@@ -37,7 +42,9 @@ export function MagicLandingPage() {
       return;
     }
     const slugMatch = location.pathname.match(/^\/t\/([a-z0-9-]+)\/auth\/magic$/);
-    const home = slugMatch ? `/t/${slugMatch[1]}/` : '/';
+    const base = slugMatch ? `/t/${slugMatch[1]}` : '';
+    const next = safePortalPath(params.get('next'));
+    const home = next ? `${base}${next}` : `${base}/`;
 
     clearApiKey();
     api<{ ok: boolean }>('/auth/magic/verify', { method: 'POST', body: { token } })

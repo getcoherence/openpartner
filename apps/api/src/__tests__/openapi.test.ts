@@ -42,6 +42,7 @@ const { accessExtension } = await import('../openapi/registry.js');
 // the public API goes here; the coverage test then holds it to the spec.
 const DOCUMENTED_ROUTERS: Record<string, Router> = {
   partners: (await import('../routes/partners.js')).partnersRouter,
+  partnerSigninLink: (await import('../routes/partner-signin-link.js')).partnerSigninLinkRouter,
   importPartners: (await import('../routes/import-partners.js')).importPartnersRouter,
   programs: (await import('../routes/programs.js')).programsRouter,
   partnerPrograms: (await import('../routes/partner-campaigns.js')).partnerCampaignsRouter,

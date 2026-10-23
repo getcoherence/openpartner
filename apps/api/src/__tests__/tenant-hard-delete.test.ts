@@ -295,6 +295,14 @@ async function seedEverything(tenantId: string): Promise<void> {
     principalKind: 'admin',
     principalId: adminId,
   });
+  await db(TABLES.PartnerSigninLinkLog).insert({
+    id: u(),
+    tenantId,
+    partnerId,
+    magicLinkTokenId: u(),
+    actorKind: 'operator_key',
+    expiresAt: new Date(Date.now() + DAY),
+  });
   await db(TABLES.PasswordCredential).insert({
     id: u(),
     tenantId,

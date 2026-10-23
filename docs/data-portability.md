@@ -547,7 +547,13 @@ logs — not customer data):
 `Session`, `MagicLinkToken`, `ApiKey`, `ConversionPostbackToken`, `TenantStripeConnection`, `Admin`, `PlatformSession`,
 `PlatformSessionBundle`, `PlatformAdmin`, `PlatformAdminSession`,
 `PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
-`StripeWebhookInbox`, `LocationDeclaration`, `SanctionsScreening`.
+`StripeWebhookInbox`, `LocationDeclaration`, `SanctionsScreening`,
+`PartnerSigninLinkLog`.
+
+`PartnerSigninLinkLog` records each sign-in link a brand's backend minted for
+a partner (`POST /partners/{id}/signin-link`): which partner, which key,
+when. Like `Session` and `MagicLinkToken` it is a record of access to one
+deployment, and the `ApiKey` ids it names never travel.
 
 `LocationDeclaration` is the hosted platform's record of where each brand
 and partner said it is based ([country-access.md](country-access.md)), and

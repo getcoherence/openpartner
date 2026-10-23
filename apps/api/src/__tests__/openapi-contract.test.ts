@@ -70,6 +70,7 @@ const TABLES_TO_CLEAN = [
   TABLES.PartnerCommission,
   TABLES.ApiKey,
   TABLES.ConversionPostbackToken,
+  TABLES.PartnerSigninLinkLog,
   TABLES.Session,
   TABLES.MagicLinkToken,
   TABLES.Program,
@@ -347,6 +348,24 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     expect(locked.portalAccess).toBe(false);
     check('updatePartner', await admin.patch(`/partners/${partner.id}`, { name: 'Renamed' }));
     check('updatePartner', await admin.patch('/partners/missing', { portalAccess: true }));
+
+    // --- "Refer & earn" opens the hosted portal instead: the backend mints
+    // a sign-in link and redirects the customer to it.
+    check('createPartnerSigninLink', await admin.post(`/partners/${partner.id}/signin-link`)); // 409 portal_access_disabled
+    check('updatePartner', await admin.patch(`/partners/${partner.id}`, { portalAccess: true }));
+    const signinKey = as(
+      check<{ plaintext: string }>('createScopedKey', await admin.post('/api-keys/scoped', { label: 'portal sso', scopes: ['partners:signin'] }))
+        .plaintext,
+    );
+    check('createPartnerSigninLink', await signinKey.post(`/partners/${partner.id}/signin-link`, { returnTo: '/links' }));
+    check('createPartnerSigninLink', await signinKey.post(`/partners/${partner.id}/signin-link`, { returnTo: 'https://evil.example' }));
+    check('createPartnerSigninLink', await signinKey.post('/partners/missing/signin-link'));
+    check('createPartnerSigninLink', await integration.post(`/partners/${partner.id}/signin-link`)); // 403 forbidden_scope
+    check('lookupPartnerSigninLink', await signinKey.post('/partners/signin-link', { metadata: { appUserId: 'u_123' } }));
+    check('lookupPartnerSigninLink', await signinKey.post('/partners/signin-link', { email: 'customer@example.com' }));
+    check('lookupPartnerSigninLink', await signinKey.post('/partners/signin-link', {}));
+    check('lookupPartnerSigninLink', await signinKey.post('/partners/signin-link', { email: 'nobody@example.com' }));
+    check('updatePartner', await admin.patch(`/partners/${partner.id}`, { portalAccess: false }));
 
     const link = check<{ linkKey: string }>(
       'createPartnerLink',

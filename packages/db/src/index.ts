@@ -53,7 +53,7 @@ export {
 export type { AudienceSize, PartnerApplication } from './partner-application.js';
 export { COUNTRY_CODES, OCCUPIED_REGION_COUNTRY, isCountryCode } from './countries.js';
 export type { CountryCode } from './countries.js';
-export { NEXT_PATH_MAX_LENGTH, safeNextPath } from './next-path.js';
+export { NEXT_PATH_MAX_LENGTH, safeNextPath, safePortalPath } from './next-path.js';
 
 export interface DbConfig {
   connectionString: string;
@@ -128,6 +128,7 @@ export const TABLES = {
   Admin: 'Admin',
   MagicLinkToken: 'MagicLinkToken',
   PasswordCredential: 'PasswordCredential',
+  PartnerSigninLinkLog: 'PartnerSigninLinkLog',
   Session: 'Session',
   PlatformSession: 'PlatformSession',
   PlatformSessionBundle: 'PlatformSessionBundle',

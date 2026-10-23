@@ -58,11 +58,14 @@ export async function issueMagicLink(
     purpose: MagicLinkPurpose;
     principalKind: PrincipalKind;
     principalId: string;
+    /** Shorter than the emailed links' 15 minutes, for a link handed
+     *  straight to a browser. */
+    ttlMs?: number;
   },
 ): Promise<IssuedMagicLink> {
   const { plaintext, prefix, tokenHash } = generate('opml');
   const id = ulid();
-  const expiresAt = new Date(Date.now() + MAGIC_TTL_MS);
+  const expiresAt = new Date(Date.now() + Math.min(params.ttlMs ?? MAGIC_TTL_MS, MAGIC_TTL_MS));
   await db<MagicLinkTokenRow>(TABLES.MagicLinkToken).insert({
     id,
     tenantId: params.tenantId,
