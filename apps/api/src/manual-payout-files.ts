@@ -934,12 +934,17 @@ export async function confirmManualExport(db: Knex, tenantId: string, exportId: 
  * pending.
  */
 export async function discardManualExport(db: Knex, tenantId: string, exportId: string): Promise<number | null> {
-  // Never a PayPal Payouts batch's payouts: that batch may have paid them,
-  // and only PayPal's answer (or the admin's resolve) frees them.
+  // Never a PayPal Payouts batch's payouts while the batch exists: it may
+  // have paid them, and only PayPal's answer (or the admin's resolve) frees
+  // them. A stamp whose batch isn't here (a bundle restored onto another
+  // deployment, which doesn't carry batches) can be discarded like a file.
+  const batchHere = await db(TABLES.PaypalPayoutBatch).where({ tenantId, id: exportId }).first('id');
   const released = await db(TABLES.Payout)
     .where({ tenantId, method: 'manual', status: 'pending' })
     .whereRaw(`metadata->'manualExport'->>'exportId' = ?`, [exportId])
-    .whereRaw(`metadata->'manualExport'->>'via' is distinct from 'api'`)
+    .modify((q) => {
+      if (batchHere) q.whereRaw(`metadata->'manualExport'->>'via' is distinct from 'api'`);
+    })
     .update({ metadata: db.raw(`metadata - 'manualExport'`) });
   return released > 0 ? released : null;
 }

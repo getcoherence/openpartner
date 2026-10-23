@@ -323,6 +323,19 @@ describe.skipIf(skipIntegration)('sending a run with PayPal', () => {
     expect(bulk.body.notConfirmable).toEqual([expect.objectContaining({ payoutId: ada.payoutId, reason: 'in_paypal_batch' })]);
   });
 
+  it('lets a restored bundle’s orphaned stamps be released, never a live batch’s', async () => {
+    await connect();
+    const runId = ulid();
+    const ada = await paypalPartner('Ada', '10.00', runId);
+    const batchId = (await admin.post(`/payouts/runs/${runId}/paypal-batches`, { currency: 'USD' })).body.batch.batchId as string;
+    expect((await admin.post(`/payouts/exports/${batchId}/discard`)).status).toBe(404);
+    // Restored elsewhere: the payout keeps its stamp, the batch didn't travel.
+    await db(TABLES.PaypalPayoutBatch).where({ id: batchId }).del();
+    const discarded = await admin.post(`/payouts/exports/${batchId}/discard`);
+    expect(discarded.body).toEqual({ released: 1 });
+    expect(stampOf(await payoutRow(ada.payoutId))).toBeUndefined();
+  });
+
   it('refuses INR, an unconnected brand, and an empty run', async () => {
     const runId = ulid();
     await paypalPartner('Ravi', '1000.00', runId, 'INR');
