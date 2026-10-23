@@ -15,9 +15,16 @@
  * access / country checks — all still the verify endpoints'. Nothing about
  * the Google account is stored.
  *
+ * Every flow takes Google's word only for addresses Google is authoritative
+ * for: Gmail, or a Workspace account (`hd`). A Google account opened on
+ * another provider's address proves only who could read that inbox when it
+ * was opened; if the address has changed hands since, the old owner would
+ * sign in as the new one. Those land on the flow's sign-in page with
+ * ?error=google_not_authoritative, to use a password or an emailed link.
+ *
  * Flows (?flow=):
  *   account / account_add   brand admin, platform identity (multi-tenant).
- *                           Any verified Google address may sign in; with no
+ *                           Any address Google vouches for may sign in; with no
  *                           brand yet, /workspaces sends them to create one —
  *                           which is "sign up with Google". ?next= (a path
  *                           inside the workspace, safeNextPath) rides the
@@ -38,12 +45,7 @@
  *                           /auth/google/creator-signup has the Network create
  *                           the creator without a confirmation email — which
  *                           the Network accepts only over the admin key
- *                           (docs/creator-sign-in.md). Only for addresses
- *                           Google is authoritative for (Gmail, or a Workspace
- *                           account's `hd`): a Google account opened on another
- *                           provider's address proves only who owned that inbox
- *                           when it was opened, so those creators are sent to
- *                           a password or an emailed link instead.
+ *                           (docs/creator-sign-in.md).
  *
  * One redirect URI for the whole deployment, on the platform origin
  * (GOOGLE_OAUTH_REDIRECT_URI, default PORTAL_URL/api/auth/google/callback):
@@ -56,7 +58,7 @@
  *
  * The ID token comes straight from Google's token endpoint over TLS, so
  * per OIDC Core §3.1.3.7 TLS stands in for checking its signature; we still
- * check issuer, audience, expiry, nonce and email_verified.
+ * check issuer, audience, expiry, nonce, email_verified and authority.
  */
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -247,29 +249,25 @@ export interface GoogleIdClaims {
   hd?: string;
 }
 
-interface VerifiedGoogleEmail {
-  email: string;
-  /** Google owns the address (Gmail) or hosts its domain (Workspace, `hd`),
-   *  so `email_verified` means the address is the account holder's now. For
-   *  any other domain it only means they could read that inbox once. */
-  authoritative: boolean;
-}
-
 /** Google's own rule for when it is authoritative for an address
- *  (developers.google.com/identity/sign-in/web/backend-auth). */
+ *  (developers.google.com/identity/sign-in/web/backend-auth): it owns the
+ *  address (Gmail) or hosts its domain (Workspace, `hd`), so `email_verified`
+ *  means the address is the account holder's now. For any other domain it
+ *  only means they could read that inbox once. */
 function googleIsAuthoritative(email: string, hd: unknown): boolean {
   const domain = email.slice(email.lastIndexOf('@') + 1);
   return domain === 'gmail.com' || domain === 'googlemail.com' || (typeof hd === 'string' && hd.length > 0);
 }
 
 class GoogleAuthError extends Error {
-  constructor(public code: 'google_failed' | 'google_unverified') {
+  constructor(public code: 'google_failed' | 'google_unverified' | 'google_not_authoritative') {
     super(code);
   }
 }
 
-/** Exchange the code and return the verified, lower-cased address. */
-async function verifiedEmailFromCode(config: GoogleConfig, code: string, nonce: string): Promise<VerifiedGoogleEmail> {
+/** Exchange the code and return the verified, lower-cased address — one
+ *  Google is authoritative for. */
+async function verifiedEmailFromCode(config: GoogleConfig, code: string, nonce: string): Promise<string> {
   const response = await fetch(GOOGLE_TOKEN_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -311,7 +309,8 @@ async function verifiedEmailFromCode(config: GoogleConfig, code: string, nonce: 
   }
   if (claims.email_verified !== true && claims.email_verified !== 'true') throw new GoogleAuthError('google_unverified');
   const email = claims.email.trim().toLowerCase();
-  return { email, authoritative: googleIsAuthoritative(email, claims.hd) };
+  if (!googleIsAuthoritative(email, claims.hd)) throw new GoogleAuthError('google_not_authoritative');
+  return email;
 }
 
 const callbackSchema = z.object({
@@ -338,9 +337,8 @@ googleAuthRouter.get('/auth/google/callback', async (req: Request, res: Response
   }
 
   let email: string;
-  let authoritative: boolean;
   try {
-    ({ email, authoritative } = await verifiedEmailFromCode(config, query.data.code, state.n));
+    email = await verifiedEmailFromCode(config, query.data.code, state.n);
   } catch (err) {
     if (!(err instanceof GoogleAuthError)) console.error('[google-auth] callback failed', err);
     return res.redirect(await failureUrl(flow, slug, err instanceof GoogleAuthError ? err.code : 'google_failed', next));
@@ -352,10 +350,7 @@ googleAuthRouter.get('/auth/google/callback', async (req: Request, res: Response
     return res.redirect(buildMagicLinkUrl(token, null, next));
   }
 
-  if (state.f === 'creator') {
-    if (!authoritative) return res.redirect(await failureUrl('creator', undefined, 'google_not_authoritative'));
-    return res.redirect(await creatorLanding(req, res, email));
-  }
+  if (state.f === 'creator') return res.redirect(await creatorLanding(req, res, email));
 
   if (state.f === 'ops') {
     if (!(await isAllowedOperator(email))) return res.redirect(await failureUrl('ops', undefined, 'not_an_operator'));
