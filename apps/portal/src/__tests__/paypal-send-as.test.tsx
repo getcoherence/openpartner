@@ -230,6 +230,15 @@ describe('Manual payouts to send: INR → USD', () => {
     expect(confirm).not.toHaveBeenCalled();
   });
 
+  it('still shows an error it has no words of its own for', async () => {
+    connections = [LIVE];
+    sendAnswer = { status: 409, body: { error: 'paypal_not_connected' } };
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
+    fireEvent.click(await view.findByRole('button', { name: 'Pay with PayPal in USD' }));
+    await view.findByText('paypal_not_connected');
+  });
+
   it('points to connecting PayPal when no app is connected', async () => {
     const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
     await view.findByText(/INR → USD/);

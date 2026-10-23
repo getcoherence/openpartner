@@ -147,7 +147,9 @@ const QUOTE_ERRORS: Record<string, string> = {
 function quoteError(err: unknown): unknown {
   if (!(err instanceof ApiError)) return err;
   const body = err.detail as { error?: string; detail?: string } | undefined;
-  return (body?.error && QUOTE_ERRORS[body.error]) ?? (body?.error === 'nothing_to_send' && body.detail) ?? err;
+  if (body?.error && QUOTE_ERRORS[body.error]) return QUOTE_ERRORS[body.error];
+  if (body?.error === 'nothing_to_send' && body.detail) return body.detail;
+  return err;
 }
 
 /** What the brand confirms before a converted batch goes. */
