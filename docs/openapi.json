@@ -1328,6 +1328,95 @@
           "customerRewardDelivery"
         ]
       },
+      "ProgramStatsList": {
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "currency": {
+            "type": "string",
+            "description": "The brand's default currency, for showing a zero. Amounts are in their own currencies.",
+            "example": "USD"
+          },
+          "programs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "programId": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "partners": {
+                  "type": "integer",
+                  "description": "Partners enrolled in the program now, plus any with clicks, conversions or commission in it during the window."
+                },
+                "clicks": {
+                  "type": "integer"
+                },
+                "attributedEvents": {
+                  "type": "integer",
+                  "description": "Conversions attributed in the window, counted per attribution: an event credited through two clicks (a multi-touch model) counts twice."
+                },
+                "attributedRevenueByCurrency": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "number"
+                  },
+                  "description": "Amount per ISO 4217 currency code. Currencies with nothing are absent; nothing is converted."
+                },
+                "commissionByCurrency": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "accrued": {
+                        "type": "number"
+                      },
+                      "approved": {
+                        "type": "number"
+                      },
+                      "paid": {
+                        "type": "number"
+                      },
+                      "reversed": {
+                        "type": "number"
+                      }
+                    }
+                  },
+                  "description": "Commission totals per currency, then per status. Currencies and statuses with nothing are absent."
+                }
+              },
+              "required": [
+                "programId",
+                "name",
+                "partners",
+                "clicks",
+                "attributedEvents",
+                "attributedRevenueByCurrency",
+                "commissionByCurrency"
+              ]
+            },
+            "description": "Every program, newest first, including programs with no activity."
+          }
+        },
+        "required": [
+          "since",
+          "until",
+          "currency",
+          "programs"
+        ]
+      },
       "PartnerVisibleProgram": {
         "type": "object",
         "properties": {
@@ -7465,6 +7554,92 @@
           },
           "402": {
             "description": "`trial_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/programs/stats": {
+      "get": {
+        "operationId": "getProgramStats",
+        "tags": [
+          "Programs"
+        ],
+        "summary": "Each program's results over a window",
+        "description": "Clicks, partners, conversions, attributed revenue and commission by status for every program, over [`since`, `until`). The default window is the 30 days before `until`, which defaults to now.\n\n- A click, conversion or commission counts toward the program it was made in. A bonus's commission counts toward the bonus's program; a bonus with no program counts toward none.\n- `partners` counts the partners enrolled in the program now, plus any with clicks, conversions or commission in it during the window, such as a partner removed from the program after earning in it.\n- Amounts are per currency, never converted or added together. Commission is by accrual date, in its status today.\n\n`since` at or after `until` answers `400 invalid_window`.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "ISO-8601 start of the window (UTC, `Z`), inclusive. Default: 30 days before `until`.",
+              "pattern": "Z$"
+            },
+            "required": false,
+            "name": "since",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "ISO-8601 end of the window (UTC, `Z`), exclusive. Default: now.",
+              "pattern": "Z$"
+            },
+            "required": false,
+            "name": "until",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One row per program.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProgramStatsList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_query`, `tenant_slug_missing`, `invalid_window`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
             "content": {
               "application/json": {
                 "schema": {

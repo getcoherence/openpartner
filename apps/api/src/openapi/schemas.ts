@@ -846,6 +846,35 @@ export const PartnerDashboard = z
   })
   .openapi('PartnerDashboard');
 
+export const ProgramStatsList = z
+  .object({
+    since: ts,
+    until: ts,
+    currency: z.string().openapi({
+      description: "The brand's default currency, for showing a zero. Amounts are in their own currencies.",
+      example: 'USD',
+    }),
+    programs: z
+      .array(
+        z.object({
+          programId: id,
+          name: z.string(),
+          partners: z.number().int().openapi({
+            description: 'Partners enrolled in the program now, plus any with clicks, conversions or commission in it during the window.',
+          }),
+          clicks: z.number().int(),
+          attributedEvents: z.number().int().openapi({
+            description:
+              'Conversions attributed in the window, counted per attribution: an event credited through two clicks (a multi-touch model) counts twice.',
+          }),
+          attributedRevenueByCurrency: amountsByCurrency,
+          commissionByCurrency: commissionByStatusAndCurrency,
+        }),
+      )
+      .openapi({ description: 'Every program, newest first, including programs with no activity.' }),
+  })
+  .openapi('ProgramStatsList');
+
 export const PartnerTimeseries = z
   .object({
     partnerId: id,

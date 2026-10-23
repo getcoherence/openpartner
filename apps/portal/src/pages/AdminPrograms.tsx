@@ -1,11 +1,27 @@
 import { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router';
 import { HelpCircle, Plus, Tag } from 'lucide-react';
 import { api } from '../api.js';
 import { alpha, theme } from '../theme.js';
 import { TenantLink } from '../tenant-link.js';
+import { useTenantBase } from '../tenant-base.js';
 import { useBrand, useDefaultCurrency } from '../lib/useBrand.js';
-import { Button, Card, EmptyState, ErrorBanner, Input, Label, Page, Select, Table, formatDate } from '../ui.js';
+import {
+  Button,
+  Card,
+  EmptyState,
+  ErrorBanner,
+  Input,
+  Label,
+  Page,
+  SectionHeading,
+  Select,
+  Table,
+  formatDate,
+  moneyByCurrency,
+  statusAmounts,
+} from '../ui.js';
 import { renderCommissionSummary } from '../lib/commission-summary.js';
 import { CompoundRuleEditor, ruleEventTypeMissing, ruleSlabProblem, type CommissionSubRule } from '../lib/CompoundRuleEditor.js';
 import { PROGRAM_CATEGORIES, clickDestinationProblem, clickDestinationWarning, parseVideoUrl } from '@openpartner/db';
@@ -141,6 +157,7 @@ export function AdminPrograms() {
       ) : (campaigns.data?.programs ?? []).length === 0 ? (
         <EmptyState title="No programs yet" hint="A program holds the commission rule and attribution settings." icon={<Tag size={28} strokeWidth={1.25} />} />
       ) : (
+        <>
         <Table
           columns={['Name', 'Status', 'Destination', 'Commission', 'Window', 'Holdback', 'Model', 'Created', 'Actions']}
           rows={(campaigns.data?.programs ?? []).map((c) => {
@@ -193,8 +210,99 @@ export function AdminPrograms() {
             ];
           })}
         />
+        <ProgramPerformance />
+        </>
       )}
     </Page>
+  );
+}
+
+const PERFORMANCE_WINDOWS = [7, 30, 90] as const;
+
+interface ProgramStats {
+  programId: string;
+  name: string;
+  partners: number;
+  clicks: number;
+  attributedEvents: number;
+  attributedRevenueByCurrency: Record<string, number>;
+  commissionByCurrency: Record<string, Record<string, number>>;
+}
+
+/** Each program's results side by side, from GET /programs/stats: the
+ *  numbers the dashboard shows filtered to that program, which each name
+ *  links to. Amounts stay per currency. */
+function ProgramPerformance() {
+  const tenantBase = useTenantBase();
+  const defaultCurrency = useDefaultCurrency();
+  const [days, setDays] = useState<number>(30);
+  const stats = useQuery({
+    queryKey: ['program-stats', days],
+    queryFn: () => {
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+      return api<{ currency: string; programs: ProgramStats[] }>(`/programs/stats?${new URLSearchParams({ since })}`);
+    },
+    placeholderData: keepPreviousData,
+  });
+  const currency = stats.data?.currency ?? defaultCurrency;
+  const right = (label: string) => ({ label, align: 'right' as const });
+
+  return (
+    <>
+      <SectionHeading
+        actions={
+          <Select
+            aria-label="Performance window"
+            value={String(days)}
+            onChange={(e) => setDays(Number(e.target.value))}
+            style={{ width: 'auto', padding: '6px 10px', fontSize: 13 }}
+          >
+            {PERFORMANCE_WINDOWS.map((d) => (
+              <option key={d} value={d}>
+                Last {d} days
+              </option>
+            ))}
+          </Select>
+        }
+      >
+        Performance
+      </SectionHeading>
+      <ErrorBanner error={stats.error} />
+      {stats.isLoading ? (
+        <Card>Loading…</Card>
+      ) : (
+        <div style={{ opacity: stats.isPlaceholderData ? 0.6 : 1, transition: 'opacity 120ms ease' }}>
+          <Table
+            columns={[
+              'Program',
+              right('Partners'),
+              right('Clicks'),
+              right('Conversions'),
+              right('Revenue'),
+              right('Accrued'),
+              right('Approved'),
+              right('Paid'),
+            ]}
+            rows={(stats.data?.programs ?? []).map((p) => [
+              <Link
+                to={{ pathname: tenantBase || '/', search: `?${new URLSearchParams({ program: p.programId })}` }}
+                title="Open the dashboard for this program"
+                style={{ color: theme.text, fontWeight: 500, textDecoration: 'none' }}
+              >
+                {p.name}
+              </Link>,
+              p.partners.toLocaleString(),
+              p.clicks.toLocaleString(),
+              p.attributedEvents.toLocaleString(),
+              moneyByCurrency(p.attributedRevenueByCurrency, currency),
+              moneyByCurrency(statusAmounts(p.commissionByCurrency, 'accrued'), currency),
+              moneyByCurrency(statusAmounts(p.commissionByCurrency, 'approved'), currency),
+              moneyByCurrency(statusAmounts(p.commissionByCurrency, 'paid'), currency),
+            ])}
+          />
+        </div>
+      )}
+    </>
   );
 }
 
