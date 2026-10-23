@@ -226,6 +226,9 @@ static_sites:
       pnpm --filter @openpartner/portal build
     output_dir: apps/portal/dist
     catchall_document: index.html
+    # A static site can't send response headers, so the portal HTML has
+    # no frame-ancestors / X-Frame-Options here; the SPA refuses to run
+    # framed instead. docs/deploy-production.md, "Portal frame protection".
     envs:
       # PostHog product analytics. VITE_-prefixed so Vite inlines the
       # value into the static bundle at build time. BUILD_TIME scope is

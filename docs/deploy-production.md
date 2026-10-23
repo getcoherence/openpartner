@@ -302,6 +302,62 @@ Single-tenant self-host (`OPENPARTNER_TENANCY=single`, the default) skips
 the check. With one tenant there is nothing to isolate, so it can run
 entirely as the migration role.
 
+### Portal frame protection
+
+No site may frame the portal. A framed sign-in or magic-link page can be
+hidden under a decoy and clicked through (clickjacking). Nothing embeds the
+portal: the Stripe App links to it in a new tab, and the portal's own
+iframes are outbound video players.
+
+- **Docker (self-host).** The portal's nginx sends
+  `Content-Security-Policy: frame-ancestors 'none'` and
+  `X-Frame-Options: DENY` on every HTML response
+  (`apps/portal/nginx.conf.template`), and Caddy passes them through. CI
+  checks this with `node scripts/test-portal-proxy.mjs`. On a running
+  deploy:
+
+  ```bash
+  curl -sI https://partners.example.com/t/default/login | grep -iE 'content-security-policy|x-frame-options'
+  ```
+
+- **App Platform (hosted).** A static site component can't send response
+  headers. The app spec has no field for them, and the Cloudflare edge in
+  front of the app belongs to DigitalOcean, so there is no zone to add a
+  transform rule to: `openpartner.dev` DNS is on DigitalOcean, and
+  white-label domains CNAME straight to the app. A `<meta>` tag doesn't
+  help either, since browsers ignore `frame-ancestors` and
+  `X-Frame-Options` there. So the SPA checks for itself: inside a frame it
+  mounts nothing and shows a "can't be shown inside another website"
+  notice (`apps/portal/src/lib/frame-guard.ts`). That covers
+  `app.openpartner.dev` and every white-label domain, which serve the same
+  build.
+
+To send the headers on App Platform too, run the portal as a service built
+from its Dockerfile instead of as a static site. This is a one-off ops
+change, not part of a deploy, and adds a basic-xxs instance (about $5 a
+month). As of October 2026 these steps haven't been run against the live
+app:
+
+1. Export the live spec with `doctl apps spec get $OP_APP_ID > live.yaml`
+   and edit that file, never `.do/app.yaml`. Only the live spec has the
+   console-managed domains: `doctl apps update --spec .do/app.yaml` would
+   drop `app.openpartner.dev` and every white-label domain.
+2. Move `portal` from `static_sites` to `services`, with
+   `dockerfile_path: apps/portal/Dockerfile`, `http_port: 8080`,
+   `instance_size_slug: basic-xxs` and a health check on `/`. Drop
+   `build_command`, `output_dir` and `catchall_document`: nginx does the SPA
+   fallback. Set `API_UPSTREAM` to `${api.PRIVATE_DOMAIN}:4601`. The
+   ingress still sends `/api` straight to the api, so the portal's own
+   `/api/` proxy goes unused, but nginx resolves its upstream at start-up.
+3. The SPA is now built inside the Dockerfile, so the `VITE_POSTHOG_*`
+   build-time envs reach Vite only if the builder stage declares them with
+   `ARG`. Add that first, or analytics stop.
+4. `doctl apps update $OP_APP_ID --spec live.yaml`, then run the `curl`
+   above against `app.openpartner.dev` and one white-label domain.
+
+Keep the SPA check after the move. It costs nothing and covers any host
+that drops the headers.
+
 ### Scheduled jobs
 
 The api process runs an in-process scheduler (`OPENPARTNER_ENABLE_SCHEDULER=1`):

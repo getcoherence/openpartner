@@ -32,8 +32,20 @@ server {
         try_files $uri =404;
     }
 
+    # No site may frame the portal, this one included: a framed sign-in or
+    # magic-link page can be overlaid and clicked through (clickjacking).
+    # Nothing embeds the portal; its own iframes are outbound video players.
+    # X-Frame-Options covers browsers without CSP frame-ancestors.
+    #
+    # add_header is inherited only by a location that declares none of its
+    # own, so each location that answers with HTML repeats the pair: this
+    # one (every SPA route lands here via try_files) and the fallback below.
+    # /api/ declares none and stays that way, so the API's helmet headers
+    # pass through without a second, conflicting copy from nginx.
     location = /index.html {
         add_header Cache-Control "no-cache";
+        add_header Content-Security-Policy "frame-ancestors 'none'" always;
+        add_header X-Frame-Options "DENY" always;
     }
 
     # Proxy /api/* to the API service. The API's own /api prefix is
@@ -51,6 +63,8 @@ server {
     # SPA fallback — every non-asset, non-/api URL serves index.html so
     # react-router owns client-side routing.
     location / {
+        add_header Content-Security-Policy "frame-ancestors 'none'" always;
+        add_header X-Frame-Options "DENY" always;
         try_files $uri /index.html;
     }
 }
