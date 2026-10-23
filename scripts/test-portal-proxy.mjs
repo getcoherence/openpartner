@@ -58,6 +58,26 @@ only /t/acme/login cache-control 'cache-control: no-cache'
 only /api/probe x-frame-options 'x-frame-options: sameorigin'
 only /api/probe content-security-policy ''
 echo 'PASS: frame headers on four HTML routes, none added to /api'
+
+# The response to $1 has the header line $2.
+has() {
+    headers "$1" | grep -qxF "$2" || {
+        echo "$1: expected [$2], received:" >&2
+        headers "$1" >&2
+        exit 1
+    }
+}
+# A year's cache only for Vite's hashed /assets/. Root files keep their
+# names across builds, op.js above all: brands' sites load it.
+html=/usr/share/nginx/html
+mkdir -p $html/assets
+echo x > $html/assets/index-AbC123.js
+echo x > $html/op.js
+has /assets/index-AbC123.js 'cache-control: public, immutable'
+only /op.js cache-control 'cache-control: public, max-age=10, s-maxage=86400'
+has /missing.js 'http/1.1 404 not found'
+has /assets/missing-AbC123.js 'http/1.1 404 not found'
+echo 'PASS: immutable cache only under /assets/, short cache for op.js, missing assets 404'
 `;
 process.stdout.write(execFileSync('docker', [
   'run', '--rm', '-i', '-e', 'API_UPSTREAM=127.0.0.1:8081',

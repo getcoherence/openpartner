@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * The hosted portal can't send frame headers (App Platform static site), so
+ * A static-site host can't send frame headers (App Platform's can't), so
  * the SPA refuses to mount inside another site's frame. The notice it shows
  * instead links to the page without its query: magic-link tokens live there.
  */
