@@ -51,13 +51,21 @@ export interface ReferralPage {
   nextCursor: string | null;
 }
 
+/** What ReferralList needs from a page: this API's own (above), or the
+ *  creator portal's, which the Network relays from the brand. */
+export interface ReferralListPage extends Pick<ReferralPage, 'stages' | 'currency' | 'referrals' | 'total' | 'nextCursor'> {
+  /** False from the Network when the brand's instance predates referral
+   *  timelines: there is no list to show. */
+  available?: boolean;
+}
+
 const PAGE_SIZE = 50;
 
 /** The signed-in partner's own referrals. */
 export function ReferralsPage({ principal }: { principal: Principal }) {
   return (
     <Page title="Referrals" subtitle="Everyone you referred, and how far they've come.">
-      <ReferralList partnerId={principal.partnerId ?? ''} adminView={false} />
+      <PartnerReferralList partnerId={principal.partnerId ?? ''} adminView={false} />
     </Page>
   );
 }
@@ -92,22 +100,48 @@ export function AdminPartnerReferrals() {
         </TenantLink>
         .
       </div>
-      <ReferralList partnerId={id} adminView />
+      <PartnerReferralList partnerId={id} adminView />
     </Page>
   );
 }
 
-export function ReferralList({ partnerId, adminView }: { partnerId: string; adminView: boolean }) {
+function PartnerReferralList({ partnerId, adminView }: { partnerId: string; adminView: boolean }) {
+  return (
+    <ReferralList
+      queryKey={['referrals', partnerId]}
+      fetchPage={(qs) => api<ReferralPage>(`/partners/${partnerId}/referrals?${qs}`)}
+      enabled={!!partnerId}
+      adminView={adminView}
+    />
+  );
+}
+
+/** A paged list of referrals. `fetchPage` gets the limit and cursor as a
+ *  query string. `showReferralIds` puts each referral's id on its card, for
+ *  a page that also lists events by it (the creator portal's). */
+export function ReferralList({
+  queryKey,
+  fetchPage,
+  enabled = true,
+  adminView,
+  showReferralIds = false,
+}: {
+  queryKey: readonly unknown[];
+  fetchPage: (qs: URLSearchParams) => Promise<ReferralListPage>;
+  enabled?: boolean;
+  adminView: boolean;
+  showReferralIds?: boolean;
+}) {
   const { data, error, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
-    queryKey: ['referrals', partnerId],
+    queryKey,
     queryFn: ({ pageParam }) => {
       const qs = new URLSearchParams({ limit: String(PAGE_SIZE) });
       if (pageParam) qs.set('cursor', pageParam);
-      return api<ReferralPage>(`/partners/${partnerId}/referrals?${qs}`);
+      return fetchPage(qs);
     },
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
-    enabled: !!partnerId,
+    enabled,
   });
 
   const first = data?.pages[0];
@@ -117,7 +151,13 @@ export function ReferralList({ partnerId, adminView }: { partnerId: string; admi
   return (
     <>
       <ErrorBanner error={error} />
-      {referrals.length === 0 ? (
+      {first?.available === false ? (
+        <EmptyState
+          title="Referral details aren't available yet"
+          hint="This brand's platform doesn't share referral details yet. Your clicks and earnings still count."
+          icon={<UserCheck size={28} strokeWidth={1.25} />}
+        />
+      ) : referrals.length === 0 ? (
         <EmptyState
           title="No referrals yet"
           hint={
@@ -134,7 +174,14 @@ export function ReferralList({ partnerId, adminView }: { partnerId: string; admi
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {referrals.map((r) => (
-              <ReferralCard key={r.referralId} referral={r} stages={first!.stages} currency={first!.currency} adminView={adminView} />
+              <ReferralCard
+                key={r.referralId}
+                referral={r}
+                stages={first!.stages}
+                currency={first!.currency}
+                adminView={adminView}
+                showReferralId={showReferralIds}
+              />
             ))}
           </div>
           {hasNextPage && (
@@ -155,11 +202,13 @@ function ReferralCard({
   stages,
   currency,
   adminView,
+  showReferralId,
 }: {
   referral: Referral;
   stages: ReferralStageDefinition[];
   currency: string;
   adminView: boolean;
+  showReferralId: boolean;
 }) {
   const isMobile = useIsMobile();
   const earned = Object.values(referral.commissionByCurrency).some((n) => n !== 0);
@@ -186,6 +235,11 @@ function ReferralCard({
             {adminView && referral.userId && (
               <div style={{ fontSize: 12, color: theme.textDim, marginTop: 3, overflowWrap: 'anywhere' }}>
                 User ID <code style={{ fontFamily: theme.fontMono }}>{referral.userId}</code>
+              </div>
+            )}
+            {showReferralId && (
+              <div style={{ fontSize: 11, color: theme.textDim, marginTop: 3, fontFamily: theme.fontMono, overflowWrap: 'anywhere' }}>
+                referral {referral.referralId}
               </div>
             )}
           </div>
