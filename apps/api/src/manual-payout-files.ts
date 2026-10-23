@@ -84,6 +84,9 @@ export const MANUAL_EXCLUSION_REASONS = [
   // Wise needs something the details lack for this payout: the holder's
   // address, for one sent in USD or AUD. The partner adds it.
   'details_incomplete',
+  // More than PayPal sends in one payment in this currency
+  // (PAYPAL_ITEM_LIMITS). Pay it another way.
+  'over_paypal_limit',
   // OpenPartner Cloud: the partner's declared country, or their payout
   // account's, is one the platform doesn't serve (country-access.ts).
   'country_not_supported',
@@ -110,6 +113,21 @@ export const PAYPAL_CURRENCIES: ReadonlySet<string> = new Set([
   'AUD', 'BRL', 'CAD', 'CNY', 'CZK', 'DKK', 'EUR', 'HKD', 'HUF', 'ILS', 'JPY', 'MYR', 'MXN',
   'TWD', 'NZD', 'NOK', 'PHP', 'PLN', 'GBP', 'RUB', 'SGD', 'SEK', 'CHF', 'THB', 'USD',
 ]);
+/**
+ * The most PayPal sends in one payout item, per currency, to a recipient
+ * with a PayPal account (developer.paypal.com/payouts/fees, "Payout
+ * transaction limits", checked 2026-10-22). A recipient without one can
+ * receive about a third of this (USD 20,000, EUR 17,000…); PayPal refuses
+ * such an item and returns its money, and the batch releases it. CNY has
+ * no published limit. Above the limit a payout is in no PayPal file or
+ * batch (`over_paypal_limit`).
+ */
+export const PAYPAL_ITEM_LIMITS: Readonly<Record<string, number>> = {
+  AUD: 95_000, BRL: 300_000, CAD: 80_000, CZK: 1_500_000, DKK: 450_000, EUR: 55_000, HKD: 500_000,
+  HUF: 22_000_000, ILS: 220_000, JPY: 9_000_000, MYR: 300_000, MXN: 1_100_000, TWD: 2_000_000,
+  NZD: 100_000, NOK: 650_000, PHP: 3_500_000, PLN: 250_000, GBP: 50_000, RUB: 5_500_000, SGD: 85_000,
+  SEK: 650_000, CHF: 55_000, THB: 2_200_000, USD: 60_000,
+};
 /** PayPal rejects a decimal amount in these. */
 const PAYPAL_NO_DECIMALS: ReadonlySet<string> = new Set(['HUF', 'JPY', 'TWD']);
 /** PayPal's upload format writes these with a decimal comma, quoted ("100,50"). */
@@ -185,6 +203,21 @@ export const WISE_COLUMNS = [
   'addressState',
 ] as const;
 
+/** What PayPal last said about one payout's item in a PayPal Payouts batch
+ *  (paypal-payouts.ts), written on each sync. */
+export interface PaypalItemStamp {
+  itemId: string;
+  /** PayPal's transaction_status: SUCCESS, PENDING, UNCLAIMED, ONHOLD… */
+  status: string;
+  transactionId: string | null;
+  /** What PayPal sent, which differs from the payout amount only where
+   *  PayPal takes no decimals (HUF, TWD). */
+  amount: string | null;
+  currency: string | null;
+  /** PayPal's error name, for an item that didn't go through. */
+  error: string | null;
+}
+
 /** Stamped on each payout a file holds (`Payout.metadata.manualExport`). */
 export interface ManualExportStamp {
   exportId: string;
@@ -195,6 +228,14 @@ export interface ManualExportStamp {
   at: string;
   /** An admin in the portal, or an API key. */
   by: 'admin' | 'api';
+  /** 'api': not a file but a PayPal Payouts batch OpenPartner sent with
+   *  the brand's credentials (paypal-payouts.ts), whose status comes from
+   *  PayPal. Its exportId is the PaypalPayoutBatch id. Absent on files. */
+  via?: 'api';
+  /** API batches: PayPal's id for the batch, once PayPal accepted it. */
+  payoutBatchId?: string;
+  /** API batches: this payout's item, once PayPal has listed it. */
+  paypal?: PaypalItemStamp;
 }
 
 function stampOf(payout: Pick<PayoutRow, 'metadata'>): ManualExportStamp | null {
@@ -202,6 +243,11 @@ function stampOf(payout: Pick<PayoutRow, 'metadata'>): ManualExportStamp | null 
   return s && typeof s.exportId === 'string' && (s.provider === 'paypal' || s.provider === 'wise')
     ? (s as ManualExportStamp)
     : null;
+}
+
+/** A stamp from a PayPal Payouts batch rather than a file. */
+export function isApiStamp(stamp: Pick<ManualExportStamp, 'via'> | null): boolean {
+  return stamp?.via === 'api';
 }
 
 // ---------------------------------------------------------------------------
@@ -253,13 +299,22 @@ export function wiseCanPay(source: string, target: string): boolean {
   return WISE_SOURCE_CURRENCIES.has(source) && !WISE_UNSUPPORTED_TARGETS.has(target);
 }
 
-/** The file these details go in, for a payout in `currency`, or why none. */
+/** Is `amount` (major units) more than PayPal sends in one item? */
+export function overPaypalItemLimit(amount: string, currency: string): boolean {
+  const limit = PAYPAL_ITEM_LIMITS[currency];
+  return limit !== undefined && Number(amount) > limit;
+}
+
+/** The file these details go in, for a payout of `amount` in `currency`,
+ *  or why none. */
 function providerFor(
   details: PayoutDetails,
   currency: string,
+  amount: string,
 ): { provider: ManualPayoutProvider } | { excluded: ManualExclusionReason } {
   if (details.method === 'paypal') {
-    return PAYPAL_CURRENCIES.has(currency) ? { provider: 'paypal' } : { excluded: 'currency_not_supported' };
+    if (!PAYPAL_CURRENCIES.has(currency)) return { excluded: 'currency_not_supported' };
+    return overPaypalItemLimit(amount, currency) ? { excluded: 'over_paypal_limit' } : { provider: 'paypal' };
   }
   if (details.method === 'bank') {
     if (!wiseCanPay(currency, details.currency)) return { excluded: 'currency_not_supported' };
@@ -314,7 +369,7 @@ async function classify(
         else if (!profile) excluded = 'no_payout_details';
         else if (!details) excluded = 'details_unreadable';
         else {
-          const where = providerFor(details, payout.currency.toUpperCase());
+          const where = providerFor(details, payout.currency.toUpperCase(), payout.amount);
           if ('provider' in where) ready = where.provider;
           else excluded = where.excluded;
         }
@@ -353,11 +408,14 @@ async function* pendingRunPayouts(
   }
 }
 
-/** The pending manual payouts a file holds, in id order. */
+/** The pending manual payouts a file holds, in id order. Never a PayPal
+ *  Payouts batch's: PayPal reports what happened to those, so the file
+ *  routes (download again, confirm, discard) can't reach them. */
 async function pendingExportPayouts(db: Knex, tenantId: string, exportId: string): Promise<PayoutRow[]> {
   return db<PayoutRow>(TABLES.Payout)
     .where({ tenantId, method: 'manual', status: 'pending' })
     .whereRaw(`metadata->'manualExport'->>'exportId' = ?`, [exportId])
+    .whereRaw(`metadata->'manualExport'->>'via' is distinct from 'api'`)
     .orderBy('id', 'asc');
 }
 
@@ -484,11 +542,14 @@ export interface ManualRun {
   ready: Array<{ provider: ManualPayoutProvider; currency: string; count: number; total: string }>;
   /** Files made from this run that still hold payouts to confirm. */
   exports: ManualRunExport[];
+  /** Pending payouts in a PayPal Payouts batch OpenPartner sent
+   *  (paypal-payouts.ts); the route lists the batches. */
+  inPaypalBatches: number;
   /** Pending payouts in no file, per reason. */
   excluded: Array<{ reason: ManualExclusionReason; count: number }>;
 }
 
-const centsToString = (cents: number) => (cents / 100).toFixed(2);
+export const centsToString = (cents: number) => (cents / 100).toFixed(2);
 
 /**
  * One run's manual payouts to send, summarised: what's ready for a new
@@ -502,6 +563,7 @@ export async function getManualRun(db: Knex, tenantId: string, runId: string): P
   const ready = new Map<string, { provider: ManualPayoutProvider; currency: string; count: number; cents: number }>();
   const exports = new Map<string, ManualRunExport & { cents: number }>();
   const excluded = new Map<ManualExclusionReason, number>();
+  let inPaypalBatches = 0;
 
   for await (const chunk of pendingRunPayouts(db, tenantId, runId)) {
     for (const c of await classify(db, tenantId, chunk, blocked)) {
@@ -509,7 +571,9 @@ export async function getManualRun(db: Knex, tenantId: string, runId: string): P
       if (!createdAt || c.payout.createdAt < createdAt) createdAt = c.payout.createdAt;
       const currency = c.payout.currency.toUpperCase();
       const cents = majorToCents(c.payout.amount);
-      if (c.stamp) {
+      if (isApiStamp(c.stamp)) {
+        inPaypalBatches += 1;
+      } else if (c.stamp) {
         const e = exports.get(c.stamp.exportId) ?? {
           exportId: c.stamp.exportId,
           provider: c.stamp.provider,
@@ -550,6 +614,7 @@ export async function getManualRun(db: Knex, tenantId: string, runId: string): P
     exports: [...exports.values()]
       .map(({ cents, ...e }) => ({ ...e, pendingTotal: centsToString(cents) }))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    inPaypalBatches,
     excluded: [...excluded.entries()].map(([reason, count]) => ({ reason, count })),
   };
 }
@@ -578,15 +643,19 @@ export interface ManualRunPayout {
     updatedAt: Date;
     updatedBy: PayoutProfileUpdatedBy;
   } | null;
-  /** The file this payout is in, if any. */
+  /** The file this payout is in, if any, or the PayPal Payouts batch
+   *  (`via: 'api'`). */
   export: {
     exportId: string;
     provider: ManualPayoutProvider;
+    via: 'file' | 'api';
     createdAt: string;
     /** What identifies the payout in that file. */
     reference: string | null;
     /** The partner changed or removed their details after the file was made. */
     destinationChanged: boolean;
+    /** A PayPal Payouts batch: what PayPal last said about this payout. */
+    paypal: PaypalItemStamp | null;
   } | null;
   /** The file a new export would put this payout in. */
   ready: ManualPayoutProvider | null;
@@ -620,9 +689,11 @@ function payoutView(c: Classified): ManualRunPayout {
       ? {
           exportId: c.stamp.exportId,
           provider: c.stamp.provider,
+          via: isApiStamp(c.stamp) ? 'api' : 'file',
           createdAt: c.stamp.at,
           reference: reference(c.stamp.provider, c.payout.id, c.details),
           destinationChanged: destinationChanged(c),
+          paypal: isApiStamp(c.stamp) ? (c.stamp.paypal ?? null) : null,
         }
       : null,
     ready: c.ready,
@@ -703,31 +774,55 @@ export interface ManualExportFile {
  * and its membership can't disagree. A payout another export stamped in
  * the meantime is left out (compare-and-set). Null when nothing is ready.
  */
-export async function createManualExport(
+/** A payout picked for a file or a PayPal Payouts batch, with the
+ *  partner's PayPal or bank details opened. */
+export interface PickedPayout {
+  payout: PayoutRow;
+  partner: Pick<PartnerRow, 'id' | 'name' | 'email'>;
+  details: PayoutDetails;
+}
+
+/**
+ * The first `max` pending payouts of a run, in one currency, that no file
+ * or batch holds and that belong with `provider`, in id order. Nothing is
+ * stamped yet: stampManualPayouts does that, and keeps only the ones no
+ * other export took in the meantime.
+ */
+export async function pickReadyPayouts(
   db: Knex,
   tenantId: string,
   runId: string,
   provider: ManualPayoutProvider,
   currency: string,
-  by: 'admin' | 'api',
-): Promise<ManualExportFile | null> {
+  max: number,
+): Promise<PickedPayout[]> {
   const blocked = await blockedCountries();
-  const max = MAX_ROWS[provider];
-  const picked: Classified[] = [];
+  const picked: PickedPayout[] = [];
   const unexportedInCurrency = (q: Knex.QueryBuilder) =>
     q.whereRaw('upper(currency) = ?', [currency]).whereRaw(`metadata->'manualExport' is null`);
   for await (const chunk of pendingRunPayouts(db, tenantId, runId, unexportedInCurrency)) {
     for (const c of await classify(db, tenantId, chunk, blocked)) {
-      if (c.ready === provider) picked.push(c);
+      if (c.ready === provider && c.details) picked.push({ payout: c.payout, partner: c.partner, details: c.details });
       if (picked.length === max) break;
     }
     if (picked.length === max) break;
   }
-  if (picked.length === 0) return null;
+  return picked;
+}
 
-  const stamp: ManualExportStamp = { exportId: ulid(), provider, currency, at: new Date().toISOString(), by };
+/**
+ * Stamp these payouts with an export, compare-and-set: only a pending
+ * manual payout that no file or batch holds takes the stamp. Returns the
+ * ids that did, so the caller builds its file or batch from exactly those.
+ */
+export async function stampManualPayouts(
+  db: Knex,
+  tenantId: string,
+  payoutIds: readonly string[],
+  stamp: ManualExportStamp,
+): Promise<Set<string>> {
   const stamped = new Set<string>();
-  for (const ids of chunks(picked.map((c) => c.payout.id))) {
+  for (const ids of chunks(payoutIds)) {
     const rows = (await db(TABLES.Payout)
       .where({ tenantId, method: 'manual', status: 'pending' })
       .whereIn('id', ids)
@@ -736,7 +831,30 @@ export async function createManualExport(
       .returning('id')) as Array<{ id: string }>;
     for (const r of rows) stamped.add(r.id);
   }
-  const rows = picked.filter((c) => stamped.has(c.payout.id)).map((c) => ({ ...c, stamp }));
+  return stamped;
+}
+
+export async function createManualExport(
+  db: Knex,
+  tenantId: string,
+  runId: string,
+  provider: ManualPayoutProvider,
+  currency: string,
+  by: 'admin' | 'api',
+): Promise<ManualExportFile | null> {
+  const picked = await pickReadyPayouts(db, tenantId, runId, provider, currency, MAX_ROWS[provider]);
+  if (picked.length === 0) return null;
+
+  const stamp: ManualExportStamp = { exportId: ulid(), provider, currency, at: new Date().toISOString(), by };
+  const stamped = await stampManualPayouts(
+    db,
+    tenantId,
+    picked.map((c) => c.payout.id),
+    stamp,
+  );
+  const rows = picked
+    .filter((c) => stamped.has(c.payout.id))
+    .map((c): Classified => ({ ...c, profile: null, hold: null, doNotPay: null, stamp, ready: null, excluded: null }));
   if (rows.length === 0) return null;
 
   return {
@@ -763,7 +881,7 @@ function exportFilename(stamp: Pick<ManualExportStamp, 'provider' | 'exportId' |
 /** Does this payout still belong in a `provider` file of its currency? */
 function stillFits(c: Classified, provider: ManualPayoutProvider): boolean {
   if (c.doNotPay || !c.details) return false;
-  const where = providerFor(c.details, c.payout.currency.toUpperCase());
+  const where = providerFor(c.details, c.payout.currency.toUpperCase(), c.payout.amount);
   return 'provider' in where && where.provider === provider;
 }
 
@@ -816,9 +934,12 @@ export async function confirmManualExport(db: Knex, tenantId: string, exportId: 
  * pending.
  */
 export async function discardManualExport(db: Knex, tenantId: string, exportId: string): Promise<number | null> {
+  // Never a PayPal Payouts batch's payouts: that batch may have paid them,
+  // and only PayPal's answer (or the admin's resolve) frees them.
   const released = await db(TABLES.Payout)
     .where({ tenantId, method: 'manual', status: 'pending' })
     .whereRaw(`metadata->'manualExport'->>'exportId' = ?`, [exportId])
+    .whereRaw(`metadata->'manualExport'->>'via' is distinct from 'api'`)
     .update({ metadata: db.raw(`metadata - 'manualExport'`) });
   return released > 0 ? released : null;
 }
@@ -839,11 +960,11 @@ function csvLine(values: readonly string[]): string {
 /** Payment files must not carry a line break or a leading formula
  *  character in text we write ourselves (partner input is refused at
  *  entry: payout-profile.ts fileSafeName). */
-function plainText(v: string, max: number): string {
+export function plainText(v: string, max: number): string {
   return v.replace(/[\r\n\t]+/g, ' ').replace(/^[=+\-@\s]+/, '').trim().slice(0, max);
 }
 
-function paypalNote(brandName: string | null): string {
+export function paypalNote(brandName: string | null): string {
   return plainText(brandName ? `Commission payout from ${brandName}` : 'Commission payout', PAYPAL_NOTE_MAX);
 }
 
@@ -948,10 +1069,44 @@ export interface BulkConfirmResult {
   notConfirmable: Array<{
     payoutId: string;
     error: 'payout_not_found' | 'not_confirmable';
-    /** Set when the payout is on a do-not-pay hold. */
-    reason?: DoNotPayReason;
+    /** Set when the payout is on a do-not-pay hold, or in a PayPal
+     *  Payouts batch whose outcome PayPal reports (`in_paypal_batch`). */
+    reason?: DoNotPayReason | 'in_paypal_batch';
     detail?: string;
   }>;
+}
+
+/** PayPal Payouts batches still in flight (paypal-payouts.ts OPEN_STATES). */
+const OPEN_PAYPAL_BATCH_STATES = ['intent', 'posted', 'submitted', 'reconcile_required'];
+
+export const IN_PAYPAL_BATCH_DETAIL =
+  'this payout is in a PayPal Payouts batch OpenPartner sent; PayPal reports whether it was paid, so it is confirmed or released from there';
+
+/**
+ * Which of these payouts are in a PayPal Payouts batch that is still in
+ * flight. Marking one as sent by hand would race PayPal's own answer: a
+ * payout PayPal then reports as failed would already read as paid. A
+ * stamp whose batch row is missing (a bundle restored onto another
+ * deployment, which doesn't carry batches) doesn't count.
+ */
+export async function inOpenPaypalBatch(db: Knex, tenantId: string, payouts: readonly PayoutRow[]): Promise<Set<string>> {
+  const byBatch = new Map<string, string[]>();
+  for (const p of payouts) {
+    const s = stampOf(p);
+    if (!s || !isApiStamp(s)) continue;
+    byBatch.set(s.exportId, [...(byBatch.get(s.exportId) ?? []), p.id]);
+  }
+  const held = new Set<string>();
+  if (byBatch.size === 0) return held;
+  for (const ids of chunks([...byBatch.keys()])) {
+    const open = (await db(TABLES.PaypalPayoutBatch)
+      .where({ tenantId })
+      .whereIn('id', ids)
+      .whereIn('state', OPEN_PAYPAL_BATCH_STATES)
+      .select('id')) as Array<{ id: string }>;
+    for (const b of open) for (const id of byBatch.get(b.id) ?? []) held.add(id);
+  }
+  return held;
 }
 
 const DO_NOT_PAY_DETAIL: Record<DoNotPayReason, string> = {
@@ -983,9 +1138,12 @@ export async function confirmManualPayouts(db: Knex, tenantId: string, payoutIds
     for (const p of await db<PayoutRow>(TABLES.Payout).where({ tenantId }).whereIn('id', chunk)) found.set(p.id, p);
   }
   const candidates = [...found.values()].filter((p) => p.method === 'manual' && p.status === 'pending');
-  const refused = new Map<string, DoNotPayReason>();
+  const refused = new Map<string, DoNotPayReason | 'in_paypal_batch'>();
   for (const c of await classify(db, tenantId, candidates, await blockedCountries())) {
     if (c.doNotPay) refused.set(c.payout.id, c.doNotPay);
+  }
+  for (const id of await inOpenPaypalBatch(db, tenantId, candidates)) {
+    if (!refused.has(id)) refused.set(id, 'in_paypal_batch');
   }
 
   const confirmed: PayoutRow[] = [];
@@ -1007,7 +1165,10 @@ export async function confirmManualPayouts(db: Knex, tenantId: string, payoutIds
         const p = found.get(payoutId);
         if (!p) return { payoutId, error: 'payout_not_found' as const };
         const reason = refused.get(payoutId);
-        if (reason) return { payoutId, error: 'not_confirmable' as const, reason, detail: DO_NOT_PAY_DETAIL[reason] };
+        if (reason) {
+          const detail = reason === 'in_paypal_batch' ? IN_PAYPAL_BATCH_DETAIL : DO_NOT_PAY_DETAIL[reason];
+          return { payoutId, error: 'not_confirmable' as const, reason, detail };
+        }
         return {
           payoutId,
           error: 'not_confirmable' as const,

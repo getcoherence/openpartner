@@ -4004,12 +4004,23 @@
                   ]
                 },
                 "reason": {
-                  "type": "string",
-                  "enum": [
-                    "country_not_supported",
-                    "screening_confirmed"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "country_not_supported",
+                        "screening_confirmed"
+                      ],
+                      "description": "OpenPartner Cloud: the payout must not be paid. `country_not_supported`: the partner, or their payout account, is in a country OpenPartner doesn't serve. `screening_confirmed`: a confirmed sanctions-list match. Every confirm refuses it."
+                    },
+                    {
+                      "type": "string",
+                      "enum": [
+                        "in_paypal_batch"
+                      ]
+                    }
                   ],
-                  "description": "OpenPartner Cloud: the payout must not be paid. `country_not_supported`: the partner, or their payout account, is in a country OpenPartner doesn't serve. `screening_confirmed`: a confirmed sanctions-list match. Every confirm refuses it."
+                  "description": "A do-not-pay hold, or `in_paypal_batch`: PayPal reports whether this payout was paid."
                 },
                 "detail": {
                   "type": "string"
@@ -4192,6 +4203,10 @@
             },
             "description": "Files made from this run that still hold payouts to confirm."
           },
+          "inPaypalBatches": {
+            "type": "integer",
+            "description": "Pending payouts in a PayPal Payouts batch OpenPartner sent with your PayPal app. List the batches with `GET /payouts/runs/{runId}/paypal-batches`."
+          },
           "excluded": {
             "type": "array",
             "items": {
@@ -4205,6 +4220,7 @@
                     "pay_individually",
                     "currency_not_supported",
                     "details_incomplete",
+                    "over_paypal_limit",
                     "country_not_supported",
                     "screening_confirmed"
                   ]
@@ -4227,7 +4243,62 @@
           "pendingCount",
           "ready",
           "exports",
+          "inPaypalBatches",
           "excluded"
+        ]
+      },
+      "PaypalItemStatus": {
+        "type": "object",
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "description": "PayPal’s payout_item_id."
+          },
+          "status": {
+            "type": "string",
+            "description": "PayPal’s transaction_status: SUCCESS, PENDING, UNCLAIMED, ONHOLD, FAILED, RETURNED, BLOCKED, REFUNDED, REVERSED."
+          },
+          "transactionId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "amount": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "What PayPal sent: whole units where PayPal takes no decimals (HUF, JPY, TWD)."
+              }
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "PayPal’s error name for an item that didn’t go through (RECEIVER_UNREGISTERED, …)."
+          }
+        },
+        "required": [
+          "itemId",
+          "status",
+          "transactionId",
+          "amount",
+          "currency",
+          "error"
         ]
       },
       "ManualRunPayout": {
@@ -4328,6 +4399,14 @@
                       "wise"
                     ]
                   },
+                  "via": {
+                    "type": "string",
+                    "enum": [
+                      "file",
+                      "api"
+                    ],
+                    "description": "`file`: a batch file you upload. `api`: a PayPal Payouts batch OpenPartner sent with your PayPal app; `exportId` is the batch id and `paypal` what PayPal last said."
+                  },
                   "createdAt": {
                     "type": "string",
                     "format": "date-time",
@@ -4343,21 +4422,34 @@
                   "destinationChanged": {
                     "type": "boolean",
                     "description": "The partner changed or removed their payout details after the file was made."
+                  },
+                  "paypal": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/PaypalItemStatus"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "A PayPal Payouts batch: this payout’s item, once PayPal has listed it."
                   }
                 },
                 "required": [
                   "exportId",
                   "provider",
+                  "via",
                   "createdAt",
                   "reference",
-                  "destinationChanged"
+                  "destinationChanged",
+                  "paypal"
                 ]
               },
               {
                 "type": "null"
               }
             ],
-            "description": "The file this payout is in. It stays in that file, and only that file, until it is confirmed or the file is discarded."
+            "description": "The file (or PayPal Payouts batch) this payout is in. It stays there, and only there, until it is confirmed, the file is discarded, or PayPal reports it failed or returned."
           },
           "ready": {
             "type": [
@@ -4382,11 +4474,12 @@
               "pay_individually",
               "currency_not_supported",
               "details_incomplete",
+              "over_paypal_limit",
               "country_not_supported",
               "screening_confirmed",
               null
             ],
-            "description": "Why a payout is in no file: `no_payout_details`, `details_unreadable`, `pay_individually` (a UPI ID or instructions: pay it yourself), `currency_not_supported` (PayPal can't send INR; Wise can't send from this currency, or to INR yet), `details_incomplete` (Wise needs the holder's address for a payout sent in USD or AUD), and on OpenPartner Cloud the do-not-pay reasons `country_not_supported` and `screening_confirmed`."
+            "description": "Why a payout is in no file: `no_payout_details`, `details_unreadable`, `pay_individually` (a UPI ID or instructions: pay it yourself), `currency_not_supported` (PayPal can't send INR; Wise can't send from this currency, or to INR yet), `details_incomplete` (Wise needs the holder's address for a payout sent in USD or AUD), `over_paypal_limit` (more than PayPal sends in one payment in this currency, e.g. USD 60,000), and on OpenPartner Cloud the do-not-pay reasons `country_not_supported` and `screening_confirmed`."
           },
           "complianceWarning": {
             "type": [
@@ -4525,6 +4618,236 @@
           "export",
           "filename",
           "csv"
+        ]
+      },
+      "PaypalConnection": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "sandbox"
+            ]
+          },
+          "clientIdPreview": {
+            "type": "string",
+            "description": "The client id’s first 6 and last 4 characters. The secret is never returned."
+          },
+          "appId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "PayPal’s id for the app, from the token call."
+          },
+          "payoutsEnabled": {
+            "type": "boolean",
+            "description": "PayPal granted the app the Payouts scope. False: PayPal hasn’t enabled Payouts on the account yet, and sends would be refused."
+          },
+          "webhook": {
+            "type": "object",
+            "properties": {
+              "registered": {
+                "type": "boolean",
+                "description": "OpenPartner registered a webhook on your app, so status arrives as PayPal sends it. Otherwise batches are polled every few minutes."
+              },
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "registered",
+              "error"
+            ]
+          },
+          "active": {
+            "type": "boolean",
+            "description": "Pay with PayPal sends with this environment."
+          },
+          "connectedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "verifiedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastErrorAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "openBatches": {
+            "type": "integer",
+            "description": "Batches sent with this app that are still in flight. Disconnecting waits for them."
+          }
+        },
+        "required": [
+          "id",
+          "environment",
+          "clientIdPreview",
+          "appId",
+          "payoutsEnabled",
+          "webhook",
+          "active",
+          "connectedAt",
+          "verifiedAt",
+          "lastError",
+          "lastErrorAt",
+          "openBatches"
+        ]
+      },
+      "PaypalBatch": {
+        "type": "object",
+        "properties": {
+          "batchId": {
+            "type": "string",
+            "description": "Also the `sender_batch_id` PayPal shows, and each payout’s `exportId`."
+          },
+          "runId": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "sandbox"
+            ]
+          },
+          "currency": {
+            "type": "string"
+          },
+          "itemCount": {
+            "type": "integer"
+          },
+          "total": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "intent",
+              "posted",
+              "submitted",
+              "completed",
+              "failed",
+              "denied",
+              "released",
+              "reconcile_required"
+            ],
+            "description": "`intent`: committed, not sent yet. `posted`: sent, PayPal’s answer not in yet (re-sent automatically; PayPal never makes a second batch for the same id). `submitted`: PayPal has it and is paying. `completed`: every payout paid or released. `failed`: PayPal refused it outright; nothing was sent and the payouts are back to pending. `denied`: PayPal denied the batch; payouts released. `released`: you released it after checking PayPal. `reconcile_required`: OpenPartner can’t tell whether it went out; check PayPal, then `POST /payouts/paypal-batches/{batchId}/resolve`."
+          },
+          "payoutBatchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "PayPal’s id for the batch."
+          },
+          "batchStatus": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "PayPal’s batch_status: PENDING, PROCESSING, SUCCESS, DENIED, CANCELED."
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "paid": {
+                "type": "integer"
+              },
+              "released": {
+                "type": "integer",
+                "description": "Back to pending: failed, returned, refunded, or the batch didn’t go out."
+              },
+              "unclaimed": {
+                "type": "integer",
+                "description": "PayPal emailed the partner to claim it (no PayPal account at that email). Returned after 30 days unless claimed."
+              },
+              "processing": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "paid",
+              "released",
+              "unclaimed",
+              "processing"
+            ]
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "createdBy": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "api"
+            ]
+          },
+          "completedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "lastSyncedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "pattern": "Z$"
+          }
+        },
+        "required": [
+          "batchId",
+          "runId",
+          "environment",
+          "currency",
+          "itemCount",
+          "total",
+          "state",
+          "payoutBatchId",
+          "batchStatus",
+          "summary",
+          "lastError",
+          "createdAt",
+          "createdBy",
+          "completedAt",
+          "lastSyncedAt"
         ]
       },
       "PayoutDetails": {
@@ -11572,6 +11895,1202 @@
           },
           "404": {
             "description": "`export_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config/paypal": {
+      "get": {
+        "operationId": "listPaypalConnections",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Your connected PayPal apps",
+        "description": "The PayPal REST apps Pay with PayPal sends with, live and/or sandbox, and which one is active. The secret is never returned. See docs/paypal-payouts.md.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "responses": {
+          "200": {
+            "description": "Connections.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connections": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PaypalConnection"
+                      }
+                    }
+                  },
+                  "required": [
+                    "connections"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "connectPaypal",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Connect your PayPal app",
+        "description": "Saves your PayPal REST app's client id and secret for one environment, after a token call proves them. The secret is sealed at rest, never returned, never logged and never exported. Pay with PayPal then calls PayPal's Payouts API as your app: money goes from your PayPal balance to your partners and never passes through OpenPartner.\n\nThe first environment you connect becomes the one Pay with PayPal uses; switch with `POST /config/paypal/{environment}/activate`. Connecting again replaces that environment's credentials. A different app's are refused (`409 open_batches`) while batches sent with the current ones are in flight; a new secret for the same app takes them over.\n\nOpenPartner also registers a webhook on the app for the Payouts events, when the deployment has a public https address.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "environment": {
+                    "type": "string",
+                    "enum": [
+                      "live",
+                      "sandbox"
+                    ]
+                  },
+                  "clientId": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{8,128}$"
+                  },
+                  "clientSecret": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{8,128}$"
+                  }
+                },
+                "required": [
+                  "environment",
+                  "clientId",
+                  "clientSecret"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Connected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connection": {
+                      "$ref": "#/components/schemas/PaypalConnection"
+                    }
+                  },
+                  "required": [
+                    "connection"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`open_batches`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`credentials_refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`paypal_unreachable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config/paypal/{environment}/verify": {
+      "post": {
+        "operationId": "verifyPaypalConnection",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Check your PayPal credentials again",
+        "description": "A fresh token call with the saved credentials. Also refreshes whether PayPal has enabled Payouts on the app (`payoutsEnabled`).\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "live",
+                "sandbox"
+              ]
+            },
+            "required": true,
+            "name": "environment",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Verified.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connection": {
+                      "$ref": "#/components/schemas/PaypalConnection"
+                    }
+                  },
+                  "required": [
+                    "connection"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_connected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`credentials_refused`, `credentials_unreadable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`paypal_unreachable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config/paypal/{environment}/activate": {
+      "post": {
+        "operationId": "activatePaypalEnvironment",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Choose live or sandbox for Pay with PayPal",
+        "description": "Pay with PayPal sends with this environment from now on. Batches already sent keep the app they were sent with.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "live",
+                "sandbox"
+              ]
+            },
+            "required": true,
+            "name": "environment",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Active.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connection": {
+                      "$ref": "#/components/schemas/PaypalConnection"
+                    }
+                  },
+                  "required": [
+                    "connection"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_connected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config/paypal/{environment}": {
+      "delete": {
+        "operationId": "disconnectPaypal",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Disconnect a PayPal app",
+        "description": "Removes OpenPartner’s webhook from the app and wipes the saved secret and token. Refused while batches sent with it are in flight (`409 open_batches`): their status can only be read with it. Never makes the other environment active.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "live",
+                "sandbox"
+              ]
+            },
+            "required": true,
+            "name": "environment",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Disconnected."
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_connected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`open_batches`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/runs/{runId}/paypal-batches": {
+      "post": {
+        "operationId": "sendRunWithPaypal",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Pay a run’s PayPal partners through your PayPal app",
+        "description": "Sends the next PayPal Payouts batch of a run, in one currency, with your active PayPal app: the same payouts a PayPal file would take (partners whose payout details are a PayPal email, a currency PayPal sends, under PayPal's per-payment limit, nothing on a do-not-pay hold), up to 5,000. The money goes from your PayPal balance to the partners; it never passes through OpenPartner.\n\nThe payouts are stamped with the batch id (`exportId`, `via: \"api\"`) before anything is sent, so they are in no other file or batch. The batch id is also PayPal's `sender_batch_id` and `PayPal-Request-Id`: a re-send after a timeout or crash reaches the same batch, and PayPal never pays one twice.\n\nPayPal pays asynchronously. Follow the batch with `GET /payouts/paypal-batches/{batchId}`: paid items confirm their payouts; failed, returned or refunded ones go back to pending (and your admins are emailed); unclaimed ones wait for the partner to claim them. No INR: PayPal pays Indian PayPal accounts in USD only.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The runId."
+            },
+            "required": true,
+            "name": "runId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "currency": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z]{3}$"
+                  }
+                },
+                "required": [
+                  "currency"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The batch, as it stands after the first send.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "batch": {
+                      "$ref": "#/components/schemas/PaypalBatch"
+                    }
+                  },
+                  "required": [
+                    "batch"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`nothing_to_send`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`paypal_not_connected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`currency_not_supported`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listRunPaypalBatches",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "List a run’s PayPal Payouts batches",
+        "description": "Newest first, up to 50.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The runId."
+            },
+            "required": true,
+            "name": "runId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Batches.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "batches": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PaypalBatch"
+                      }
+                    }
+                  },
+                  "required": [
+                    "batches"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/paypal-batches/{batchId}": {
+      "get": {
+        "operationId": "getPaypalBatch",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Get a PayPal Payouts batch",
+        "description": "Where the batch stands, as of the last read from PayPal (`lastSyncedAt`).\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The batchId."
+            },
+            "required": true,
+            "name": "batchId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The batch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "batch": {
+                      "$ref": "#/components/schemas/PaypalBatch"
+                    }
+                  },
+                  "required": [
+                    "batch"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`batch_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/paypal-batches/{batchId}/sync": {
+      "post": {
+        "operationId": "syncPaypalBatch",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Check a PayPal Payouts batch now",
+        "description": "Reads the batch from PayPal now instead of at the next poll, and applies what it says. A batch whose send had no answer yet is re-sent (it reaches the same batch).\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The batchId."
+            },
+            "required": true,
+            "name": "batchId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The batch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "batch": {
+                      "$ref": "#/components/schemas/PaypalBatch"
+                    }
+                  },
+                  "required": [
+                    "batch"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`batch_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/paypal-batches/{batchId}/resolve": {
+      "post": {
+        "operationId": "resolvePaypalBatch",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Settle a PayPal batch OpenPartner can’t",
+        "description": "For a batch in `reconcile_required` (OpenPartner can't tell whether it went out), after you've looked in your PayPal account:\n\n- `{\"action\": \"link\", \"payoutBatchId\": \"…\"}`: PayPal shows the batch. It is read back and adopted only if its sender_batch_id is this batch's id.\n- `{\"action\": \"retry\"}`: send the same request again. Only within 29 days of the first send, while PayPal still refuses a duplicate.\n- `{\"action\": \"release\"}`: no such batch went out. The payouts go back to pending. Also abandons a batch still in `intent`.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The batchId."
+            },
+            "required": true,
+            "name": "batchId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "enum": [
+                          "retry"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "action"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "enum": [
+                          "release"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "action"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "enum": [
+                          "link"
+                        ]
+                      },
+                      "payoutBatchId": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9]{1,64}$"
+                      }
+                    },
+                    "required": [
+                      "action",
+                      "payoutBatchId"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The batch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "batch": {
+                      "$ref": "#/components/schemas/PaypalBatch"
+                    }
+                  },
+                  "required": [
+                    "batch"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`batch_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_resolvable`, `not_retryable`, `not_connected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`batch_not_ours`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`paypal_unreachable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/{id}/paypal-cancel": {
+      "post": {
+        "operationId": "cancelUnclaimedPaypalPayout",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Cancel an unclaimed PayPal payout",
+        "description": "PayPal returns an unclaimed payment after 30 days. This cancels it now: PayPal returns the money to your balance and the payout goes back to pending. If the partner has just claimed it, nothing is cancelled and the payout follows what PayPal says.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What PayPal said.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "released": {
+                      "type": "boolean"
+                    },
+                    "status": {
+                      "type": "string",
+                      "description": "The item’s transaction_status now."
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "released",
+                    "status"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`payout_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_unclaimed`, `not_connected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`paypal_unreachable`",
             "content": {
               "application/json": {
                 "schema": {

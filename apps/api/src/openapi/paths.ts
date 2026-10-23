@@ -30,6 +30,7 @@ import * as apiKeys from '../routes/api-keys.js';
 import * as exportRoutes from '../routes/export.js';
 import * as settings from '../routes/settings.js';
 import * as payouts from '../routes/payouts.js';
+import * as paypal from '../routes/paypal.js';
 import { EXPORTABLE_TABLES } from '../export.js';
 import { MAX_IP_ALLOWLIST } from '../conversion-postback.js';
 import type { OperationRegistry } from './registry.js';
@@ -1090,6 +1091,166 @@ The file's payouts are fixed here: each is stamped with the \`exportId\`, held o
       200: { description: 'Released.', schema: z.object({ released: z.number().int().openapi({ description: 'Payouts released.' }) }) },
     },
     errors: { 404: ['export_not_found'] },
+  });
+
+  // ------------------------------------------------------- Pay with PayPal
+  const paypalEnvironment = { environment: paypal.paypalEnvironmentParam };
+  const connectionResponse = z.object({ connection: S.PaypalConnection });
+  const batchResponse = z.object({ batch: S.PaypalBatch });
+
+  r.operation({
+    method: 'get',
+    path: '/config/paypal',
+    tag: 'Payouts',
+    operationId: 'listPaypalConnections',
+    summary: 'Your connected PayPal apps',
+    description: 'The PayPal REST apps Pay with PayPal sends with, live and/or sandbox, and which one is active. The secret is never returned. See docs/paypal-payouts.md.',
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'Connections.', schema: z.object({ connections: z.array(S.PaypalConnection) }) } },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/config/paypal',
+    tag: 'Payouts',
+    operationId: 'connectPaypal',
+    summary: 'Connect your PayPal app',
+    description: `Saves your PayPal REST app's client id and secret for one environment, after a token call proves them. The secret is sealed at rest, never returned, never logged and never exported. Pay with PayPal then calls PayPal's Payouts API as your app: money goes from your PayPal balance to your partners and never passes through OpenPartner.
+
+The first environment you connect becomes the one Pay with PayPal uses; switch with \`POST /config/paypal/{environment}/activate\`. Connecting again replaces that environment's credentials. A different app's are refused (\`409 open_batches\`) while batches sent with the current ones are in flight; a new secret for the same app takes them over.
+
+OpenPartner also registers a webhook on the app for the Payouts events, when the deployment has a public https address.`,
+    access: { kind: 'admin' },
+    body: paypal.connectPaypalSchema,
+    responses: { 201: { description: 'Connected.', schema: connectionResponse } },
+    errors: { 409: ['open_batches'], 422: ['credentials_refused'], 502: ['paypal_unreachable'] },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/config/paypal/:environment/verify',
+    tag: 'Payouts',
+    operationId: 'verifyPaypalConnection',
+    summary: 'Check your PayPal credentials again',
+    description: 'A fresh token call with the saved credentials. Also refreshes whether PayPal has enabled Payouts on the app (`payoutsEnabled`).',
+    access: { kind: 'admin' },
+    params: paypalEnvironment,
+    responses: { 200: { description: 'Verified.', schema: connectionResponse } },
+    errors: { 404: ['not_connected'], 422: ['credentials_refused', 'credentials_unreadable'], 502: ['paypal_unreachable'] },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/config/paypal/:environment/activate',
+    tag: 'Payouts',
+    operationId: 'activatePaypalEnvironment',
+    summary: 'Choose live or sandbox for Pay with PayPal',
+    description: 'Pay with PayPal sends with this environment from now on. Batches already sent keep the app they were sent with.',
+    access: { kind: 'admin' },
+    params: paypalEnvironment,
+    responses: { 200: { description: 'Active.', schema: connectionResponse } },
+    errors: { 404: ['not_connected'] },
+  });
+
+  r.operation({
+    method: 'delete',
+    path: '/config/paypal/:environment',
+    tag: 'Payouts',
+    operationId: 'disconnectPaypal',
+    summary: 'Disconnect a PayPal app',
+    description:
+      'Removes OpenPartner’s webhook from the app and wipes the saved secret and token. Refused while batches sent with it are in flight (`409 open_batches`): their status can only be read with it. Never makes the other environment active.',
+    access: { kind: 'admin' },
+    params: paypalEnvironment,
+    responses: { 204: { description: 'Disconnected.' } },
+    errors: { 404: ['not_connected'], 409: ['open_batches'] },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/payouts/runs/:runId/paypal-batches',
+    tag: 'Payouts',
+    operationId: 'sendRunWithPaypal',
+    summary: 'Pay a run’s PayPal partners through your PayPal app',
+    description: `Sends the next PayPal Payouts batch of a run, in one currency, with your active PayPal app: the same payouts a PayPal file would take (partners whose payout details are a PayPal email, a currency PayPal sends, under PayPal's per-payment limit, nothing on a do-not-pay hold), up to 5,000. The money goes from your PayPal balance to the partners; it never passes through OpenPartner.
+
+The payouts are stamped with the batch id (\`exportId\`, \`via: "api"\`) before anything is sent, so they are in no other file or batch. The batch id is also PayPal's \`sender_batch_id\` and \`PayPal-Request-Id\`: a re-send after a timeout or crash reaches the same batch, and PayPal never pays one twice.
+
+PayPal pays asynchronously. Follow the batch with \`GET /payouts/paypal-batches/{batchId}\`: paid items confirm their payouts; failed, returned or refunded ones go back to pending (and your admins are emailed); unclaimed ones wait for the partner to claim them. No INR: PayPal pays Indian PayPal accounts in USD only.`,
+    access: { kind: 'admin' },
+    body: paypal.sendWithPaypalSchema,
+    responses: { 201: { description: 'The batch, as it stands after the first send.', schema: batchResponse } },
+    errors: { 404: ['nothing_to_send'], 409: ['paypal_not_connected'], 422: ['currency_not_supported'] },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/payouts/runs/:runId/paypal-batches',
+    tag: 'Payouts',
+    operationId: 'listRunPaypalBatches',
+    summary: 'List a run’s PayPal Payouts batches',
+    description: 'Newest first, up to 50.',
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'Batches.', schema: z.object({ batches: z.array(S.PaypalBatch) }) } },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/payouts/paypal-batches/:batchId',
+    tag: 'Payouts',
+    operationId: 'getPaypalBatch',
+    summary: 'Get a PayPal Payouts batch',
+    description: 'Where the batch stands, as of the last read from PayPal (`lastSyncedAt`).',
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'The batch.', schema: batchResponse } },
+    errors: { 404: ['batch_not_found'] },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/payouts/paypal-batches/:batchId/sync',
+    tag: 'Payouts',
+    operationId: 'syncPaypalBatch',
+    summary: 'Check a PayPal Payouts batch now',
+    description: 'Reads the batch from PayPal now instead of at the next poll, and applies what it says. A batch whose send had no answer yet is re-sent (it reaches the same batch).',
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'The batch.', schema: batchResponse } },
+    errors: { 404: ['batch_not_found'] },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/payouts/paypal-batches/:batchId/resolve',
+    tag: 'Payouts',
+    operationId: 'resolvePaypalBatch',
+    summary: 'Settle a PayPal batch OpenPartner can’t',
+    description: `For a batch in \`reconcile_required\` (OpenPartner can't tell whether it went out), after you've looked in your PayPal account:
+
+- \`{"action": "link", "payoutBatchId": "…"}\`: PayPal shows the batch. It is read back and adopted only if its sender_batch_id is this batch's id.
+- \`{"action": "retry"}\`: send the same request again. Only within 29 days of the first send, while PayPal still refuses a duplicate.
+- \`{"action": "release"}\`: no such batch went out. The payouts go back to pending. Also abandons a batch still in \`intent\`.`,
+    access: { kind: 'admin' },
+    body: paypal.resolvePaypalBatchSchema,
+    responses: { 200: { description: 'The batch.', schema: batchResponse } },
+    errors: { 404: ['batch_not_found'], 409: ['not_resolvable', 'not_retryable', 'not_connected'], 422: ['batch_not_ours'], 502: ['paypal_unreachable'] },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/payouts/:id/paypal-cancel',
+    tag: 'Payouts',
+    operationId: 'cancelUnclaimedPaypalPayout',
+    summary: 'Cancel an unclaimed PayPal payout',
+    description:
+      'PayPal returns an unclaimed payment after 30 days. This cancels it now: PayPal returns the money to your balance and the payout goes back to pending. If the partner has just claimed it, nothing is cancelled and the payout follows what PayPal says.',
+    access: { kind: 'admin' },
+    responses: {
+      200: {
+        description: 'What PayPal said.',
+        schema: z.object({ ok: z.literal(true), released: z.boolean(), status: z.string().openapi({ description: 'The item’s transaction_status now.' }) }),
+      },
+    },
+    errors: { 404: ['payout_not_found'], 409: ['not_unclaimed', 'not_connected'], 502: ['paypal_unreachable'] },
   });
 
   r.operation({

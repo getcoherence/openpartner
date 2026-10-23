@@ -147,6 +147,8 @@ export const TABLES = {
   HostedFundingAuthorization: 'HostedFundingAuthorization',
   HostedBillingState: 'HostedBillingState',
   TenantStripeConnection: 'TenantStripeConnection',
+  PaypalConnection: 'PaypalConnection',
+  PaypalPayoutBatch: 'PaypalPayoutBatch',
   StripeWebhookInbox: 'StripeWebhookInbox',
   PayoutReversal: 'PayoutReversal',
   CommissionAdjustment: 'CommissionAdjustment',

@@ -213,6 +213,69 @@ export function payoutDetailsChangedEmail(opts: {
   return { subject, text, html: plainHtml(text) };
 }
 
+/** What a PayPal item status means for the brand, in the alert below. */
+const PAYPAL_ITEM_OUTCOME: Record<string, string> = {
+  UNCLAIMED: 'unclaimed: the partner has no PayPal account at that email yet. PayPal returns the money after 30 days unless they claim it',
+  FAILED: 'failed, nothing was sent',
+  RETURNED: 'returned to your PayPal balance',
+  BLOCKED: 'blocked by PayPal',
+  REFUNDED: 'refunded to you by the partner',
+  REVERSED: 'reversed',
+  DENIED: 'refused by PayPal',
+  CANCELED: 'canceled',
+  not_sent: 'not sent',
+};
+
+/** Brand admins: a PayPal Payouts batch needs a look (paypal-payouts.ts):
+ *  items that didn't go through or wait to be claimed, a batch PayPal
+ *  refused, or one OpenPartner can't settle on its own. */
+export function paypalBatchAttentionEmail(opts: {
+  brandName: string | null;
+  kind: 'failed' | 'held' | 'items';
+  environment: 'live' | 'sandbox';
+  batchId: string;
+  lastError: string | null;
+  items: Array<{ partnerName: string; amount: string; currency: string; status: string; error: string | null }>;
+  payoutsUrl: string;
+}): EmailTemplate {
+  const env = opts.environment === 'sandbox' ? ' (sandbox)' : '';
+  const subject =
+    opts.kind === 'held'
+      ? `A PayPal payout batch needs you to check it${env}`
+      : opts.kind === 'failed'
+        ? `A PayPal payout batch wasn't sent${env}`
+        : `PayPal payouts that didn't go through${env}`;
+  const lines = opts.items.slice(0, 50).map((i) => {
+    const outcome = PAYPAL_ITEM_OUTCOME[i.status] ?? i.status.toLowerCase();
+    return `- ${i.partnerName}: ${Number(i.amount).toFixed(2)} ${i.currency.toUpperCase()}, ${outcome}${i.error ? ` (${i.error})` : ''}`;
+  });
+  if (opts.items.length > 50) lines.push(`- and ${opts.items.length - 50} more`);
+  const intro =
+    opts.kind === 'held'
+      ? [
+          `OpenPartner sent a PayPal Payouts batch (${opts.batchId}) from your PayPal account, but can't tell for certain whether it went out.`,
+          ...(opts.lastError ? [``, `Reason: ${opts.lastError}`] : []),
+          ``,
+          `Its payouts stay out of other files and batches until you settle it. Look for the batch in your PayPal account (Activity), then on the Payouts page either link the batch PayPal shows, or release the payouts if it never went out.`,
+        ]
+      : opts.kind === 'failed'
+        ? [
+            `A PayPal Payouts batch (${opts.batchId}) wasn't sent, so no money left your PayPal account for it.`,
+            ...(opts.lastError ? [``, `Reason: ${opts.lastError}`] : []),
+            ``,
+            `Its payouts are back to "to send": you can send them again once the problem is fixed.`,
+          ]
+        : [
+            `Some payouts in a PayPal Payouts batch (${opts.batchId}) didn't reach the partner:`,
+            ``,
+            ...lines,
+            ``,
+            `Payouts that failed or were returned are back to "to send", so you can pay them again, for example once the partner fixes their PayPal email. An unclaimed one stays in the batch until it is claimed or returned; you can cancel it on the Payouts page to get the money back now.`,
+          ];
+  const text = [`Hi${opts.brandName ? ` from ${opts.brandName}` : ''},`, ``, ...intro, ``, `Payouts page:`, ``, opts.payoutsUrl].join('\n');
+  return { subject, text, html: wrap(text, opts.payoutsUrl, 'Open Payouts') };
+}
+
 /** Brand admin: 7-day notice that a Campaign is about to end. */
 export function campaignEndingBrandEmail(
   brandName: string | null,

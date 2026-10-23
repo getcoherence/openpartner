@@ -251,6 +251,25 @@ async function seedEverything(tenantId: string): Promise<void> {
     permissionsVersion: 1,
     refreshTokenEnc: 'enc',
   });
+  const paypalConnectionId = u();
+  await db(TABLES.PaypalConnection).insert({
+    id: paypalConnectionId,
+    tenantId,
+    environment: 'sandbox',
+    clientId: `client_${short()}`,
+    clientSecretEnc: 'enc',
+  });
+  await db(TABLES.PaypalPayoutBatch).insert({
+    id: u(),
+    tenantId,
+    connectionId: paypalConnectionId,
+    environment: 'sandbox',
+    runId: u(),
+    currency: 'USD',
+    itemCount: 1,
+    total: '10.00',
+    createdBy: 'admin',
+  });
   await db(TABLES.PortalCustomDomain).insert({
     id: u(),
     tenantId,

@@ -1373,6 +1373,76 @@ export interface TenantStripeConnectionRow {
   updatedAt: Date;
 }
 
+export type PaypalEnvironment = 'live' | 'sandbox';
+
+/** A brand's own PayPal REST app (migration 20261022010000). Credentials
+ *  for one deployment: never exported. */
+export interface PaypalConnectionRow {
+  id: string;
+  tenantId: string;
+  environment: PaypalEnvironment;
+  clientId: string;
+  /** AES-GCM envelope (crypto.ts). Null once disconnected. */
+  clientSecretEnc: string | null;
+  accessTokenEnc: string | null;
+  accessTokenExpiresAt: Date | null;
+  appId: string | null;
+  payoutsScope: boolean;
+  /** Sealed PayPal webhook id; null when none is registered. */
+  webhookIdEnc: string | null;
+  webhookError: string | null;
+  active: boolean;
+  connectedByAdminId: string | null;
+  connectedAt: Date;
+  verifiedAt: Date | null;
+  lastError: string | null;
+  lastErrorAt: Date | null;
+  disconnectedAt: Date | null;
+  disconnectReason: 'admin' | 'replaced' | null;
+  updatedAt: Date;
+}
+
+export type PaypalBatchState =
+  | 'intent'
+  | 'posted'
+  | 'submitted'
+  | 'completed'
+  | 'failed'
+  | 'denied'
+  | 'released'
+  | 'reconcile_required';
+
+/** One PayPal Payouts batch sent with a brand's credentials (migration
+ *  20261022010000). Its id is the payouts' export id and PayPal's
+ *  sender_batch_id. */
+export interface PaypalPayoutBatchRow {
+  id: string;
+  tenantId: string;
+  connectionId: string;
+  environment: PaypalEnvironment;
+  runId: string;
+  currency: string;
+  itemCount: number;
+  total: string;
+  state: PaypalBatchState;
+  /** Sealed frozen request body; null once PayPal has the batch. */
+  requestEnc: string | null;
+  payoutBatchId: string | null;
+  batchStatus: string | null;
+  itemSummary: Record<string, number>;
+  attempts: number;
+  postedAt: Date | null;
+  leaseAt: Date | null;
+  lastSyncedAt: Date | null;
+  nextSyncAt: Date | null;
+  lastError: string | null;
+  createdBy: 'admin' | 'api';
+  createdAt: Date;
+  completedAt: Date | null;
+  resolution: 'released' | 'linked' | null;
+  updatedAt: Date;
+}
+
 export interface StripeWebhookInboxRow {
   stripeEventId: string;
   type: string;

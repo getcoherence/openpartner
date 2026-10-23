@@ -11,7 +11,9 @@ import { executePayoutTransfers } from '../payout-transfers.js';
 import { listHeldPartners, screenPayablePartners } from '../sanctions-screening.js';
 import { tenantOf, withTenantTransaction } from '../tenancy.js';
 import {
+  IN_PAYPAL_BATCH_DETAIL,
   MANUAL_PAYOUT_PROVIDERS,
+  inOpenPaypalBatch,
   confirmManualExport,
   confirmManualPayouts,
   createManualExport,
@@ -218,6 +220,10 @@ payoutsRouter.post('/payouts/:id/confirm', requireAuth, requireAdmin, async (req
   // sanctions match) is never recorded as paid, whichever path asks.
   const reason = existing.method === 'manual' && existing.status === 'pending' ? await doNotPayReason(db, tenantId, existing) : null;
   if (reason) return res.status(409).json({ error: 'not_confirmable', reason, detail: doNotPayDetail(reason) });
+  // PayPal reports what happened to a payout in a batch it is processing.
+  if ((await inOpenPaypalBatch(db, tenantId, [existing])).size > 0) {
+    return res.status(409).json({ error: 'not_confirmable', reason: 'in_paypal_batch', detail: IN_PAYPAL_BATCH_DETAIL });
+  }
   const updated = await db<PayoutRow>(TABLES.Payout)
     .where({ id: req.params.id, tenantId, method: 'manual', status: 'pending' })
     .update({ status: 'paid', completedAt: new Date() })
