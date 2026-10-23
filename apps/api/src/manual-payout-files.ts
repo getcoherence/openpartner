@@ -112,8 +112,10 @@ export const CHUNK = { size: 1000 };
 
 /**
  * Currencies PayPal's REST API lists (developer.paypal.com/api/rest/
- * reference/currency-codes, checked 2026-10-19). Not INR: since April 2021
- * Indian PayPal accounts receive international payments in USD only.
+ * reference/currency-codes, checked 2026-10-19 and 2026-10-23). Not INR:
+ * PayPal's API has no INR at all. Indian PayPal accounts take
+ * international payments in the sender's currency and PayPal converts
+ * them to INR on the way to the partner's bank (paypal-send-as.ts).
  */
 export const PAYPAL_CURRENCIES: ReadonlySet<string> = new Set([
   'AUD', 'BRL', 'CAD', 'CNY', 'CZK', 'DKK', 'EUR', 'HKD', 'HUF', 'ILS', 'JPY', 'MYR', 'MXN',
@@ -864,6 +866,9 @@ export async function pickReadyPayouts(
  * manual payout that no file or batch holds takes the stamp. Returns the
  * ids that did, so the caller builds its file or batch from exactly those.
  * `perPayout`: fields added to one payout's stamp only (its conversion).
+ * `expect`: a payout takes the stamp only while it still has this many
+ * `paypalReleases` and this amount (a quoted conversion's payouts),
+ * checked by the UPDATE itself on the row it stamps.
  */
 export async function stampManualPayouts(
   db: Knex,
@@ -871,14 +876,24 @@ export async function stampManualPayouts(
   payoutIds: readonly string[],
   stamp: ManualExportStamp,
   perPayout?: ReadonlyMap<string, Partial<ManualExportStamp>>,
+  expect?: ReadonlyMap<string, { releases: number; amount: string }>,
 ): Promise<Set<string>> {
   const stamped = new Set<string>();
   for (const ids of chunks(payoutIds)) {
     const own = perPayout ? JSON.stringify(Object.fromEntries(ids.map((id) => [id, perPayout.get(id) ?? {}]))) : null;
+    const expected = expect ? JSON.stringify(Object.fromEntries(ids.map((id) => [id, expect.get(id) ?? null]))) : null;
     const rows = (await db(TABLES.Payout)
       .where({ tenantId, method: 'manual', status: 'pending' })
       .whereIn('id', ids)
       .whereRaw(`metadata->'manualExport' is null`)
+      .modify((q) => {
+        if (!expected) return;
+        q.whereRaw(
+          `jsonb_array_length(coalesce(metadata->'paypalReleases', '[]'::jsonb)) = ((?::jsonb) -> "id"::text ->> 'releases')::int
+           and amount = ((?::jsonb) -> "id"::text ->> 'amount')::numeric`,
+          [expected, expected],
+        );
+      })
       .update({
         metadata: own
           ? db.raw(`metadata || jsonb_build_object('manualExport', ?::jsonb || coalesce((?::jsonb) -> "id"::text, '{}'::jsonb))`, [JSON.stringify(stamp), own])

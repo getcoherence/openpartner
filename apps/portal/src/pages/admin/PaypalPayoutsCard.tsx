@@ -153,11 +153,10 @@ function SendUnsupportedAs() {
         <span>
           <strong>Pay INR balances with PayPal in USD</strong>
           <span style={{ color: theme.textMuted, display: 'block', lineHeight: 1.55, marginTop: 2 }}>
-            PayPal can’t send INR: Indian PayPal accounts receive international payments in USD. With this on, INR payouts
-            to partners with a PayPal email can go out with Pay with PayPal in USD, converted at the European Central Bank
-            reference rate. You see the rate and both totals before each batch, the payouts stay in INR in your records,
-            and your partners see both amounts. When a partner withdraws USD to an Indian bank, PayPal converts it at its
-            own rate; that conversion is between them and PayPal.
+            PayPal can’t send INR. With this on, INR payouts to partners with a PayPal email can go out with Pay with
+            PayPal in USD, converted at the European Central Bank reference rate. You see the rate and both totals before
+            each batch, the payouts stay in INR in your records, and your partners see both amounts. PayPal then converts
+            the USD to INR for the partner’s bank at its own rate; that conversion is between them and PayPal.
           </span>
         </span>
       </label>

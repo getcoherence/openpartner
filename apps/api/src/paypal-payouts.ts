@@ -126,7 +126,7 @@ import {
   type PaypalConversionStamp,
   type PaypalSendAsCurrency,
 } from './paypal-send-as.js';
-import type { PaypalDetails } from './payout-profile.js';
+import { summarizeDetails, type PaypalDetails } from './payout-profile.js';
 import {
   PaypalApiError,
   cancelPayoutItem,
@@ -322,13 +322,19 @@ async function pickBatchItems(
   return { items: picked.map((p) => ({ ...p, sentAmount: sent.get(p.payout.id)! })), leftOut };
 }
 
+/** How many times PayPal has given this payout back (paypalReleases). */
+function releasesOf(p: Pick<PayoutRow, 'metadata'>): number {
+  return ((p.metadata as { paypalReleases?: unknown[] } | null)?.paypalReleases ?? []).length;
+}
+
 function digestOf(items: readonly BatchItem[]): string {
   return itemsDigest(
     items.map((i) => ({
       payoutId: i.payout.id,
       amount: Number(i.payout.amount).toFixed(2),
       sentAmount: i.sentAmount,
-      releases: ((i.payout.metadata as { paypalReleases?: unknown[] } | null)?.paypalReleases ?? []).length,
+      releases: releasesOf(i.payout),
+      destination: (i.details as PaypalDetails).email.toLowerCase(),
     })),
   );
 }
@@ -341,10 +347,10 @@ function grouped(amount: string): string {
 }
 
 /** The note on a converted item: both amounts, the rate's date, and whose
- *  the conversion to INR at withdrawal is. */
+ *  the conversion to INR afterwards is. */
 function convertedNote(brandName: string | null, c: PaypalConversionStamp): string {
   return plainText(
-    `${paypalNote(brandName)}: ${c.sourceCurrency} ${grouped(c.sourceAmount)}, sent as ${c.sentCurrency} ${grouped(c.sentAmount)} at the ECB reference rate of ${formatRateDate(c.rateDate)}. If you withdraw it in ${c.sourceCurrency}, PayPal converts it at its own rate.`,
+    `${paypalNote(brandName)}: ${c.sourceCurrency} ${grouped(c.sourceAmount)}, sent as ${c.sentCurrency} ${grouped(c.sentAmount)} at the ECB reference rate of ${formatRateDate(c.rateDate)}. PayPal converts it to ${c.sourceCurrency} at its own rate.`,
     400,
   );
 }
@@ -357,6 +363,8 @@ export interface PaypalQuoteItem {
   payoutId: string;
   partnerId: string;
   partnerName: string;
+  /** The PayPal account it goes to, masked. */
+  destination: string;
   /** The payout's own amount, in the quote's `currency`. */
   amount: string;
   /** What PayPal would send for it, in `sendAs`: rounded on its own. */
@@ -397,12 +405,15 @@ export type QuotePaypalResult =
       ok: false;
       error: 'paypal_not_connected' | 'nothing_to_send' | 'currency_not_supported' | 'conversion_not_needed' | 'conversion_not_enabled' | 'fx_unavailable';
       detail?: string;
+      /** nothing_to_send because every payout was left out at this rate. */
+      leftOut?: PaypalConversionQuote['leftOut'];
     };
 
 const quoteItem = (i: BatchItem): PaypalQuoteItem => ({
   payoutId: i.payout.id,
   partnerId: i.payout.partnerId,
   partnerName: i.partner.name,
+  destination: summarizeDetails(i.details),
   amount: Number(i.payout.amount).toFixed(2),
   sentAmount: i.sentAmount,
 });
@@ -444,10 +455,18 @@ export async function quotePaypalConversion(
 
   const { items, leftOut } = await withTenantTransaction(tenantId, (trx) => pickBatchItems(trx, tenantId, runId, currency, conversion));
   if (items.length === 0) {
+    if (leftOut.length === 0) return { ok: false, error: 'nothing_to_send' };
+    const over = leftOut.filter((l) => l.reason === 'over_paypal_limit').length;
+    const tiny = leftOut.length - over;
+    const why = [
+      over > 0 && `${over === 1 ? '1 is' : `${over} are`} over PayPal’s per-payment limit in ${sendAs}`,
+      tiny > 0 && `${tiny === 1 ? '1 is' : `${tiny} are`} under a cent in ${sendAs}`,
+    ].filter(Boolean);
     return {
       ok: false,
       error: 'nothing_to_send',
-      ...(leftOut.length > 0 ? { detail: `No payout fits PayPal’s per-payment limit in ${sendAs} at this rate.` } : {}),
+      detail: `None of these payouts can go through PayPal at this rate: ${why.join(', and ')}. Pay them another way.`,
+      leftOut: leftOut.map((i) => ({ ...quoteItem(i), reason: i.reason })),
     };
   }
   const quotedAt = now.toISOString();
@@ -506,6 +525,7 @@ export type SendWithPaypalResult =
 
 /** Thrown inside the create transaction to roll its stamps back. */
 class QuoteChanged extends Error {}
+class QuoteExpired extends Error {}
 
 /**
  * Send the next PayPal batch of a run, in one currency: the first 5,000
@@ -527,7 +547,7 @@ export async function sendRunWithPaypal(
   opts: { now?: () => Date; sendAs?: PaypalSendAsCurrency; quoteId?: string } = {},
 ): Promise<SendWithPaypalResult> {
   const now = opts.now ?? (() => new Date());
-  let conversion: (Conversion & { quotedAt: string; items: string; connectionId: string }) | null = null;
+  let conversion: (Conversion & { quotedAt: string; expiresAt: string; items: string; connectionId: string }) | null = null;
   if (opts.sendAs || opts.quoteId) {
     if (PAYPAL_CURRENCIES.has(currency)) return { ok: false, error: 'conversion_not_needed' };
     if (!PAYPAL_CONVERTIBLE_CURRENCIES.has(currency)) return { ok: false, error: 'currency_not_supported' };
@@ -536,7 +556,15 @@ export async function sendRunWithPaypal(
       return { ok: false, error: 'invalid_quote' };
     }
     if (now().getTime() > Date.parse(q.expiresAt)) return { ok: false, error: 'quote_expired' };
-    conversion = { sendAs: q.sendAs, rate: q.rate, rateDate: q.rateDate, quotedAt: q.quotedAt, items: q.items, connectionId: q.connectionId };
+    conversion = {
+      sendAs: q.sendAs,
+      rate: q.rate,
+      rateDate: q.rateDate,
+      quotedAt: q.quotedAt,
+      expiresAt: q.expiresAt,
+      items: q.items,
+      connectionId: q.connectionId,
+    };
   } else if (!PAYPAL_CURRENCIES.has(currency)) {
     return { ok: false, error: 'currency_not_supported' };
   }
@@ -579,6 +607,10 @@ export async function sendRunWithPaypal(
         picked.map((p) => p.payout.id),
         stamp,
         conversion ? new Map([...converted].map(([pid, c]) => [pid, { conversion: c }])) : undefined,
+        // Decided on the row being stamped, not on the read above: a payout
+        // another batch took and PayPal gave back in between has a new
+        // release, or a changed amount, and isn't the one quoted.
+        conversion ? new Map(picked.map((p) => [p.payout.id, { releases: releasesOf(p.payout), amount: p.payout.amount }])) : undefined,
       );
       const rows = picked.filter((p) => stamped.has(p.payout.id));
       // A converted batch is exactly what the brand was shown, or nothing:
@@ -633,10 +665,14 @@ export async function sendRunWithPaypal(
         createdAt: at,
         updatedAt: at,
       });
+      // Checked again at the end: waiting for a connection or for row
+      // locks mustn't stretch a quote past its 15 minutes.
+      if (conversion && now().getTime() > Date.parse(conversion.expiresAt)) throw new QuoteExpired();
       return id;
     });
   } catch (err) {
     if (err instanceof QuoteChanged) return { ok: false, error: 'quote_changed' };
+    if (err instanceof QuoteExpired) return { ok: false, error: 'quote_expired' };
     throw err;
   }
   if (created === 'paypal_not_connected' || created === 'nothing_to_send' || created === 'conversion_not_enabled' || created === 'quote_changed') {

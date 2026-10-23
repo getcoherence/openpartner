@@ -207,7 +207,11 @@ paypalRouter.post('/payouts/runs/:runId/paypal-batches/quote', requireAuth, requ
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
   const out = await quotePaypalConversion(tenantId, req.params.runId!, body.data.currency, body.data.sendAs);
   res.setHeader('Cache-Control', 'no-store');
-  if (!out.ok) return res.status(SEND_STATUS[out.error]).json({ error: out.error, ...(out.detail ? { detail: out.detail } : {}) });
+  if (!out.ok) {
+    return res
+      .status(SEND_STATUS[out.error])
+      .json({ error: out.error, ...(out.detail ? { detail: out.detail } : {}), ...(out.leftOut ? { leftOut: out.leftOut } : {}) });
+  }
   res.json({ quote: out.quote });
 });
 

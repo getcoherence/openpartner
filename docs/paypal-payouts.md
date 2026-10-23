@@ -232,9 +232,11 @@ See [data-portability.md](data-portability.md#credentials).
 
 ## Balances PayPal can't send (INR)
 
-PayPal can't send INR: since April 2021 Indian PayPal accounts receive
-international payments in USD only. A payout's currency is its
-commissions' currency, so an INR program's payouts are
+PayPal can't send INR: it isn't a PayPal API currency (developer.paypal.com
+currency codes, checked 2026-10-23). Indian PayPal accounts take
+international payments in the sender's currency, and PayPal converts them
+to INR on the way to the partner's Indian bank (a daily sweep under Indian
+rules). A payout's currency is its commissions' currency, so an INR program's payouts are
 `currency_not_supported` for PayPal files and batches, unless the brand
 turns on **Pay INR balances with PayPal in USD** (Settings → Pay with
 PayPal; `POST /config/paypal-payouts` `{"sendUnsupportedAs": "USD"}`; the
@@ -260,15 +262,21 @@ With it on:
   total is the sum of those, which can differ by a few cents from the INR
   total × the rate. PayPal's per-payment limit (USD 60,000) applies to the
   USD amount; a payout over it, or under a cent, is listed in `leftOut`
-  and stays out of the batch.
+  and stays out of the batch (when that's all of them, the quote is
+  `404 nothing_to_send` with the `leftOut` list and why). The run still
+  shows those payouts as ready, since only a rate says whether they fit.
 - **Confirm, then send at that rate.** The confirm names both totals, the
-  rate and its date, and says whose the conversion at withdrawal is. The
+  full rate (every digit the amounts are computed from) and its date, and
+  says whose the later conversion to INR is. The
   send (`POST …/paypal-batches` `{"currency": "INR", "sendAs": "USD",
-  "quoteId": "…"}`) freezes exactly the quoted rate into the batch and
-  each payout, and sends exactly the quoted payouts. Refused, with nothing
+  `"quoteId": "…"}`) freezes exactly the quoted rate into the batch and
+  each payout, and sends exactly the quoted payouts. The stamp itself
+  re-checks each payout's amount and release count, and the expiry is
+  checked again just before the batch is committed. Refused, with nothing
   stamped: an expired quote (`409 quote_expired`), one whose payouts or
-  amounts changed since (`409 quote_changed`: another batch took one, a
-  partner changed their details, PayPal gave one back), one made for a
+  amounts or PayPal accounts changed since (`409 quote_changed`: another
+  batch took one, a partner changed their PayPal email, PayPal gave one
+  back), one made for a
   PayPal app that is no longer the active one (also `quote_changed`, so a
   sandbox test the brand confirmed never goes out from live; the quote
   says which, `environment`), a forged or other run's quote
@@ -302,9 +310,9 @@ With it on:
 **Whose conversion is whose.** The brand pays the ECB mid-market amount in
 USD from its PayPal balance (PayPal charges the brand its usual Payouts
 fee, and a currency-conversion fee if the brand's balance isn't in USD).
-When the partner withdraws USD to an Indian bank, PayPal converts it at
-its own rate; that is between the partner and PayPal, and every place
-that shows a converted amount says so. Indian PayPal recipients may also
+PayPal then converts the USD to INR for the partner's Indian bank at its
+own rate; that is between the partner and PayPal, and every place that
+shows a converted amount says so. Indian PayPal recipients may also
 need a verified PAN and a purpose code on their side to receive.
 
 Other currencies PayPal can't send are not converted:

@@ -183,8 +183,9 @@ and [currency codes](https://developer.paypal.com/api/rest/reference/currency-co
   older PayPal page says the decimal separator follows the sender's locale.
 - Supported currencies: AUD, BRL, CAD, CNY, CZK, DKK, EUR, HKD, HUF, ILS,
   JPY, MYR, MXN, TWD, NZD, NOK, PHP, PLN, GBP, RUB, SGD, SEK, CHF, THB, USD.
-  No INR: since April 2021 Indian PayPal accounts receive international
-  payments in USD only. Pay Indian PayPal partners in USD: Pay with PayPal
+  No INR: it isn't a PayPal API currency, and Indian PayPal accounts take
+  payments in the sender's currency, converted to INR by PayPal. Pay Indian
+  PayPal partners in USD: Pay with PayPal
   can convert INR balances at a quoted ECB rate
   ([paypal-payouts.md](paypal-payouts.md#balances-paypal-cant-send-inr));
   a file can't. They need a verified PAN and a purpose code on their side.

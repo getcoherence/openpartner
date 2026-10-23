@@ -8,7 +8,9 @@
  *     own, and signs what it showed for 15 minutes;
  *   - a send freezes exactly the quoted rate into the batch and each
  *     payout's stamp, whatever the ECB says by then, and refuses an
- *     expired, forged or stale quote;
+ *     expired, forged or stale quote (changed payouts, PayPal accounts or
+ *     PayPal app; a release that lands while the send waits on the row;
+ *     a wait that outlasts the quote);
  *   - PayPal's limit applies to the USD amount;
  *   - the ledger stays in INR, and the partner's payout views show both;
  *   - a released payout is re-quoted; a sandbox batch is still a rehearsal.
@@ -221,7 +223,12 @@ describe.skipIf(skipIntegration)('quoting', () => {
     // What PayPal sends is the sum of the rounded items, not the rounded
     // total: 1,506 × 0.0125 = 18.825 would be 18.83.
     expect(q.sentTotal).toBe('18.82');
-    expect(q.items.find((i: { payoutId: string }) => i.payoutId === big.payoutId).partnerName).toBe('Big');
+    const bigItem = q.items.find((i: { payoutId: string }) => i.payoutId === big.payoutId);
+    expect(bigItem.partnerName).toBe('Big');
+    // Where it goes, masked: the quote id itself carries only a digest.
+    expect(bigItem.destination).toMatch(/^PayPal b.*@pay\.test$/);
+    expect(bigItem.destination).not.toContain('big@');
+    expect(Buffer.from(q.quoteId.split('.')[0], 'base64url').toString('utf8')).not.toContain('@');
     expect(Date.parse(q.expiresAt) - Date.parse(q.quotedAt)).toBe(15 * 60 * 1000);
 
     // Nothing stamped, nothing sent.
@@ -280,6 +287,15 @@ describe.skipIf(skipIntegration)('quoting', () => {
     expect(res.body.batch).toMatchObject({ itemCount: 1, total: '60000.00', currency: 'USD' });
     expect(stampOf(await payoutRow(over.payoutId))).toBeUndefined();
     expect(stampOf(await payoutRow(tiny.payoutId))).toBeUndefined();
+
+    // When every payout is left out, the 404 says why, with the list.
+    const none = await admin.post(`/payouts/runs/${runId}/paypal-batches/quote`, { currency: 'INR', sendAs: 'USD' });
+    expect([none.status, none.body.error]).toEqual([404, 'nothing_to_send']);
+    expect(none.body.detail).toBe('None of these payouts can go through PayPal at this rate: 1 is over PayPal’s per-payment limit in USD, and 1 is under a cent in USD. Pay them another way.');
+    expect(none.body.leftOut.map((l: { payoutId: string; reason: string }) => [l.payoutId, l.reason])).toEqual([
+      [over.payoutId, 'over_paypal_limit'],
+      [tiny.payoutId, 'below_minimum'],
+    ]);
   });
 });
 
@@ -314,7 +330,7 @@ describe.skipIf(skipIntegration)('sending at the quoted rate', () => {
     expect(items.get(ravi.payoutId)!.amount).toEqual({ value: '18.75', currency: 'USD' });
     expect(items.get(asha.payoutId)!.amount).toEqual({ value: '15.43', currency: 'USD' });
     expect(items.get(ravi.payoutId)!.note).toContain('INR 1,500.00, sent as USD 18.75 at the ECB reference rate of 16 Oct 2026');
-    expect(items.get(ravi.payoutId)!.note).toContain('PayPal converts it at its own rate');
+    expect(items.get(ravi.payoutId)!.note).toContain('PayPal converts it to INR at its own rate');
     // The frozen request is what any re-send sends.
     expect(JSON.parse(decryptSecret((await db(TABLES.PaypalPayoutBatch).where({ id: batch.batchId }).first()).requestEnc))).toEqual(body);
 
@@ -381,6 +397,82 @@ describe.skipIf(skipIntegration)('sending at the quoted rate', () => {
     // Spent: its payouts are in a batch now.
     expect((await send(runId, q.quoteId)).body.error).toBe('quote_changed');
     expect(fake.createCalls).toBe(1);
+  });
+});
+
+describe.skipIf(skipIntegration)('a quote goes stale', () => {
+  it('when a partner changes their PayPal email before the send', async () => {
+    await connect();
+    await turnOn();
+    const runId = ulid();
+    const ravi = await paypalPartner('Ravi', '1500.00', runId);
+    const q = await quote(runId);
+    const moved = profiles.parsePayoutDetails({ method: 'paypal', email: 'ravi-new@pay.test' });
+    if (!moved.ok) throw new Error('bad fixture');
+    await profiles.savePayoutProfile(db, T, ravi.partnerId, moved.details, 'partner');
+    const res = await send(runId, q.quoteId);
+    expect([res.status, res.body.error]).toEqual([409, 'quote_changed']);
+    expect(stampOf(await payoutRow(ravi.payoutId))).toBeUndefined();
+    // A fresh quote shows the new account, and sends to it.
+    const fresh = await quote(runId);
+    expect(fresh.items[0]!).toMatchObject({ destination: expect.stringMatching(/^PayPal r.*@pay\.test$/) });
+    expect((await send(runId, fresh.quoteId)).status).toBe(201);
+    expect(createBodies()[0].items[0].receiver).toBe('ravi-new@pay.test');
+  });
+
+  it('when PayPal gives a payout back while the send waits on its row: decided by the stamp, not the earlier read', async () => {
+    await connect();
+    await turnOn();
+    const runId = ulid();
+    const ravi = await paypalPartner('Ravi', '1500.00', runId);
+    const q = await quote(runId);
+
+    // Another worker holds the payout's row: the send reads it (no lock
+    // needed), passes the digest, then waits on the row to stamp it.
+    const holder = await db.transaction();
+    try {
+      await holder(TABLES.Payout).where({ id: ravi.payoutId }).forUpdate().first();
+      const pending = send(runId, q.quoteId).then((r) => r);
+      for (let i = 0; ; i += 1) {
+        const { rows } = await db.raw<{ rows: Array<{ n: number }> }>(
+          `select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and query ilike 'update%Payout%'`,
+        );
+        if (rows[0]!.n > 0) break;
+        if (i > 200) throw new Error('the send never waited on the payout row');
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      // Meanwhile that worker's batch was refused and the payout released:
+      // unstamped and pending again, one more release on record.
+      await holder(TABLES.Payout)
+        .where({ id: ravi.payoutId })
+        .update({ metadata: db.raw(`metadata || jsonb_build_object('paypalReleases', '[{"batchId":"other","reason":"not_sent"}]'::jsonb)`) });
+      await holder.commit();
+
+      const res = await pending;
+      expect([res.status, res.body.error]).toEqual([409, 'quote_changed']);
+    } finally {
+      if (!holder.isCompleted()) await holder.rollback();
+    }
+    expect(stampOf(await payoutRow(ravi.payoutId))).toBeUndefined();
+    expect(await db(TABLES.PaypalPayoutBatch).where({ tenantId: T })).toHaveLength(0);
+    expect(fake.createCalls).toBe(0);
+  });
+
+  it('when the send outlasts the quote while it waits: checked again before the intent commits', async () => {
+    await connect();
+    await turnOn();
+    const runId = ulid();
+    const ravi = await paypalPartner('Ravi', '1500.00', runId);
+    const quotedAt = new Date();
+    const q = await paypal.quotePaypalConversion(T, runId, 'INR', 'USD', { now: () => quotedAt });
+    if (!q.ok) throw new Error(q.error);
+    // In time when it starts; 16 minutes on by the time it would commit.
+    let calls = 0;
+    const clock = () => new Date(quotedAt.getTime() + (calls++ === 0 ? 14 : 16) * 60 * 1000);
+    const out = await paypal.sendRunWithPaypal(T, runId, 'INR', 'admin', { sendAs: 'USD', quoteId: q.quote.quoteId, now: clock });
+    expect(out).toEqual({ ok: false, error: 'quote_expired' });
+    expect(stampOf(await payoutRow(ravi.payoutId))).toBeUndefined();
+    expect(await db(TABLES.PaypalPayoutBatch).where({ tenantId: T })).toHaveLength(0);
   });
 });
 

@@ -145,9 +145,9 @@ const QUOTE_ERRORS: Record<string, string> = {
 };
 
 function quoteError(err: unknown): unknown {
-  return err instanceof ApiError && typeof (err.detail as { error?: string } | undefined)?.error === 'string'
-    ? (QUOTE_ERRORS[(err.detail as { error: string }).error] ?? err)
-    : err;
+  if (!(err instanceof ApiError)) return err;
+  const body = err.detail as { error?: string; detail?: string } | undefined;
+  return (body?.error && QUOTE_ERRORS[body.error]) ?? (body?.error === 'nothing_to_send' && body.detail) ?? err;
 }
 
 /** What the brand confirms before a converted batch goes. */
@@ -157,7 +157,7 @@ function conversionAsk(q: ConversionQuote): string {
     q.environment === 'sandbox'
       ? `Test ${what} with your PayPal sandbox app? PayPal’s sandbox moves test money only: nothing is marked paid, and the payouts come back to send when it’s done.`
       : `Send ${what} from your live PayPal account now? PayPal moves the money as soon as it accepts the batch.`,
-    `Rate: ${rateLabel(q.rate, q.currency, q.sendAs)}, the European Central Bank reference rate of ${rateDateLabel(q.rateDate)}. Each payout is converted and rounded on its own.`,
+    `Rate: ${rateLabel(q.rate, q.currency, q.sendAs, { exact: true })}, the European Central Bank reference rate of ${rateDateLabel(q.rateDate)}. Each payout is converted and rounded to the cent on its own.`,
     withdrawalNote(q.sendAs, q.currency, 'brand'),
   ];
   const over = q.leftOut.filter((l) => l.reason === 'over_paypal_limit').length;
@@ -583,7 +583,10 @@ export function ManualPayoutFiles() {
                     <div>
                       <span style={{ fontWeight: 500 }}>{money(p.amount, p.currency)}</span>
                       {p.export?.conversion && (
-                        <div style={{ fontSize: 12, color: theme.textMuted }} title={rateLabel(p.export.conversion.rate, p.export.conversion.sourceCurrency, p.export.conversion.sentCurrency)}>
+                        <div
+                          style={{ fontSize: 12, color: theme.textMuted }}
+                          title={rateLabel(p.export.conversion.rate, p.export.conversion.sourceCurrency, p.export.conversion.sentCurrency, { exact: true })}
+                        >
                           sent as {money(p.export.conversion.sentAmount, p.export.conversion.sentCurrency)}
                         </div>
                       )}

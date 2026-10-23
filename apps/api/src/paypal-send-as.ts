@@ -3,8 +3,9 @@
  * can't send").
  *
  * A payout's currency is its commissions' currency, and PayPal can't send
- * some of them: since April 2021 Indian PayPal accounts receive
- * international payments in USD only, so PayPal has no INR. A brand that
+ * some of them: INR isn't a PayPal API currency at all (Indian PayPal
+ * accounts take international payments in the sender's currency, and
+ * PayPal converts them to INR on the way to the bank). A brand that
  * turns on "Pay balances PayPal can't send in: USD" (the `paypal_payouts`
  * Config key, off by default) can pay an INR payout to a partner's PayPal
  * email through Pay with PayPal in USD:
@@ -25,9 +26,10 @@
  *   - **PayPal's limits are on what PayPal sends**: a payout over PayPal's
  *     per-item limit in USD is left out of the quote.
  *
- * The brand pays the ECB mid-market amount. What PayPal later charges the
- * partner to turn USD into INR at withdrawal is between the partner and
- * PayPal, and every place that shows a converted amount says so.
+ * The brand pays the ECB mid-market amount. PayPal's own conversion of the
+ * USD into INR for the partner's bank, at PayPal's rate, is between the
+ * partner and PayPal, and every place that shows a converted amount says
+ * so.
  */
 
 import { createHash } from 'node:crypto';
@@ -186,14 +188,17 @@ export interface QuoteClaims {
 }
 
 /**
- * A digest of exactly which payouts, at which amounts, on which attempt
- * (`releases`: how many times PayPal has given each one back). A payout
- * released since its quote counts as changed, so it is always sent again
- * on a fresh quote, and a quote can't be spent twice.
+ * A digest of exactly which payouts, at which amounts, to which PayPal
+ * account, on which attempt (`releases`: how many times PayPal has given
+ * each one back). A payout released since its quote counts as changed, so
+ * it is always sent again on a fresh quote, and a quote can't be spent
+ * twice. Only the digest is in the quote id, never an email.
  */
-export function itemsDigest(items: ReadonlyArray<{ payoutId: string; amount: string; sentAmount: string; releases: number }>): string {
+export function itemsDigest(
+  items: ReadonlyArray<{ payoutId: string; amount: string; sentAmount: string; releases: number; destination: string }>,
+): string {
   const h = createHash('sha256');
-  for (const i of items) h.update(`${i.payoutId}:${i.amount}:${i.sentAmount}:${i.releases}\n`);
+  for (const i of items) h.update(`${i.payoutId}:${i.amount}:${i.sentAmount}:${i.releases}:${i.destination}\n`);
   return h.digest('base64url');
 }
 

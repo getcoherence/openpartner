@@ -24,17 +24,18 @@ export function rateDateLabel(date: string): string {
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', ...(sameYear ? {} : { year: 'numeric' }), timeZone: 'UTC' });
 }
 
-/** "1 INR = 0.011959 USD": enough digits to check, not all twelve. */
-export function rateLabel(rate: string, from: string, to: string): string {
-  return `1 ${from} = ${Number(Number(rate).toPrecision(5))} ${to}`;
+/** "1 INR = 0.011958866935 USD", every digit the amounts were computed
+ *  from (`exact`), or "1 INR ≈ 0.011959 USD" where it's only a label. */
+export function rateLabel(rate: string, from: string, to: string, opts: { exact?: boolean } = {}): string {
+  return opts.exact ? `1 ${from} = ${rate} ${to}` : `1 ${from} ≈ ${Number(Number(rate).toPrecision(5))} ${to}`;
 }
 
-/** Whose the conversion at withdrawal is, said wherever a converted
- *  amount is shown: to the partner, or to the brand about its partners. */
+/** Whose the later conversion is, said wherever a converted amount is
+ *  shown: to the partner, or to the brand about its partners. */
 export function withdrawalNote(sentCurrency: string, ownCurrency: string, to: 'partner' | 'brand'): string {
   return to === 'partner'
-    ? `PayPal paid you in ${sentCurrency}, converted at the European Central Bank reference rate shown. If you withdraw it in ${ownCurrency}, PayPal converts it at its own rate; that conversion is between you and PayPal.`
-    : `Partners receive ${sentCurrency}, converted at the European Central Bank reference rate. If they withdraw it in ${ownCurrency}, PayPal converts it at its own rate; that conversion is between them and PayPal.`;
+    ? `PayPal paid you in ${sentCurrency}, converted at the European Central Bank reference rate shown. PayPal converts it to ${ownCurrency} for your bank at its own rate; that conversion is between you and PayPal.`
+    : `Partners receive ${sentCurrency}, converted at the European Central Bank reference rate. PayPal converts it to ${ownCurrency} for their bank at its own rate; that conversion is between them and PayPal.`;
 }
 
 /** "sent as $17.99 at the ECB rate of 22 Oct", under a payout's amount. */

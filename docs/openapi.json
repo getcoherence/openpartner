@@ -3831,7 +3831,7 @@
           "rateSource",
           "rateDate"
         ],
-        "description": "A payout PayPal can’t send in its own currency (INR), sent through Pay with PayPal in another (USD) at the ECB reference rate frozen when the batch was made. `amount` and `currency` on the payout stay its own. What PayPal later charges the partner to convert it at withdrawal is between the partner and PayPal."
+        "description": "A payout PayPal can’t send in its own currency (INR), sent through Pay with PayPal in another (USD) at the ECB reference rate frozen when the batch was made. `amount` and `currency` on the payout stay its own. PayPal’s own conversion of it into the partner’s currency is between the partner and PayPal."
       },
       "Payout": {
         "type": "object",
@@ -5201,6 +5201,10 @@
                 "partnerName": {
                   "type": "string"
                 },
+                "destination": {
+                  "type": "string",
+                  "description": "The PayPal account it goes to, masked. A change before sending voids the quote."
+                },
                 "amount": {
                   "allOf": [
                     {
@@ -5226,6 +5230,7 @@
                 "payoutId",
                 "partnerId",
                 "partnerName",
+                "destination",
                 "amount",
                 "sentAmount"
               ]
@@ -5244,6 +5249,10 @@
                 },
                 "partnerName": {
                   "type": "string"
+                },
+                "destination": {
+                  "type": "string",
+                  "description": "The PayPal account it goes to, masked. A change before sending voids the quote."
                 },
                 "amount": {
                   "allOf": [
@@ -5277,6 +5286,7 @@
                 "payoutId",
                 "partnerId",
                 "partnerName",
+                "destination",
                 "amount",
                 "sentAmount",
                 "reason"
@@ -12885,7 +12895,7 @@
           "Payouts"
         ],
         "summary": "Pay a run’s PayPal partners through your PayPal app",
-        "description": "Sends the next PayPal Payouts batch of a run, in one currency, with your active PayPal app: the same payouts a PayPal file would take (partners whose payout details are a PayPal email, a currency PayPal sends, under PayPal's per-payment limit, nothing on a do-not-pay hold), up to 5,000. The money goes from your PayPal balance to the partners; it never passes through OpenPartner.\n\nThe payouts are stamped with the batch id (`exportId`, `via: \"api\"`) before anything is sent, so they are in no other file or batch. The batch id is also PayPal's `sender_batch_id` and `PayPal-Request-Id`: a re-send after a timeout or crash reaches the same batch, and PayPal never pays one twice.\n\nPayPal pays asynchronously. Follow the batch with `GET /payouts/paypal-batches/{batchId}`: paid items confirm their payouts; failed, returned or refunded ones go back to pending (and your admins are emailed); unclaimed ones wait for the partner to claim them.\n\n**INR.** PayPal can't send INR (Indian PayPal accounts receive international payments in USD only): an INR payout is `currency_not_supported` unless you turn on `POST /config/paypal-payouts` `{\"sendUnsupportedAs\": \"USD\"}`. Then quote first (`POST /payouts/runs/{runId}/paypal-batches/quote`) and send with `{\"currency\": \"INR\", \"sendAs\": \"USD\", \"quoteId\": \"…\"}` within 15 minutes: the batch sends exactly the quoted payouts at exactly the quoted ECB rate. A quote that expired is `409 quote_expired`; one whose payouts changed since (another batch took one, a partner changed their details) is `409 quote_changed`; quote again. The payouts stay in INR; each one's stamp records what was sent (`conversion`).\n\nWith your **sandbox** app active, the batch is a rehearsal: PayPal's sandbox moves test money, so no payout is marked paid, and once PayPal settles every item the payouts go back to pending (`rehearsal` on the batch says what happened).\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "Sends the next PayPal Payouts batch of a run, in one currency, with your active PayPal app: the same payouts a PayPal file would take (partners whose payout details are a PayPal email, a currency PayPal sends, under PayPal's per-payment limit, nothing on a do-not-pay hold), up to 5,000. The money goes from your PayPal balance to the partners; it never passes through OpenPartner.\n\nThe payouts are stamped with the batch id (`exportId`, `via: \"api\"`) before anything is sent, so they are in no other file or batch. The batch id is also PayPal's `sender_batch_id` and `PayPal-Request-Id`: a re-send after a timeout or crash reaches the same batch, and PayPal never pays one twice.\n\nPayPal pays asynchronously. Follow the batch with `GET /payouts/paypal-batches/{batchId}`: paid items confirm their payouts; failed, returned or refunded ones go back to pending (and your admins are emailed); unclaimed ones wait for the partner to claim them.\n\n**INR.** PayPal can't send INR (it isn't a PayPal API currency): an INR payout is `currency_not_supported` unless you turn on `POST /config/paypal-payouts` `{\"sendUnsupportedAs\": \"USD\"}`. Then quote first (`POST /payouts/runs/{runId}/paypal-batches/quote`) and send with `{\"currency\": \"INR\", \"sendAs\": \"USD\", \"quoteId\": \"…\"}` within 15 minutes: the batch sends exactly the quoted payouts at exactly the quoted ECB rate. A quote that expired is `409 quote_expired`; one whose payouts changed since (another batch took one, a partner changed their PayPal email, PayPal gave one back) or whose PayPal app is no longer the active one is `409 quote_changed`; quote again. The payouts stay in INR; each one's stamp records what was sent (`conversion`).\n\nWith your **sandbox** app active, the batch is a rehearsal: PayPal's sandbox moves test money, so no payout is marked paid, and once PayPal settles every item the payouts go back to pending (`rehearsal` on the batch says what happened).\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -13110,7 +13120,7 @@
           "Payouts"
         ],
         "summary": "Quote sending INR balances through PayPal in USD",
-        "description": "For balances PayPal can't send in their own currency (INR), with `POST /config/paypal-payouts` `{\"sendUnsupportedAs\": \"USD\"}` on. Quotes the next batch the send would make: the European Central Bank reference rate (crossed through EUR, published once a business day), its date, each payout's USD amount (its INR amount × rate, rounded half up to the cent on its own), the INR and USD totals, and a signed `quoteId` valid for 15 minutes.\n\nSend with `POST /payouts/runs/{runId}/paypal-batches` `{\"currency\": \"INR\", \"sendAs\": \"USD\", \"quoteId\": \"…\"}`. Nothing is held: the send checks the payouts are still exactly these. A payout over PayPal's per-payment limit in USD is listed in `leftOut` instead.\n\nThe rate is the ECB mid-market reference rate; you send that USD amount from your PayPal balance. When a partner withdraws USD to an Indian bank, PayPal converts it at its own rate, which is between the partner and PayPal. If the ECB rates can't be read, nothing is quoted (`503 fx_unavailable`): no rate is ever guessed.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "For balances PayPal can't send in their own currency (INR), with `POST /config/paypal-payouts` `{\"sendUnsupportedAs\": \"USD\"}` on. Quotes the next batch the send would make: the European Central Bank reference rate (crossed through EUR, published once a business day), its date, each payout's USD amount (its INR amount × rate, rounded half up to the cent on its own), the INR and USD totals, and a signed `quoteId` valid for 15 minutes.\n\nSend with `POST /payouts/runs/{runId}/paypal-batches` `{\"currency\": \"INR\", \"sendAs\": \"USD\", \"quoteId\": \"…\"}`. Nothing is held: the send checks the payouts are still exactly these. A payout over PayPal's per-payment limit in USD, or under a cent, is listed in `leftOut` instead; when that's every payout, the `404 nothing_to_send` carries the `leftOut` list.\n\nThe rate is the ECB mid-market reference rate; you send that USD amount from your PayPal balance. PayPal then converts it to INR for the partner's Indian bank at PayPal's own rate, which is between the partner and PayPal. If the ECB rates can't be read, nothing is quoted (`503 fx_unavailable`): no rate is ever guessed.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []

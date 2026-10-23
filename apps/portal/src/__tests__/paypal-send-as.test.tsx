@@ -21,6 +21,7 @@ let requests: Array<{ method: string; path: string; body: Record<string, unknown
 let connections: unknown[] = [];
 let settings: { sendUnsupportedAs: 'USD' | null } = { sendUnsupportedAs: null };
 let sendAnswer: { status: number; body: unknown } = { status: 201, body: {} };
+let quoteAnswer: { status: number; body: unknown } | null = null;
 let batches: unknown[] = [];
 
 function json(status: number, body: unknown): Response {
@@ -98,6 +99,7 @@ beforeEach(() => {
   connections = [];
   settings = { sendUnsupportedAs: null };
   sendAnswer = { status: 201, body: { batch: CONVERTED_BATCH } };
+  quoteAnswer = null;
   batches = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost');
@@ -119,7 +121,7 @@ beforeEach(() => {
     if (path === `/payouts/runs/${RUN_ID}`) return json(200, RUN);
     if (path === `/payouts/runs/${RUN_ID}/payouts`) return json(200, { payouts: [], nextCursor: null });
     if (path === `/payouts/runs/${RUN_ID}/paypal-batches` && method === 'GET') return json(200, { batches });
-    if (path === `/payouts/runs/${RUN_ID}/paypal-batches/quote`) return json(200, { quote: QUOTE });
+    if (path === `/payouts/runs/${RUN_ID}/paypal-batches/quote`) return quoteAnswer ? json(quoteAnswer.status, quoteAnswer.body) : json(200, { quote: QUOTE });
     if (path === `/payouts/runs/${RUN_ID}/paypal-batches` && method === 'POST') return json(sendAnswer.status, sendAnswer.body);
     if (path === '/partners/p_ravi/payouts') {
       return json(200, {
@@ -164,7 +166,7 @@ describe('Settings: INR in USD', () => {
     const box = (await view.findByRole('checkbox', { name: /Pay INR balances with PayPal in USD/ })) as HTMLInputElement;
     await waitFor(() => expect(box.disabled).toBe(false));
     expect(box.checked).toBe(false);
-    expect(view.getByText(/PayPal converts it at its own rate; that conversion is between them and PayPal/)).toBeTruthy();
+    expect(view.getByText(/PayPal then converts the USD to INR for the partner’s bank at its own rate; that conversion is between them and PayPal/)).toBeTruthy();
     fireEvent.click(box);
     await waitFor(() => expect(requests.find((r) => r.method === 'POST' && r.path === '/config/paypal-payouts')?.body).toEqual({ sendUnsupportedAs: 'USD' }));
     await waitFor(() => expect(box.checked).toBe(true));
@@ -184,8 +186,9 @@ describe('Manual payouts to send: INR → USD', () => {
     await waitFor(() => expect(confirm).toHaveBeenCalled());
     const ask = confirm.mock.calls[0]![0] as string;
     expect(ask).toContain('Send 3 payouts totalling ₹4,500.00 as $53.82 from your live PayPal account now?');
-    expect(ask).toContain('Rate: 1 INR = 0.011959 USD, the European Central Bank reference rate of 22 Oct');
-    expect(ask).toContain('PayPal converts it at its own rate');
+    // Every digit the amounts were computed from, not a rounded label.
+    expect(ask).toContain('Rate: 1 INR = 0.011958866935 USD, the European Central Bank reference rate of 22 Oct');
+    expect(ask).toContain('PayPal converts it to INR for their bank at its own rate');
     expect(requests.find((r) => r.path.endsWith('/paypal-batches/quote'))?.body).toEqual({ currency: 'INR', sendAs: 'USD' });
     // Declined: nothing sent.
     expect(requests.some((r) => r.method === 'POST' && r.path === `/payouts/runs/${RUN_ID}/paypal-batches`)).toBe(false);
@@ -210,6 +213,23 @@ describe('Manual payouts to send: INR → USD', () => {
     await view.findByText(/quote expired \(they last 15 minutes\)\. Press the button again/);
   });
 
+  it('says why when no payout can go at the quoted rate', async () => {
+    connections = [LIVE];
+    quoteAnswer = {
+      status: 404,
+      body: {
+        error: 'nothing_to_send',
+        detail: 'None of these payouts can go through PayPal at this rate: 1 is under a cent in USD. Pay them another way.',
+        leftOut: [],
+      },
+    };
+    const confirm = vi.spyOn(window, 'confirm');
+    const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
+    fireEvent.click(await view.findByRole('button', { name: 'Pay with PayPal in USD' }));
+    await view.findByText('None of these payouts can go through PayPal at this rate: 1 is under a cent in USD. Pay them another way.');
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
   it('points to connecting PayPal when no app is connected', async () => {
     const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
     await view.findByText(/INR → USD/);
@@ -222,7 +242,7 @@ describe('Manual payouts to send: INR → USD', () => {
     batches = [CONVERTED_BATCH];
     const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
     await view.findByText('Sent with PayPal');
-    expect(view.getByText(/\$53\.82 \(₹4,500\.00 at 1 INR = 0\.011959 USD, ECB 22 Oct/)).toBeTruthy();
+    expect(view.getByText(/\$53\.82 \(₹4,500\.00 at 1 INR ≈ 0\.011959 USD, ECB 22 Oct/)).toBeTruthy();
   });
 });
 
@@ -232,6 +252,6 @@ describe('the partner’s payouts', () => {
     await view.findByText('₹1,500.00');
     expect(view.getByText(/sent as \$17\.94 at the ECB rate of 22 Oct/)).toBeTruthy();
     expect(view.getByText(/PayPal paid you in USD/)).toBeTruthy();
-    expect(view.getByText(/If you withdraw it in INR, PayPal converts it at its own rate; that conversion is between you and PayPal/)).toBeTruthy();
+    expect(view.getByText(/PayPal converts it to INR for your bank at its own rate; that conversion is between you and PayPal/)).toBeTruthy();
   });
 });

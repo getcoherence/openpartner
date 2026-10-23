@@ -569,7 +569,7 @@ export const PayoutSent = z
   })
   .openapi('PayoutSent', {
     description:
-      'A payout PayPal can’t send in its own currency (INR), sent through Pay with PayPal in another (USD) at the ECB reference rate frozen when the batch was made. `amount` and `currency` on the payout stay its own. What PayPal later charges the partner to convert it at withdrawal is between the partner and PayPal.',
+      'A payout PayPal can’t send in its own currency (INR), sent through Pay with PayPal in another (USD) at the ECB reference rate frozen when the batch was made. `amount` and `currency` on the payout stay its own. PayPal’s own conversion of it into the partner’s currency is between the partner and PayPal.',
   });
 
 const sent = orNull(PayoutSent).openapi({ description: 'Set while (or once) a PayPal batch sends this payout in another currency; gone if PayPal returns it.' });
@@ -952,6 +952,7 @@ const quoteItem = z.object({
   payoutId: id,
   partnerId: id,
   partnerName: z.string(),
+  destination: z.string().openapi({ description: 'The PayPal account it goes to, masked. A change before sending voids the quote.' }),
   amount: Decimal.openapi({ description: 'The payout’s own amount, in `currency`.' }),
   sentAmount: Decimal.openapi({ description: 'What PayPal would send for it, in `sendAs`: amount × rate, rounded half up to the cent on its own.' }),
 });
