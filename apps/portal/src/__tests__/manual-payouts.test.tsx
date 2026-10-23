@@ -4,7 +4,8 @@
  *   - the admin Payouts page shows the files made from a run, what's ready
  *     for a new file, why the rest are in none, and warnings worth reading
  *     before sending; it makes a file, and marks a file sent or discards
- *     it only after asking;
+ *     it only after asking; a payout in no file is marked sent one at a
+ *     time, with its payment reference if the brand has one;
  *   - the partner's Payout details form sends only the fields the
  *     account's route needs, and shows field errors from the API.
  */
@@ -133,6 +134,7 @@ beforeEach(() => {
     if (path === '/payouts/exports/exp_1/confirm' && method === 'POST') return json(200, { confirmed: [], notConfirmable: [] });
     if (path === '/payouts/exports/exp_1/discard' && method === 'POST') return json(200, { released: 1 });
     if (path === '/payouts/confirm' && method === 'POST') return json(200, { confirmed: [], notConfirmable: [] });
+    if (path === '/payouts/po_esha/confirm' && method === 'POST') return json(200, { payout: { id: 'po_esha', status: 'paid' } });
     if (path === '/partners/p_me/payout-profile' && method === 'GET') return json(200, { profile: null, paidVia: 'manual' });
     if (path === '/partners/p_me/payout-profile' && method === 'PUT') return putResponse();
     return json(404, { error: 'not_found' });
@@ -184,6 +186,39 @@ describe('admin manual payout files', () => {
     fireEvent.click(buttons[0]!);
     await waitFor(() => expect(requests.some((r) => r.method === 'POST' && r.path === '/payouts/exports/exp_1/confirm')).toBe(true));
     expect(requests.some((r) => r.path === '/payouts/confirm')).toBe(false);
+  });
+
+  it('marks a payout in no file as sent with its payment reference, which may be left blank', async () => {
+    const confirm = vi.spyOn(window, 'confirm');
+    const view = renderWithClient(<PayoutsPage principal={{ role: 'admin' }} />);
+    await view.findByText('UPI e•••@okaxis');
+    const markEsha = () => fireEvent.click(view.getAllByRole('button', { name: 'Mark sent' })[1]!);
+
+    // Cancel sends nothing.
+    markEsha();
+    fireEvent.change(view.getByLabelText('Payment reference (optional)'), { target: { value: 'wrong one' } });
+    fireEvent.click(view.getByRole('button', { name: 'Cancel' }));
+    expect(view.queryByLabelText('Payment reference (optional)')).toBeNull();
+
+    markEsha();
+    const field = view.getByLabelText('Payment reference (optional)') as HTMLInputElement;
+    expect(field.value).toBe('');
+    expect(field.maxLength).toBe(100);
+    expect(view.getByText(/printed on Esha’s statement/)).toBeTruthy();
+    fireEvent.change(field, { target: { value: '  UPI 412345678901 ' } });
+    fireEvent.submit(field.closest('form')!);
+    await waitFor(() =>
+      expect(requests.find((r) => r.method === 'POST' && r.path === '/payouts/po_esha/confirm')?.body).toEqual({ reference: 'UPI 412345678901' }),
+    );
+    expect(requests.some((r) => r.path === '/payouts/confirm')).toBe(false);
+    expect(confirm).not.toHaveBeenCalled();
+
+    // Blank: confirmed with no reference.
+    requests = [];
+    fireEvent.click(view.getByRole('button', { name: 'Cancel' }));
+    markEsha();
+    fireEvent.submit((view.getByLabelText('Payment reference (optional)') as HTMLInputElement).closest('form')!);
+    await waitFor(() => expect(requests.find((r) => r.method === 'POST' && r.path === '/payouts/po_esha/confirm')?.body).toEqual({}));
   });
 
   it('makes a file from what’s ready, and discards one only after asking', async () => {

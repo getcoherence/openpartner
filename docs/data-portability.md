@@ -275,6 +275,9 @@ The PayPal and Wise files a brand made from its payout runs
 file is a stamp on each of its payouts (`Payout.metadata.manualExport`),
 which travels with the `Payout` rows. On a restored instance a file's
 unconfirmed payouts still show under "Files made", to confirm or discard.
+So does the payment reference a brand gave when it confirmed a payout sent
+one at a time (`Payout.metadata.externalReference`), which the payout's
+statement prints.
 
 ### Settings (`Config`)
 

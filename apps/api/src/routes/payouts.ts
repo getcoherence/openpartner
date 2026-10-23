@@ -31,6 +31,20 @@ export const bulkConfirmSchema = z.object({
   payoutIds: z.array(z.string().min(1).max(64)).min(1).max(5000),
 });
 
+/**
+ * POST /payouts/:id/confirm. `reference` is what identifies the money the
+ * brand sent one at a time (a bank UTR, a UPI transaction id, a cheque
+ * number), printed on the payout's statement. One line of printable text.
+ */
+export const confirmPayoutSchema = z.object({
+  reference: z
+    .string()
+    .trim()
+    .max(100)
+    .regex(/^[^\p{C}\p{Zl}\p{Zp}]*$/u, 'reference must be printable text on one line')
+    .optional(),
+});
+
 export const manualRunsQuerySchema = z.object({
   cursor: z.string().max(200).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -215,9 +229,17 @@ payoutsRouter.get('/payouts/holds', requireAuth, requireAdmin, async (req, res) 
  * "I actually sent it" — the payout becomes 'paid' with a completion
  * timestamp, which is what revenue reporting and the Network payout
  * aggregation count.
+ *
+ * The brand may say how it sent the money (`reference`), kept as
+ * `metadata.externalReference` for the statement. It's never logged:
+ * request bodies stay out of the request log (request-log.ts), and
+ * nothing here prints it.
  */
 payoutsRouter.post('/payouts/:id/confirm', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
+  const body = confirmPayoutSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const reference = body.data.reference || null;
   const existing = await db<PayoutRow>(TABLES.Payout).where({ id: req.params.id, tenantId }).first();
   if (!existing) return res.status(404).json({ error: 'payout_not_found' });
   // A payout the platform must not pay (blocked country, confirmed
@@ -226,7 +248,11 @@ payoutsRouter.post('/payouts/:id/confirm', requireAuth, requireAdmin, async (req
   if (reason) return res.status(409).json({ error: 'not_confirmable', reason, detail: doNotPayDetail(reason) });
   const updated = await db<PayoutRow>(TABLES.Payout)
     .where({ id: req.params.id, tenantId, method: 'manual', status: 'pending' })
-    .update({ status: 'paid', completedAt: new Date() })
+    .update({
+      status: 'paid',
+      completedAt: new Date(),
+      ...(reference ? { metadata: db.raw(`metadata || jsonb_build_object('externalReference', ?::text)`, [reference]) } : {}),
+    })
     .returning('*');
   if (updated.length === 0) {
     return res.status(409).json({
@@ -243,7 +269,9 @@ payoutsRouter.post('/payouts/:id/confirm', requireAuth, requireAdmin, async (req
  * Confirm many manual payouts at once: the brand uploaded a batch file
  * (manual-payout-files.ts) and its PayPal or Wise batch went out. Same
  * rule per payout as the single confirm; one that can't be confirmed is
- * reported and doesn't stop the rest.
+ * reported and doesn't stop the rest. No references here: a file's
+ * payouts print the file's own, and a payout sent one at a time is
+ * confirmed one at a time, with its own.
  */
 payoutsRouter.post('/payouts/confirm', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);

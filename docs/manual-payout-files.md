@@ -90,7 +90,8 @@ Flow, on the admin Payouts page ("Manual payouts to send"):
 4. Once the batch has gone out, **Mark sent** for that file under "Files
    made". If you never uploaded it, **Discard** it instead. Payouts in no
    file have their own Mark sent button once you've paid them some other
-   way.
+   way, which asks for the payment's reference
+   ([Paying one at a time](#paying-one-at-a-time)).
 
 ### A file is fixed when it's made
 
@@ -146,6 +147,28 @@ them, as the manual rail has always done: it's the brand's own money, and
 pending screening usually clears within the hour. The country list and
 screening are hosted-platform controls, so a self-host refuses nothing for
 them.
+
+### Paying one at a time
+
+A payout in no file (UPI, `other`, INR to a bank account, no details yet)
+is paid however the brand pays it, and confirmed on its own: **Mark sent**
+on its row, or `POST /payouts/{id}/confirm`. The confirm can carry the
+payment's reference, `{ "reference": "…" }`: the bank's UTR for a NEFT,
+RTGS or IMPS transfer, the UPI transaction ID, a cheque number. It's
+optional, trimmed, and at most 100 characters on one line. It's kept on the
+payout as `Payout.metadata.externalReference`, and the payout's statement
+prints it as the **Payment reference** (docs/payout-statements.md). A
+payout that is also in a file prints the file's PayPal Customer ID or Wise
+payment reference instead, while that still holds.
+
+The reference is fixed once the payout is confirmed: a second confirm is
+`409 not_confirmable`. It isn't written to the request log, which keeps no
+request bodies (apps/api/src/request-log.ts).
+
+The bulk `POST /payouts/confirm` takes no references, by design. It confirms
+many payouts in one call, mostly a file's, and those already print the
+file's reference. A payment sent one at a time has a reference of its own,
+so it's confirmed with its own call.
 
 ### Scale
 
@@ -263,6 +286,7 @@ payment** a batch row needs, which this file doesn't send yet.
 | `GET /payouts/exports/{exportId}.csv` | admin |
 | `POST /payouts/exports/{exportId}/confirm` | admin |
 | `POST /payouts/exports/{exportId}/discard` | admin |
+| `POST /payouts/{id}/confirm` (optional `{ reference }`) | admin |
 | `POST /payouts/confirm` (`{ payoutIds }`, up to 5,000) | admin |
 
 The files carry full payout details, so every file route is admin-only and
@@ -271,7 +295,8 @@ The files carry full payout details, so every file route is admin-only and
 
 Every payout also has a statement, with the details masked: see
 docs/payout-statements.md. A payout in a file prints that file's PayPal
-Customer ID or Wise payment reference as its reference.
+Customer ID or Wise payment reference as its reference; a payout paid one
+at a time prints the reference given when it was confirmed.
 
 ## Not yet
 

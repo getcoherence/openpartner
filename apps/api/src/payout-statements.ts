@@ -4,7 +4,9 @@
  *
  * A statement is a view over rows that already exist, never a record of
  * its own:
- *   - the Payout: id, status, method, amount, the Stripe transfer;
+ *   - the Payout: id, status, method, amount, the Stripe transfer, or the
+ *     reference the brand recorded when it confirmed a manual payout
+ *     (`metadata.externalReference`);
  *   - its commissions (Commission.payoutId), bonuses' among them;
  *   - the refund clawbacks it netted (CommissionAdjustment.appliedPayoutId,
  *     clawback-netting.ts);
@@ -181,7 +183,9 @@ export interface PayoutStatement {
     method: PayoutRow['method'];
     /** How it was sent, in words: "Stripe Connect transfer", "Manual · Wise batch payment". */
     methodLabel: string;
-    /** What identifies it at the provider, when there is one. */
+    /** What identifies it at the provider, when there is one: the Stripe
+     *  transfer, the batch file's reference, or what the brand recorded
+     *  when it confirmed a payout sent one at a time. */
     reference: { label: string; value: string } | null;
     /** What was paid (or is to be), in the payout's currency. */
     amount: string;
@@ -288,6 +292,7 @@ export async function buildPayoutStatement(db: Knex, tenantId: string, payoutId:
     transferIntentId?: unknown;
     transferState?: unknown;
     error?: unknown;
+    externalReference?: unknown;
   };
 
   // One after another: `db` is usually the request's transaction, a single
@@ -436,6 +441,11 @@ export async function buildPayoutStatement(db: Knex, tenantId: string, payoutId:
     if (exported?.reference && (exported.provider === 'paypal' || !destinationChanged)) {
       reference = { label: exported.provider === 'paypal' ? 'PayPal Customer ID' : 'Wise payment reference', value: exported.reference };
     }
+    // Sent one at a time: what the brand said identifies it when it
+    // confirmed the payout (a bank UTR, a UPI transaction id, a cheque
+    // number). A file's own reference wins.
+    const external = text(meta.externalReference);
+    if (!reference && external) reference = { label: 'Payment reference', value: external.trim() };
   } else {
     methodLabel = 'Recorded outside the payout run';
   }

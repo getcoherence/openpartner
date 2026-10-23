@@ -484,8 +484,17 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     check('listPayouts', await admin.get('/payouts?cursor=bm9wZQ'));
     const afterRun = check<{ commissions: Array<{ id: string; status: string }> }>('listPartnerCommissions', await integration.get(`/partners/${partner.id}/commissions`));
     expect(afterRun.commissions.find((c) => c.id === toApprove!.id)?.status).toBe('paid');
+    // A payment reference is one printable line of up to 100 characters;
+    // the published schema must refuse what the route refuses.
+    check('confirmManualPayout', await admin.post(`/payouts/${run.payouts[0]!.payoutId}/confirm`, { reference: `UTR${'9'.repeat(98)}` }));
+    check('confirmManualPayout', await admin.post(`/payouts/${run.payouts[0]!.payoutId}/confirm`, { reference: 'UTR 1\nUTR 2' }));
+    const confirmed = check<{ payout: { status: string; metadata: Record<string, unknown> } }>(
+      'confirmManualPayout',
+      await admin.post(`/payouts/${run.payouts[0]!.payoutId}/confirm`, { reference: 'NEFT UTR HDFCN52026102312345678' }),
+    );
+    expect(confirmed.payout).toMatchObject({ status: 'paid', metadata: { externalReference: 'NEFT UTR HDFCN52026102312345678' } });
     check('confirmManualPayout', await admin.post(`/payouts/${run.payouts[0]!.payoutId}/confirm`));
-    check('confirmManualPayout', await admin.post(`/payouts/${run.payouts[0]!.payoutId}/confirm`));
+    check('confirmManualPayout', await admin.post('/payouts/missing/confirm', { reference: 'UTR123' }));
 
     // Its statement: a printable page for the brand, its data for the integration.
     check('getPayoutStatementSettings', await admin.get('/config/payout-statements'));

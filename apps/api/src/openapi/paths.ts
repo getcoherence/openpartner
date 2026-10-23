@@ -961,9 +961,12 @@ Called with the brand's OpenPartner Network federation key, the bonus is recorde
     tag: 'Payouts',
     operationId: 'confirmManualPayout',
     summary: 'Mark a manual payout as sent',
-    description:
-      'Only a `pending` manual payout. On OpenPartner Cloud a payout on a do-not-pay hold (the partner or their payout account in a country OpenPartner doesn’t serve, or a confirmed sanctions-list match) is refused with `409 not_confirmable` and a `reason`.',
+    description: `Only a \`pending\` manual payout. On OpenPartner Cloud a payout on a do-not-pay hold (the partner or their payout account in a country OpenPartner doesn’t serve, or a confirmed sanctions-list match) is refused with \`409 not_confirmable\` and a \`reason\`.
+
+The body is optional. For a payout you sent one at a time (a bank transfer, UPI, a cheque), \`reference\` records what identifies the payment: the bank's UTR, the UPI transaction ID, the cheque number. Up to 100 characters on one line, trimmed. It is kept on the payout as \`metadata.externalReference\` and printed on its statement as the \`Payment reference\` (\`GET /payouts/{id}/statement\`), unless the payout is in a PayPal or Wise file, whose own reference is printed instead. It can't be added or changed after the payout is confirmed.`,
     access: { kind: 'admin' },
+    body: payouts.confirmPayoutSchema.openapi('ConfirmManualPayoutRequest'),
+    optionalBody: true,
     responses: { 200: { description: 'Confirmed.', schema: z.object({ payout: S.Payout }) } },
     errors: { 404: ['payout_not_found'], 409: ['not_confirmable'] },
   });
@@ -1016,7 +1019,7 @@ It is built from the payout's records each time, so it always agrees with them. 
     operationId: 'confirmManualPayouts',
     summary: 'Mark many manual payouts as sent',
     description:
-      'Each id is confirmed as `POST /payouts/{id}/confirm` would, or reported in `notConfirmable` (with a `reason` for a do-not-pay hold); one that can’t be confirmed doesn’t stop the rest. Up to 5,000 ids. To confirm a PayPal or Wise file, use `POST /payouts/exports/{exportId}/confirm`, which confirms exactly the payouts in it. No webhooks: `payout.created` and `commission.paid` fired when the run made the payouts.',
+      'Each id is confirmed as `POST /payouts/{id}/confirm` would, or reported in `notConfirmable` (with a `reason` for a do-not-pay hold); one that can’t be confirmed doesn’t stop the rest. Up to 5,000 ids. To confirm a PayPal or Wise file, use `POST /payouts/exports/{exportId}/confirm`, which confirms exactly the payouts in it. This takes no payment references: to record one for a payout you sent one at a time, confirm it with `POST /payouts/{id}/confirm`. No webhooks: `payout.created` and `commission.paid` fired when the run made the payouts.',
     access: { kind: 'admin' },
     body: payouts.bulkConfirmSchema,
     responses: { 200: { description: 'What was confirmed, and what wasn’t.', schema: S.BulkConfirmResult } },
