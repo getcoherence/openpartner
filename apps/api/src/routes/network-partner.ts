@@ -9,10 +9,11 @@
  * and we proxy server-side using the encrypted vendorToken in
  * network_membership Config plus an x-act-as-vendor-partner header.
  *
- * Network's requireCreator middleware accepts that header (when paired
- * with an active vendor bearer) and resolves the Creator via
- * VendorAffiliation(vendorId, vendorPartnerId), so the same handler code
- * serves both browser-creator and proxied-from-vendor cases.
+ * The Network's requireCreatorOrActingVendor middleware accepts that
+ * header (when paired with an active vendor bearer) and resolves the
+ * Creator via VendorAffiliation(vendorId, vendorPartnerId), so the same
+ * handler code serves both browser-creator and proxied-from-vendor cases.
+ * What it answers is scoped to this brand; see partnerProxy.
  *
  * Acting as the partner needs the partner's Network consent
  * (requireConsent); browsing public offerings doesn't. The partner's own
