@@ -5,6 +5,7 @@ import { grantScope, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { parseUserAgent } from '../ua-parse.js';
 import { byCurrency, byCurrencyAndStatus, currencySql, tenantDefaultCurrency } from '../currency.js';
+import { readReferralSettings, referralIdFor } from '../referrals.js';
 
 export const dashboardRouter = Router();
 
@@ -361,20 +362,28 @@ dashboardRouter.get(
   grantScope('partners:read'),
   requirePartnerOrAdmin('id'),
   async (req, res) => {
-    const { db } = tenantOf(req);
+    const { db, tenantId } = tenantOf(req);
     const partnerId = req.params.id;
     const q = eventsQuerySchema.safeParse(req.query);
     if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
 
     const limit = q.data.limit ?? 50;
     const offset = q.data.offset ?? 0;
+    // A partner sees only the event types the brand shows as referral
+    // stages (Admin → Settings → Referral stages); the brand's own callers
+    // see every type.
+    const asPartner = req.principal?.role === 'partner';
+    const shownTypes = asPartner ? (await readReferralSettings(db, tenantId)).stages.map((s) => s.eventType) : null;
 
     const rows = (await db(`${TABLES.Attribution} as a`)
       .join(`${TABLES.Event} as e`, 'e.id', 'a.eventId')
-      .leftJoin(`${TABLES.Click} as cl`, 'cl.id', 'a.clickId')
-      .leftJoin(`${TABLES.Link} as l`, 'l.id', 'cl.linkId')
-      .where('a.partnerId', partnerId)
+      .leftJoin(`${TABLES.Click} as cl`, (j) => j.on('cl.id', 'a.clickId').andOnVal('cl.tenantId', tenantId))
+      .leftJoin(`${TABLES.Link} as l`, (j) => j.on('l.id', 'cl.linkId').andOnVal('l.tenantId', tenantId))
+      .where('a.tenantId', tenantId)
+      .andWhere('a.partnerId', partnerId)
+      .andWhere('e.tenantId', tenantId)
       .modify((qb) => {
+        if (shownTypes) qb.whereIn('e.type', shownTypes);
         if (q.data.programId) qb.andWhere('a.programId', q.data.programId);
         if (q.data.type) qb.andWhere('e.type', q.data.type);
         if (q.data.since) qb.andWhere('e.ts', '>=', new Date(q.data.since));
@@ -417,6 +426,8 @@ dashboardRouter.get(
         linkKey: string | null;
       }>;
 
+    // The brand's userId is the brand's own data: a partner gets the
+    // customer's pseudonymous referralId (referrals.ts) instead.
     res.json({
       partnerId,
       events: rows.map((r) => ({
@@ -428,7 +439,8 @@ dashboardRouter.get(
         value: r.eventValue != null ? Number(r.eventValue) : null,
         currency: r.eventCurrency,
         ts: r.eventTs.toISOString(),
-        userId: r.userId,
+        userId: asPartner ? null : r.userId,
+        referralId: referralIdFor(tenantId, r.userId),
         click: r.clickId
           ? {
               id: r.clickId,
@@ -464,13 +476,17 @@ dashboardRouter.get(
   grantScope('partners:read'),
   requirePartnerOrAdmin('id'),
   async (req, res) => {
-    const { db } = tenantOf(req);
+    const { db, tenantId } = tenantOf(req);
     const partnerId = req.params.id;
     const q = customersQuerySchema.safeParse(req.query);
     if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
 
     const limit = q.data.limit ?? 50;
     const offset = q.data.offset ?? 0;
+    // As on /events, a partner's counts and dates cover only the event
+    // types the brand shows as referral stages.
+    const asPartner = req.principal?.role === 'partner';
+    const shownTypes = asPartner ? (await readReferralSettings(db, tenantId)).stages.map((s) => s.eventType) : null;
 
     // Rolled-up per-customer view via knex query builder so the bindings
     // stay typed. Each row = one userId attributed to this partner with
@@ -478,8 +494,11 @@ dashboardRouter.get(
     // + event count, ordered by revenue desc.
     const rows = (await db(`${TABLES.Attribution} as a`)
       .join(`${TABLES.Event} as e`, 'e.id', 'a.eventId')
-      .where('a.partnerId', partnerId)
+      .where('a.tenantId', tenantId)
+      .andWhere('a.partnerId', partnerId)
+      .andWhere('e.tenantId', tenantId)
       .modify((qb) => {
+        if (shownTypes) qb.whereIn('e.type', shownTypes);
         if (q.data.programId) qb.andWhere('a.programId', q.data.programId);
       })
       .groupBy('e.userId')
@@ -500,10 +519,12 @@ dashboardRouter.get(
         revenue: string;
       }>;
 
+    // As on /events: a partner gets the referralId, never the userId.
     res.json({
       partnerId,
       customers: rows.map((r) => ({
-        userId: r.userId,
+        userId: asPartner ? null : r.userId,
+        referralId: referralIdFor(tenantId, r.userId),
         firstEventAt: r.firstEventAt.toISOString(),
         lastEventAt: r.lastEventAt.toISOString(),
         eventCount: Number(r.eventCount),

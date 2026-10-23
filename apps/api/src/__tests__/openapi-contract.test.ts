@@ -235,7 +235,7 @@ beforeAll(async () => {
   if (skipIntegration) return;
   await db.raw('select 1');
   for (const t of TABLES_TO_CLEAN) await db(t).del();
-  await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access']).del();
+  await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access', 'partner_referrals']).del();
   savedTenant = await db(TABLES.Tenant)
     .where({ id: DEFAULT_TENANT_ID })
     .first('payoutThresholdCents', 'couponIntegrationVerifiedAt');
@@ -260,7 +260,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (!skipIntegration) {
     for (const t of TABLES_TO_CLEAN) await db(t).del();
-    await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access']).del();
+    await db(TABLES.Config).where({ tenantId: DEFAULT_TENANT_ID }).whereIn('key', ['network_membership', 'partner_access', 'partner_referrals']).del();
     await db(TABLES.Tenant)
       .where({ id: DEFAULT_TENANT_ID })
       .update({
@@ -400,7 +400,38 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     expect(offsetQuery.status).toBe(400);
     check('getPartnerTimeseries', offsetQuery);
     check('listPartnerEvents', await integration.get(`/partners/${partner.id}/events?limit=10`));
-    check('listPartnerCustomers', await integration.get(`/partners/${partner.id}/customers`));
+    const customers = check<{ customers: Array<{ userId: string | null; referralId: string }> }>(
+      'listPartnerCustomers',
+      await integration.get(`/partners/${partner.id}/customers`),
+    );
+    expect(customers.customers[0]).toMatchObject({ userId: 'friend_1' });
+
+    // --- Each referred customer's journey, through the stages the brand shows.
+    check('getReferralSettings', await admin.get('/config/referrals'));
+    const stagesSet = check<{ stages: Array<{ eventType: string }> }>(
+      'updateReferralSettings',
+      await admin.post('/config/referrals', {
+        stages: [
+          { eventType: 'demo_booked', label: 'Demo booked' },
+          { eventType: 'invoice_paid', label: 'Paid' },
+        ],
+      }),
+    );
+    expect(stagesSet.stages.map((s) => s.eventType)).toEqual(['demo_booked', 'invoice_paid']);
+    check('updateReferralSettings', await admin.post('/config/referrals', { stages: [{ eventType: 'refund', label: 'Refunded' }] }));
+    check('updateReferralSettings', await admin.post('/config/referrals', { stages: [{ eventType: '', label: 'Empty' }] }));
+    const referrals = check<{
+      referrals: Array<{ referralId: string; userId?: string; stages: Array<{ eventType: string; count: number }>; commission: number }>;
+      total: number;
+    }>('listPartnerReferrals', await integration.get(`/partners/${partner.id}/referrals`));
+    expect(referrals.total).toBe(1);
+    expect(referrals.referrals[0]).toMatchObject({ userId: 'friend_1', referralId: customers.customers[0]!.referralId, commission: 42 });
+    expect(referrals.referrals[0]!.stages.map((s) => [s.eventType, s.count])).toEqual([
+      ['demo_booked', 1],
+      ['invoice_paid', 2],
+    ]);
+    check('listPartnerReferrals', await integration.get(`/partners/${partner.id}/referrals?cursor=nope`));
+    check('listPartnerReferrals', await integration.get('/partners/missing/referrals'));
     check('getPartnerBreakdown', await integration.get(`/partners/${partner.id}/breakdowns?dimension=referer`));
     check('getPartnerBreakdown', await integration.get(`/partners/${partner.id}/breakdowns?dimension=browser`));
     // Funnel has no scope (documented): admin key from the server.

@@ -30,6 +30,7 @@ import * as apiKeys from '../routes/api-keys.js';
 import * as exportRoutes from '../routes/export.js';
 import * as settings from '../routes/settings.js';
 import * as payouts from '../routes/payouts.js';
+import * as referrals from '../routes/referrals.js';
 import { EXPORTABLE_TABLES } from '../export.js';
 import { MAX_IP_ALLOWLIST } from '../conversion-postback.js';
 import type { OperationRegistry } from './registry.js';
@@ -1165,7 +1166,8 @@ The file's payouts are fixed here: each is stamped with the \`exportId\`, held o
     tag: 'Partner reporting',
     operationId: 'listPartnerEvents',
     summary: 'Attributed events for a partner',
-    description: 'Newest first, offset-paginated (default 50, max 200), with the click each event was credited through.',
+    description:
+      "Newest first, offset-paginated (default 50, max 200), with the click each event was credited through. A partner calling gets `userId: null` and the customer's `referralId` instead, and only events of the types the brand shows as referral stages (`GET /config/referrals`); admins and scoped keys get every type and the userId.",
     access: { kind: 'partnerOrAdmin', scope: 'partners:read' },
     query: dashboard.eventsQuerySchema,
     responses: { 200: { description: 'Events.', schema: S.PartnerEventList } },
@@ -1177,7 +1179,8 @@ The file's payouts are fixed here: each is stamped with the \`exportId\`, held o
     tag: 'Partner reporting',
     operationId: 'listPartnerCustomers',
     summary: 'Customers a partner brought in',
-    description: 'One row per attributed userId, by attributed revenue. Offset-paginated (default 50, max 200).',
+    description:
+      "One row per attributed userId, by attributed revenue. Offset-paginated (default 50, max 200). A partner calling gets `userId: null` and the customer's `referralId` instead, and counts, dates and revenue over only the event types the brand shows as referral stages. For each customer's stages, see `GET /partners/{id}/referrals`.",
     access: { kind: 'partnerOrAdmin', scope: 'partners:read' },
     query: dashboard.customersQuerySchema,
     responses: { 200: { description: 'Customers.', schema: S.PartnerCustomerList } },
@@ -1205,6 +1208,27 @@ The file's payouts are fixed here: each is stamped with the \`exportId\`, held o
     access: { kind: 'partnerOrAdmin' },
     query: sinceQuery,
     responses: { 200: { description: 'Funnel.', schema: S.PartnerFunnel } },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/partners/:id/referrals',
+    tag: 'Partner reporting',
+    operationId: 'listPartnerReferrals',
+    summary: "A partner's referrals and the stages each has reached",
+    description: `
+One row per customer the partner referred: a userId with at least one event credited to the partner, of any type, whether or not it earned anything. So a CRM stage that pays nothing (\`lead_created\`, \`demo_booked\`) still shows the partner their customer moving.
+
+- **Stages** are the event types the brand shows partners (\`GET /config/referrals\`), with its labels, in its order. Every other type is hidden: it still makes the customer a referral and still counts toward \`commission\`, but its type and dates never appear.
+- **No userId for partners.** A partner sees \`referralId\` (pseudonymous) and \`label\`: "Referral #12" (its \`number\`), or the \`metadata.customerLabel\` you send on events if you turn \`showCustomerLabels\` on. Admins and scoped keys also get \`userId\`, so a headless brand can show its own customer names.
+- **Reversals:** \`commission\` counts live commissions net of refund clawbacks; a stage whose commissions were all reversed or clawed back says \`reversed: true\` and is skipped by \`latestStage\`.
+- A revoked partner's referrals stay readable to the brand as history. The partner's own sessions and keys stop working when they're revoked, including keys minted for them afterwards.
+
+Newest referral first: the customer who most recently became the partner's referral leads, and \`number\` counts up in the same order. \`referredAt\` is when they first clicked the partner's link. Keyset-paginated: pass \`nextCursor\` back as \`cursor\`. The cursor is encrypted and carries no readable data.`,
+    access: { kind: 'partnerOrAdmin', scope: 'partners:read' },
+    query: referrals.listQuerySchema,
+    responses: { 200: { description: 'One page.', schema: S.PartnerReferralPage } },
+    errors: { 400: ['invalid_cursor'], 404: ['not_found'] },
   });
 
   // ---------------------------------------------------------------- Webhooks
@@ -1369,7 +1393,7 @@ The file's payouts are fixed here: each is stamped with the \`exportId\`, held o
     tag: 'API keys',
     operationId: 'createPartnerKey',
     summary: 'Mint a partner key',
-    description: "A key that acts as this one partner: it reads and writes only that partner's own resources. Revoking the partner revokes its keys.",
+    description: "A key that acts as this one partner: it reads and writes only that partner's own resources. Revoking the partner revokes its keys, and a key minted for a revoked partner doesn't authenticate (`401`) until they're reinstated.",
     access: { kind: 'partnerOrAdmin' },
     body: apiKeys.createSchema,
     responses: { 201: { description: 'Minted.', schema: S.CreatedKey } },
@@ -1545,5 +1569,30 @@ The file's payouts are fixed here: each is stamped with the \`exportId\`, held o
     access: { kind: 'admin' },
     body: settings.partnerAccessSchema.openapi('UpdatePartnerAccessSettingsRequest'),
     responses: { 200: { description: 'The saved setting.', schema: S.PartnerAccessSettings } },
+  });
+
+  // ------------------------------------------------------- Referral stages
+  r.operation({
+    method: 'get',
+    path: '/config/referrals',
+    tag: 'Partner reporting',
+    operationId: 'getReferralSettings',
+    summary: 'Get which stages partners see on their referrals',
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'The setting.', schema: S.ReferralSettings } },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/config/referrals',
+    tag: 'Partner reporting',
+    operationId: 'updateReferralSettings',
+    summary: 'Set which stages partners see on their referrals',
+    description:
+      'Sets the stages partners see on `GET /partners/{id}/referrals` and the partner portal\'s Referrals page: `{"stages": [{"eventType": "lead_created", "label": "Lead"}, {"eventType": "demo_booked", "label": "Demo booked"}, {"eventType": "deal_won", "label": "Deal won"}, {"eventType": "invoice_paid", "label": "Paid"}]}`. `stages` replaces the whole list, in the order given (at most 20; a label at most 60 characters). `refund`, `chargeback`, `dispute_created` and `invoice_payment_failed` are never attributed, so they can\'t be stages (`400 corrective_stage`); a type listed twice is `400 duplicate_stage`. `showCustomerLabels: true` shows partners the `metadata.customerLabel` you send on events. That is your decision as the data\'s controller, so it is off by default. Omitted fields keep their value. Also on Admin → Settings.',
+    access: { kind: 'admin' },
+    body: referrals.settingsSchema.openapi('UpdateReferralSettingsRequest'),
+    responses: { 200: { description: 'The saved setting.', schema: S.ReferralSettings } },
+    errors: { 400: ['duplicate_stage', 'corrective_stage'] },
   });
 }

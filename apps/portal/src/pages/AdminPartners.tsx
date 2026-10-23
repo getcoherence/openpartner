@@ -183,6 +183,8 @@ function PartnerTable({
           <span style={{ color: theme.border }}>·</span>
           <TenantLink to={`/admin/partners/${p.id}/programs`} style={{ color: theme.accentText, fontSize: 13 }}>Programs</TenantLink>
           <span style={{ color: theme.border }}>·</span>
+          <TenantLink to={`/admin/partners/${p.id}/referrals`} style={{ color: theme.accentText, fontSize: 13 }}>Referrals</TenantLink>
+          <span style={{ color: theme.border }}>·</span>
           <TenantLink to={`/admin/partners/${p.id}/coupons`} style={{ color: theme.accentText, fontSize: 13 }}>Coupons</TenantLink>
           <span style={{ color: theme.border }}>·</span>
           <TenantLink to={`/admin/partners/${p.id}/commission`} style={{ color: theme.accentText, fontSize: 13 }}>Commission</TenantLink>

@@ -21,7 +21,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import type { Knex } from 'knex';
 import { ulid } from 'ulid';
-import { TABLES, type ApiKeyRow } from '@openpartner/db';
+import { TABLES, type ApiKeyRow, type PartnerRow } from '@openpartner/db';
 
 export type ApiKeyPrincipal =
   | { role: 'admin'; source: 'env' }
@@ -191,6 +191,12 @@ async function resolvePrincipal(req: Request): Promise<ApiKeyPrincipal | null> {
     return { role: 'scoped', source: 'db', apiKeyId: match2.id, scopes: match2.scopes };
   }
   if (match2.partnerId) {
+    // Revoking a partner revokes their keys (POST /partners/:id/revoke), but
+    // an admin can still mint one for them afterwards. It mustn't reopen
+    // what the revoke closed, so a revoked partner's key never resolves,
+    // just as their sessions don't (auth-sessions.ts resolveSession).
+    const partner = await db<PartnerRow>(TABLES.Partner).where({ id: match2.partnerId, tenantId }).first('revokedAt');
+    if (!partner || partner.revokedAt) return null;
     return { role: 'partner', source: 'db', apiKeyId: match2.id, partnerId: match2.partnerId };
   }
   return { role: 'admin', source: 'db', apiKeyId: match2.id };

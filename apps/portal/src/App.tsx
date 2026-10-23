@@ -30,6 +30,7 @@ import {
   KeyRound,
   Landmark,
   CalendarCheck,
+  UserCheck,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { clearApiKey, api, type Principal } from './api.js';
@@ -40,6 +41,7 @@ import { useBrand, useConnectPayouts, usePublicBrand } from './lib/useBrand.js';
 import { Dashboard } from './pages/Dashboard.js';
 import { LinksPage } from './pages/Links.js';
 import { CommissionsPage } from './pages/Commissions.js';
+import { AdminPartnerReferrals, ReferralsPage } from './pages/Referrals.js';
 import { PayoutsPage } from './pages/Payouts.js';
 import { ConnectPage } from './pages/Connect.js';
 import { PayoutDetailsPage } from './pages/PayoutDetails.js';
@@ -326,6 +328,7 @@ function Shell() {
                   <Route path="network/profile" element={<MyProfilePage />} />
                 </>
               )}
+              <Route path="referrals" element={<ReferralsPage principal={auth.principal} />} />
               <Route path="coupons" element={<AdminPartnerCoupons ownPartnerId={auth.principal.partnerId!} />} />
               <Route path="postbacks" element={<PartnerPostbacksPage principal={auth.principal} />} />
               <Route path="bounties" element={<PartnerBountiesPage />} />
@@ -337,6 +340,7 @@ function Shell() {
               <Route path="admin/partners" element={<AdminPartners />} />
               <Route path="admin/partners/:id/programs" element={<AdminPartnerPrograms />} />
               <Route path="admin/partners/:id/coupons" element={<AdminPartnerCoupons />} />
+              <Route path="admin/partners/:id/referrals" element={<AdminPartnerReferrals />} />
               <Route path="admin/partners/:id/commission" element={<AdminPartnerCommission />} />
               <Route path="admin/programs" element={<AdminPrograms />} />
               <Route path="admin/programs/:id/bounties" element={<AdminProgramBounties />} />
@@ -496,6 +500,7 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
         <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
           <NavItem to="/" icon={<LayoutDashboard size={16} />}>Dashboard</NavItem>
           <NavItem to="/links" icon={<Link2 size={16} />}>Links</NavItem>
+          {principal.role === 'partner' && <NavItem to="/referrals" icon={<UserCheck size={16} />}>Referrals</NavItem>}
           {principal.role === 'partner' && <NavItem to="/coupons" icon={<Tag size={16} />}>Coupons</NavItem>}
           {principal.role === 'partner' && <NavItem to="/bounties" icon={<Trophy size={16} />}>Bounties</NavItem>}
           <NavItem to="/commissions" icon={<Receipt size={16} />}>Commissions</NavItem>
