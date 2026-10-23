@@ -243,7 +243,11 @@ export interface PaypalBatch {
 export async function createPayoutBatch(env: PaypalEnvironment, token: string, requestId: string, body: string): Promise<PaypalBatch> {
   const { data } = await call<PaypalBatch>(env, { method: 'POST', path: '/v1/payments/payouts', auth: { bearer: token }, json: body, requestId });
   if (!data?.batch_header?.payout_batch_id) {
-    throw new PaypalApiError('http', 201, null, 'PayPal accepted the batch but returned no payout_batch_id', null, null);
+    // PayPal said yes, but the answer can't be read (truncated, not JSON,
+    // no id). The batch may well exist: an UNKNOWN outcome, never a
+    // refusal, so the caller re-sends with the same ids instead of
+    // releasing the payouts.
+    throw new PaypalApiError('network', null, null, 'PayPal accepted the batch but its answer couldn’t be read', null, null);
   }
   return data;
 }

@@ -20,7 +20,14 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import type { PaypalFetch, PaypalHttpResponse } from '../paypal-api.js';
 
 type Env = 'live' | 'sandbox';
-export type Fault = 'network_before' | 'network_after' | '500_before' | '500_after' | { status: number; name: string; message?: string };
+export type Fault =
+  | 'network_before'
+  | 'network_after'
+  | '500_before'
+  | '500_after'
+  /** Created, then a 2xx whose body isn't JSON. */
+  | 'garbled_after'
+  | { status: number; name: string; message?: string };
 
 interface App {
   env: Env;
@@ -137,6 +144,7 @@ export class FakePaypal {
     if (typeof next === 'string' && !next.endsWith(when)) return null;
     if (typeof next !== 'string' && when === 'after') return null;
     this.faults[kind].shift();
+    if (next === 'garbled_after') return { status: 201, text: async () => '<html>upstream reset</html>' };
     if (next === 'network_before' || next === 'network_after') return 'throw';
     if (next === '500_before' || next === '500_after') return res(500, { name: 'INTERNAL_SERVER_ERROR', message: 'An internal server error occurred.', debug_id: 'dbg500' });
     return res(next.status, { name: next.name, message: next.message ?? next.name, debug_id: 'dbg4xx' });

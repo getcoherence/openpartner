@@ -366,11 +366,10 @@ export async function connectPaypal(db: Knex, tenantId: string, input: ConnectPa
     updatedAt: now,
   };
   await db(TABLES.PaypalConnection).insert(row);
-  if (existing && sameApp && open > 0) {
-    await db(TABLES.PaypalPayoutBatch)
-      .where({ tenantId, connectionId: existing.id })
-      .whereIn('state', OPEN_BATCH_STATES)
-      .update({ connectionId: id, updatedAt: now });
+  if (existing && sameApp) {
+    // Every batch, finished ones too: a paid item can still be refunded,
+    // and only these credentials can read it.
+    await db(TABLES.PaypalPayoutBatch).where({ tenantId, connectionId: existing.id }).update({ connectionId: id, updatedAt: now });
   }
   const saved = (await connectionById(db, tenantId, id))!;
   return toView(saved, sameApp ? open : 0);

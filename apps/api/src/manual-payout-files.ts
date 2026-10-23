@@ -934,17 +934,15 @@ export async function confirmManualExport(db: Knex, tenantId: string, exportId: 
  * pending.
  */
 export async function discardManualExport(db: Knex, tenantId: string, exportId: string): Promise<number | null> {
-  // Never a PayPal Payouts batch's payouts while the batch exists: it may
-  // have paid them, and only PayPal's answer (or the admin's resolve) frees
-  // them. A stamp whose batch isn't here (a bundle restored onto another
-  // deployment, which doesn't carry batches) can be discarded like a file.
-  const batchHere = await db(TABLES.PaypalPayoutBatch).where({ tenantId, id: exportId }).first('id');
+  // Never a PayPal Payouts batch's payouts: that batch may have paid them,
+  // or may still, and only PayPal's answer (or the admin's resolve) frees
+  // them. That holds even when the batch row isn't here (a bundle restored
+  // onto another deployment): the batch can still pay at PayPal, so its
+  // payouts can be marked sent once checked there, never released.
   const released = await db(TABLES.Payout)
     .where({ tenantId, method: 'manual', status: 'pending' })
     .whereRaw(`metadata->'manualExport'->>'exportId' = ?`, [exportId])
-    .modify((q) => {
-      if (batchHere) q.whereRaw(`metadata->'manualExport'->>'via' is distinct from 'api'`);
-    })
+    .whereRaw(`metadata->'manualExport'->>'via' is distinct from 'api'`)
     .update({ metadata: db.raw(`metadata - 'manualExport'`) });
   return released > 0 ? released : null;
 }
@@ -1088,13 +1086,23 @@ export const IN_PAYPAL_BATCH_DETAIL =
   'this payout is in a PayPal Payouts batch OpenPartner sent; PayPal reports whether it was paid, so it is confirmed or released from there';
 
 /**
- * Which of these payouts are in a PayPal Payouts batch that is still in
- * flight. Marking one as sent by hand would race PayPal's own answer: a
- * payout PayPal then reports as failed would already read as paid. A
- * stamp whose batch row is missing (a bundle restored onto another
- * deployment, which doesn't carry batches) doesn't count.
+ * Where these payouts stand against PayPal Payouts batches:
+ *
+ *   - `held`: payouts in a batch still in flight. Marking one as sent by
+ *     hand would race PayPal's own answer: a payout PayPal then reports as
+ *     failed would already read as paid.
+ *   - `settled`: the batch ids of API stamps a confirm may go ahead on: a
+ *     batch that ended (failed, denied, released) or isn't on this
+ *     deployment (a bundle restored elsewhere, checked in PayPal by the
+ *     admin). The confirm UPDATE allows an API stamp only from this list,
+ *     so a batch that stamps the payout after this read is never
+ *     overruled.
  */
-export async function inOpenPaypalBatch(db: Knex, tenantId: string, payouts: readonly PayoutRow[]): Promise<Set<string>> {
+export async function paypalBatchStanding(
+  db: Knex,
+  tenantId: string,
+  payouts: readonly PayoutRow[],
+): Promise<{ held: Set<string>; settled: string[] }> {
   const byBatch = new Map<string, string[]>();
   for (const p of payouts) {
     const s = stampOf(p);
@@ -1102,16 +1110,19 @@ export async function inOpenPaypalBatch(db: Knex, tenantId: string, payouts: rea
     byBatch.set(s.exportId, [...(byBatch.get(s.exportId) ?? []), p.id]);
   }
   const held = new Set<string>();
-  if (byBatch.size === 0) return held;
+  const open = new Set<string>();
   for (const ids of chunks([...byBatch.keys()])) {
-    const open = (await db(TABLES.PaypalPayoutBatch)
+    const rows = (await db(TABLES.PaypalPayoutBatch)
       .where({ tenantId })
       .whereIn('id', ids)
       .whereIn('state', OPEN_PAYPAL_BATCH_STATES)
       .select('id')) as Array<{ id: string }>;
-    for (const b of open) for (const id of byBatch.get(b.id) ?? []) held.add(id);
+    for (const b of rows) {
+      open.add(b.id);
+      for (const id of byBatch.get(b.id) ?? []) held.add(id);
+    }
   }
-  return held;
+  return { held, settled: [...byBatch.keys()].filter((id) => !open.has(id)) };
 }
 
 const DO_NOT_PAY_DETAIL: Record<DoNotPayReason, string> = {
@@ -1147,7 +1158,8 @@ export async function confirmManualPayouts(db: Knex, tenantId: string, payoutIds
   for (const c of await classify(db, tenantId, candidates, await blockedCountries())) {
     if (c.doNotPay) refused.set(c.payout.id, c.doNotPay);
   }
-  for (const id of await inOpenPaypalBatch(db, tenantId, candidates)) {
+  const standing = await paypalBatchStanding(db, tenantId, candidates);
+  for (const id of standing.held) {
     if (!refused.has(id)) refused.set(id, 'in_paypal_batch');
   }
 
@@ -1157,11 +1169,27 @@ export async function confirmManualPayouts(db: Knex, tenantId: string, payoutIds
       ...((await db<PayoutRow>(TABLES.Payout)
         .where({ tenantId, method: 'manual', status: 'pending' })
         .whereIn('id', chunk)
+        // Decided on the row being updated, not on the read above: a
+        // PayPal batch that stamped it since (or is stamping it now: the
+        // UPDATE waits for that row lock, then re-checks this) wins.
+        .andWhere((q) =>
+          q
+            .whereRaw(`metadata->'manualExport'->>'via' is distinct from 'api'`)
+            .orWhereRaw(`metadata->'manualExport'->>'exportId' = any(?::text[])`, [standing.settled]),
+        )
         .update({ status: 'paid', completedAt: new Date() })
         .returning('*')) as PayoutRow[]),
     );
   }
   const done = new Set(confirmed.map((p) => p.id));
+  // A candidate the UPDATE skipped changed under it: say why from its row now.
+  const changed = candidates.filter((p) => !done.has(p.id) && !refused.has(p.id)).map((p) => p.id);
+  for (const chunk of chunks(changed)) {
+    for (const p of await db<PayoutRow>(TABLES.Payout).where({ tenantId }).whereIn('id', chunk)) {
+      found.set(p.id, p);
+      if (p.status === 'pending' && isApiStamp(stampOf(p))) refused.set(p.id, 'in_paypal_batch');
+    }
+  }
   return {
     confirmed,
     notConfirmable: ids

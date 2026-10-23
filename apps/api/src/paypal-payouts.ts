@@ -166,6 +166,9 @@ export interface PaypalBatchView {
   /** Of the batch's payouts: confirmed paid, released back to pending,
    *  unclaimed at PayPal, and still processing. */
   summary: { paid: number; released: number; unclaimed: number; processing: number };
+  /** A finished sandbox batch: what PayPal's sandbox did with its test
+   *  money. Its payouts were never marked paid; they are back to send. */
+  rehearsal: { paid: number; unclaimed: number; failed: number } | null;
   lastError: string | null;
   createdAt: Date;
   createdBy: 'admin' | 'api';
@@ -176,6 +179,10 @@ export interface PaypalBatchView {
 function view(b: PaypalPayoutBatchRow): PaypalBatchView {
   const s = (b.itemSummary ?? {}) as Record<string, number>;
   return {
+    rehearsal:
+      b.environment === 'sandbox' && s.sandboxPaid !== undefined
+        ? { paid: s.sandboxPaid ?? 0, unclaimed: s.sandboxUnclaimed ?? 0, failed: s.sandboxFailed ?? 0 }
+        : null,
     batchId: b.id,
     runId: b.runId,
     environment: b.environment,
@@ -278,7 +285,9 @@ export async function sendRunWithPaypal(
       sender_batch_header: {
         sender_batch_id: id,
         email_subject: plainText(brandName ? `You have a payout from ${brandName}` : 'You have a commission payout', 255),
-        email_message: note,
+        // PayPal's email shows this with each item's note, so it doesn't
+        // repeat it.
+        email_message: plainText(brandName ? `${brandName} sent you your partner commission through PayPal.` : 'You were sent your partner commission through PayPal.', 1000),
       },
       items: rows.map((r) => ({
         recipient_type: 'EMAIL',
@@ -616,8 +625,13 @@ function itemStamp(item: PaypalBatchItem): PaypalItemStamp {
   };
 }
 
-/** Recount the batch's payouts into itemSummary. */
-async function updateSummary(db: Knex, b: PaypalPayoutBatchRow): Promise<{ pending: number; summary: PaypalBatchView['summary'] }> {
+/** Recount the batch's payouts into itemSummary (merged, so a sandbox
+ *  rehearsal's counts stay). */
+async function updateSummary(
+  db: Knex,
+  b: PaypalPayoutBatchRow,
+  extra?: Record<string, number>,
+): Promise<{ pending: number; summary: PaypalBatchView['summary'] }> {
   const rows = (await db(TABLES.Payout)
     .where({ tenantId: b.tenantId })
     .whereRaw(`metadata->'manualExport'->>'exportId' = ?`, [b.id])
@@ -637,7 +651,9 @@ async function updateSummary(db: Knex, b: PaypalPayoutBatchRow): Promise<{ pendi
     else if (r.status === 'pending') processing += r.n;
   }
   const summary = { paid, released: Math.max(0, b.itemCount - paid - unclaimed - processing), unclaimed, processing };
-  await db(TABLES.PaypalPayoutBatch).where({ id: b.id, tenantId: b.tenantId }).update({ itemSummary: summary });
+  await db(TABLES.PaypalPayoutBatch)
+    .where({ id: b.id, tenantId: b.tenantId })
+    .update({ itemSummary: db.raw(`"itemSummary" || ?::jsonb`, [JSON.stringify({ ...summary, ...extra })]) });
   return { pending: unclaimed + processing, summary };
 }
 
@@ -673,6 +689,7 @@ export async function syncBatch(db: Knex, tenantId: string, batchId: string, now
     if (!conn) throw new PaypalConnectError('not_connected', 'The PayPal connection is gone');
     const token = await paypalAccessToken(db, conn);
     remote = await getWholePayoutBatch(b.environment, token, b.payoutBatchId!);
+    if (!remote?.batch_header?.payout_batch_id) throw new PaypalApiError('network', null, null, 'PayPal’s answer couldn’t be read', null, null);
   } catch (err) {
     const message =
       err instanceof PaypalConnectError ? err.message : err instanceof PaypalApiError ? `Couldn’t read the batch from PayPal: ${err.summary}` : 'Couldn’t read the batch from PayPal';
@@ -706,6 +723,7 @@ export async function syncBatch(db: Knex, tenantId: string, batchId: string, now
 
   const attention: AlertItem[] = [];
   const refused = batchStatus !== null && BATCH_REFUSED.has(batchStatus);
+  const sandbox = b.environment === 'sandbox';
   for (const p of ours) {
     const it = items.get(p.id);
     const before = ((p.metadata as { manualExport?: ManualExportStamp }).manualExport?.paypal ?? null) as PaypalItemStamp | null;
@@ -723,7 +741,12 @@ export async function syncBatch(db: Knex, tenantId: string, batchId: string, now
       continue;
     }
     const st = itemStamp(it);
-    if (ITEM_PAID.has(st.status)) {
+    if (ITEM_PAID.has(st.status) && sandbox) {
+      // Test money: PayPal's sandbox "paid" it and nobody was. Recorded on
+      // the stamp, never confirmed; the payout is released below once
+      // the rehearsal is over.
+      if (p.status === 'pending' && before?.status !== st.status) await restamp(db, b, p, st);
+    } else if (ITEM_PAID.has(st.status)) {
       if (p.status === 'pending') {
         const at = it.time_processed && !Number.isNaN(Date.parse(it.time_processed)) ? new Date(it.time_processed) : now;
         if (await confirmOne(db, b, p, st, at)) result.paid.push(p.id);
@@ -741,16 +764,40 @@ export async function syncBatch(db: Knex, tenantId: string, batchId: string, now
     }
   }
 
-  const { pending, summary } = await updateSummary(db, b);
+  // A sandbox batch is a rehearsal: once PayPal has settled every item,
+  // what it did is kept on the batch and every payout goes back to send.
+  let rehearsal: Record<string, number> | undefined;
+  if (sandbox) {
+    const statuses = [...items.values()].map((it) => it.transaction_status ?? 'PENDING');
+    const settled = statuses.length > 0 && statuses.every((s) => ITEM_PAID.has(s) || ITEM_RETURNED.has(s) || s === 'UNCLAIMED');
+    if (settled || refused) {
+      rehearsal = {
+        sandboxPaid: statuses.filter((s) => ITEM_PAID.has(s)).length,
+        sandboxUnclaimed: statuses.filter((s) => s === 'UNCLAIMED').length,
+        sandboxFailed: refused ? b.itemCount : statuses.filter((s) => ITEM_RETURNED.has(s)).length,
+      };
+      result.released.push(...(await releaseAllPending(db, b, 'sandbox_test')).map((r) => r.payoutId));
+    }
+  }
+
+  const { pending, summary } = await updateSummary(db, b, rehearsal);
   const finished = pending === 0;
+  // Paid items can still be refunded or reversed later: a finished live
+  // batch is read again daily for 90 days (webhooks bring it sooner).
+  const completedAt = finished ? (b.completedAt ?? now) : null;
+  const followUntil = completedAt ? completedAt.getTime() + 90 * DAY_MS : 0;
   await cas(db, b, SYNCABLE_STATES, now, {
     state: finished ? (refused ? 'denied' : 'completed') : b.state === 'completed' ? 'completed' : 'submitted',
     batchStatus,
     leaseAt: null,
     lastError: null,
     lastSyncedAt: now,
-    completedAt: finished ? (b.completedAt ?? now) : null,
-    nextSyncAt: finished ? null : nextSync(now, b, summary.processing),
+    completedAt,
+    nextSyncAt: !finished
+      ? nextSync(now, b, summary.processing)
+      : !refused && !sandbox && summary.paid > 0 && now.getTime() < followUntil
+        ? new Date(now.getTime() + DAY_MS)
+        : null,
   });
   result.synced.push(b.id);
   if (attention.length > 0) await alertAdmins(db, tenantId, { kind: 'items', batch: b, items: attention });
@@ -822,7 +869,10 @@ export async function resolvePaypalBatch(tenantId: string, batchId: string, inpu
   const now = (opts.now ?? (() => new Date()))();
   const current = await loadBatch(db, tenantId, batchId);
   if (!current) return { ok: false, error: 'batch_not_found' };
-  const allowed: PaypalBatchState[] = input.action === 'release' ? ['reconcile_required', 'intent'] : ['reconcile_required'];
+  // A sandbox batch moves test money only, so it can be released whenever
+  // it's still open: nothing real can be paid twice.
+  const allowed: PaypalBatchState[] =
+    input.action !== 'release' ? ['reconcile_required'] : current.environment === 'sandbox' ? OPEN_STATES : ['reconcile_required', 'intent'];
   if (!allowed.includes(current.state)) return { ok: false, error: 'not_resolvable' };
   const b = await lease(db, current, allowed, now);
   if (!b) return { ok: false, error: 'not_resolvable' };
@@ -894,15 +944,26 @@ export async function syncPaypalBatchNow(db: Knex, tenantId: string, batchId: st
 /**
  * Release pending payouts still stamped with a batch that ended without
  * paying them (failed, denied, released): the state moves first and the
- * payouts follow, so a crash in between leaves stamps to free here.
+ * payouts follow, so a crash in between leaves stamps to free here, however
+ * long ago. Found from the payouts' side (pending manual payouts only, which
+ * a partial index covers), oldest batch first.
  */
-async function repairReleasedStamps(db: Knex, now: Date): Promise<number> {
-  const ended = (await db<PaypalPayoutBatchRow>(TABLES.PaypalPayoutBatch)
-    .whereIn('state', ['failed', 'denied', 'released'])
-    .where('updatedAt', '>', new Date(now.getTime() - 2 * DAY_MS))
-    .limit(200)) as PaypalPayoutBatchRow[];
+async function repairReleasedStamps(db: Knex): Promise<number> {
+  const ended = (await db(`${TABLES.Payout} as p`)
+    .join(`${TABLES.PaypalPayoutBatch} as b`, (j) =>
+      j.on('b.tenantId', 'p.tenantId').andOn(db.raw(`b.id = p.metadata->'manualExport'->>'exportId'`)),
+    )
+    .where({ 'p.method': 'manual', 'p.status': 'pending' })
+    .whereRaw(`p.metadata->'manualExport'->>'via' = 'api'`)
+    .whereIn('b.state', ['failed', 'denied', 'released'])
+    .distinct('b.id', 'b.tenantId', 'b.state')
+    .orderBy('b.id', 'asc')
+    .limit(200)) as Array<Pick<PaypalPayoutBatchRow, 'id' | 'tenantId' | 'state'>>;
   let n = 0;
-  for (const b of ended) n += (await releaseAllPending(db, b, b.state === 'released' ? 'released_by_admin' : 'not_sent')).length;
+  for (const b of ended) {
+    const row = (await loadBatch(db, b.tenantId, b.id))!;
+    n += (await releaseAllPending(db, row, b.state === 'released' ? 'released_by_admin' : 'not_sent')).length;
+  }
   return n;
 }
 
@@ -931,9 +992,14 @@ export async function runPaypalPayoutsJob(db: Knex = privilegedDb, opts: { now?:
     }
   }
 
+  // Submitted batches whenever they're due; finished ones only while they
+  // carry a nextSyncAt (live, paid items, under 90 days: late refunds).
   const toSync = (await db<PaypalPayoutBatchRow>(TABLES.PaypalPayoutBatch)
-    .where({ state: 'submitted' })
-    .andWhere((q) => q.whereNull('nextSyncAt').orWhere('nextSyncAt', '<=', now))
+    .andWhere((q) =>
+      q
+        .where((s) => s.where({ state: 'submitted' }).andWhere((n) => n.whereNull('nextSyncAt').orWhere('nextSyncAt', '<=', now)))
+        .orWhere((c) => c.where({ state: 'completed' }).andWhere('nextSyncAt', '<=', now)),
+    )
     .andWhere((q) => q.whereNull('leaseAt').orWhere('leaseAt', '<', stale))
     .orderByRaw('coalesce("nextSyncAt", "createdAt") asc')
     .limit(100)
@@ -946,7 +1012,7 @@ export async function runPaypalPayoutsJob(db: Knex = privilegedDb, opts: { now?:
     }
   }
 
-  return { ...result, repaired: await repairReleasedStamps(db, now) };
+  return { ...result, repaired: await repairReleasedStamps(db) };
 }
 
 // ---------------------------------------------------------------------------

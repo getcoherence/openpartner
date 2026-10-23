@@ -82,7 +82,7 @@ async function paypalPartner(name: string, amount: string, runId: string, curren
   return { partnerId, payoutId: await payout(partnerId, amount, currency, runId, tenantId) };
 }
 
-async function connect(environment: 'sandbox' | 'live' = 'sandbox') {
+async function connect(environment: 'live' | 'sandbox' = 'live') {
   const res = await admin.post('/config/paypal', { environment, clientId: CLIENT_ID, clientSecret: SECRET });
   expect(res.status).toBe(201);
   return res.body.connection as { id: string; active: boolean; webhook: { registered: boolean } };
@@ -124,7 +124,7 @@ beforeEach(async () => {
   await cleanup();
   sent.length = 0;
   fake = new FakePaypal();
-  fake.addApp({ env: 'sandbox', clientId: CLIENT_ID, secret: SECRET });
+  fake.addApp({ env: 'live', clientId: CLIENT_ID, secret: SECRET });
   __setPaypalFetchForTests(fake.fetch);
   process.env.PORTAL_URL = 'https://portal.brand.example';
   await db(TABLES.Admin).insert({ id: ulid(), tenantId: T, email: `ops-${ulid().toLowerCase()}@paypal-admin.test`, name: 'Ops', activatedAt: new Date() });
@@ -151,11 +151,11 @@ afterAll(async () => {
 
 describe.skipIf(skipIntegration)('connecting PayPal', () => {
   it('verifies with a token call, seals the secret and webhook id, never returns them', async () => {
-    const res = await admin.post('/config/paypal', { environment: 'sandbox', clientId: CLIENT_ID, clientSecret: SECRET });
+    const res = await admin.post('/config/paypal', { environment: 'live', clientId: CLIENT_ID, clientSecret: SECRET });
     expect(res.status).toBe(201);
     expect(JSON.stringify(res.body)).not.toContain(SECRET);
     expect(res.body.connection).toMatchObject({
-      environment: 'sandbox',
+      environment: 'live',
       clientIdPreview: 'AbCdEf…6789',
       payoutsEnabled: true,
       active: true,
@@ -177,12 +177,12 @@ describe.skipIf(skipIntegration)('connecting PayPal', () => {
   });
 
   it('refuses credentials PayPal refuses, and stores nothing', async () => {
-    const res = await admin.post('/config/paypal', { environment: 'sandbox', clientId: CLIENT_ID, clientSecret: 'WrongSecret0123456789' });
+    const res = await admin.post('/config/paypal', { environment: 'live', clientId: CLIENT_ID, clientSecret: 'WrongSecret0123456789' });
     expect(res.status).toBe(422);
     expect(res.body.error).toBe('credentials_refused');
     expect(await db(TABLES.PaypalConnection).where({ tenantId: T })).toHaveLength(0);
     // Live credentials don't work in sandbox, and the other way round.
-    expect((await admin.post('/config/paypal', { environment: 'live', clientId: CLIENT_ID, clientSecret: SECRET })).status).toBe(422);
+    expect((await admin.post('/config/paypal', { environment: 'sandbox', clientId: CLIENT_ID, clientSecret: SECRET })).status).toBe(422);
   });
 
   it('answers a bad body by naming fields, never echoing values', async () => {
@@ -199,9 +199,10 @@ describe.skipIf(skipIntegration)('connecting PayPal', () => {
   });
 
   it('keeps one environment active, switches only when asked, and disconnects once nothing is in flight', async () => {
-    fake.addApp({ env: 'live', clientId: CLIENT_ID, secret: SECRET });
+    fake.addApp({ env: 'sandbox', clientId: CLIENT_ID, secret: SECRET });
     const sandbox = await connect('sandbox');
     const live = await connect('live');
+    // The first one connected sends; connecting live later doesn't switch.
     expect(sandbox.active).toBe(true);
     expect(live.active).toBe(false);
     expect((await admin.post('/config/paypal/live/activate')).body.connection.active).toBe(true);
@@ -210,7 +211,7 @@ describe.skipIf(skipIntegration)('connecting PayPal', () => {
     // A batch in flight pins the live app.
     const runId = ulid();
     await paypalPartner('Ada', '10.00', runId);
-    expect((await admin.post(`/payouts/runs/${runId}/paypal-batches`, { currency: 'USD' })).status).toBe(201);
+    expect((await admin.post(`/payouts/runs/${runId}/paypal-batches`, { currency: 'USD' })).body.batch.environment).toBe('live');
     const refused = await admin.delete('/config/paypal/live');
     expect(refused.status).toBe(409);
     expect(refused.body).toMatchObject({ error: 'open_batches', openBatches: 1 });
@@ -230,13 +231,13 @@ describe.skipIf(skipIntegration)('connecting PayPal', () => {
     expect(sent1.status).toBe(201);
 
     const appId = fake.apps[0]!.appId;
-    fake.addApp({ env: 'sandbox', clientId: 'OtherAppClientId0123456789', secret: 'OtherSecret0123456789' });
-    const other = await admin.post('/config/paypal', { environment: 'sandbox', clientId: 'OtherAppClientId0123456789', clientSecret: 'OtherSecret0123456789' });
+    fake.addApp({ env: 'live', clientId: 'OtherAppClientId0123456789', secret: 'OtherSecret0123456789' });
+    const other = await admin.post('/config/paypal', { environment: 'live', clientId: 'OtherAppClientId0123456789', clientSecret: 'OtherSecret0123456789' });
     expect(other.status).toBe(409);
 
     // A rotated secret for the same app.
     fake.apps[0]!.secret = 'RotatedSecret0123456789abc';
-    const rotated = await admin.post('/config/paypal', { environment: 'sandbox', clientId: CLIENT_ID, clientSecret: 'RotatedSecret0123456789abc' });
+    const rotated = await admin.post('/config/paypal', { environment: 'live', clientId: CLIENT_ID, clientSecret: 'RotatedSecret0123456789abc' });
     expect(rotated.status).toBe(201);
     expect(rotated.body.connection).toMatchObject({ appId, active: true, openBatches: 1 });
     const batch = await db(TABLES.PaypalPayoutBatch).where({ id: sent1.body.batch.batchId }).first();
@@ -279,7 +280,7 @@ describe.skipIf(skipIntegration)('sending a run with PayPal', () => {
     const res = await admin.post(`/payouts/runs/${runId}/paypal-batches`, { currency: 'USD' });
     expect(res.status).toBe(201);
     const batchId = res.body.batch.batchId;
-    expect(res.body.batch).toMatchObject({ state: 'submitted', itemCount: 2, total: '35.50', currency: 'USD', environment: 'sandbox' });
+    expect(res.body.batch).toMatchObject({ state: 'submitted', itemCount: 2, total: '35.50', currency: 'USD', environment: 'live' });
 
     expect(fake.createCalls).toBe(1);
     const create = fake.seen.find((s) => s.path === '/v1/payments/payouts')!;
@@ -323,17 +324,20 @@ describe.skipIf(skipIntegration)('sending a run with PayPal', () => {
     expect(bulk.body.notConfirmable).toEqual([expect.objectContaining({ payoutId: ada.payoutId, reason: 'in_paypal_batch' })]);
   });
 
-  it('lets a restored bundle’s orphaned stamps be released, never a live batch’s', async () => {
+  it('never releases a restored bundle’s API stamp: it can only be marked sent (finding: orphan discard)', async () => {
     await connect();
     const runId = ulid();
     const ada = await paypalPartner('Ada', '10.00', runId);
     const batchId = (await admin.post(`/payouts/runs/${runId}/paypal-batches`, { currency: 'USD' })).body.batch.batchId as string;
-    expect((await admin.post(`/payouts/exports/${batchId}/discard`)).status).toBe(404);
-    // Restored elsewhere: the payout keeps its stamp, the batch didn't travel.
+    // Restored elsewhere: the payout keeps its stamp, the batch didn't
+    // travel, and PayPal may still pay it.
     await db(TABLES.PaypalPayoutBatch).where({ id: batchId }).del();
-    const discarded = await admin.post(`/payouts/exports/${batchId}/discard`);
-    expect(discarded.body).toEqual({ released: 1 });
-    expect(stampOf(await payoutRow(ada.payoutId))).toBeUndefined();
+    expect((await admin.post(`/payouts/exports/${batchId}/discard`)).status).toBe(404);
+    expect(stampOf(await payoutRow(ada.payoutId))).toMatchObject({ exportId: batchId });
+    // Checked in PayPal and paid: the admin marks it sent.
+    const sent = await admin.post(`/payouts/${ada.payoutId}/confirm`);
+    expect(sent.status).toBe(200);
+    expect(sent.body.payout.status).toBe('paid');
   });
 
   it('refuses INR, an unconnected brand, and an empty run', async () => {
@@ -720,14 +724,128 @@ describe.skipIf(skipIntegration)('PayPal webhooks', () => {
 
 // ---------------------------------------------------------------------------
 
+describe.skipIf(skipIntegration)('review findings', () => {
+  it('a sandbox batch is a rehearsal: test money never marks a real payout paid', async () => {
+    fake.addApp({ env: 'sandbox', clientId: CLIENT_ID, secret: SECRET });
+    await connect('sandbox');
+    const runId = ulid();
+    const ada = await paypalPartner('Ada', '10.00', runId);
+    const bob = await paypalPartner('Bob', '20.00', runId);
+    const cy = await paypalPartner('Cy', '30.00', runId);
+    const batchId = (await admin.post(`/payouts/runs/${runId}/paypal-batches`, { currency: 'USD' })).body.batch.batchId as string;
+    fake.setItem(batchId, ada.payoutId, 'SUCCESS');
+    fake.setItem(batchId, bob.payoutId, 'UNCLAIMED');
+    // Still processing one: nothing released yet, nothing paid.
+    await admin.post(`/payouts/paypal-batches/${batchId}/sync`);
+    expect((await payoutRow(ada.payoutId)).status).toBe('pending');
+    expect(stampOf(await payoutRow(ada.payoutId))).toMatchObject({ exportId: batchId, paypal: expect.objectContaining({ status: 'SUCCESS' }) });
+
+    fake.setItem(batchId, cy.payoutId, 'FAILED');
+    const done = (await admin.post(`/payouts/paypal-batches/${batchId}/sync`)).body.batch;
+    expect(done).toMatchObject({ state: 'completed', rehearsal: { paid: 1, unclaimed: 1, failed: 1 }, summary: { paid: 0, released: 3 } });
+    for (const p of [ada, bob, cy]) {
+      const row = await payoutRow(p.payoutId);
+      expect(row.status).toBe('pending');
+      expect(stampOf(row)).toBeUndefined();
+    }
+    // A live batch can take them now.
+    expect((await paypal.listRunPaypalBatches(db, T, runId))[0]!.environment).toBe('sandbox');
+  });
+
+  it('a sandbox batch can be released while still open', async () => {
+    fake.addApp({ env: 'sandbox', clientId: CLIENT_ID, secret: SECRET });
+    await connect('sandbox');
+    const runId = ulid();
+    const ada = await paypalPartner('Ada', '10.00', runId);
+    const batchId = (await admin.post(`/payouts/runs/${runId}/paypal-batches`, { currency: 'USD' })).body.batch.batchId as string;
+    const res = await admin.post(`/payouts/paypal-batches/${batchId}/resolve`, { action: 'release' });
+    expect(res.body.batch.state).toBe('released');
+    expect(stampOf(await payoutRow(ada.payoutId))).toBeUndefined();
+  });
+
+  it('PayPal said yes but the answer can’t be read: held as unknown, re-sent, made once (finding: unreadable 2xx)', async () => {
+    await connect();
+    const runId = ulid();
+    const ada = await paypalPartner('Ada', '10.00', runId);
+    fake.faults.create.push('garbled_after');
+    const res = await admin.post(`/payouts/runs/${runId}/paypal-batches`, { currency: 'USD' });
+    expect(res.body.batch.state).toBe('posted');
+    expect(stampOf(await payoutRow(ada.payoutId))).toMatchObject({ exportId: res.body.batch.batchId });
+    await paypal.runPaypalPayoutsJob(db, { now: () => new Date(Date.now() + 3 * 60 * 1000) });
+    expect((await paypal.getPaypalBatch(db, T, res.body.batch.batchId))!.state).toBe('submitted');
+    expect(fake.created).toBe(1);
+  });
+
+  it('a confirm racing a batch that stamps the payout loses (finding: confirm race)', async () => {
+    const conn = await connect();
+    const runId = ulid();
+    const ada = await paypalPartner('Ada', '10.00', runId);
+    // A send, mid-transaction: stamped and its batch written, not committed.
+    const trx = await db.transaction();
+    const batchId = ulid();
+    const stamp = { exportId: batchId, provider: 'paypal', currency: 'USD', at: new Date().toISOString(), by: 'admin', via: 'api' };
+    await trx(TABLES.Payout)
+      .where({ id: ada.payoutId })
+      .update({ metadata: trx.raw(`metadata || jsonb_build_object('manualExport', ?::jsonb)`, [JSON.stringify(stamp)]) });
+    await trx(TABLES.PaypalPayoutBatch).insert({
+      id: batchId, tenantId: T, connectionId: conn.id, environment: 'live', runId, currency: 'USD', itemCount: 1, total: '10.00', createdBy: 'admin',
+    });
+    // The confirm reads the payout as unstamped, then waits on its row lock.
+    const confirming = files.confirmManualPayouts(db, T, [ada.payoutId]);
+    for (let i = 0; i < 200; i += 1) {
+      const { rows } = (await db.raw('select count(*)::int as n from pg_locks where not granted')) as { rows: Array<{ n: number }> };
+      if (rows[0]!.n > 0) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await trx.commit();
+    const out = await confirming;
+    expect(out.confirmed).toEqual([]);
+    expect(out.notConfirmable).toEqual([expect.objectContaining({ payoutId: ada.payoutId, reason: 'in_paypal_batch' })]);
+    expect((await payoutRow(ada.payoutId)).status).toBe('pending');
+  });
+
+  it('repairs stamps a crash left on an ended batch, however long ago (finding: repair window)', async () => {
+    await connect();
+    const runId = ulid();
+    const ada = await paypalPartner('Ada', '10.00', runId);
+    fake.faults.create.push({ status: 422, name: 'INSUFFICIENT_FUNDS' });
+    const batchId = (await admin.post(`/payouts/runs/${runId}/paypal-batches`, { currency: 'USD' })).body.batch.batchId as string;
+    // As if the process died after failing the batch, before freeing it.
+    const stamp = { exportId: batchId, provider: 'paypal', currency: 'USD', at: new Date().toISOString(), by: 'admin', via: 'api' };
+    await db(TABLES.Payout)
+      .where({ id: ada.payoutId })
+      .update({ metadata: db.raw(`metadata || jsonb_build_object('manualExport', ?::jsonb)`, [JSON.stringify(stamp)]) });
+    await db(TABLES.PaypalPayoutBatch).where({ id: batchId }).update({ updatedAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000) });
+    const out = await paypal.runPaypalPayoutsJob(db);
+    expect(out.repaired).toBe(1);
+    expect(stampOf(await payoutRow(ada.payoutId))).toBeUndefined();
+  });
+
+  it('keeps reading a finished live batch, so a late refund is caught without webhooks (finding: late refunds)', async () => {
+    process.env.PORTAL_URL = 'http://localhost:5673';
+    await connect();
+    const runId = ulid();
+    const ada = await paypalPartner('Ada', '10.00', runId);
+    const batchId = (await admin.post(`/payouts/runs/${runId}/paypal-batches`, { currency: 'USD' })).body.batch.batchId as string;
+    fake.setItem(batchId, ada.payoutId, 'SUCCESS');
+    fake.setBatchStatus(batchId, 'SUCCESS');
+    expect((await admin.post(`/payouts/paypal-batches/${batchId}/sync`)).body.batch.state).toBe('completed');
+    fake.setItem(batchId, ada.payoutId, 'REFUNDED');
+    const tomorrow = new Date(Date.now() + 25 * 60 * 60 * 1000);
+    const out = await paypal.runPaypalPayoutsJob(db, { now: () => tomorrow });
+    expect(out.synced).toContain(batchId);
+    expect((await payoutRow(ada.payoutId)).status).toBe('pending');
+  });
+});
+
 describe.skipIf(skipIntegration)('tenant isolation', () => {
   it('one tenant’s batches, webhooks and PayPal listings never touch another’s payouts', async () => {
     await db(TABLES.Tenant).insert({ id: OTHER, slug: OTHER, displayName: 'Other', status: 'active' });
     // Tenant A (default) and tenant B each connect their own app.
     const connA = await connect();
     const hookA = [...fake.webhooks.values()][0]!.id;
-    fake.addApp({ env: 'sandbox', clientId: 'TenantBClientId0123456789', secret: 'TenantBSecret0123456789' });
-    await connection.connectPaypal(db, OTHER, { environment: 'sandbox', clientId: 'TenantBClientId0123456789', clientSecret: 'TenantBSecret0123456789', adminId: null });
+    fake.addApp({ env: 'live', clientId: 'TenantBClientId0123456789', secret: 'TenantBSecret0123456789' });
+    await connection.connectPaypal(db, OTHER, { environment: 'live', clientId: 'TenantBClientId0123456789', clientSecret: 'TenantBSecret0123456789', adminId: null });
 
     const runA = ulid();
     const runB = ulid();
@@ -792,8 +910,8 @@ describe('logging', () => {
         },
       }) as unknown as NodeJS.WritableStream,
     } as Parameters<typeof createApp>[0]);
-    await request(logged).post('/config/paypal').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ environment: 'sandbox', clientId: CLIENT_ID, clientSecret: SECRET });
-    await request(logged).post('/config/paypal').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ environment: 'sandbox', clientId: CLIENT_ID, clientSecret: `${SECRET}!` });
+    await request(logged).post('/config/paypal').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ environment: 'live', clientId: CLIENT_ID, clientSecret: SECRET });
+    await request(logged).post('/config/paypal').set('Authorization', `Bearer ${ADMIN_KEY}`).send({ environment: 'live', clientId: CLIENT_ID, clientSecret: `${SECRET}!` });
     expect(lines.length).toBeGreaterThan(0);
     expect(lines.join('\n')).not.toContain(SECRET);
   });
