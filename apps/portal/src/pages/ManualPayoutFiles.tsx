@@ -123,6 +123,8 @@ interface PaypalBatch {
 /** POST /payouts/runs/:runId/paypal-batches/quote */
 interface ConversionQuote {
   quoteId: string;
+  /** The app the quote is bound to; a send after a switch is refused. */
+  environment: PaypalEnvironment;
   currency: string;
   sendAs: string;
   rate: string;
@@ -137,7 +139,7 @@ interface ConversionQuote {
 /** Why a converted send didn't go, in words. */
 const QUOTE_ERRORS: Record<string, string> = {
   quote_expired: 'The exchange-rate quote expired (they last 15 minutes). Press the button again for a fresh one.',
-  quote_changed: 'These payouts changed since the quote. Press the button again for a fresh quote.',
+  quote_changed: 'These payouts, or the PayPal app sending them, changed since the quote. Press the button again for a fresh quote.',
   conversion_not_enabled: 'Paying INR balances in USD is turned off in Settings.',
   fx_unavailable: 'The European Central Bank reference rates can’t be read right now, so nothing was sent. Try again shortly.',
 };
@@ -149,10 +151,10 @@ function quoteError(err: unknown): unknown {
 }
 
 /** What the brand confirms before a converted batch goes. */
-function conversionAsk(q: ConversionQuote, environment: PaypalEnvironment): string {
+function conversionAsk(q: ConversionQuote): string {
   const what = `${q.count === 1 ? '1 payout' : `${q.count.toLocaleString()} payouts`} totalling ${money(q.sourceTotal, q.currency)} as ${money(q.sentTotal, q.sendAs)}`;
   const lines = [
-    environment === 'sandbox'
+    q.environment === 'sandbox'
       ? `Test ${what} with your PayPal sandbox app? PayPal’s sandbox moves test money only: nothing is marked paid, and the payouts come back to send when it’s done.`
       : `Send ${what} from your live PayPal account now? PayPal moves the money as soon as it accepts the batch.`,
     `Rate: ${rateLabel(q.rate, q.currency, q.sendAs)}, the European Central Bank reference rate of ${rateDateLabel(q.rateDate)}. Each payout is converted and rounded on its own.`,
@@ -288,12 +290,12 @@ export function ManualPayoutFiles() {
   // Balances PayPal can't send (INR): quote the rate, show it, then send
   // at exactly that rate.
   const payConverted = useMutation({
-    mutationFn: async (g: { currency: string; sendAs: string; environment: PaypalEnvironment }) => {
+    mutationFn: async (g: { currency: string; sendAs: string }) => {
       const { quote } = await api<{ quote: ConversionQuote }>(`/payouts/runs/${runId}/paypal-batches/quote`, {
         method: 'POST',
         body: { currency: g.currency, sendAs: g.sendAs },
       });
-      if (!window.confirm(conversionAsk(quote, g.environment))) return null;
+      if (!window.confirm(conversionAsk(quote))) return null;
       return api<{ batch: PaypalBatch }>(`/payouts/runs/${runId}/paypal-batches`, {
         method: 'POST',
         body: { currency: g.currency, sendAs: g.sendAs, quoteId: quote.quoteId },
@@ -516,7 +518,7 @@ export function ManualPayoutFiles() {
                         <Button
                           size="sm"
                           icon={<Send size={13} />}
-                          onClick={() => payConverted.mutate({ currency: g.currency, sendAs: g.sendAs!, environment: activePaypal.environment })}
+                          onClick={() => payConverted.mutate({ currency: g.currency, sendAs: g.sendAs! })}
                           disabled={busy}
                         >
                           {payConverted.isPending

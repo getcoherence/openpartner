@@ -268,8 +268,11 @@ With it on:
   each payout, and sends exactly the quoted payouts. Refused, with nothing
   stamped: an expired quote (`409 quote_expired`), one whose payouts or
   amounts changed since (`409 quote_changed`: another batch took one, a
-  partner changed their details, PayPal gave one back), a forged or other
-  run's quote (`400 invalid_quote`), or the setting turned off in between
+  partner changed their details, PayPal gave one back), one made for a
+  PayPal app that is no longer the active one (also `quote_changed`, so a
+  sandbox test the brand confirmed never goes out from live; the quote
+  says which, `environment`), a forged or other run's quote
+  (`400 invalid_quote`), or the setting turned off in between
   (`409 conversion_not_enabled`). Quote again. A quote can't be spent
   twice: its payouts are stamped by the first send.
 - **Fails closed.** If the ECB feed can't be read, or has no INR rate,

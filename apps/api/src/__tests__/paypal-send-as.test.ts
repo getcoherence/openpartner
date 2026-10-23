@@ -384,6 +384,30 @@ describe.skipIf(skipIntegration)('sending at the quoted rate', () => {
   });
 });
 
+describe.skipIf(skipIntegration)('the quote is bound to the PayPal app', () => {
+  it('a send after another app was made active is refused, so a confirmed sandbox test never goes out live', async () => {
+    await connect('sandbox');
+    await connect('live'); // connected second: sandbox stays the one that sends
+    await turnOn();
+    const runId = ulid();
+    const { payoutId } = await paypalPartner('Ravi', '1500.00', runId);
+    const q = await quote(runId);
+    expect((await admin.post(`/payouts/runs/${runId}/paypal-batches/quote`, { currency: 'INR', sendAs: 'USD' })).body.quote.environment).toBe('sandbox');
+
+    // Someone switches to live in another tab before the brand confirms.
+    expect((await admin.post('/config/paypal/live/activate')).status).toBe(200);
+    const refused = await send(runId, q.quoteId);
+    expect([refused.status, refused.body.error]).toEqual([409, 'quote_changed']);
+    expect(stampOf(await payoutRow(payoutId))).toBeUndefined();
+    expect(fake.createCalls).toBe(0);
+
+    // A fresh quote names live, and sends from it.
+    const fresh = await admin.post(`/payouts/runs/${runId}/paypal-batches/quote`, { currency: 'INR', sendAs: 'USD' });
+    expect(fresh.body.quote.environment).toBe('live');
+    expect((await send(runId, fresh.body.quote.quoteId)).body.batch.environment).toBe('live');
+  });
+});
+
 describe.skipIf(skipIntegration)('what the partner sees', () => {
   it('payout views show the INR amount and what PayPal sent, pending and paid', async () => {
     await connect();

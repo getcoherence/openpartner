@@ -368,6 +368,9 @@ export interface PaypalConversionQuote {
    *  until `expiresAt`. Signed; it holds nothing. */
   quoteId: string;
   runId: string;
+  /** The PayPal app it sends from. A send after another app was made
+   *  active is refused (quote_changed). */
+  environment: 'live' | 'sandbox';
   currency: string;
   sendAs: PaypalSendAsCurrency;
   /** Units of sendAs per unit of currency. */
@@ -422,12 +425,11 @@ export async function quotePaypalConversion(
   if (!PAYPAL_CONVERTIBLE_CURRENCIES.has(currency)) return { ok: false, error: 'currency_not_supported' };
   const now = (opts.now ?? (() => new Date()))();
 
-  const refused = await withTenantTransaction(tenantId, async (trx) => {
+  const conn = await withTenantTransaction(tenantId, async (trx) => {
     if ((await readPaypalPayoutSettings(trx, tenantId)).sendUnsupportedAs !== sendAs) return 'conversion_not_enabled' as const;
-    if (!(await activePaypalConnection(trx, tenantId))) return 'paypal_not_connected' as const;
-    return null;
+    return (await activePaypalConnection(trx, tenantId)) ?? ('paypal_not_connected' as const);
   });
-  if (refused) return { ok: false, error: refused };
+  if (typeof conn === 'string') return { ok: false, error: conn };
 
   let conversion: Conversion;
   try {
@@ -453,7 +455,19 @@ export async function quotePaypalConversion(
   return {
     ok: true,
     quote: {
-      quoteId: signQuote({ tenantId, runId, currency, sendAs, rate: conversion.rate, rateDate: conversion.rateDate, quotedAt, expiresAt, items: digestOf(items) }),
+      quoteId: signQuote({
+        tenantId,
+        runId,
+        connectionId: conn.id,
+        currency,
+        sendAs,
+        rate: conversion.rate,
+        rateDate: conversion.rateDate,
+        quotedAt,
+        expiresAt,
+        items: digestOf(items),
+      }),
+      environment: conn.environment,
       runId,
       currency,
       sendAs,
@@ -513,7 +527,7 @@ export async function sendRunWithPaypal(
   opts: { now?: () => Date; sendAs?: PaypalSendAsCurrency; quoteId?: string } = {},
 ): Promise<SendWithPaypalResult> {
   const now = opts.now ?? (() => new Date());
-  let conversion: (Conversion & { quotedAt: string; items: string }) | null = null;
+  let conversion: (Conversion & { quotedAt: string; items: string; connectionId: string }) | null = null;
   if (opts.sendAs || opts.quoteId) {
     if (PAYPAL_CURRENCIES.has(currency)) return { ok: false, error: 'conversion_not_needed' };
     if (!PAYPAL_CONVERTIBLE_CURRENCIES.has(currency)) return { ok: false, error: 'currency_not_supported' };
@@ -522,7 +536,7 @@ export async function sendRunWithPaypal(
       return { ok: false, error: 'invalid_quote' };
     }
     if (now().getTime() > Date.parse(q.expiresAt)) return { ok: false, error: 'quote_expired' };
-    conversion = { sendAs: q.sendAs, rate: q.rate, rateDate: q.rateDate, quotedAt: q.quotedAt, items: q.items };
+    conversion = { sendAs: q.sendAs, rate: q.rate, rateDate: q.rateDate, quotedAt: q.quotedAt, items: q.items, connectionId: q.connectionId };
   } else if (!PAYPAL_CURRENCIES.has(currency)) {
     return { ok: false, error: 'currency_not_supported' };
   }
@@ -533,6 +547,9 @@ export async function sendRunWithPaypal(
       const conn = await activePaypalConnection(trx, tenantId);
       if (!conn) return 'paypal_not_connected';
       if (conversion && (await readPaypalPayoutSettings(trx, tenantId)).sendUnsupportedAs !== conversion.sendAs) return 'conversion_not_enabled';
+      // The brand confirmed a send from this app (live, or a sandbox test):
+      // another app made active since is not what it agreed to.
+      if (conversion && conn.id !== conversion.connectionId) return 'quote_changed';
       const { items: picked } = await pickBatchItems(trx, tenantId, runId, currency, conversion);
       // A quote covers exactly the payouts and amounts it showed.
       if (conversion && digestOf(picked) !== conversion.items) return 'quote_changed';

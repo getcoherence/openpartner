@@ -58,6 +58,7 @@ const RUN = {
 const QUOTE = {
   quoteId: 'payload.mac',
   runId: RUN_ID,
+  environment: 'live',
   currency: 'INR',
   sendAs: 'USD',
   rate: '0.011958866935',

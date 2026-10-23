@@ -198,8 +198,9 @@ const SEND_STATUS = {
   fx_unavailable: 503,
 } as const;
 
-/** Quote a conversion: reads the ECB rate on the request (no DB
- *  transaction is open while it does), holds nothing. */
+/** Quote a conversion. Like the send, it doesn't use `req.db`: it reads
+ *  in short tenant transactions of its own, with the ECB fetch between
+ *  them, and holds nothing. */
 paypalRouter.post('/payouts/runs/:runId/paypal-batches/quote', requireAuth, requireAdmin, async (req, res) => {
   const { tenantId } = tenantOf(req);
   const body = quotePaypalConversionSchema.safeParse(req.body);

@@ -172,6 +172,8 @@ export function withSent<T extends Pick<PayoutRow, 'metadata'>>(payout: T): T & 
 export interface QuoteClaims {
   tenantId: string;
   runId: string;
+  /** The PayPal app (live, or sandbox) the brand was asked to send from. */
+  connectionId: string;
   currency: string;
   sendAs: PaypalSendAsCurrency;
   rate: string;

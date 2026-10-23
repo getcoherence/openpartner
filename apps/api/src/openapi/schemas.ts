@@ -960,6 +960,9 @@ export const PaypalConversionQuote = z
   .object({
     quoteId: z.string().openapi({ description: 'Send with it (`POST /payouts/runs/{runId}/paypal-batches` with `currency`, `sendAs` and `quoteId`) before `expiresAt`. Signed; it reserves nothing.' }),
     runId: id,
+    environment: PaypalEnvironment.openapi({
+      description: 'The PayPal app the batch would send from: your live app, or a sandbox test. If another app is made active before you send, the send is refused (`409 quote_changed`).',
+    }),
     currency: z.string().openapi({ description: 'The payouts’ own currency (INR).' }),
     sendAs: z.enum(['USD']),
     rate: rateString,

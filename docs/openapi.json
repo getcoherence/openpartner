@@ -5119,6 +5119,14 @@
           "runId": {
             "type": "string"
           },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "sandbox"
+            ],
+            "description": "The PayPal app the batch would send from: your live app, or a sandbox test. If another app is made active before you send, the send is refused (`409 quote_changed`)."
+          },
           "currency": {
             "type": "string",
             "description": "The payouts’ own currency (INR)."
@@ -5280,6 +5288,7 @@
         "required": [
           "quoteId",
           "runId",
+          "environment",
           "currency",
           "sendAs",
           "rate",
