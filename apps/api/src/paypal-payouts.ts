@@ -693,7 +693,18 @@ export async function syncBatch(db: Knex, tenantId: string, batchId: string, now
   } catch (err) {
     const message =
       err instanceof PaypalConnectError ? err.message : err instanceof PaypalApiError ? `Couldn’t read the batch from PayPal: ${err.summary}` : 'Couldn’t read the batch from PayPal';
-    await cas(db, b, SYNCABLE_STATES, now, { leaseAt: null, lastError: message, nextSyncAt: new Date(now.getTime() + 15 * 60 * 1000) });
+    // A batch still being paid is retried soon. A finished one is only
+    // followed for late refunds: daily, within its 90 days, and never
+    // again once its app is disconnected.
+    const followUntil = b.completedAt ? b.completedAt.getTime() + 90 * DAY_MS : 0;
+    const gone = err instanceof PaypalConnectError && err.code === 'not_connected';
+    const retry =
+      b.state !== 'completed'
+        ? new Date(now.getTime() + 15 * 60 * 1000)
+        : !gone && now.getTime() < followUntil
+          ? new Date(now.getTime() + DAY_MS)
+          : null;
+    await cas(db, b, SYNCABLE_STATES, now, { leaseAt: null, lastError: message, nextSyncAt: retry });
     return;
   }
 

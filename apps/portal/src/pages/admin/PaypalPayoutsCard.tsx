@@ -91,7 +91,11 @@ export function PaypalPayoutsCard() {
               onActivate={() => activate.mutate(env)}
               onVerify={() => verify.mutate(env)}
               onDisconnect={() => {
-                if (window.confirm(`Disconnect your ${PAYPAL_ENV_LABEL[env].toLowerCase()} PayPal app? OpenPartner forgets its secret and stops using it.`)) {
+                if (
+                  window.confirm(
+                    `Disconnect your ${PAYPAL_ENV_LABEL[env].toLowerCase()} PayPal app? OpenPartner forgets its secret and stops using it, including checking batches it already sent for late refunds. Connect the same app again to pick them back up.`,
+                  )
+                ) {
                   disconnect.mutate(env);
                 }
               }}

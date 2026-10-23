@@ -73,6 +73,10 @@ The admin pastes the app's client id and secret for one environment.
   finished ones included (a paid item can still be refunded).
 - **Disconnect** removes OpenPartner's webhook from the app (best effort)
   and wipes the secret, token and webhook id. The row stays as history.
+  It is never blocked by finished batches (a brand whose secret leaked
+  must be able to cut it at once), but it stops the daily check of those
+  batches for late refunds. Connecting the **same** app again (same PayPal
+  app id) picks every batch sent with it back up, finished ones included.
 
 ## Sending
 
@@ -163,7 +167,8 @@ read it back: the webhook (when registered) and a poll every few minutes
 (2 minutes for the first hour, then 15, then hourly; every 6 hours once
 only unclaimed items are left). A finished live batch with paid items is
 still read once a day for 90 days, so a later refund or reversal is caught
-even without webhooks. **Nothing acts on a webhook's payload.** A
+even without webhooks; a read that fails is retried daily within those 90
+days, and not at all once the app is disconnected. **Nothing acts on a webhook's payload.** A
 verified event only names the batch, which is then read back in full from
 PayPal and applied to that batch's own payouts, matched by
 `sender_item_id`, in that brand's workspace only.

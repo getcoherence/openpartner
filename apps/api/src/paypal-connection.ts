@@ -366,13 +366,34 @@ export async function connectPaypal(db: Knex, tenantId: string, input: ConnectPa
     updatedAt: now,
   };
   await db(TABLES.PaypalConnection).insert(row);
-  if (existing && sameApp) {
-    // Every batch, finished ones too: a paid item can still be refunded,
-    // and only these credentials can read it.
-    await db(TABLES.PaypalPayoutBatch).where({ tenantId, connectionId: existing.id }).update({ connectionId: id, updatedAt: now });
+  if (token.appId) {
+    // Every batch sent with this same PayPal app, finished ones too (a paid
+    // item can still be refunded, and only this app can read it), whether
+    // its old row was replaced just now (a secret rotation) or
+    // disconnected earlier (connecting the app again).
+    const sameAppRows = (await db(TABLES.PaypalConnection)
+      .where({ tenantId, environment: input.environment, appId: token.appId })
+      .whereNot({ id })
+      .select('id')) as Array<{ id: string }>;
+    if (sameAppRows.length > 0) {
+      await db(TABLES.PaypalPayoutBatch)
+        .where({ tenantId })
+        .whereIn(
+          'connectionId',
+          sameAppRows.map((r) => r.id),
+        )
+        .update({ connectionId: id, updatedAt: now });
+      // Finished batches a disconnect stopped following resume, within
+      // their 90 days.
+      await db(TABLES.PaypalPayoutBatch)
+        .where({ tenantId, connectionId: id, state: 'completed' })
+        .whereNull('nextSyncAt')
+        .where('completedAt', '>', new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000))
+        .update({ nextSyncAt: now });
+    }
   }
   const saved = (await connectionById(db, tenantId, id))!;
-  return toView(saved, sameApp ? open : 0);
+  return toView(saved, await openBatchCount(db, tenantId, id));
 }
 
 /** Check the saved credentials again (a fresh token call). */

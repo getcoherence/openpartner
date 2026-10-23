@@ -838,6 +838,54 @@ describe.skipIf(skipIntegration)('review findings', () => {
   });
 });
 
+describe.skipIf(skipIntegration)('second review pass', () => {
+  async function completedLiveBatch() {
+    const conn = await connect();
+    const runId = ulid();
+    const ada = await paypalPartner('Ada', '10.00', runId);
+    const batchId = (await admin.post(`/payouts/runs/${runId}/paypal-batches`, { currency: 'USD' })).body.batch.batchId as string;
+    fake.setItem(batchId, ada.payoutId, 'SUCCESS');
+    fake.setBatchStatus(batchId, 'SUCCESS');
+    expect((await admin.post(`/payouts/paypal-batches/${batchId}/sync`)).body.batch.state).toBe('completed');
+    return { conn, ada, batchId };
+  }
+  const batchRow = (id: string) => db(TABLES.PaypalPayoutBatch).where({ id }).first();
+
+  it('a finished batch whose reads fail backs off daily and stops after 90 days (finding: endless retries)', async () => {
+    const { batchId } = await completedLiveBatch();
+    const day = 24 * 60 * 60 * 1000;
+    fake.faults.get.push('500_before');
+    await paypal.runPaypalPayoutsJob(db, { now: () => new Date(Date.now() + day + 60_000) });
+    const after = await batchRow(batchId);
+    expect(after.lastError).toContain('Couldn’t read the batch');
+    expect((after.nextSyncAt as Date).getTime()).toBeGreaterThan(Date.now() + 1.9 * day);
+
+    // Past its 90 days, a failing read ends the follow-up.
+    fake.faults.get.push('500_before');
+    await db(TABLES.PaypalPayoutBatch).where({ id: batchId }).update({ nextSyncAt: new Date(Date.now() - 1000), completedAt: new Date(Date.now() - 91 * day) });
+    await paypal.runPaypalPayoutsJob(db);
+    expect((await batchRow(batchId)).nextSyncAt).toBeNull();
+  });
+
+  it('disconnecting stops the follow-up; connecting the same app again resumes it (finding: retention)', async () => {
+    const { conn, ada, batchId } = await completedLiveBatch();
+    // Finished batches never block a disconnect.
+    expect((await admin.delete('/config/paypal/live')).status).toBe(204);
+    await db(TABLES.PaypalPayoutBatch).where({ id: batchId }).update({ nextSyncAt: new Date(Date.now() - 1000) });
+    await paypal.runPaypalPayoutsJob(db);
+    expect((await batchRow(batchId)).nextSyncAt).toBeNull();
+
+    // The same app again: the batch moves over and is read; a refund lands.
+    fake.setItem(batchId, ada.payoutId, 'REFUNDED');
+    const again = await connect();
+    expect(again.id).not.toBe(conn.id);
+    const moved = await batchRow(batchId);
+    expect(moved.connectionId).toBe(again.id);
+    await paypal.runPaypalPayoutsJob(db, { now: () => new Date(Date.now() + 60_000) });
+    expect((await payoutRow(ada.payoutId)).status).toBe('pending');
+  });
+});
+
 describe.skipIf(skipIntegration)('tenant isolation', () => {
   it('one tenant’s batches, webhooks and PayPal listings never touch another’s payouts', async () => {
     await db(TABLES.Tenant).insert({ id: OTHER, slug: OTHER, displayName: 'Other', status: 'active' });
