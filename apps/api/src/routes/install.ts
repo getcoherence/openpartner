@@ -22,7 +22,7 @@
  */
 
 import { Router } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { ulid } from 'ulid';
 import { DEFAULT_TENANT_ID, TABLES, type AdminRow, type ConfigRow } from '@openpartner/db';
 import { db } from '../db.js';

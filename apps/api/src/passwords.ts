@@ -20,7 +20,7 @@
 import { randomBytes, scrypt as scryptCb, timingSafeEqual, type ScryptOptions } from 'node:crypto';
 import type { Knex } from 'knex';
 import { ulid } from 'ulid';
-import { z } from 'zod';
+import { z } from './zod.js';
 import {
   DEFAULT_TENANT_ID,
   TABLES,

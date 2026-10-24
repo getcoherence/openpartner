@@ -12,7 +12,7 @@
 
 import { Router } from 'express';
 import type { Knex } from 'knex';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { ulid } from 'ulid';
 import { TABLES, type AdminRow, type ConfigRow, type SessionRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';

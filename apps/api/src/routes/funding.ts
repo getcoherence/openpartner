@@ -21,7 +21,7 @@
  */
 
 import { Router } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import type Stripe from 'stripe';
 import { TABLES, type HostedFundingBatchRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';

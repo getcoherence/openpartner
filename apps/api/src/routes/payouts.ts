@@ -1,6 +1,6 @@
 import { Router, type Request } from 'express';
 import type { Knex } from 'knex';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { TABLES, type PartnerRow, type PayoutRow } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { db as privilegedDb } from '../db.js';

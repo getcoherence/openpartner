@@ -89,6 +89,19 @@ export default [
     },
   },
   {
+    // zod 4 hands a schema its methods when the schema is created, so the
+    // API sets zod up (zod 3 messages, .openapi()) in src/zod.ts before any
+    // schema exists. Everything else imports z from there.
+    files: ['apps/api/src/**/*.ts'],
+    ignores: ['apps/api/src/zod.ts', 'apps/api/src/zod-compat.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        { paths: [{ name: 'zod', message: 'Import { z } from src/zod.ts, which sets zod up first.', allowTypeImports: true }] },
+      ],
+    },
+  },
+  {
     // Scripts + migrations run in node; console is fine.
     files: ['**/scripts/**', '**/migrations/**', '**/*.config.{js,mjs,ts}'],
     rules: {

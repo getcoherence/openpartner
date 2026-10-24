@@ -30,7 +30,7 @@
  */
 
 import { Router } from 'express';
-import { z } from 'zod';
+import { utcDateTime, z } from '../zod.js';
 import { ulid } from 'ulid';
 import { randomBytes } from 'node:crypto';
 import {
@@ -422,7 +422,7 @@ export const redeemSchema = z.object({
    *  synthetic clickId so subsequent events from the same user
    *  attribute via the standard path. */
   userId: z.string().min(1).max(120),
-  ts: z.string().datetime().optional(),
+  ts: utcDateTime().optional(),
 });
 
 // Server-to-server coupon redemption → synthesizes Click+Identity+Event and

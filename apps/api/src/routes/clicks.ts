@@ -17,7 +17,7 @@
  */
 
 import { Router } from 'express';
-import { z } from 'zod';
+import { utcDateTime, z } from '../zod.js';
 import { TABLES, type ClickRow, type LinkRow } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
@@ -49,7 +49,7 @@ export const ingestSchema = z.object({
   fraudFlag: z.enum(['velocity', 'manual', 'revoked']).nullable().optional(),
   /** Click timestamp from the federating caller — preserves the actual
    *  click time even if the federation push is delayed. ISO 8601. */
-  ts: z.string().datetime(),
+  ts: utcDateTime(),
 });
 
 export const clicksRouter = Router();

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { z } from 'zod';
+import { utcDateTime, z } from '../zod.js';
 import { TABLES, type ClickRow, type LinkRow } from '@openpartner/db';
 import { grantScope, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
@@ -180,8 +180,8 @@ dashboardRouter.get('/partners/:id/dashboard', requireAuth, grantScope('partners
 // programId from Partnership.offering.vendorProgramId.
 
 export const timeseriesQuerySchema = z.object({
-  since: z.string().datetime().optional(),
-  until: z.string().datetime().optional(),
+  since: utcDateTime().optional(),
+  until: utcDateTime().optional(),
   programId: z.string().min(1).optional(),
   bucket: z.enum(['day', 'week']).optional(),
 });
@@ -350,8 +350,8 @@ function bucketKey(d: Date): string {
 export const eventsQuerySchema = z.object({
   programId: z.string().min(1).optional(),
   type: z.string().min(1).max(80).optional(),
-  since: z.string().datetime().optional(),
-  until: z.string().datetime().optional(),
+  since: utcDateTime().optional(),
+  until: utcDateTime().optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });
@@ -568,8 +568,8 @@ const DEFAULT_UA_SAMPLE_LIMIT = 5000;
 export const breakdownQuerySchema = z.object({
   dimension: z.enum([...SQL_DIMENSIONS, ...UA_DIMENSIONS] as [AnyDimension, ...AnyDimension[]]),
   programId: z.string().min(1).optional(),
-  since: z.string().datetime().optional(),
-  until: z.string().datetime().optional(),
+  since: utcDateTime().optional(),
+  until: utcDateTime().optional(),
   limit: z.coerce.number().int().min(1).max(50).optional(),
 });
 

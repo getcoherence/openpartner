@@ -12,7 +12,7 @@
  */
 
 import { Router } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { TABLES, type AdminRow, type PartnerRow } from '@openpartner/db';
 import {
   SESSION_COOKIE_NAME,

@@ -29,7 +29,7 @@
  */
 
 import type { Knex } from 'knex';
-import { z } from 'zod';
+import { z } from './zod.js';
 import {
   TABLES,
   isCountryCode,
@@ -50,13 +50,15 @@ const trimmed = (max: number) => z.string().trim().min(1).max(max);
  *  refused instead. */
 const fileSafeName = (max: number) =>
   trimmed(max).refine((v) => !/^[=+\-@]/.test(v), 'must not start with =, +, - or @');
+// .optional() goes last so zod 4 types the key optional, as it is at
+// runtime: an absent key stays absent.
 const optionalTrimmed = (max: number) =>
   z
     .string()
     .trim()
     .max(max)
-    .optional()
-    .transform((v) => (v ? v : undefined));
+    .transform((v) => (v ? v : undefined))
+    .optional();
 
 const countrySchema = z
   .string()
@@ -136,39 +138,39 @@ export const bankDetailsSchema = z
     currency: currencySchema,
     iban: z
       .string()
-      .optional()
       .transform((v) => (v ? compact(v) : undefined))
-      .refine((v) => v === undefined || isValidIban(v), 'iban is not a valid IBAN'),
+      .refine((v) => v === undefined || isValidIban(v), 'iban is not a valid IBAN')
+      .optional(),
     bic: z
       .string()
-      .optional()
       .transform((v) => (v ? compact(v) : undefined))
-      .refine((v) => v === undefined || /^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(v), 'bic must be an 8 or 11 character SWIFT/BIC code'),
+      .refine((v) => v === undefined || /^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(v), 'bic must be an 8 or 11 character SWIFT/BIC code')
+      .optional(),
     accountNumber: z
       .string()
-      .optional()
       .transform((v) => (v ? v.replace(/[\s-]+/g, '') : undefined))
-      .refine((v) => v === undefined || /^[A-Za-z0-9]{4,34}$/.test(v), 'accountNumber must be 4-34 letters or digits'),
+      .refine((v) => v === undefined || /^[A-Za-z0-9]{4,34}$/.test(v), 'accountNumber must be 4-34 letters or digits')
+      .optional(),
     /** UK sort code (6 digits). */
     sortCode: z
       .string()
-      .optional()
       .transform((v) => (v ? v.replace(/[\s-]+/g, '') : undefined))
-      .refine((v) => v === undefined || /^\d{6}$/.test(v), 'sortCode must be 6 digits'),
+      .refine((v) => v === undefined || /^\d{6}$/.test(v), 'sortCode must be 6 digits')
+      .optional(),
     /** US ABA routing number (9 digits). */
     routingNumber: z
       .string()
-      .optional()
       .transform((v) => (v ? v.replace(/[\s-]+/g, '') : undefined))
-      .refine((v) => v === undefined || isValidAbaRouting(v), 'routingNumber is not a valid ABA routing number'),
+      .refine((v) => v === undefined || isValidAbaRouting(v), 'routingNumber is not a valid ABA routing number')
+      .optional(),
     /** US accounts: checking or savings. */
     accountType: z.enum(['checking', 'savings']).optional(),
     /** Indian Financial System Code (11 characters, 5th is 0). */
     ifsc: z
       .string()
-      .optional()
       .transform((v) => (v ? compact(v) : undefined))
-      .refine((v) => v === undefined || /^[A-Z]{4}0[A-Z0-9]{6}$/.test(v), 'ifsc must be an 11 character IFSC'),
+      .refine((v) => v === undefined || /^[A-Z]{4}0[A-Z0-9]{6}$/.test(v), 'ifsc must be an 11 character IFSC')
+      .optional(),
     /** Where Wise sends the partner its transfer notice. Optional. */
     email: emailSchema.optional(),
     /** The account holder's address. Some currencies need it (USD, for one). */
@@ -260,9 +262,9 @@ export const otherDetailsSchema = z.object({
 /** PUT /partners/:id/payout-profile body. */
 export const payoutDetailsSchema = z.discriminatedUnion('method', [
   paypalDetailsSchema,
-  // discriminatedUnion needs the plain object; the cross-field checks run
-  // in savePayoutProfile's parse below.
-  bankDetailsSchema.innerType(),
+  // The fields alone: parsePayoutDetails runs the cross-field checks once
+  // these pass, as it did when zod 3's union couldn't take a refined object.
+  z.object(bankDetailsSchema.shape),
   upiDetailsSchema,
   otherDetailsSchema,
 ]);
@@ -279,7 +281,7 @@ export type PayoutDetails = PaypalDetails | BankDetails | UpiDetails | OtherDeta
  */
 export function parsePayoutDetails(
   body: unknown,
-): { ok: true; details: PayoutDetails } | { ok: false; error: z.typeToFlattenedError<unknown> } {
+): { ok: true; details: PayoutDetails } | { ok: false; error: z.core.$ZodFlattenedError<unknown> } {
   const first = payoutDetailsSchema.safeParse(body);
   if (!first.success) return { ok: false, error: first.error.flatten() };
   if (first.data.method !== 'bank') return { ok: true, details: first.data };
