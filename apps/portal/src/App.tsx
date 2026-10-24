@@ -97,6 +97,7 @@ import { PlatformConsole } from './pages/platform/PlatformConsole.js';
 import { CreatorSignupPage } from './pages/creator/CreatorSignup.js';
 import { CreatorSigninPage } from './pages/creator/CreatorSignin.js';
 import { CreatorMagicLandingPage } from './pages/creator/CreatorMagicLanding.js';
+import { CreatorResetPasswordPage } from './pages/creator/CreatorResetPassword.js';
 import { CreatorShell } from './pages/creator/CreatorShell.js';
 import { CreatorPublicProfilePage } from './pages/creator/CreatorPublicProfile.js';
 import { BookingConfirmPage } from './pages/creator/BookingConfirm.js';
@@ -190,6 +191,8 @@ export function App() {
             <Route path="/creator/signup" element={<CreatorSignupPage />} />
             <Route path="/creator/login" element={<CreatorSigninPage />} />
             <Route path="/creator/auth/magic" element={<CreatorMagicLandingPage />} />
+            {/* The Network's "forgot password" link. */}
+            <Route path="/creator/reset-password" element={<CreatorResetPasswordPage />} />
             <Route path="/creator/*" element={<CreatorShell />} />
             {/* Public creator profiles — no auth, browsable from anywhere. */}
             <Route path="/creators/:handle" element={<CreatorPublicProfilePage />} />

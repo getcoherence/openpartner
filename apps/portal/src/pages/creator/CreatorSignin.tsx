@@ -1,85 +1,85 @@
-import { useState } from 'react';
-import { Link } from 'react-router';
-import { alpha, theme } from '../../theme.js';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
+import { theme } from '../../theme.js';
 import { AuthFrame } from '../auth/Shared.js';
-import { countryErrorMessage } from '../../lib/CountryField.js';
+import {
+  AuthNotice,
+  EmailPasswordForm,
+  googleStartHref,
+  useAuthProviders,
+  type AuthLocationState,
+} from '../auth/PasswordAuth.js';
 import { creatorApi, ApiError } from './creator-api.js';
 
-export function CreatorSigninPage() {
-  const [email, setEmail] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [sent, setSent] = useState(false);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setErr(null);
-    try {
-      await creatorApi('/creators/signin', {
-        method: 'POST',
-        body: { email: email.trim() },
-      });
-      setSent(true);
-    } catch (e) {
-      const message = e instanceof ApiError ? e.message : 'Something went wrong.';
-      setErr(countryErrorMessage(message) ?? message);
-    } finally {
-      setBusy(false);
-    }
+/** The Network's error code, for authErrorMessage. */
+export function creatorErrorCode(e: unknown): Error {
+  if (e instanceof ApiError) {
+    const d = e.detail as { error?: unknown } | null;
+    return new Error(typeof d?.error === 'string' ? d.error : e.message);
   }
-
-  if (sent) {
-    return (
-      <AuthFrame title="Check your inbox" subtitle={`If an account exists for ${email}, we just sent a sign-in link.`}>
-        <div style={{ background: theme.successSoft, border: `1px solid ${alpha(theme.success, 0.333)}`, padding: 14, borderRadius: theme.radiusSm, fontSize: 13, color: theme.success }}>
-          The link is good for 15 minutes.
-        </div>
-      </AuthFrame>
-    );
-  }
-
-  return (
-    <AuthFrame title="Creator sign in" subtitle="We&rsquo;ll email you a one-time sign-in link.">
-      <form onSubmit={submit}>
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 4 }}>Email</div>
-          <input type="email" name="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ada@example.com" required autoFocus style={inputStyle} />
-        </div>
-        {err && <div style={{ color: theme.danger, fontSize: 13, marginBottom: 8 }}>{err}</div>}
-        <button type="submit" disabled={busy} style={primaryBtnStyle(busy)}>
-          {busy ? 'Sending…' : 'Email me a sign-in link'}
-        </button>
-        <div style={{ marginTop: 12, fontSize: 12, color: theme.textDim, textAlign: 'center' }}>
-          New here? <Link to="/creator/signup" style={{ color: theme.accentText }}>Create an account</Link> · <Link to="/" style={{ color: theme.accentText }}>Home</Link>
-        </div>
-      </form>
-    </AuthFrame>
-  );
+  return e instanceof Error ? e : new Error(String(e));
 }
 
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  padding: '10px 12px',
-  fontSize: 14,
-  background: theme.surface2,
-  border: `1px solid ${theme.border}`,
-  borderRadius: theme.radiusSm,
-  color: theme.text,
-};
+/**
+ * Creator sign-in: email + password, "Continue with Google", or an emailed
+ * link. Every way ends at the Network's POST /creators/verify, which makes
+ * the session: a correct password returns the token the sign-in email would
+ * have carried and we redeem it here; Google lands on /creator/auth/magic
+ * with that token (routes/google-auth.ts, flow=creator).
+ */
+export function CreatorSigninPage() {
+  const nav = useNavigate();
+  const [params] = useSearchParams();
+  const state = (useLocation().state ?? {}) as AuthLocationState;
+  const providers = useAuthProviders();
 
-function primaryBtnStyle(disabled: boolean): React.CSSProperties {
-  return {
-    marginTop: 6,
-    width: '100%',
-    padding: '10px 14px',
-    background: theme.accent,
-    color: theme.accentInk,
-    border: 'none',
-    borderRadius: theme.radiusSm,
-    fontSize: 14,
-    fontWeight: 600,
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    opacity: disabled ? 0.5 : 1,
-  };
+  return (
+    <AuthFrame title="Creator sign in" subtitle="Sign in to your OpenPartner Network creator account.">
+      <AuthNotice error={params.get('error')} reset={state.reset} />
+      <EmailPasswordForm
+        initialEmail={state.email}
+        emailPlaceholder="ada@example.com"
+        googleHref={providers.googleStartUrl ? googleStartHref(providers.googleStartUrl, 'creator') : null}
+        onPassword={async (email, password) => {
+          try {
+            const { token } = await creatorApi<{ token: string }>('/creators/signin/password', {
+              method: 'POST',
+              body: { email, password },
+            });
+            await creatorApi('/creators/verify', { method: 'POST', body: { token } });
+          } catch (e) {
+            throw creatorErrorCode(e);
+          }
+          nav('/creator', { replace: true });
+        }}
+        onLink={(email) =>
+          creatorApi('/creators/signin', { method: 'POST', body: { email } }).then(
+            () => undefined,
+            (e) => Promise.reject(creatorErrorCode(e)),
+          )
+        }
+        onForgot={(email) =>
+          creatorApi('/creators/password/forgot', { method: 'POST', body: { email } }).then(
+            () => undefined,
+            (e) => Promise.reject(creatorErrorCode(e)),
+          )
+        }
+        linkSentText={(email) => `If an account exists for ${email}, we sent a sign-in link. It’s good for 15 minutes.`}
+        forgotSentText={(email) =>
+          `If an account exists for ${email}, we sent a link to choose a password. It’s good for 15 minutes.`
+        }
+        footer={
+          <div style={{ marginTop: 12, fontSize: 12, color: theme.textDim, textAlign: 'center' }}>
+            New here?{' '}
+            <Link to="/creator/signup" style={{ color: theme.accentText }}>
+              Create an account
+            </Link>{' '}
+            ·{' '}
+            <Link to="/" style={{ color: theme.accentText }}>
+              Home
+            </Link>
+          </div>
+        }
+      />
+    </AuthFrame>
+  );
 }

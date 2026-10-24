@@ -7,7 +7,7 @@ import { Card, Page } from '../ui.js';
 import { Logo } from './auth/Shared.js';
 import { authErrorMessage, Notice, PasswordInput, primaryButtonStyle, useNewPassword } from './auth/PasswordAuth.js';
 
-interface PasswordBody {
+export interface PasswordBody {
   currentPassword?: string;
   password: string;
 }
@@ -54,8 +54,8 @@ function PasswordForm({ hasPassword, onSave }: { hasPassword: boolean; onSave: (
 }
 
 /** Password card with its saved state; remounts the form after a save so
- *  the fields clear. */
-function PasswordSection({
+ *  the fields clear. Also the creator portal's (CreatorMyProfile.tsx). */
+export function PasswordSection({
   hasPassword,
   onSave,
   sharedNote,

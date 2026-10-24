@@ -11,6 +11,8 @@ import {
   type VerificationStart,
 } from '../../lib/NetworkProfileEditor.js';
 import { publicStorefrontUrl } from '../../lib/public-site.js';
+import { PasswordSection, type PasswordBody } from '../Account.js';
+import { creatorErrorCode } from './CreatorSignin.js';
 
 /** The creator portal talks to the Network through /api/creator-api. */
 export const creatorProfileAdapter: NetworkProfileAdapter = {
@@ -48,8 +50,40 @@ export function CreatorMyProfilePage() {
         />
       ) : null}
       <div style={{ height: 18 }} />
+      <CreatorPasswordCard pendingDeletion={!!(data as NetworkProfile & { pendingDeletionAt?: string | null })?.pendingDeletionAt} />
+      <div style={{ height: 18 }} />
       <CreatorDangerZone email={data?.email ?? ''} pendingDeletionAt={(data as NetworkProfile & { pendingDeletionAt?: string | null })?.pendingDeletionAt ?? null} />
     </Page>
+  );
+}
+
+/**
+ * Set or change the creator's Network password (GET|PUT /creators/me/password,
+ * the creator's own session only). The current password is required once one
+ * is set; changing it signs out the creator's other devices.
+ */
+export function CreatorPasswordCard({ pendingDeletion }: { pendingDeletion: boolean }) {
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: ['creator-password'],
+    queryFn: () => creatorApi<{ hasPassword: boolean }>('/creators/me/password'),
+    retry: false,
+  });
+  // Mid-deletion the account takes recovery actions only.
+  if (pendingDeletion || !q.data) return null;
+  return (
+    <PasswordSection
+      hasPassword={q.data.hasPassword}
+      sharedNote="Changing it signs you out on your other devices."
+      onSave={async (body: PasswordBody) => {
+        try {
+          await creatorApi('/creators/me/password', { method: 'PUT', body });
+        } catch (e) {
+          throw creatorErrorCode(e);
+        }
+        await qc.invalidateQueries({ queryKey: ['creator-password'] });
+      }}
+    />
   );
 }
 
