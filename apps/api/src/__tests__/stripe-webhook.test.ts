@@ -144,11 +144,14 @@ const TABLES_TO_CLEAN = [
   TABLES.HostedFundingTransfer,
   TABLES.HostedFundingBatch,
   TABLES.StripeWebhookInbox,
+  // Every brand event the pipeline processes is logged (stripe-event-catchup.ts).
+  TABLES.StripeEventLog,
   // Before Partner — Payout.partnerId is an FK. Commission is already
   // deleted above, which is what frees Payout.
   TABLES.Payout,
   TABLES.Partner,
   TABLES.Config,
+  TABLES.TrackingIssue,
 ];
 
 interface Ids {
@@ -265,6 +268,32 @@ describe.skipIf(skipIntegration)('stripe webhook — merchant billing flow', () 
     expect(identity).toBeFalsy();
     const event = await db(TABLES.Event).where({ userId: customerId }).first();
     expect(event).toBeFalsy();
+    // Dropped, but counted for Admin → Tracking health.
+    const issue = await db(TABLES.TrackingIssue).where({ kind: 'stripe_unknown_click' }).first();
+    expect(issue).toMatchObject({ count: 1, sampleRef: bogusCref });
+  });
+
+  it("counts a client_reference_id that isn't a click id at all as the brand's own reference", async () => {
+    const res = await postWebhook({
+      id: `evt_${ulid()}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: `cs_${ulid()}`,
+          mode: 'subscription',
+          client_reference_id: 'order-1234',
+          customer: `cus_${ulid()}`,
+          subscription: `sub_${ulid()}`,
+        },
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(await db(TABLES.TrackingIssue).where({ kind: 'stripe_foreign_reference' }).first()).toMatchObject({
+      count: 1,
+      sampleRef: 'order-1234',
+    });
+    expect(await db(TABLES.TrackingIssue).where({ kind: 'stripe_unknown_click' }).first()).toBeUndefined();
   });
 
   it('redelivery of the same Stripe event is idempotent', async () => {

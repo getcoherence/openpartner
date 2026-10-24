@@ -32,6 +32,7 @@ import {
   CalendarCheck,
   UserCheck,
   UserPlus,
+  Activity,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { clearApiKey, api, type Principal } from './api.js';
@@ -58,6 +59,7 @@ import { LoginPage } from './pages/auth/Login.js';
 import { MagicLandingPage } from './pages/auth/MagicLanding.js';
 import { WebhooksPage } from './pages/admin/Webhooks.js';
 import { AdminIntegrations } from './pages/admin/Integrations.js';
+import { AdminTrackingHealth } from './pages/admin/TrackingHealth.js';
 import { AdminSettings } from './pages/admin/Settings.js';
 import { AdminBilling } from './pages/admin/Billing.js';
 import { AdminWhiteLabel } from './pages/admin/WhiteLabel.js';
@@ -355,6 +357,7 @@ function Shell() {
               <Route path="admin/fraud-review" element={<FraudReviewPage />} />
               <Route path="admin/webhooks" element={<WebhooksPage />} />
               <Route path="admin/integrations" element={<AdminIntegrations />} />
+              <Route path="admin/tracking-health" element={<AdminTrackingHealth />} />
               <Route path="admin/admins" element={<AdminAdmins />} />
               <Route path="admin/settings" element={<AdminSettings />} />
               <Route path="admin/billing" element={<AdminBilling />} />
@@ -546,6 +549,7 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
             <NavItem to="/admin/fraud-review" icon={<ShieldCheck size={16} />}>Fraud review</NavItem>
             <NavItem to="/admin/webhooks" icon={<Webhook size={16} />}>Webhooks</NavItem>
             <NavItem to="/admin/integrations" icon={<Link2 size={16} />}>Integrations</NavItem>
+            <NavItem to="/admin/tracking-health" icon={<Activity size={16} />}>Tracking health</NavItem>
             <NavItem to="/admin/admins" icon={<UserCog size={16} />}>Admins</NavItem>
             <NavItem to="/admin/settings" icon={<Settings size={16} />}>Settings</NavItem>
             <NavItem to="/admin/billing" icon={<CreditCard size={16} />}>Billing</NavItem>

@@ -26,8 +26,14 @@ describe('identify CORS carve-out', () => {
     expect(res.headers['access-control-allow-credentials']).toBeUndefined();
   });
 
-  it('covers the tenant-scoped path shapes', async () => {
-    for (const path of ['/t/xispark/attribution/identify', '/api/t/xispark/attribution/identify']) {
+  it('covers the tenant-scoped path shapes, and the landing beacon', async () => {
+    for (const path of [
+      '/t/xispark/attribution/identify',
+      '/api/t/xispark/attribution/identify',
+      '/attribution/landing',
+      '/t/xispark/attribution/landing',
+      '/api/t/xispark/attribution/landing',
+    ]) {
       const res = await request(app)
         .options(path)
         .set('Origin', 'https://brand-site.example')

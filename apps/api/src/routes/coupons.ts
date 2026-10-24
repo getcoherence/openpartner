@@ -51,6 +51,7 @@ import { sameConversion } from '../conversion-ingest.js';
 import { currencyInputSchema, ingestCurrency } from '../currency.js';
 import { codeExistsInStripe, deactivateCustomerReward, provisionCustomerReward } from '../customer-rewards.js';
 import { recordedFromStripe, recordedFromStripeDetail } from '../stripe-app.js';
+import { noteTrackingIssue } from '../tracking-issues.js';
 
 export const couponsRouter = Router();
 
@@ -437,7 +438,10 @@ couponsRouter.post('/coupons/redeem', requireAuth, grantScope('events:write'), r
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
 
   const coupon = await findCouponByCode(db, tenantId, body.data.code);
-  if (!coupon) return res.status(404).json({ error: 'coupon_not_found' });
+  if (!coupon) {
+    await noteTrackingIssue(db, tenantId, 'coupon_unknown_code', body.data.code);
+    return res.status(404).json({ error: 'coupon_not_found' });
+  }
 
   const { userId, eventType, value, currency, externalEventId } = body.data;
   // Keyed on a Checkout Session (or, connected, an invoice) whose payment

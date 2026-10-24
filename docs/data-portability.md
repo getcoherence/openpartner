@@ -47,20 +47,21 @@ appears after everything it references.
 | 7 | `Coupon` | `id` | **code → (partner, program) attribution** |
 | 8 | `Link` | `id` | tracking links |
 | 9 | `Click` | `id` | raw click log |
-| 10 | `Identity` | `id` | click → user stitch |
-| 11 | `Event` | `id` | raw conversion events |
-| 12 | `Attribution` | `id` | derived attribution (re-derivable) |
-| 13 | `Bounty` | `id` | **performance bounties**: goals on a program that pay a bonus |
-| 14 | `Bonus` | `id` | **rewards not tied to a sale** (manual, performance bounty, Network bounty) |
-| 15 | `Commission` | `id` | derived commission ledger |
-| 16 | `Payout` | `id` | payout ledger |
-| 17 | `PortalCustomDomain` | `id` | white-label domain history (inert on self-host) |
-| 18 | `CommissionAdjustment` | `id` | clawbacks / corrections |
-| 19 | `BrandAsset` | `id` | **the marketing-asset library** (image URLs, text snippets) |
-| 20 | `WebhookEndpoint` | `id` | **your outbound webhook endpoints** (not the signing secret) |
-| 21 | `PartnerPostback` | `id` | **each partner's own tracker callbacks** (the URL opened) |
-| 22 | `ConversionPostbackToken` | `id` | **the GET /postback allowlist and rotation history** (not the token) |
-| 23 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy, the portal-access default, the onboarding Network skip, the payout-statement and Pay with PayPal INR settings, and the referral-stage setting** |
+| 10 | `ClickLanding` | `clickId` | **the browser SDK saw the click arrive on your site** (Tracking health) |
+| 11 | `Identity` | `id` | click → user stitch |
+| 12 | `Event` | `id` | raw conversion events |
+| 13 | `Attribution` | `id` | derived attribution (re-derivable) |
+| 14 | `Bounty` | `id` | **performance bounties**: goals on a program that pay a bonus |
+| 15 | `Bonus` | `id` | **rewards not tied to a sale** (manual, performance bounty, Network bounty) |
+| 16 | `Commission` | `id` | derived commission ledger |
+| 17 | `Payout` | `id` | payout ledger |
+| 18 | `PortalCustomDomain` | `id` | white-label domain history (inert on self-host) |
+| 19 | `CommissionAdjustment` | `id` | clawbacks / corrections |
+| 20 | `BrandAsset` | `id` | **the marketing-asset library** (image URLs, text snippets) |
+| 21 | `WebhookEndpoint` | `id` | **your outbound webhook endpoints** (not the signing secret) |
+| 22 | `PartnerPostback` | `id` | **each partner's own tracker callbacks** (the URL opened) |
+| 23 | `ConversionPostbackToken` | `id` | **the GET /postback allowlist and rotation history** (not the token) |
+| 24 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy, the portal-access default, the onboarding Network skip, the payout-statement and Pay with PayPal INR settings, and the referral-stage setting** |
 
 Rows 3, 4 and 7 were added in schemaVersion 2 (Aug 2026). Without them a
 restored instance had the roster but no grants, no coupon attribution, and
@@ -75,12 +76,12 @@ v2 or v3 bundle restores with no consent rows, so every restored partner
 starts undecided and nobody is sent to the Network until they opt in on
 the new instance.
 
-Rows 19 to 23 were added in schemaVersion 5 (Oct 2026). Before that a
+Rows 20 to 24 were added in schemaVersion 5 (Oct 2026). Before that a
 restored instance had the attribution and money ledger but none of the
 brand's configuration: no program name or support email, no join-page
 policy, no asset library, no webhooks, and no partner postbacks.
 
-Row 14 was added in schemaVersion 6 (Oct 2026). A `Bonus` is a reward paid
+Row 15 was added in schemaVersion 6 (Oct 2026). A `Bonus` is a reward paid
 to a partner that isn't tied to an attributed sale
 ([bounties.md](bounties.md)): who got it, how much, under which program,
 where it came from (`manual`, `performance_bounty`, `network`), the
@@ -92,7 +93,7 @@ it is never re-derived from the event log; it travels as recorded. A v1–v5
 bundle has no bonuses, and its `Commission` rows restore with `bonusId`
 null.
 
-Row 13 was added in schemaVersion 7 (Oct 2026). A `Bounty` is a goal on a
+Row 14 was added in schemaVersion 7 (Oct 2026). A `Bounty` is a goal on a
 program ("10 new sales by Dec 31 earns $500"): its metric, threshold,
 window, reward, partner allowlist, status, and the stamps that keep its
 partner emails from going out twice. A bonus a bounty paid names it in
@@ -117,6 +118,13 @@ account, a UPI ID or free-text instructions
 ([manual-payout-files.md](manual-payout-files.md)). It is stored sealed, so
 it travels opened; see [Payout details](#payout-details). A v1–v8 bundle
 restores with no payout details, and partners enter them again.
+
+Row 10 was added in schemaVersion 12 (Oct 2026). A `ClickLanding` is the
+browser SDK's record that a click arrived on the brand's own site
+(`POST /attribution/landing`): one row per click, the first landing, with the
+page's hostname and never its path. Admin → Tracking health compares them
+with clicks to show the ones lost before the page. A v11 bundle restores no
+landings, which is what an instance that predates the beacon recorded.
 
 `Coupon` rows carry `brandChosen` (schemaVersion 10, Oct 2026): the
 brand's admin typed the code, rather than it being generated or picked by
@@ -433,6 +441,8 @@ that should attribute every event against the window alone.
 | 8 (Oct 2026) | `Click` rows carry `subId`, the publisher's `?sub_id=` (older bundles restore it as null) |
 | 9 (Oct 2026) | added `PartnerPayoutProfile`, its `details` opened (older bundles restore no payout details) |
 | 10 (Oct 2026) | `Coupon` rows carry `brandChosen`, whether the brand's admin typed the code (older bundles restore it as false) |
+| 11 (Oct 2026) | two-tier commissions: `Partner` rows carry `recruitedByPartnerId`, `recruitedAt` and `recruitCode`, `Program` rows `recruiterCommissionPercent` and `recruiterCommissionMonths`, `Commission` rows `sourceCommissionId` (older bundles restore them as null) |
+| 12 (Oct 2026) | added `ClickLanding`, the browser SDK's record that a click reached the brand's site (older bundles restore no landings) |
 
 **Importing a v1 or v2 bundle.** `POST /import` upgrades older rows before
 inserting them (`upgradeBundle` in `apps/api/src/export.ts`). A v2
@@ -586,7 +596,20 @@ logs — not customer data):
 `PlatformSessionBundle`, `PlatformAdmin`, `PlatformAdminSession`,
 `PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
 `StripeWebhookInbox`, `LocationDeclaration`, `SanctionsScreening`,
-`PartnerSigninLinkLog`.
+`PartnerSigninLinkLog`, `TrackingIssue`, `StripeEventLog`.
+
+`TrackingIssue` counts, per day, the input this deployment had to drop: a
+click id that `identify()`, a conversion or the landing beacon named but the
+tenant doesn't have, a Checkout Session `client_reference_id` that isn't a
+click, a coupon code nobody holds (Admin → Tracking health). Like
+`WebhookDelivery` it is a log of what reached one deployment, nothing
+re-derives from it, and a restored instance starts counting afresh.
+
+`StripeEventLog` lists the brand Stripe events this deployment's attribution
+pipeline processed, so the Stripe catch-up ([stripe-app.md](stripe-app.md#missed-events--the-catch-up))
+can replay the ones no webhook delivered. A delivery log of one deployment,
+pruned after 35 days. What the events recorded is in the exported `Event`
+rows, and a recovered one carries `metadata.recoveredBy`.
 
 `PartnerSigninLinkLog` records each sign-in link a brand's backend minted for
 a partner (`POST /partners/{id}/signin-link`): which partner, which key,

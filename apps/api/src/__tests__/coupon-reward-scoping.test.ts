@@ -81,6 +81,8 @@ const TABLES_TO_CLEAN = [
   TABLES.Program,
   TABLES.ApiKey,
   TABLES.Partner,
+  // An unknown code at /coupons/redeem is counted (tracking-issues.ts).
+  TABLES.TrackingIssue,
 ];
 
 const FREE_YEAR: CustomerReward = { type: 'free_months', value: 12, duration: 'repeating' };

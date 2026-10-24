@@ -6,7 +6,7 @@
  * checkouts code-free for a brand whose Stripe is connected to OpenPartner.
  * Plus the script-tag build's config and its first-party op_ref cookie.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenPartner } from '../browser.js';
 import { configFromScript } from '../auto.js';
 
@@ -26,11 +26,13 @@ beforeEach(() => {
   document.body.innerHTML = '';
   document.cookie = 'op_ref=; Max-Age=0; Path=/';
   window.history.replaceState({}, '', '/');
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('{"ok":true}', { status: 200 })));
 });
 
 afterEach(() => {
   for (const op of instances) op.stopLinkingStripe();
   instances = [];
+  vi.unstubAllGlobals();
 });
 
 describe('linking Stripe checkouts to the referral', () => {
@@ -124,6 +126,8 @@ describe('the script-tag build', () => {
       apiUrl: 'https://app.openpartner.dev/api',
       stripe: { linkHosts: [] },
       referralCookie: { name: 'op_ref' },
+      consent: 'granted',
+      reportLanding: true,
     });
     expect(
       configFromScript({
@@ -138,10 +142,22 @@ describe('the script-tag build', () => {
       apiUrl: 'https://partners.acme.test/api/t/acme',
       stripe: { linkHosts: ['pay.acme.test', 'buy.acme.test'] },
       referralCookie: { name: 'op_ref', domain: '.acme.test' },
+      consent: 'granted',
+      reportLanding: true,
     });
     expect(configFromScript({ src: 'https://x.test/op.js', dataset: { stripe: 'off', cookie: 'off' } })).toMatchObject({
       stripe: false,
       referralCookie: false,
+    });
+    expect(
+      configFromScript({ src: 'https://x.test/op.js', dataset: { consent: 'pending', landing: 'off' } }),
+    ).toMatchObject({ consent: 'pending', reportLanding: false });
+    expect(configFromScript({ src: 'https://x.test/op.js', dataset: { consent: 'denied' } })).toMatchObject({
+      consent: 'denied',
+    });
+    // Anything else is the default, never a value the SDK doesn't know.
+    expect(configFromScript({ src: 'https://x.test/op.js', dataset: { consent: 'yes' } })).toMatchObject({
+      consent: 'granted',
     });
   });
 });
