@@ -443,6 +443,7 @@ that should attribute every event against the window alone.
 | 10 (Oct 2026) | `Coupon` rows carry `brandChosen`, whether the brand's admin typed the code (older bundles restore it as false) |
 | 11 (Oct 2026) | two-tier commissions: `Partner` rows carry `recruitedByPartnerId`, `recruitedAt` and `recruitCode`, `Program` rows `recruiterCommissionPercent` and `recruiterCommissionMonths`, `Commission` rows `sourceCommissionId` (older bundles restore them as null) |
 | 12 (Oct 2026) | added `ClickLanding`, the browser SDK's record that a click reached the brand's site (older bundles restore no landings) |
+| 13 (Oct 2026) | `Program` rows carry `couponsYieldToLinks`, whether partner link clicks beat the program's coupon codes (older bundles restore it as false) |
 
 **Importing a v1 or v2 bundle.** `POST /import` upgrades older rows before
 inserting them (`upgradeBundle` in `apps/api/src/export.ts`). A v2
