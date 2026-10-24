@@ -40,6 +40,7 @@ import { getConfig, setConfig } from './config.js';
 import { resolveBrandName } from './brand-name.js';
 import { getPayoutProfile, summarizeDetails, type OpenedPayoutProfile } from './payout-profile.js';
 import { manualExportOf } from './manual-payout-files.js';
+import { SOURCE_REVERSED_CAUSE } from './recruiter-commissions.js';
 import { WHOLE_UNITS_TWO_DECIMAL, majorToCents, stripeExponent, stripeMinorToMajorString } from './stripe-amounts.js';
 
 // ---------------------------------------------------------------------------
@@ -234,10 +235,17 @@ interface CommissionSource {
   bonusSource: string | null;
   bonusNote: string | null;
   bountyName: string | null;
+  /** Set on a recruiter commission (recruiter-commissions.ts). */
+  sourceCommissionId: string | null;
+  recruitName: string | null;
 }
 
 /** What a commission was earned on: the portal's commissionSourceLabel. */
 function sourceLabel(c: CommissionSource): string {
+  if (c.sourceCommissionId) {
+    const sale = c.eventType ? `, ${eventTypeLabel(c.eventType).toLowerCase()}` : '';
+    return `Recruiter commission: ${c.recruitName ?? 'a partner you recruited'}${sale}`;
+  }
   if (!c.bonusId) return c.eventType ? eventTypeLabel(c.eventType) : 'Sale';
   if (c.bonusSource === 'performance_bounty') return c.bountyName ? `Bounty: ${c.bountyName}` : 'Bounty';
   const kind = c.bonusSource === 'network' ? 'Network bounty' : 'Bonus';
@@ -257,8 +265,14 @@ function withSource(db: Knex, q: Knex.QueryBuilder, commissionAlias: string): Kn
       // A commission has exactly one of the two (a CHECK says so).
       j.on('pr.id', '=', db.raw('coalesce(a."programId", b."programId")')).andOn('pr.tenantId', `${c}.tenantId`),
     )
+    // A recruiter commission's recruit: the partner the sale is attributed to.
+    .leftJoin(`${TABLES.Partner} as rp`, (j) =>
+      j.on('rp.id', 'a.partnerId').andOn('rp.tenantId', `${c}.tenantId`).andOnNotNull(`${c}.sourceCommissionId`),
+    )
     .select(
       `${c}.bonusId as bonusId`,
+      `${c}.sourceCommissionId as sourceCommissionId`,
+      'rp.name as recruitName',
       'e.type as eventType',
       'b.source as bonusSource',
       'b.note as bonusNote',
@@ -332,7 +346,15 @@ export async function buildPayoutStatement(db: Knex, tenantId: string, payoutId:
       .where('adj.appliedPayoutId', payout.id)
       .where('adj.reason', 'refund_clawback')
       .leftJoin(`${TABLES.Commission} as c`, (j) => j.on('c.id', 'adj.commissionId').andOn('c.tenantId', 'adj.tenantId'))
-      .select('adj.id', 'adj.commissionId', 'adj.amount', 'adj.currency', 'adj.createdAt', 'c.accruedAt as earnedAt')
+      .select(
+        'adj.id',
+        'adj.commissionId',
+        'adj.amount',
+        'adj.currency',
+        'adj.createdAt',
+        'c.accruedAt as earnedAt',
+        db.raw(`adj.metadata->>'cause' as cause`),
+      )
       .orderBy([{ column: 'adj.createdAt' }, { column: 'adj.id' }]),
     'c',
   )) as Array<
@@ -344,6 +366,7 @@ export async function buildPayoutStatement(db: Knex, tenantId: string, payoutId:
       createdAt: Date;
       earnedAt: Date | null;
       programName: string | null;
+      cause: string | null;
     }
   >;
 
@@ -369,7 +392,11 @@ export async function buildPayoutStatement(db: Knex, tenantId: string, payoutId:
     commissionId: r.commissionId,
     date: day(r.createdAt),
     programName: r.programName,
-    description: `Refund clawback: ${sourceLabel(r)}${r.earnedAt ? ` (earned ${day(r.earnedAt)})` : ''}`,
+    // A recruiter commission whose source was reversed after it was paid
+    // is clawed back the same way, but no refund caused it.
+    description: `${r.cause === SOURCE_REVERSED_CAUSE ? "Clawback, recruit's commission reversed" : 'Refund clawback'}: ${sourceLabel(r)}${
+      r.earnedAt ? ` (earned ${day(r.earnedAt)})` : ''
+    }`,
     amount: major(cents(r.amount)),
     currency: r.currency.toUpperCase(),
   }));

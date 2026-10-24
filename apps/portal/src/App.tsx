@@ -31,6 +31,7 @@ import {
   Landmark,
   CalendarCheck,
   UserCheck,
+  UserPlus,
   Activity,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
@@ -43,6 +44,7 @@ import { Dashboard } from './pages/Dashboard.js';
 import { LinksPage } from './pages/Links.js';
 import { CommissionsPage } from './pages/Commissions.js';
 import { AdminPartnerReferrals, ReferralsPage } from './pages/Referrals.js';
+import { RecruitPage, useShowRecruiting } from './pages/PartnerRecruiting.js';
 import { PayoutsPage } from './pages/Payouts.js';
 import { ConnectPage } from './pages/Connect.js';
 import { PayoutDetailsPage } from './pages/PayoutDetails.js';
@@ -334,6 +336,7 @@ function Shell() {
                 </>
               )}
               <Route path="referrals" element={<ReferralsPage principal={auth.principal} />} />
+              <Route path="recruit" element={<RecruitPage principal={auth.principal} />} />
               <Route path="coupons" element={<AdminPartnerCoupons ownPartnerId={auth.principal.partnerId!} />} />
               <Route path="postbacks" element={<PartnerPostbacksPage principal={auth.principal} />} />
               <Route path="bounties" element={<PartnerBountiesPage />} />
@@ -469,6 +472,8 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
   const { programName, supportEmail, logoUrl, whiteLabel } = useBrand();
   const connectPayouts = useConnectPayouts();
   const partnerNetwork = usePartnerNetworkAccess(principal.role === 'partner');
+  // Only once a program pays for recruiting (or there are recruits to see).
+  const showRecruiting = useShowRecruiting(principal);
   const isDrawer = variant === 'drawer';
 
   return (
@@ -509,6 +514,9 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
           {principal.role === 'partner' && <NavItem to="/referrals" icon={<UserCheck size={16} />}>Referrals</NavItem>}
           {principal.role === 'partner' && <NavItem to="/coupons" icon={<Tag size={16} />}>Coupons</NavItem>}
           {principal.role === 'partner' && <NavItem to="/bounties" icon={<Trophy size={16} />}>Bounties</NavItem>}
+          {principal.role === 'partner' && showRecruiting && (
+            <NavItem to="/recruit" icon={<UserPlus size={16} />}>Recruit partners</NavItem>
+          )}
           <NavItem to="/commissions" icon={<Receipt size={16} />}>Commissions</NavItem>
           <NavItem to="/payouts" icon={<Banknote size={16} />}>Payouts</NavItem>
           {principal.role === 'partner' && <NavItem to="/payout-details" icon={<Landmark size={16} />}>Payout details</NavItem>}

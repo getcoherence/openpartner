@@ -466,6 +466,13 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     ]);
     check('listPartnerReferrals', await integration.get(`/partners/${partner.id}/referrals?cursor=nope`));
     check('listPartnerReferrals', await integration.get('/partners/missing/referrals'));
+    // Two-tier recruiting: no program pays a share here, so no link.
+    const recruits = check<{ recruitUrl: string | null; recruits: unknown[]; total: number }>(
+      'getPartnerRecruits',
+      await integration.get(`/partners/${partner.id}/recruits`),
+    );
+    expect(recruits).toMatchObject({ recruitUrl: null, recruits: [], total: 0 });
+    check('getPartnerRecruits', await integration.get('/partners/missing/recruits'));
     check('getPartnerBreakdown', await integration.get(`/partners/${partner.id}/breakdowns?dimension=referer`));
     check('getPartnerBreakdown', await integration.get(`/partners/${partner.id}/breakdowns?dimension=browser`));
     // Funnel has no scope (documented): admin key from the server.

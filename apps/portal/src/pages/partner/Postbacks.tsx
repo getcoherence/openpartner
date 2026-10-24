@@ -405,7 +405,10 @@ function PostbackForm({
 
 function MacroReference() {
   const macros: Array<[string, string]> = [
-    ['{click_id}', 'Originating click — present on every commission event'],
+    [
+      '{click_id}',
+      "Originating click — present on every commission event except a recruiter commission (your share of what a partner you recruited earned). That one carries nothing of their sale: {click_id}, {sub_id}, {event_id}, {transaction_id} and {sale_amount} stay literal",
+    ],
     [
       '{sub_id}',
       'Your own sub-ID from the link (…?sub_id=abc123), so your tracker can match its click. Empty when the link had none',

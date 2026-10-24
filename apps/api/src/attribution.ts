@@ -47,6 +47,7 @@ import { onCommit } from './on-commit.js';
 import type { WebhookPayload } from './openapi/webhook-events.js';
 import { accrueSlabRule, commissionMetadata, type SubRuleAccrual } from './commission-slabs.js';
 import { rowCurrency } from './currency.js';
+import { accrueRecruiterCommission } from './recruiter-commissions.js';
 
 // Average month length used by the recurringMonths cap. We use 30.4375 days
 // (365.25 / 12) so a "12 months" cap doesn't drift by an extra day every
@@ -374,6 +375,28 @@ export async function attributeEvent(
         subId: click.subId,
       } satisfies WebhookPayload<'commission.accrued'>;
       onCommit(db, 'commission.accrued webhook', () => dispatchEvent(event.tenantId, 'commission.accrued', accruedPayload));
+
+      // Two-tier: the partner who recruited this one earns the program's
+      // share of this commission, on the same attribution
+      // (recruiter-commissions.ts). Only a partner's own commission pays a
+      // recruiter, so it stops at two levels.
+      const recruiterCommission = await accrueRecruiterCommission(
+        db,
+        { id: commissionId, tenantId: event.tenantId, attributionId, partnerId: click.partnerId, amount: amount.toFixed(2), currency },
+        click.campaign,
+        new Date(event.ts),
+      );
+      if (recruiterCommission) {
+        const recruiterPayload = {
+          ...accruedPayload,
+          commissionId: recruiterCommission.id,
+          partnerId: recruiterCommission.partnerId,
+          amount: recruiterCommission.amount,
+          sourceCommissionId: commissionId,
+          recruitedPartnerId: click.partnerId,
+        } satisfies WebhookPayload<'commission.accrued'>;
+        onCommit(db, 'commission.accrued webhook', () => dispatchEvent(event.tenantId, 'commission.accrued', recruiterPayload));
+      }
     }
 
     // attribution.created fires once per Attribution regardless of how many

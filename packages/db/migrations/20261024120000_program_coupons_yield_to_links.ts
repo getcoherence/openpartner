@@ -20,7 +20,7 @@ import type { Knex } from 'knex';
  * winner, so turning it on doesn't move an existing customer's renewals.
  * Derived like everything else: changing it re-decides future first
  * conversions, never ones already attributed. Exported on the
- * Program row (export v12; older bundles restore it as false).
+ * Program row (export v13; older bundles restore it as false).
  */
 export async function up(knex: Knex): Promise<void> {
   await knex.schema.alterTable('Program', (t) => {

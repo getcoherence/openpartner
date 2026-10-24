@@ -57,6 +57,10 @@ interface Program {
   /** Event types that are sales in this program beyond invoice_paid and
    *  subscription_created. */
   revenueEventTypes?: string[];
+  /** Two-tier: the recruiter's share of a recruit's commission, a decimal
+   *  string ("10.00"). Null or absent = off. */
+  recruiterCommissionPercent?: string | null;
+  recruiterCommissionMonths?: number | null;
   marketplaceDescription: string | null;
   marketplaceCoverUrl?: string | null;
   marketplaceVideoUrl?: string | null;
@@ -367,6 +371,7 @@ function EditProgramDates({
   const [renewalsStayWithPartner, setRenewalsStayWithPartner] = useState(
     campaign.renewalsStayWithPartner ?? true,
   );
+  const [recruiter, setRecruiter] = useState<RecruiterTerms>(recruiterTermsOf(campaign));
   const [couponsYieldToLinks, setCouponsYieldToLinks] = useState(campaign.couponsYieldToLinks ?? false);
 
   const save = useMutation({
@@ -390,6 +395,7 @@ function EditProgramDates({
           holdbackDays: Number(holdbackDays) || 0,
           revenueEventTypes: parseEventTypes(revenueEventTypes),
           renewalsStayWithPartner,
+          ...recruiterTermsBody(recruiter),
           couponsYieldToLinks,
         },
       }),
@@ -496,6 +502,7 @@ function EditProgramDates({
         windowDays={campaign.attributionWindowDays}
         onChange={setRenewalsStayWithPartner}
       />
+      <RecruiterCommissionField value={recruiter} onChange={setRecruiter} />
       <CouponPrecedenceField enabled={couponsYieldToLinks} onChange={setCouponsYieldToLinks} />
 
       <div style={{ display: 'flex', gap: 8 }}>
@@ -510,7 +517,8 @@ function EditProgramDates({
             rules.some((r) => ruleSlabProblem(r) !== null) ||
             (shareOnNetwork && !marketplaceDescription.trim()) ||
             (shareOnNetwork && videoLinkInvalid(videoUrl)) ||
-            revenueEventTypesProblem(revenueEventTypes) !== null
+            revenueEventTypesProblem(revenueEventTypes) !== null ||
+            recruiterTermsProblem(recruiter) !== null
           }
         >
           {save.isPending ? 'Saving…' : 'Save changes'}
@@ -623,6 +631,7 @@ function CreateProgram({
   const [startsAt, setStartsAt] = useState('');
   const [endsAt, setEndsAt] = useState('');
   const [grantToAllPartners, setGrantToAllPartners] = useState(false);
+  const [recruiter, setRecruiter] = useState<RecruiterTerms>(recruiterTermsOf({}));
 
   const urlProblem = destinationUrlProblem(destinationUrl);
 
@@ -657,6 +666,7 @@ function CreateProgram({
           categories: categories.length > 0 ? categories : undefined,
           partnersMayCustomizeCode: partnersMayCustomizeCode || undefined,
           grantToAllPartners: grantToAllPartners || undefined,
+          ...(recruiter.enabled ? recruiterTermsBody(recruiter) : {}),
         },
       }),
     onSuccess: onCreated,
@@ -727,6 +737,7 @@ function CreateProgram({
         windowDays={Number(windowDays) || 60}
         onChange={setRenewalsStayWithPartner}
       />
+      <RecruiterCommissionField value={recruiter} onChange={setRecruiter} />
       <CouponPrecedenceField enabled={couponsYieldToLinks} onChange={setCouponsYieldToLinks} />
       <div style={{ marginBottom: 16 }}>
         <LabelWithHelp
@@ -793,6 +804,7 @@ function CreateProgram({
             urlProblem != null ||
             (networkEnabled && shareOnNetwork && !marketplaceDescription.trim()) ||
             (networkEnabled && shareOnNetwork && videoLinkInvalid(videoUrl)) ||
+            recruiterTermsProblem(recruiter) !== null ||
             mut.isPending
           }
         >
@@ -844,6 +856,101 @@ function PartnerCodeCustomizationField({
             crediting a deactivated code, but it keeps discounting until you do.
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** The recruiter-commission inputs as typed. */
+interface RecruiterTerms {
+  enabled: boolean;
+  /** Percent of the recruit's commission, as typed. */
+  percent: string;
+  /** Months it lasts; blank = no limit. */
+  months: string;
+}
+
+function recruiterTermsOf(p: Pick<Program, 'recruiterCommissionPercent' | 'recruiterCommissionMonths'> | Record<string, never>): RecruiterTerms {
+  const percent = 'recruiterCommissionPercent' in p ? p.recruiterCommissionPercent : null;
+  const months = 'recruiterCommissionMonths' in p ? p.recruiterCommissionMonths : null;
+  return {
+    enabled: percent != null,
+    percent: percent != null ? String(Number(percent)) : '10',
+    months: months != null ? String(months) : '',
+  };
+}
+
+/** What the API's recruiter schemas would refuse (routes/programs.ts),
+ *  said here instead of as a bare invalid_body after Save. */
+function recruiterTermsProblem(t: RecruiterTerms): string | null {
+  if (!t.enabled) return null;
+  const percent = Number(t.percent);
+  if (!t.percent.trim() || !Number.isFinite(percent) || percent <= 0 || percent > 50) {
+    return 'Enter a share above 0 and up to 50%.';
+  }
+  if (Math.abs(percent * 100 - Math.round(percent * 100)) > 1e-9) return 'Use at most two decimal places.';
+  if (t.months.trim()) {
+    const months = Number(t.months);
+    if (!Number.isInteger(months) || months < 1 || months > 120) return 'Months must be a whole number from 1 to 120, or blank.';
+  }
+  return null;
+}
+
+function recruiterTermsBody(t: RecruiterTerms): { recruiterCommissionPercent: number | null; recruiterCommissionMonths: number | null } {
+  if (!t.enabled) return { recruiterCommissionPercent: null, recruiterCommissionMonths: null };
+  return {
+    recruiterCommissionPercent: Number(t.percent),
+    recruiterCommissionMonths: t.months.trim() ? Number(t.months) : null,
+  };
+}
+
+/**
+ * Program.recruiterCommissionPercent / recruiterCommissionMonths: two-tier
+ * commissions. A partner's recruiter earns this share of every commission
+ * the partner earns here. Spec: docs/two-tier-commissions.md.
+ */
+function RecruiterCommissionField({ value, onChange }: { value: RecruiterTerms; onChange: (v: RecruiterTerms) => void }) {
+  const problem = recruiterTermsProblem(value);
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text, marginBottom: 6 }}>
+        <input type="checkbox" checked={value.enabled} onChange={(e) => onChange({ ...value, enabled: e.target.checked })} />
+        Pay partners for the partners they recruit
+      </label>
+      {value.enabled && (
+        <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, margin: '8px 0 6px 24px' }}>
+          <div>
+            <Label>Recruiter&rsquo;s share (% of the recruit&rsquo;s commission)</Label>
+            <Input
+              type="number"
+              min={0.01}
+              max={50}
+              step={0.5}
+              value={value.percent}
+              onChange={(e) => onChange({ ...value, percent: e.target.value })}
+              style={problem ? { borderColor: alpha(theme.danger, 0.533) } : undefined}
+            />
+          </div>
+          <div>
+            <Label>For how many months (blank = no limit)</Label>
+            <Input
+              type="number"
+              min={1}
+              max={120}
+              value={value.months}
+              placeholder="No limit"
+              onChange={(e) => onChange({ ...value, months: e.target.value })}
+            />
+          </div>
+        </div>
+      )}
+      {problem && <div style={{ fontSize: 12, color: theme.danger, margin: '0 0 4px 24px' }}>{problem}</div>}
+      <div style={{ fontSize: 12, color: theme.textDim, marginLeft: 24, lineHeight: 1.5 }}>
+        A partner who recruits another, through their recruit link or because you set it on the
+        partner, earns this share of every commission the recruit earns in this campaign. It&rsquo;s
+        paid on top of the recruit&rsquo;s commission, not out of it, and approved together with it.
+        One level only: recruiters earn nothing on partners their recruits bring in. Keep the share
+        small, and check that recruits bring in real customers.
       </div>
     </div>
   );

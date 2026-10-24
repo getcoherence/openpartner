@@ -201,6 +201,19 @@ const revenueEventTypesSchema = z
   )
   .max(20);
 
+/** Two-tier commissions (recruiter-commissions.ts): the share of a
+ *  recruit's commission their recruiter earns, as a percent (10 = 10%).
+ *  Above 0, at most 50, two decimal places. Null = off. */
+const recruiterCommissionPercentSchema = z
+  .number()
+  .gt(0)
+  .max(50)
+  .refine((v) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-9, { message: 'at most two decimal places' });
+
+/** How many months after the recruitment the recruiter keeps earning.
+ *  Null = for as long as the recruit earns. */
+const recruiterCommissionMonthsSchema = z.number().int().min(1).max(120);
+
 /** Stored form: unique, without the two types that are always revenue. */
 function normalizeRevenueEventTypes(types: string[]): string[] {
   return [...new Set(types)].filter((t) => t !== 'invoice_paid' && t !== 'subscription_created');
@@ -268,6 +281,12 @@ export const createSchema = z.object({
    *  Their value counts as partner-attributed revenue for the hosted
    *  platform fee. Omitted = none. */
   revenueEventTypes: revenueEventTypesSchema.optional(),
+  /** Two-tier: a partner's recruiter earns this percent of each commission
+   *  the partner earns in this program. Omitted/null = off. */
+  recruiterCommissionPercent: recruiterCommissionPercentSchema.nullable().optional(),
+  /** Months after the recruitment the recruiter keeps earning it. Omitted/
+   *  null = no limit. */
+  recruiterCommissionMonths: recruiterCommissionMonthsSchema.nullable().optional(),
   /** When true, after creating the campaign, also grant every existing
    *  non-revoked partner access to it (source='admin'). Defaults to
    *  false so VIP / scoped campaigns stay private unless the brand opts
@@ -301,6 +320,9 @@ export const updateSchema = z.object({
     .optional(),
   partnersMayCustomizeCode: z.boolean().optional(),
   revenueEventTypes: revenueEventTypesSchema.optional(),
+  /** Not retroactive: pays on commissions accrued from now on. */
+  recruiterCommissionPercent: recruiterCommissionPercentSchema.nullable().optional(),
+  recruiterCommissionMonths: recruiterCommissionMonthsSchema.nullable().optional(),
 });
 
 export const programsRouter = Router();
@@ -461,6 +483,8 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
       categories: body.data.categories ?? [],
       partnersMayCustomizeCode: body.data.partnersMayCustomizeCode ?? false,
       revenueEventTypes: normalizeRevenueEventTypes(body.data.revenueEventTypes ?? []),
+      recruiterCommissionPercent: body.data.recruiterCommissionPercent?.toFixed(2) ?? null,
+      recruiterCommissionMonths: body.data.recruiterCommissionMonths ?? null,
     })
     .returning('*');
 
@@ -559,6 +583,12 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
   }
   if (body.data.revenueEventTypes !== undefined) {
     patch.revenueEventTypes = normalizeRevenueEventTypes(body.data.revenueEventTypes);
+  }
+  if (body.data.recruiterCommissionPercent !== undefined) {
+    patch.recruiterCommissionPercent = body.data.recruiterCommissionPercent?.toFixed(2) ?? null;
+  }
+  if (body.data.recruiterCommissionMonths !== undefined) {
+    patch.recruiterCommissionMonths = body.data.recruiterCommissionMonths;
   }
 
   // White-label tenants are isolated from the marketplace — pin the flag

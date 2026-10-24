@@ -48,11 +48,16 @@ import { openPostbackForExport, sealPostbackForImport } from './postback-url.js'
  *  v9 → v10 (Oct 2026): Coupon rows carry `brandChosen` (the brand's admin
  *  typed the code; the Stripe webhook credits a promo the brand already had
  *  under it only then).
- *  v10 → v11 (Oct 2026): added ClickLanding (the browser SDK saw the click
+ *  v10 → v11 (Oct 2026): two-tier commissions. Partner rows carry
+ *  `recruitedByPartnerId`, `recruitedAt` and `recruitCode`, Program rows
+ *  `recruiterCommissionPercent` and `recruiterCommissionMonths`, and
+ *  Commission rows `sourceCommissionId` (set on a recruiter's share of a
+ *  recruit's commission).
+ *  v11 → v12 (Oct 2026): added ClickLanding (the browser SDK saw the click
  *  arrive on the brand's site; Admin → Tracking health).
- *  v11 → v12 (Oct 2026): Program rows carry `couponsYieldToLinks` (link
+ *  v12 → v13 (Oct 2026): Program rows carry `couponsYieldToLinks` (link
  *  clicks beat the program's coupon codes). */
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 /** Older bundles still import — a v1 bundle is a v2 bundle minus three
  *  tables, a v2 bundle's PartnerCommission rows are partner-wide v3 rows
  *  (see upgradeBundle), a v3 bundle is a v4 bundle minus
@@ -68,14 +73,17 @@ export const SCHEMA_VERSION = 12;
  *  carried one before the column existed. A v8 bundle is a v9 bundle with no
  *  payout details: every restored partner starts without any. A v9 bundle's
  *  Coupon rows have no `brandChosen`, so it takes its default (false), the
- *  value the migration gave every existing code. A v10 bundle is a v11
- *  bundle with no landings: every restored click reads as never landed,
- *  which is what an instance that predates the beacon recorded. A v11
+ *  value the migration gave every existing code. A v10 bundle has no
+ *  recruiting: its partners have no recruiter or code, its programs pay no
+ *  recruiter share and none of its commissions is one, so the new columns
+ *  take their defaults (null). A v11 bundle is a v12 bundle with no landings:
+ *  every restored click reads as never landed, which is what an instance
+ *  that predates the beacon recorded. A v12
  *  bundle's Program rows have no `couponsYieldToLinks`, so it takes its
  *  default (false): every program's codes competed as clicks before.
  *  Dropping support for a version people hold on disk would break the
  *  portability promise, so this list only ever grows. */
-export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as const;
+export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] as const;
 
 /**
  * The Config keys that travel: the brand's own program and portal settings.
@@ -216,7 +224,7 @@ export const EXPORT_TABLES = [
   { table: TABLES.Coupon, primaryKey: 'id' },
   { table: TABLES.Link, primaryKey: 'id' },
   { table: TABLES.Click, primaryKey: 'id' },
-  // Landings (v11): raw, one per click, keyed on the click.
+  // Landings (v12): raw, one per click, keyed on the click.
   { table: TABLES.ClickLanding, primaryKey: 'clickId' },
   { table: TABLES.Identity, primaryKey: 'id' },
   { table: TABLES.Event, primaryKey: 'id' },

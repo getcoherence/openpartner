@@ -155,7 +155,9 @@ export interface PayoutRunResult {
 export interface PendingPayoutNotification {
   /** The payout.created payload, exactly as dispatched. */
   payout: WebhookPayload<'payout.created'>;
-  commissions: Array<Pick<CommissionRow, 'id' | 'partnerId' | 'attributionId' | 'bonusId' | 'amount' | 'currency'>>;
+  commissions: Array<
+    Pick<CommissionRow, 'id' | 'partnerId' | 'attributionId' | 'bonusId' | 'sourceCommissionId' | 'amount' | 'currency'>
+  >;
 }
 
 /**
@@ -541,6 +543,7 @@ export async function runPayouts(db: Knex, tenantId: string): Promise<PayoutRunR
           partnerId: c.partnerId,
           attributionId: c.attributionId,
           bonusId: c.bonusId,
+          sourceCommissionId: c.sourceCommissionId,
           amount: c.amount,
           currency: c.currency,
         })),

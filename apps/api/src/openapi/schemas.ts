@@ -55,6 +55,16 @@ export const Partner = z
       description:
         'May the partner sign in to the partner portal? `false`: `POST /auth/signin` sends them nothing (answering as it does for an unknown email), password and Google sign-in turn them away the same way, their sessions end, and no invite or portal email goes to them. For headless programs. Set it on `POST /partners` or `PATCH /partners/{id}`.',
     }),
+    recruitedByPartnerId: id.nullable().openapi({
+      description:
+        "The partner who recruited this one: the one whose recruit link they joined through, or the one set on `POST /partners` or `PATCH /partners/{id}`. In programs with `recruiterCommissionPercent` that partner earns that share of this one's commissions. Null when nobody did.",
+    }),
+    recruitedAt: tsNullable.openapi({
+      description: 'When the recruitment started. Only commissions on events from then on pay the recruiter, and `recruiterCommissionMonths` counts from here.',
+    }),
+    recruitCode: z.string().nullable().openapi({
+      description: "This partner's own code for recruiting others: the `ref` on their join-page link. Minted the first time `GET /partners/{id}/recruits` is read while a program pays a recruiter share.",
+    }),
   })
   .openapi('Partner');
 
@@ -182,6 +192,13 @@ export const Program = z
     revenueEventTypes: z.array(z.string()).openapi({
       description:
         'Event types that are sales in this program beyond invoice_paid and subscription_created, which always are. Their value counts as partner-attributed revenue for the hosted platform fee.',
+    }),
+    recruiterCommissionPercent: orNull(Decimal).openapi({
+      description:
+        "Two-tier commissions: a partner's recruiter earns this percent of each commission the partner earns in this program (`\"10.00\"` = 10%). Null: off, the default. Only one level: a recruiter earns nothing on partners their recruits bring in.",
+    }),
+    recruiterCommissionMonths: z.number().int().nullable().openapi({
+      description: "How many months after the recruitment the recruiter keeps earning it. Null: for as long as the recruit earns.",
     }),
     shareOnNetwork: z.boolean(),
     marketplaceDescription: z.string().nullable(),
@@ -466,6 +483,10 @@ const CommissionRowShape = z.object({
     description: "The attributed sale this commission was earned on. Null on a bonus's commission (`bonusId` is set instead).",
   }),
   bonusId: id.nullable().openapi({ description: "The bonus this commission pays (`POST /bonuses`). Null on a sale's commission." }),
+  sourceCommissionId: id.nullable().openapi({
+    description:
+      "Set on a recruiter commission: the recruited partner's commission this one is a share of. It is on the same `attributionId` (the recruit's sale), and `partnerId` is the recruiter. Null on every other commission.",
+  }),
   partnerId: id,
   amount: Decimal,
   currency: z.string(),
@@ -478,7 +499,7 @@ const CommissionRowShape = z.object({
   payoutId: z.string().nullable(),
   metadata: z.record(z.string(), z.unknown()).openapi({
     description:
-      "How the amount was worked out. `rateType` is the sub-rule's `percent` or `fixed` (absent on commissions accrued before October 2026). A banded or tiered rule also records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. A replacement accrued for what a partial refund left records `refund`.",
+      "How the amount was worked out. `rateType` is the sub-rule's `percent` or `fixed` (absent on commissions accrued before October 2026). A banded or tiered rule also records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. A replacement accrued for what a partial refund left records `refund`. A recruiter commission has `rateType: \"recruiter\"` and `recruiter`: the `percent` it was worked out at and the `recruitedPartnerId`.",
   }),
 });
 
@@ -507,7 +528,60 @@ export const CommissionListItem = CommissionRowShape.extend({
     })
     .nullable()
     .openapi({ description: 'The bonus behind a `source: "bonus"` commission; null otherwise.' }),
+  recruiter: z
+    .object({
+      sourceCommissionId: id,
+      recruitedPartnerId: id.nullable(),
+      recruitedPartnerName: z.string().nullable(),
+      percent: z.number().nullable().openapi({ description: 'The share it was worked out at, as a percent.' }),
+    })
+    .nullable()
+    .openapi({
+      description:
+        "A recruiter commission's recruit and share; null otherwise. Its `source` is `attribution` (it was earned on the recruit's sale) and its `matureAt` is null: it is approved with the recruit's commission, not on a holdback of its own.",
+    }),
 }).openapi('CommissionListItem');
+
+export const PartnerRecruits = z
+  .object({
+    partnerId: id,
+    recruitCode: z.string().nullable().openapi({ description: 'The `ref` on their recruit link. Null until a program pays a recruiter share.' }),
+    recruitUrl: z.string().nullable().openapi({
+      description: "The join page with the partner's `ref`. Null while no program they can recruit for pays a recruiter share, or the partner is revoked.",
+    }),
+    signupOpen: z.boolean().openapi({ description: 'False when the join page is closed: the link then opens a page that says so.' }),
+    programs: z
+      .array(
+        z.object({
+          id,
+          name: z.string(),
+          recruiterCommissionPercent: z.number(),
+          recruiterCommissionMonths: z.number().int().nullable(),
+        }),
+      )
+      .openapi({
+        description:
+          'Programs that pay a recruiter share. A partner calling sees only running programs they are granted; an admin sees all of them.',
+      }),
+    recruitedBy: z
+      .object({ id, name: z.string(), recruitedAt: ts })
+      .nullable()
+      .openapi({ description: 'Who recruited this partner, if anyone.' }),
+    recruits: z.array(
+      z.object({
+        id,
+        name: z.string(),
+        recruitedAt: ts,
+        status: z.enum(['active', 'pending', 'revoked']).openapi({ description: '`pending`: not active yet (invite not accepted, or held for review).' }),
+        earned: z.record(z.string(), Decimal).openapi({
+          description: 'What this recruit has earned the recruiter, per currency: live recruiter commissions net of clawbacks.',
+        }),
+      }),
+    ),
+    total: z.number().int().openapi({ description: 'How many partners this one recruited. `recruits` lists the newest `limit`.' }),
+    limit: z.number().int(),
+  })
+  .openapi('PartnerRecruits');
 
 export const CommissionPage = z
   .object({ commissions: z.array(CommissionListItem), nextCursor: z.string().nullable() })
