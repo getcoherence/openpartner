@@ -87,6 +87,23 @@ describe('reading the referral cookie back', () => {
     expect(new URL(href).searchParams.get('client_reference_id')).toBe(CLICK);
   });
 
+  it('keeps a fresh click from the URL when localStorage throws: cookie, Stripe tags and identify all get it', async () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+    document.body.innerHTML = '<a id="pay" href="https://buy.stripe.com/abc">Buy</a>';
+    window.history.replaceState({}, '', `/?cref=${CLICK}`);
+    const op = init({ referralCookie: { name: 'op_ref' } });
+    expect(op.getReferral()).toBe(CLICK);
+    expect(document.cookie).toContain(`op_ref=${CLICK}`);
+    expect(new URL((document.getElementById('pay') as HTMLAnchorElement).href).searchParams.get('client_reference_id')).toBe(CLICK);
+    await op.identify('user_1');
+    expect(JSON.parse(String(calls('/attribution/identify')[0]![1]!.body))).toMatchObject({ cref: CLICK });
+  });
+
   it("doesn't rewrite an op_ref cookie that already holds the referral, but a new click replaces it", () => {
     const writes: string[] = [];
     const desc = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie');
@@ -158,6 +175,35 @@ describe('consent', () => {
     document.body.innerHTML = '<a id="late" href="https://buy.stripe.com/late">Buy</a>';
     await flush();
     expect((document.getElementById('late') as HTMLAnchorElement).href).toBe('https://buy.stripe.com/late');
+  });
+
+  it("setConsent('denied') takes back the Stripe references it added, and leaves the brand's own", async () => {
+    document.body.innerHTML = `
+      <a id="ours" href="https://buy.stripe.com/abc?prefilled_email=a%40b.c">Buy</a>
+      <a id="brand" href="https://buy.stripe.com/abc?client_reference_id=brand_set">Buy</a>
+      <stripe-pricing-table id="table"></stripe-pricing-table>`;
+    window.history.replaceState({}, '', `/?cref=${CLICK}`);
+    const op = init();
+    const href = (id: string) => new URL((document.getElementById(id) as HTMLAnchorElement).href);
+    expect(href('ours').searchParams.get('client_reference_id')).toBe(CLICK);
+    expect(document.getElementById('table')!.getAttribute('client-reference-id')).toBe(CLICK);
+
+    op.setConsent('denied');
+    expect(href('ours').searchParams.has('client_reference_id')).toBe(false);
+    expect(href('ours').searchParams.get('prefilled_email')).toBe('a@b.c');
+    expect(href('brand').searchParams.get('client_reference_id')).toBe('brand_set');
+    expect(document.getElementById('table')!.hasAttribute('client-reference-id')).toBe(false);
+    // Saying it again is harmless.
+    op.setConsent('denied');
+    expect(op.getReferral()).toBeNull();
+  });
+
+  it("'denied' at load deletes what an earlier visit stored", () => {
+    localStorage.setItem('openpartner:cref', CLICK);
+    document.cookie = `op_ref=${CLICK}; Path=/`;
+    init({ consent: 'denied' });
+    expect(localStorage.getItem('openpartner:cref')).toBeNull();
+    expect(document.cookie).not.toContain('op_ref=');
   });
 
   it("'denied' uses nothing from the start", async () => {

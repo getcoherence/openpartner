@@ -81,7 +81,7 @@ yourConsentBanner.onChange((choices) => {
 });
 ```
 
-While consent is pending, the SDK keeps the click from the URL in memory and does nothing else: it doesn't read or write storage or cookies, tag Stripe links, or call OpenPartner. `setConsent('granted')` then works as if the page had just loaded, even after the visitor has navigated within a single-page app. `setConsent('denied')` stops everything and deletes what was stored. `getReferral()` and `identify()` return `null` until consent is granted. Script tag: `data-consent="pending"`, then `openpartner.setConsent('granted')`.
+While consent is pending, the SDK keeps the click from the URL in memory and does nothing else: it doesn't read or write storage or cookies, tag Stripe links, or call OpenPartner. `setConsent('granted')` then works as if the page had just loaded, even after the visitor has navigated within a single-page app. `setConsent('denied')` stops everything, takes the references the SDK added back off Stripe links and embeds (one you set yourself stays), and deletes what was stored. Starting with `consent: 'denied'` deletes what an earlier visit stored. `getReferral()` and `identify()` return `null` until consent is granted. Script tag: `data-consent="pending"`, then `openpartner.setConsent('granted')`.
 
 Clicks from visitors who never consent can't be credited, and Admin → Tracking health counts them among the clicks that never landed.
 

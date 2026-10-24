@@ -137,12 +137,21 @@ export class OpenPartner {
   private consent: ConsentState;
   /** The URL's referral while consent is pending, held in memory only. */
   private held: string | null = null;
+  /** This page's referral, kept here too: where localStorage throws it is
+   *  the only copy until the cookie is written. */
+  private current: string | null = null;
+  /** The Stripe links and embeds this SDK tagged, and with what, so a
+   *  withdrawn consent can take the tags back off. */
+  private tagged: Array<{ el: Element; value: string }> = [];
 
   private constructor(config: OpenPartnerConfig) {
     this.config = { ...DEFAULTS, ...config } as Required<OpenPartnerConfig>;
     this.consent = this.config.consent;
     if (this.consent === 'granted') this.start();
     else if (this.consent === 'pending') this.held = this.queryCref();
+    // A returning visitor who has since said no: drop what an earlier
+    // visit stored.
+    else this.clear();
   }
 
   static init(config: OpenPartnerConfig): OpenPartner {
@@ -153,7 +162,7 @@ export class OpenPartner {
    *  consent is granted. */
   getCref(): string | null {
     if (this.consent !== 'granted') return null;
-    return this.storageGet() ?? this.readCookie(this.referralCookieName());
+    return this.storageGet() ?? this.current ?? this.readCookie(this.referralCookieName());
   }
 
   /**
@@ -173,9 +182,12 @@ export class OpenPartner {
     return this.getCref();
   }
 
-  /** Explicitly discard the captured cref, and the referral cookie with it. */
+  /** Explicitly discard the captured cref, the referral cookie, and the
+   *  references this SDK added to Stripe links and embeds. */
   clear(): void {
     this.held = null;
+    this.current = null;
+    this.untagStripe();
     this.storageRemove();
     if (typeof document === 'undefined') return;
     const name = this.referralCookieName();
@@ -189,15 +201,18 @@ export class OpenPartner {
    * Record the visitor's answer to your consent banner. `'granted'` stores
    * the referral (the one held since the page loaded, or one already
    * stored), starts tagging Stripe links and sends the landing report.
-   * `'denied'` stops all of it and deletes what was stored.
+   * `'denied'` stops all of it, takes the references it added off Stripe
+   * links and embeds, and deletes what was stored. Calling it again is
+   * safe.
    */
   setConsent(state: 'granted' | 'denied'): void {
-    if (state === this.consent) return;
-    this.consent = state;
     if (state === 'granted') {
+      if (this.consent === 'granted') return;
+      this.consent = state;
       this.start();
       return;
     }
+    this.consent = state;
     this.stopLinkingStripe();
     this.clear();
   }
@@ -229,6 +244,7 @@ export class OpenPartner {
       if (!hosts.has(url.hostname.toLowerCase()) || url.searchParams.has('client_reference_id')) continue;
       url.searchParams.set('client_reference_id', referral);
       a.href = url.toString();
+      this.remember(a, referral);
       changed += 1;
     }
 
@@ -238,9 +254,37 @@ export class OpenPartner {
     for (const el of embeds) {
       if (el.hasAttribute('client-reference-id')) continue;
       el.setAttribute('client-reference-id', referral);
+      this.remember(el, referral);
       changed += 1;
     }
     return changed;
+  }
+
+  private remember(el: Element, value: string): void {
+    // Elements an SPA has thrown away go, so the list can't grow forever.
+    this.tagged = this.tagged.filter((t) => t.el.isConnected);
+    this.tagged.push({ el, value });
+  }
+
+  /** Take back the references this SDK added. One the brand set, or one
+   *  changed since, stays. */
+  private untagStripe(): void {
+    for (const { el, value } of this.tagged) {
+      if (el instanceof HTMLAnchorElement) {
+        let url: URL;
+        try {
+          url = new URL(el.href);
+        } catch {
+          continue;
+        }
+        if (url.searchParams.get('client_reference_id') !== value) continue;
+        url.searchParams.delete('client_reference_id');
+        el.href = url.toString();
+      } else if (el.getAttribute('client-reference-id') === value) {
+        el.removeAttribute('client-reference-id');
+      }
+    }
+    this.tagged = [];
   }
 
   /** Stop watching the page for new Stripe links and embeds. */
@@ -318,6 +362,7 @@ export class OpenPartner {
     const incoming = held ?? this.queryCref();
     if (incoming) {
       const isNew = this.storageGet() !== incoming;
+      this.current = incoming;
       this.storageSet(incoming);
       return isNew ? incoming : null;
     }
@@ -327,7 +372,10 @@ export class OpenPartner {
     // self-host whose router shares the brand's domain), then the referral
     // cookie a sibling subdomain or the brand's server wrote.
     const restored = this.readCookie(this.config.cookieName) ?? this.readCookie(this.referralCookieName());
-    if (restored) this.storageSet(restored);
+    if (restored) {
+      this.current = restored;
+      this.storageSet(restored);
+    }
     return null;
   }
 
