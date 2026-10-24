@@ -192,14 +192,22 @@ the ones nobody processed through the same pipeline the webhook uses.
   to, in the same transaction. The catch-up replays only events with no row.
 - **Window.** The last 72 hours, never the last hour (a webhook may still be on
   its way), and never before the connection's `eventLogSince`: the moment the
-  log started for it, so the first run after the deploy replays nothing the
-  webhook already handled. A brand that disconnects and connects again gets a
+  log started for it, so the first run after the deploy doesn't replay what
+  the webhook handled before it. (Events an older instance handled during the
+  rolling deploy itself have no row and may be replayed; the pipeline is
+  idempotent per event, so that's harmless.) A brand that disconnects and connects again gets a
   new connection and a new start; one that only had to reconnect keeps its
   start, so events skipped while the connection was broken are recorded when
   it works again, within the 72 hours.
-- **Bounds.** At most 10,000 events listed and 1,000 replayed per connection per
-  run. Events of the other mode (test vs live) are ignored. One connection
-  failing doesn't stop the others; the next run retries.
+- **Order and bounds.** The window is walked oldest first in six-hour slices,
+  and each slice's missed events are replayed in the order they happened, so
+  an original sale is recorded before the renewal that inherits its partner.
+  At most 50,000 events listed and 1,000 replayed per connection per run; a
+  run that stops early starts again from the window's start next time, and
+  the window slides with each run, so every event is listed before it ages
+  out while six hours hold fewer than 50,000 events. Events of the other mode
+  (test vs live) are ignored. One connection failing doesn't stop the others;
+  the next run retries.
 - **Tagging.** Recorded Events carry `metadata.recoveredBy = 'stripe_catchup'`.
   **Admin → Tracking health** counts them: anything above zero means webhook
   deliveries are failing, and the log line `[stripe-catchup] recorded events the

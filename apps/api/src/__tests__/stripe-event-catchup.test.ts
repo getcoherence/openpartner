@@ -22,7 +22,7 @@ process.env.OPENPARTNER_MODE = 'flat';
 process.env.OPENPARTNER_TENANCY = 'single';
 
 const { db } = await import('../db.js');
-const { runStripeEventCatchup, LOOKBACK_HOURS, SETTLE_MINUTES } = await import('../stripe-event-catchup.js');
+const { runStripeEventCatchup, LOOKBACK_HOURS, SETTLE_MINUTES, SLICE_HOURS } = await import('../stripe-event-catchup.js');
 const { processBrandStripeEvent } = await import('../routes/stripe-webhook.js');
 const { StripeConnectionUnavailableError } = await import('../stripe-app.js');
 const { withTenantTransaction } = await import('../tenancy.js');
@@ -142,9 +142,10 @@ async function seedConnection(o: { tenantId?: string; livemode?: boolean; eventL
   return id;
 }
 
-const run = (clients: Record<string, Stripe>, now = NOW) =>
+const run = (clients: Record<string, Stripe>, now = NOW, caps: { maxScannedPerRun?: number; maxRecoveredPerRun?: number } = {}) =>
   runStripeEventCatchup({
     now,
+    ...caps,
     clientFor: async (conn: TenantStripeConnectionRow) => {
       const client = clients[conn.id];
       if (!client) throw new StripeConnectionUnavailableError('reconnect_needed', conn.id);
@@ -225,29 +226,71 @@ describe.skipIf(skipIntegration)('runStripeEventCatchup', () => {
     expect(revenue.metadata.recoveredBy).toBeUndefined();
   });
 
-  it('asks for the window: after eventLogSince, within 72 hours, not the last hour', async () => {
+  it('walks the window oldest first in slices: after eventLogSince, within 72 hours, not the last hour', async () => {
     await seedClick();
     const since = new Date(NOW.getTime() - 10 * HOUR);
     const conn = await seedConnection({ eventLogSince: since });
     const { client, calls } = fakeStripe([]);
     await run({ [conn]: client });
-    expect(calls[0]).toMatchObject({
-      created: { gte: Math.floor(since.getTime() / 1000), lte: secondsAgo(SETTLE_MINUTES * 60_000) },
-      limit: 100,
-    });
+    const ranges = calls.map((c) => c.created as { gte: number; lte: number });
+    // Up from the log's start (nothing from the second before it), down from
+    // an hour ago, in contiguous slices, oldest first.
+    expect(ranges[0]!.gte).toBe(Math.ceil(since.getTime() / 1000));
+    expect(ranges.at(-1)!.lte).toBe(secondsAgo(SETTLE_MINUTES * 60_000));
+    for (let i = 1; i < ranges.length; i++) expect(ranges[i]!.gte).toBe(ranges[i - 1]!.lte + 1);
+    expect(ranges[0]!.lte - ranges[0]!.gte + 1).toBe(SLICE_HOURS * 3600);
     expect((calls[0]!.types as string[]).sort()).toContain('invoice.paid');
 
     // An old connection reaches back 72 hours, no further.
     await db(TABLES.TenantStripeConnection).where({ id: conn }).update({ eventLogSince: new Date(NOW.getTime() - 30 * 24 * HOUR) });
     const second = fakeStripe([]);
     await run({ [conn]: second.client });
-    expect((second.calls[0]!.created as { gte: number }).gte).toBe(secondsAgo(LOOKBACK_HOURS * HOUR));
+    expect((second.calls[0]!.created as { gte: number }).gte).toBe(Math.ceil((NOW.getTime() - LOOKBACK_HOURS * HOUR) / 1000));
 
     // A connection made minutes ago has nothing settled yet: no call.
     await db(TABLES.TenantStripeConnection).where({ id: conn }).update({ eventLogSince: new Date(NOW.getTime() - 10 * 60_000) });
     const third = fakeStripe([]);
     await run({ [conn]: third.client });
     expect(third.calls).toHaveLength(0);
+  });
+
+  it('replays missed events in the order they happened, across slices', async () => {
+    const clickId = await seedClick();
+    const conn = await seedConnection();
+    const older = checkoutEvent(clickId, 50 * 3600);
+    const newer = checkoutEvent(clickId, 2 * 3600);
+    const { client } = fakeStripe([newer, older]);
+    await run({ [conn]: client });
+    const logged = await db(TABLES.StripeEventLog).where({ tenantId: DEFAULT_TENANT_ID }).orderBy('receivedAt');
+    expect(logged.map((r) => r.stripeEventId)).toEqual([older.id, newer.id]);
+  });
+
+  it('replays the oldest missed events within the budget, and the rest next run', async () => {
+    const clickId = await seedClick();
+    const conn = await seedConnection();
+    const events = [5, 4, 3, 2].map((h) => checkoutEvent(clickId, h * 3600));
+    const { client } = fakeStripe(events);
+    const first = await run({ [conn]: client }, NOW, { maxRecoveredPerRun: 2 });
+    expect(first.connections[0]).toMatchObject({ recovered: 2, truncated: true });
+    const logged = async () => (await db(TABLES.StripeEventLog).where({ tenantId: DEFAULT_TENANT_ID })).map((r) => r.stripeEventId).sort();
+    expect(await logged()).toEqual([events[0]!.id, events[1]!.id].sort());
+    const second = await run({ [conn]: client }, NOW, { maxRecoveredPerRun: 2 });
+    expect(second.connections[0]).toMatchObject({ recovered: 2 });
+    expect(await logged()).toEqual(events.map((e) => e.id).sort());
+  });
+
+  it("reaches an old missed event even when newer delivered ones fill the scan cap", async () => {
+    const clickId = await seedClick();
+    const conn = await seedConnection();
+    const delivered = Array.from({ length: 250 }, (_, i) => checkoutEvent(clickId, 2 * 3600 + i));
+    await db(TABLES.StripeEventLog).insert(
+      delivered.map((e) => ({ stripeEventId: e.id, tenantId: DEFAULT_TENANT_ID, type: e.type, via: 'webhook' })),
+    );
+    const missed = checkoutEvent(clickId, 60 * 3600);
+    const { client } = fakeStripe([...delivered, missed]);
+    const result = await run({ [conn]: client }, NOW, { maxScannedPerRun: 100 });
+    expect(result.connections[0]).toMatchObject({ recovered: 1, truncated: true });
+    expect(await db(TABLES.StripeEventLog).where({ stripeEventId: missed.id }).first()).toMatchObject({ via: 'catchup' });
   });
 
   it("ignores the other mode's events and pages through Stripe's list", async () => {
@@ -262,7 +305,8 @@ describe.skipIf(skipIntegration)('runStripeEventCatchup', () => {
     const { client, calls } = fakeStripe([...events, testMode]);
 
     const result = await run({ [conn]: client });
-    expect(calls).toHaveLength(3);
+    // The newest slice holds all 231: three pages of 100.
+    expect(calls.filter((c) => (c.created as { lte: number }).lte === secondsAgo(SETTLE_MINUTES * 60_000))).toHaveLength(3);
     expect(result.connections[0]).toMatchObject({ listed: 230, recovered: 2 });
     expect(await db(TABLES.StripeEventLog).where({ stripeEventId: testMode.id })).toEqual([]);
   });

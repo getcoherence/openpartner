@@ -15,12 +15,19 @@
  *   - The window is the last LOOKBACK_HOURS, never before the connection's
  *     eventLogSince (the log's start for it), and never the last
  *     SETTLE_MINUTES: a webhook may still be on its way.
- *   - Page by page as Stripe lists them (newest first; oldest first within
- *     a page), at most MAX_SCANNED_PER_RUN listed and MAX_RECOVERED_PER_RUN
- *     replayed per connection per run. Out of order is fine: the pipeline
- *     already takes Stripe's own out-of-order deliveries. A failure stops
- *     that connection's run (the next run retries what's left); other
- *     connections carry on.
+ *   - Oldest first. The window is walked in SLICE_HOURS slices from its
+ *     start; each slice is listed in full and its missed events replayed in
+ *     the order they happened, so an original sale is recorded before the
+ *     renewal that should inherit its partner. Stripe lists newest first,
+ *     so the slice holds at most the replay budget of missed events, the
+ *     oldest, and drops newer ones for the next run.
+ *   - Bounded: MAX_SCANNED_PER_RUN listed and MAX_RECOVERED_PER_RUN replayed
+ *     per connection per run. A run that stops early picks up from the
+ *     window's start next time, and the window slides forward with each
+ *     run, so every event is listed before it ages out as long as one run
+ *     interval (6 hours) holds fewer than MAX_SCANNED_PER_RUN events.
+ *   - A failure stops that connection's run (the next run retries what's
+ *     left); other connections carry on.
  *   - Recorded Events carry metadata.recoveredBy = 'stripe_catchup', which
  *     Admin → Tracking health counts: any number above zero means webhook
  *     deliveries are failing.
@@ -47,8 +54,10 @@ import { withTenantTransaction } from './tenancy.js';
 export const LOOKBACK_HOURS = 72;
 /** Younger events are left to the webhook still delivering them. */
 export const SETTLE_MINUTES = 60;
-export const MAX_SCANNED_PER_RUN = 10_000;
+export const MAX_SCANNED_PER_RUN = 50_000;
 export const MAX_RECOVERED_PER_RUN = 1000;
+/** The window is listed this many hours at a time, oldest slice first. */
+export const SLICE_HOURS = 6;
 /** Stripe lists events for 30 days; a log row older than that can't matter. */
 export const LOG_RETENTION_DAYS = 35;
 
@@ -75,6 +84,9 @@ export interface CatchupOptions {
   now?: Date;
   /** Tests: the client for a connection. Default: the Stripe App's (brandStripe). */
   clientFor?: (conn: TenantStripeConnectionRow) => Promise<Stripe>;
+  /** Tests: smaller caps. */
+  maxScannedPerRun?: number;
+  maxRecoveredPerRun?: number;
 }
 
 export async function runStripeEventCatchup(opts: CatchupOptions = {}): Promise<CatchupResult> {
@@ -91,7 +103,12 @@ export async function runStripeEventCatchup(opts: CatchupOptions = {}): Promise<
   const results: ConnectionCatchup[] = [];
   for (const conn of connections) {
     if (!(await tenantAcceptsStripeEvents(conn.tenantId))) continue;
-    results.push(await catchUpConnection(conn, now, clientFor));
+    results.push(
+      await catchUpConnection(conn, now, clientFor, {
+        scanned: opts.maxScannedPerRun ?? MAX_SCANNED_PER_RUN,
+        recovered: opts.maxRecoveredPerRun ?? MAX_RECOVERED_PER_RUN,
+      }),
+    );
   }
 
   const pruned = await db(TABLES.StripeEventLog)
@@ -112,6 +129,7 @@ async function catchUpConnection(
   conn: TenantStripeConnectionRow,
   now: Date,
   clientFor: (conn: TenantStripeConnectionRow) => Promise<Stripe>,
+  caps: { scanned: number; recovered: number },
 ): Promise<ConnectionCatchup> {
   const out: ConnectionCatchup = { tenantId: conn.tenantId, connectionId: conn.id, listed: 0, recovered: 0, truncated: false };
   const from = Math.max(
@@ -139,38 +157,61 @@ async function catchUpConnection(
     via: 'catchup',
   };
 
-  try {
-    let startingAfter: string | undefined;
-    let scanned = 0;
-    for (;;) {
-      const page = await stripe.events.list({
-        created: { gte: Math.floor(from / 1000), lte: Math.floor(to / 1000) },
-        types: [...STRIPE_APP_ATTRIBUTION_EVENT_TYPES],
-        limit: PAGE_SIZE,
-        ...(startingAfter ? { starting_after: startingAfter } : {}),
-      });
-      scanned += page.data.length;
-      // A live connection lists live events; a test-mode one, test events.
-      const events = page.data.filter((e) => e.livemode === conn.livemode);
-      out.listed += events.length;
+  // Whole seconds, as Stripe filters: up, so nothing from the second before
+  // the log started is listed.
+  const fromSec = Math.ceil(from / 1000);
+  const toSec = Math.floor(to / 1000);
+  const sliceSec = SLICE_HOURS * 3600;
+  let scanned = 0;
 
-      const seen = new Set(
-        events.length === 0
-          ? []
-          : ((await db(TABLES.StripeEventLog)
+  try {
+    for (let sliceStart = fromSec; sliceStart <= toSec; sliceStart += sliceSec) {
+      const sliceEnd = Math.min(sliceStart + sliceSec - 1, toSec);
+      const budget = caps.recovered - out.recovered;
+      // The slice's missed events, newest first as listed. Held to the
+      // replay budget by dropping the newest: those wait for the next run.
+      const missed: Stripe.Event[] = [];
+      let startingAfter: string | undefined;
+      for (;;) {
+        const page = await stripe.events.list({
+          created: { gte: sliceStart, lte: sliceEnd },
+          types: [...STRIPE_APP_ATTRIBUTION_EVENT_TYPES],
+          limit: PAGE_SIZE,
+          ...(startingAfter ? { starting_after: startingAfter } : {}),
+        });
+        scanned += page.data.length;
+        // A live connection lists live events; a test-mode one, test events.
+        const events = page.data.filter((e) => e.livemode === conn.livemode);
+        out.listed += events.length;
+        if (events.length > 0) {
+          const seen = new Set(
+            (await db(TABLES.StripeEventLog)
               .where({ tenantId: conn.tenantId })
               .whereIn(
                 'stripeEventId',
                 events.map((e) => e.id),
               )
-              .pluck('stripeEventId')) as string[]),
-      );
-      const missed = events.filter((e) => !seen.has(e.id)).sort((a, b) => a.created - b.created);
-      for (const event of missed) {
-        if (out.recovered >= MAX_RECOVERED_PER_RUN) {
-          out.truncated = true;
-          return out;
+              .pluck('stripeEventId')) as string[],
+          );
+          for (const event of events) {
+            if (seen.has(event.id)) continue;
+            missed.push(event);
+            if (missed.length > budget) {
+              missed.shift();
+              out.truncated = true;
+            }
+          }
         }
+        if (!page.has_more || page.data.length === 0) break;
+        if (scanned >= caps.scanned) {
+          out.truncated = true;
+          break;
+        }
+        startingAfter = page.data[page.data.length - 1]!.id;
+      }
+
+      missed.sort((a, b) => a.created - b.created);
+      for (const event of missed) {
         let refunds: Awaited<ReturnType<typeof processBrandStripeEvent>>['refunds'] = [];
         await withTenantTransaction(conn.tenantId, async (trx) => {
           const processed = await processBrandStripeEvent(trx, source, event, conn.tenantId);
@@ -181,13 +222,10 @@ async function catchUpConnection(
         }
         out.recovered += 1;
       }
-
-      if (!page.has_more || page.data.length === 0) break;
-      if (scanned >= MAX_SCANNED_PER_RUN) {
+      if (out.truncated || out.recovered >= caps.recovered) {
         out.truncated = true;
         break;
       }
-      startingAfter = page.data[page.data.length - 1]!.id;
     }
   } catch (err) {
     // The next run retries whatever this one didn't log.

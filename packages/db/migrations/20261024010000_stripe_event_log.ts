@@ -26,8 +26,10 @@ import type { Knex } from 'knex';
  * events started being logged: the migration for connections that exist
  * now, the connect itself for new ones. The catch-up never reaches back
  * past it, so its first run doesn't replay events delivered before the log
- * existed, and a reconnect doesn't backfill the time the brand was
- * disconnected.
+ * existed, and a new connection doesn't backfill the time the brand was
+ * disconnected. (An event an older instance handled during the rolling
+ * deploy, after this migration, has no row and may be replayed: harmless,
+ * because the pipeline is idempotent per event.)
  *
  * RLS follows the canonical tenant_isolation pattern; the app role may read
  * and append (pruning runs on the privileged pool).
