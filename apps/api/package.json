@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "8.5.0",
-    "@aws-sdk/client-s3": "^3.1045.0",
+    "@aws-sdk/client-s3": "^3.1154.0",
     "@openpartner/db": "workspace:*",
     "@types/cookie-parser": "^1.4.10",
     "cookie-parser": "^1.4.7",
