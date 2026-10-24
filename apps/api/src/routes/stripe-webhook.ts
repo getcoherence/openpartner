@@ -319,6 +319,9 @@ export interface BrandStripeSource {
   keyRevenueByTransaction: boolean;
   /** Merged into every recorded Event's metadata. */
   eventMetadata?: Record<string, unknown>;
+  /** How the event reached the pipeline, as StripeEventLog records it.
+   *  Default 'webhook'; the catch-up (stripe-event-catchup.ts) says so. */
+  via?: 'webhook' | 'catchup';
 }
 
 /**
@@ -334,6 +337,17 @@ export async function processBrandStripeEvent(
   event: Stripe.Event,
   tenantId: string,
 ): Promise<{ result: Record<string, unknown>; refunds: NonNullable<MappedEvent['refund']>[] }> {
+  // A brand's own events are logged whatever they come to, in the same
+  // transaction: the catch-up replays only events with no row, so a skipped
+  // event stays skipped and a rolled-back one is tried again. OpenPartner's
+  // billing account (brandAccount false) has nothing to catch up.
+  if (source.brandAccount) {
+    await trx(TABLES.StripeEventLog)
+      .insert({ stripeEventId: event.id, tenantId, type: event.type, via: source.via ?? 'webhook' })
+      .onConflict('stripeEventId')
+      .ignore();
+  }
+
   // Coupon auto-redemption (brand accounts only): if the event carries a
   // discount code that matches an OpenPartner Coupon in this tenant, ensure
   // the synthetic Click + Identity exist BEFORE the standard attribution

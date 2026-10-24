@@ -144,6 +144,8 @@ const TABLES_TO_CLEAN = [
   TABLES.HostedFundingTransfer,
   TABLES.HostedFundingBatch,
   TABLES.StripeWebhookInbox,
+  // Every brand event the pipeline processes is logged (stripe-event-catchup.ts).
+  TABLES.StripeEventLog,
   // Before Partner — Payout.partnerId is an FK. Commission is already
   // deleted above, which is what frees Payout.
   TABLES.Payout,

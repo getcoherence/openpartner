@@ -61,6 +61,9 @@ const RESTRICTED_GRANTS: Array<{ table: string; grant: string }> = [
   // Same reason: the record of every partner sign-in link a brand minted
   // (routes/partner-signin-link.ts).
   { table: 'PartnerSigninLinkLog', grant: 'select, insert' },
+  // The brand Stripe events attribution processed; the catch-up prunes it
+  // on the privileged pool (stripe-event-catchup.ts).
+  { table: 'StripeEventLog', grant: 'select, insert' },
 ];
 
 async function main(): Promise<void> {

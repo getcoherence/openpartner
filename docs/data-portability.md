@@ -570,7 +570,13 @@ logs — not customer data):
 `PlatformSessionBundle`, `PlatformAdmin`, `PlatformAdminSession`,
 `PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
 `StripeWebhookInbox`, `LocationDeclaration`, `SanctionsScreening`,
-`PartnerSigninLinkLog`.
+`PartnerSigninLinkLog`, `StripeEventLog`.
+
+`StripeEventLog` lists the brand Stripe events this deployment's attribution
+pipeline processed, so the Stripe catch-up ([stripe-app.md](stripe-app.md#missed-events--the-catch-up))
+can replay the ones no webhook delivered. A delivery log of one deployment,
+pruned after 35 days. What the events recorded is in the exported `Event`
+rows, and a recovered one carries `metadata.recoveredBy`.
 
 `PartnerSigninLinkLog` records each sign-in link a brand's backend minted for
 a partner (`POST /partners/{id}/signin-link`): which partner, which key,

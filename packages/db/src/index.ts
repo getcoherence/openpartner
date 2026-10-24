@@ -151,6 +151,7 @@ export const TABLES = {
   PaypalConnection: 'PaypalConnection',
   PaypalPayoutBatch: 'PaypalPayoutBatch',
   StripeWebhookInbox: 'StripeWebhookInbox',
+  StripeEventLog: 'StripeEventLog',
   PayoutReversal: 'PayoutReversal',
   CommissionAdjustment: 'CommissionAdjustment',
   OperatorRecoveryRequest: 'OperatorRecoveryRequest',

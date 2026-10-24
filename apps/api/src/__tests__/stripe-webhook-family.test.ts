@@ -64,6 +64,9 @@ beforeAll(async () => {
   await db.raw('select 1');
 });
 afterAll(async () => {
+  // The one event that reaches the brand pipeline is logged
+  // (stripe-event-catchup.ts).
+  if (!skipIntegration) await db(TABLES.StripeEventLog).where({ tenantId: DEFAULT_TENANT_ID }).del();
   await db.destroy();
 });
 

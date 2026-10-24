@@ -390,6 +390,17 @@ const JOBS: ScheduledJob[] = [
     },
   },
   {
+    name: 'stripe-event-catchup',
+    cronExpr: '25 */6 * * *',
+    description:
+      'Hosted: list each connected brand’s Stripe events from the last 72 hours and record the ones no webhook delivered (stripe-event-catchup.ts; every 6 hours at :25)',
+    handler: async () => {
+      if (getMode() === 'selfhost') return { skipped: 'selfhost' };
+      const { runStripeEventCatchup } = await import('./stripe-event-catchup.js');
+      return runStripeEventCatchup();
+    },
+  },
+  {
     name: 'seal-payout-details',
     cronExpr: '35 * * * *',
     description:
@@ -509,6 +520,7 @@ export const TENANT_PURGE_ORDER = [
   TABLES.HostedFeeTerms,
   TABLES.HostedBillingProfile,
   TABLES.HostedBillingState,
+  TABLES.StripeEventLog,
   TABLES.TenantStripeConnection,
   // Before PaypalConnection (PaypalPayoutBatch.connectionId).
   TABLES.PaypalPayoutBatch,
