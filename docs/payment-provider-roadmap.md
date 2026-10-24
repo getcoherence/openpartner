@@ -227,10 +227,12 @@ Scope: medium.
 onto a provider-neutral connection and event log (`StripeEventLog` → provider
 event log), keep the catch-up generic, and add per-source rows to Tracking
 health. Also from the tracking review:
-- **Stripe totals on Tracking health**: list the window's charges through the
-  Stripe App (`charge_read`) and show revenue in Stripe, revenue OpenPartner
-  recorded, and revenue credited to partners side by side. The catch-up closes
-  gaps from missed webhooks; this shows the size of what's left.
+- **Stripe totals on Tracking health** (built in #267): the window's paid
+  invoices and one-time Checkout payments, read through the Stripe App, next
+  to what OpenPartner recorded and credited, with every payment that carries
+  a partner signal but wasn't recorded listed. The catch-up closes gaps from
+  missed webhooks; this shows the size of what's left. The same report per
+  provider is part of each connector.
 - **Catch-up on a self-host** (docs/stripe-app.md follow-ups).
 - **Consent-banner adapters**: the SDK's `setConsent()` wired to OneTrust,
   Cookiebot and Google Consent Mode out of the box, so brands don't write the
