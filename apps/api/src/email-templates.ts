@@ -446,6 +446,33 @@ export function signinNoAccountEmail(opts: {
   return { subject, text, html: wrap(text, opts.signupUrl, 'Create a brand') };
 }
 
+/** "Forgot password" on the platform sign-in page, for an address with no
+ *  platform password to reset but a partner account on some brands
+ *  (routes/password-auth.ts). A partner's password belongs to each brand, so
+ *  this points at the portals whose own "Forgot password" resets it. */
+export function passwordResetPartnerPortalsEmail(opts: {
+  email: string;
+  portals: Array<{ brandName: string; signinUrl: string }>;
+  creatorSigninUrl: string;
+}): EmailTemplate {
+  const subject = `No OpenPartner admin password for this address`;
+  const text = [
+    `Someone asked to reset the OpenPartner password for ${opts.email}, but there's`,
+    `no OpenPartner admin password for this address, so no reset link was sent.`,
+    ``,
+    `This address is a partner. Each brand's partner password is its own: sign in`,
+    `at that brand's partner portal, and use "Forgot password" there to reset it.`,
+    ``,
+    ...opts.portals.flatMap((p) => [p.brandName, p.signinUrl, ``]),
+    `If you're an OpenPartner Network creator, sign in at the creator portal:`,
+    ``,
+    opts.creatorSigninUrl,
+    ``,
+    `If you didn't ask for this, ignore this email. Nothing changed.`,
+  ].join('\n');
+  return { subject, text, html: linkedHtml(text, [...opts.portals.map((p) => p.signinUrl), opts.creatorSigninUrl]) };
+}
+
 /** Platform ops: a new brand signed up and is waiting for review. */
 export function opsBrandNeedsReviewEmail(
   brandName: string,
@@ -950,6 +977,34 @@ export function plainHtml(text: string): string {
             ${text
               .split('\n')
               .map((l) => l.replace(/</g, '&lt;').replace(/>/g, '&gt;'))
+              .join('<br>')}
+          </td></tr>
+        </table>
+      </td></tr>
+    </table>
+  </body>
+</html>`;
+}
+
+/** {@link plainHtml} for a mail offering several destinations, so no one
+ *  button: each line that is one of `urls` links to itself. Only those lines
+ *  — a line of free text (a brand name) that looks like a URL stays text. */
+function linkedHtml(text: string, urls: string[]): string {
+  const links = new Set(urls);
+  return `<!DOCTYPE html>
+<html>
+  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#f4f4f5; padding:24px 0; margin:0;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+      <tr><td align="center">
+        <table role="presentation" width="520" cellspacing="0" cellpadding="0" border="0" data-op-email="card" style="background:#ffffff; border-radius:8px; overflow:hidden;">
+          <tr><td style="padding:28px 32px; color:#1f2937; font-size:14px; line-height:1.6;">
+            ${text
+              .split('\n')
+              .map((line) =>
+                links.has(line)
+                  ? `<a href="${escapeHtml(line)}" data-op-email="link" style="color:#2dd4bf">${escapeHtml(line)}</a>`
+                  : escapeHtml(line),
+              )
               .join('<br>')}
           </td></tr>
         </table>

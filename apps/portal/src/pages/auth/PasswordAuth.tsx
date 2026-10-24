@@ -321,6 +321,7 @@ export function EmailPasswordForm({
   onForgot,
   linkSentText,
   forgotSentText,
+  forgotHint,
   emailPlaceholder = 'you@example.com',
   footer,
 }: {
@@ -332,6 +333,8 @@ export function EmailPasswordForm({
   onForgot: (email: string) => Promise<void>;
   linkSentText: (email: string) => ReactNode;
   forgotSentText: (email: string) => ReactNode;
+  /** Extra line under the "forgot password" explanation. */
+  forgotHint?: ReactNode;
   emailPlaceholder?: string;
   footer?: ReactNode;
 }) {
@@ -431,6 +434,7 @@ export function EmailPasswordForm({
         {mode === 'forgot' && (
           <div style={{ fontSize: 12, color: theme.textDim, marginBottom: 12, lineHeight: 1.5 }}>
             We&rsquo;ll email you a link to choose a new password. Never had one? This sets your first.
+            {forgotHint && <div style={{ marginTop: 6 }}>{forgotHint}</div>}
           </div>
         )}
         {err && <div style={{ color: theme.danger, fontSize: 13, marginBottom: 8 }}>{err}</div>}
