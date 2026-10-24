@@ -29,7 +29,7 @@
     "ipaddr.js": "^2.2.0",
     "knex": "^3.3.0",
     "maxmind": "^4.3.29",
-    "nodemailer": "^10.0.6",
+    "nodemailer": "^10.1.4",
     "pg": "^8.23.1",
     "pino": "^9.4.0",
     "pino-http": "^9.0.0",
