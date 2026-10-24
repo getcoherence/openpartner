@@ -3,7 +3,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { CheckCheck, Download, FilePlus2, FileSpreadsheet, Trash2 } from 'lucide-react';
 import { api, apiDownload, saveBlob } from '../api.js';
 import { alpha, theme } from '../theme.js';
-import { Button, Card, ErrorBanner, Select, Table, formatDate, money } from '../ui.js';
+import { Button, Card, ErrorBanner, Input, Select, Table, formatDate, money } from '../ui.js';
 import { HOLD_REASON, type HoldReason } from './payout-holds.js';
 
 type Provider = 'paypal' | 'wise';
@@ -163,9 +163,11 @@ export function ManualPayoutFiles() {
     onSuccess: refresh,
   });
 
+  // One payout sent by hand, with what identifies the payment if the brand
+  // has it (printed on the payout's statement).
   const confirmOne = useMutation({
-    mutationFn: (payoutId: string) =>
-      api<{ confirmed: unknown[]; notConfirmable: unknown[] }>('/payouts/confirm', { method: 'POST', body: { payoutIds: [payoutId] } }),
+    mutationFn: (v: { payoutId: string; reference: string }) =>
+      api<{ payout: unknown }>(`/payouts/${v.payoutId}/confirm`, { method: 'POST', body: v.reference ? { reference: v.reference } : {} }),
     onSuccess: refresh,
   });
 
@@ -298,11 +300,9 @@ export function ManualPayoutFiles() {
                     <div>{p.destination?.summary ?? <span style={{ color: theme.textDim }}>—</span>}</div>
                     <Notes p={p} />
                   </div>,
-                  <FileCell p={p} busy={busy} onConfirm={() => {
-                    if (window.confirm(`Mark the payout to ${p.partnerName} as sent? Only do this once the money has gone out.`)) {
-                      confirmOne.mutate(p.payoutId);
-                    }
-                  }} />,
+                  // Keyed: a confirmed payout leaves the list, and its open
+                  // reference form mustn't pass to the row that moves up.
+                  <FileCell key={p.payoutId} p={p} busy={busy} onConfirm={(reference) => confirmOne.mutate({ payoutId: p.payoutId, reference })} />,
                 ])}
               />
               {payouts.hasNextPage && (
@@ -357,7 +357,14 @@ function Warn({ children, danger }: { children: React.ReactNode; danger?: boolea
   );
 }
 
-function FileCell({ p, busy, onConfirm }: { p: RunPayout; busy: boolean; onConfirm: () => void }) {
+/** A payout reference is one line of up to this many characters (the API's
+ *  confirmPayoutSchema). */
+const MAX_REFERENCE = 100;
+
+function FileCell({ p, busy, onConfirm }: { p: RunPayout; busy: boolean; onConfirm: (reference: string) => void }) {
+  // Marking a payout sent by hand asks for its payment reference first.
+  const [confirming, setConfirming] = useState(false);
+  const [reference, setReference] = useState('');
   if (p.export) {
     return (
       <div style={{ fontSize: 13 }}>
@@ -374,10 +381,51 @@ function FileCell({ p, busy, onConfirm }: { p: RunPayout; busy: boolean; onConfi
   return (
     <div style={{ fontSize: 12.5, maxWidth: 220 }}>
       <div style={{ color: p.doNotPay ? theme.danger : theme.textMuted }}>{p.excluded ? EXCLUSION[p.excluded] : '—'}</div>
-      {!p.doNotPay && (
-        <Button size="sm" variant="ghost" style={{ marginTop: 4, marginLeft: -10 }} onClick={onConfirm} disabled={busy}>
+      {!p.doNotPay && !confirming && (
+        <Button size="sm" variant="ghost" style={{ marginTop: 4, marginLeft: -10 }} onClick={() => setConfirming(true)} disabled={busy}>
           Mark sent
         </Button>
+      )}
+      {!p.doNotPay && confirming && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            onConfirm(reference.trim());
+          }}
+          style={{ marginTop: 6 }}
+        >
+          <label style={{ display: 'block', color: theme.textMuted }}>
+            Payment reference (optional)
+            <Input
+              value={reference}
+              onChange={(e) => setReference(e.target.value)}
+              maxLength={MAX_REFERENCE}
+              autoFocus
+              autoComplete="off"
+              style={{ fontSize: 13, padding: '6px 8px', marginTop: 4 }}
+            />
+          </label>
+          <div style={{ fontSize: 11.5, color: theme.textDim, margin: '4px 0 6px', lineHeight: 1.4 }}>
+            The bank’s UTR, the UPI transaction ID or the cheque number. It’s printed on {p.partnerName}’s statement. Mark
+            it sent only once the money has gone out.
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <Button size="sm" type="submit" disabled={busy}>
+              Mark sent
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setConfirming(false);
+                setReference('');
+              }}
+              disabled={busy}
+            >
+              Cancel
+            </Button>
+          </div>
+        </form>
       )}
     </div>
   );

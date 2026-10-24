@@ -73,6 +73,9 @@ export interface OperationSpec {
   params?: Record<string, z.ZodTypeAny>;
   query?: z.AnyZodObject;
   body?: z.ZodTypeAny;
+  /** `body` may be left out entirely: every field in it is optional, and
+   *  callers from before it existed send none. */
+  optionalBody?: boolean;
   /** A non-JSON request body (e.g. text/csv), instead of `body`. */
   requestContent?: ZodContentObject;
   /** Success responses: status → schema (JSON) or a full response config. */
@@ -255,7 +258,7 @@ export class OperationRegistry {
       request: {
         ...(params ? { params } : {}),
         ...(spec.query ? { query: spec.query } : {}),
-        ...(spec.body ? { body: { required: true, content: { 'application/json': { schema: spec.body } } } } : {}),
+        ...(spec.body ? { body: { required: !spec.optionalBody, content: { 'application/json': { schema: spec.body } } } } : {}),
         ...(spec.requestContent ? { body: { required: true, content: spec.requestContent } } : {}),
       },
       responses,

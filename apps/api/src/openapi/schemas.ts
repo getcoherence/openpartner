@@ -557,7 +557,10 @@ export const Payout = z
     status: z.enum(PAYOUT_STATUSES).openapi({
       description: 'A `manual` payout stays `pending` until you send the money and confirm it; only `paid` means it went out.',
     }),
-    metadata: z.record(z.unknown()),
+    metadata: z.record(z.unknown()).openapi({
+      description:
+        'What the run and the payout rails recorded. `externalReference` is the payment reference you gave when you confirmed a manual payout (`POST /payouts/{id}/confirm`).',
+    }),
     createdAt: ts,
     completedAt: tsNullable,
   })
@@ -633,7 +636,10 @@ export const PayoutStatement = z
       reference: z
         .object({ label: z.string(), value: z.string() })
         .nullable()
-        .openapi({ description: 'What identifies the payout at the provider: the Stripe transfer, or its PayPal Customer ID or Wise reference in a batch file.' }),
+        .openapi({
+          description:
+            'What identifies the payout: the Stripe transfer (`Stripe transfer`), its PayPal Customer ID or Wise reference in a batch file (`PayPal Customer ID`, `Wise payment reference`), or, for a payout sent one at a time, the `reference` you gave `POST /payouts/{id}/confirm` (`Payment reference`). Null when there is none.',
+        }),
       amount: Decimal.openapi({ description: 'What was paid, or is to be.' }),
       currency: z.string(),
       createdAt: ts,

@@ -29,10 +29,14 @@ tax-related.
 - **The payout.** Statement number, payout id, status, how it was sent
   (Stripe Connect, or manual: PayPal Payouts file, Wise batch file, bank
   transfer, UPI, other) and its reference where there is one: the Stripe
-  transfer id, or the PayPal Customer ID or Wise payment reference it
-  carried in a batch file. A Wise reference depends on the account's
-  currency (there is none for JPY or COP), so it is left off once the
-  partner's details have changed since the file.
+  transfer id, the PayPal Customer ID or Wise payment reference it carried
+  in a batch file, or, for a payout sent one at a time, the reference the
+  brand gave when it confirmed it (a bank UTR, a UPI transaction id, a
+  cheque number: `Payout.metadata.externalReference`, labelled **Payment
+  reference**; docs/manual-payout-files.md#paying-one-at-a-time). A Wise
+  reference depends on the account's currency (there is none for JPY or
+  COP), so it is left off once the partner's details have changed since the
+  file, and the brand's own reference prints instead if it gave one.
 - **Line items.**
   - each commission: the date it was earned, the program, the event it was
     earned on (`Invoice paid`, `Trial started`, a custom type) and the amount;
@@ -151,6 +155,6 @@ What the answers would mean for the product:
 ## Not yet
 
 - A bundle (zip or one document) of every statement in a run.
-- Recording a reference for a payout sent one at a time (a bank UTR, a UPI
-  transaction id) when confirming it, so the statement can print it.
+- Adding or correcting a payment reference after the payout is confirmed.
+  Today it can be given only with the confirm.
 - Recording tax amounts for the tax lines.

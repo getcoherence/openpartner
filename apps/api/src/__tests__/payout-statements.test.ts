@@ -9,6 +9,9 @@
  *   - a partner sees only their own payouts' statements;
  *   - tenant isolation on a pool that bypasses RLS, so only the explicit
  *     tenantId filters keep another tenant's rows out;
+ *   - the payment reference a brand gives when it confirms a payout sent
+ *     one at a time: validated, kept on the payout, printed unless a batch
+ *     file's own reference is, scoped to the tenant, and never logged;
  *   - the brand's statement settings, including the tax-lines stub (off
  *     by default), and the statement URL on payout.created.
  *
@@ -16,6 +19,7 @@
  * tenant-scope-no-rls.test.ts: the app pool runs as the privileged role,
  * so a query that leaned on RLS would leak here.
  */
+import { Writable } from 'node:stream';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { ulid } from 'ulid';
@@ -377,7 +381,7 @@ describe.skipIf(skipIntegration)('GET /payouts/:id/statement', () => {
       .post(`/t/${A.slug}/config/payout-statements`)
       .set('Authorization', `Bearer ${aAdmin}`)
       .send({ footer: '</footer><script>alert(2)</script>' });
-    const payout = await seedPayout(A.id, mallory, '10.00', 'USD');
+    const payout = await seedPayout(A.id, mallory, '10.00', 'USD', { metadata: { externalReference: '<script>alert(3)</script>' } });
     await seedSale(A.id, { partnerId: mallory, programId, amount: '10.00', currency: 'USD', payoutId: payout });
 
     const page = await get(A, `/payouts/${payout}/statement`, aAdmin);
@@ -385,6 +389,7 @@ describe.skipIf(skipIntegration)('GET /payouts/:id/statement', () => {
     expect(page.text).not.toMatch(/<script/i);
     expect(page.text).not.toContain('<img src=x');
     expect(page.text).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(page.text).toContain('&lt;script&gt;alert(3)&lt;/script&gt;');
     expect(page.text).toContain('&quot;&gt;&lt;img src=x onerror=alert(1)&gt;');
   });
 
@@ -646,6 +651,148 @@ describe.skipIf(skipIntegration)('GET /payouts/:id/statement', () => {
     const page = (await get(A, `/payouts/${payout}/statement`, aAdmin)).text;
     expect(page).not.toContain('B Legal Name');
     expect(page).not.toContain('999');
+  });
+});
+
+describe.skipIf(skipIntegration)('the payment reference given at confirm (POST /payouts/:id/confirm)', () => {
+  const confirm = (tenant: { slug: string }, payoutId: string, token: string, body?: object, target = app) => {
+    const t = request(target).post(`/t/${tenant.slug}/payouts/${payoutId}/confirm`).set('Authorization', `Bearer ${token}`);
+    return body === undefined ? t : t.send(body);
+  };
+  const pendingPayout = (tenantId: string, partnerId: string, extra: Record<string, unknown> = {}) =>
+    seedPayout(tenantId, partnerId, '1500.00', 'INR', { status: 'pending', completedAt: null, ...extra });
+
+  it('keeps it on the payout and prints it on the statement, the partner’s copy too', async () => {
+    const ada = await seedPartner(A.id, 'Ada Rao');
+    await saveDetails(A.id, ada, { method: 'upi', vpa: 'ada.pay@okaxis', name: 'Ada Rao' });
+    const runId = ulid();
+    const payout = await pendingPayout(A.id, ada, { metadata: { runId } });
+    await seedSale(A.id, { partnerId: ada, programId, amount: '1500.00', currency: 'INR', payoutId: payout });
+
+    const res = await confirm(A, payout, aAdmin, { reference: '  UPI 412345678901  ' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expectShape(S.Payout, res.body.payout, 'payout');
+    expect(res.body.payout).toMatchObject({ status: 'paid', metadata: { runId, externalReference: 'UPI 412345678901' } });
+
+    const s = await statementJson(A, payout, aAdmin);
+    expect(s.payout).toMatchObject({
+      status: 'paid',
+      methodLabel: 'Manual · UPI',
+      reference: { label: 'Payment reference', value: 'UPI 412345678901' },
+    });
+    expect(s.notes).toEqual([]);
+    expect((await get(A, `/payouts/${payout}/statement`, aAdmin)).text).toContain('<dt>Payment reference</dt><dd>UPI 412345678901</dd>');
+    const adaKey = await key(A.id, { partnerId: ada });
+    expect((await statementJson(A, payout, adaKey)).payout.reference).toEqual({ label: 'Payment reference', value: 'UPI 412345678901' });
+  });
+
+  it('confirms without one as before: no body, an empty one, or a blank reference', async () => {
+    const ada = await seedPartner(A.id, 'Ada Rao');
+    for (const body of [undefined, {}, { reference: '   ' }]) {
+      const payout = await pendingPayout(A.id, ada);
+      const res = await confirm(A, payout, aAdmin, body);
+      expect(res.status, JSON.stringify(body)).toBe(200);
+      expect(res.body.payout.metadata).toEqual({});
+      expect((await statementJson(A, payout, aAdmin)).payout.reference).toBeNull();
+    }
+    // A bundle from elsewhere may hold anything there: only text prints.
+    const odd = await seedPayout(A.id, ada, '5.00', 'INR', { metadata: { externalReference: 42 } });
+    expect((await statementJson(A, odd, aAdmin)).payout.reference).toBeNull();
+  });
+
+  it('refuses one that is too long or not one printable line, naming the rule rather than the value', async () => {
+    const ada = await seedPartner(A.id, 'Ada Rao');
+    const payout = await pendingPayout(A.id, ada);
+    for (const reference of [`UTR${'9'.repeat(98)}`, 'UTR 1\nUTR 2', 'UTR\u0000123', 'UTR 123', 42]) {
+      const res = await confirm(A, payout, aAdmin, { reference });
+      expect(res.status, JSON.stringify(reference)).toBe(400);
+      expect(res.body.error).toBe('invalid_body');
+      expect(JSON.stringify(res.body)).not.toContain('UTR');
+    }
+    expect(await db(TABLES.Payout).where({ id: payout }).first()).toMatchObject({ status: 'pending', metadata: {}, completedAt: null });
+
+    const res = await confirm(A, payout, aAdmin, { reference: 'x'.repeat(100) });
+    expect(res.status).toBe(200);
+    expect(res.body.payout.metadata.externalReference).toBe('x'.repeat(100));
+  });
+
+  it('records nothing on a payout it refuses, and the reference is fixed once confirmed', async () => {
+    const lee = await seedPartner(A.id, 'Lee Park');
+    const stripe = await seedPayout(A.id, lee, '80.00', 'USD', { method: 'stripe_connect', status: 'pending', completedAt: null });
+    expect((await confirm(A, stripe, aAdmin, { reference: 'NOT-MANUAL' })).status).toBe(409);
+    expect((await db(TABLES.Payout).where({ id: stripe }).first()).metadata).toEqual({});
+
+    const ada = await seedPartner(A.id, 'Ada Rao');
+    const payout = await pendingPayout(A.id, ada);
+    expect((await confirm(A, payout, aAdmin, { reference: 'FIRST' })).status).toBe(200);
+    expect((await confirm(A, payout, aAdmin, { reference: 'SECOND' })).status).toBe(409);
+    expect((await db(TABLES.Payout).where({ id: payout }).first()).metadata).toEqual({ externalReference: 'FIRST' });
+  });
+
+  it("prints a batch file's own reference over it, unless the file's can't be vouched for", async () => {
+    const zoe = await seedPartner(A.id, 'Zoe Brandt');
+    await saveDetails(A.id, zoe, { method: 'paypal', email: 'zoe@example.com' });
+    const paypalStamp = { exportId: ulid(), provider: 'paypal', currency: 'USD', at: new Date().toISOString(), by: 'admin' };
+    const paypal = await pendingPayout(A.id, zoe, { currency: 'USD', metadata: { manualExport: paypalStamp } });
+    expect((await confirm(A, paypal, aAdmin, { reference: 'PP-BATCH-77' })).body.payout.metadata).toEqual({
+      manualExport: paypalStamp,
+      externalReference: 'PP-BATCH-77',
+    });
+    expect((await statementJson(A, paypal, aAdmin)).payout.reference).toEqual({ label: 'PayPal Customer ID', value: paypal });
+
+    // A Wise reference is dropped once the partner's details change after
+    // the file (payout-statements.ts): the brand's own then prints.
+    const ines = await seedPartner(A.id, 'Ines Duarte');
+    const gbp = { method: 'bank', accountHolderName: 'Ines Duarte', country: 'GB', currency: 'GBP', accountNumber: '31926819', sortCode: '231470' };
+    await saveDetails(A.id, ines, gbp);
+    await db(TABLES.PartnerPayoutProfile).where({ partnerId: ines }).update({ updatedAt: new Date(Date.now() - 20 * 60_000) });
+    const wise = await pendingPayout(A.id, ines, {
+      currency: 'GBP',
+      metadata: { manualExport: { exportId: ulid(), provider: 'wise', currency: 'GBP', at: new Date(Date.now() - 10 * 60_000).toISOString(), by: 'admin' } },
+    });
+    expect((await confirm(A, wise, aAdmin, { reference: 'WISE-TRANSFER-123' })).status).toBe(200);
+    expect((await statementJson(A, wise, aAdmin)).payout.reference).toEqual({ label: 'Wise payment reference', value: wise.slice(-10) });
+    await saveDetails(A.id, ines, { ...gbp, accountNumber: '55779911' });
+    expect((await statementJson(A, wise, aAdmin)).payout.reference).toEqual({ label: 'Payment reference', value: 'WISE-TRANSFER-123' });
+  });
+
+  it("never confirms or stamps another tenant's payout, even without RLS", async () => {
+    const ada = await seedPartner(A.id, 'Ada Rao');
+    const payout = await pendingPayout(A.id, ada);
+    // B's admin on B's own address, then B's key on A's address.
+    const asB = await confirm(B, payout, bAdmin, { reference: 'B-REF' });
+    expect(asB.status).toBe(404);
+    expect(asB.body).toEqual({ error: 'payout_not_found' });
+    expect((await confirm(A, payout, bAdmin, { reference: 'B-REF' })).status).toBe(401);
+    expect(await db(TABLES.Payout).where({ id: payout }).first()).toMatchObject({ status: 'pending', metadata: {}, completedAt: null });
+
+    // B confirming its own payout leaves A's statements alone.
+    const bob = await seedPartner(B.id, 'Bob of B');
+    const bPayout = await pendingPayout(B.id, bob);
+    expect((await confirm(B, bPayout, bAdmin, { reference: 'B-REF' })).status).toBe(200);
+    expect((await confirm(A, payout, aAdmin)).status).toBe(200);
+    expect((await statementJson(A, payout, aAdmin)).payout.reference).toBeNull();
+    expect((await get(A, `/payouts/${bPayout}/statement?format=json`, aAdmin)).status).toBe(404);
+  });
+
+  it('never writes the reference to the request log', async () => {
+    const lines: string[] = [];
+    const sink = new Writable({
+      write(chunk, _enc, cb) {
+        lines.push(String(chunk));
+        cb();
+      },
+    });
+    const logged = createApp({ logDestination: sink });
+    const ada = await seedPartner(A.id, 'Ada Rao');
+    const payout = await pendingPayout(A.id, ada);
+    expect((await confirm(A, payout, aAdmin, { reference: 'UTR\nHDFCN52026102399887766' }, logged)).status).toBe(400);
+    expect((await confirm(A, payout, aAdmin, { reference: 'UTR HDFCN52026102399887766' }, logged)).status).toBe(200);
+    await new Promise((r) => setImmediate(r));
+
+    const log = lines.join('');
+    expect(log).toContain(`/payouts/${payout}/confirm`);
+    expect(log).not.toContain('HDFCN52026102399887766');
   });
 });
 
