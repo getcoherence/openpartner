@@ -746,6 +746,12 @@ export interface ProgramRow {
    *  False: every event is attributed on its own within the window.
    *  Spec: docs/renewal-attribution.md. */
   renewalsStayWithPartner: boolean;
+  /** True: this program's coupon codes credit only when the customer has
+   *  no partner link click inside the window. False (default): a code
+   *  competes as a click stamped at checkout, so under last click it beats
+   *  an earlier link. Decides first conversions; renewals follow the
+   *  winner (renewalsStayWithPartner). Migration 20261024020000. */
+  couponsYieldToLinks: boolean;
   /** Where partner share-links for this Campaign land by default. Brand
    *  controls this; partners can only override if deepLinkAllowedDomains
    *  is set and their override matches. */

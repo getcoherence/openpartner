@@ -426,6 +426,7 @@ that should attribute every event against the window alone.
 | 9 (Oct 2026) | added `PartnerPayoutProfile`, its `details` opened (older bundles restore no payout details) |
 | 10 (Oct 2026) | `Coupon` rows carry `brandChosen`, whether the brand's admin typed the code (older bundles restore it as false) |
 | 11 (Oct 2026) | added `ClickLanding`, the browser SDK's record that a click reached the brand's site (older bundles restore no landings) |
+| 12 (Oct 2026) | `Program` rows carry `couponsYieldToLinks`, whether partner link clicks beat the program's coupon codes (older bundles restore it as false) |
 
 **Importing a v1 or v2 bundle.** `POST /import` upgrades older rows before
 inserting them (`upgradeBundle` in `apps/api/src/export.ts`). A v2

@@ -164,6 +164,10 @@ export const Program = z
       description:
         "True (default): a repeat event, meaning a type the customer already has an attributed conversion of (the 2nd, 13th, 40th `invoice_paid`), keeps that first conversion's partners, weights and model whatever the click's age, and a later click from another partner doesn't take it. Past the window only `recurring` sub-rules pay on it, up to `recurringMonths`. False: every event is attributed on its own against the clicks inside the window.",
     }),
+    couponsYieldToLinks: z.boolean().openapi({
+      description:
+        "False (default): a coupon code redeemed at checkout counts as a click at that moment, so under `last_click` it beats an earlier link click from another partner. True: this program's coupon codes drop out of a conversion whenever the customer has a partner link click inside the window, so a code credits only when no link did. Decided per code, by the program it belongs to. It decides who wins a customer's first conversion of each type; with `renewalsStayWithPartner`, renewals follow that winner, so changing it doesn't move an existing customer's renewals.",
+    }),
     destinationUrl: z.string().url(),
     deepLinkAllowedDomains: z.string().nullable(),
     holdbackDays: z.number().int().nullable().openapi({

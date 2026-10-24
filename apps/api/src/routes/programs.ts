@@ -220,6 +220,8 @@ export const createSchema = z.object({
    *  recurring sub-rules pay on it, up to recurringMonths. False: every
    *  event is attributed on its own within the window. */
   renewalsStayWithPartner: z.boolean().optional(),
+  /** Link clicks beat this program's coupon codes. Default false. */
+  couponsYieldToLinks: z.boolean().optional(),
   /** Where partner links send visitors. May carry the {click_id} macro
    *  (e.g. a Stripe Payment Link's ?client_reference_id={click_id}); the
    *  router substitutes the click id there instead of appending cref. */
@@ -281,6 +283,8 @@ export const updateSchema = z.object({
   attributionModel: z.enum(['last_click', 'first_click', 'linear', 'position']).optional(),
   /** Not retroactive: decides events attributed from now on. */
   renewalsStayWithPartner: z.boolean().optional(),
+  /** Link clicks beat this program's coupon codes. Default false. */
+  couponsYieldToLinks: z.boolean().optional(),
   destinationUrl: destinationUrlSchema.optional(),
   deepLinkAllowedDomains: z.string().max(1000).nullable().optional(),
   holdbackDays: z.number().int().min(0).max(365).nullable().optional(),
@@ -441,6 +445,7 @@ programsRouter.post('/programs', requireAuth, requireAdmin, async (req, res) => 
       attributionWindowDays: body.data.attributionWindowDays ?? 60,
       attributionModel: body.data.attributionModel ?? 'last_click',
       renewalsStayWithPartner: body.data.renewalsStayWithPartner ?? true,
+      couponsYieldToLinks: body.data.couponsYieldToLinks ?? false,
       destinationUrl: body.data.destinationUrl,
       deepLinkAllowedDomains: body.data.deepLinkAllowedDomains ?? null,
       holdbackDays: body.data.holdbackDays ?? null,
@@ -519,6 +524,9 @@ programsRouter.patch('/programs/:id', requireAuth, requireAdmin, async (req, res
   if (body.data.attributionModel !== undefined) patch.attributionModel = body.data.attributionModel;
   if (body.data.renewalsStayWithPartner !== undefined) {
     patch.renewalsStayWithPartner = body.data.renewalsStayWithPartner;
+  }
+  if (body.data.couponsYieldToLinks !== undefined) {
+    patch.couponsYieldToLinks = body.data.couponsYieldToLinks;
   }
   if (body.data.destinationUrl !== undefined) patch.destinationUrl = body.data.destinationUrl;
   if (body.data.deepLinkAllowedDomains !== undefined) patch.deepLinkAllowedDomains = body.data.deepLinkAllowedDomains;

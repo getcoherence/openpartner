@@ -119,6 +119,8 @@ async function seedEverything(): Promise<Seeded> {
     attributionModel: 'last_click',
     // Not the column default, so a restore that dropped it would show.
     renewalsStayWithPartner: false,
+    // Nor this (schemaVersion 12).
+    couponsYieldToLinks: true,
   });
   await db(TABLES.PartnerProgram).insert({
     id: ulid(),
@@ -525,6 +527,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(program.commissionRule).toEqual([{ trigger: 'every', type: 'percent', value: 20 }]);
     expect(program.categories).toEqual(['saas', 'devtools']);
     expect(program.renewalsStayWithPartner).toBe(false);
+    expect(program.couponsYieldToLinks).toBe(true);
     // …and that the money ledger survived with its shape intact.
     const commission = await db(TABLES.Commission).where({ id: seeded.commissionId }).first();
     expect(commission.amount).toBe('40.00');
@@ -988,8 +991,27 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect((await counts())[TABLES.ClickLanding]).toBe(0);
   }, 30_000);
 
-  it('exports at schemaVersion 11', () => {
-    expect(SCHEMA_VERSION).toBe(11);
+  it('accepts a v11 bundle — programs restore with coupons competing as clicks', async () => {
+    const seeded = await seedEverything();
+    const v11 = await exportAll(db, TENANT);
+    v11[TABLES.Program] = (v11[TABLES.Program] as Record<string, unknown>[]).map(
+      ({ couponsYieldToLinks: _dropped, ...row }) => row,
+    );
+    await wipe();
+
+    const app = createApp();
+    const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+    const viaRoute = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: 11, tables: v11 });
+    expect(viaRoute.status).toBe(200);
+    const program = await db(TABLES.Program).where({ id: seeded.programId }).first();
+    expect(program.couponsYieldToLinks).toBe(false);
+  }, 30_000);
+
+  it('exports at schemaVersion 12', () => {
+    expect(SCHEMA_VERSION).toBe(12);
   });
 });
 
@@ -1163,6 +1185,7 @@ describe.skipIf(skipIntegration)('SQL dump', () => {
     expect(program.commissionRule).toEqual([{ trigger: 'every', type: 'percent', value: 20 }]);
     expect(program.categories).toEqual(['saas', 'devtools']);
     expect(program.renewalsStayWithPartner).toBe(false);
+    expect(program.couponsYieldToLinks).toBe(true);
     expect((await db(TABLES.Click).first()).subId).toBe('wct_9f2a-17');
     expect((await db(TABLES.Coupon).first()).brandChosen).toBe(true);
   }, 30_000);

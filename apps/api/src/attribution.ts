@@ -117,6 +117,12 @@ interface Touch {
   pastWindow: boolean;
 }
 
+/** A coupon redemption's synthetic click (routes/coupons.ts): no Link,
+ *  and a coupon:// landing URL naming the code. */
+export function isCouponClick(click: Pick<ClickRow, 'linkId' | 'landingUrl'>): boolean {
+  return click.linkId == null && click.landingUrl.startsWith('coupon://');
+}
+
 /** Who gets credit for one event, and under which model. */
 interface AttributionDecision {
   model: AttributionModel;
@@ -226,6 +232,21 @@ export async function attributeEvent(
     // replayed against a newer click — is hours or months off, never minutes.
     if (ageMs < -CLICK_AFTER_EVENT_GRACE_MS || ageMs > windowMs) continue;
     eligible.push(click);
+  }
+
+  // A coupon redemption's synthetic click is stamped at checkout, so under
+  // last click a code always beats the link click that brought the
+  // customer. A program can turn that round (Program.couponsYieldToLinks,
+  // off by default): its coupon clicks drop out whenever a link click is in
+  // the window, so the code credits only when no link did. Each coupon click
+  // follows its own program's setting. A renewal inherits its first
+  // conversion's touches (priorConversions) before this matters, so the
+  // setting decides who wins a customer, not who keeps them.
+  if (eligible.some((c) => !isCouponClick(c))) {
+    for (let i = eligible.length - 1; i >= 0; i--) {
+      const click = eligible[i]!;
+      if (isCouponClick(click) && click.campaign.couponsYieldToLinks) eligible.splice(i, 1);
+    }
   }
 
   // A repeat of a conversion the customer already made keeps that

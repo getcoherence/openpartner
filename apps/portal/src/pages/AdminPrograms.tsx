@@ -45,6 +45,7 @@ interface Program {
   attributionModel: string;
   /** Older API responses during a deploy gap omit it; treat as on. */
   renewalsStayWithPartner?: boolean;
+  couponsYieldToLinks?: boolean;
   destinationUrl: string;
   deepLinkAllowedDomains: string | null;
   holdbackDays: number | null;
@@ -366,6 +367,7 @@ function EditProgramDates({
   const [renewalsStayWithPartner, setRenewalsStayWithPartner] = useState(
     campaign.renewalsStayWithPartner ?? true,
   );
+  const [couponsYieldToLinks, setCouponsYieldToLinks] = useState(campaign.couponsYieldToLinks ?? false);
 
   const save = useMutation({
     mutationFn: () =>
@@ -388,6 +390,7 @@ function EditProgramDates({
           holdbackDays: Number(holdbackDays) || 0,
           revenueEventTypes: parseEventTypes(revenueEventTypes),
           renewalsStayWithPartner,
+          couponsYieldToLinks,
         },
       }),
     onSuccess: onSaved,
@@ -493,6 +496,7 @@ function EditProgramDates({
         windowDays={campaign.attributionWindowDays}
         onChange={setRenewalsStayWithPartner}
       />
+      <CouponPrecedenceField enabled={couponsYieldToLinks} onChange={setCouponsYieldToLinks} />
 
       <div style={{ display: 'flex', gap: 8 }}>
         <Button
@@ -614,6 +618,7 @@ function CreateProgram({
   const [windowDays, setWindowDays] = useState('60');
   const [model, setModel] = useState<'last_click' | 'first_click' | 'linear' | 'position'>('last_click');
   const [renewalsStayWithPartner, setRenewalsStayWithPartner] = useState(true);
+  const [couponsYieldToLinks, setCouponsYieldToLinks] = useState(false);
   const [holdbackDays, setHoldbackDays] = useState('0');
   const [startsAt, setStartsAt] = useState('');
   const [endsAt, setEndsAt] = useState('');
@@ -633,6 +638,7 @@ function CreateProgram({
           attributionWindowDays: Number(windowDays),
           attributionModel: model,
           renewalsStayWithPartner,
+          couponsYieldToLinks,
           holdbackDays: Number(holdbackDays) || undefined,
           startsAt: startsAt ? new Date(startsAt).toISOString() : null,
           endsAt: endsAt ? new Date(endsAt).toISOString() : null,
@@ -721,6 +727,7 @@ function CreateProgram({
         windowDays={Number(windowDays) || 60}
         onChange={setRenewalsStayWithPartner}
       />
+      <CouponPrecedenceField enabled={couponsYieldToLinks} onChange={setCouponsYieldToLinks} />
       <div style={{ marginBottom: 16 }}>
         <LabelWithHelp
           label="Payout holdback (days)"
@@ -875,6 +882,37 @@ function RenewalsField({
             Off: every payment is credited to whoever has the latest click in the {windowDays}-day
             window (or as your model splits it). A customer who renews {windowDays} days after
             their last partner click earns nobody a commission.
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Program.couponsYieldToLinks. Off: a code redeemed at checkout is the
+ * latest touch, so it beats the link that brought the customer. On: a code
+ * credits only when no partner link click is in the window. Admin →
+ * Tracking health counts how often a code took a sale from a link.
+ */
+function CouponPrecedenceField({ enabled, onChange }: { enabled: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: theme.text, marginBottom: 6 }}>
+        <input type="checkbox" checked={enabled} onChange={(e) => onChange(e.target.checked)} />
+        Partner links beat coupon codes
+      </label>
+      <div style={{ fontSize: 12, color: theme.textDim, marginLeft: 24 }}>
+        {enabled ? (
+          <>
+            On: when a customer clicked a partner&rsquo;s link inside the window, that click is credited even if
+            they check out with another partner&rsquo;s code. A code credits on its own only when no link did.
+            Renewals stay with whoever won the customer&rsquo;s first payment, so existing customers don&rsquo;t move.
+          </>
+        ) : (
+          <>
+            Off (default): a code used at checkout counts as the customer&rsquo;s latest touch, so it takes the
+            sale from a partner whose link brought them earlier.
           </>
         )}
       </div>
