@@ -15,6 +15,11 @@ Payoneer) are out of scope: they would put OpenPartner in the flow of funds.
 
 The Connect and funded rails are unchanged.
 
+For partners paid by PayPal, the brand can also skip the upload: **Pay with
+PayPal** sends the same payouts through PayPal's Payouts API with the
+brand's own PayPal app, in one click ([paypal-payouts.md](paypal-payouts.md)).
+A payout is in one file or one PayPal batch, never both.
+
 ## Payout details
 
 One `PartnerPayoutProfile` row per partner
@@ -132,6 +137,7 @@ went through.
 | `pay_individually` | UPI or `other`: pay it yourself, then mark it sent |
 | `currency_not_supported` | PayPal can't send the payout currency (INR, for one); Wise can't send from it, or can't pay the account's currency yet (INR) |
 | `details_incomplete` | Wise needs the holder's address for a payout sent in USD or AUD, and the bank details have none |
+| `over_paypal_limit` | more than PayPal sends in one payment in this currency (USD 60,000, EUR 55,000, GBP 50,000…; `PAYPAL_ITEM_LIMITS`, from PayPal's "Payout transaction limits", checked 2026-10-22) |
 | `country_not_supported` | OpenPartner Cloud: the partner's declared country, or the account's or address's country, is on the country list ([country-access.md](country-access.md)) |
 | `screening_confirmed` | OpenPartner Cloud: an operator confirmed a sanctions-list match ([sanctions-screening.md](sanctions-screening.md)) |
 
@@ -298,11 +304,17 @@ docs/payout-statements.md. A payout in a file prints that file's PayPal
 Customer ID or Wise payment reference as its reference; a payout paid one
 at a time prints the reference given when it was confirmed.
 
+## PayPal batches sent through the API
+
+Pay with PayPal ([paypal-payouts.md](paypal-payouts.md)) stamps its payouts
+the same way, with `via: "api"` and the batch id as the `exportId`. So a
+payout in a PayPal batch is in no file, and the reverse. PayPal reports
+what happened to them, so the file routes (download again, confirm,
+discard) don't reach an API batch, and marking one of its payouts sent by
+hand is refused while the batch is open (`reason: "in_paypal_batch"`).
+
 ## Not yet
 
-- Sending through the PayPal Payouts API with the brand's own credentials,
-  so the brand clicks once instead of uploading. It would keep the same
-  money flow.
 - Letting a brand choose which methods its partners may pick.
 - INR targets in the Wise file, once the purpose of payment has a column
   (see [Wise columns](#wise-columns)).

@@ -776,6 +776,16 @@ const DoNotPayReason = z.enum(DO_NOT_PAY_REASONS).openapi({
   description:
     "OpenPartner Cloud: the payout must not be paid. `country_not_supported`: the partner, or their payout account, is in a country OpenPartner doesn't serve. `screening_confirmed`: a confirmed sanctions-list match. Every confirm refuses it.",
 });
+const PaypalItemStatus = z
+  .object({
+    itemId: z.string().openapi({ description: 'PayPal’s payout_item_id.' }),
+    status: z.string().openapi({ description: 'PayPal’s transaction_status: SUCCESS, PENDING, UNCLAIMED, ONHOLD, FAILED, RETURNED, BLOCKED, REFUNDED, REVERSED.' }),
+    transactionId: z.string().nullable(),
+    amount: Decimal.nullable().openapi({ description: 'What PayPal sent: whole units where PayPal takes no decimals (HUF, JPY, TWD).' }),
+    currency: z.string().nullable(),
+    error: z.string().nullable().openapi({ description: 'PayPal’s error name for an item that didn’t go through (RECEIVER_UNREGISTERED, …).' }),
+  })
+  .openapi('PaypalItemStatus');
 
 export const ManualPayoutRuns = z
   .object({
@@ -820,6 +830,9 @@ export const ManualPayoutRun = z
         }),
       )
       .openapi({ description: 'Files made from this run that still hold payouts to confirm.' }),
+    inPaypalBatches: z.number().int().openapi({
+      description: 'Pending payouts in a PayPal Payouts batch OpenPartner sent with your PayPal app. List the batches with `GET /payouts/runs/{runId}/paypal-batches`.',
+    }),
     excluded: z
       .array(z.object({ reason: z.enum(MANUAL_EXCLUSION_REASONS), count: z.number().int() }))
       .openapi({ description: 'Pending payouts in no file, per reason (see ManualRunPayout.excluded).' }),
@@ -848,18 +861,22 @@ export const ManualRunPayout = z
       z.object({
         exportId: id,
         provider: ManualPayoutProvider,
+        via: z.enum(['file', 'api']).openapi({
+          description: '`file`: a batch file you upload. `api`: a PayPal Payouts batch OpenPartner sent with your PayPal app; `exportId` is the batch id and `paypal` what PayPal last said.',
+        }),
         createdAt: ts,
         reference: z.string().nullable().openapi({
           description:
             'What identifies this payout in the file: the PayPal Customer ID (the payout id), or the Wise payment reference (its last 10 characters; none for JPY or COP).',
         }),
         destinationChanged: z.boolean().openapi({ description: 'The partner changed or removed their payout details after the file was made.' }),
+        paypal: orNull(PaypalItemStatus).openapi({ description: 'A PayPal Payouts batch: this payout’s item, once PayPal has listed it.' }),
       }),
-    ).openapi({ description: 'The file this payout is in. It stays in that file, and only that file, until it is confirmed or the file is discarded.' }),
+    ).openapi({ description: 'The file (or PayPal Payouts batch) this payout is in. It stays there, and only there, until it is confirmed, the file is discarded, or PayPal reports it failed or returned.' }),
     ready: ManualPayoutProvider.nullable().openapi({ description: 'The file a new export would put this payout in.' }),
     excluded: z.enum(MANUAL_EXCLUSION_REASONS).nullable().openapi({
       description:
-        "Why a payout is in no file: `no_payout_details`, `details_unreadable`, `pay_individually` (a UPI ID or instructions: pay it yourself), `currency_not_supported` (PayPal can't send INR; Wise can't send from this currency, or to INR yet), `details_incomplete` (Wise needs the holder's address for a payout sent in USD or AUD), and on OpenPartner Cloud the do-not-pay reasons `country_not_supported` and `screening_confirmed`.",
+        "Why a payout is in no file: `no_payout_details`, `details_unreadable`, `pay_individually` (a UPI ID or instructions: pay it yourself), `currency_not_supported` (PayPal can't send INR; Wise can't send from this currency, or to INR yet), `details_incomplete` (Wise needs the holder's address for a payout sent in USD or AUD), `over_paypal_limit` (more than PayPal sends in one payment in this currency, e.g. USD 60,000), and on OpenPartner Cloud the do-not-pay reasons `country_not_supported` and `screening_confirmed`.",
     }),
     complianceWarning: PayoutHoldReason.nullable().openapi({
       description: 'OpenPartner Cloud: the partner is on a compliance hold. A sanctions review or pending screening stays payable; check before you send it.',
@@ -897,12 +914,75 @@ export const BulkConfirmResult = z
       z.object({
         payoutId: id,
         error: z.enum(['payout_not_found', 'not_confirmable']),
-        reason: DoNotPayReason.optional(),
+        reason: z
+          .union([DoNotPayReason, z.literal('in_paypal_batch')])
+          .optional()
+          .openapi({ description: 'A do-not-pay hold, or `in_paypal_batch`: PayPal reports whether this payout was paid.' }),
         detail: z.string().optional(),
       }),
     ),
   })
   .openapi('BulkConfirmResult');
+
+// ---------- Pay with PayPal ----------
+
+export const PaypalEnvironment = z.enum(['live', 'sandbox']);
+
+export const PaypalConnection = z
+  .object({
+    id,
+    environment: PaypalEnvironment,
+    clientIdPreview: z.string().openapi({ description: 'The client id’s first 6 and last 4 characters. The secret is never returned.' }),
+    appId: z.string().nullable().openapi({ description: 'PayPal’s id for the app, from the token call.' }),
+    payoutsEnabled: z.boolean().openapi({
+      description: 'PayPal granted the app the Payouts scope. False: PayPal hasn’t enabled Payouts on the account yet, and sends would be refused.',
+    }),
+    webhook: z.object({
+      registered: z.boolean().openapi({ description: 'OpenPartner registered a webhook on your app, so status arrives as PayPal sends it. Otherwise batches are polled every few minutes.' }),
+      error: z.string().nullable(),
+    }),
+    active: z.boolean().openapi({ description: 'Pay with PayPal sends with this environment.' }),
+    connectedAt: ts,
+    verifiedAt: tsNullable,
+    lastError: z.string().nullable(),
+    lastErrorAt: tsNullable,
+    openBatches: z.number().int().openapi({ description: 'Batches sent with this app that are still in flight. Disconnecting waits for them.' }),
+  })
+  .openapi('PaypalConnection');
+
+export const PaypalBatch = z
+  .object({
+    batchId: id.openapi({ description: 'Also the `sender_batch_id` PayPal shows, and each payout’s `exportId`.' }),
+    runId: id,
+    environment: PaypalEnvironment,
+    currency: z.string(),
+    itemCount: z.number().int(),
+    total: Decimal,
+    state: z.enum(['intent', 'posted', 'submitted', 'completed', 'failed', 'denied', 'released', 'reconcile_required']).openapi({
+      description:
+        '`intent`: committed, not sent yet. `posted`: sent, PayPal’s answer not in yet (re-sent automatically; PayPal never makes a second batch for the same id). `submitted`: PayPal has it and is paying. `completed`: every payout paid or released. `failed`: PayPal refused it outright; nothing was sent and the payouts are back to pending. `denied`: PayPal denied the batch; payouts released. `released`: you released it after checking PayPal. `reconcile_required`: OpenPartner can’t tell whether it went out; check PayPal, then `POST /payouts/paypal-batches/{batchId}/resolve`.',
+    }),
+    payoutBatchId: z.string().nullable().openapi({ description: 'PayPal’s id for the batch.' }),
+    batchStatus: z.string().nullable().openapi({ description: 'PayPal’s batch_status: PENDING, PROCESSING, SUCCESS, DENIED, CANCELED.' }),
+    summary: z.object({
+      paid: z.number().int(),
+      released: z.number().int().openapi({ description: 'Back to pending: failed, returned, refunded, or the batch didn’t go out.' }),
+      unclaimed: z.number().int().openapi({ description: 'PayPal emailed the partner to claim it (no PayPal account at that email). Returned after 30 days unless claimed.' }),
+      processing: z.number().int(),
+    }),
+    rehearsal: orNull(
+      z.object({ paid: z.number().int(), unclaimed: z.number().int(), failed: z.number().int() }),
+    ).openapi({
+      description:
+        'A finished **sandbox** batch: what PayPal’s sandbox did with its test money. A sandbox batch never marks a payout paid; once PayPal settles every item its payouts go back to pending, ready for a live batch or a file.',
+    }),
+    lastError: z.string().nullable(),
+    createdAt: ts,
+    createdBy: z.enum(['admin', 'api']),
+    completedAt: tsNullable,
+    lastSyncedAt: tsNullable,
+  })
+  .openapi('PaypalBatch');
 
 // ---------- Reporting ----------
 

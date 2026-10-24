@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCheck, Download, FilePlus2, FileSpreadsheet, Trash2 } from 'lucide-react';
+import { CheckCheck, Download, FilePlus2, FileSpreadsheet, RefreshCw, Send, Trash2 } from 'lucide-react';
 import { api, apiDownload, saveBlob } from '../api.js';
+import { TenantLink } from '../tenant-link.js';
 import { alpha, theme } from '../theme.js';
 import { Button, Card, ErrorBanner, Input, Select, Table, formatDate, money } from '../ui.js';
 import { HOLD_REASON, type HoldReason } from './payout-holds.js';
+import { usePaypalConnections, type PaypalEnvironment } from './admin/PaypalPayoutsCard.js';
 
 type Provider = 'paypal' | 'wise';
 type DoNotPay = 'country_not_supported' | 'screening_confirmed';
@@ -14,6 +16,7 @@ type Exclusion =
   | 'pay_individually'
   | 'currency_not_supported'
   | 'details_incomplete'
+  | 'over_paypal_limit'
   | DoNotPay;
 
 /** GET /payouts/runs */
@@ -41,7 +44,15 @@ interface ManualRun {
     changedCount: number;
     doNotPayCount: number;
   }>;
+  inPaypalBatches?: number;
   excluded: Array<{ reason: Exclusion; count: number }>;
+}
+
+interface PaypalItem {
+  itemId: string;
+  status: string;
+  transactionId: string | null;
+  error: string | null;
 }
 
 /** GET /payouts/runs/:runId/payouts */
@@ -59,11 +70,37 @@ interface RunPayout {
     updatedAt: string;
     updatedBy: 'partner' | 'admin' | 'api';
   } | null;
-  export: { exportId: string; provider: Provider; createdAt: string; reference: string | null; destinationChanged: boolean } | null;
+  export: {
+    exportId: string;
+    provider: Provider;
+    via?: 'file' | 'api';
+    createdAt: string;
+    reference: string | null;
+    destinationChanged: boolean;
+    paypal?: PaypalItem | null;
+  } | null;
   ready: Provider | null;
   excluded: Exclusion | null;
   complianceWarning: HoldReason | null;
   doNotPay: DoNotPay | null;
+}
+
+/** GET /payouts/runs/:runId/paypal-batches */
+type BatchState = 'intent' | 'posted' | 'submitted' | 'completed' | 'failed' | 'denied' | 'released' | 'reconcile_required';
+interface PaypalBatch {
+  batchId: string;
+  environment: PaypalEnvironment;
+  currency: string;
+  itemCount: number;
+  total: string;
+  state: BatchState;
+  payoutBatchId: string | null;
+  summary: { paid: number; released: number; unclaimed: number; processing: number };
+  /** A finished sandbox batch: what PayPal's sandbox did with test money. */
+  rehearsal?: { paid: number; unclaimed: number; failed: number } | null;
+  lastError: string | null;
+  createdAt: string;
+  lastSyncedAt: string | null;
 }
 
 /** POST /payouts/runs/:runId/exports */
@@ -81,8 +118,27 @@ const EXCLUSION: Record<Exclusion, string> = {
   pay_individually: 'Pay this one yourself.',
   currency_not_supported: 'No file can send this currency. Pay it another way.',
   details_incomplete: 'Wise needs the account holder’s address for this payout. Ask the partner to add it.',
+  over_paypal_limit: 'More than PayPal sends in one payment. Pay it another way.',
   country_not_supported: 'Country OpenPartner doesn’t serve. Don’t pay.',
   screening_confirmed: 'Confirmed sanctions-list match. Don’t pay.',
+};
+
+const BATCH_STATE: Record<BatchState, string> = {
+  intent: 'Waiting to send',
+  posted: 'Sent, waiting for PayPal to confirm',
+  submitted: 'PayPal is paying',
+  completed: 'Done',
+  failed: 'Not sent',
+  denied: 'Refused by PayPal',
+  released: 'Released',
+  reconcile_required: 'Check this batch in PayPal',
+};
+
+const ITEM_STATUS: Record<string, string> = {
+  PENDING: 'PayPal is paying',
+  ONHOLD: 'On hold at PayPal',
+  UNCLAIMED: 'Unclaimed: PayPal emailed the partner to claim it',
+  SUCCESS: 'Paid',
 };
 
 /** Details changed this recently before a payout get a second look. */
@@ -91,10 +147,11 @@ const RECENT_CHANGE_MS = 7 * 24 * 60 * 60 * 1000;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /**
- * The manual rail's batch files (docs/manual-payout-files.md): pick a run,
- * make PayPal and Wise files for your own accounts, then mark each file as
- * sent once its batch has gone out. A file's payouts are fixed when it's
- * made, so "Mark sent" confirms exactly what was in it.
+ * The manual rail's payouts to send (docs/manual-payout-files.md,
+ * docs/paypal-payouts.md): pick a run, then either make PayPal and Wise
+ * files for your own accounts and mark each as sent once its batch has gone
+ * out, or pay PayPal partners in one click through your own PayPal app. A
+ * file's or batch's payouts are fixed when it's made.
  */
 export function ManualPayoutFiles() {
   const qc = useQueryClient();
@@ -108,6 +165,8 @@ export function ManualPayoutFiles() {
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
   const list = useMemo(() => runs.data?.pages.flatMap((p) => p.runs) ?? [], [runs.data]);
+  const connections = usePaypalConnections();
+  const activePaypal = connections.data?.connections.find((c) => c.active) ?? null;
 
   // Default to the newest run, and move off one that's fully confirmed.
   useEffect(() => {
@@ -131,10 +190,21 @@ export function ManualPayoutFiles() {
     enabled: !!runId,
   });
 
+  const batches = useQuery({
+    queryKey: ['manual-payout-run-paypal', runId],
+    queryFn: () => api<{ batches: PaypalBatch[] }>(`/payouts/runs/${runId}/paypal-batches`),
+    enabled: !!runId,
+    // PayPal pays in the background: keep an eye on batches in flight.
+    refetchInterval: (q) =>
+      (q.state.data?.batches ?? []).some((b) => b.state === 'intent' || b.state === 'posted' || (b.state === 'submitted' && b.summary.processing > 0)) ? 15_000 : false,
+  });
+
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['manual-payout-runs'] });
     qc.invalidateQueries({ queryKey: ['manual-payout-run', runId] });
     qc.invalidateQueries({ queryKey: ['manual-payout-run-payouts', runId] });
+    qc.invalidateQueries({ queryKey: ['manual-payout-run-paypal', runId] });
+    qc.invalidateQueries({ queryKey: ['paypal-connections'] });
     qc.invalidateQueries({ queryKey: ['payouts'] });
   };
 
@@ -145,6 +215,27 @@ export function ManualPayoutFiles() {
       saveBlob(new Blob([file.csv], { type: 'text/csv;charset=utf-8' }), file.filename);
       refresh();
     },
+  });
+
+  const payWithPaypal = useMutation({
+    mutationFn: (currency: string) => api<{ batch: PaypalBatch }>(`/payouts/runs/${runId}/paypal-batches`, { method: 'POST', body: { currency } }),
+    onSettled: refresh,
+  });
+
+  const syncBatch = useMutation({
+    mutationFn: (batchId: string) => api<{ batch: PaypalBatch }>(`/payouts/paypal-batches/${batchId}/sync`, { method: 'POST' }),
+    onSettled: refresh,
+  });
+
+  const resolveBatch = useMutation({
+    mutationFn: (r: { batchId: string; body: { action: 'retry' | 'release' } | { action: 'link'; payoutBatchId: string } }) =>
+      api<{ batch: PaypalBatch }>(`/payouts/paypal-batches/${r.batchId}/resolve`, { method: 'POST', body: r.body }),
+    onSettled: refresh,
+  });
+
+  const cancelUnclaimed = useMutation({
+    mutationFn: (payoutId: string) => api(`/payouts/${payoutId}/paypal-cancel`, { method: 'POST' }),
+    onSettled: refresh,
   });
 
   const downloadAgain = useMutation({
@@ -171,10 +262,17 @@ export function ManualPayoutFiles() {
     onSuccess: refresh,
   });
 
-  if (runs.isLoading || list.length === 0) return null;
-
-  const busy = makeFile.isPending || confirmFile.isPending || discardFile.isPending || confirmOne.isPending;
+  const busy =
+    makeFile.isPending ||
+    payWithPaypal.isPending ||
+    syncBatch.isPending ||
+    resolveBatch.isPending ||
+    cancelUnclaimed.isPending ||
+    confirmFile.isPending ||
+    discardFile.isPending ||
+    confirmOne.isPending;
   const rows = payouts.data?.pages.flatMap((p) => p.payouts) ?? [];
+  const paypalBatches = batches.data?.batches ?? [];
 
   return (
     <Card style={{ marginBottom: 14 }}>
@@ -200,123 +298,304 @@ export function ManualPayoutFiles() {
         )}
       </div>
       <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 14, lineHeight: 1.5, maxWidth: 760 }}>
-        Make a file and upload it to your own PayPal (Send Money → Make a Mass Payment) or Wise (Payments → Batch)
-        account. The money goes straight from you to your partners. A file’s payouts are fixed when you make it: once its
-        batch has gone out, mark that file as sent.
+        Partners you pay yourself (the manual rail) land here after each payout run. Make a file and upload it to your own
+        PayPal (Send Money → Make a Mass Payment) or Wise (Payments → Batch) account, then mark it as sent once the batch
+        has gone out.{' '}
+        {activePaypal?.environment === 'live' ? (
+          <>
+            Or pay PayPal partners in one click: <strong>Pay with PayPal</strong> sends the batch from your PayPal app and
+            marks each payout paid as PayPal pays it.
+          </>
+        ) : activePaypal ? (
+          <>
+            Your PayPal <strong>sandbox</strong> app is the one connected for sending, so PayPal batches are tests with
+            test money: nothing is marked paid. Switch to your live app in Settings to pay for real.
+          </>
+        ) : (
+          <>
+            To pay PayPal partners in one click instead, <TenantLink to="/admin/settings">connect your PayPal app</TenantLink> in
+            Settings.
+          </>
+        )}{' '}
+        Either way the money goes straight from you to your partners.
       </div>
       <ErrorBanner
-        error={runs.error ?? run.error ?? payouts.error ?? makeFile.error ?? downloadAgain.error ?? confirmFile.error ?? discardFile.error ?? confirmOne.error}
+        error={
+          runs.error ??
+          run.error ??
+          payouts.error ??
+          batches.error ??
+          makeFile.error ??
+          payWithPaypal.error ??
+          syncBatch.error ??
+          resolveBatch.error ??
+          cancelUnclaimed.error ??
+          downloadAgain.error ??
+          confirmFile.error ??
+          discardFile.error ??
+          confirmOne.error
+        }
       />
 
-      {run.data && (
-        <>
-          {run.data.exports.length > 0 && (
-            <Section title="Files made">
-              {run.data.exports.map((e) => (
-                <Row key={e.exportId}>
-                  <div style={{ flex: 1, minWidth: 220, fontSize: 13 }}>
-                    <span style={{ fontWeight: 600 }}>{PROVIDER[e.provider]}</span>
-                    <span style={{ color: theme.textMuted }}>
-                      {' '}
-                      · {e.currency} · {plural(e.pendingCount, 'payout')} to confirm · {money(e.pendingTotal, e.currency)} · made{' '}
-                      {formatDate(e.createdAt, { relative: true })}
-                    </span>
-                    {e.changedCount > 0 && (
-                      <Warn>
-                        {plural(e.changedCount, 'partner')} changed their payout details since this file was made. A new
-                        download carries the new details or leaves them out.
-                      </Warn>
-                    )}
-                    {e.doNotPayCount > 0 && (
-                      <Warn danger>
-                        {plural(e.doNotPayCount, 'payout')} in this file must not be paid now, and won’t be marked as sent.
-                      </Warn>
-                    )}
-                  </div>
-                  <Button size="sm" variant="ghost" icon={<Download size={13} />} onClick={() => downloadAgain.mutate(e)} disabled={busy}>
-                    Download again
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    icon={<Trash2 size={13} />}
-                    onClick={() => {
-                      if (window.confirm('Discard this file? Only do this if you never uploaded it. Its payouts can then go into a new file.')) {
-                        discardFile.mutate(e.exportId);
-                      }
-                    }}
-                    disabled={busy}
-                  >
-                    Discard
-                  </Button>
-                  <Button
-                    size="sm"
-                    icon={<CheckCheck size={13} />}
-                    onClick={() => {
-                      const what = e.pendingCount === 1 ? `this ${PROVIDER[e.provider]} file’s payout` : `this ${PROVIDER[e.provider]} file’s ${e.pendingCount} payouts`;
-                      if (window.confirm(`Mark ${what} as sent? Only do this once the batch has gone out.`)) confirmFile.mutate(e.exportId);
-                    }}
-                    disabled={busy}
-                  >
-                    Mark sent
-                  </Button>
-                </Row>
-              ))}
-            </Section>
-          )}
+      {runs.isLoading ? (
+        <div style={{ fontSize: 13, color: theme.textMuted }}>Loading…</div>
+      ) : list.length === 0 ? (
+        <div style={{ fontSize: 13, color: theme.textMuted, padding: '10px 12px', background: theme.bg, borderRadius: theme.radiusSm }}>
+          Nothing to send right now. When a payout run pays a partner on the manual rail (no Stripe Connect account, or the
+          rail set to manual in Settings), their payout shows up here, ready for a file or for Pay with PayPal.
+        </div>
+      ) : (
+        run.data && (
+          <>
+            {paypalBatches.length > 0 && (
+              <Section title="Sent with PayPal">
+                {paypalBatches.map((b) => (
+                  <BatchRow
+                    key={b.batchId}
+                    b={b}
+                    busy={busy}
+                    onSync={() => syncBatch.mutate(b.batchId)}
+                    onResolve={(body) => resolveBatch.mutate({ batchId: b.batchId, body })}
+                  />
+                ))}
+              </Section>
+            )}
 
-          {run.data.ready.length > 0 && (
-            <Section title="Ready for a new file">
-              {run.data.ready.map((g) => (
-                <Row key={`${g.provider}:${g.currency}`}>
-                  <div style={{ flex: 1, minWidth: 220, fontSize: 13 }}>
-                    <span style={{ fontWeight: 600 }}>{PROVIDER[g.provider]}</span>
-                    <span style={{ color: theme.textMuted }}>
-                      {' '}
-                      · {g.currency} · {plural(g.count, 'payout')} · {money(g.total, g.currency)}
-                    </span>
-                  </div>
-                  <Button size="sm" variant="secondary" icon={<FilePlus2 size={13} />} onClick={() => makeFile.mutate({ provider: g.provider, currency: g.currency })} disabled={busy}>
-                    Make file
-                  </Button>
-                </Row>
-              ))}
-            </Section>
-          )}
+            {run.data.exports.length > 0 && (
+              <Section title="Files made">
+                {run.data.exports.map((e) => (
+                  <Row key={e.exportId}>
+                    <div style={{ flex: 1, minWidth: 220, fontSize: 13 }}>
+                      <span style={{ fontWeight: 600 }}>{PROVIDER[e.provider]}</span>
+                      <span style={{ color: theme.textMuted }}>
+                        {' '}
+                        · {e.currency} · {plural(e.pendingCount, 'payout')} to confirm · {money(e.pendingTotal, e.currency)} · made{' '}
+                        {formatDate(e.createdAt, { relative: true })}
+                      </span>
+                      {e.changedCount > 0 && (
+                        <Warn>
+                          {plural(e.changedCount, 'partner')} changed their payout details since this file was made. A new
+                          download carries the new details or leaves them out.
+                        </Warn>
+                      )}
+                      {e.doNotPayCount > 0 && (
+                        <Warn danger>
+                          {plural(e.doNotPayCount, 'payout')} in this file must not be paid now, and won’t be marked as sent.
+                        </Warn>
+                      )}
+                    </div>
+                    <Button size="sm" variant="ghost" icon={<Download size={13} />} onClick={() => downloadAgain.mutate(e)} disabled={busy}>
+                      Download again
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon={<Trash2 size={13} />}
+                      onClick={() => {
+                        if (window.confirm('Discard this file? Only do this if you never uploaded it. Its payouts can then go into a new file.')) {
+                          discardFile.mutate(e.exportId);
+                        }
+                      }}
+                      disabled={busy}
+                    >
+                      Discard
+                    </Button>
+                    <Button
+                      size="sm"
+                      icon={<CheckCheck size={13} />}
+                      onClick={() => {
+                        const what = e.pendingCount === 1 ? `this ${PROVIDER[e.provider]} file’s payout` : `this ${PROVIDER[e.provider]} file’s ${e.pendingCount} payouts`;
+                        if (window.confirm(`Mark ${what} as sent? Only do this once the batch has gone out.`)) confirmFile.mutate(e.exportId);
+                      }}
+                      disabled={busy}
+                    >
+                      Mark sent
+                    </Button>
+                  </Row>
+                ))}
+              </Section>
+            )}
 
-          {rows.length === 0 && !payouts.isLoading ? (
-            <div style={{ fontSize: 13, color: theme.textMuted }}>Every payout in this run is marked as sent.</div>
-          ) : (
-            <>
-              <Table
-                columns={['Partner', { label: 'Amount', align: 'right' }, 'Pays to', 'File']}
-                rows={rows.map((p) => [
-                  <div>
-                    <div style={{ fontWeight: 500 }}>{p.partnerName}</div>
-                    <div style={{ fontSize: 12, color: theme.textDim }}>{p.partnerEmail}</div>
-                  </div>,
-                  <span style={{ fontWeight: 500 }}>{money(p.amount, p.currency)}</span>,
-                  <div style={{ fontSize: 13 }}>
-                    <div>{p.destination?.summary ?? <span style={{ color: theme.textDim }}>—</span>}</div>
-                    <Notes p={p} />
-                  </div>,
-                  // Keyed: a confirmed payout leaves the list, and its open
-                  // reference form mustn't pass to the row that moves up.
-                  <FileCell key={p.payoutId} p={p} busy={busy} onConfirm={(reference) => confirmOne.mutate({ payoutId: p.payoutId, reference })} />,
-                ])}
-              />
-              {payouts.hasNextPage && (
-                <div style={{ marginTop: 10 }}>
-                  <Button size="sm" variant="secondary" onClick={() => void payouts.fetchNextPage()} disabled={payouts.isFetchingNextPage}>
-                    {payouts.isFetchingNextPage ? 'Loading…' : 'Show more'}
-                  </Button>
-                </div>
-              )}
-            </>
-          )}
-        </>
+            {run.data.ready.length > 0 && (
+              <Section title="Ready to send">
+                {run.data.ready.map((g) => (
+                  <Row key={`${g.provider}:${g.currency}`}>
+                    <div style={{ flex: 1, minWidth: 220, fontSize: 13 }}>
+                      <span style={{ fontWeight: 600 }}>{PROVIDER[g.provider]}</span>
+                      <span style={{ color: theme.textMuted }}>
+                        {' '}
+                        · {g.currency} · {plural(g.count, 'payout')} · {money(g.total, g.currency)}
+                      </span>
+                    </div>
+                    <Button size="sm" variant="secondary" icon={<FilePlus2 size={13} />} onClick={() => makeFile.mutate({ provider: g.provider, currency: g.currency })} disabled={busy}>
+                      Make file
+                    </Button>
+                    {g.provider === 'paypal' && activePaypal && (
+                      <Button
+                        size="sm"
+                        icon={<Send size={13} />}
+                        onClick={() => {
+                          const n = Math.min(g.count, 5000);
+                          const what = n === g.count ? `${plural(n, 'payout')} totalling ${money(g.total, g.currency)}` : `the first ${n.toLocaleString()} of these payouts`;
+                          const ask =
+                            activePaypal.environment === 'sandbox'
+                              ? `Test ${what} with your PayPal sandbox app? PayPal’s sandbox moves test money only: nothing is marked paid, and the payouts come back to send when it’s done.`
+                              : `Send ${what} from your live PayPal account now? PayPal moves the money as soon as it accepts the batch.`;
+                          if (window.confirm(ask)) payWithPaypal.mutate(g.currency);
+                        }}
+                        disabled={busy}
+                      >
+                        {payWithPaypal.isPending ? 'Sending…' : activePaypal.environment === 'sandbox' ? 'Test with PayPal sandbox' : 'Pay with PayPal'}
+                      </Button>
+                    )}
+                  </Row>
+                ))}
+              </Section>
+            )}
+
+            {rows.length === 0 && !payouts.isLoading ? (
+              <div style={{ fontSize: 13, color: theme.textMuted }}>Every payout in this run is marked as sent.</div>
+            ) : (
+              <>
+                <Table
+                  columns={['Partner', { label: 'Amount', align: 'right' }, 'Pays to', 'File']}
+                  rows={rows.map((p) => [
+                    <div>
+                      <div style={{ fontWeight: 500 }}>{p.partnerName}</div>
+                      <div style={{ fontSize: 12, color: theme.textDim }}>{p.partnerEmail}</div>
+                    </div>,
+                    <span style={{ fontWeight: 500 }}>{money(p.amount, p.currency)}</span>,
+                    <div style={{ fontSize: 13 }}>
+                      <div>{p.destination?.summary ?? <span style={{ color: theme.textDim }}>—</span>}</div>
+                      <Notes p={p} />
+                    </div>,
+                    // Keyed: a confirmed payout leaves the list, and its open
+                    // reference form mustn't pass to the row that moves up.
+                    <FileCell
+                      key={p.payoutId}
+                      p={p}
+                      busy={busy}
+                      onConfirm={(reference) => confirmOne.mutate({ payoutId: p.payoutId, reference })}
+                      onCancelUnclaimed={() => {
+                        if (window.confirm(`Cancel the unclaimed PayPal payment to ${p.partnerName}? PayPal returns the money to your balance, and the payout goes back to “to send”.`)) {
+                          cancelUnclaimed.mutate(p.payoutId);
+                        }
+                      }}
+                    />,
+                  ])}
+                />
+                {payouts.hasNextPage && (
+                  <div style={{ marginTop: 10 }}>
+                    <Button size="sm" variant="secondary" onClick={() => void payouts.fetchNextPage()} disabled={payouts.isFetchingNextPage}>
+                      {payouts.isFetchingNextPage ? 'Loading…' : 'Show more'}
+                    </Button>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )
       )}
     </Card>
+  );
+}
+
+function BatchRow({
+  b,
+  busy,
+  onSync,
+  onResolve,
+}: {
+  b: PaypalBatch;
+  busy: boolean;
+  onSync: () => void;
+  onResolve: (body: { action: 'retry' | 'release' } | { action: 'link'; payoutBatchId: string }) => void;
+}) {
+  const s = b.summary;
+  const parts = [
+    s.paid > 0 && `${s.paid} paid`,
+    s.processing > 0 && `${s.processing} processing`,
+    s.unclaimed > 0 && `${s.unclaimed} unclaimed`,
+    s.released > 0 && `${s.released} back to send`,
+  ].filter(Boolean);
+  const open = b.state === 'intent' || b.state === 'posted' || b.state === 'submitted';
+  return (
+    <Row>
+      <div style={{ flex: 1, minWidth: 220, fontSize: 13 }}>
+        <span style={{ fontWeight: 600 }}>PayPal{b.environment === 'sandbox' ? ' sandbox' : ''}</span>
+        <span style={{ color: theme.textMuted }}>
+          {' '}
+          · {b.currency} · {plural(b.itemCount, 'payout')} · {money(b.total, b.currency)} · sent {formatDate(b.createdAt, { relative: true })}
+        </span>
+        <div style={{ fontSize: 12.5, marginTop: 2, color: b.state === 'reconcile_required' || b.state === 'failed' || b.state === 'denied' ? theme.danger : theme.textMuted }}>
+          {b.state === 'submitted' && s.processing === 0 && s.unclaimed > 0 ? 'Waiting for partners to claim their payments' : BATCH_STATE[b.state]}
+          {parts.length > 0 && ` · ${parts.join(' · ')}`}
+          {b.payoutBatchId && (
+            <span style={{ color: theme.textDim }}>
+              {' '}
+              · PayPal batch <code>{b.payoutBatchId}</code>
+            </span>
+          )}
+        </div>
+        {b.rehearsal && (
+          <Warn>
+            Sandbox test: {b.rehearsal.paid} paid, {b.rehearsal.unclaimed} unclaimed, {b.rehearsal.failed} failed, with
+            PayPal’s test money. Nothing was marked paid; these payouts are back to send.
+          </Warn>
+        )}
+        {b.environment === 'sandbox' && open && (
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>
+            A sandbox test: no payout is marked paid, and they all go back to send when PayPal is done.
+          </div>
+        )}
+        {b.lastError && <Warn danger={b.state !== 'posted' && b.state !== 'submitted'}>{b.lastError}</Warn>}
+        {b.state === 'reconcile_required' && (
+          <Warn>
+            Look in your PayPal account (Activity) for a payout batch with ID <code>{b.batchId}</code>. If it’s there, link it
+            so OpenPartner follows it. If it never went out, release the payouts so you can send them again.
+          </Warn>
+        )}
+      </div>
+      {open && (
+        <Button size="sm" variant="ghost" icon={<RefreshCw size={13} />} onClick={onSync} disabled={busy}>
+          Check status
+        </Button>
+      )}
+      {b.state === 'reconcile_required' && (
+        <>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              const id = window.prompt('The PayPal payout batch ID shown in your PayPal account:')?.trim();
+              if (id) onResolve({ action: 'link', payoutBatchId: id });
+            }}
+            disabled={busy}
+          >
+            Link PayPal batch
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => onResolve({ action: 'retry' })} disabled={busy}>
+            Try again
+          </Button>
+        </>
+      )}
+      {(b.state === 'reconcile_required' || b.state === 'intent' || (b.environment === 'sandbox' && open)) && (
+        <Button
+          size="sm"
+          variant="danger"
+          onClick={() => {
+            const ask =
+              b.environment === 'sandbox'
+                ? 'Release these payouts from the sandbox test now? They go back to “to send”.'
+                : 'Release these payouts? Only do this if you checked your PayPal account and this batch never went out. They go back to “to send”.';
+            if (window.confirm(ask)) onResolve({ action: 'release' });
+          }}
+          disabled={busy}
+        >
+          Release
+        </Button>
+      )}
+    </Row>
   );
 }
 
@@ -361,10 +640,37 @@ function Warn({ children, danger }: { children: React.ReactNode; danger?: boolea
  *  confirmPayoutSchema). */
 const MAX_REFERENCE = 100;
 
-function FileCell({ p, busy, onConfirm }: { p: RunPayout; busy: boolean; onConfirm: (reference: string) => void }) {
+function FileCell({
+  p,
+  busy,
+  onConfirm,
+  onCancelUnclaimed,
+}: {
+  p: RunPayout;
+  busy: boolean;
+  onConfirm: (reference: string) => void;
+  onCancelUnclaimed: () => void;
+}) {
   // Marking a payout sent by hand asks for its payment reference first.
   const [confirming, setConfirming] = useState(false);
   const [reference, setReference] = useState('');
+  if (p.export?.via === 'api') {
+    const status = p.export.paypal?.status;
+    return (
+      <div style={{ fontSize: 13, maxWidth: 240 }}>
+        Sent with PayPal · {formatDate(p.export.createdAt, { relative: true })}
+        <div style={{ fontSize: 12, color: status === 'UNCLAIMED' ? theme.warn : theme.textMuted }}>
+          {status ? (ITEM_STATUS[status] ?? status) : 'Waiting for PayPal'}
+          {p.export.paypal?.error && ` (${p.export.paypal.error})`}
+        </div>
+        {status === 'UNCLAIMED' && (
+          <Button size="sm" variant="ghost" style={{ marginTop: 4, marginLeft: -10 }} onClick={onCancelUnclaimed} disabled={busy}>
+            Cancel and get it back
+          </Button>
+        )}
+      </div>
+    );
+  }
   if (p.export) {
     return (
       <div style={{ fontSize: 13 }}>

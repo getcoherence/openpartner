@@ -17,8 +17,6 @@ import {
   confirmManualPayouts,
   createManualExport,
   discardManualExport,
-  doNotPayDetail,
-  doNotPayReason,
   getManualRun,
   listManualRunPayouts,
   listManualRuns,
@@ -242,27 +240,17 @@ payoutsRouter.post('/payouts/:id/confirm', requireAuth, requireAdmin, async (req
   const reference = body.data.reference || null;
   const existing = await db<PayoutRow>(TABLES.Payout).where({ id: req.params.id, tenantId }).first();
   if (!existing) return res.status(404).json({ error: 'payout_not_found' });
-  // A payout the platform must not pay (blocked country, confirmed
-  // sanctions match) is never recorded as paid, whichever path asks.
-  const reason = existing.method === 'manual' && existing.status === 'pending' ? await doNotPayReason(db, tenantId, existing) : null;
-  if (reason) return res.status(409).json({ error: 'not_confirmable', reason, detail: doNotPayDetail(reason) });
-  const updated = await db<PayoutRow>(TABLES.Payout)
-    .where({ id: req.params.id, tenantId, method: 'manual', status: 'pending' })
-    .update({
-      status: 'paid',
-      completedAt: new Date(),
-      ...(reference ? { metadata: db.raw(`metadata || jsonb_build_object('externalReference', ?::text)`, [reference]) } : {}),
-    })
-    .returning('*');
-  if (updated.length === 0) {
-    return res.status(409).json({
-      error: 'not_confirmable',
-      detail: `only pending manual payouts can be confirmed (this one is ${existing.method}/${existing.status})`,
-    });
+  // The bulk confirm's rules, one payout: never one the platform must not
+  // pay (blocked country, confirmed sanctions match), never one a PayPal
+  // batch is paying, decided on the row as it is when updated.
+  const { confirmed, notConfirmable } = await confirmManualPayouts(db, tenantId, [existing.id], { reference });
+  if (confirmed[0]) {
+    // No webhook here: payout.created + commission.paid already fired when
+    // runPayouts wrote the row — confirmation is bookkeeping, not a new event.
+    return res.json({ payout: confirmed[0] });
   }
-  // No webhook here: payout.created + commission.paid already fired when
-  // runPayouts wrote the row — confirmation is bookkeeping, not a new event.
-  res.json({ payout: updated[0]! });
+  const refused = notConfirmable[0]!;
+  res.status(409).json({ error: 'not_confirmable', ...(refused.reason ? { reason: refused.reason } : {}), detail: refused.detail });
 });
 
 /**

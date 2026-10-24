@@ -197,6 +197,10 @@ To finish a restore:
 - **Conversion postbacks.** Rotate the token, then update the URL at every
   network or lender that fires it. The host changes on a hosted to
   self-host move anyway.
+- **Pay with PayPal.** Your PayPal app's credentials never travel (the
+  whole `PaypalConnection` table stays out): connect the app again under
+  Settings → Pay with PayPal. See
+  [What is deliberately NOT in the bundle](#what-is-deliberately-not-in-the-bundle).
 
 Partner postback URLs travel opened; see
 [Partner postback URLs](#partner-postback-urls).
@@ -557,7 +561,7 @@ doesn't keep is worse than a documented gap.
 
 **Never exported** (credentials, platform-operational state, or delivery
 logs — not customer data):
-`Session`, `MagicLinkToken`, `ApiKey`, `ConversionPostbackToken`, `TenantStripeConnection`, `Admin`, `PlatformSession`,
+`Session`, `MagicLinkToken`, `ApiKey`, `ConversionPostbackToken`, `TenantStripeConnection`, `PaypalConnection`, `PaypalPayoutBatch`, `Admin`, `PlatformSession`,
 `PlatformSessionBundle`, `PlatformAdmin`, `PlatformAdminSession`,
 `PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
 `StripeWebhookInbox`, `LocationDeclaration`, `SanctionsScreening`,
@@ -590,6 +594,21 @@ own `STRIPE_SECRET_KEY` is the connection. What the connection *recorded* is
 in the bundle as ordinary raw `Event` rows (tagged `metadata.via =
 'stripe_app'`, with the Stripe account id), and those re-derive on any
 instance like every other Event.
+
+`PaypalConnection` and `PaypalPayoutBatch` (Oct 2026) are the same kind of
+thing for Pay with PayPal ([paypal-payouts.md](paypal-payouts.md)): the
+brand's own PayPal REST app credentials (client secret, cached token and
+webhook id, all sealed) and the delivery state of the batches sent with
+them. Credentials for one deployment, and state that only those
+credentials can follow, so neither is exported, in any format; on another
+instance the brand connects its PayPal app again. What the batches did is
+on the payouts, which are exported: each paid payout's
+`metadata.manualExport` carries `via: "api"`, PayPal's `payoutBatchId`,
+item id, transaction id and status, and a released one carries
+`metadata.paypalReleases`. A restored payout still stamped with a batch
+that didn't travel is never released, because PayPal may still pay that
+batch: once checked in PayPal it can be marked sent. Settle every PayPal
+batch before you migrate.
 
 **Not exported yet — known gaps, not decisions:**
 

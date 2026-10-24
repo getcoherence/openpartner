@@ -11,6 +11,8 @@ import { ulid } from 'ulid';
 
 import { stripeWebhookRouter } from './routes/stripe-webhook.js';
 import { stripeAppWebhookRouter } from './routes/stripe-app-webhook.js';
+import { paypalWebhookRouter } from './routes/paypal-webhook.js';
+import { paypalRouter } from './routes/paypal.js';
 import { stripeAppCallbackRouter, stripeAppRouter } from './routes/stripe-app.js';
 import { identifyRouter } from './routes/identify.js';
 import { eventsRouter } from './routes/events.js';
@@ -205,6 +207,9 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   // Hosted brands' own Stripe accounts, via the OpenPartner Stripe App —
   // its own route and signing secrets (stripe-app-webhook.ts). Raw body too.
   app.use(stripeAppWebhookRouter);
+  // Brands' own PayPal apps, for Pay with PayPal: verified by PayPal, raw
+  // body, the tenant from the connection the URL names (paypal-webhook.ts).
+  app.use(paypalWebhookRouter);
 
   // /import is a full-database bundle; 1 MB caps out around a few
   // hundred Click rows. Give it its own parser before the global one
@@ -305,6 +310,7 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(connectRouter);
   app.use(stripeAppRouter);
   app.use(payoutsRouter);
+  app.use(paypalRouter);
   app.use(recoveryRouter);
   app.use(commissionsRouter);
   app.use(bonusesRouter);
