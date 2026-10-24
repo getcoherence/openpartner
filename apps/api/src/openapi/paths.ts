@@ -1056,6 +1056,36 @@ Called with the brand's OpenPartner Network federation key, the bonus is recorde
   });
 
   r.operation({
+    method: 'get',
+    path: '/payouts/:id/statement',
+    tag: 'Payouts',
+    operationId: 'getPayoutStatement',
+    summary: "Get a payout's statement",
+    description: `Remittance advice for one payout: who paid whom, how, and for what. A printable HTML page by default (print it, or save it as a PDF from the browser's print dialog); \`?format=json\` returns the same data.
+
+It lists the payout's commissions (date, program, the event it was earned on, amount), its bonuses, and the refund clawbacks deducted from it, with totals per currency and the amount paid. It names your business (the legal name and address from \`POST /config/payout-statements\`, else the program name; on OpenPartner Cloud, the GSTIN on your billing profile), the partner, and where the payout went, **masked**: a full account number, email or UPI ID is never shown. A pending or failed payout says so.
+
+It is built from the payout's records each time, so it always agrees with them. It is not a tax invoice.`,
+    access: {
+      kind: 'handler',
+      rule: "an admin key, a key holding `payouts:read`, or a partner (session or key) for one of their own payouts. Another partner's payout answers `404 payout_not_found`, like one that doesn't exist.",
+      scopes: ['payouts:read'],
+      partner: true,
+    },
+    query: payouts.statementQuerySchema,
+    responses: {
+      200: {
+        description: 'The statement.',
+        content: {
+          'text/html': { schema: z.string() },
+          'application/json': { schema: z.object({ statement: S.PayoutStatement }) },
+        },
+      },
+    },
+    errors: { 400: ['invalid_query'], 404: ['payout_not_found'] },
+  });
+
+  r.operation({
     method: 'post',
     path: '/payouts/confirm',
     tag: 'Payouts',
@@ -1621,5 +1651,29 @@ The file's payouts are fixed here: each is stamped with the \`exportId\`, held o
     access: { kind: 'admin' },
     body: settings.partnerAccessSchema.openapi('UpdatePartnerAccessSettingsRequest'),
     responses: { 200: { description: 'The saved setting.', schema: S.PartnerAccessSettings } },
+  });
+
+  // ------------------------------------------------ Payout statements
+  r.operation({
+    method: 'get',
+    path: '/config/payout-statements',
+    tag: 'Payouts',
+    operationId: 'getPayoutStatementSettings',
+    summary: 'Get what payout statements print',
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'The settings.', schema: S.PayoutStatementSettings } },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/config/payout-statements',
+    tag: 'Payouts',
+    operationId: 'updatePayoutStatementSettings',
+    summary: 'Set what payout statements print',
+    description:
+      'Your legal name and address, a footer, and a prefix for statement numbers (`GET /payouts/{id}/statement`). Omitted fields keep their value; `""` or `null` clears one. `taxLines` is a placeholder, off by default: OpenPartner records no tax amounts yet, so ask your accountant which lines (GST, TDS) you need before turning it on. Also on Admin → Settings.',
+    access: { kind: 'admin' },
+    body: settings.payoutStatementSettingsSchema.openapi('UpdatePayoutStatementSettingsRequest'),
+    responses: { 200: { description: 'The saved settings.', schema: S.PayoutStatementSettings } },
   });
 }

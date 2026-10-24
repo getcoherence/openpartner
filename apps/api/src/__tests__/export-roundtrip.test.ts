@@ -657,6 +657,13 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
       value: { networkListingSkipped: true },
       updatedAt: new Date(),
     });
+    // And what its payout statements print.
+    await db(TABLES.Config).insert({
+      tenantId: TENANT,
+      key: 'payout_statements',
+      value: { legalName: 'Volza Technologies Pvt Ltd', numberPrefix: 'VZ-', taxLines: { enabled: false, labels: ['Tax withheld'] } },
+      updatedAt: new Date(),
+    });
 
     const bundle = await exportAll(db, TENANT);
     const keys = (bundle[TABLES.Config] as Array<{ key: string }>).map((r) => r.key).sort();
@@ -670,9 +677,10 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
       [TABLES.Config]: [...bundle[TABLES.Config]!, { tenantId: 'x', key: 'network_membership', value: others.network_membership }],
     };
     const report = await importBundle(db, TENANT, smuggled);
-    expect(report.inserted[TABLES.Config]).toBe(4);
+    expect(report.inserted[TABLES.Config]).toBe(5);
     expect((await db(TABLES.Config).where({ key: 'partner_access' }).first()).value).toEqual({ uninvitedPortalAccess: false });
     expect((await db(TABLES.Config).where({ key: 'onboarding' }).first()).value).toEqual({ networkListingSkipped: true });
+    expect((await db(TABLES.Config).where({ key: 'payout_statements' }).first()).value).toMatchObject({ legalName: 'Volza Technologies Pvt Ltd', numberPrefix: 'VZ-' });
     expect(report.skipped[TABLES.Config]).toBe(1);
     expect(await db(TABLES.Config).where({ key: 'network_membership' })).toHaveLength(0);
     expect((await db(TABLES.Config).where({ key: 'partner_signup' }).first()).value).toEqual({

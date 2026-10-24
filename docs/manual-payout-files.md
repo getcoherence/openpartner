@@ -269,6 +269,10 @@ The files carry full payout details, so every file route is admin-only and
 `Cache-Control: no-store`. No confirm fires webhooks: `payout.created` and
 `commission.paid` fired when the run wrote the payouts.
 
+Every payout also has a statement, with the details masked: see
+docs/payout-statements.md. A payout in a file prints that file's PayPal
+Customer ID or Wise payment reference as its reference.
+
 ## Not yet
 
 - Sending through the PayPal Payouts API with the brand's own credentials,

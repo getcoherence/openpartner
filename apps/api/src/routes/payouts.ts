@@ -8,6 +8,7 @@ import { PAYOUT_STATUSES } from '../openapi/enums.js';
 import { cursorTimestamp, decodeCursor, takePage, whereAfterCursor } from '../pagination.js';
 import { dispatchPayoutNotifications, runPayouts, type PayoutRunResult } from '../payouts.js';
 import { executePayoutTransfers } from '../payout-transfers.js';
+import { STATEMENT_CSP, buildPayoutStatement, renderStatementHtml } from '../payout-statements.js';
 import { listHeldPartners, screenPayablePartners } from '../sanctions-screening.js';
 import { tenantOf, withTenantTransaction } from '../tenancy.js';
 import {
@@ -50,6 +51,11 @@ export const listPayoutsQuerySchema = z.object({
   status: z.enum(PAYOUT_STATUSES).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional().default(50),
   cursor: z.string().max(200).optional(),
+});
+
+/** GET /payouts/:id/statement: the printable page (default), or its data. */
+export const statementQuerySchema = z.object({
+  format: z.enum(['html', 'json']).default('html'),
 });
 
 export const createManualExportSchema = z.object({
@@ -329,6 +335,38 @@ payoutsRouter.post('/payouts/exports/:exportId/discard', requireAuth, requireAdm
   const released = await discardManualExport(db, tenantId, req.params.exportId!);
   if (released === null) return res.status(404).json({ error: 'export_not_found' });
   res.json({ released });
+});
+
+/**
+ * One payout's statement (payout-statements.ts): a printable page, or its
+ * data with ?format=json. Admins and keys holding payouts:read get any
+ * payout's; a partner gets only their own, and another partner's answers
+ * 404 exactly as a payout that doesn't exist. Read on `req.db`, and every
+ * query in the builder names the tenant too.
+ */
+payoutsRouter.get('/payouts/:id/statement', requireAuth, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const principal = req.principal!;
+  // Decided here rather than by grantScope, which would make a scoped key
+  // an admin and leave partners out.
+  if (principal.role === 'scoped' && !principal.scopes.includes('payouts:read')) {
+    return res.status(403).json({ error: 'forbidden_scope', required: 'payouts:read' });
+  }
+  const q = statementQuerySchema.safeParse(req.query);
+  if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
+  const payout = await db<PayoutRow>(TABLES.Payout).where({ id: req.params.id, tenantId }).first('id', 'partnerId');
+  if (!payout || (principal.role === 'partner' && payout.partnerId !== principal.partnerId)) {
+    return res.status(404).json({ error: 'payout_not_found' });
+  }
+  const statement = await buildPayoutStatement(db, tenantId, payout.id);
+  if (!statement) return res.status(404).json({ error: 'payout_not_found' });
+  // Names, emails and masked payout details: never cached anywhere.
+  res.setHeader('Cache-Control', 'private, no-store');
+  if (q.data.format === 'json') return res.json({ statement });
+  res.setHeader('Content-Security-Policy', STATEMENT_CSP);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Content-Disposition', `inline; filename="payout-statement-${statement.payout.id}.html"`);
+  res.send(renderStatementHtml(statement));
 });
 
 // payouts:read lets a scoped integration key (headless in-app earnings

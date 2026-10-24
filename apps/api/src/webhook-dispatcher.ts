@@ -243,6 +243,7 @@ const SYNTHETIC_PAYLOADS: Record<string, () => Record<string, unknown>> = {
     currency: 'USD',
     method: 'manual',
     commissionIds: [`01J${'0'.repeat(23)}`],
+    statementUrl: `https://partners.example.com/api/payouts/01J${'5'.repeat(23)}/statement`,
   }),
 };
 

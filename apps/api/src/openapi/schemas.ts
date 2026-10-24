@@ -571,6 +571,89 @@ export const PayoutPage = z
   .object({ payouts: z.array(PayoutListItem), nextCursor: z.string().nullable() })
   .openapi('PayoutPage');
 
+// ---------- Payout statements ----------
+
+export const PayoutStatementSettings = z
+  .object({
+    legalName: z.string().nullable().openapi({ description: 'The registered business name statements are issued in. Null: the program name.' }),
+    address: z.string().nullable().openapi({ description: 'Your postal address; line breaks are kept.' }),
+    footer: z.string().nullable().openapi({ description: 'Printed at the foot of every statement; line breaks are kept.' }),
+    numberPrefix: z.string().nullable().openapi({ description: 'Put before the payout id to make the statement number, e.g. `PS-`.' }),
+    taxLines: z
+      .object({
+        enabled: z.boolean(),
+        labels: z.array(z.string()),
+      })
+      .openapi({
+        description:
+          'A placeholder for tax lines such as tax withheld, off by default. Turned on, each label prints as a row marked "Not recorded": OpenPartner records no tax amounts yet. Which lines you need (GST, TDS) is for your accountant to say.',
+      }),
+  })
+  .openapi('PayoutStatementSettings');
+
+const StatementLine = z
+  .object({
+    id: id.openapi({ description: 'The commission, bonus, commission adjustment or reversal id.' }),
+    commissionId: id.nullable().openapi({ description: 'The commission behind the line; null on a reversal.' }),
+    date: z.string().openapi({ description: 'YYYY-MM-DD (UTC): when it was earned, or when a deduction or reversal was recorded.', example: '2026-10-14' }),
+    programName: z.string().nullable(),
+    description: z.string().openapi({ example: 'Invoice paid' }),
+    amount: Decimal.openapi({ description: 'Signed: deductions and reversals are negative.' }),
+    currency: z.string(),
+  })
+  .openapi('PayoutStatementLine');
+
+export const PayoutStatement = z
+  .object({
+    statementNumber: z.string().openapi({ description: 'Your `numberPrefix` and the payout id: unique, and the same every time.' }),
+    generatedAt: ts,
+    issuer: z.object({
+      name: z.string(),
+      tradingName: z.string().nullable().openapi({ description: 'The program name, when it differs from `name`.' }),
+      address: z.string().nullable(),
+      gstin: z.string().nullable().openapi({ description: 'OpenPartner Cloud: the GSTIN on your billing profile.' }),
+      logoUrl: z.string().nullable(),
+    }),
+    partner: z.object({
+      id,
+      name: z.string().nullable(),
+      email: z.string().nullable(),
+      destination: z.string().nullable().openapi({
+        description: "Where the payout goes, masked, never in full: the last four characters of the Stripe account the transfer was made to, or the partner's payout details on file (`PayPal j•••@example.com`, `Bank account •••• 1234 (INR)`). Null when a manual payout's partner has no details on file.",
+      }),
+      destinationChanged: z.boolean().openapi({
+        description: "The partner changed their payout details after the payout was sent (or put in a batch file); `destination` shows the current ones.",
+      }),
+    }),
+    payout: z.object({
+      id,
+      status: z.enum(PAYOUT_STATUSES),
+      method: z.enum(PAYOUT_METHODS),
+      methodLabel: z.string().openapi({ example: 'Manual · Wise batch payment' }),
+      reference: z
+        .object({ label: z.string(), value: z.string() })
+        .nullable()
+        .openapi({ description: 'What identifies the payout at the provider: the Stripe transfer, or its PayPal Customer ID or Wise reference in a batch file.' }),
+      amount: Decimal.openapi({ description: 'What was paid, or is to be.' }),
+      currency: z.string(),
+      createdAt: ts,
+      completedAt: tsNullable,
+    }),
+    commissions: z.array(StatementLine),
+    bonuses: z.array(StatementLine),
+    clawbacks: z.array(StatementLine).openapi({ description: 'Refund clawbacks deducted from this payout.' }),
+    reversals: z.array(StatementLine).openapi({ description: 'Stripe transfer reversals after the payout was paid. Not in `totals`.' }),
+    taxLines: z.array(z.object({ label: z.string(), amount: Decimal.nullable(), currency: z.string() })).openapi({
+      description: 'Empty unless you turned tax lines on (`POST /config/payout-statements`). `amount` is always null for now.',
+    }),
+    totals: z
+      .array(z.object({ currency: z.string(), commissions: Decimal, bonuses: Decimal, clawbacks: Decimal, net: Decimal }))
+      .openapi({ description: 'One per currency the lines are in, never added across currencies. A payout has one; `net` matches `payout.amount` except where the currency is paid in whole units.' }),
+    notes: z.array(z.string()).openapi({ description: 'Plain sentences: a pending, failed or reversed payout, or rounding.' }),
+    footer: z.string().nullable(),
+  })
+  .openapi('PayoutStatement');
+
 const moneyGroup = z.object({ partnerId: id, partnerName, currency: z.string(), amount: z.number() });
 
 const PayoutHoldReason = z.enum(['country_not_supported', 'screening_confirmed', 'screening_review', 'screening_pending']).openapi({

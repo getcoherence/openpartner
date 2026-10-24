@@ -195,6 +195,10 @@ export const WEBHOOK_PAYLOADS = {
     clawbackAdjustmentIds: z.array(id).optional().openapi({
       description: 'The `refund_clawback` commission adjustments this payout deducted.',
     }),
+    statementUrl: z.string().url().optional().openapi({
+      description:
+        "The payout's statement: `GET /payouts/{id}/statement` on your API address. Fetch it with an admin key or a key holding `payouts:read`; add `?format=json` for its data. Absent on deliveries of payouts made before statements existed.",
+    }),
   }),
 } satisfies Record<Exclude<(typeof KNOWN_EVENTS)[number], '*'>, z.AnyZodObject>;
 

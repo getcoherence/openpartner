@@ -225,6 +225,7 @@ describe.skipIf(skipIntegration)('manual-rail payout webhooks fire only after th
         currency: 'USD',
         method: 'manual',
         commissionIds: expect.arrayContaining(s.commissionIds),
+        statementUrl: expect.stringMatching(new RegExp(`/api/payouts/${payoutIdOf(s.partnerId)}/statement$`)),
       });
       expect(payload.commissionIds).toHaveLength(s.commissionIds.length);
     }

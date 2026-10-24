@@ -1,9 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Settings as SettingsIcon, Mail, Wallet, Palette, Image as ImageIcon, Trash2, UserPlus, KeyRound } from 'lucide-react';
+import { Settings as SettingsIcon, Mail, Wallet, Palette, Image as ImageIcon, Trash2, UserPlus, KeyRound, FileText } from 'lucide-react';
 import { api, ApiError } from '../../api.js';
 import { alpha, theme } from '../../theme.js';
-import { Button, Card, ErrorBanner, Input, Label, Page, Select } from '../../ui.js';
+import { Button, Card, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 
 type PayoutRail = 'auto' | 'stripe_connect' | 'manual';
 type PayoutCadence = 'weekly' | 'biweekly' | 'monthly' | 'manual';
@@ -92,6 +92,8 @@ export function AdminSettings() {
       <PartnerPortalAccessSection />
       <div style={{ height: 18 }} />
       <PayoutSection />
+      <div style={{ height: 18 }} />
+      <PayoutStatementsSection />
       <div style={{ height: 18 }} />
       <MailSection />
       <div style={{ height: 18 }} />
@@ -877,6 +879,108 @@ function PayoutSection() {
       <Row>
         <Button onClick={() => mut.mutate()} disabled={mut.isPending}>
           {mut.isPending ? 'Saving…' : 'Save payout settings'}
+        </Button>
+        {saved && <span style={{ color: theme.success, fontSize: 13 }}>Saved.</span>}
+      </Row>
+    </Card>
+  );
+}
+
+// ---------- payout statements ----------
+
+/** GET /config/payout-statements. The tax-lines placeholder isn't edited
+ *  here: it stays off until a brand's accountant says which lines it needs. */
+interface PayoutStatementSettings {
+  legalName: string | null;
+  address: string | null;
+  footer: string | null;
+  numberPrefix: string | null;
+}
+
+/**
+ * What every payout statement (GET /payouts/:id/statement) prints about the
+ * brand. Empty fields fall back: no legal name prints the brand name.
+ */
+export function PayoutStatementsSection() {
+  const qc = useQueryClient();
+  const { data, error, isLoading } = useQuery({
+    queryKey: ['payout-statement-settings'],
+    queryFn: () => api<PayoutStatementSettings>('/config/payout-statements'),
+  });
+  const [legalName, setLegalName] = useState('');
+  const [address, setAddress] = useState('');
+  const [footer, setFooter] = useState('');
+  const [numberPrefix, setNumberPrefix] = useState('');
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (!data) return;
+    setLegalName(data.legalName ?? '');
+    setAddress(data.address ?? '');
+    setFooter(data.footer ?? '');
+    setNumberPrefix(data.numberPrefix ?? '');
+  }, [data]);
+
+  const mut = useMutation({
+    mutationFn: () =>
+      api<PayoutStatementSettings>('/config/payout-statements', {
+        method: 'POST',
+        body: { legalName, address, footer, numberPrefix },
+      }),
+    onSuccess: (next) => {
+      qc.setQueryData(['payout-statement-settings'], next);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    },
+  });
+
+  if (isLoading) return <Card>Loading…</Card>;
+
+  return (
+    <Card>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+        <FileText size={18} style={{ color: theme.accentText }} />
+        <div style={{ fontSize: 15, fontWeight: 500 }}>Payout statements</div>
+      </div>
+      <ErrorBanner error={error ?? mut.error} />
+      <Hint>
+        Every payout has a statement: what it paid, for which commissions, bonuses and refund deductions. Open one from
+        the Statement link on the Payouts page. Partners see the statements for their own payouts. A statement records a
+        payment; it isn&rsquo;t a tax invoice.
+      </Hint>
+
+      <div style={{ marginTop: 16, marginBottom: 16, maxWidth: 560 }}>
+        <Label>Legal name</Label>
+        <Input value={legalName} onChange={(e) => setLegalName(e.target.value)} maxLength={200} placeholder="Your registered company name" />
+        <Hint>Empty prints your brand name.</Hint>
+      </div>
+
+      <div style={{ marginBottom: 16, maxWidth: 560 }}>
+        <Label>Address</Label>
+        <Textarea value={address} onChange={(e) => setAddress(e.target.value)} maxLength={500} rows={3} />
+      </div>
+
+      <div style={{ marginBottom: 16, maxWidth: 560 }}>
+        <Label>Statement number prefix</Label>
+        <Input
+          value={numberPrefix}
+          onChange={(e) => setNumberPrefix(e.target.value)}
+          maxLength={20}
+          placeholder="PS-"
+          style={{ maxWidth: 200 }}
+        />
+        <Hint>Goes before the payout ID to make each statement&rsquo;s number. Letters, digits and / _ . # - only.</Hint>
+      </div>
+
+      <div style={{ marginBottom: 18, maxWidth: 560 }}>
+        <Label>Footer</Label>
+        <Textarea value={footer} onChange={(e) => setFooter(e.target.value)} maxLength={2000} rows={3} />
+        <Hint>Printed at the bottom of every statement: a contact for payout questions, say, or a registration number.</Hint>
+      </div>
+
+      <Row>
+        <Button onClick={() => mut.mutate()} disabled={mut.isPending}>
+          {mut.isPending ? 'Saving…' : 'Save statement settings'}
         </Button>
         {saved && <span style={{ color: theme.success, fontSize: 13 }}>Saved.</span>}
       </Row>

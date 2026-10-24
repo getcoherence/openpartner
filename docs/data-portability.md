@@ -286,12 +286,22 @@ Only these keys are exported, and only these are imported:
 | `partner_signup` | the join page: auto-approve or review, or closed |
 | `partner_access` | whether partners created without an invite may sign in to the partner portal (a headless program turns it off) |
 | `onboarding` | whether the brand said "Not now" to listing on the OpenPartner Network (the dashboard's Getting started card) |
+| `payout_statements` | what payout statements print: legal name, address, footer, statement-number prefix, and the tax-lines placeholder (docs/payout-statements.md) |
 
-`onboarding` was added in Oct 2026 without a version bump. It is a new
-key in a table the bundle already carries, not a new table or column. An
-instance from before it skips the key on import (Config import takes only
-the keys it knows), and the restored brand sees the Network step on its
-Getting started card again.
+`onboarding` and `payout_statements` were added in Oct 2026 without a
+version bump. Each is a new key in a table the bundle already carries, not
+a new table or column. An instance from before it skips the key on import
+(Config import takes only the keys it knows): the restored brand sees the
+Network step on its Getting started card again, or prints statements under
+its brand name until it enters its statement settings again.
+
+Payout statements themselves aren't exported: each is built from the
+`Payout`, `Commission`, `Bonus` and `CommissionAdjustment` rows the bundle
+carries, so a restored instance prints the same line items and totals. Two
+things on a hosted statement don't travel: the GSTIN, read from the hosted
+`HostedBillingProfile`, and the "reversed after payment" lines of a Stripe
+transfer, read from `PayoutReversal`, which isn't in the bundle either. The
+payout's own `status` still says it was reversed.
 
 Every other key stays out, on purpose:
 
