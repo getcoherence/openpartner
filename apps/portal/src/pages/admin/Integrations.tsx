@@ -502,6 +502,17 @@ function StripeCheckoutGuide({ rewards }: { rewards: boolean }) {
   );
   const body = { fontSize: 13, color: theme.textMuted, margin: '10px 0 0', lineHeight: 1.55 } as const;
 
+  // Behind a consent banner the tag waits for an answer; without one the
+  // clicks of visitors who decline still can't be credited, but nothing
+  // is stored for them.
+  const consentNote = (
+    <span style={{ display: 'block', marginTop: 8 }}>
+      Using a cookie consent banner? Add <code style={codeInline}>data-consent=&quot;pending&quot;</code> to the tag and
+      call <code style={codeInline}>openpartner.setConsent(&apos;granted&apos;)</code> when the visitor accepts. Until then
+      nothing is stored.
+    </span>
+  );
+
   return (
     <div style={{ marginTop: 16 }}>
       <div style={{ fontSize: 14, fontWeight: 500, color: theme.text }}>Credit partners for Stripe checkouts</div>
@@ -560,6 +571,7 @@ function StripeCheckoutGuide({ rewards }: { rewards: boolean }) {
           <span style={{ display: 'block', marginTop: 8 }}>
             Payment Links on your own domain? Add <code style={codeInline}>data-stripe-hosts=&quot;pay.yourbrand.com&quot;</code> to the tag.
           </span>
+          {consentNote}
         </div>
       )}
       {path === 'server' && (
@@ -575,6 +587,7 @@ function StripeCheckoutGuide({ rewards }: { rewards: boolean }) {
             Visitors land on one subdomain and check out on another (<code style={codeInline}>www.</code> and{' '}
             <code style={codeInline}>app.</code>)? Add <code style={codeInline}>data-cookie-domain=&quot;.yourbrand.com&quot;</code> to the tag.
           </span>
+          {consentNote}
         </div>
       )}
       {path === 'codes' && (

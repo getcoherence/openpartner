@@ -295,6 +295,13 @@ export const IdentifyResult = z
   })
   .openapi('IdentifyResult');
 
+export const LandingResult = z
+  .object({
+    ok: z.literal(true),
+    firstLanding: z.boolean().openapi({ description: 'False when this click had already landed; nothing was written.' }),
+  })
+  .openapi('LandingResult');
+
 export const Attribution = z
   .object({
     status: z

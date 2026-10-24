@@ -55,6 +55,8 @@ const TABLES_TO_CLEAN = [
   TABLES.PartnerCommission,
   TABLES.Partner,
   TABLES.Config,
+  // A conversion naming an unknown click is counted (tracking-issues.ts).
+  TABLES.TrackingIssue,
 ];
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';

@@ -503,6 +503,7 @@ export const TENANT_PURGE_ORDER = [
   TABLES.ConversionPostbackToken,
   TABLES.Config,
   TABLES.BrandNotification,
+  TABLES.TrackingIssue,
   TABLES.OperatorRecoveryRequest,
   TABLES.UsageLedger,
   TABLES.UsageFeeShadow,
@@ -536,6 +537,8 @@ export const TENANT_PURGE_ORDER = [
   TABLES.Attribution,
   TABLES.Event,
   TABLES.Identity,
+  // Cascades with its Click; named so the purge never depends on that.
+  TABLES.ClickLanding,
   TABLES.Click,
   TABLES.Link,
   TABLES.Coupon,
