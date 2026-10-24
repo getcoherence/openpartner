@@ -12,6 +12,7 @@ import { rulesLeftUnpaid, sharedRules } from '../lib/commission-override.js';
 import { useDefaultCurrency } from '../lib/useBrand.js';
 import { useIsMobile } from '../lib/useMediaQuery.js';
 import { PartnerBonusSection } from './AdminPartnerBonus.js';
+import { AdminPartnerRecruitingSection } from './PartnerRecruiting.js';
 
 interface Partner {
   id: string;
@@ -111,7 +112,7 @@ export function AdminPartnerCommission() {
   return (
     <Page
       title={`Commission · ${partnerName}`}
-      subtitle="Override this partner's commission terms, for every program at once or for one program. Useful for VIP creators on a higher cut than the program default. Pay them a one-off bonus at the bottom."
+      subtitle="Override this partner's commission terms, for every program at once or for one program. Useful for VIP creators on a higher cut than the program default. Pay them a one-off bonus, or set who recruited them, at the bottom."
     >
       <div style={{ marginBottom: 14 }}>
         <TenantLink to="/admin/partners" style={{ color: theme.textMuted, fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -154,6 +155,7 @@ export function AdminPartnerCommission() {
             partnerName={partnerName}
             programs={(programs.data?.programs ?? []).filter((p) => p.granted)}
           />
+          <AdminPartnerRecruitingSection partnerId={partnerId} partnerName={partnerName} />
         </>
       )}
     </Page>

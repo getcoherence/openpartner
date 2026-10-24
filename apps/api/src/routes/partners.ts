@@ -27,6 +27,7 @@ import { vetApprovalSnapshot } from '../commission-slabs.js';
 import { isPendingReview } from '../partner-review.js';
 import { findPartnerCommission, legacyRuleColumns, upsertPartnerCommission } from '../partner-commission.js';
 import { endPortalAccess, readPartnerAccessSettings } from '../partner-portal-access.js';
+import { RECRUITER_PROBLEM_DETAIL, lockRecruitment, recruiterProblem } from '../recruiter-commissions.js';
 
 // Admin-set commission terms for a partner: the body of both override
 // PUTs (partner-wide and program-scoped) and of each POST /partners
@@ -159,6 +160,10 @@ export const createSchema = z.object({
   /** With `country: "UA"`: the partner is outside the Russian-occupied
    *  regions of Ukraine, which no country code covers. */
   outsideOccupiedRegions: z.boolean().optional(),
+  /** The partner who recruited this one (two-tier commissions,
+   *  recruiter-commissions.ts). In programs with a recruiter commission
+   *  they earn that share of this partner's commissions, from now on. */
+  recruitedByPartnerId: z.string().min(1).optional(),
 });
 
 export const partnersRouter = Router();
@@ -172,6 +177,9 @@ function beyondCreateScope(body: z.infer<typeof createSchema>): string | null {
   if (body.commissionSnapshot || body.programCommissions) {
     return 'A partners:create key cannot set commission terms (commissionSnapshot, programCommissions).';
   }
+  // A recruiter is paid a share of this partner's commissions, so naming
+  // one is a commission term too.
+  if (body.recruitedByPartnerId) return 'A partners:create key cannot set recruitedByPartnerId.';
   return null;
 }
 
@@ -225,6 +233,11 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write', 'part
   // tenant's partners and programs (Oct 2026 verification).
   const existing = await db<PartnerRow>(TABLES.Partner).where({ email, tenantId }).first();
   if (existing) return res.status(409).json({ error: 'email_taken' });
+
+  if (body.data.recruitedByPartnerId) {
+    const problem = await recruiterProblem(db, tenantId, null, body.data.recruitedByPartnerId);
+    if (problem) return res.status(400).json({ error: problem, detail: RECRUITER_PROBLEM_DETAIL[problem] });
+  }
 
   // Resolve program (campaign) grants before inserting the Partner so a
   // rejected list doesn't leave an orphan row behind — a Network retry
@@ -299,6 +312,9 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write', 'part
         // (federation client, admin seeding, etc); skip the pending state.
         activatedAt: sendInvite ? null : new Date(),
         portalAccess,
+        ...(body.data.recruitedByPartnerId
+          ? { recruitedByPartnerId: body.data.recruitedByPartnerId, recruitedAt: new Date() }
+          : {}),
       })
       .returning('*');
   } catch (err) {
@@ -462,6 +478,7 @@ partnersRouter.post('/partners', requireAuth, grantScope('partners:write', 'part
     portalAccess,
     programIds,
     source: 'api',
+    ...(partnerRow.recruitedByPartnerId ? { recruitedByPartnerId: partnerRow.recruitedByPartnerId } : {}),
   } satisfies WebhookPayload<'partner.created'>;
   onCommit(db, 'partner.created webhook', () => dispatchEvent(tenantId, 'partner.created', createdPayload));
   // A partner created without an invite is active now, so this is their
@@ -734,6 +751,10 @@ export const updateSchema = z
      *  nothing (an active partner can then request a link at sign-in, a
      *  pending one needs POST /partners/:id/invite). */
     portalAccess: z.boolean().optional(),
+    /** Set, change or (null) clear who recruited this partner (two-tier
+     *  commissions). Not retroactive: a new recruiter earns on commissions
+     *  from now on, and ones already accrued stay with whoever earned them. */
+    recruitedByPartnerId: z.string().min(1).nullable().optional(),
   })
   .strict();
 
@@ -743,6 +764,15 @@ partnersRouter.patch('/partners/:id', requireAuth, grantScope('partners:write'),
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
   const partner = await db<PartnerRow>(TABLES.Partner).where({ id: req.params.id }).first();
   if (!partner) return res.status(404).json({ error: 'not_found' });
+
+  // Checked before anything is written: a 4xx still commits the request.
+  const recruiterId = body.data.recruitedByPartnerId;
+  const recruiterChanges = recruiterId !== undefined && recruiterId !== partner.recruitedByPartnerId;
+  if (recruiterChanges && recruiterId) {
+    await lockRecruitment(db, tenantId, partner.id, recruiterId);
+    const problem = await recruiterProblem(db, tenantId, partner.id, recruiterId);
+    if (problem) return res.status(400).json({ error: problem, detail: RECRUITER_PROBLEM_DETAIL[problem] });
+  }
 
   let updated = partner;
   if (body.data.portalAccess !== undefined && body.data.portalAccess !== partner.portalAccess) {
@@ -755,6 +785,20 @@ partnersRouter.patch('/partners/:id', requireAuth, grantScope('partners:write'),
   // Also when it was already off: whatever slipped in since (a link sent
   // a moment before, a session from a direct DB edit) ends here too.
   if (body.data.portalAccess === false) await endPortalAccess(db, tenantId, partner.id);
+
+  if (recruiterChanges) {
+    // The recruitment starts now, so a recruiter only ever earns on
+    // commissions from the time they were named.
+    const rows = (await db<PartnerRow>(TABLES.Partner)
+      .where({ id: partner.id, tenantId })
+      .update({
+        recruitedByPartnerId: recruiterId,
+        recruitedAt: recruiterId ? new Date() : null,
+        updatedAt: new Date(),
+      })
+      .returning('*')) as PartnerRow[];
+    updated = rows[0] ?? updated;
+  }
   res.json(updated);
 });
 

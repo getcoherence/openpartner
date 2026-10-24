@@ -8,6 +8,9 @@
  * conversion's commissions in line with it: each commission the conversion
  * accrued (its "root") ends up worth its original amount times the share of
  * the conversion's value the customer kept. A full refund keeps nothing.
+ * A recruiter's share of a recruit's commission (recruiter-commissions.ts)
+ * sits on the same attribution, so it is a root of its own here and is cut
+ * by the same share; its replacement keeps its sourceCommissionId.
  *
  *   accrued / approved → flipped to `reversed`, through the same funding and
  *                        payout-intent interlocks as the admin reverse. On a
@@ -170,6 +173,7 @@ export async function applyRefund(
       programId: a.programId,
       eventValue: conversion?.value ?? null,
       subId: subIds.get(a.clickId) ?? null,
+      attributedPartnerId: a.partnerId,
     });
   }
 
@@ -305,6 +309,11 @@ export async function applyRefund(
           eventValue: conversion.value,
           subId: out.announce.origins.get(attributionId)?.subId ?? null,
           replacesCommissionId: w.current.id,
+          // A recruiter's share (recruiter-commissions.ts) is cut like any
+          // commission on the conversion, and its replacement keeps its source.
+          ...(replacement.sourceCommissionId
+            ? { sourceCommissionId: replacement.sourceCommissionId, recruitedPartnerId: attribution.partnerId }
+            : {}),
         });
         if (replacement.status === 'approved') out.announce.approved.push(replacement);
       }
@@ -363,6 +372,7 @@ async function accrueReplacement(
       id: ulid(),
       tenantId: w.current.tenantId,
       attributionId: w.current.attributionId,
+      sourceCommissionId: w.current.sourceCommissionId,
       partnerId: w.current.partnerId,
       amount: fromMinor(w.targetMinor),
       currency: w.current.currency,

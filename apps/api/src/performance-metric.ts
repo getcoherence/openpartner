@@ -170,6 +170,9 @@ export async function performanceByPartner(db: Knex, q: PerformanceQuery): Promi
   } else {
     query
       .join(`${TABLES.Commission} as cm`, 'cm.attributionId', 'a.id')
+      // A recruiter's share sits on the same attribution but is the
+      // recruiter's earnings, not this partner's (recruiter-commissions.ts).
+      .whereNull('cm.sourceCommissionId')
       .whereNot('cm.status', 'reversed')
       .andWhereRaw(`upper("cm"."currency") = ?`, [q.currency!])
       .leftJoin(

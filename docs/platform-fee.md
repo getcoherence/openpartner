@@ -66,6 +66,13 @@ partners shared it.
 (not reversed) `Commission` amounts **over every touch**, fixed and percent,
 net of `refund_clawback` adjustments.
 
+That includes recruiter commissions ([two-tier-commissions.md](two-tier-commissions.md)).
+A recruiter's share of a recruit's commission sits on the same attribution,
+so it adds to the commission side of the conversion it was earned on. It
+never decides the revenue side: its `rateType` is `recruiter`, so a
+conversion counts as revenue only through its own commission's rate, type
+or the program's declared types, as before.
+
 ### Refunds and reversals
 
 A refund (`POST /attribution/refunds`, or Stripe `charge.refunded` on

@@ -968,8 +968,8 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(coupon).toMatchObject({ code: 'CREATOR15', brandChosen: false });
   }, 30_000);
 
-  it('exports at schemaVersion 10', () => {
-    expect(SCHEMA_VERSION).toBe(10);
+  it('exports at schemaVersion 11', () => {
+    expect(SCHEMA_VERSION).toBe(11);
   });
 });
 
