@@ -27,15 +27,19 @@
  *                  outside_window  linked, but no click inside the
  *                                  program's attribution window.
  *                  other           a usable click in the window and still
- *                                  no credit (should be rare: look at it).
+ *                                  no credit: the event was recorded before
+ *                                  the click was stitched, by a path that
+ *                                  doesn't replay the backlog (a conversion
+ *                                  call with the brand's own userId).
  *                The same order the engine checks in (attributeEvent).
  *                Account-wide, whatever the program filter: an event
  *                belongs to no program until it attributes.
  *   coupons      conversions a coupon took from a link: credited to a
  *                coupon's partner while the customer also had an in-window
- *                link click from another partner.
- *   stripe       Stripe events the catch-up job recovered after the
- *                webhook missed them (metadata.recoveredBy), when it runs.
+ *                link click from another partner who could have earned it
+ *                and got nothing.
+ *   stripe       distinct Stripe events the catch-up job recovered after
+ *                the webhook missed them (metadata.recoveredBy), when it runs.
  *   issues       input OpenPartner dropped (tracking-issues.ts).
  *   signals      when each integration last delivered anything.
  */
@@ -210,7 +214,7 @@ async function clicksByUserAgent(
             )::int as stitched,
             count(cr."clickId") filter (where c."fraudFlag" is null)::int as converted
        from ?? c
-       left join ?? l on l."clickId" = c.id
+       left join ?? l on l."clickId" = c.id and l."tenantId" = c."tenantId"
        left join credited cr on cr."clickId" = c.id
       where c."tenantId" = ? and c.ts >= ? and c."linkId" is not null ${programFilter}
       group by c."userAgent"`,
@@ -255,7 +259,7 @@ async function unattributedConversions(
          from ?? e
         where e."tenantId" = ? and e.ts >= ?
           and e.type not in (${corrective.map(() => '?').join(', ')})
-          and not exists (select 1 from ?? a where a."eventId" = e.id)
+          and not exists (select 1 from ?? a where a."eventId" = e.id and a."tenantId" = e."tenantId")
      ),
      reasoned as (
        select ev.*,
@@ -320,9 +324,11 @@ async function unattributedConversions(
 /**
  * Conversions a coupon took from a link: the credited click is a coupon
  * redemption's synthetic click (no Link, landingUrl coupon://), and the
- * customer also had a usable link click from another partner inside that
- * link's program window. Under last-click the redemption, stamped at the
- * moment of purchase, always wins that race.
+ * customer also had a link click inside that link's program window from
+ * another partner who could have earned it (click not flagged, partner not
+ * revoked) and got nothing on the conversion. A multi-touch split that
+ * credits both isn't counted. Under last-click the redemption, stamped at
+ * the moment of purchase, always wins that race.
  */
 async function couponOverrides(db: Knex, tenantId: string, since: Date, programId: string | null): Promise<number> {
   const programFilter = programId ? 'and a."programId" = ?' : '';
@@ -343,6 +349,12 @@ async function couponOverrides(db: Knex, tenantId: string, since: Date, programI
              and lc."partnerId" <> cc."partnerId"
              and lc.ts <= e.ts + ${CLICK_AFTER_EVENT_GRACE}
              and lc.ts >= e.ts - pr."attributionWindowDays" * interval '1 day'
+             and not exists (
+               select 1 from ?? p where p.id = lc."partnerId" and p."tenantId" = lc."tenantId" and p."revokedAt" is not null
+             )
+             and not exists (
+               select 1 from ?? a2 where a2."eventId" = a."eventId" and a2."tenantId" = a."tenantId" and a2."partnerId" = lc."partnerId"
+             )
         )`,
     [
       TABLES.Attribution,
@@ -354,18 +366,21 @@ async function couponOverrides(db: Knex, tenantId: string, since: Date, programI
       TABLES.Identity,
       TABLES.Click,
       TABLES.Program,
+      TABLES.Partner,
+      TABLES.Attribution,
     ],
   );
   return rows[0]?.n ?? 0;
 }
 
-/** Events the Stripe catch-up recorded after the webhook missed them. */
+/** Stripe events the catch-up recorded after the webhook missed them:
+ *  distinct Stripe events, not Event rows (a paid checkout records two). */
 async function stripeRecovered(db: Knex, tenantId: string, since: Date): Promise<number> {
   const [row] = (await db(TABLES.Event)
     .where({ tenantId })
     .andWhere('ts', '>=', since)
     .whereRaw(`"metadata"->>'recoveredBy' = 'stripe_catchup'`)
-    .count({ n: '*' })) as Array<{ n: string | number }>;
+    .countDistinct({ n: db.raw(`"metadata"->>'stripeEventId'`) })) as Array<{ n: string | number }>;
   return Number(row?.n ?? 0);
 }
 

@@ -59,7 +59,7 @@ never credited by design.
 | No partner click on record | The customer was never linked to a partner click. Every customer who came without a partner is here too, so this is the most that could be missing, not what is. |
 | Only excluded clicks | Every click behind the customer is flagged as fraud or belongs to a revoked partner. |
 | Click outside the window | The customer's partner clicks are all older than the program's attribution window. |
-| Unexplained | A usable click inside the window and still no credit. This should be rare. |
+| Recorded before the click was linked | A usable click inside the window and still no credit. The conversion arrived before its click was linked to the customer, and the call that linked it, `POST /attribution/conversions` with your own `userId`, credits only its own conversion. Link the click first (`identify()` or `POST /attribution/identify`, which also credits conversions already recorded for the user) and every conversion after it is credited. |
 
 This section always covers the whole account: a conversion belongs to no
 program until it is credited.
@@ -85,12 +85,13 @@ an export (see [data portability](data-portability.md)).
 ## Credit decisions
 
 - **Coupon took credit from a link**: conversions credited to a coupon's
-  partner while the customer also had another partner's link click inside
-  the window. Under last click the code, entered at checkout, is the most
-  recent touch and wins.
-- **Stripe events recovered**: events the daily Stripe catch-up recorded
-  after the webhook missed them. Any number above zero means webhook
-  deliveries are failing.
+  partner while another partner, whose link click was inside the window and
+  who could have earned it (not flagged, not revoked), got nothing. Under
+  last click the code, entered at checkout, is the most recent touch and
+  wins. A multi-touch split that credits both isn't counted.
+- **Stripe events recovered**: Stripe events the catch-up (every six hours,
+  hosted Stripe connections) recorded after the webhook missed them. Any
+  number above zero means webhook deliveries are failing.
 
 ## What it can't see
 

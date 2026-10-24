@@ -54,6 +54,10 @@ const ago = (days: number) => new Date(Date.now() - days * DAY);
 interface Seeded {
   programId: string;
   otherProgramId: string;
+  partnerA: string;
+  couponEventId: string;
+  couponLinkClick: string;
+  recoveredEventId: string;
 }
 
 async function seed(): Promise<Seeded> {
@@ -137,7 +141,8 @@ async function seed(): Promise<Seeded> {
   const couponClick = await click({ coupon: 'BCODE', partnerId: partnerB, ts: ago(1) });
   await stitch(linkClick, 'user_coupon');
   await stitch(couponClick, 'user_coupon');
-  await credit(await event('user_coupon', 'invoice_paid', '80.00'), couponClick, partnerB);
+  const couponEventId = await event('user_coupon', 'invoice_paid', '80.00');
+  await credit(couponEventId, couponClick, partnerB);
 
   // Recovered by the Stripe catch-up (and attributed: it isn't a miss).
   const recovered = await event('user_a', 'invoice_paid', '100.00', 'USD', { stripeEventId: 'evt_1', recoveredBy: 'stripe_catchup' });
@@ -150,7 +155,7 @@ async function seed(): Promise<Seeded> {
     count: 2,
     sampleRef: 'nope',
   });
-  return { programId, otherProgramId };
+  return { programId, otherProgramId, partnerA, couponEventId, couponLinkClick: linkClick, recoveredEventId: recovered };
 }
 
 beforeAll(async () => {
@@ -204,6 +209,45 @@ describe.skipIf(skipIntegration)('trackingHealth', () => {
     expect(report.signals.lastStitchAt).not.toBeNull();
     expect(report.signals.lastStripeEventAt).not.toBeNull();
     expect(report.signals.lastPostbackAt).toBeNull();
+  });
+
+  it("doesn't count a coupon override when the link's partner couldn't earn it or shared the credit", async () => {
+    const seeded = await seed();
+    // A linear split that credits the link's partner too isn't an override.
+    await db(TABLES.Attribution).insert({
+      id: ulid(),
+      tenantId: T,
+      eventId: seeded.couponEventId,
+      clickId: seeded.couponLinkClick,
+      partnerId: seeded.partnerA,
+      programId: seeded.programId,
+      model: 'linear',
+      weight: '0.5000',
+    });
+    expect((await trackingHealth(db, T, { days: 30 })).coupons.overrodeLink).toBe(0);
+
+    await db(TABLES.Attribution).where({ tenantId: T, eventId: seeded.couponEventId, model: 'linear' }).del();
+    expect((await trackingHealth(db, T, { days: 30 })).coupons.overrodeLink).toBe(1);
+    // Nor when that partner is revoked: their click could never have earned.
+    await db(TABLES.Partner).where({ id: seeded.partnerA }).update({ revokedAt: new Date() });
+    expect((await trackingHealth(db, T, { days: 30 })).coupons.overrodeLink).toBe(0);
+  });
+
+  it('counts recovered Stripe events, not the Event rows they made', async () => {
+    const seeded = await seed();
+    const recovered = await db(TABLES.Event).where({ id: seeded.recoveredEventId }).first();
+    // A paid checkout records a signup and its revenue from one Stripe event.
+    await db(TABLES.Event).insert({
+      id: ulid(),
+      tenantId: T,
+      userId: 'user_a',
+      type: 'signup',
+      value: null,
+      currency: 'USD',
+      ts: recovered.ts,
+      metadata: recovered.metadata,
+    });
+    expect((await trackingHealth(db, T, { days: 30 })).stripe.recovered).toBe(1);
   });
 
   it('filters clicks and coupon credits to one program, and reports nothing landed before any landing', async () => {

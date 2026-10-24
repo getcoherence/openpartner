@@ -77,8 +77,8 @@ const REASONS: Record<UnattributedReason, { label: string; hint: string }> = {
     hint: "The customer's partner clicks are all older than the program's attribution window.",
   },
   other: {
-    label: 'Unexplained',
-    hint: 'A usable click inside the window and still no credit. This should be rare: tell us if it is not.',
+    label: 'Recorded before the click was linked',
+    hint: 'A usable click inside the window and still no credit: the conversion arrived before its click was linked to the customer, and the call that linked it (POST /attribution/conversions with your own userId) credits only its own conversion. Link the click first (identify) and those that follow are credited.',
   },
 };
 
@@ -336,12 +336,12 @@ export function AdminTrackingHealth() {
             <Stat
               label="Coupon took credit from a link"
               value={data.coupons.overrodeLink.toLocaleString()}
-              hint="Conversions credited to a coupon's partner while the customer also had another partner's link click in the window. Under last click the code, used at checkout, wins."
+              hint="Conversions credited to a coupon's partner while another partner, whose link click was in the window, got nothing. Under last click the code, used at checkout, wins."
             />
             <Stat
               label="Stripe events recovered"
               value={data.stripe.recovered.toLocaleString()}
-              hint="Recorded by the daily Stripe catch-up after the webhook missed them."
+              hint="Recorded by the Stripe catch-up (hosted Stripe connections) after the webhook missed them. Above zero means webhook deliveries are failing."
             />
           </div>
 
