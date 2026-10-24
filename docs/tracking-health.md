@@ -126,7 +126,10 @@ an export (see [data portability](data-portability.md)).
   partner while another partner, whose link click was inside the window and
   who could have earned it (not flagged, not revoked), got nothing. Under
   last click the code, entered at checkout, is the most recent touch and
-  wins. A multi-touch split that credits both isn't counted.
+  wins. A multi-touch split that credits both isn't counted. To let the link
+  win instead, turn on **Partner links beat coupon codes** for the code's
+  program (Programs → Edit; `couponsYieldToLinks` on the API). It decides who
+  wins a customer's first payment; renewals stay with that winner.
 - **Stripe events recovered**: Stripe events the catch-up (every six hours,
   hosted Stripe connections) recorded after the webhook missed them. Any
   number above zero means webhook deliveries are failing.

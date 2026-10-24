@@ -369,7 +369,7 @@ export function AdminTrackingHealth() {
             <Stat
               label="Coupon took credit from a link"
               value={data.coupons.overrodeLink.toLocaleString()}
-              hint="Conversions credited to a coupon's partner while another partner, whose link click was in the window, got nothing. Under last click the code, used at checkout, wins."
+              hint="Conversions credited to a coupon's partner while another partner, whose link click was in the window, got nothing. Under last click the code, used at checkout, wins. To let the link win, turn on “Partner links beat coupon codes” in the program's settings."
             />
             <Stat
               label="Stripe events recovered"

@@ -759,6 +759,12 @@ export interface ProgramRow {
    *  False: every event is attributed on its own within the window.
    *  Spec: docs/renewal-attribution.md. */
   renewalsStayWithPartner: boolean;
+  /** True: this program's coupon codes credit only when the customer has
+   *  no partner link click inside the window. False (default): a code
+   *  competes as a click stamped at checkout, so under last click it beats
+   *  an earlier link. Decides first conversions; renewals follow the
+   *  winner (renewalsStayWithPartner). Migration 20261024120000. */
+  couponsYieldToLinks: boolean;
   /** Where partner share-links for this Campaign land by default. Brand
    *  controls this; partners can only override if deepLinkAllowedDomains
    *  is set and their override matches. */
@@ -1424,6 +1430,16 @@ export type StripeAppKeyMode = 'live' | 'test' | 'sandbox';
 /** Hosted-only sidecar: a brand's own Stripe account, connected through the
  *  OpenPartner Stripe App (migration 20261017000000). Credentials — never
  *  exported. At most one live row per tenant and per Stripe account. */
+/** A brand Stripe event the attribution pipeline processed (migration
+ *  20261024110000_stripe_event_log). Not exported. */
+export interface StripeEventLogRow {
+  stripeEventId: string;
+  tenantId: string;
+  type: string;
+  via: 'webhook' | 'catchup';
+  receivedAt: Date;
+}
+
 export interface TenantStripeConnectionRow {
   id: string;
   tenantId: string;
@@ -1447,6 +1463,10 @@ export interface TenantStripeConnectionRow {
    *  hourly sweep re-runs the check while it's null (migration
    *  20261021010000). */
   rewardsVerifiedAt: Date | null;
+  /** When this connection's events started being logged in StripeEventLog;
+   *  the Stripe catch-up never reaches back past it (migration
+   *  20261024110000). */
+  eventLogSince: Date;
   disconnectedAt: Date | null;
   disconnectReason: 'admin' | 'deauthorized' | 'replaced' | null;
   updatedAt: Date;
