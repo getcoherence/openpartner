@@ -521,7 +521,7 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
         {principal.role === 'partner' && partnerNetwork.show && (
           <NavSection title="Network" collapsible storageKey="partner-network">
             <NavItem to="/network/discover" icon={<Globe size={16} />}>Discover programs</NavItem>
-            <NavItem to="/network/affiliations" icon={<Megaphone size={16} />}>My partnerships</NavItem>
+            <NavItem to="/network/affiliations" icon={<Megaphone size={16} />}>My partnership</NavItem>
             <NavItem to="/network/requests" icon={<Inbox size={16} />}>My applications</NavItem>
             <NavItem to="/network/profile" icon={<UserCog size={16} />}>Network profile</NavItem>
           </NavSection>

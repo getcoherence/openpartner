@@ -1188,8 +1188,19 @@ export async function adminRestoreVendor(networkUrl: string, vendorId: string): 
 // Used by openpartner partner-role routes (/api/network/partner/*) to
 // forward calls to Network's existing /creators/me/* + /offerings + /vendors/:id
 // endpoints. Auth is the vendor bearer plus an x-act-as-vendor-partner
-// header carrying the partner's vendor-local id; Network's requireCreator
-// resolves the creator from VendorAffiliation(vendorId, vendorPartnerId).
+// header carrying the partner's vendor-local id; the Network's
+// requireCreatorOrActingVendor resolves the creator from
+// VendorAffiliation(vendorId, vendorPartnerId). It accepts the header only
+// on the acting-as-creator routes below (its ACTING_VENDOR_ROUTES), so one
+// added here needs a matching entry on the Network side.
+//
+// The Network scopes what it returns to this brand (openpartner-network#28):
+// affiliations, their earnings, requests and cancel only see this brand's
+// own rows, and another brand's affiliation or request id is 404. Apply
+// takes any brand's offering, so Discover still works, but a 409
+// request_already_exists on another brand's offering carries no requestId
+// or status. The partner sees everything across brands in their own
+// Network portal (the hosted app's /creator/* pages).
 
 export const partnerProxy = {
   // Discovery (public on Network — no acting header needed)

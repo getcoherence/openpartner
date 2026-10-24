@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate, useParams } from 'react-router';
+import { useParams } from 'react-router';
 import { api, ApiError, type Principal } from '../../api.js';
 import { TenantLink } from '../../tenant-link.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Textarea } from '../../ui.js';
 import { countryErrorMessage } from '../../lib/CountryField.js';
 import { theme } from '../../theme.js';
+import { NetworkPortalLink } from '../../lib/network-portal.js';
 import {
   ProfileIncompleteNotice,
   missingFromProfile,
@@ -29,9 +30,19 @@ interface Offering {
   createdAt: string;
 }
 
+/**
+ * Whether `err` is the Network's 409 request_already_exists. The partner
+ * proxy wraps the Network body as JSON text in `detail` (see
+ * profile-incomplete.tsx), so match the code inside it.
+ */
+function alreadyAppliedFrom(err: unknown): boolean {
+  if (!(err instanceof ApiError) || err.status !== 409) return false;
+  const wrapped = (err.detail as { detail?: unknown } | null | undefined)?.detail;
+  return typeof wrapped === 'string' && wrapped.includes('"request_already_exists"');
+}
+
 export function OfferingDetailPage({ principal }: { principal: Principal }) {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const qc = useQueryClient();
   const [message, setMessage] = useState('');
   const [preferredSlug, setPreferredSlug] = useState('');
@@ -49,10 +60,10 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
         method: 'POST',
         body: { message: message || undefined, preferredSlug: preferredSlug || undefined },
       }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['network-my-requests'] });
-      navigate('/network/requests');
-    },
+    // No redirect to My applications: it only lists applications to this
+    // brand (openpartner-network#28), and most offerings here are other
+    // brands'. The card below confirms instead.
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['network-my-requests'] }),
   });
 
   const canApply = principal.role === 'partner';
@@ -73,6 +84,7 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
   const profileMissing = myProfile?.notFederated ? null : missingFromProfile(myProfile);
   const refusedMissing = profileIncompleteFrom(apply.error);
   const missing = refusedMissing ?? profileMissing;
+  const alreadyApplied = alreadyAppliedFrom(apply.error);
 
   return (
     <Page title={offering?.title ?? 'Program'} subtitle={offering?.vendorName}>
@@ -103,58 +115,71 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
           <div style={{ height: 18 }} />
 
           <Card>
-            <h3 style={{ marginTop: 0 }}>Apply to promote</h3>
-            {!canApply ? (
-              <p style={{ color: theme.textMuted }}>
-                Only partner accounts can apply. <TenantLink to="/login">Switch accounts</TenantLink>?
-              </p>
-            ) : needsConsent ? (
-              <p style={{ color: theme.textMuted, fontSize: 14 }}>
-                To apply to programs from other brands, join the OpenPartner Network first.{' '}
-                <TenantLink to="/network/profile" style={{ color: theme.accentText, fontWeight: 500 }}>
-                  See what&rsquo;s shared and join →
-                </TenantLink>
-              </p>
+            {apply.isSuccess ? (
+              <>
+                <h3 style={{ marginTop: 0 }}>Application sent to {offering.vendorName}</h3>
+                <p style={{ color: theme.textMuted, fontSize: 14, marginBottom: 0 }}>
+                  {offering.vendorName} will review it. Track it in your Network portal, where all your applications
+                  show.{' '}
+                  <NetworkPortalLink page="requests">Open your Network portal ↗</NetworkPortalLink>
+                </p>
+              </>
             ) : (
               <>
-                {missing && (
-                  <ProfileIncompleteNotice
-                    missing={missing}
-                    link={<TenantLink to="/network/profile" style={{ color: theme.accentText, fontWeight: 500 }}>Go to your profile →</TenantLink>}
-                  />
-                )}
-                {!refusedMissing && (
-                  <ErrorBanner error={apply.error ? (countryErrorMessage(apply.error.message) ?? apply.error) : null} />
-                )}
-                {apply.error instanceof ApiError && apply.error.detail && typeof apply.error.detail === 'object' &&
-                  'detail' in (apply.error.detail as { detail?: { detail?: string } }) &&
-                  (apply.error.detail as { detail?: string }).detail === 'request_already_exists' && (
-                  <p style={{ color: theme.textMuted, fontSize: 13 }}>
-                    You already have a pending or active request for this program.
+                <h3 style={{ marginTop: 0 }}>Apply to promote</h3>
+                {!canApply ? (
+                  <p style={{ color: theme.textMuted }}>
+                    Only partner accounts can apply. <TenantLink to="/login">Switch accounts</TenantLink>?
                   </p>
+                ) : needsConsent ? (
+                  <p style={{ color: theme.textMuted, fontSize: 14 }}>
+                    To apply to programs from other brands, join the OpenPartner Network first.{' '}
+                    <TenantLink to="/network/profile" style={{ color: theme.accentText, fontWeight: 500 }}>
+                      See what&rsquo;s shared and join →
+                    </TenantLink>
+                  </p>
+                ) : (
+                  <>
+                    {missing && (
+                      <ProfileIncompleteNotice
+                        missing={missing}
+                        link={<TenantLink to="/network/profile" style={{ color: theme.accentText, fontWeight: 500 }}>Go to your profile →</TenantLink>}
+                      />
+                    )}
+                    {!refusedMissing && !alreadyApplied && (
+                      <ErrorBanner error={apply.error ? (countryErrorMessage(apply.error.message) ?? apply.error) : null} />
+                    )}
+                    {alreadyApplied && (
+                      <p style={{ color: theme.textMuted, fontSize: 14 }}>
+                        You&rsquo;ve already applied to this program, or you&rsquo;re already partnered on it. Track it in
+                        your Network portal.{' '}
+                        <NetworkPortalLink page="requests">Open your Network portal ↗</NetworkPortalLink>
+                      </p>
+                    )}
+                    <div style={{ marginTop: 8 }}>
+                      <Label>Preferred share-link slug (optional)</Label>
+                      <Input
+                        placeholder="your-handle"
+                        value={preferredSlug}
+                        onChange={(e) => setPreferredSlug(e.target.value)}
+                      />
+                    </div>
+                    <div style={{ marginTop: 12 }}>
+                      <Label>Message to the vendor (optional)</Label>
+                      <Textarea
+                        value={message}
+                        onChange={(e) => setMessage(e.target.value)}
+                        rows={4}
+                        placeholder="Why you'd be a great partner…"
+                      />
+                    </div>
+                    <div style={{ marginTop: 12 }}>
+                      <Button onClick={() => apply.mutate()} disabled={apply.isPending || !!profileMissing}>
+                        {apply.isPending ? 'Applying…' : 'Submit application'}
+                      </Button>
+                    </div>
+                  </>
                 )}
-                <div style={{ marginTop: 8 }}>
-                  <Label>Preferred share-link slug (optional)</Label>
-                  <Input
-                    placeholder="your-handle"
-                    value={preferredSlug}
-                    onChange={(e) => setPreferredSlug(e.target.value)}
-                  />
-                </div>
-                <div style={{ marginTop: 12 }}>
-                  <Label>Message to the vendor (optional)</Label>
-                  <Textarea
-                    value={message}
-                    onChange={(e) => setMessage(e.target.value)}
-                    rows={4}
-                    placeholder="Why you'd be a great partner…"
-                  />
-                </div>
-                <div style={{ marginTop: 12 }}>
-                  <Button onClick={() => apply.mutate()} disabled={apply.isPending || !!profileMissing}>
-                    {apply.isPending ? 'Applying…' : 'Submit application'}
-                  </Button>
-                </div>
               </>
             )}
           </Card>
