@@ -10,18 +10,27 @@
  * Data flows entirely through the Network's federated proxies; the
  * vendor instance owns the underlying Click / Event / Commission
  * tables. See openpartner-network/src/routes/creator-domains.ts for
- * the four pulled endpoints (timeseries / events / customers /
- * commissions).
+ * the four pulled endpoints (timeseries / events / referrals /
+ * commissions). Events and referrals name a customer only by the
+ * brand's pseudonymous referralId, never the brand's userId, and cover
+ * only the stages the brand shows partners (openpartner-network
+ * src/creator-referrals.ts).
  */
 
 import { useMemo, useState, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { Link, NavLink, Outlet, Route, Routes, useNavigate, useOutletContext, useParams } from 'react-router';
 import { ArrowLeft, ArrowUpRight } from 'lucide-react';
-import { Card, EmptyState, ErrorBanner, Page, formatDate, money, shortId } from '../../ui.js';
+import { Button, Card, EmptyState, ErrorBanner, Page, formatDate, money } from '../../ui.js';
 import { theme } from '../../theme.js';
-import { creatorApi } from './creator-api.js';
-import { commissionSourceLabel, isBonusCommission, type CommissionSourceFields } from '../../lib/commission-source.js';
+import { ApiError, creatorApi } from './creator-api.js';
+import {
+  commissionSourceLabel,
+  eventTypeLabel,
+  isBonusCommission,
+  type CommissionSourceFields,
+} from '../../lib/commission-source.js';
+import { ReferralList, type ReferralListPage, type ReferralStageDefinition } from '../Referrals.js';
 
 // ---------- Shared types (mirror federation responses) ----------
 
@@ -73,10 +82,15 @@ interface PartnerEvent {
   model: string;
   eventId: string;
   type: string;
+  /** The brand's name for the stage. Absent from a Network that predates
+   *  stage filtering. */
+  label?: string;
   value: number | null;
   currency: string | null;
   ts: string;
-  userId: string;
+  /** The customer, pseudonymously. Null when the brand's instance predates
+   *  referral ids. */
+  referralId?: string | null;
   click: {
     id: string;
     linkKey: string | null;
@@ -86,12 +100,22 @@ interface PartnerEvent {
   } | null;
 }
 
-interface Customer {
-  userId: string;
-  firstEventAt: string;
-  lastEventAt: string;
-  eventCount: number;
-  revenue: number;
+interface EventPage {
+  /** The stages the brand shows, in its order. */
+  stages?: ReferralStageDefinition[];
+  events: PartnerEvent[];
+  /** Absent from a Network that predates stage filtering. */
+  nextCursor?: string | null;
+}
+
+const EVENTS_PAGE = 100;
+
+/** GET /creators/me/partnerships/:id/referrals: the brand's referral page,
+ *  minus every userId. */
+interface CreatorReferralPage extends Omit<ReferralListPage, 'currency'> {
+  available: boolean;
+  /** Null only when `available` is false. */
+  currency: string | null;
 }
 
 interface CommissionRow extends CommissionSourceFields {
@@ -501,24 +525,33 @@ function EarningsTab() {
 function EventsTab() {
   const partnership = useOutletPartnership();
   const [typeFilter, setTypeFilter] = useState<string>('');
-  const events = useQuery({
+  const events = useInfiniteQuery({
     queryKey: ['creator-program-events', partnership.id, typeFilter],
-    queryFn: () =>
-      creatorApi<{ events: PartnerEvent[] }>(
-        `/creators/me/partnerships/${partnership.id}/events?limit=100${typeFilter ? `&type=${encodeURIComponent(typeFilter)}` : ''}`,
-      ),
+    queryFn: ({ pageParam }) => {
+      const qs = new URLSearchParams({ limit: String(EVENTS_PAGE) });
+      if (typeFilter) qs.set('type', typeFilter);
+      if (pageParam) qs.set('cursor', pageParam);
+      return creatorApi<EventPage>(`/creators/me/partnerships/${partnership.id}/events?${qs}`);
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor ?? null,
     retry: false,
     staleTime: 30_000,
   });
+  const stages = events.data?.pages[0]?.stages;
+  const rows = useMemo(() => events.data?.pages.flatMap((p) => p.events) ?? [], [events.data]);
 
-  // Pull the unique event types we've seen so the filter chips reflect
-  // what's actually in the data — avoids hard-coding a list that
-  // diverges from custom brand event taxonomies.
-  const seenTypes = useMemo(() => {
+  // The filter chips are the brand's stages, in its order: the only types
+  // the Network relays. A Network from before stage filtering sends none,
+  // so fall back to the types in the data.
+  const typeOptions = useMemo(() => {
+    if (stages) return stages.map((s) => ({ value: s.eventType, label: s.label }));
     const set = new Set<string>();
-    for (const e of events.data?.events ?? []) set.add(e.type);
-    return Array.from(set).sort();
-  }, [events.data]);
+    for (const e of rows) set.add(e.type);
+    return Array.from(set)
+      .sort()
+      .map((t) => ({ value: t, label: eventTypeLabel(t) }));
+  }, [stages, rows]);
 
   return (
     <>
@@ -526,17 +559,17 @@ function EventsTab() {
       <Card>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8 }}>
           <div style={{ fontSize: 13, fontWeight: 500, flex: 1 }}>Events</div>
-          {seenTypes.length > 0 && (
+          {typeOptions.length > 0 && (
             <FilterChips
               value={typeFilter}
-              options={[{ value: '', label: 'All' }, ...seenTypes.map((t) => ({ value: t, label: t }))]}
+              options={[{ value: '', label: 'All' }, ...typeOptions]}
               onChange={setTypeFilter}
             />
           )}
         </div>
         {events.isLoading ? (
           <p style={{ color: theme.textMuted, fontSize: 12 }}>Loading…</p>
-        ) : (events.data?.events ?? []).length === 0 ? (
+        ) : rows.length === 0 ? (
           <EmptyState
             title="No events recorded"
             hint="Events appear here when customers click your link or convert."
@@ -549,13 +582,15 @@ function EventsTab() {
               <span style={{ width: 100 }}>Source</span>
               <span style={{ width: 140, textAlign: 'right' }}>When</span>
             </Row>
-            {(events.data?.events ?? []).map((e) => (
+            {rows.map((e) => (
               <Row key={e.attributionId}>
                 <span style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span style={{ fontSize: 13, color: theme.text }}>{e.type}</span>
-                  <span style={{ fontSize: 11, color: theme.textDim, fontFamily: theme.fontMono }}>
-                    user {shortId(e.userId)}
-                  </span>
+                  <span style={{ fontSize: 13, color: theme.text }}>{e.label ?? eventTypeLabel(e.type)}</span>
+                  {e.referralId && (
+                    <span style={{ fontSize: 11, color: theme.textDim, fontFamily: theme.fontMono }}>
+                      referral {e.referralId}
+                    </span>
+                  )}
                 </span>
                 <span style={{ width: 100, fontSize: 13, color: e.value != null ? theme.text : theme.textDim }}>
                   {e.value != null ? money(e.value, e.currency ?? 'USD') : '—'}
@@ -568,6 +603,13 @@ function EventsTab() {
                 </span>
               </Row>
             ))}
+            {events.hasNextPage && (
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 12 }}>
+                <Button variant="secondary" size="sm" onClick={() => void events.fetchNextPage()} disabled={events.isFetchingNextPage}>
+                  {events.isFetchingNextPage ? 'Loading…' : `Load ${EVENTS_PAGE} more`}
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </Card>
@@ -577,55 +619,32 @@ function EventsTab() {
 
 // ---------- Customers tab ----------
 
+/** Each customer the creator referred, as "Referral #n" (or the brand's
+ *  label for them, when it shows those), with the stages they've reached:
+ *  the brand's own Referrals page, relayed by the Network. */
 function CustomersTab() {
   const partnership = useOutletPartnership();
-  const customers = useQuery({
-    queryKey: ['creator-program-customers', partnership.id],
-    queryFn: () => creatorApi<{ customers: Customer[] }>(`/creators/me/partnerships/${partnership.id}/customers?limit=100`),
-    retry: false,
-    staleTime: 60_000,
-  });
-
   return (
-    <>
-      <ErrorBanner error={customers.error} />
-      <Card>
-        <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Customers</div>
-        {customers.isLoading ? (
-          <p style={{ color: theme.textMuted, fontSize: 12 }}>Loading…</p>
-        ) : (customers.data?.customers ?? []).length === 0 ? (
-          <EmptyState
-            title="No customers yet"
-            hint="Customers attributed to you through this program will appear here."
-          />
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <Row header>
-              <span style={{ flex: 1 }}>Customer</span>
-              <span style={{ width: 100, textAlign: 'right' }}>Events</span>
-              <span style={{ width: 120, textAlign: 'right' }}>Revenue</span>
-              <span style={{ width: 140, textAlign: 'right' }}>First seen</span>
-            </Row>
-            {(customers.data?.customers ?? []).map((c) => (
-              <Row key={c.userId}>
-                <span style={{ flex: 1, fontSize: 13, color: theme.text, fontFamily: theme.fontMono }}>
-                  {shortId(c.userId, 12)}
-                </span>
-                <span style={{ width: 100, textAlign: 'right', fontSize: 13, color: theme.textMuted }}>
-                  {c.eventCount.toLocaleString()}
-                </span>
-                <span style={{ width: 120, textAlign: 'right', fontSize: 13, color: theme.text }}>
-                  {money(c.revenue, 'USD')}
-                </span>
-                <span style={{ width: 140, textAlign: 'right', fontSize: 12, color: theme.textMuted }}>
-                  {formatDate(c.firstEventAt, { relative: true })}
-                </span>
-              </Row>
-            ))}
-          </div>
-        )}
-      </Card>
-    </>
+    <ReferralList
+      queryKey={['creator-program-referrals', partnership.id]}
+      fetchPage={async (qs) => {
+        let page: CreatorReferralPage;
+        try {
+          page = await creatorApi<CreatorReferralPage>(`/creators/me/partnerships/${partnership.id}/referrals?${qs}`);
+        } catch (err) {
+          // A Network from before referral relays has no such route. Say
+          // "not available yet" rather than show an error until it's updated.
+          if (!(err instanceof ApiError) || err.status !== 404) throw err;
+          if ((err.detail as { error?: string } | null)?.error === 'partnership_not_found') throw err;
+          page = { available: false, stages: [], currency: null, referrals: [], total: 0, nextCursor: null };
+        }
+        // currency is null only on an unavailable page, which lists nobody.
+        return { ...page, currency: page.currency ?? 'USD' };
+      }}
+      adminView={false}
+      // The Events tab names each event's customer by this id.
+      showReferralIds
+    />
   );
 }
 
