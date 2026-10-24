@@ -202,7 +202,11 @@ describe.skipIf(skipIntegration)('reconcileStripe', () => {
     expect(calls.find((c) => c.what === 'invoices')!.params).toMatchObject({
       status: 'paid',
       created: { gte: Math.floor((NOW.getTime() - 30 * DAY) / 1000) },
-      expand: ['data.customer', 'data.discounts'],
+      expand: ['data.customer', 'data.discounts', 'data.total_discount_amounts.discount'],
+    });
+    expect(calls.find((c) => c.what === 'sessions')!.params).toMatchObject({
+      status: 'complete',
+      expand: ['data.customer', 'data.total_details.breakdown'],
     });
     expect(r.counts).toEqual({ payments: 11, credited: 2, recorded: 1, missed: 4, unreferred: 4 });
     // The default currency (USD) first, then by code.
@@ -268,6 +272,34 @@ describe.skipIf(skipIntegration)('reconcileStripe', () => {
     const r = await reconcileStripe(db, T, client, { days: 30, livemode: true, now: NOW });
     expect(r.counts).toEqual({ payments: 3, credited: 0, recorded: 1, missed: 0, unreferred: 2 });
     expect(r.missed).toEqual([]);
+  });
+
+  it("gives an invoiced Checkout's click to its invoice, and finds partner coupons on line items", async () => {
+    const seeded = await seedProgram();
+    await db(TABLES.Coupon).where({ tenantId: T }).update({ stripeCouponId: 'coupon_partner' });
+    const { client } = fakeStripe(
+      [
+        invoice('in_from_checkout', 3, 4000),
+        // A line-item discount, its coupon named directly and (API 2025-03-31+) under source.
+        invoice('in_line_item', 3, 2500, {
+          discounts: [],
+          total_discount_amounts: [{ amount: 500, discount: { id: 'di_li', promotion_code: null, coupon: { id: 'coupon_partner' } } }],
+        }),
+        invoice('in_line_item_source', 3, 2600, {
+          total_discount_amounts: [{ amount: 500, discount: { id: 'di_src', source: { coupon: 'coupon_partner' } } }],
+        }),
+      ],
+      // The Checkout that made in_from_checkout: counted once, as the invoice.
+      [session('cs_made_invoice', 3, 4000, { invoice: 'in_from_checkout', client_reference_id: seeded.clickId })],
+    );
+    const r = await reconcileStripe(db, T, client, { days: 30, livemode: true, now: NOW });
+    expect(r.counts).toEqual({ payments: 3, credited: 0, recorded: 0, missed: 3, unreferred: 0 });
+    expect(Object.fromEntries(r.missed.map((m) => [m.id, m.signals]))).toEqual({
+      in_from_checkout: ['partner_click'],
+      in_line_item: ['partner_code'],
+      in_line_item_source: ['partner_code'],
+    });
+    expect(r.totals).toEqual([{ currency: 'USD', stripe: 91, recorded: 0, credited: 0, missed: 91, unreferred: 0 }]);
   });
 
   it('pages through Stripe, and clamps the window to 90 days', async () => {

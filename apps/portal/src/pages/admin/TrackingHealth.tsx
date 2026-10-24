@@ -516,8 +516,8 @@ function StripeReconciliationSection({ days }: { days: number }) {
                     {r.counts.missed.toLocaleString()} {r.counts.missed === 1 ? 'payment carries' : 'payments carry'} a
                     partner signal, but OpenPartner recorded nothing for {r.counts.missed === 1 ? 'it' : 'them'}.
                   </strong>{' '}
-                  Usually a webhook that never arrived: the Stripe catch-up records those within 72 hours. One still
-                  listed after that is a payment OpenPartner couldn&rsquo;t map. Open it in Stripe to see why.
+                  Usually a webhook that never arrived, or a payment OpenPartner couldn&rsquo;t map. Open it in
+                  Stripe to see why.
                 </Muted>
               </Card>
               <div style={{ marginTop: 12 }}>

@@ -50,17 +50,19 @@ payments, created in the window. Each is one of:
 | In Stripe | every such payment, gross (before refunds) |
 | Recorded | OpenPartner recorded it |
 | Credited to partners | recorded and credited to a partner |
-| Missed | **not recorded, though it carries a partner signal**: the customer is linked to a partner click, the Checkout's `client_reference_id` is one of your program's clicks, or it used a partner's promotion code |
+| Missed | **not recorded, though it carries a partner signal**: the customer is linked to a partner click made before the payment, the Checkout's `client_reference_id` is one of your program's clicks (a Checkout that made an invoice counts for that invoice), or it used a partner's code (its promotion code or Stripe coupon, on the invoice, a line item or the Checkout) |
 | No partner signal | not recorded, and nothing ties it to a partner: a customer who came on their own |
 
 **Missed** is the leak. The payments are listed with a link to each in your
-Stripe dashboard. Most are a webhook that never arrived, and the Stripe
-catch-up records those within 72 hours. One still listed after that is a
-payment OpenPartner couldn't map: open it in Stripe to see why.
+Stripe dashboard. Most are a webhook that never arrived; the rest are payments
+OpenPartner couldn't map. Open one in Stripe to see why. Codes are matched by
+id: a code you typed into a promotion of your own matches only if it's the
+promotion recorded for the partner's code.
 
 Totals are per currency, with your default currency first, and are never
 added across currencies. Up to 2,000 invoices and 2,000 Checkout payments are
-read per window; the page says when there were more. Payments your backend
+read per window (and up to 5,000 Stripe objects of each kind listed to find
+them); the page says when there were more. Payments your backend
 charges directly (a PaymentIntent outside invoices and Checkout) aren't read
 from Stripe at all: report them with the conversions API.
 

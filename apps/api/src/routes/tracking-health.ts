@@ -73,12 +73,22 @@ trackingHealthRouter.get('/admin/tracking-health/stripe', requireAuth, requireAd
   const { db, tenantId } = tenantOf(req);
   const { days, refresh } = parsed.data;
 
-  const key = `${tenantId}|${days}`;
+  // Access first, every time: a disconnected brand or a revoked grant must
+  // never be served a cached report, and the cache key names the account
+  // and mode, so a reconnect to another one starts fresh.
+  let access: Awaited<ReturnType<typeof brandStripeAccess>>;
+  try {
+    access = await brandStripeAccess(db, tenantId);
+  } catch (err) {
+    // A token refresh Stripe didn't answer: no detail, it may name the grant.
+    console.error('[tracking-health] stripe access failed', { tenantId, error: (err as Error).message });
+    return res.json({ available: false, reason: 'stripe_error' } satisfies StripeReconciliationResult);
+  }
+  if (!access.ok) return res.json({ available: false, reason: access.reason } satisfies StripeReconciliationResult);
+
+  const key = `${tenantId}|${days}|${access.identity}`;
   const cached = reconcileCache.get(key);
   if (cached && cached.expires > Date.now() && refresh !== '1') return res.json(cached.result);
-
-  const access = await brandStripeAccess(db, tenantId);
-  if (!access.ok) return res.json({ available: false, reason: access.reason } satisfies StripeReconciliationResult);
 
   let result: StripeReconciliationResult;
   try {
