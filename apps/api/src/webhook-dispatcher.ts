@@ -99,24 +99,32 @@ async function runDispatch(tenantId: string, event: WebhookEventType, data: unkn
     // origin lookup failed) → undefined, so its macro stays literal.
     const strOrEmpty = (v: unknown) => (v === null ? '' : str(v));
     const partnerId = str(d.partnerId) ?? null;
+    // A recruiter commission (recruiter-commissions.ts) carries the
+    // recruit's sale for the brand: their click and sub-ID, the event and
+    // its value. That is the recruit's business, not the recruiter's, and
+    // none of it matches anything in the recruiter's tracker, so their
+    // postback leaves {click_id}, {sub_id}, {event_id}, {transaction_id}
+    // and {sale_amount} literal, as a bonus's does. What they earned, its
+    // status, program and event type still fill in.
+    const recruiterShare = typeof d.sourceCommissionId === 'string';
     if (partnerId) {
       dispatchPartnerPostbacks(tenantId, partnerId, event, {
-        click_id: str(d.clickId),
+        click_id: recruiterShare ? undefined : str(d.clickId),
         partner_id: partnerId,
         commission_id: str(d.commissionId),
         commission_amount: str(d.amount),
         currency: str(d.currency),
-        event_id: str(d.eventId),
-        transaction_id: str(d.eventId),
+        event_id: recruiterShare ? undefined : str(d.eventId),
+        transaction_id: recruiterShare ? undefined : str(d.eventId),
         event_type: str(d.eventType),
         program_id: str(d.programId),
         payout_id: str(d.payoutId),
         bonus_id: str(d.bonusId),
         bounty_id: str(d.bountyId),
         bonus_amount: event.startsWith('bonus.') ? str(d.amount) : undefined,
-        sub_id: strOrEmpty(d.subId),
+        sub_id: recruiterShare ? undefined : strOrEmpty(d.subId),
         status: postbackStatus(event, d.status),
-        sale_amount: strOrEmpty(d.eventValue),
+        sale_amount: recruiterShare ? undefined : strOrEmpty(d.eventValue),
       });
     }
   }

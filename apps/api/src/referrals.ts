@@ -459,6 +459,9 @@ async function commissionTotals(
     .leftJoin(clawbacks(db, tenantId, partnerId).as('adj'), 'adj.commissionId', 'c.id')
     .where('c.tenantId', tenantId)
     .andWhere('c.partnerId', partnerId)
+    // Their own referrals only: a recruiter share on a recruit's sale to
+    // the same customer is not what this referral earned them.
+    .andWhere('a.partnerId', partnerId)
     .andWhere('a.tenantId', tenantId)
     .andWhere('e.tenantId', tenantId)
     .whereIn('e.userId', userIds)

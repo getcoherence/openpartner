@@ -72,6 +72,8 @@ Commission = attribution + pricing rule. Rules live on the Campaign:
 - **percent** — percentage of the event's `value`. `recurring: true` means every recurring invoice counts, not just the first, including renewals past the attribution window; a rule without it pays only while the click is inside the window. `recurringMonths` caps it.
 - **fixed** — flat amount per event (signup bounties).
 
+A program can also pay a partner's recruiter a share of each commission the partner earns (`recruiterCommissionPercent`, two levels only). That share is a commission of its own on the **same attribution**, with `sourceCommissionId` naming the commission it was worked out from, so a commission's partner is no longer always its attribution's partner. Anything that sums a partner's own earnings from their attributions excludes those rows. Spec: [docs/two-tier-commissions.md](docs/two-tier-commissions.md).
+
 Commissions enter `accrued` state. An admin (or approval webhook flow) moves them to `approved`. The payouts runner groups approved commissions by `(partnerId, currency)` and writes a Payout row plus a Stripe transfer (Connect mode) or leaves it `pending` for the operator to clear out-of-band (manual mode).
 
 Idempotency: each Payout gets a ULID up front, used as the Stripe idempotency key. A retry after a crash doesn't double-transfer.
