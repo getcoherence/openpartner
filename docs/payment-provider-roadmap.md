@@ -23,7 +23,7 @@ match:
 | 1 | **The click rides the payment** | `client_reference_id` on Checkout, Payment Links and Pricing Tables, set by the script tag with no brand code | the purchase names its partner click, so no cookie has to survive |
 | 2 | **Signed events** | webhooks signed per endpoint | nobody can forge a conversion |
 | 3 | **Renewals stay attached** | `invoice.paid` carries a stable customer id | the partner who won the customer keeps the renewals (docs/renewal-attribution.md) |
-| 4 | **Refunds and disputes** | `charge.refunded` (partial amounts), `charge.dispute.created` | commissions are clawed back (docs/refund-clawback-netting.md) |
+| 4 | **Refunds and disputes** | `charge.refunded` (partial amounts) reverses commissions automatically; `charge.dispute.created` is recorded, and a lost chargeback is reported to `POST /attribution/refunds` | partners aren't paid on money the brand gave back (docs/refund-clawback-netting.md) |
 | 5 | **Catch-up** | the Events API lists 30 days | missed webhooks are recovered, not lost (the catch-up job) |
 | 6 | **Access without pasted secrets** | the Stripe App: OAuth, read-only, revocable by the brand | brands connect in a click and stay in control |
 | 7 | **Coupon codes** | promotion codes on the checkout and invoice | partner codes credit without a click |
@@ -105,9 +105,11 @@ a webhook on it** (`paypal-connection.ts`).
   doesn't carry it. Store `custom_id` from `BILLING.SUBSCRIPTION.CREATED`, then
   join each sale on `billing_agreement_id` (the subscription id), falling back
   to the subscription's transactions list when a webhook omits it.
-- **Refunds and disputes**: `PAYMENT.CAPTURE.REFUNDED` (partial amounts),
-  `PAYMENT.SALE.REFUNDED`, `CUSTOMER.DISPUTE.CREATED`, whose disputed
-  transactions carry the `custom` value.
+- **Refunds and disputes**: `PAYMENT.CAPTURE.REFUNDED` (partial amounts) and
+  `PAYMENT.SALE.REFUNDED` map to refunds, which reverse commissions;
+  `CUSTOMER.DISPUTE.CREATED` (its disputed transactions carry the `custom`
+  value) is recorded like a Stripe dispute, without reversing anything until
+  a chargeback is reported.
 - **The gotcha: webhooks are per REST app.** Payments made through one app
   never fire webhooks on another. So:
   - If the brand's checkout runs on the app it connected for payouts, we add the
@@ -159,9 +161,10 @@ and the click id it captured on the order.
 - `custom_data` can be set client-side in Paddle.js, and Paddle copies it from
   the first transaction to the subscription and to every renewal.
 - HMAC-signed webhooks, a replay API, and a 90-day events API for catch-up.
-- No OAuth: the brand pastes a scoped API key (read permissions only).
-  Notification destinations can be created through the API, so we register our
-  own webhook.
+- No OAuth: the brand pastes a scoped API key with read permissions plus
+  `notification_setting.write`, which lets us create our own webhook
+  destination through the API. Without that one write permission the brand
+  adds the webhook by hand.
 - Script tag: set `customData` on `Paddle.Checkout.open` (a snippet), or tag
   Paddle checkout links if the brand uses hosted checkout links (**verify** the
   URL parameter).
