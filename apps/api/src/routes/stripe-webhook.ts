@@ -38,6 +38,7 @@ import { adoptInvoiceSubscription, invoiceDueTracked, refreshInvoiceDue } from '
 import { getMode } from '../stripe.js';
 import { fromStripeMinor, majorToCents, stripeMinorToCents } from '../stripe-amounts.js';
 import { getTenancyMode } from '../tenancy.js';
+import { looksLikeClickId, noteTrackingIssue } from '../tracking-issues.js';
 import {
   announceRefund,
   applyRefund,
@@ -1182,6 +1183,24 @@ async function mapStripeEvent(
 
       if (!cref) return withoutLink();
 
+      // A cref that names no click: counted for Admin → Tracking health,
+      // split by shape. One shaped like a click id is a click this tenant
+      // doesn't have (a stale link, another program's script); anything
+      // else is the brand's own id in client_reference_id, where partner
+      // clicks can't ride. Brand accounts only: on OpenPartner's billing
+      // account the field is ours.
+      const unlinked = async (): Promise<MappedEvent[] | null> => {
+        if (source.brandAccount) {
+          await noteTrackingIssue(
+            trx,
+            tenantId,
+            looksLikeClickId(cref) ? 'stripe_unknown_click' : 'stripe_foreign_reference',
+            cref,
+          );
+        }
+        return withoutLink();
+      };
+
       if (!customerId) {
         // A guest checkout: mode=payment without a Customer, a Stripe
         // Payment Link's default. Key the user to the partner coupon's
@@ -1190,7 +1209,7 @@ async function mapStripeEvent(
         // /attribution/conversions does without a userId.
         const userId = redeemed?.userId ?? clickUserId(cref);
         const stitch = await stitchCheckoutCustomer(trx, tenantId, cref, userId);
-        if (!stitch) return withoutLink();
+        if (!stitch) return unlinked();
         return checkoutEvents(signup(userId), revenue(userId));
       }
 
@@ -1212,7 +1231,7 @@ async function mapStripeEvent(
         // committed the Event our backlog pass below picks up.
         await lockMerchantUser(trx, tenantId, metadataUserId);
         const stitch = await stitchCheckoutCustomer(trx, tenantId, cref, metadataUserId);
-        if (!stitch) return withoutLink();
+        if (!stitch) return unlinked();
         // Events that beat this stitch (customer.created's signup, an
         // early invoice) were recorded under the merchant's id with no
         // click to credit.
@@ -1224,7 +1243,7 @@ async function mapStripeEvent(
       }
 
       const stitch = await stitchCheckoutCustomer(trx, tenantId, cref, customerId);
-      if (!stitch) return withoutLink();
+      if (!stitch) return unlinked();
 
       // Backfill metadata so the cheaper resolve path (metadata lookup)
       // works for downstream invoice.paid / subscription events. Best-

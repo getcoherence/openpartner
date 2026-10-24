@@ -766,13 +766,14 @@ describe.skipIf(skipIntegration)('two-tier: program settings, export and constra
     expect(cleared.body).toMatchObject({ recruiterCommissionPercent: null, recruiterCommissionMonths: null });
   });
 
-  it('exports the new columns at schemaVersion 11', async () => {
+  it('exports the new columns (added at schemaVersion 11)', async () => {
     const { recruiterId, recruitId, clickId } = await setup();
     await convert(clickId, { externalEventId: 'order-export' });
     const res = await request(app).get('/export.json').set(admin);
     expect(res.status).toBe(200);
     expect(res.body.schemaVersion).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(11);
+    // Later versions keep the columns.
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(11);
     const partners = res.body.tables.Partner as Array<Record<string, unknown>>;
     expect(partners.find((p) => p.id === recruitId)).toMatchObject({ recruitedByPartnerId: recruiterId });
     const programs = res.body.tables.Program as Array<Record<string, unknown>>;

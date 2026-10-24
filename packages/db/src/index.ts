@@ -115,6 +115,7 @@ export const TABLES = {
   PartnerProgram: 'PartnerProgram',
   Link: 'Link',
   Click: 'Click',
+  ClickLanding: 'ClickLanding',
   Identity: 'Identity',
   Event: 'Event',
   Attribution: 'Attribution',
@@ -159,4 +160,5 @@ export const TABLES = {
   HostedFeeTerms: 'HostedFeeTerms',
   HostedBillingProfile: 'HostedBillingProfile',
   UsageFeeShadow: 'UsageFeeShadow',
+  TrackingIssue: 'TrackingIssue',
 } as const;

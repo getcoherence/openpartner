@@ -27,6 +27,7 @@ import {
 import { attributeEvent, resolveCommissionRule, ruleTakesEventType, type AttributeResult } from './attribution.js';
 import { ingestCurrency, rowCurrency } from './currency.js';
 import { recordedFromStripe } from './stripe-app.js';
+import { noteTrackingIssue } from './tracking-issues.js';
 
 /**
  * A replay must describe the same conversion. Reusing a key for a different
@@ -182,7 +183,12 @@ export async function recordClickConversion(
   // Explicit tenant filter rather than RLS alone: the app pool falls back to
   // the privileged role when DATABASE_URL_APP is unset (see auth.ts).
   const click = await db<ClickRow>(TABLES.Click).where({ id: input.clickId, tenantId }).first();
-  if (!click) return { ok: false, status: 404, error: 'click_not_found' };
+  if (!click) {
+    // A 404 the sender's logs swallow, so it's counted for Admin → Tracking
+    // health too.
+    await noteTrackingIssue(db, tenantId, 'conversion_unknown_click', input.clickId);
+    return { ok: false, status: 404, error: 'click_not_found' };
+  }
   if (await recordedFromStripe(db, tenantId, input.externalEventId)) {
     return { ok: false, status: 409, error: 'recorded_from_stripe' };
   }

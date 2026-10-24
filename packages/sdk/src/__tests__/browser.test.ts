@@ -6,6 +6,9 @@ describe('OpenPartner (browser)', () => {
   beforeEach(() => {
     localStorage.clear();
     document.cookie = '_cref=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+    // A captured ?cref= sends the landing report; tests that care stub
+    // their own fetch.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"ok":true}', { status: 200 })));
     // jsdom preserves history across tests — reset it so stale query
     // params don't leak and trigger captureCref on the next test.
     window.history.replaceState({}, '', '/');

@@ -6,9 +6,10 @@
  *           data-api-url="https://app.openpartner.dev/api/t/your-slug"></script>
  *
  * It starts itself: captures the partner click, links Stripe Payment Links
- * and Pricing Table / Buy Button embeds to it, and keeps it in a first-party
- * `op_ref` cookie your server can read. The instance is `window.openpartner`
- * (`openpartner.identify(userId)`, `openpartner.getReferral()`).
+ * and Pricing Table / Buy Button embeds to it, keeps it in a first-party
+ * `op_ref` cookie your server can read, and reports the click's landing.
+ * The instance is `window.openpartner` (`openpartner.identify(userId)`,
+ * `openpartner.getReferral()`, `openpartner.setConsent('granted')`).
  *
  * Attributes on the tag:
  *   data-api-url         API base for identify(). Default: the script's
@@ -18,11 +19,15 @@
  *   data-stripe          "off" leaves Stripe links alone.
  *   data-cookie-domain   Share op_ref across subdomains (".yourbrand.com").
  *   data-cookie          "off" skips the op_ref cookie.
+ *   data-consent         "pending" waits for openpartner.setConsent()
+ *                        (call it from your consent banner's callback);
+ *                        "denied" starts with nothing. Default: granted.
+ *   data-landing         "off" skips the landing report.
  *
  * Put it in <head>, before any Stripe embed script (see watchStripe).
  */
 
-import { OpenPartner } from './browser.js';
+import { OpenPartner, type ConsentState } from './browser.js';
 
 export interface AutoInitOptions {
   src: string;
@@ -44,11 +49,14 @@ export function configFromScript(tag: AutoInitOptions) {
     .split(',')
     .map((h) => h.trim())
     .filter(Boolean);
+  const consent: ConsentState = d.consent === 'pending' || d.consent === 'denied' ? d.consent : 'granted';
   return {
     apiUrl: apiUrl.replace(/\/$/, ''),
     stripe: d.stripe === 'off' ? (false as const) : { linkHosts },
     referralCookie:
       d.cookie === 'off' ? (false as const) : { name: 'op_ref', ...(d.cookieDomain ? { domain: d.cookieDomain } : {}) },
+    consent,
+    reportLanding: d.landing !== 'off',
   };
 }
 

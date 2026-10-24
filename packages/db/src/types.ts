@@ -901,6 +901,39 @@ export interface ClickRow {
   ts: Date;
 }
 
+/** The browser SDK saw a click arrive on the brand's site (migration
+ *  20261024100000_click_landing_tracking_issue). One row per click, the
+ *  first landing; append-only. */
+export interface ClickLandingRow {
+  clickId: string;
+  tenantId: string;
+  landedAt: Date;
+  /** The landing page's hostname only; never its path or query. */
+  host: string | null;
+}
+
+/** What a TrackingIssue counts (apps/api/src/tracking-issues.ts). */
+export type TrackingIssueKind =
+  | 'identify_unknown_click'
+  | 'landing_unknown_click'
+  | 'conversion_unknown_click'
+  | 'stripe_unknown_click'
+  | 'stripe_foreign_reference'
+  | 'coupon_unknown_code';
+
+/** Dropped input, counted per (tenant, day, kind). Not exported. */
+export interface TrackingIssueRow {
+  tenantId: string;
+  /** YYYY-MM-DD, UTC. */
+  day: string;
+  kind: TrackingIssueKind;
+  count: number;
+  /** The latest value seen, cut to 64 characters. */
+  sampleRef: string | null;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+}
+
 export interface IdentityRow {
   id: string;
   tenantId: string;
