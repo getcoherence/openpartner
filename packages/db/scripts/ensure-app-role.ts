@@ -66,6 +66,9 @@ const RESTRICTED_GRANTS: Array<{ table: string; grant: string }> = [
   // no request deletes one.
   { table: 'ClickLanding', grant: 'select, insert' },
   { table: 'TrackingIssue', grant: 'select, insert, update' },
+  // The brand Stripe events attribution processed; the catch-up prunes it
+  // on the privileged pool (stripe-event-catchup.ts).
+  { table: 'StripeEventLog', grant: 'select, insert' },
 ];
 
 async function main(): Promise<void> {

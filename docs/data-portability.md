@@ -597,7 +597,7 @@ logs — not customer data):
 `PlatformSessionBundle`, `PlatformAdmin`, `PlatformAdminSession`,
 `PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
 `StripeWebhookInbox`, `LocationDeclaration`, `SanctionsScreening`,
-`PartnerSigninLinkLog`, `TrackingIssue`.
+`PartnerSigninLinkLog`, `TrackingIssue`, `StripeEventLog`.
 
 `TrackingIssue` counts, per day, the input this deployment had to drop: a
 click id that `identify()`, a conversion or the landing beacon named but the
@@ -605,6 +605,12 @@ tenant doesn't have, a Checkout Session `client_reference_id` that isn't a
 click, a coupon code nobody holds (Admin → Tracking health). Like
 `WebhookDelivery` it is a log of what reached one deployment, nothing
 re-derives from it, and a restored instance starts counting afresh.
+
+`StripeEventLog` lists the brand Stripe events this deployment's attribution
+pipeline processed, so the Stripe catch-up ([stripe-app.md](stripe-app.md#missed-events--the-catch-up))
+can replay the ones no webhook delivered. A delivery log of one deployment,
+pruned after 35 days. What the events recorded is in the exported `Event`
+rows, and a recovered one carries `metadata.recoveredBy`.
 
 `PartnerSigninLinkLog` records each sign-in link a brand's backend minted for
 a partner (`POST /partners/{id}/signin-link`): which partner, which key,
