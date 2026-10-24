@@ -1,5 +1,6 @@
 /**
- * Currency conversion for platform billing — and only for that.
+ * Currency conversion for platform billing, and for Pay with PayPal's
+ * "send as" (paypal-fx.ts). Nothing else.
  *
  * OpenPartner's own prices are in USD: the Stripe metered prices behind
  * the attributed-GMV meter, and the Network's fee on Network-originated
@@ -18,7 +19,10 @@
  * without advancing their high-water mark, so the next run bills it.
  *
  * Partner commissions never go through here: the attribution engine has no
- * FX (see commission-slabs.ts). A commission is in the event's currency.
+ * FX (see commission-slabs.ts). A commission is in the event's currency,
+ * and so is its payout. Pay with PayPal only converts what it SENDS when
+ * PayPal can't send the payout's currency (INR), at a rate the brand sees
+ * before sending (paypal-fx.ts); the payout stays in INR.
  */
 
 export const METER_CURRENCY = 'USD';
@@ -101,6 +105,14 @@ export function usdPerUnit(rates: EcbRates, currency: string): number | null {
   if (c === METER_CURRENCY) return 1;
   const perEur = rates.perEur[c];
   return perEur ? rates.perEur.USD! / perEur : null;
+}
+
+/** Units of `to` per one unit of `from`, crossed through EUR, or null
+ *  when the table lacks either. */
+export function crossRate(rates: EcbRates, from: string, to: string): number | null {
+  const f = rates.perEur[from.toUpperCase()];
+  const t = rates.perEur[to.toUpperCase()];
+  return f && t ? t / f : null;
 }
 
 /**

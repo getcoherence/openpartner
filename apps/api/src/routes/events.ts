@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { z } from 'zod';
+import { utcDateTime, z } from '../zod.js';
 import { ulid } from 'ulid';
 import { TABLES, type EventRow } from '@openpartner/db';
 import { attributeEvent } from '../attribution.js';
@@ -17,8 +17,8 @@ export const schema = z.object({
   /** ISO 4217, any case; stored upper case. Omitted → the tenant's
    *  default currency (Settings → Program). */
   currency: currencyInputSchema.optional(),
-  metadata: z.record(z.unknown()).optional(),
-  ts: z.string().datetime().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  ts: utcDateTime().optional(),
   /** Idempotency key — the source system's stable id for this one event
    *  (order id, invoice id, CRM deal-stage change id). A retry with the
    *  same key replays the original result instead of inserting a second

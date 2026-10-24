@@ -68,8 +68,9 @@ export function SigninPage() {
             : `If we found accounts for ${email}, we just emailed sign-in links — one per account type if you have both a brand and a creator account. They’re good for 15 minutes.`
         }
         forgotSentText={(email) =>
-          `If ${email} has an OpenPartner brand or operator account, we just emailed it a link to choose a password. It’s good for 15 minutes.`
+          `If ${email} has an OpenPartner brand or operator account, we just emailed it a link to choose a password. It’s good for 15 minutes. A partner address gets a list of its partner portals instead.`
         }
+        forgotHint="Partners: reset your password from your brand’s partner portal."
         footer={
           <div style={{ marginTop: 14, fontSize: 12, color: theme.textDim, textAlign: 'center' }}>
             New here? <Link to="/signup" style={{ color: theme.accentText }}>Sign up as a brand</Link> · <Link to="/creator/signup" style={{ color: theme.accentText }}>Sign up as a creator</Link>

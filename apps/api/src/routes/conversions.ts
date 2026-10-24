@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { z } from 'zod';
+import { utcDateTime, z } from '../zod.js';
 import { TABLES } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import type { AttributeResult } from '../attribution.js';
@@ -58,8 +58,8 @@ export const conversionSchema = z.object({
   /** The sender's own id for the user, when it has one. Omitted → the
    *  click's own synthetic user. */
   userId: z.string().min(1).max(255).optional(),
-  ts: z.string().datetime().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  ts: utcDateTime().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 conversionsRouter.post(

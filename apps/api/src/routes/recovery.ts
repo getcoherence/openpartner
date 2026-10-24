@@ -21,7 +21,7 @@
  */
 
 import { Router, type Request, type Response } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { ulid } from 'ulid';
 import {
   TABLES,

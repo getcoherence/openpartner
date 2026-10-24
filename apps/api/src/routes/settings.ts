@@ -11,7 +11,7 @@
 
 import { Router } from 'express';
 import type { Knex } from 'knex';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import {
   PAYOUT_CADENCES,
   PAYOUT_RAIL_PREFERENCES,
@@ -44,6 +44,7 @@ import {
 } from '../network-client.js';
 import { isNetworkOfferedToPartners, resyncConsentedPartners, summarizeNetworkConsent } from '../network-consent.js';
 import { readPartnerAccessSettings, savePartnerAccessSettings } from '../partner-portal-access.js';
+import { readStatementSettings, saveStatementSettings } from '../payout-statements.js';
 import { clearNetworkListingSkip } from '../onboarding-settings.js';
 import { createApiKeyRow } from '../auth.js';
 import { getTenancyMode, tenantOf } from '../tenancy.js';
@@ -424,6 +425,44 @@ settingsRouter.post('/config/partner-access', requireAuth, requireAdmin, async (
   const body = partnerAccessSchema.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
   res.json(await savePartnerAccessSettings(db, tenantId, body.data));
+});
+
+// ---------- Payout statements ----------
+
+/** Text printed on statements: `''` or null clears it. */
+const statementText = (max: number) => z.string().trim().max(max).nullable().optional();
+
+/** What payout statements print (payout-statements.ts). Omitted fields
+ *  keep their value. */
+export const payoutStatementSettingsSchema = z.object({
+  legalName: statementText(200),
+  address: statementText(500),
+  footer: statementText(2000),
+  numberPrefix: z
+    .string()
+    .trim()
+    .max(20)
+    .regex(/^[A-Za-z0-9/_.#-]*$/, 'use letters, digits and / _ . # -')
+    .nullable()
+    .optional(),
+  taxLines: z
+    .object({
+      enabled: z.boolean().optional(),
+      labels: z.array(z.string().trim().min(1).max(60)).min(1).max(5).optional(),
+    })
+    .optional(),
+});
+
+settingsRouter.get('/config/payout-statements', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  res.json(await readStatementSettings(db, tenantId));
+});
+
+settingsRouter.post('/config/payout-statements', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const body = payoutStatementSettingsSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  res.json(await saveStatementSettings(db, tenantId, body.data));
 });
 
 // ---------- Payout settings ----------

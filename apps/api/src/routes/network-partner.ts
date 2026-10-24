@@ -9,10 +9,11 @@
  * and we proxy server-side using the encrypted vendorToken in
  * network_membership Config plus an x-act-as-vendor-partner header.
  *
- * Network's requireCreator middleware accepts that header (when paired
- * with an active vendor bearer) and resolves the Creator via
- * VendorAffiliation(vendorId, vendorPartnerId), so the same handler code
- * serves both browser-creator and proxied-from-vendor cases.
+ * The Network's requireCreatorOrActingVendor middleware accepts that
+ * header (when paired with an active vendor bearer) and resolves the
+ * Creator via VendorAffiliation(vendorId, vendorPartnerId), so the same
+ * handler code serves both browser-creator and proxied-from-vendor cases.
+ * What it answers is scoped to this brand; see partnerProxy.
  *
  * Acting as the partner needs the partner's Network consent
  * (requireConsent); browsing public offerings doesn't. The partner's own
@@ -21,7 +22,7 @@
  */
 
 import express, { Router, type Request, type Response } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import type { Knex } from 'knex';
 import { AUDIENCE_SIZES, TABLES, type PartnerRow } from '@openpartner/db';
 import { requireAuth } from '../auth.js';
@@ -296,7 +297,7 @@ const updateProfileSchema = z.object({
     .nullable()
     .optional(),
   bio: z.string().max(2000).nullable().optional(),
-  profile: z.record(z.unknown()).optional(),
+  profile: z.record(z.string(), z.unknown()).optional(),
   categories: z.array(z.string().trim().toLowerCase().min(1).max(40)).max(12).optional(),
   audienceLocations: z.array(isoCountry).max(5).optional(),
   audienceAgeRange: z.enum(['13-17', '18-24', '25-34', '35-44', '45-54', '55+']).nullable().optional(),

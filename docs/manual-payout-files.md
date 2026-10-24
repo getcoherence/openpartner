@@ -15,6 +15,11 @@ Payoneer) are out of scope: they would put OpenPartner in the flow of funds.
 
 The Connect and funded rails are unchanged.
 
+For partners paid by PayPal, the brand can also skip the upload: **Pay with
+PayPal** sends the same payouts through PayPal's Payouts API with the
+brand's own PayPal app, in one click ([paypal-payouts.md](paypal-payouts.md)).
+A payout is in one file or one PayPal batch, never both.
+
 ## Payout details
 
 One `PartnerPayoutProfile` row per partner
@@ -90,7 +95,8 @@ Flow, on the admin Payouts page ("Manual payouts to send"):
 4. Once the batch has gone out, **Mark sent** for that file under "Files
    made". If you never uploaded it, **Discard** it instead. Payouts in no
    file have their own Mark sent button once you've paid them some other
-   way.
+   way, which asks for the payment's reference
+   ([Paying one at a time](#paying-one-at-a-time)).
 
 ### A file is fixed when it's made
 
@@ -129,8 +135,9 @@ went through.
 | `no_payout_details` | the partner hasn't given any |
 | `details_unreadable` | sealed under another deployment's key |
 | `pay_individually` | UPI or `other`: pay it yourself, then mark it sent |
-| `currency_not_supported` | PayPal can't send the payout currency (INR, for one); Wise can't send from it, or can't pay the account's currency yet (INR) |
+| `currency_not_supported` | PayPal can't send the payout currency (INR, for one; Pay with PayPal can send INR in USD once the brand turns that on, [paypal-payouts.md](paypal-payouts.md#balances-paypal-cant-send-inr)); Wise can't send from it, or can't pay the account's currency yet (INR) |
 | `details_incomplete` | Wise needs the holder's address for a payout sent in USD or AUD, and the bank details have none |
+| `over_paypal_limit` | more than PayPal sends in one payment in this currency (USD 60,000, EUR 55,000, GBP 50,000…; `PAYPAL_ITEM_LIMITS`, from PayPal's "Payout transaction limits", checked 2026-10-22) |
 | `country_not_supported` | OpenPartner Cloud: the partner's declared country, or the account's or address's country, is on the country list ([country-access.md](country-access.md)) |
 | `screening_confirmed` | OpenPartner Cloud: an operator confirmed a sanctions-list match ([sanctions-screening.md](sanctions-screening.md)) |
 
@@ -146,6 +153,28 @@ them, as the manual rail has always done: it's the brand's own money, and
 pending screening usually clears within the hour. The country list and
 screening are hosted-platform controls, so a self-host refuses nothing for
 them.
+
+### Paying one at a time
+
+A payout in no file (UPI, `other`, INR to a bank account, no details yet)
+is paid however the brand pays it, and confirmed on its own: **Mark sent**
+on its row, or `POST /payouts/{id}/confirm`. The confirm can carry the
+payment's reference, `{ "reference": "…" }`: the bank's UTR for a NEFT,
+RTGS or IMPS transfer, the UPI transaction ID, a cheque number. It's
+optional, trimmed, and at most 100 characters on one line. It's kept on the
+payout as `Payout.metadata.externalReference`, and the payout's statement
+prints it as the **Payment reference** (docs/payout-statements.md). A
+payout that is also in a file prints the file's PayPal Customer ID or Wise
+payment reference instead, while that still holds.
+
+The reference is fixed once the payout is confirmed: a second confirm is
+`409 not_confirmable`. It isn't written to the request log, which keeps no
+request bodies (apps/api/src/request-log.ts).
+
+The bulk `POST /payouts/confirm` takes no references, by design. It confirms
+many payouts in one call, mostly a file's, and those already print the
+file's reference. A payment sent one at a time has a reference of its own,
+so it's confirmed with its own call.
 
 ### Scale
 
@@ -177,9 +206,12 @@ and [currency codes](https://developer.paypal.com/api/rest/reference/currency-co
   older PayPal page says the decimal separator follows the sender's locale.
 - Supported currencies: AUD, BRL, CAD, CNY, CZK, DKK, EUR, HKD, HUF, ILS,
   JPY, MYR, MXN, TWD, NZD, NOK, PHP, PLN, GBP, RUB, SGD, SEK, CHF, THB, USD.
-  No INR: since April 2021 Indian PayPal accounts receive international
-  payments in USD only. Pay Indian PayPal partners in USD. They need a
-  verified PAN and a purpose code on their side.
+  No INR: it isn't a PayPal API currency, and Indian PayPal accounts take
+  payments in the sender's currency, converted to INR by PayPal. Pay Indian
+  PayPal partners in USD: Pay with PayPal
+  can convert INR balances at a quoted ECB rate
+  ([paypal-payouts.md](paypal-payouts.md#balances-paypal-cant-send-inr));
+  a file can't. They need a verified PAN and a purpose code on their side.
 - 5,000 rows per file. PayPal's default per-item cap is USD 20,000. The
   account needs Payouts enabled by PayPal.
 
@@ -263,17 +295,29 @@ payment** a batch row needs, which this file doesn't send yet.
 | `GET /payouts/exports/{exportId}.csv` | admin |
 | `POST /payouts/exports/{exportId}/confirm` | admin |
 | `POST /payouts/exports/{exportId}/discard` | admin |
+| `POST /payouts/{id}/confirm` (optional `{ reference }`) | admin |
 | `POST /payouts/confirm` (`{ payoutIds }`, up to 5,000) | admin |
 
 The files carry full payout details, so every file route is admin-only and
 `Cache-Control: no-store`. No confirm fires webhooks: `payout.created` and
 `commission.paid` fired when the run wrote the payouts.
 
+Every payout also has a statement, with the details masked: see
+docs/payout-statements.md. A payout in a file prints that file's PayPal
+Customer ID or Wise payment reference as its reference; a payout paid one
+at a time prints the reference given when it was confirmed.
+
+## PayPal batches sent through the API
+
+Pay with PayPal ([paypal-payouts.md](paypal-payouts.md)) stamps its payouts
+the same way, with `via: "api"` and the batch id as the `exportId`. So a
+payout in a PayPal batch is in no file, and the reverse. PayPal reports
+what happened to them, so the file routes (download again, confirm,
+discard) don't reach an API batch, and marking one of its payouts sent by
+hand is refused while the batch is open (`reason: "in_paypal_batch"`).
+
 ## Not yet
 
-- Sending through the PayPal Payouts API with the brand's own credentials,
-  so the brand clicks once instead of uploading. It would keep the same
-  money flow.
 - Letting a brand choose which methods its partners may pick.
 - INR targets in the Wise file, once the purpose of payment has a column
   (see [Wise columns](#wise-columns)).

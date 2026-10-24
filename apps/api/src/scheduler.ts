@@ -19,6 +19,10 @@
  *   - payout-transfers: every 15 minutes. Retries/reconciles Connect
  *                   transfer intents left open by a crash, an ambiguous
  *                   Stripe response, or a partner who wasn't ready.
+ *   - paypal-payouts: every 5 minutes. Posts Pay with PayPal batches
+ *                   waiting to go out (or re-sends one whose answer never
+ *                   came), and reads PayPal's status for batches it is
+ *                   processing (paypal-payouts.ts).
  *   - sanctions-screening: hourly. Screens partners with approved
  *                   commissions against the Consolidated Screening List
  *                   the first time they're payable, and again at most
@@ -185,6 +189,16 @@ const JOBS: ScheduledJob[] = [
       const { executePayoutTransfers } = await import('./payout-transfers.js');
       const transfers = await executePayoutTransfers(db);
       return { recovery, transfers };
+    },
+  },
+  {
+    name: 'paypal-payouts',
+    cronExpr: '*/5 * * * *',
+    description:
+      'Pay with PayPal: post committed batches with their frozen sender_batch_id (re-sending only within 29 days of the first POST), read back batches PayPal is processing, confirm paid items and release failed or returned ones (every 5 minutes)',
+    handler: async () => {
+      const { runPaypalPayoutsJob } = await import('./paypal-payouts.js');
+      return runPaypalPayoutsJob(db);
     },
   },
   {
@@ -479,6 +493,7 @@ export const TENANT_PURGE_ORDER = [
   TABLES.WebhookEndpoint,
   TABLES.Session,
   TABLES.MagicLinkToken,
+  TABLES.PartnerSigninLinkLog,
   // The brand's partner passwords and any signup password still waiting on
   // an activation link. Platform passwords belong to an email, not a brand:
   // they sit under DEFAULT_TENANT_ID, like platform magic-link tokens, and
@@ -495,6 +510,9 @@ export const TENANT_PURGE_ORDER = [
   TABLES.HostedBillingProfile,
   TABLES.HostedBillingState,
   TABLES.TenantStripeConnection,
+  // Before PaypalConnection (PaypalPayoutBatch.connectionId).
+  TABLES.PaypalPayoutBatch,
+  TABLES.PaypalConnection,
   TABLES.PortalCustomDomain,
   // Before Payout (PayoutReversal.payoutId).
   TABLES.PayoutReversal,

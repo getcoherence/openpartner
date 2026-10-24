@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from './zod.js';
 import { clickDestinationProblem, clickDestinationWarning } from '@openpartner/db';
 
 /**

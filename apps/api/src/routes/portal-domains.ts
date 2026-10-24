@@ -17,7 +17,7 @@
  */
 
 import { Router } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { ulid } from 'ulid';
 import { TABLES, type PortalCustomDomainRow, type TenantRow } from '@openpartner/db';
 import { db } from '../db.js';

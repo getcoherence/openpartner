@@ -14,14 +14,12 @@
  *     (dashboard revenue, earnings) are JSON numbers
  */
 
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { ATTRIBUTION_MODELS, BONUS_SOURCES, COMMISSION_STATUSES, PAYOUT_METHODS, PAYOUT_RAILS, PAYOUT_STATUSES } from './enums.js';
 import { commissionBandsSchema, commissionTiersSchema } from '../commission-rule-schema.js';
 import { PAYOUT_PROFILE_METHODS } from '@openpartner/db';
 import { payoutDetailsSchema } from '../payout-profile.js';
 import { DO_NOT_PAY_REASONS, MANUAL_EXCLUSION_REASONS, MANUAL_PAYOUT_PROVIDERS } from '../manual-payout-files.js';
-
-import './registry.js'; // extendZodWithOpenApi before any .openapi() call
 
 /** Nullable reference. `.nullable()` on a registered (`$ref`) schema comes
  *  out of the 3.1 generator as an `allOf` with conflicting types; a union
@@ -47,7 +45,7 @@ export const Partner = z
     email: z.string().email(),
     name: z.string(),
     stripeConnectAccountId: z.string().nullable(),
-    metadata: z.record(z.unknown()).openapi({ description: 'Free-form JSON you supplied at creation. OpenPartner may add a `network` key when the partner is synced to the Network.' }),
+    metadata: z.record(z.string(), z.unknown()).openapi({ description: 'Free-form JSON you supplied at creation. OpenPartner may add a `network` key when the partner is synced to the Network.' }),
     createdAt: ts,
     updatedAt: ts,
     activatedAt: tsNullable.openapi({ description: 'Null until the partner accepts their invite. `sendInvite: false` sets it at creation.' }),
@@ -70,6 +68,17 @@ export const PartnerAccessSettings = z
   .openapi('PartnerAccessSettings');
 
 export const PartnerCreated = Partner.extend({ invited: z.boolean() }).openapi('PartnerCreated');
+
+export const PartnerSigninLink = z
+  .object({
+    url: z.string().url().openapi({
+      description:
+        "Redirect the partner's browser here. It signs them in to the partner portal, once, and lands on `returnTo` (or their dashboard). On your white-label domain when one is verified.",
+    }),
+    expiresAt: z.string().datetime().openapi({ description: 'Five minutes after minting. Unused by then, the link fails.' }),
+    partnerId: z.string(),
+  })
+  .openapi('PartnerSigninLink');
 
 export const PartnerPage = z
   .object({
@@ -456,7 +465,7 @@ const CommissionRowShape = z.object({
   accruedAt: ts,
   paidAt: tsNullable,
   payoutId: z.string().nullable(),
-  metadata: z.record(z.unknown()).openapi({
+  metadata: z.record(z.string(), z.unknown()).openapi({
     description:
       "How the amount was worked out. `rateType` is the sub-rule's `percent` or `fixed` (absent on commissions accrued before October 2026). A banded or tiered rule also records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. A replacement accrued for what a partial refund left records `refund`.",
   }),
@@ -546,7 +555,10 @@ export const Payout = z
     status: z.enum(PAYOUT_STATUSES).openapi({
       description: 'A `manual` payout stays `pending` until you send the money and confirm it; only `paid` means it went out.',
     }),
-    metadata: z.record(z.unknown()),
+    metadata: z.record(z.string(), z.unknown()).openapi({
+      description:
+        'What the run and the payout rails recorded. `externalReference` is the payment reference you gave when you confirmed a manual payout (`POST /payouts/{id}/confirm`).',
+    }),
     createdAt: ts,
     completedAt: tsNullable,
   })
@@ -554,11 +566,133 @@ export const Payout = z
 
 const partnerName = z.string().nullable().openapi({ description: "The partner's name. Null only if the partner record is gone." });
 
-export const PayoutListItem = Payout.extend({ partnerName }).openapi('PayoutListItem');
+const rateString = z.string().regex(/^\d+(\.\d+)?$/).openapi({
+  description: 'Units of the sent currency per unit of the payout’s currency, as a decimal string (ECB reference rates, crossed through EUR).',
+  example: '0.011958904110',
+});
+
+export const PayoutSent = z
+  .object({
+    amount: Decimal.openapi({ description: 'What PayPal was asked to send.' }),
+    currency: z.string(),
+    rate: rateString,
+    rateSource: z.literal('ecb'),
+    rateDate: z.string().openapi({ description: 'The ECB reference date of the rate (YYYY-MM-DD).' }),
+  })
+  .openapi('PayoutSent', {
+    description:
+      'A payout PayPal can’t send in its own currency (INR), sent through Pay with PayPal in another (USD) at the ECB reference rate frozen when the batch was made. `amount` and `currency` on the payout stay its own. PayPal’s own conversion of it into the partner’s currency is between the partner and PayPal.',
+  });
+
+const sent = orNull(PayoutSent).openapi({ description: 'Set while (or once) a PayPal batch sends this payout in another currency; gone if PayPal returns it.' });
+
+/** A payout in the payout lists: with what PayPal sent, if converted. */
+export const PayoutWithSent = Payout.extend({ sent }).openapi('PayoutWithSent');
+
+export const PayoutListItem = Payout.extend({ partnerName, sent }).openapi('PayoutListItem');
 
 export const PayoutPage = z
   .object({ payouts: z.array(PayoutListItem), nextCursor: z.string().nullable() })
   .openapi('PayoutPage');
+
+// ---------- Payout statements ----------
+
+export const PayoutStatementSettings = z
+  .object({
+    legalName: z.string().nullable().openapi({ description: 'The registered business name statements are issued in. Null: the program name.' }),
+    address: z.string().nullable().openapi({ description: 'Your postal address; line breaks are kept.' }),
+    footer: z.string().nullable().openapi({ description: 'Printed at the foot of every statement; line breaks are kept.' }),
+    numberPrefix: z.string().nullable().openapi({ description: 'Put before the payout id to make the statement number, e.g. `PS-`.' }),
+    taxLines: z
+      .object({
+        enabled: z.boolean(),
+        labels: z.array(z.string()),
+      })
+      .openapi({
+        description:
+          'A placeholder for tax lines such as tax withheld, off by default. Turned on, each label prints as a row marked "Not recorded": OpenPartner records no tax amounts yet. Which lines you need (GST, TDS) is for your accountant to say.',
+      }),
+  })
+  .openapi('PayoutStatementSettings');
+
+const StatementLine = z
+  .object({
+    id: id.openapi({ description: 'The commission, bonus, commission adjustment or reversal id.' }),
+    commissionId: id.nullable().openapi({ description: 'The commission behind the line; null on a reversal.' }),
+    date: z.string().openapi({ description: 'YYYY-MM-DD (UTC): when it was earned, or when a deduction or reversal was recorded.', example: '2026-10-14' }),
+    programName: z.string().nullable(),
+    description: z.string().openapi({ example: 'Invoice paid' }),
+    amount: Decimal.openapi({ description: 'Signed: deductions and reversals are negative.' }),
+    currency: z.string(),
+  })
+  .openapi('PayoutStatementLine');
+
+export const PayoutStatement = z
+  .object({
+    statementNumber: z.string().openapi({ description: 'Your `numberPrefix` and the payout id: unique, and the same every time.' }),
+    generatedAt: ts,
+    issuer: z.object({
+      name: z.string(),
+      tradingName: z.string().nullable().openapi({ description: 'The program name, when it differs from `name`.' }),
+      address: z.string().nullable(),
+      gstin: z.string().nullable().openapi({ description: 'OpenPartner Cloud: the GSTIN on your billing profile.' }),
+      logoUrl: z.string().nullable(),
+    }),
+    partner: z.object({
+      id,
+      name: z.string().nullable(),
+      email: z.string().nullable(),
+      destination: z.string().nullable().openapi({
+        description: "Where the payout goes, masked, never in full: the last four characters of the Stripe account the transfer was made to, or the partner's payout details on file (`PayPal j•••@example.com`, `Bank account •••• 1234 (INR)`). Null when a manual payout's partner has no details on file.",
+      }),
+      destinationChanged: z.boolean().openapi({
+        description: "The partner changed their payout details after the payout was sent (or put in a batch file); `destination` shows the current ones.",
+      }),
+    }),
+    payout: z.object({
+      id,
+      status: z.enum(PAYOUT_STATUSES),
+      method: z.enum(PAYOUT_METHODS),
+      methodLabel: z.string().openapi({ example: 'Manual · Wise batch payment' }),
+      reference: z
+        .object({ label: z.string(), value: z.string() })
+        .nullable()
+        .openapi({
+          description:
+            'What identifies the payout: the Stripe transfer (`Stripe transfer`), its PayPal Customer ID or Wise reference in a batch file (`PayPal Customer ID`, `Wise payment reference`), or, for a payout sent one at a time, the `reference` you gave `POST /payouts/{id}/confirm` (`Payment reference`). Null when there is none.',
+        }),
+      amount: Decimal.openapi({ description: 'What was paid, or is to be.' }),
+      currency: z.string(),
+      sent: z
+        .object({
+          amount: Decimal,
+          currency: z.string(),
+          rate: Decimal.openapi({ description: 'Units of `currency` per unit of the payout currency.' }),
+          rateSource: z.literal('ecb'),
+          rateDate: z.string().openapi({ example: '2026-10-22' }),
+        })
+        .nullable()
+        .openapi({
+          description:
+            'When Pay with PayPal sent the payout in another currency (an INR balance in USD), what was sent and at which ECB reference rate. `amount` and the line items stay in the payout currency. Null otherwise.',
+        }),
+      createdAt: ts,
+      completedAt: tsNullable,
+    }),
+    commissions: z.array(StatementLine),
+    bonuses: z.array(StatementLine),
+    clawbacks: z.array(StatementLine).openapi({ description: 'Refund clawbacks deducted from this payout.' }),
+    reversals: z.array(StatementLine).openapi({ description: 'Stripe transfer reversals after the payout was paid. Not in `totals`.' }),
+    taxLines: z.array(z.object({ label: z.string(), amount: Decimal.nullable(), currency: z.string() })).openapi({
+      description: 'Empty unless you turned tax lines on (`POST /config/payout-statements`). `amount` is always null for now.',
+    }),
+    totals: z
+      .array(z.object({ currency: z.string(), commissions: Decimal, bonuses: Decimal, clawbacks: Decimal, net: Decimal }))
+      .openapi({ description: 'One per currency the lines are in, never added across currencies. A payout has one; `net` matches `payout.amount` except where the currency is paid in whole units.' }),
+    notes: z.array(z.string()).openapi({ description: 'Plain sentences: a pending, failed or reversed payout, or rounding.' }),
+    footer: z.string().nullable(),
+  })
+  .openapi('PayoutStatement');
 
 const moneyGroup = z.object({ partnerId: id, partnerName, currency: z.string(), amount: z.number() });
 
@@ -676,6 +810,30 @@ const DoNotPayReason = z.enum(DO_NOT_PAY_REASONS).openapi({
   description:
     "OpenPartner Cloud: the payout must not be paid. `country_not_supported`: the partner, or their payout account, is in a country OpenPartner doesn't serve. `screening_confirmed`: a confirmed sanctions-list match. Every confirm refuses it.",
 });
+const PaypalConversion = z
+  .object({
+    sourceAmount: Decimal.openapi({ description: 'The payout’s own amount.' }),
+    sourceCurrency: z.string(),
+    sentAmount: Decimal.openapi({ description: 'What PayPal was asked to send: sourceAmount × rate, rounded to the cent on its own.' }),
+    sentCurrency: z.string(),
+    rate: rateString,
+    rateSource: z.literal('ecb'),
+    rateDate: z.string().openapi({ description: 'The ECB reference date of the rate (YYYY-MM-DD).' }),
+  })
+  .openapi('PaypalConversion', {
+    description: 'Stamped on a payout a PayPal batch sends in another currency (`metadata.manualExport.conversion`); exported with the payout.',
+  });
+
+const PaypalItemStatus = z
+  .object({
+    itemId: z.string().openapi({ description: 'PayPal’s payout_item_id.' }),
+    status: z.string().openapi({ description: 'PayPal’s transaction_status: SUCCESS, PENDING, UNCLAIMED, ONHOLD, FAILED, RETURNED, BLOCKED, REFUNDED, REVERSED.' }),
+    transactionId: z.string().nullable(),
+    amount: Decimal.nullable().openapi({ description: 'What PayPal sent: whole units where PayPal takes no decimals (HUF, JPY, TWD).' }),
+    currency: z.string().nullable(),
+    error: z.string().nullable().openapi({ description: 'PayPal’s error name for an item that didn’t go through (RECEIVER_UNREGISTERED, …).' }),
+  })
+  .openapi('PaypalItemStatus');
 
 export const ManualPayoutRuns = z
   .object({
@@ -697,7 +855,18 @@ export const ManualPayoutRun = z
     createdAt: ts,
     pendingCount: z.number().int(),
     ready: z
-      .array(z.object({ provider: ManualPayoutProvider, currency: z.string(), count: z.number().int(), total: Decimal }))
+      .array(
+        z.object({
+          provider: ManualPayoutProvider,
+          currency: z.string(),
+          sendAs: z.string().nullable().openapi({
+            description:
+              'Balances PayPal can’t send in `currency` (INR) that Pay with PayPal sends in this currency instead (the `paypal_payouts` setting): quote with `POST /payouts/runs/{runId}/paypal-batches/quote`, then send. No file takes them. Null for every other group.',
+          }),
+          count: z.number().int(),
+          total: Decimal.openapi({ description: 'In `currency`.' }),
+        }),
+      )
       .openapi({
         description:
           'Payouts no file holds yet that a new file would take, per provider and currency (PayPal: the payout currency; Wise: the source currency). Each new file takes up to 5,000 (PayPal) or 1,000 (Wise) of them.',
@@ -720,6 +889,9 @@ export const ManualPayoutRun = z
         }),
       )
       .openapi({ description: 'Files made from this run that still hold payouts to confirm.' }),
+    inPaypalBatches: z.number().int().openapi({
+      description: 'Pending payouts in a PayPal Payouts batch OpenPartner sent with your PayPal app. List the batches with `GET /payouts/runs/{runId}/paypal-batches`.',
+    }),
     excluded: z
       .array(z.object({ reason: z.enum(MANUAL_EXCLUSION_REASONS), count: z.number().int() }))
       .openapi({ description: 'Pending payouts in no file, per reason (see ManualRunPayout.excluded).' }),
@@ -748,18 +920,28 @@ export const ManualRunPayout = z
       z.object({
         exportId: id,
         provider: ManualPayoutProvider,
+        via: z.enum(['file', 'api']).openapi({
+          description: '`file`: a batch file you upload. `api`: a PayPal Payouts batch OpenPartner sent with your PayPal app; `exportId` is the batch id and `paypal` what PayPal last said.',
+        }),
         createdAt: ts,
         reference: z.string().nullable().openapi({
           description:
             'What identifies this payout in the file: the PayPal Customer ID (the payout id), or the Wise payment reference (its last 10 characters; none for JPY or COP).',
         }),
         destinationChanged: z.boolean().openapi({ description: 'The partner changed or removed their payout details after the file was made.' }),
+        paypal: orNull(PaypalItemStatus).openapi({ description: 'A PayPal Payouts batch: this payout’s item, once PayPal has listed it.' }),
+        conversion: orNull(PaypalConversion).openapi({
+          description: 'A PayPal Payouts batch sending this payout in another currency (an INR balance sent in USD): its amounts and the rate, frozen when the batch was made.',
+        }),
       }),
-    ).openapi({ description: 'The file this payout is in. It stays in that file, and only that file, until it is confirmed or the file is discarded.' }),
+    ).openapi({ description: 'The file (or PayPal Payouts batch) this payout is in. It stays there, and only there, until it is confirmed, the file is discarded, or PayPal reports it failed or returned.' }),
     ready: ManualPayoutProvider.nullable().openapi({ description: 'The file a new export would put this payout in.' }),
+    sendAs: z.string().nullable().openapi({
+      description: 'Ready for a Pay with PayPal batch only, sent in this currency at a quoted rate (a balance PayPal can’t send in its own). No file takes it.',
+    }),
     excluded: z.enum(MANUAL_EXCLUSION_REASONS).nullable().openapi({
       description:
-        "Why a payout is in no file: `no_payout_details`, `details_unreadable`, `pay_individually` (a UPI ID or instructions: pay it yourself), `currency_not_supported` (PayPal can't send INR; Wise can't send from this currency, or to INR yet), `details_incomplete` (Wise needs the holder's address for a payout sent in USD or AUD), and on OpenPartner Cloud the do-not-pay reasons `country_not_supported` and `screening_confirmed`.",
+        "Why a payout is in no file: `no_payout_details`, `details_unreadable`, `pay_individually` (a UPI ID or instructions: pay it yourself), `currency_not_supported` (PayPal can't send INR; Wise can't send from this currency, or to INR yet), `details_incomplete` (Wise needs the holder's address for a payout sent in USD or AUD), `over_paypal_limit` (more than PayPal sends in one payment in this currency, e.g. USD 60,000), and on OpenPartner Cloud the do-not-pay reasons `country_not_supported` and `screening_confirmed`.",
     }),
     complianceWarning: PayoutHoldReason.nullable().openapi({
       description: 'OpenPartner Cloud: the partner is on a compliance hold. A sanctions review or pending screening stays payable; check before you send it.',
@@ -797,12 +979,127 @@ export const BulkConfirmResult = z
       z.object({
         payoutId: id,
         error: z.enum(['payout_not_found', 'not_confirmable']),
-        reason: DoNotPayReason.optional(),
+        reason: z
+          .union([DoNotPayReason, z.literal('in_paypal_batch')])
+          .optional()
+          .openapi({ description: 'A do-not-pay hold, or `in_paypal_batch`: PayPal reports whether this payout was paid.' }),
         detail: z.string().optional(),
       }),
     ),
   })
   .openapi('BulkConfirmResult');
+
+// ---------- Pay with PayPal ----------
+
+export const PaypalEnvironment = z.enum(['live', 'sandbox']);
+
+export const PaypalConnection = z
+  .object({
+    id,
+    environment: PaypalEnvironment,
+    clientIdPreview: z.string().openapi({ description: 'The client id’s first 6 and last 4 characters. The secret is never returned.' }),
+    appId: z.string().nullable().openapi({ description: 'PayPal’s id for the app, from the token call.' }),
+    payoutsEnabled: z.boolean().openapi({
+      description: 'PayPal granted the app the Payouts scope. False: PayPal hasn’t enabled Payouts on the account yet, and sends would be refused.',
+    }),
+    webhook: z.object({
+      registered: z.boolean().openapi({ description: 'OpenPartner registered a webhook on your app, so status arrives as PayPal sends it. Otherwise batches are polled every few minutes.' }),
+      error: z.string().nullable(),
+    }),
+    active: z.boolean().openapi({ description: 'Pay with PayPal sends with this environment.' }),
+    connectedAt: ts,
+    verifiedAt: tsNullable,
+    lastError: z.string().nullable(),
+    lastErrorAt: tsNullable,
+    openBatches: z.number().int().openapi({ description: 'Batches sent with this app that are still in flight. Disconnecting waits for them.' }),
+  })
+  .openapi('PaypalConnection');
+
+export const PaypalBatch = z
+  .object({
+    batchId: id.openapi({ description: 'Also the `sender_batch_id` PayPal shows, and each payout’s `exportId`.' }),
+    runId: id,
+    environment: PaypalEnvironment,
+    currency: z.string().openapi({ description: 'What PayPal sends: the payouts’ currency, or the one their balances were converted to (`conversion`).' }),
+    itemCount: z.number().int(),
+    total: Decimal.openapi({ description: 'In `currency`: what PayPal is asked to send.' }),
+    conversion: orNull(
+      z.object({
+        sourceCurrency: z.string().openapi({ description: 'The payouts’ own currency (INR).' }),
+        sourceTotal: Decimal,
+        rate: rateString,
+        rateSource: z.literal('ecb'),
+        rateDate: z.string().openapi({ description: 'The ECB reference date of the rate (YYYY-MM-DD).' }),
+        quotedAt: ts.openapi({ description: 'When the quote this batch was sent with was made.' }),
+      }),
+    ).openapi({ description: 'A batch sending balances PayPal can’t send in their own currency, at a quoted rate. Null otherwise.' }),
+    state: z.enum(['intent', 'posted', 'submitted', 'completed', 'failed', 'denied', 'released', 'reconcile_required']).openapi({
+      description:
+        '`intent`: committed, not sent yet. `posted`: sent, PayPal’s answer not in yet (re-sent automatically; PayPal never makes a second batch for the same id). `submitted`: PayPal has it and is paying. `completed`: every payout paid or released. `failed`: PayPal refused it outright; nothing was sent and the payouts are back to pending. `denied`: PayPal denied the batch; payouts released. `released`: you released it after checking PayPal. `reconcile_required`: OpenPartner can’t tell whether it went out; check PayPal, then `POST /payouts/paypal-batches/{batchId}/resolve`.',
+    }),
+    payoutBatchId: z.string().nullable().openapi({ description: 'PayPal’s id for the batch.' }),
+    batchStatus: z.string().nullable().openapi({ description: 'PayPal’s batch_status: PENDING, PROCESSING, SUCCESS, DENIED, CANCELED.' }),
+    summary: z.object({
+      paid: z.number().int(),
+      released: z.number().int().openapi({ description: 'Back to pending: failed, returned, refunded, or the batch didn’t go out.' }),
+      unclaimed: z.number().int().openapi({ description: 'PayPal emailed the partner to claim it (no PayPal account at that email). Returned after 30 days unless claimed.' }),
+      processing: z.number().int(),
+    }),
+    rehearsal: orNull(
+      z.object({ paid: z.number().int(), unclaimed: z.number().int(), failed: z.number().int() }),
+    ).openapi({
+      description:
+        'A finished **sandbox** batch: what PayPal’s sandbox did with its test money. A sandbox batch never marks a payout paid; once PayPal settles every item its payouts go back to pending, ready for a live batch or a file.',
+    }),
+    lastError: z.string().nullable(),
+    createdAt: ts,
+    createdBy: z.enum(['admin', 'api']),
+    completedAt: tsNullable,
+    lastSyncedAt: tsNullable,
+  })
+  .openapi('PaypalBatch');
+
+const quoteItem = z.object({
+  payoutId: id,
+  partnerId: id,
+  partnerName: z.string(),
+  destination: z.string().openapi({ description: 'The PayPal account it goes to, masked. A change before sending voids the quote.' }),
+  amount: Decimal.openapi({ description: 'The payout’s own amount, in `currency`.' }),
+  sentAmount: Decimal.openapi({ description: 'What PayPal would send for it, in `sendAs`: amount × rate, rounded half up to the cent on its own.' }),
+});
+
+export const PaypalConversionQuote = z
+  .object({
+    quoteId: z.string().openapi({ description: 'Send with it (`POST /payouts/runs/{runId}/paypal-batches` with `currency`, `sendAs` and `quoteId`) before `expiresAt`. Signed; it reserves nothing.' }),
+    runId: id,
+    environment: PaypalEnvironment.openapi({
+      description: 'The PayPal app the batch would send from: your live app, or a sandbox test. If another app is made active before you send, the send is refused (`409 quote_changed`).',
+    }),
+    currency: z.string().openapi({ description: 'The payouts’ own currency (INR).' }),
+    sendAs: z.enum(['USD']),
+    rate: rateString,
+    rateSource: z.literal('ecb'),
+    rateDate: z.string().openapi({ description: 'The ECB reference date (YYYY-MM-DD). The ECB publishes once a business day, around 16:00 CET.' }),
+    quotedAt: ts,
+    expiresAt: ts.openapi({ description: '15 minutes after `quotedAt`.' }),
+    count: z.number().int(),
+    sourceTotal: Decimal.openapi({ description: 'What the quoted payouts add up to, in `currency`.' }),
+    sentTotal: Decimal.openapi({ description: 'What PayPal would send, in `sendAs`: the sum of the per-item amounts, which can differ by a few cents from sourceTotal × rate.' }),
+    items: z.array(quoteItem),
+    leftOut: z
+      .array(quoteItem.extend({ reason: z.enum(['over_paypal_limit', 'below_minimum']) }))
+      .openapi({ description: 'Payouts this batch can’t take at this rate: over PayPal’s per-payment limit in `sendAs` (USD 60,000), or under a cent in it. Pay them another way.' }),
+  })
+  .openapi('PaypalConversionQuote');
+
+export const PaypalPayoutSettings = z
+  .object({
+    sendUnsupportedAs: z.enum(['USD']).nullable().openapi({
+      description:
+        'Pay balances PayPal can’t send in their own currency (INR) through Pay with PayPal in this currency, at the ECB reference rate quoted before each batch. Null (the default): off, and those payouts stay `currency_not_supported`.',
+    }),
+  })
+  .openapi('PaypalPayoutSettings');
 
 // ---------- Reporting ----------
 
@@ -810,7 +1107,7 @@ const amountsByCurrency = z.record(z.string(), z.number()).openapi({
   description: 'Amount per ISO 4217 currency code. Currencies with nothing are absent; nothing is converted.',
 });
 
-const commissionByStatusAndCurrency = z.record(z.string(), z.record(z.enum(COMMISSION_STATUSES), z.number())).openapi({
+const commissionByStatusAndCurrency = z.record(z.string(), z.partialRecord(z.enum(COMMISSION_STATUSES), z.number())).openapi({
   description: 'Commission totals per currency, then per status. Currencies and statuses with nothing are absent.',
 });
 
@@ -826,7 +1123,7 @@ export const PartnerDashboard = z
     attributedEvents: z.number().int(),
     attributedRevenue: z.number().openapi({ description: 'Attributed revenue in `currency` only.' }),
     attributedRevenueByCurrency: amountsByCurrency,
-    commissionByStatus: z.record(z.enum(COMMISSION_STATUSES), z.number()).openapi({
+    commissionByStatus: z.partialRecord(z.enum(COMMISSION_STATUSES), z.number()).openapi({
       description:
         'Sum of commission amounts in `currency` accrued since `since`, keyed by status. Statuses with nothing are absent. Commissions in other currencies are in `commissionByCurrency`. `paid` includes manual payouts not yet sent: read payouts for money that went out.',
     }),
@@ -845,6 +1142,35 @@ export const PartnerDashboard = z
       .openapi({ description: 'Only with `includeLinks=true`.' }),
   })
   .openapi('PartnerDashboard');
+
+export const ProgramStatsList = z
+  .object({
+    since: ts,
+    until: ts,
+    currency: z.string().openapi({
+      description: "The brand's default currency, for showing a zero. Amounts are in their own currencies.",
+      example: 'USD',
+    }),
+    programs: z
+      .array(
+        z.object({
+          programId: id,
+          name: z.string(),
+          partners: z.number().int().openapi({
+            description: 'Partners enrolled in the program now, plus any with clicks, conversions or commission in it during the window.',
+          }),
+          clicks: z.number().int(),
+          attributedEvents: z.number().int().openapi({
+            description:
+              'Conversions attributed in the window, counted per attribution: an event credited through two clicks (a multi-touch model) counts twice.',
+          }),
+          attributedRevenueByCurrency: amountsByCurrency,
+          commissionByCurrency: commissionByStatusAndCurrency,
+        }),
+      )
+      .openapi({ description: 'Every program, newest first, including programs with no activity.' }),
+  })
+  .openapi('ProgramStatsList');
 
 export const PartnerTimeseries = z
   .object({
@@ -865,6 +1191,15 @@ export const PartnerTimeseries = z
   })
   .openapi('PartnerTimeseries');
 
+const referralIdField = z.string().openapi({
+  description:
+    "The customer's pseudonymous id, `ref_` + 12 characters: the same customer has the same id on `/partners/{id}/referrals`, `/events` and `/customers`, and a partner can't work out the userId from it.",
+  example: 'ref_Xk3dP0aQm9Lc',
+});
+const partnerHiddenUserId = z.string().nullable().openapi({
+  description: "The brand's userId. Null when a partner calls: partners get `referralId` instead.",
+});
+
 export const PartnerEventList = z
   .object({
     partnerId: id,
@@ -878,7 +1213,8 @@ export const PartnerEventList = z
         value: z.number().nullable(),
         currency: z.string().nullable(),
         ts,
-        userId: z.string(),
+        userId: partnerHiddenUserId,
+        referralId: referralIdField,
         click: z
           .object({
             id,
@@ -900,7 +1236,14 @@ export const PartnerCustomerList = z
   .object({
     partnerId: id,
     customers: z.array(
-      z.object({ userId: z.string(), firstEventAt: ts, lastEventAt: ts, eventCount: z.number().int(), revenue: z.number() }),
+      z.object({
+        userId: partnerHiddenUserId,
+        referralId: referralIdField,
+        firstEventAt: ts,
+        lastEventAt: ts,
+        eventCount: z.number().int(),
+        revenue: z.number(),
+      }),
     ),
     limit: z.number().int(),
     offset: z.number().int(),
@@ -937,6 +1280,81 @@ export const PartnerFunnel = z
     revenueByCurrency: amountsByCurrency,
   })
   .openapi('PartnerFunnel');
+
+const ReferralStageDefinition = z
+  .object({
+    eventType: z.string().openapi({ description: 'The event type, as sent to `POST /attribution/events`.', example: 'demo_booked' }),
+    label: z.string().openapi({ description: 'What partners see.', example: 'Demo booked' }),
+  })
+  .openapi('ReferralStageDefinition');
+
+export const PartnerReferralPage = z
+  .object({
+    partnerId: id,
+    stages: z.array(ReferralStageDefinition).openapi({
+      description:
+        "The stages the brand shows partners, in its order (`GET /config/referrals`). Render each referral's progress against this list. Every other event type is hidden.",
+    }),
+    currency: z.string().openapi({ description: "The brand's default currency: the currency of each `commission`.", example: 'INR' }),
+    referrals: z.array(
+      z.object({
+        referralId: referralIdField,
+        number: z.number().int().openapi({ description: "1 for the partner's first referral, counted in the order customers became the partner's referrals, so a new one takes the next number. Only an admin re-running attribution (unflagging a click) can renumber; `referralId` never changes." }),
+        label: z.string().openapi({
+          description: 'What to call the customer: `customerLabel` when there is one, else "Referral #" and `number`.',
+          example: 'Referral #12',
+        }),
+        customerLabel: z.string().nullable().openapi({
+          description:
+            "The newest `metadata.customerLabel` the brand sent on this customer's credited events, cut to 80 characters. Null unless the brand shows customer labels (`showCustomerLabels`, off by default).",
+        }),
+        userId: z.string().optional().openapi({ description: "The brand's userId. Admins and scoped keys only; never sent to a partner." }),
+        referredAt: ts.openapi({ description: "When the customer first clicked the partner's link: the earliest of the partner's clicks credited on the customer's events." }),
+        stages: z.array(
+          z.object({
+            eventType: z.string(),
+            label: z.string(),
+            firstAt: ts.openapi({ description: 'The first event of this type: when the customer reached the stage.' }),
+            lastAt: ts.openapi({ description: 'The latest event of this type (a monthly invoice repeats).' }),
+            count: z.number().int(),
+            reversed: z.boolean().openapi({
+              description:
+                "Every event at this stage earned the partner a commission and none of it is left: reversed (a refund, a chargeback, or the brand reversing it) or clawed back after payment.",
+            }),
+          }),
+        ).openapi({ description: "The shown stages the customer has reached, in the brand's order. Stages not reached are absent." }),
+        latestStage: z
+          .object({ eventType: z.string(), label: z.string(), at: ts })
+          .nullable()
+          .openapi({ description: "The furthest stage reached in the brand's order, skipping reversed ones. `at` is when it was reached. Null when none is." }),
+        commission: z.number().openapi({
+          description:
+            "What the customer has earned the partner in `currency`, every event type included: live commissions (not reversed), net of refund clawbacks. Bonuses aren't tied to a customer and never count.",
+        }),
+        commissionByCurrency: amountsByCurrency,
+      }),
+    ),
+    total: z.number().int().openapi({ description: "All of the partner's referrals, not only this page." }),
+    nextCursor: z.string().nullable(),
+  })
+  .openapi('PartnerReferralPage');
+
+export const ReferralSettings = z
+  .object({
+    stages: z.array(ReferralStageDefinition).openapi({
+      description:
+        "The event types partners see as stages on their referrals, in order. Default: `signup`, `trial_started`, `subscription_created`, `invoice_paid`. A type that isn't listed is hidden from partners (it still makes the customer a referral and still counts toward the commission total). An empty list shows no stages.",
+    }),
+    showCustomerLabels: z.boolean().openapi({
+      description:
+        "Show partners the `metadata.customerLabel` you send on events. Off by default: OpenPartner stores only your userId, and a label is personal data you choose to share with your partners, as its controller.",
+    }),
+    defaultStages: z.array(ReferralStageDefinition).openapi({ description: 'The stages a brand gets until it sets its own.' }),
+    recentEventTypes: z.array(z.string()).openapi({
+      description: 'Event types recorded in the last 90 days, most frequent first (up to 50): candidates for stages.',
+    }),
+  })
+  .openapi('ReferralSettings');
 
 // ---------- Webhook endpoints ----------
 
@@ -1018,7 +1436,7 @@ export const ExportBundle = z
   .object({
     exportedAt: ts,
     schemaVersion: z.number().int(),
-    tables: z.record(z.array(z.record(z.unknown()))),
+    tables: z.record(z.string(), z.array(z.record(z.string(), z.unknown()))),
   })
   .openapi('ExportBundle', { description: 'The whole tenant, re-importable by a self-hosted instance (`POST /import`).' });
 
@@ -1026,9 +1444,9 @@ export const ImportResult = z
   .object({
     ok: z.literal(true),
     report: z.object({
-      inserted: z.record(z.number().int()),
-      skipped: z.record(z.number().int()),
-      credentials: z.record(z.array(z.record(z.unknown()))).openapi({
+      inserted: z.record(z.string(), z.number().int()),
+      skipped: z.record(z.string(), z.number().int()),
+      credentials: z.record(z.string(), z.array(z.record(z.string(), z.unknown()))).openapi({
         description:
           'Fresh credentials for restored rows, per table, shown once. `WebhookEndpoint`: `{ id, url, secret }` for each endpoint restored (paused until you turn it back on).',
       }),

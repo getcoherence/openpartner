@@ -1,6 +1,6 @@
 import { Router, type Request } from 'express';
 import type { Knex } from 'knex';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { TABLES, type PartnerRow, type PayoutRow } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { db as privilegedDb } from '../db.js';
@@ -8,6 +8,7 @@ import { PAYOUT_STATUSES } from '../openapi/enums.js';
 import { cursorTimestamp, decodeCursor, takePage, whereAfterCursor } from '../pagination.js';
 import { dispatchPayoutNotifications, runPayouts, type PayoutRunResult } from '../payouts.js';
 import { executePayoutTransfers } from '../payout-transfers.js';
+import { STATEMENT_CSP, buildPayoutStatement, renderStatementHtml } from '../payout-statements.js';
 import { listHeldPartners, screenPayablePartners } from '../sanctions-screening.js';
 import { tenantOf, withTenantTransaction } from '../tenancy.js';
 import {
@@ -16,18 +17,33 @@ import {
   confirmManualPayouts,
   createManualExport,
   discardManualExport,
-  doNotPayDetail,
-  doNotPayReason,
   getManualRun,
   listManualRunPayouts,
   listManualRuns,
   rebuildManualExportFile,
 } from '../manual-payout-files.js';
+import { withSent } from '../paypal-send-as.js';
 
 export const payoutsRouter = Router();
 
 export const bulkConfirmSchema = z.object({
   payoutIds: z.array(z.string().min(1).max(64)).min(1).max(5000),
+});
+
+/**
+ * POST /payouts/:id/confirm. `reference` is what identifies the money the
+ * brand sent one at a time (a bank UTR, a UPI transaction id, a cheque
+ * number), printed on the payout's statement. One line of printable text.
+ */
+export const confirmPayoutSchema = z.object({
+  reference: z
+    .string()
+    .trim()
+    .max(100)
+    .regex(/^[^\p{C}\p{Zl}\p{Zp}]*$/u, 'reference must be printable text on one line')
+    // zod-to-openapi prints the regex's flags into `pattern` ("…$/u").
+    .openapi({ pattern: String.raw`^[^\p{C}\p{Zl}\p{Zp}]*$` })
+    .optional(),
 });
 
 export const manualRunsQuerySchema = z.object({
@@ -50,6 +66,11 @@ export const listPayoutsQuerySchema = z.object({
   status: z.enum(PAYOUT_STATUSES).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional().default(50),
   cursor: z.string().max(200).optional(),
+});
+
+/** GET /payouts/:id/statement: the printable page (default), or its data. */
+export const statementQuerySchema = z.object({
+  format: z.enum(['html', 'json']).default('html'),
 });
 
 export const createManualExportSchema = z.object({
@@ -176,7 +197,7 @@ payoutsRouter.get('/payouts', requireAuth, grantScope('payouts:read'), requireAd
   }
   const rows = (await query) as Array<PayoutRow & { partnerName: string | null; _cursorTs: string }>;
   const { page, nextCursor } = takePage(rows, q.data.limit);
-  res.json({ payouts: page, nextCursor });
+  res.json({ payouts: page.map(withSent), nextCursor });
 });
 
 /**
@@ -209,35 +230,39 @@ payoutsRouter.get('/payouts/holds', requireAuth, requireAdmin, async (req, res) 
  * "I actually sent it" — the payout becomes 'paid' with a completion
  * timestamp, which is what revenue reporting and the Network payout
  * aggregation count.
+ *
+ * The brand may say how it sent the money (`reference`), kept as
+ * `metadata.externalReference` for the statement. It's never logged:
+ * request bodies stay out of the request log (request-log.ts), and
+ * nothing here prints it.
  */
 payoutsRouter.post('/payouts/:id/confirm', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
+  const body = confirmPayoutSchema.safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const reference = body.data.reference || null;
   const existing = await db<PayoutRow>(TABLES.Payout).where({ id: req.params.id, tenantId }).first();
   if (!existing) return res.status(404).json({ error: 'payout_not_found' });
-  // A payout the platform must not pay (blocked country, confirmed
-  // sanctions match) is never recorded as paid, whichever path asks.
-  const reason = existing.method === 'manual' && existing.status === 'pending' ? await doNotPayReason(db, tenantId, existing) : null;
-  if (reason) return res.status(409).json({ error: 'not_confirmable', reason, detail: doNotPayDetail(reason) });
-  const updated = await db<PayoutRow>(TABLES.Payout)
-    .where({ id: req.params.id, tenantId, method: 'manual', status: 'pending' })
-    .update({ status: 'paid', completedAt: new Date() })
-    .returning('*');
-  if (updated.length === 0) {
-    return res.status(409).json({
-      error: 'not_confirmable',
-      detail: `only pending manual payouts can be confirmed (this one is ${existing.method}/${existing.status})`,
-    });
+  // The bulk confirm's rules, one payout: never one the platform must not
+  // pay (blocked country, confirmed sanctions match), never one a PayPal
+  // batch is paying, decided on the row as it is when updated.
+  const { confirmed, notConfirmable } = await confirmManualPayouts(db, tenantId, [existing.id], { reference });
+  if (confirmed[0]) {
+    // No webhook here: payout.created + commission.paid already fired when
+    // runPayouts wrote the row — confirmation is bookkeeping, not a new event.
+    return res.json({ payout: confirmed[0] });
   }
-  // No webhook here: payout.created + commission.paid already fired when
-  // runPayouts wrote the row — confirmation is bookkeeping, not a new event.
-  res.json({ payout: updated[0]! });
+  const refused = notConfirmable[0]!;
+  res.status(409).json({ error: 'not_confirmable', ...(refused.reason ? { reason: refused.reason } : {}), detail: refused.detail });
 });
 
 /**
  * Confirm many manual payouts at once: the brand uploaded a batch file
  * (manual-payout-files.ts) and its PayPal or Wise batch went out. Same
  * rule per payout as the single confirm; one that can't be confirmed is
- * reported and doesn't stop the rest.
+ * reported and doesn't stop the rest. No references here: a file's
+ * payouts print the file's own, and a payout sent one at a time is
+ * confirmed one at a time, with its own.
  */
 payoutsRouter.post('/payouts/confirm', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
@@ -331,6 +356,38 @@ payoutsRouter.post('/payouts/exports/:exportId/discard', requireAuth, requireAdm
   res.json({ released });
 });
 
+/**
+ * One payout's statement (payout-statements.ts): a printable page, or its
+ * data with ?format=json. Admins and keys holding payouts:read get any
+ * payout's; a partner gets only their own, and another partner's answers
+ * 404 exactly as a payout that doesn't exist. Read on `req.db`, and every
+ * query in the builder names the tenant too.
+ */
+payoutsRouter.get('/payouts/:id/statement', requireAuth, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  const principal = req.principal!;
+  // Decided here rather than by grantScope, which would make a scoped key
+  // an admin and leave partners out.
+  if (principal.role === 'scoped' && !principal.scopes.includes('payouts:read')) {
+    return res.status(403).json({ error: 'forbidden_scope', required: 'payouts:read' });
+  }
+  const q = statementQuerySchema.safeParse(req.query);
+  if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
+  const payout = await db<PayoutRow>(TABLES.Payout).where({ id: req.params.id, tenantId }).first('id', 'partnerId');
+  if (!payout || (principal.role === 'partner' && payout.partnerId !== principal.partnerId)) {
+    return res.status(404).json({ error: 'payout_not_found' });
+  }
+  const statement = await buildPayoutStatement(db, tenantId, payout.id);
+  if (!statement) return res.status(404).json({ error: 'payout_not_found' });
+  // Names, emails and masked payout details: never cached anywhere.
+  res.setHeader('Cache-Control', 'private, no-store');
+  if (q.data.format === 'json') return res.json({ statement });
+  res.setHeader('Content-Security-Policy', STATEMENT_CSP);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Content-Disposition', `inline; filename="payout-statement-${statement.payout.id}.html"`);
+  res.send(renderStatementHtml(statement));
+});
+
 // payouts:read lets a scoped integration key (headless in-app earnings
 // UI) read any partner's payout history. Read-only: running or
 // confirming payouts stays admin-only with no scope grant.
@@ -345,6 +402,8 @@ payoutsRouter.get(
       .where({ tenantId, partnerId: req.params.id })
       .orderBy('createdAt', 'desc')
       .limit(200);
-    res.json({ payouts });
+    // `sent`: what a PayPal batch sent for a payout PayPal can't send in
+    // its own currency (paypal-send-as.ts). The amount stays the payout's.
+    res.json({ payouts: payouts.map(withSent) });
   },
 );

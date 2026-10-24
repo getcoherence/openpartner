@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { z } from 'zod';
+import { utcDateTime, z } from '../zod.js';
 import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import { announceRefund, recordRefund, REFUND_KINDS, toMinor } from '../refunds.js';
 import { tenantOf } from '../tenancy.js';
@@ -38,8 +38,8 @@ export const refundSchema = z
     reason: z.string().min(1).max(500).optional(),
     /** Required idempotency key for this refund. */
     externalEventId: externalId,
-    ts: z.string().datetime().optional(),
-    metadata: z.record(z.unknown()).optional(),
+    ts: utcDateTime().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
   })
   .refine((b) => (b.conversionExternalEventId === undefined) !== (b.conversionEventId === undefined), {
     message: 'Send exactly one of conversionExternalEventId or conversionEventId.',

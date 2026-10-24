@@ -27,7 +27,7 @@
 
 import { Router } from 'express';
 import type { Knex } from 'knex';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import type Stripe from 'stripe';
 import { TABLES, type AdminRow, type BillingPlan, type TenantRow } from '@openpartner/db';
 import { requireAdmin, requireAuth, type ApiKeyPrincipal } from '../auth.js';

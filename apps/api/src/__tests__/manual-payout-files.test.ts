@@ -522,10 +522,10 @@ describe.skipIf(skipIntegration)('manual payout files', () => {
     expect(run.status).toBe(200);
     expect(run.body).toMatchObject({ runId, pendingCount: 11, exports: [] });
     expect(run.body.ready).toEqual([
-      { provider: 'paypal', currency: 'EUR', count: 1, total: '1234.50' },
-      { provider: 'paypal', currency: 'USD', count: 1, total: '125.50' },
-      { provider: 'wise', currency: 'GBP', count: 1, total: '40.00' },
-      { provider: 'wise', currency: 'USD', count: 1, total: '75.00' },
+      { provider: 'paypal', currency: 'EUR', sendAs: null, count: 1, total: '1234.50' },
+      { provider: 'paypal', currency: 'USD', sendAs: null, count: 1, total: '125.50' },
+      { provider: 'wise', currency: 'GBP', sendAs: null, count: 1, total: '40.00' },
+      { provider: 'wise', currency: 'USD', sendAs: null, count: 1, total: '75.00' },
     ]);
     expect(Object.fromEntries((run.body.excluded as Array<{ reason: string; count: number }>).map((e) => [e.reason, e.count]))).toEqual({
       // INR to PayPal; USD into an INR account (no purpose of payment); INR out of Wise.
@@ -651,7 +651,7 @@ describe.skipIf(skipIntegration)('manual payout files', () => {
     expect(run.exports).toEqual([
       expect.objectContaining({ exportId, provider: 'paypal', currency: 'USD', pendingCount: 1, pendingTotal: '125.50', changedCount: 0 }),
     ]);
-    expect(run.ready).toContainEqual({ provider: 'paypal', currency: 'USD', count: 1, total: '60.00' });
+    expect(run.ready).toContainEqual({ provider: 'paypal', currency: 'USD', sendAs: null, count: 1, total: '60.00' });
 
     const confirmed = await admin.post(`/payouts/exports/${exportId}/confirm`, {});
     expect(confirmed.status).toBe(200);
@@ -831,7 +831,7 @@ describe.skipIf(skipIntegration)('compliance on OpenPartner Cloud', () => {
     process.env.OPENPARTNER_TENANCY = 'multi';
     const run = await files.getManualRun(db, T, runId);
     expect(Object.fromEntries(run!.excluded.map((e) => [e.reason, e.count]))).toEqual({ country_not_supported: 2, screening_confirmed: 1 });
-    expect(run!.ready).toEqual([{ provider: 'paypal', currency: 'USD', count: 1, total: '10.00' }]);
+    expect(run!.ready).toEqual([{ provider: 'paypal', currency: 'USD', sendAs: null, count: 1, total: '10.00' }]);
     const page = await files.listManualRunPayouts(db, T, runId, { limit: 100 });
     const by = new Map((page as { payouts: Array<{ payoutId: string }> }).payouts.map((x) => [x.payoutId, x]));
     expect(by.get(ids.declaredIran)).toMatchObject({ excluded: 'country_not_supported', doNotPay: 'country_not_supported', complianceWarning: 'country_not_supported' });

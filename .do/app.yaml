@@ -3,7 +3,7 @@
 # Three deployable components + a managed Postgres, stitched together by
 # App Platform's ingress rules so the whole app lives on one domain:
 #
-#   https://<your-app>.ondigitalocean.app/         → portal (static SPA)
+#   https://<your-app>.ondigitalocean.app/         → portal (SPA on nginx)
 #   https://<your-app>.ondigitalocean.app/api/...  → api   (Node/Express)
 #   router runs on a separate component; wire a subdomain (e.g.
 #   go.yourdomain.com) to it via the domains section below.
@@ -205,35 +205,39 @@ services:
       - key: VELOCITY_WINDOW_MS
         value: '60000'
 
-# SPA, served by App Platform's CDN. The build runs with the monorepo's
-# pnpm install; we only need to produce apps/portal/dist. /api proxying
-# is handled by the ingress rules below, not by the portal container.
-static_sites:
+  # SPA, served by the same nginx image self-hosters run
+  # (apps/portal/Dockerfile). A service rather than a static site because
+  # a static site can't send response headers, and the portal HTML needs
+  # frame-ancestors / X-Frame-Options (docs/deploy-production.md,
+  # "Portal frame protection"). Its hashed assets are still cached at
+  # App Platform's edge.
   - name: portal
+    dockerfile_path: apps/portal/Dockerfile
     source_dir: /
     github:
       repo: getcoherence/openpartner
       branch: main
       deploy_on_push: true
-    # Force devDependencies (tsc, vite) during build — App Platform sets
-    # NODE_ENV=production by default which would have pnpm skip them.
-    # NODE_ENV stays unset on this static site at runtime; nothing executes.
-    build_command: |
-      corepack enable
-      corepack prepare pnpm@9.11.0 --activate
-      NPM_CONFIG_PRODUCTION=false pnpm install --frozen-lockfile
-      pnpm --filter @openpartner/db build
-      pnpm --filter @openpartner/portal build
-    output_dir: apps/portal/dist
-    catchall_document: index.html
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    health_check:
+      http_path: /
+      initial_delay_seconds: 5
+      period_seconds: 30
+      timeout_seconds: 5
+      failure_threshold: 3
     envs:
+      # The ingress sends /api to the api component, so the portal's own
+      # /api/ proxy never runs here. nginx still resolves its upstream at
+      # start-up, so this is an address that needs no DNS.
+      - key: API_UPSTREAM
+        value: 127.0.0.1:4601
+        scope: RUN_TIME
       # PostHog product analytics. VITE_-prefixed so Vite inlines the
-      # value into the static bundle at build time. BUILD_TIME scope is
-      # required: the static site has no run-time process to read env
-      # vars from. Without this declaration the values you set in the
-      # DO UI may not flow into the build (depending on App Platform
-      # version). Same project key as studio-website for unified
-      # dashboards.
+      # value into the bundle at build time: App Platform passes BUILD_TIME
+      # envs to the Dockerfile as build args, which it declares. Same
+      # project key as studio-website for unified dashboards.
       - key: VITE_POSTHOG_KEY
         type: SECRET
         scope: BUILD_TIME
@@ -244,7 +248,7 @@ static_sites:
 # App-level routing.
 #   /api/* → api (path stripped before forward)
 #   /r/*   → router (path preserved — router serves /r/:linkKey directly)
-#   /      → portal (App Platform's static-site default)
+#   /      → portal (everything else; nginx falls back to index.html)
 #
 # Once you wire `r.openpartner.dev` to the router component via the
 # `domains` block, you can remove the /r rule — the subdomain handles it.
@@ -261,6 +265,11 @@ ingress:
           prefix: /r
       component:
         name: router
+    - match:
+        path:
+          prefix: /
+      component:
+        name: portal
 
 # Domains: managed in the DO console/API — DELIBERATELY not declared here.
 #

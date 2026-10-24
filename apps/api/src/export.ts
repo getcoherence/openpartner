@@ -91,6 +91,21 @@ export const PORTABLE_CONFIG_KEYS = [
   // bump: an instance that predates it skips the key on import, and the
   // brand just sees the Network step again.
   'onboarding',
+  // What payout statements print: legal name, address, footer, number
+  // prefix, the tax-lines stub (payout-statements.ts). No version bump,
+  // as for 'onboarding': an older instance skips it and prints statements
+  // under the brand name until the settings are entered again.
+  'payout_statements',
+  // "Pay balances PayPal can't send in: USD" (paypal-send-as.ts). A brand
+  // setting with no credential in it (the PayPal app never travels). Added
+  // without a version bump, like `onboarding`: an instance that predates it
+  // skips the key, and the setting reads as off.
+  'paypal_payouts',
+  // Which event types partners see as referral stages, and whether they
+  // see customer labels (referrals.ts). A key, so no version bump: an
+  // instance that predates it skips the key, and partners see the default
+  // stages and no labels, which shows them less, never more.
+  'partner_referrals',
 ] as const;
 
 /**

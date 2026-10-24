@@ -2,6 +2,8 @@
 
 This guide shows you how to run a customer referral program ("Refer & earn") inside your own app. Your customers see their link, stats and earnings on a page you build. They never sign in to OpenPartner. Your backend talks to the OpenPartner API, and the browser only talks to your backend.
 
+Rather not build the page? [Send customers to the hosted portal instead](#send-customers-to-the-hosted-portal-instead), on your own domain, already signed in by your backend.
+
 The same API also lets you run OpenPartner from your own admin dashboard or storefronts. See [Drive OpenPartner from your own admin](#drive-openpartner-from-your-own-admin).
 
 - **API reference:** `GET /openapi.json` and the rendered `/docs` on every deployment, e.g. `https://app.openpartner.dev/api/docs`. A copy lives in [`docs/openapi.json`](./openapi.json).
@@ -64,6 +66,7 @@ curl -s -X POST $OP/api-keys/scoped -H "Authorization: Bearer $ADMIN" -H 'conten
 | `commissions:read` | `GET /partners/{id}/commissions` |
 | `payouts:read` | `GET /partners/{id}/payouts` |
 | `events:write` | `POST /attribution/events`, `POST /attribution/conversions`, `POST /attribution/refunds`, `POST /coupons/redeem` |
+| `partners:signin` | `POST /partners/{id}/signin-link` and `POST /partners/signin-link`: sign a customer in to the hosted portal. Only if you [send customers there](#send-customers-to-the-hosted-portal-instead). |
 
 **Give the runtime key `partners:create`, not `partners:write`.** `partners:write` is the broad partner scope, meant for admin tools and Zapier-style integrations. Besides creating partners it unlocks:
 
@@ -98,7 +101,7 @@ curl -s -X POST $OP/config/partner-access -H "Authorization: Bearer $ADMIN" \
 # { "uninvitedPortalAccess": false }
 ```
 
-Or use **Admin → Settings → Partner portal access**. From then on, a partner created with `sendInvite: false` and no `portalAccess`, or imported from CSV, has no portal access (step 3 says what that means). Invited partners, and creators the OpenPartner Network provisions, still get the portal. Partners that already exist keep what they have: change them one at a time with `PATCH /partners/{id}`, or on the Partners page. Also send `"portalAccess": false` on each create (step 3), so the setting is a safety net rather than the only guard.
+Or use **Admin → Settings → Partner portal access**. (Sending customers to the hosted portal instead of building a page? Leave it on: see [Send customers to the hosted portal instead](#send-customers-to-the-hosted-portal-instead).) From then on, a partner created with `sendInvite: false` and no `portalAccess`, or imported from CSV, has no portal access (step 3 says what that means). Invited partners, and creators the OpenPartner Network provisions, still get the portal. Partners that already exist keep what they have: change them one at a time with `PATCH /partners/{id}`, or on the Partners page. Also send `"portalAccess": false` on each create (step 3), so the setting is a safety net rather than the only guard.
 
 ### The OpenPartner Network
 
@@ -213,6 +216,7 @@ All of these work with the scoped key:
 | --- | --- |
 | `GET /partners/{id}/dashboard?since=<iso>` | `clicks`, `attributedEvents`, `attributedRevenue` and `commissionByStatus` (`accrued` / `approved` / `paid` / `reversed` totals) in `currency`, your default currency. `attributedRevenueByCurrency` and `commissionByCurrency` hold every currency. Defaults to the last 30 days. |
 | `GET /partners/{id}/timeseries?since=&until=&programId=` | Dense daily (or weekly) buckets: `clicks`, `leads` (`signup` + `trial_started`), `sales` (events with a value), `revenue`, `earnings`. |
+| `GET /partners/{id}/referrals?limit=&cursor=` | Each customer the user referred, newest first: the stages they've reached (the ones you show, with your labels), `latestStage`, and what the customer has earned them (`commission`, `commissionByCurrency`). Your key also gets each customer's `userId`, so you can show the name from your own records. Cursor-paginated. See [referral-timeline.md](referral-timeline.md). |
 | `GET /partners/{id}/events?limit=&offset=` | Each attributed event, with the click it came through. |
 | `GET /partners/{id}/commissions?limit=&cursor=&status=` | The commission ledger, newest first, cursor-paginated. Each row has `amount`, `status` and `matureAt` (when the holdback ends). |
 | `GET /partners/{id}/payouts` | Up to the 200 most recent payouts. |
@@ -452,6 +456,20 @@ Content-Type: application/json
 
 CRM workflows retry, and a deal can be moved back and forth. Because the `externalEventId` is the deal id plus the stage, each paid stage is counted once.
 
+### Every stage → the customer's referral timeline
+
+Send the stages that pay nothing too: `lead_created` when the lead is created, `demo_booked` when the demo is booked, and so on. Use the same workflow, with the stage name as `type` and `externalEventId` (`zoho:<deal id>:demo_booked`), and leave `value` out. Each one is recorded and credited to the partner like any conversion, earns only if a commission rule takes its type, and moves the customer along their referral timeline (`GET /partners/{id}/referrals`, and the Referrals page of the partner portal).
+
+Then tell OpenPartner which stages your partners see, in order, and what to call them:
+
+```bash
+curl -s -X POST $OP/config/referrals -H "Authorization: Bearer $ADMIN" -H 'content-type: application/json' \
+  -d '{"stages": [{"eventType": "lead_created", "label": "Lead"}, {"eventType": "demo_booked", "label": "Demo booked"},
+                  {"eventType": "deal_won", "label": "Deal won"}, {"eventType": "invoice_paid", "label": "Paid"}]}'
+```
+
+Types you don't list stay hidden from partners. Partners never see your `userId`. A customer reads "Referral #12" unless you send `metadata.customerLabel` (a company name, say) and turn on `showCustomerLabels`. That's your call as the data's controller, so it's off by default. In your own app you can skip labels altogether: your key gets the `userId`, so look the name up yourself. Details: [referral-timeline.md](referral-timeline.md).
+
 ### Deal refunded → refund
 
 When the CRM records a refund, a credit note or a lost deal after payment, send it to `POST /attribution/refunds` with the same `events:write` key. Reference the conversion by the `externalEventId` you sent from the deal-stage workflow above, so build it the same way:
@@ -536,6 +554,59 @@ await crm.updateContact(partner.metadata.crmContactId, {
 
 Writing totals rather than adding each webhook's amount means a duplicate, missed or out-of-order delivery can't skew the field. The next event corrects it. Store the CRM record id in the partner's `metadata` when you create it (step 3); metadata stays in your tenant, even for a partner who joins the Network. For HubSpot, the update is `PATCH /crm/v3/objects/contacts/{id}`; for Zoho, `PUT /crm/v6/Contacts/{id}` or an upsert. See their API docs for auth.
 
+## Send customers to the hosted portal instead
+
+Instead of building the page in steps 4 and 5, you can send customers to the hosted partner portal, where they see their links, stats, commissions and payouts. With the white-label add-on it runs on your own domain (`refer.yourapp.com`) under your brand. Your backend signs them in, so a customer who is logged in to your app never meets a second login. Everything else in this guide still applies: the program (step 2), a partner per customer (step 3), click capture and conversion reporting (steps 6 to 8).
+
+**What changes:**
+
+- **Partners need portal access.** Create them with `"sendInvite": false` and `"portalAccess": true`, and leave **Partner portal access** on in step 1. A partner with portal access can also ask the portal's sign-in page for an emailed link, so a customer who finds the portal on their own can still get in.
+- **A key with `partners:signin`.** Add the scope to your runtime key, or mint a key of its own. It can sign in as any partner in your tenant, and a portal session can change that partner's payout details, so it is a server-side credential like any other. Nothing else grants it: `partners:write` doesn't, and the OpenPartner Network's federation key is refused even if it holds it.
+- **The Network.** A brand with an active white-label add-on never offers the OpenPartner Network to its partners. Without one, turn offering off in step 1 unless you want customers asked to join it on their first sign-in.
+
+**The redirect.** Put a route on your server behind your own login, point the "Refer & earn" button at it, and have it mint a link for the signed-in user and redirect:
+
+```bash
+curl -s -X POST $OP/partners/$PARTNER_ID/signin-link -H "Authorization: Bearer $KEY" \
+  -H 'content-type: application/json' -d '{"returnTo": "/links"}'
+# 201 → { "url": "https://refer.yourapp.com/auth/magic?token=opml_…&next=%2Flinks",
+#         "expiresAt": "2026-10-22T10:05:00.000Z", "partnerId": "01J…" }
+```
+
+```js
+// Express. req.user is your logged-in user; openpartnerId is the partner id you stored in step 3.
+app.get('/refer', requireLogin, async (req, res) => {
+  const r = await fetch(`${OP}/partners/${req.user.openpartnerId}/signin-link`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${KEY}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ returnTo: '/links' }),
+  });
+  if (!r.ok) return res.status(502).send('Your referral dashboard is unavailable right now.');
+  const { url } = await r.json();
+  res.set('Cache-Control', 'no-store').redirect(303, url);
+});
+```
+
+- **The link works once, for five minutes, and signs in whoever opens it.** Mint it when the user clicks, and redirect at once. Don't render it into a page ahead of time, email it, or log it. The response carries `Cache-Control: no-store`.
+- **It lands on your white-label domain** once that domain is verified, and on `https://app.openpartner.dev/t/<slug>/…` until then. The session cookie belongs to that host, so redirect to `url` exactly as returned.
+- **`returnTo`** is a path inside the portal, such as `/links`, `/commissions`, `/payouts` or `/payout-details`. Same-origin paths only (`400 invalid_body` otherwise). Omitted, the customer lands on their dashboard.
+- **No partner id stored?** `POST /partners/signin-link` takes exactly one of `{"metadata": {"appUserId": "user_123"}}` (one key and value from the partner's `metadata`, matched as stored) or `{"email": "ada@example.com"}` (verified addresses only), plus `returnTo`. Two partners carrying the same metadata value: `409 ambiguous_partner`.
+- **Who can be signed in** is who the portal's own sign-in page would email: an active partner, not revoked, with portal access. The same checks, and the served-country check on the customer's own connection, run again when the link is opened.
+- **Link, don't embed.** Open the portal in the same tab or a new one. Showing it in an iframe inside your app isn't supported.
+
+| Answer | Meaning |
+| --- | --- |
+| `201` | `url` to redirect to, its `expiresAt`, and the `partnerId`. |
+| `404 partner_not_found` | No such partner in your tenant. |
+| `409 portal_access_disabled` | Turn portal access on first: `PATCH /partners/{id}` `{"portalAccess": true}`. |
+| `409 partner_not_activated` | An invited partner who hasn't accepted. Partners created with `sendInvite: false` are active at once. |
+| `409 pending_review` / `partner_revoked` | An applicant you haven't approved, or a suspended partner. |
+| `403 forbidden_scope` / `api_key_required` | The key lacks `partners:signin`, or the call came from a portal session instead of an API key. |
+| `403 brand_pending_review` | Your brand is still awaiting approval on OpenPartner Cloud. |
+| `429 rate_limited` | More than 600 links a minute for one key, or 10 for one partner. `Retry-After` says when to try again. The per-IP API limit (step 5) applies as well. |
+
+Every link minted is recorded: the partner, the key that asked, when, `returnTo` and the calling IP.
+
 ## Stripe Payment Links on OpenPartner Cloud
 
 A Stripe Payment Link takes the buyer straight to Stripe, so no page of yours runs the SDK, and on OpenPartner Cloud Stripe's webhooks go to your Stripe account, not to OpenPartner. The click id reaches Stripe in the link, comes back to you in Stripe's webhook, and you report it with one call. (A single-tenant self-host whose Stripe webhook points at `/webhooks/stripe` does this itself.)
@@ -604,6 +675,7 @@ A sender that holds the click id (a lender's system, a supplier's order pipeline
 - [ ] Your backend takes the partner id from its own session, never from a request parameter. A scoped key can read every partner.
 - [ ] A partner found by email is linked to a user only when its `metadata.appUserId` matches (step 3), and only verified emails are used.
 - [ ] If customers shouldn't be asked to join the Network, offering is off (step 1), and you re-check it after any Network reconnect.
+- [ ] If you send customers to the hosted portal: the `partners:signin` key is server-side, your route mints a link only for the signed-in user's own partner, on click, redirects at once, and never logs or renders the URL.
 - [ ] Webhook signatures are verified on the raw body, with the 5-minute timestamp window, and deliveries are deduped on `id`.
 - [ ] `userId` is an opaque internal id, not an email address.
 - [ ] "Paid out" in your UI comes from payouts with status `paid`, not from commissions marked `paid` (step 5).
@@ -621,6 +693,7 @@ For an operator dashboard or storefront, the same API covers the admin side (adm
 | Find partners | `GET /partners?q=` (name/email search), `?email=` (exact), cursor-paginated (`partners:read`) |
 | Bulk-load partners | `POST /import/partners-csv` (`partners:write`) |
 | Who may sign in to the hosted partner portal | `PATCH /partners/{id}` `{"portalAccess": …}` (`partners:write`); the default for partners added without an invite: `GET/POST /config/partner-access` |
+| Sign a partner in to the hosted portal from your app | `POST /partners/{id}/signin-link`, or `POST /partners/signin-link` by email or metadata (`partners:signin`) |
 | Review commissions | `GET /commissions?status=accrued` (`commissions:read`), `POST /commissions/{id}/approve`, `.../reverse` |
 | Refunds and chargebacks | `POST /attribution/refunds` (`events:write`) |
 | Pay partners | `POST /payouts/run`, `POST /payouts/{id}/confirm` (manual rail) |
@@ -632,7 +705,8 @@ For an operator dashboard or storefront, the same API covers the admin side (adm
 
 These are tracked as follow-ups. None of them is available today:
 
-- **Embedding the hosted partner portal without a separate login** (a signed embed/SSO token from your backend). Today, either build your own page (this guide) or have partners sign in to the portal with a magic link.
+- **Embedding the hosted partner portal in an iframe.** Linking to it, signed in by your backend, is built ([Send customers to the hosted portal instead](#send-customers-to-the-hosted-portal-instead)); framing it inside your app isn't supported.
+- **Reading the sign-in link record through the API.** Every link minted is recorded, but there's no endpoint to list them yet.
 - **Scoped reads** for `/partners/{id}/funnel`, `/coupons` and `/commission-snapshot`.
 - **Per-key rate limits.** Today the limit is per client IP (step 5).
 - **A create-only scope for CSV import.** `POST /import/partners-csv` needs `partners:write` or the admin key; `partners:create` covers `POST /partners` only.

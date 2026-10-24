@@ -481,7 +481,11 @@ export type MagicLinkPurpose =
    *  resets a brand admin's / operator's password and is redeemed by
    *  POST /password/reset; principalKind 'partner' resets one brand's
    *  partner password via POST /auth/password/reset. */
-  | 'password_reset';
+  | 'password_reset'
+  /** Minted by the brand's backend (POST /partners/{id}/signin-link) and
+   *  handed to the partner's browser, never emailed. Verifies like
+   *  partner_signin; each one has a PartnerSigninLinkLog row. */
+  | 'partner_signin_link';
 
 export type PrincipalKind = 'partner' | 'admin' | 'platform';
 
@@ -626,6 +630,22 @@ export interface PlatformAuditLogRow {
   targetType: string | null;
   targetId: string | null;
   detail: Record<string, unknown>;
+  createdAt: Date;
+}
+
+/** One sign-in link a brand's backend minted for a partner (migration
+ *  20261022000000_partner_signin_link_log). Append-only. */
+export interface PartnerSigninLinkLogRow {
+  id: string;
+  tenantId: string;
+  partnerId: string;
+  magicLinkTokenId: string;
+  /** 'api_key': an ApiKey row (actorId); 'operator_key': ADMIN_API_KEY. */
+  actorKind: 'api_key' | 'operator_key';
+  actorId: string | null;
+  returnTo: string | null;
+  ip: string | null;
+  expiresAt: Date;
   createdAt: Date;
 }
 
@@ -1371,6 +1391,97 @@ export interface TenantStripeConnectionRow {
   disconnectedAt: Date | null;
   disconnectReason: 'admin' | 'deauthorized' | 'replaced' | null;
   updatedAt: Date;
+}
+
+export type PaypalEnvironment = 'live' | 'sandbox';
+
+/** A brand's own PayPal REST app (migration 20261022010000). Credentials
+ *  for one deployment: never exported. */
+export interface PaypalConnectionRow {
+  id: string;
+  tenantId: string;
+  environment: PaypalEnvironment;
+  clientId: string;
+  /** AES-GCM envelope (crypto.ts). Null once disconnected. */
+  clientSecretEnc: string | null;
+  accessTokenEnc: string | null;
+  accessTokenExpiresAt: Date | null;
+  appId: string | null;
+  payoutsScope: boolean;
+  /** Sealed PayPal webhook id; null when none is registered. */
+  webhookIdEnc: string | null;
+  webhookError: string | null;
+  active: boolean;
+  connectedByAdminId: string | null;
+  connectedAt: Date;
+  verifiedAt: Date | null;
+  lastError: string | null;
+  lastErrorAt: Date | null;
+  disconnectedAt: Date | null;
+  disconnectReason: 'admin' | 'replaced' | null;
+  updatedAt: Date;
+}
+
+export type PaypalBatchState =
+  | 'intent'
+  | 'posted'
+  | 'submitted'
+  | 'completed'
+  | 'failed'
+  | 'denied'
+  | 'released'
+  | 'reconcile_required';
+
+/** One PayPal Payouts batch sent with a brand's credentials (migration
+ *  20261022010000). Its id is the payouts' export id and PayPal's
+ *  sender_batch_id. */
+export interface PaypalPayoutBatchRow {
+  id: string;
+  tenantId: string;
+  connectionId: string;
+  environment: PaypalEnvironment;
+  runId: string;
+  currency: string;
+  itemCount: number;
+  total: string;
+  state: PaypalBatchState;
+  /** Sealed frozen request body; null once PayPal has the batch. */
+  requestEnc: string | null;
+  payoutBatchId: string | null;
+  batchStatus: string | null;
+  itemSummary: Record<string, number>;
+  attempts: number;
+  postedAt: Date | null;
+  leaseAt: Date | null;
+  lastSyncedAt: Date | null;
+  nextSyncAt: Date | null;
+  lastError: string | null;
+  createdBy: 'admin' | 'api';
+  createdAt: Date;
+  completedAt: Date | null;
+  resolution: 'released' | 'linked' | null;
+  /** A batch that sends a balance PayPal can't send in its own currency
+   *  (INR) in `currency` (USD), at the rate quoted before sending
+   *  (migration 20261023010000). Null when the payouts are sent in their
+   *  own currency. */
+  conversion: PaypalBatchConversion | null;
+  updatedAt: Date;
+}
+
+export interface PaypalBatchConversion {
+  /** The payouts' own currency (INR). */
+  sourceCurrency: string;
+  /** What the payouts add up to in it. */
+  sourceTotal: string;
+  /** Units of the batch currency per unit of sourceCurrency, a decimal
+   *  string: each item's sent amount is its source amount times this,
+   *  rounded per item. */
+  rate: string;
+  rateSource: 'ecb';
+  /** The ECB reference date the rate is from (YYYY-MM-DD). */
+  rateDate: string;
+  /** When the brand was shown the rate. */
+  quotedAt: string;
 }
 
 export interface StripeWebhookInboxRow {

@@ -28,6 +28,12 @@ COPY --from=deps /repo ./
 COPY tsconfig.base.json ./
 COPY packages ./packages
 COPY apps ./apps
+# PostHog analytics (src/posthog.ts): Vite inlines VITE_* from the build
+# environment. App Platform passes its BUILD_TIME envs as --build-arg, and
+# only declared ARGs reach the RUN below. Unset, the SPA ships without
+# analytics, as self-host and CI images do.
+ARG VITE_POSTHOG_KEY
+ARG VITE_POSTHOG_HOST
 # Portal's types depend on @openpartner/db types being compiled first.
 RUN pnpm --filter @openpartner/db build \
  && pnpm --filter @openpartner/portal build

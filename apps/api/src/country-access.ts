@@ -25,7 +25,7 @@
 import type { Knex } from 'knex';
 import type { RequestHandler } from 'express';
 import { ulid } from 'ulid';
-import { z } from 'zod';
+import { z } from './zod.js';
 import {
   OCCUPIED_REGION_COUNTRY,
   TABLES,

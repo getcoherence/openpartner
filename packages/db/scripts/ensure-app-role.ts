@@ -58,6 +58,9 @@ const TENANT_TABLES = [
 // what makes the audit trail tamper-resistant to tenant-scoped code.
 const RESTRICTED_GRANTS: Array<{ table: string; grant: string }> = [
   { table: 'OperatorRecoveryRequest', grant: 'select, insert' },
+  // Same reason: the record of every partner sign-in link a brand minted
+  // (routes/partner-signin-link.ts).
+  { table: 'PartnerSigninLinkLog', grant: 'select, insert' },
 ];
 
 async function main(): Promise<void> {

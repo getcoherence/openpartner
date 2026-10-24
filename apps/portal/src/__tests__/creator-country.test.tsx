@@ -123,6 +123,8 @@ describe('creator sign-in refused by country', () => {
     routes['POST /creator-api/creators/signin'] = () => json(403, { error: 'country_not_supported' });
     const page = renderAt('/creator/login', <CreatorSigninPage />);
     fireEvent.change(page.getByPlaceholderText('ada@example.com'), { target: { value: 'ada@example.com' } });
+    // The page opens on the password form; the emailed link is one click away.
+    fireEvent.click(page.getByRole('button', { name: 'Email me a sign-in link instead' }));
     fireEvent.click(page.getByRole('button', { name: 'Email me a sign-in link' }));
     await waitFor(() => expect(page.getByText(NOT_SERVED)).toBeTruthy());
   });

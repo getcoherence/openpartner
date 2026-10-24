@@ -1,6 +1,8 @@
 # Rendered at container start from /etc/nginx/templates/default.conf.template
 # by the nginx:alpine entrypoint. API_UPSTREAM defaults to the compose
-# service name; override for Fly / standalone deployments.
+# service name; override for Fly / standalone deployments. On App Platform
+# the ingress sends /api to the api component before the portal sees it,
+# so .do/app.yaml points API_UPSTREAM at an address nginx needn't resolve.
 
 # TLS terminates at the deployment proxy; the portal receives plain HTTP.
 # Preserve only recognized schemes, falling back to the local connection.
@@ -24,16 +26,39 @@ server {
     gzip_types       text/plain text/css application/javascript application/json image/svg+xml;
     gzip_min_length  512;
 
-    # Long cache for hashed static assets, no-cache for index.html so
-    # new builds are seen immediately.
-    location ~ \.(js|css|svg|woff2|png|jpg|gif|ico)$ {
+    # Long cache only for Vite's hashed output, no-cache for index.html so
+    # new builds are seen immediately. ^~ keeps the regex below from
+    # claiming /assets/*.js.
+    location ^~ /assets/ {
         expires 1y;
         add_header Cache-Control "public, immutable";
         try_files $uri =404;
     }
 
+    # Unhashed files at the root keep their names across builds: /op.js,
+    # which brands' own sites load, plus favicons and logos. A year-long
+    # immutable cache would pin visitors to an old op.js, so browsers
+    # revalidate after 10s while a CDN may keep a day (App Platform's edge
+    # purges on deploy). A missing file is a 404, not index.html.
+    location ~ \.(js|css|svg|woff2|png|jpg|gif|ico)$ {
+        add_header Cache-Control "public, max-age=10, s-maxage=86400";
+        try_files $uri =404;
+    }
+
+    # No site may frame the portal, this one included: a framed sign-in or
+    # magic-link page can be overlaid and clicked through (clickjacking).
+    # Nothing embeds the portal; its own iframes are outbound video players.
+    # X-Frame-Options covers browsers without CSP frame-ancestors.
+    #
+    # add_header is inherited only by a location that declares none of its
+    # own, so each location that answers with HTML repeats the pair: this
+    # one (every SPA route lands here via try_files) and the fallback below.
+    # /api/ declares none and stays that way, so the API's helmet headers
+    # pass through without a second, conflicting copy from nginx.
     location = /index.html {
         add_header Cache-Control "no-cache";
+        add_header Content-Security-Policy "frame-ancestors 'none'" always;
+        add_header X-Frame-Options "DENY" always;
     }
 
     # Proxy /api/* to the API service. The API's own /api prefix is
@@ -51,6 +76,8 @@ server {
     # SPA fallback — every non-asset, non-/api URL serves index.html so
     # react-router owns client-side routing.
     location / {
+        add_header Content-Security-Policy "frame-ancestors 'none'" always;
+        add_header X-Frame-Options "DENY" always;
         try_files $uri /index.html;
     }
 }

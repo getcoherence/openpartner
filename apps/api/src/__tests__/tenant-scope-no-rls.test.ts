@@ -17,7 +17,8 @@
  *     onboarding
  *   - routes keyed on a partner ID in the URL, which requirePartnerOrAdmin
  *     lets any admin name: manual payout confirmation and payout history,
- *     Stripe Connect onboarding and status, partner postbacks
+ *     Stripe Connect onboarding and status, partner postbacks, a partner's
+ *     referrals, customers and events
  *   - per-tenant-unique keys: coupon codes, link keys, sign-in emails and
  *     magic links, the public signup
  *
@@ -832,6 +833,18 @@ describe.skipIf(skipIntegration)('partner-keyed routes without RLS', () => {
     const res = await request(app).get(`/t/${B.slug}/partners/${aPartnerId}/postbacks`).set(asB());
     expect(res.status).toBe(200);
     expect(res.body.postbacks).toEqual([]);
+  });
+
+  it("GET /partners/:id/referrals, /customers and /events don't list another tenant's partner's customers", async () => {
+    const programId = await seedProgram(A.id);
+    await seedConversion(A.id, aPartnerId, programId, 'accrued');
+    const referrals = await request(app).get(`/t/${B.slug}/partners/${aPartnerId}/referrals`).set(asB());
+    expect(referrals.status).toBe(404);
+    for (const list of ['customers', 'events'] as const) {
+      const res = await request(app).get(`/t/${B.slug}/partners/${aPartnerId}/${list}`).set(asB());
+      expect(res.status).toBe(200);
+      expect(res.body[list]).toEqual([]);
+    }
   });
 
   it("POST /partners/:id/postbacks doesn't add a postback to another tenant's partner", async () => {

@@ -4,6 +4,8 @@ import { api } from '../../api.js';
 import { TenantLink } from '../../tenant-link.js';
 import { Button, Card, EmptyState, ErrorBanner, Page, StatusPill, formatDate } from '../../ui.js';
 import { theme } from '../../theme.js';
+import { useBrand } from '../../lib/useBrand.js';
+import { NetworkPortalLink } from '../../lib/network-portal.js';
 
 interface RequestRow {
   id: string;
@@ -19,7 +21,11 @@ interface RequestRow {
   vendorName: string;
 }
 
+// Only applications to this brand: the Network hides the partner's
+// applications to other brands from it (openpartner-network#28). Those are
+// tracked in the partner's own Network portal.
 export function MyRequestsPage() {
+  const { programName } = useBrand();
   const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({
     queryKey: ['network-my-requests'],
@@ -32,14 +38,19 @@ export function MyRequestsPage() {
   });
 
   return (
-    <Page title="My applications" subtitle="Programs you&rsquo;ve applied to across the Network.">
+    <Page title="My applications" subtitle={`Your applications to ${programName} on the OpenPartner Network.`}>
+      <p style={{ color: theme.textMuted, fontSize: 14, marginTop: 0 }}>
+        Only applications to {programName} show here. Applications to other brands, including ones you send from
+        Discover, are tracked in your Network portal.{' '}
+        <NetworkPortalLink page="requests">Open your Network portal ↗</NetworkPortalLink>
+      </p>
       <ErrorBanner error={error} />
       {isLoading ? (
         <Card>Loading…</Card>
       ) : !data || data.requests.length === 0 ? (
         <EmptyState
           title="No applications yet"
-          hint="Browse programs to apply."
+          hint={`Your applications to ${programName} show here.`}
           icon={<Inbox size={28} strokeWidth={1.25} />}
         />
       ) : (

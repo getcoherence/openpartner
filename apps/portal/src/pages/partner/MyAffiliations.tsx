@@ -4,6 +4,8 @@ import { api, ApiError } from '../../api.js';
 import { TenantLink } from '../../tenant-link.js';
 import { Card, EmptyState, ErrorBanner, Page, Stat, StatusPill, formatDate, money } from '../../ui.js';
 import { theme } from '../../theme.js';
+import { useBrand } from '../../lib/useBrand.js';
+import { NetworkPortalLink } from '../../lib/network-portal.js';
 
 interface Affiliation {
   id: string;
@@ -59,7 +61,12 @@ function EarningsBlock({ aff }: { aff: Affiliation }) {
   );
 }
 
+// The Network answers a brand acting for its partner with that brand's
+// affiliation only (openpartner-network#28), so this page is the partner's
+// standing with this brand; every brand they work with is in their own
+// Network portal.
 export function MyAffiliationsPage() {
+  const { programName } = useBrand();
   const { data, isLoading, error } = useQuery({
     queryKey: ['network-my-affiliations'],
     queryFn: () => api<{ affiliations: Affiliation[] }>(`/network/me/affiliations`),
@@ -67,14 +74,19 @@ export function MyAffiliationsPage() {
   });
 
   return (
-    <Page title="My partnerships" subtitle="Programs across the Network you&rsquo;re actively partnered with.">
+    <Page title="My partnership" subtitle={`Your ${programName} partnership on the OpenPartner Network.`}>
+      <p style={{ color: theme.textMuted, fontSize: 14, marginTop: 0 }}>
+        Only your {programName} partnership shows here. Your partnerships with other brands are in your Network
+        portal.{' '}
+        <NetworkPortalLink page="affiliations">Open your Network portal ↗</NetworkPortalLink>
+      </p>
       <ErrorBanner error={error} />
       {isLoading ? (
         <Card>Loading…</Card>
       ) : !data || data.affiliations.length === 0 ? (
         <EmptyState
-          title="No partnerships yet"
-          hint="Browse and apply to programs to get started."
+          title="No Network partnership yet"
+          hint={`Your ${programName} partnership shows here once it's on the Network.`}
           icon={<Globe size={28} strokeWidth={1.25} />}
         />
       ) : (

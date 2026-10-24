@@ -1,13 +1,14 @@
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Banknote, Play } from 'lucide-react';
+import { ArrowLeft, Banknote, FileText, Play } from 'lucide-react';
 import { useSearchParams } from 'react-router';
-import { api, type Principal } from '../api.js';
+import { api, apiHref, apiOpen, getApiKey, type Principal } from '../api.js';
 import { TenantLink } from '../tenant-link.js';
 import { alpha, theme } from '../theme.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, SectionHeading, StatusPill, Table, formatDate, money, shortId } from '../ui.js';
 import { HOLD_REASON, type HoldReason } from './payout-holds.js';
 import { ManualPayoutFiles } from './ManualPayoutFiles.js';
 import { PayoutRunSummary, payoutMethodLabel, type PayoutRunResult } from './PayoutRunSummary.js';
+import { SentAs, withdrawalNote, type PayoutSent } from './payout-sent.js';
 
 interface Payout {
   id: string;
@@ -19,6 +20,26 @@ interface Payout {
   createdAt: string;
   completedAt: string | null;
   stripeTransferId: string | null;
+  /** Sent through Pay with PayPal in another currency (an INR balance in
+   *  USD); `amount` and `currency` stay the payout's own. */
+  sent?: PayoutSent | null;
+}
+
+/** The payout's own amount, and what PayPal sent when it was converted. */
+function PayoutAmount({ p }: { p: Payout }) {
+  return (
+    <div style={{ textAlign: 'right' }}>
+      <span style={{ fontWeight: 500 }}>{money(p.amount, p.currency)}</span>
+      {p.sent && <SentAs sent={p.sent} pending={p.status !== 'paid'} />}
+    </div>
+  );
+}
+
+/** Under a list with converted payouts: whose the conversion at withdrawal is. */
+function ConvertedNote({ rows, to }: { rows: Payout[]; to: 'partner' | 'brand' }) {
+  const p = rows.find((r) => r.sent);
+  if (!p?.sent) return null;
+  return <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 10, lineHeight: 1.5, maxWidth: 760 }}>{withdrawalNote(p.sent.currency, p.currency.toUpperCase(), to)}</div>;
 }
 
 /** GET /payouts: every partner's payouts, with the partner's name. */
@@ -144,19 +165,49 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
           icon={<Banknote size={28} strokeWidth={1.25} />}
         />
       ) : (
-        <Table
-          columns={['ID', { label: 'Amount', align: 'right' }, 'Method', 'Status', 'Created', 'Completed']}
-          rows={(payouts.data?.payouts ?? []).map((p) => [
-            <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(p.id)}</code>,
-            <span style={{ fontWeight: 500 }}>{money(p.amount, p.currency)}</span>,
-            <span style={{ color: theme.textMuted }}>{payoutMethodLabel(p.method)}</span>,
-            <StatusPill status={p.status} />,
-            <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
-            <span style={{ color: theme.textMuted }}>{formatDate(p.completedAt, { relative: true })}</span>,
-          ])}
-        />
+        <>
+          <Table
+            columns={['ID', { label: 'Amount', align: 'right' }, 'Method', 'Status', 'Created', 'Completed', 'Statement']}
+            rows={(payouts.data?.payouts ?? []).map((p) => [
+              <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(p.id)}</code>,
+              <PayoutAmount p={p} />,
+              <span style={{ color: theme.textMuted }}>{payoutMethodLabel(p.method)}</span>,
+              <StatusPill status={p.status} />,
+              <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
+              <span style={{ color: theme.textMuted }}>{formatDate(p.completedAt, { relative: true })}</span>,
+              <StatementLink payoutId={p.id} />,
+            ])}
+          />
+          <ConvertedNote rows={payouts.data?.payouts ?? []} to={isAdmin ? 'brand' : 'partner'} />
+        </>
       )}
     </Page>
+  );
+}
+
+/**
+ * Opens the payout's statement (GET /payouts/:id/statement) in a new tab:
+ * a printable page of what the payout paid and what for. A plain link, so
+ * the session cookie signs it in; when a pasted API key signs requests in
+ * instead, the click fetches the page with it.
+ */
+export function StatementLink({ payoutId }: { payoutId: string }) {
+  const path = `/payouts/${encodeURIComponent(payoutId)}/statement`;
+  return (
+    <a
+      href={apiHref(path)}
+      target="_blank"
+      rel="noopener"
+      aria-label="Payout statement"
+      onClick={(e) => {
+        if (!getApiKey()) return;
+        e.preventDefault();
+        apiOpen(path).catch((err: unknown) => window.alert(err instanceof Error ? err.message : String(err)));
+      }}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: theme.accentText, fontSize: 13, textDecoration: 'none' }}
+    >
+      <FileText size={13} /> View
+    </a>
   );
 }
 
@@ -189,7 +240,7 @@ function RecentPayouts() {
       ) : (
         <>
           <Table
-            columns={['Partner', { label: 'Amount', align: 'right' }, 'Method', 'Status', 'Created', 'Completed']}
+            columns={['Partner', { label: 'Amount', align: 'right' }, 'Method', 'Status', 'Created', 'Completed', 'Statement']}
             rows={rows.map((p) => [
               <TenantLink
                 to={`/payouts?partnerId=${p.partnerId}`}
@@ -203,13 +254,15 @@ function RecentPayouts() {
                   <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(p.partnerId)}</code>
                 )}
               </TenantLink>,
-              <span style={{ fontWeight: 500 }}>{money(p.amount, p.currency)}</span>,
+              <PayoutAmount p={p} />,
               <span style={{ color: theme.textMuted }}>{payoutMethodLabel(p.method)}</span>,
               <StatusPill status={p.status} />,
               <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
               <span style={{ color: theme.textMuted }}>{formatDate(p.completedAt, { relative: true })}</span>,
+              <StatementLink payoutId={p.id} />,
             ])}
           />
+          <ConvertedNote rows={rows} to="brand" />
           {hasNextPage && (
             <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16 }}>
               <Button variant="secondary" size="sm" onClick={() => void fetchNextPage()} disabled={isFetchingNextPage}>

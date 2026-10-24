@@ -10,6 +10,8 @@
  *   passwordPlatformRouter — mounted before tenantMiddleware, privileged pool.
  *     POST /signin/password   brand admin → platform identity (multi-tenant)
  *     POST /password/forgot   mail a reset link for the platform password
+ *                             (a partner-only address: where its partner
+ *                             passwords are reset instead)
  *     POST /password/reset    redeem it (both tenancy modes: single-tenant
  *                             admins' resets land here too)
  *     GET|PUT /me/password    set / change it with a platform session
@@ -30,14 +32,14 @@
  */
 
 import { Router, type Request } from 'express';
-import { z } from 'zod';
-import { DEFAULT_TENANT_ID, TABLES, type AdminRow, type PartnerRow } from '@openpartner/db';
+import { z } from '../zod.js';
+import { DEFAULT_TENANT_ID, TABLES, type AdminRow, type PartnerRow, type TenantRow } from '@openpartner/db';
 import { db as platformDb } from '../db.js';
 import { consumeMagicLink, issueMagicLink } from '../auth-sessions.js';
 import { requireAuth } from '../auth.js';
 import { getMailer } from '../mailer.js';
 import { ipRateLimit } from '../middleware/rate-limit.js';
-import { passwordResetEmail } from '../email-templates.js';
+import { passwordResetEmail, passwordResetPartnerPortalsEmail } from '../email-templates.js';
 import { getPortalBaseUrl, linkTenantOf } from '../portal-url.js';
 import { getTenancyMode, tenantOf } from '../tenancy.js';
 import { requireServedCountry } from '../country-access.js';
@@ -144,6 +146,58 @@ async function sendPlatformReset(address: string, landing: '/reset-password' | '
   }
 }
 
+/**
+ * No platform password to reset, but the address is a partner somewhere:
+ * tell it which brands' portals reset its partner passwords, instead of
+ * leaving it to wait for a mail that never comes. Lists the brands whose own
+ * "Forgot password" would mail this partner (tenantSigninCandidates' rule,
+ * on a brand whose portal is up). An address with none hears nothing, so
+ * the form can't mail strangers. Shares the platform reset's per-address
+ * cap. Never throws.
+ */
+async function sendPartnerPortalsNotice(address: string): Promise<void> {
+  try {
+    const brands = (await platformDb(`${TABLES.Partner} as p`)
+      .join(`${TABLES.Tenant} as t`, 't.id', 'p.tenantId')
+      .where('p.email', address)
+      .whereNotNull('p.activatedAt')
+      .whereNull('p.revokedAt')
+      .where('p.portalAccess', true)
+      .where('t.status', 'active')
+      .whereNull('t.pendingDeletionAt')
+      .select('t.id', 't.slug', 't.customDomain')) as Array<Pick<TenantRow, 'id' | 'slug' | 'customDomain'>>;
+    if (brands.length === 0) return;
+    if (!resetMailLimit.hit(failureKey('platform', address))) return;
+
+    const { resolveBrandName } = await import('../brand-name.js');
+    const portals = await Promise.all(
+      brands.map(async (t) => ({
+        brandName: ((await resolveBrandName(platformDb, t.id)) ?? t.slug).replace(/\s+/g, ' ').trim(),
+        signinUrl: `${getPortalBaseUrl({ slug: t.slug, customDomain: t.customDomain })}/login`,
+      })),
+    );
+    portals.sort((a, b) => a.brandName.localeCompare(b.brandName));
+    const tmpl = passwordResetPartnerPortalsEmail({
+      email: address,
+      portals,
+      creatorSigninUrl: `${getPortalBaseUrl()}/creator/login`,
+    });
+    // Platform mail, like the reset it stands in for: it names every brand
+    // the address partners with, so no one brand's mail provider carries it.
+    await getMailer().send({ db: platformDb, tenantId: DEFAULT_TENANT_ID }, {
+      to: address,
+      subject: tmpl.subject,
+      text: tmpl.text,
+      html: tmpl.html,
+      tag: 'password_reset_partner_portals',
+      metadata: { purpose: 'password_reset_partner_portals', email: address, brands: brands.length },
+      platform: true,
+    });
+  } catch (err) {
+    console.error('[password] partner portals notice failed', { email: address, err });
+  }
+}
+
 function readPlatformCookie(req: Request): string | null {
   return (req as unknown as { cookies?: Record<string, string> }).cookies?.[PLATFORM_SESSION_COOKIE] ?? null;
 }
@@ -183,11 +237,14 @@ passwordPlatformRouter.post('/password/forgot', forgotLimit, async (req, res) =>
   const address = body.data.email.toLowerCase();
 
   // Whoever /signin or the ops console would mail a link to, plus anyone
-  // who already has a password. Everyone else: the same 200, no mail.
+  // who already has a password. A partner hears where its passwords are
+  // reset instead. Everyone else: the same 200, no mail.
   const operator = await isAllowedOperator(address);
   const admin = await platformDb<AdminRow>(TABLES.Admin).where({ email: address }).whereNull('revokedAt').first('id');
   if (operator || admin || (await hasPassword(platformDb, platformCredential(address)))) {
     await sendPlatformReset(address, body.data.context === 'ops' && operator ? '/platform/reset-password' : '/reset-password');
+  } else {
+    await sendPartnerPortalsNotice(address);
   }
   res.json({ ok: true });
 });

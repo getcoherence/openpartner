@@ -85,6 +85,9 @@ jobs:
       - name: Portal proxy regression
         run: node scripts/test-portal-proxy.mjs
 
+      - name: App Platform portal spec transform
+        run: node --test scripts/do-portal-service.test.mjs
+
       - name: Audit
         # Fails on any high-severity CVE in the resolved workspace.
         # Moderate/low are tolerated — too many false-positive patterns

@@ -7,7 +7,7 @@
  * shapes — a rule one route refuses must not get in through the other.
  */
 
-import { z } from 'zod';
+import { z } from './zod.js';
 
 /** Steps per band / tier table. Ten covers every slab table we've seen
  *  asked for while keeping the editor (and the tier query) bounded. */

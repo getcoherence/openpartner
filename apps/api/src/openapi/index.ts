@@ -75,9 +75,10 @@ function visit(node: unknown, fn: (obj: Record<string, unknown>) => void): void 
  *   - `z.enum([...]).nullable()` comes out as `type: [string, null]` with an
  *     `enum` that lacks null, so a null value fails the published schema
  *     while the route (or response) allows it. Add null to the enum.
- *   - `z.string().datetime()` comes out as `format: date-time`, which allows
- *     any RFC 3339 offset; zod 3 accepts only UTC with a `Z`
- *     (`2026-10-16T10:00:00+00:00` is a 400). Say so with a pattern.
+ *   - utcDateTime() (and `z.string().datetime()`) comes out as
+ *     `format: date-time`, which allows any RFC 3339 offset; the routes
+ *     accept only UTC with a `Z` (`2026-10-16T10:00:00+00:00` is a 400).
+ *     Say so with a pattern.
  */
 function alignWithZod(document: OpenApiDocument): void {
   visit(document, (obj) => {
@@ -89,9 +90,9 @@ function alignWithZod(document: OpenApiDocument): void {
 }
 
 /**
- * Request fields whose zod schema can't be rendered faithfully, described
- * by hand. Each entry throws if its target disappears, so a renamed field
- * fails the build instead of silently keeping a stale override.
+ * Fields whose zod schema can't be rendered faithfully, described by hand.
+ * Each entry throws if its target disappears, so a renamed field fails the
+ * build instead of silently keeping a stale override.
  */
 function applyOverrides(document: OpenApiDocument): void {
   const schemas = document.components?.schemas as Record<string, { properties?: Record<string, unknown> }> | undefined;
@@ -131,6 +132,14 @@ function applyOverrides(document: OpenApiDocument): void {
   const refund = schemas?.RecordRefundRequest as Record<string, unknown> | undefined;
   if (!refund) throw new Error('openapi override target missing: RecordRefundRequest');
   refund.oneOf = [{ required: ['conversionExternalEventId'] }, { required: ['conversionEventId'] }];
+  // orNull(PayoutDetails): PayoutDetails is a discriminated union, and the
+  // generator flattens a union inside a union, inlining its branches in
+  // place of the reference.
+  const details = schemas?.PayoutProfile?.properties?.details as { description?: string } | undefined;
+  set('PayoutProfile', 'details', {
+    anyOf: [{ $ref: '#/components/schemas/PayoutDetails' }, { type: 'null' }],
+    description: details?.description,
+  });
 }
 
 function build() {

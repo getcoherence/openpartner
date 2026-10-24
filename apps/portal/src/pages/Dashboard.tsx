@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import {
   MousePointerClick,
   Receipt,
@@ -412,6 +412,9 @@ const OVERVIEW_SORTS: Array<{ value: OverviewSort; label: string }> = [
 
 interface AdminOverview {
   since: string;
+  /** The program the overview is filtered to; absent from an API that
+   *  predates the filter. */
+  programId?: string | null;
   sort: OverviewSort;
   nextCursor: string | null;
   totals: {
@@ -442,15 +445,42 @@ interface AdminOverview {
   }>;
 }
 
+interface ProgramOption {
+  id: string;
+  name: string;
+}
+
 function AdminDashboard() {
   const [sort, setSort] = useState<OverviewSort>('revenue');
+  // `?program=<id>` filters the whole page to one program, so a filtered
+  // view can be bookmarked and shared. An id that isn't one of the brand's
+  // programs (deleted, or another workspace's link) shows everything.
+  const [params, setParams] = useSearchParams();
+  const programs = useQuery({
+    queryKey: ['campaigns'],
+    queryFn: () => api<{ programs: ProgramOption[] }>('/programs'),
+  }).data?.programs;
+  const requested = params.get('program');
+  const program = requested && programs ? programs.find((p) => p.id === requested) : undefined;
+  const programId = requested && (!programs || program) ? requested : undefined;
+  const selectProgram = (id: string) =>
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (id) next.set('program', id);
+        else next.delete('program');
+        return next;
+      },
+      { replace: true },
+    );
   // Totals come from the first page (every page carries the same
-  // whole-tenant aggregates); partner cards accumulate page by page so a
-  // program with tens of thousands of partners never loads them all.
+  // aggregates); partner cards accumulate page by page so a program with
+  // tens of thousands of partners never loads them all.
   const { data, error, isLoading, isFetching, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
-    queryKey: ['admin-overview', sort],
+    queryKey: ['admin-overview', sort, programId ?? null],
     queryFn: ({ pageParam }) => {
       const qs = new URLSearchParams({ sort });
+      if (programId) qs.set('programId', programId);
       if (pageParam) qs.set('cursor', pageParam);
       return api<AdminOverview>(`/admin/overview?${qs}`);
     },
@@ -469,7 +499,31 @@ function AdminDashboard() {
     : {};
 
   return (
-    <Page title="Partner Program" subtitle="Overview of every partner driving attributed revenue.">
+    <Page
+      title="Partner Program"
+      subtitle={
+        program
+          ? `${program.name}: its partners and their activity over the last 30 days.`
+          : 'Overview of every partner driving attributed revenue.'
+      }
+      actions={
+        ((programs?.length ?? 0) > 1 || program) && (
+          <Select
+            aria-label="Program"
+            value={program?.id ?? ''}
+            onChange={(e) => selectProgram(e.target.value)}
+            style={{ width: 'auto', maxWidth: '100%', padding: '6px 10px', fontSize: 13 }}
+          >
+            <option value="">All programs</option>
+            {programs?.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </Select>
+        )
+      }
+    >
       <ErrorBanner error={error} />
       <PendingApprovalsBanner />
       <BrandOnboarding />
@@ -514,11 +568,19 @@ function AdminDashboard() {
             Partners
           </SectionHeading>
           {partners.length === 0 ? (
-            <EmptyState
-              title="No partners yet"
-              hint="Create one from Admin → Partners to get started."
-              icon={<Users size={28} strokeWidth={1.25} />}
-            />
+            programId ? (
+              <EmptyState
+                title="No partners in this program yet"
+                hint="Grant partners access to it from Admin → Partners."
+                icon={<Users size={28} strokeWidth={1.25} />}
+              />
+            ) : (
+              <EmptyState
+                title="No partners yet"
+                hint="Create one from Admin → Partners to get started."
+                icon={<Users size={28} strokeWidth={1.25} />}
+              />
+            )
           ) : (
             <>
               <div

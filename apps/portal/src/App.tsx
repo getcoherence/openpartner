@@ -30,6 +30,7 @@ import {
   KeyRound,
   Landmark,
   CalendarCheck,
+  UserCheck,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { clearApiKey, api, type Principal } from './api.js';
@@ -40,6 +41,7 @@ import { useBrand, useConnectPayouts, usePublicBrand } from './lib/useBrand.js';
 import { Dashboard } from './pages/Dashboard.js';
 import { LinksPage } from './pages/Links.js';
 import { CommissionsPage } from './pages/Commissions.js';
+import { AdminPartnerReferrals, ReferralsPage } from './pages/Referrals.js';
 import { PayoutsPage } from './pages/Payouts.js';
 import { ConnectPage } from './pages/Connect.js';
 import { PayoutDetailsPage } from './pages/PayoutDetails.js';
@@ -95,6 +97,7 @@ import { PlatformConsole } from './pages/platform/PlatformConsole.js';
 import { CreatorSignupPage } from './pages/creator/CreatorSignup.js';
 import { CreatorSigninPage } from './pages/creator/CreatorSignin.js';
 import { CreatorMagicLandingPage } from './pages/creator/CreatorMagicLanding.js';
+import { CreatorResetPasswordPage } from './pages/creator/CreatorResetPassword.js';
 import { CreatorShell } from './pages/creator/CreatorShell.js';
 import { CreatorPublicProfilePage } from './pages/creator/CreatorPublicProfile.js';
 import { BookingConfirmPage } from './pages/creator/BookingConfirm.js';
@@ -188,6 +191,8 @@ export function App() {
             <Route path="/creator/signup" element={<CreatorSignupPage />} />
             <Route path="/creator/login" element={<CreatorSigninPage />} />
             <Route path="/creator/auth/magic" element={<CreatorMagicLandingPage />} />
+            {/* The Network's "forgot password" link. */}
+            <Route path="/creator/reset-password" element={<CreatorResetPasswordPage />} />
             <Route path="/creator/*" element={<CreatorShell />} />
             {/* Public creator profiles — no auth, browsable from anywhere. */}
             <Route path="/creators/:handle" element={<CreatorPublicProfilePage />} />
@@ -326,6 +331,7 @@ function Shell() {
                   <Route path="network/profile" element={<MyProfilePage />} />
                 </>
               )}
+              <Route path="referrals" element={<ReferralsPage principal={auth.principal} />} />
               <Route path="coupons" element={<AdminPartnerCoupons ownPartnerId={auth.principal.partnerId!} />} />
               <Route path="postbacks" element={<PartnerPostbacksPage principal={auth.principal} />} />
               <Route path="bounties" element={<PartnerBountiesPage />} />
@@ -337,6 +343,7 @@ function Shell() {
               <Route path="admin/partners" element={<AdminPartners />} />
               <Route path="admin/partners/:id/programs" element={<AdminPartnerPrograms />} />
               <Route path="admin/partners/:id/coupons" element={<AdminPartnerCoupons />} />
+              <Route path="admin/partners/:id/referrals" element={<AdminPartnerReferrals />} />
               <Route path="admin/partners/:id/commission" element={<AdminPartnerCommission />} />
               <Route path="admin/programs" element={<AdminPrograms />} />
               <Route path="admin/programs/:id/bounties" element={<AdminProgramBounties />} />
@@ -496,6 +503,7 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
         <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
           <NavItem to="/" icon={<LayoutDashboard size={16} />}>Dashboard</NavItem>
           <NavItem to="/links" icon={<Link2 size={16} />}>Links</NavItem>
+          {principal.role === 'partner' && <NavItem to="/referrals" icon={<UserCheck size={16} />}>Referrals</NavItem>}
           {principal.role === 'partner' && <NavItem to="/coupons" icon={<Tag size={16} />}>Coupons</NavItem>}
           {principal.role === 'partner' && <NavItem to="/bounties" icon={<Trophy size={16} />}>Bounties</NavItem>}
           <NavItem to="/commissions" icon={<Receipt size={16} />}>Commissions</NavItem>
@@ -513,7 +521,7 @@ export function Sidebar({ principal, variant = 'sidebar' }: { principal: Princip
         {principal.role === 'partner' && partnerNetwork.show && (
           <NavSection title="Network" collapsible storageKey="partner-network">
             <NavItem to="/network/discover" icon={<Globe size={16} />}>Discover programs</NavItem>
-            <NavItem to="/network/affiliations" icon={<Megaphone size={16} />}>My partnerships</NavItem>
+            <NavItem to="/network/affiliations" icon={<Megaphone size={16} />}>My partnership</NavItem>
             <NavItem to="/network/requests" icon={<Inbox size={16} />}>My applications</NavItem>
             <NavItem to="/network/profile" icon={<UserCog size={16} />}>Network profile</NavItem>
           </NavSection>

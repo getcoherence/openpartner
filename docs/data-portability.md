@@ -60,7 +60,7 @@ appears after everything it references.
 | 20 | `WebhookEndpoint` | `id` | **your outbound webhook endpoints** (not the signing secret) |
 | 21 | `PartnerPostback` | `id` | **each partner's own tracker callbacks** (the URL opened) |
 | 22 | `ConversionPostbackToken` | `id` | **the GET /postback allowlist and rotation history** (not the token) |
-| 23 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy, the portal-access default and the onboarding Network skip** |
+| 23 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy, the portal-access default, the onboarding Network skip, the payout-statement and Pay with PayPal INR settings, and the referral-stage setting** |
 
 Rows 3, 4 and 7 were added in schemaVersion 2 (Aug 2026). Without them a
 restored instance had the roster but no grants, no coupon attribution, and
@@ -197,6 +197,10 @@ To finish a restore:
 - **Conversion postbacks.** Rotate the token, then update the URL at every
   network or lender that fires it. The host changes on a hosted to
   self-host move anyway.
+- **Pay with PayPal.** Your PayPal app's credentials never travel (the
+  whole `PaypalConnection` table stays out): connect the app again under
+  Settings → Pay with PayPal. See
+  [What is deliberately NOT in the bundle](#what-is-deliberately-not-in-the-bundle).
 
 Partner postback URLs travel opened; see
 [Partner postback URLs](#partner-postback-urls).
@@ -275,6 +279,9 @@ The PayPal and Wise files a brand made from its payout runs
 file is a stamp on each of its payouts (`Payout.metadata.manualExport`),
 which travels with the `Payout` rows. On a restored instance a file's
 unconfirmed payouts still show under "Files made", to confirm or discard.
+So does the payment reference a brand gave when it confirmed a payout sent
+one at a time (`Payout.metadata.externalReference`), which the payout's
+statement prints.
 
 ### Settings (`Config`)
 
@@ -286,12 +293,27 @@ Only these keys are exported, and only these are imported:
 | `partner_signup` | the join page: auto-approve or review, or closed |
 | `partner_access` | whether partners created without an invite may sign in to the partner portal (a headless program turns it off) |
 | `onboarding` | whether the brand said "Not now" to listing on the OpenPartner Network (the dashboard's Getting started card) |
+| `payout_statements` | what payout statements print: legal name, address, footer, statement-number prefix, and the tax-lines placeholder (docs/payout-statements.md) |
+| `paypal_payouts` | whether Pay with PayPal sends INR balances in USD (`sendUnsupportedAs`), [paypal-payouts.md](paypal-payouts.md#balances-paypal-cant-send-inr) |
+| `partner_referrals` | which event types partners see as referral stages, with their labels and order, and whether partners see customer labels ([referral timeline](referral-timeline.md)) |
 
-`onboarding` was added in Oct 2026 without a version bump. It is a new
-key in a table the bundle already carries, not a new table or column. An
-instance from before it skips the key on import (Config import takes only
-the keys it knows), and the restored brand sees the Network step on its
-Getting started card again.
+`onboarding`, `payout_statements`, `paypal_payouts` and `partner_referrals`
+were added in Oct 2026 without a version bump. Each is a new key in a table
+the bundle already carries, not a new table or column. An instance from
+before it skips the key on import (Config import takes only the keys it
+knows): the restored brand sees the Network step on its Getting started
+card again, prints statements under its brand name until it enters its
+statement settings again, reads the PayPal setting as off, and its partners
+see the default referral stages with no customer labels (less than before,
+never more).
+
+Payout statements themselves aren't exported: each is built from the
+`Payout`, `Commission`, `Bonus` and `CommissionAdjustment` rows the bundle
+carries, so a restored instance prints the same line items and totals. Two
+things on a hosted statement don't travel: the GSTIN, read from the hosted
+`HostedBillingProfile`, and the "reversed after payment" lines of a Stripe
+transfer, read from `PayoutReversal`, which isn't in the bundle either. The
+payout's own `status` still says it was reversed.
 
 Every other key stays out, on purpose:
 
@@ -544,10 +566,16 @@ doesn't keep is worse than a documented gap.
 
 **Never exported** (credentials, platform-operational state, or delivery
 logs — not customer data):
-`Session`, `MagicLinkToken`, `ApiKey`, `ConversionPostbackToken`, `TenantStripeConnection`, `Admin`, `PlatformSession`,
+`Session`, `MagicLinkToken`, `ApiKey`, `ConversionPostbackToken`, `TenantStripeConnection`, `PaypalConnection`, `PaypalPayoutBatch`, `Admin`, `PlatformSession`,
 `PlatformSessionBundle`, `PlatformAdmin`, `PlatformAdminSession`,
 `PlatformAuditLog`, `SignupBlocklist`, `WebhookDelivery`, `NetworkOutbox`,
-`StripeWebhookInbox`, `LocationDeclaration`, `SanctionsScreening`.
+`StripeWebhookInbox`, `LocationDeclaration`, `SanctionsScreening`,
+`PartnerSigninLinkLog`.
+
+`PartnerSigninLinkLog` records each sign-in link a brand's backend minted for
+a partner (`POST /partners/{id}/signin-link`): which partner, which key,
+when. Like `Session` and `MagicLinkToken` it is a record of access to one
+deployment, and the `ApiKey` ids it names never travel.
 
 `LocationDeclaration` is the hosted platform's record of where each brand
 and partner said it is based ([country-access.md](country-access.md)), and
@@ -571,6 +599,24 @@ own `STRIPE_SECRET_KEY` is the connection. What the connection *recorded* is
 in the bundle as ordinary raw `Event` rows (tagged `metadata.via =
 'stripe_app'`, with the Stripe account id), and those re-derive on any
 instance like every other Event.
+
+`PaypalConnection` and `PaypalPayoutBatch` (Oct 2026) are the same kind of
+thing for Pay with PayPal ([paypal-payouts.md](paypal-payouts.md)): the
+brand's own PayPal REST app credentials (client secret, cached token and
+webhook id, all sealed) and the delivery state of the batches sent with
+them. Credentials for one deployment, and state that only those
+credentials can follow, so neither is exported, in any format; on another
+instance the brand connects its PayPal app again. What the batches did is
+on the payouts, which are exported: each paid payout's
+`metadata.manualExport` carries `via: "api"`, PayPal's `payoutBatchId`,
+item id, transaction id and status, and a released one carries
+`metadata.paypalReleases`. A payout whose INR balance was sent in USD
+keeps `amount` and `currency` in INR; its stamp's `conversion` holds the
+INR amount, the USD amount sent, the ECB rate and its date, and a released
+one keeps that `conversion` in its `paypalReleases` entry. A restored payout still stamped with a batch
+that didn't travel is never released, because PayPal may still pay that
+batch: once checked in PayPal it can be marked sent. Settle every PayPal
+batch before you migrate.
 
 **Not exported yet — known gaps, not decisions:**
 

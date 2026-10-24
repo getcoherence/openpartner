@@ -12,7 +12,7 @@ The spec at `.do/app.yaml` declares four components:
 | --- | --- | --- |
 | `api` | Service (Dockerfile) | Node/Express — attribution, auth, network, webhooks |
 | `router` | Service (Dockerfile) | Hono click redirect — the `/r/<key>` hot path |
-| `portal` | Static site | Vite SPA, served from DO's CDN |
+| `portal` | Service (Dockerfile) | Vite SPA on nginx, which sends the frame-protection headers |
 | `openpartner-db` | Managed Postgres | App-owned Postgres 16 |
 
 Ingress rules fan incoming traffic out: `/api/*` → `api`, everything else → `portal`. The router runs on its own subdomain.

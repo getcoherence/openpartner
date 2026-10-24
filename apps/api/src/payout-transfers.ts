@@ -39,8 +39,9 @@
 
 import type Stripe from 'stripe';
 import type { Knex } from 'knex';
-import { TABLES, type CommissionRow, type PartnerRow, type PayoutRow } from '@openpartner/db';
+import { TABLES, type CommissionRow, type PartnerRow, type PayoutRow, type TenantRow } from '@openpartner/db';
 import { requireStripe } from './stripe.js';
+import { payoutStatementUrl } from './portal-url.js';
 import { centsToStripeMinor, majorToCents, toStripeMinor } from './stripe-amounts.js';
 import { dispatchEvent } from './webhook-dispatcher.js';
 import type { WebhookPayload } from './openapi/webhook-events.js';
@@ -649,6 +650,7 @@ async function finalizeTransfer(
     payoutId: payout.id,
   })) as CommissionRow[];
   const platformFee = (payout.metadata as { platformFee?: number }).platformFee;
+  const linkTenant = await db<TenantRow>(TABLES.Tenant).where({ id: payout.tenantId }).first('slug', 'customDomain');
   dispatchEvent(payout.tenantId, 'payout.created', {
     payoutId: payout.id,
     partnerId: payout.partnerId,
@@ -658,6 +660,7 @@ async function finalizeTransfer(
     commissionIds: commissions.map((c) => c.id),
     platformFee: platformFee || undefined,
     ...nettingPayloadFields((payout.metadata as { netting?: unknown }).netting),
+    statementUrl: payoutStatementUrl(linkTenant, payout.id),
   } satisfies WebhookPayload<'payout.created'>);
   void dispatchCommissionEvents(payout.tenantId, 'commission.paid', commissions, { payoutId: payout.id });
   result.confirmed.push({ payoutId: payout.id, stripeTransferId: transfer.id });

@@ -42,6 +42,7 @@ const { accessExtension } = await import('../openapi/registry.js');
 // the public API goes here; the coverage test then holds it to the spec.
 const DOCUMENTED_ROUTERS: Record<string, Router> = {
   partners: (await import('../routes/partners.js')).partnersRouter,
+  partnerSigninLink: (await import('../routes/partner-signin-link.js')).partnerSigninLinkRouter,
   importPartners: (await import('../routes/import-partners.js')).importPartnersRouter,
   programs: (await import('../routes/programs.js')).programsRouter,
   partnerPrograms: (await import('../routes/partner-campaigns.js')).partnerCampaignsRouter,
@@ -55,9 +56,11 @@ const DOCUMENTED_ROUTERS: Record<string, Router> = {
   commissions: (await import('../routes/commissions.js')).commissionsRouter,
   bonuses: (await import('../routes/bonuses.js')).bonusesRouter,
   payouts: (await import('../routes/payouts.js')).payoutsRouter,
+  paypal: (await import('../routes/paypal.js')).paypalRouter,
   payoutProfiles: (await import('../routes/payout-profiles.js')).payoutProfilesRouter,
   dashboard: (await import('../routes/dashboard.js')).dashboardRouter,
   funnel: (await import('../routes/funnel.js')).funnelRouter,
+  referrals: (await import('../routes/referrals.js')).referralsRouter,
   webhooks: (await import('../routes/webhooks.js')).webhooksRouter,
   apiKeys: (await import('../routes/api-keys.js')).apiKeysRouter,
   export: (await import('../routes/export.js')).exportRouter,

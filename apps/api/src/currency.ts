@@ -14,7 +14,7 @@
  */
 
 import type { Knex } from 'knex';
-import { z } from 'zod';
+import { z } from './zod.js';
 import { TABLES, type TenantRow } from '@openpartner/db';
 
 /** What a null currency on a stored row means. */

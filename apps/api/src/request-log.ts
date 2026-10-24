@@ -12,6 +12,9 @@
  *     token (op_session, op_platform_session, op_platform_admin_session) and
  *     the op_bundle_id cookie this way. The values are replaced; cookie
  *     names and attributes stay, so a log still shows what was set or cleared.
+ *   - Location on the response, with the same query rules as the URL: the
+ *     Google callback redirects to a magic-link landing whose ?token= signs
+ *     in whoever holds it (routes/google-auth.ts).
  */
 
 const REDACTED = '[REDACTED]';
@@ -83,12 +86,16 @@ function redactSetCookie(line: unknown): unknown {
 /** pino-http `res` serializer, the response-side twin of `redactRequest`. */
 export function redactResponse(res: SerializedResponse): SerializedResponse {
   const setCookie = res.headers?.['set-cookie'];
-  if (setCookie === undefined) return res;
+  const location = res.headers?.location;
+  if (setCookie === undefined && location === undefined) return res;
   return {
     ...res,
     headers: {
       ...res.headers,
-      'set-cookie': Array.isArray(setCookie) ? setCookie.map(redactSetCookie) : redactSetCookie(setCookie),
+      ...(setCookie === undefined
+        ? {}
+        : { 'set-cookie': Array.isArray(setCookie) ? setCookie.map(redactSetCookie) : redactSetCookie(setCookie) }),
+      ...(location === undefined ? {} : { location: typeof location === 'string' ? redactUrl(location) : REDACTED }),
     },
   };
 }
