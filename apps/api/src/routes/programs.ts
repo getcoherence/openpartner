@@ -311,8 +311,8 @@ programsRouter.get('/programs', requireAuth, requireAdmin, async (req, res) => {
 });
 
 export const programStatsQuerySchema = z.object({
-  since: z.string().datetime().optional(),
-  until: z.string().datetime().optional(),
+  since: utcDateTime().optional(),
+  until: utcDateTime().optional(),
 });
 
 /**

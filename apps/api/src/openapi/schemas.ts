@@ -663,6 +663,19 @@ export const PayoutStatement = z
         }),
       amount: Decimal.openapi({ description: 'What was paid, or is to be.' }),
       currency: z.string(),
+      sent: z
+        .object({
+          amount: Decimal,
+          currency: z.string(),
+          rate: Decimal.openapi({ description: 'Units of `currency` per unit of the payout currency.' }),
+          rateSource: z.literal('ecb'),
+          rateDate: z.string().openapi({ example: '2026-10-22' }),
+        })
+        .nullable()
+        .openapi({
+          description:
+            'When Pay with PayPal sent the payout in another currency (an INR balance in USD), what was sent and at which ECB reference rate. `amount` and the line items stay in the payout currency. Null otherwise.',
+        }),
       createdAt: ts,
       completedAt: tsNullable,
     }),

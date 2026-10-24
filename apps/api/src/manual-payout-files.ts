@@ -791,10 +791,23 @@ function reference(provider: ManualPayoutProvider, payoutId: string, details: Pa
 export function manualExportOf(
   payout: Pick<PayoutRow, 'id' | 'metadata'>,
   details: PayoutDetails | null,
-): { exportId: string; provider: ManualPayoutProvider; at: string; reference: string | null } | null {
+): {
+  exportId: string;
+  provider: ManualPayoutProvider;
+  at: string;
+  reference: string | null;
+  /** Pay with PayPal sent this payout in another currency (paypal-send-as.ts). */
+  conversion: PaypalConversionStamp | null;
+} | null {
   const stamp = stampOf(payout);
   if (!stamp) return null;
-  return { exportId: stamp.exportId, provider: stamp.provider, at: stamp.at, reference: reference(stamp.provider, payout.id, details) };
+  return {
+    exportId: stamp.exportId,
+    provider: stamp.provider,
+    at: stamp.at,
+    reference: reference(stamp.provider, payout.id, details),
+    conversion: isApiStamp(stamp) ? (stamp.conversion ?? null) : null,
+  };
 }
 
 // ---------------------------------------------------------------------------

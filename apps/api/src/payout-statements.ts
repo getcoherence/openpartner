@@ -190,6 +190,15 @@ export interface PayoutStatement {
     /** What was paid (or is to be), in the payout's currency. */
     amount: string;
     currency: string;
+    /** Pay with PayPal sent it in another currency: what was sent, and the
+     *  frozen ECB rate. Null otherwise. */
+    sent: {
+      amount: string;
+      currency: string;
+      rate: string;
+      rateSource: 'ecb';
+      rateDate: string;
+    } | null;
     createdAt: string;
     completedAt: string | null;
   };
@@ -513,6 +522,17 @@ export async function buildPayoutStatement(db: Knex, tenantId: string, payoutId:
       reference,
       amount: major(cents(payout.amount)),
       currency,
+      // Pay with PayPal sent an INR balance in USD at a quoted ECB rate
+      // (paypal-send-as.ts). The line items stay in the payout's currency.
+      sent: exported?.conversion
+        ? {
+            amount: exported.conversion.sentAmount,
+            currency: exported.conversion.sentCurrency,
+            rate: exported.conversion.rate,
+            rateSource: exported.conversion.rateSource,
+            rateDate: exported.conversion.rateDate,
+          }
+        : null,
       createdAt: new Date(payout.createdAt).toISOString(),
       completedAt: payout.completedAt ? new Date(payout.completedAt).toISOString() : null,
     },
@@ -696,6 +716,9 @@ export function renderStatementHtml(s: PayoutStatement): string {
   const totals =
     `<section class="totals"><h2>Totals</h2><table><tbody>${totalRows}` +
     `<tr class="paid"><td class="label">${paidLabel}</td><td class="num">${esc(formatMoney(s.payout.amount, s.payout.currency))}</td></tr>` +
+    (s.payout.sent
+      ? `<tr><td class="label">Sent as (${esc(s.payout.sent.rateSource.toUpperCase())} reference rate ${esc(s.payout.sent.rate)} on ${esc(s.payout.sent.rateDate)})</td><td class="num">${esc(formatMoney(s.payout.sent.amount, s.payout.sent.currency))}</td></tr>`
+      : '') +
     (reversed !== 0
       ? `<tr><td class="label">Reversed after payment</td><td class="num">${esc(formatMoney(major(reversed), s.payout.currency))}</td></tr>` +
         `<tr class="net"><td class="label">Kept after reversals</td><td class="num">${esc(formatMoney(major(cents(s.payout.amount) + reversed), s.payout.currency))}</td></tr>`

@@ -4216,7 +4216,7 @@
           "reference": {
             "type": "string",
             "maxLength": 100,
-            "pattern": "^[^\\p{C}\\p{Zl}\\p{Zp}]*$/u"
+            "pattern": "^[^\\p{C}\\p{Zl}\\p{Zp}]*$"
           }
         }
       },
@@ -4397,6 +4397,48 @@
               "currency": {
                 "type": "string"
               },
+              "sent": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "amount": {
+                    "$ref": "#/components/schemas/Decimal"
+                  },
+                  "currency": {
+                    "type": "string"
+                  },
+                  "rate": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Decimal"
+                      },
+                      {
+                        "description": "Units of `currency` per unit of the payout currency."
+                      }
+                    ]
+                  },
+                  "rateSource": {
+                    "type": "string",
+                    "enum": [
+                      "ecb"
+                    ]
+                  },
+                  "rateDate": {
+                    "type": "string",
+                    "example": "2026-10-22"
+                  }
+                },
+                "required": [
+                  "amount",
+                  "currency",
+                  "rate",
+                  "rateSource",
+                  "rateDate"
+                ],
+                "description": "When Pay with PayPal sent the payout in another currency (an INR balance in USD), what was sent and at which ECB reference rate. `amount` and the line items stay in the payout currency. Null otherwise."
+              },
               "createdAt": {
                 "type": "string",
                 "format": "date-time",
@@ -4419,6 +4461,7 @@
               "reference",
               "amount",
               "currency",
+              "sent",
               "createdAt",
               "completedAt"
             ]

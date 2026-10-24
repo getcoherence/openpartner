@@ -237,7 +237,14 @@ interface StatementJson {
     statementNumber: string;
     issuer: { name: string; tradingName: string | null; address: string | null; gstin: string | null };
     partner: { id: string; name: string | null; destination: string | null; destinationChanged: boolean };
-    payout: { amount: string; currency: string; methodLabel: string; reference: { label: string; value: string } | null; status: string };
+    payout: {
+      amount: string;
+      currency: string;
+      methodLabel: string;
+      reference: { label: string; value: string } | null;
+      sent: { amount: string; currency: string; rate: string; rateSource: string; rateDate: string } | null;
+      status: string;
+    };
     commissions: Array<{ description: string; programName: string | null; amount: string; currency: string; date: string }>;
     bonuses: Array<{ description: string; amount: string }>;
     clawbacks: Array<{ description: string; amount: string; commissionId: string }>;
@@ -585,6 +592,31 @@ describe.skipIf(skipIntegration)('GET /payouts/:id/statement', () => {
     s = await statementJson(A, payout, aAdmin);
     expect(s.partner.destinationChanged).toBe(true);
     expect(s.payout.reference).toBeNull();
+  });
+
+  it('shows what Pay with PayPal sent when it sent an INR balance in USD, and the frozen rate', async () => {
+    const ravi = await seedPartner(A.id, 'Ravi Menon');
+    await saveDetails(A.id, ravi, { method: 'paypal', email: 'ravi@example.com' });
+    const conversion = { sourceAmount: '1500.00', sourceCurrency: 'INR', sentAmount: '18.75', sentCurrency: 'USD', rate: '0.0125', rateSource: 'ecb', rateDate: '2026-10-22' };
+    const payout = await seedPayout(A.id, ravi, '1500.00', 'INR', {
+      metadata: { manualExport: { exportId: ulid(), provider: 'paypal', currency: 'USD', at: new Date().toISOString(), by: 'admin', via: 'api', conversion } },
+    });
+    await seedSale(A.id, { partnerId: ravi, programId, amount: '1500.00', currency: 'INR', payoutId: payout });
+
+    const s = await statementJson(A, payout, aAdmin);
+    // The ledger stays in INR; what PayPal sent sits beside it.
+    expect(s.payout).toMatchObject({ amount: '1500.00', currency: 'INR' });
+    expect(s.payout.sent).toEqual({ amount: '18.75', currency: 'USD', rate: '0.0125', rateSource: 'ecb', rateDate: '2026-10-22' });
+    expect(s.totals).toEqual([{ currency: 'INR', commissions: '1500.00', bonuses: '0.00', clawbacks: '0.00', net: '1500.00' }]);
+    const page = (await get(A, `/payouts/${payout}/statement`, aAdmin)).text;
+    expect(page).toContain('Sent as (ECB reference rate 0.0125 on 2026-10-22)');
+    expect(page).toContain('$18.75');
+
+    // A batch file has no conversion, whatever its metadata carries.
+    const filed = await seedPayout(A.id, ravi, '900.00', 'INR', {
+      metadata: { manualExport: { exportId: ulid(), provider: 'paypal', currency: 'INR', at: new Date().toISOString(), by: 'admin', conversion } },
+    });
+    expect((await statementJson(A, filed, aAdmin)).payout.sent).toBeNull();
   });
 
   it("lets a partner fetch their own statements, and answers another partner's as not found", async () => {

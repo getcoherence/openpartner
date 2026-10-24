@@ -687,7 +687,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
       [TABLES.Config]: [...bundle[TABLES.Config]!, { tenantId: 'x', key: 'network_membership', value: others.network_membership }],
     };
     const report = await importBundle(db, TENANT, smuggled);
-    expect(report.inserted[TABLES.Config]).toBe(5);
+    expect(report.inserted[TABLES.Config]).toBe(PORTABLE_CONFIG_KEYS.length);
     expect((await db(TABLES.Config).where({ key: 'partner_access' }).first()).value).toEqual({ uninvitedPortalAccess: false });
     expect((await db(TABLES.Config).where({ key: 'onboarding' }).first()).value).toEqual({ networkListingSkipped: true });
     expect((await db(TABLES.Config).where({ key: 'payout_statements' }).first()).value).toMatchObject({ legalName: 'Volza Technologies Pvt Ltd', numberPrefix: 'VZ-' });

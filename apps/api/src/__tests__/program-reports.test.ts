@@ -452,6 +452,8 @@ describe.skipIf(skipIntegration)('GET /programs/stats', () => {
     const garbage = await admin('/programs/stats?since=yesterday');
     expect(garbage.status).toBe(400);
     expect(garbage.body.error).toBe('invalid_query');
+    // As before zod 4: a timestamp without seconds is still a timestamp.
+    expect((await admin('/programs/stats?since=2026-10-01T10:00Z')).status).toBe(200);
     expect((await request(app).get('/programs/stats')).status).toBe(401);
   });
 });

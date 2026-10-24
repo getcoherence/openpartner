@@ -428,8 +428,8 @@ Clicks, partners, conversions, attributed revenue and commission by status for e
 \`since\` at or after \`until\` answers \`400 invalid_window\`.`,
     access: { kind: 'admin' },
     query: programs.programStatsQuerySchema.extend({
-      since: z.string().datetime().optional().openapi({ description: 'ISO-8601 start of the window (UTC, `Z`), inclusive. Default: 30 days before `until`.' }),
-      until: z.string().datetime().optional().openapi({ description: 'ISO-8601 end of the window (UTC, `Z`), exclusive. Default: now.' }),
+      since: utcDateTime().optional().openapi({ description: 'ISO-8601 start of the window (UTC, `Z`), inclusive. Default: 30 days before `until`.' }),
+      until: utcDateTime().optional().openapi({ description: 'ISO-8601 end of the window (UTC, `Z`), exclusive. Default: now.' }),
     }),
     responses: { 200: { description: 'One row per program.', schema: S.ProgramStatsList } },
     errors: { 400: ['invalid_window'] },

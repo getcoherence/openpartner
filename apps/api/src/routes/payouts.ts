@@ -41,6 +41,8 @@ export const confirmPayoutSchema = z.object({
     .trim()
     .max(100)
     .regex(/^[^\p{C}\p{Zl}\p{Zp}]*$/u, 'reference must be printable text on one line')
+    // zod-to-openapi prints the regex's flags into `pattern` ("…$/u").
+    .openapi({ pattern: String.raw`^[^\p{C}\p{Zl}\p{Zp}]*$` })
     .optional(),
 });
 
