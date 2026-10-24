@@ -60,7 +60,7 @@ appears after everything it references.
 | 20 | `WebhookEndpoint` | `id` | **your outbound webhook endpoints** (not the signing secret) |
 | 21 | `PartnerPostback` | `id` | **each partner's own tracker callbacks** (the URL opened) |
 | 22 | `ConversionPostbackToken` | `id` | **the GET /postback allowlist and rotation history** (not the token) |
-| 23 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy, the portal-access default, the onboarding Network skip and the Pay with PayPal INR setting** |
+| 23 | `Config` | (`tenantId`, `key`) | **program settings, the join-page policy, the portal-access default, the onboarding Network skip, the payout-statement and Pay with PayPal INR settings, and the referral-stage setting** |
 
 Rows 3, 4 and 7 were added in schemaVersion 2 (Aug 2026). Without them a
 restored instance had the roster but no grants, no coupon attribution, and
@@ -295,14 +295,17 @@ Only these keys are exported, and only these are imported:
 | `onboarding` | whether the brand said "Not now" to listing on the OpenPartner Network (the dashboard's Getting started card) |
 | `payout_statements` | what payout statements print: legal name, address, footer, statement-number prefix, and the tax-lines placeholder (docs/payout-statements.md) |
 | `paypal_payouts` | whether Pay with PayPal sends INR balances in USD (`sendUnsupportedAs`), [paypal-payouts.md](paypal-payouts.md#balances-paypal-cant-send-inr) |
+| `partner_referrals` | which event types partners see as referral stages, with their labels and order, and whether partners see customer labels ([referral timeline](referral-timeline.md)) |
 
-`onboarding`, `payout_statements` and `paypal_payouts` were added in Oct
-2026 without a version bump. Each is a new key in a table the bundle
-already carries, not a new table or column. An instance from before it
-skips the key on import (Config import takes only the keys it knows): the
-restored brand sees the Network step on its Getting started card again,
-prints statements under its brand name until it enters its statement
-settings again, and reads the PayPal setting as off.
+`onboarding`, `payout_statements`, `paypal_payouts` and `partner_referrals`
+were added in Oct 2026 without a version bump. Each is a new key in a table
+the bundle already carries, not a new table or column. An instance from
+before it skips the key on import (Config import takes only the keys it
+knows): the restored brand sees the Network step on its Getting started
+card again, prints statements under its brand name until it enters its
+statement settings again, reads the PayPal setting as off, and its partners
+see the default referral stages with no customer labels (less than before,
+never more).
 
 Payout statements themselves aren't exported: each is built from the
 `Payout`, `Commission`, `Bonus` and `CommissionAdjustment` rows the bundle

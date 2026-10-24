@@ -1180,6 +1180,15 @@ export const PartnerTimeseries = z
   })
   .openapi('PartnerTimeseries');
 
+const referralIdField = z.string().openapi({
+  description:
+    "The customer's pseudonymous id, `ref_` + 12 characters: the same customer has the same id on `/partners/{id}/referrals`, `/events` and `/customers`, and a partner can't work out the userId from it.",
+  example: 'ref_Xk3dP0aQm9Lc',
+});
+const partnerHiddenUserId = z.string().nullable().openapi({
+  description: "The brand's userId. Null when a partner calls: partners get `referralId` instead.",
+});
+
 export const PartnerEventList = z
   .object({
     partnerId: id,
@@ -1193,7 +1202,8 @@ export const PartnerEventList = z
         value: z.number().nullable(),
         currency: z.string().nullable(),
         ts,
-        userId: z.string(),
+        userId: partnerHiddenUserId,
+        referralId: referralIdField,
         click: z
           .object({
             id,
@@ -1215,7 +1225,14 @@ export const PartnerCustomerList = z
   .object({
     partnerId: id,
     customers: z.array(
-      z.object({ userId: z.string(), firstEventAt: ts, lastEventAt: ts, eventCount: z.number().int(), revenue: z.number() }),
+      z.object({
+        userId: partnerHiddenUserId,
+        referralId: referralIdField,
+        firstEventAt: ts,
+        lastEventAt: ts,
+        eventCount: z.number().int(),
+        revenue: z.number(),
+      }),
     ),
     limit: z.number().int(),
     offset: z.number().int(),
@@ -1252,6 +1269,81 @@ export const PartnerFunnel = z
     revenueByCurrency: amountsByCurrency,
   })
   .openapi('PartnerFunnel');
+
+const ReferralStageDefinition = z
+  .object({
+    eventType: z.string().openapi({ description: 'The event type, as sent to `POST /attribution/events`.', example: 'demo_booked' }),
+    label: z.string().openapi({ description: 'What partners see.', example: 'Demo booked' }),
+  })
+  .openapi('ReferralStageDefinition');
+
+export const PartnerReferralPage = z
+  .object({
+    partnerId: id,
+    stages: z.array(ReferralStageDefinition).openapi({
+      description:
+        "The stages the brand shows partners, in its order (`GET /config/referrals`). Render each referral's progress against this list. Every other event type is hidden.",
+    }),
+    currency: z.string().openapi({ description: "The brand's default currency: the currency of each `commission`.", example: 'INR' }),
+    referrals: z.array(
+      z.object({
+        referralId: referralIdField,
+        number: z.number().int().openapi({ description: "1 for the partner's first referral, counted in the order customers became the partner's referrals, so a new one takes the next number. Only an admin re-running attribution (unflagging a click) can renumber; `referralId` never changes." }),
+        label: z.string().openapi({
+          description: 'What to call the customer: `customerLabel` when there is one, else "Referral #" and `number`.',
+          example: 'Referral #12',
+        }),
+        customerLabel: z.string().nullable().openapi({
+          description:
+            "The newest `metadata.customerLabel` the brand sent on this customer's credited events, cut to 80 characters. Null unless the brand shows customer labels (`showCustomerLabels`, off by default).",
+        }),
+        userId: z.string().optional().openapi({ description: "The brand's userId. Admins and scoped keys only; never sent to a partner." }),
+        referredAt: ts.openapi({ description: "When the customer first clicked the partner's link: the earliest of the partner's clicks credited on the customer's events." }),
+        stages: z.array(
+          z.object({
+            eventType: z.string(),
+            label: z.string(),
+            firstAt: ts.openapi({ description: 'The first event of this type: when the customer reached the stage.' }),
+            lastAt: ts.openapi({ description: 'The latest event of this type (a monthly invoice repeats).' }),
+            count: z.number().int(),
+            reversed: z.boolean().openapi({
+              description:
+                "Every event at this stage earned the partner a commission and none of it is left: reversed (a refund, a chargeback, or the brand reversing it) or clawed back after payment.",
+            }),
+          }),
+        ).openapi({ description: "The shown stages the customer has reached, in the brand's order. Stages not reached are absent." }),
+        latestStage: z
+          .object({ eventType: z.string(), label: z.string(), at: ts })
+          .nullable()
+          .openapi({ description: "The furthest stage reached in the brand's order, skipping reversed ones. `at` is when it was reached. Null when none is." }),
+        commission: z.number().openapi({
+          description:
+            "What the customer has earned the partner in `currency`, every event type included: live commissions (not reversed), net of refund clawbacks. Bonuses aren't tied to a customer and never count.",
+        }),
+        commissionByCurrency: amountsByCurrency,
+      }),
+    ),
+    total: z.number().int().openapi({ description: "All of the partner's referrals, not only this page." }),
+    nextCursor: z.string().nullable(),
+  })
+  .openapi('PartnerReferralPage');
+
+export const ReferralSettings = z
+  .object({
+    stages: z.array(ReferralStageDefinition).openapi({
+      description:
+        "The event types partners see as stages on their referrals, in order. Default: `signup`, `trial_started`, `subscription_created`, `invoice_paid`. A type that isn't listed is hidden from partners (it still makes the customer a referral and still counts toward the commission total). An empty list shows no stages.",
+    }),
+    showCustomerLabels: z.boolean().openapi({
+      description:
+        "Show partners the `metadata.customerLabel` you send on events. Off by default: OpenPartner stores only your userId, and a label is personal data you choose to share with your partners, as its controller.",
+    }),
+    defaultStages: z.array(ReferralStageDefinition).openapi({ description: 'The stages a brand gets until it sets its own.' }),
+    recentEventTypes: z.array(z.string()).openapi({
+      description: 'Event types recorded in the last 90 days, most frequent first (up to 50): candidates for stages.',
+    }),
+  })
+  .openapi('ReferralSettings');
 
 // ---------- Webhook endpoints ----------
 

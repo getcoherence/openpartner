@@ -216,6 +216,7 @@ All of these work with the scoped key:
 | --- | --- |
 | `GET /partners/{id}/dashboard?since=<iso>` | `clicks`, `attributedEvents`, `attributedRevenue` and `commissionByStatus` (`accrued` / `approved` / `paid` / `reversed` totals) in `currency`, your default currency. `attributedRevenueByCurrency` and `commissionByCurrency` hold every currency. Defaults to the last 30 days. |
 | `GET /partners/{id}/timeseries?since=&until=&programId=` | Dense daily (or weekly) buckets: `clicks`, `leads` (`signup` + `trial_started`), `sales` (events with a value), `revenue`, `earnings`. |
+| `GET /partners/{id}/referrals?limit=&cursor=` | Each customer the user referred, newest first: the stages they've reached (the ones you show, with your labels), `latestStage`, and what the customer has earned them (`commission`, `commissionByCurrency`). Your key also gets each customer's `userId`, so you can show the name from your own records. Cursor-paginated. See [referral-timeline.md](referral-timeline.md). |
 | `GET /partners/{id}/events?limit=&offset=` | Each attributed event, with the click it came through. |
 | `GET /partners/{id}/commissions?limit=&cursor=&status=` | The commission ledger, newest first, cursor-paginated. Each row has `amount`, `status` and `matureAt` (when the holdback ends). |
 | `GET /partners/{id}/payouts` | Up to the 200 most recent payouts. |
@@ -454,6 +455,20 @@ Content-Type: application/json
   Without custom code, point HubSpot's "Send a webhook" action at a small relay of your own that reshapes the body.
 
 CRM workflows retry, and a deal can be moved back and forth. Because the `externalEventId` is the deal id plus the stage, each paid stage is counted once.
+
+### Every stage → the customer's referral timeline
+
+Send the stages that pay nothing too: `lead_created` when the lead is created, `demo_booked` when the demo is booked, and so on. Use the same workflow, with the stage name as `type` and `externalEventId` (`zoho:<deal id>:demo_booked`), and leave `value` out. Each one is recorded and credited to the partner like any conversion, earns only if a commission rule takes its type, and moves the customer along their referral timeline (`GET /partners/{id}/referrals`, and the Referrals page of the partner portal).
+
+Then tell OpenPartner which stages your partners see, in order, and what to call them:
+
+```bash
+curl -s -X POST $OP/config/referrals -H "Authorization: Bearer $ADMIN" -H 'content-type: application/json' \
+  -d '{"stages": [{"eventType": "lead_created", "label": "Lead"}, {"eventType": "demo_booked", "label": "Demo booked"},
+                  {"eventType": "deal_won", "label": "Deal won"}, {"eventType": "invoice_paid", "label": "Paid"}]}'
+```
+
+Types you don't list stay hidden from partners. Partners never see your `userId`. A customer reads "Referral #12" unless you send `metadata.customerLabel` (a company name, say) and turn on `showCustomerLabels`. That's your call as the data's controller, so it's off by default. In your own app you can skip labels altogether: your key gets the `userId`, so look the name up yourself. Details: [referral-timeline.md](referral-timeline.md).
 
 ### Deal refunded → refund
 

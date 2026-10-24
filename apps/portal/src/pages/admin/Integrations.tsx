@@ -63,7 +63,7 @@ interface ScopeOption {
 const CORE_SCOPES: ScopeOption[] = [
   { scope: 'events:write', description: 'Record conversion events (the CRM webhook path).' },
   { scope: 'partners:write', description: 'Create, invite and revoke partners (Zapier/ActivePieces actions). Revoking emails the partner unless told not to.' },
-  { scope: 'partners:read', description: 'List partners, look one up by id or email, and read a partner’s dashboard stats.' },
+  { scope: 'partners:read', description: 'List partners, look one up by id or email, and read a partner’s dashboard stats and referrals.' },
   { scope: 'commissions:read', description: 'List commissions — tenant-wide or per partner, paged with a cursor.' },
   { scope: 'webhooks:write', description: 'Subscribe + unsubscribe webhook endpoints (Zapier/ActivePieces triggers register their callback URLs through these).' },
 ];

@@ -662,6 +662,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
       tenantId: TENANT,
       key: 'payout_statements',
       value: { legalName: 'Volza Technologies Pvt Ltd', numberPrefix: 'VZ-', taxLines: { enabled: false, labels: ['Tax withheld'] } },
+      updatedAt: new Date(),
     });
     // And its choice to pay INR balances through PayPal in USD.
     await db(TABLES.Config).insert({
@@ -670,6 +671,9 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
       value: { sendUnsupportedAs: 'USD' },
       updatedAt: new Date(),
     });
+    // And which stages partners see on their referrals.
+    const referralStages = { stages: [{ eventType: 'demo_booked', label: 'Demo booked' }], showCustomerLabels: true };
+    await db(TABLES.Config).insert({ tenantId: TENANT, key: 'partner_referrals', value: referralStages, updatedAt: new Date() });
 
     const bundle = await exportAll(db, TENANT);
     const keys = (bundle[TABLES.Config] as Array<{ key: string }>).map((r) => r.key).sort();
@@ -688,6 +692,7 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect((await db(TABLES.Config).where({ key: 'onboarding' }).first()).value).toEqual({ networkListingSkipped: true });
     expect((await db(TABLES.Config).where({ key: 'payout_statements' }).first()).value).toMatchObject({ legalName: 'Volza Technologies Pvt Ltd', numberPrefix: 'VZ-' });
     expect((await db(TABLES.Config).where({ key: 'paypal_payouts' }).first()).value).toEqual({ sendUnsupportedAs: 'USD' });
+    expect((await db(TABLES.Config).where({ key: 'partner_referrals' }).first()).value).toEqual(referralStages);
     expect(report.skipped[TABLES.Config]).toBe(1);
     expect(await db(TABLES.Config).where({ key: 'network_membership' })).toHaveLength(0);
     expect((await db(TABLES.Config).where({ key: 'partner_signup' }).first()).value).toEqual({

@@ -101,6 +101,11 @@ export const PORTABLE_CONFIG_KEYS = [
   // without a version bump, like `onboarding`: an instance that predates it
   // skips the key, and the setting reads as off.
   'paypal_payouts',
+  // Which event types partners see as referral stages, and whether they
+  // see customer labels (referrals.ts). A key, so no version bump: an
+  // instance that predates it skips the key, and partners see the default
+  // stages and no labels, which shows them less, never more.
+  'partner_referrals',
 ] as const;
 
 /**

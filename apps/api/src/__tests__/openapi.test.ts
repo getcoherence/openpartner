@@ -60,6 +60,7 @@ const DOCUMENTED_ROUTERS: Record<string, Router> = {
   payoutProfiles: (await import('../routes/payout-profiles.js')).payoutProfilesRouter,
   dashboard: (await import('../routes/dashboard.js')).dashboardRouter,
   funnel: (await import('../routes/funnel.js')).funnelRouter,
+  referrals: (await import('../routes/referrals.js')).referralsRouter,
   webhooks: (await import('../routes/webhooks.js')).webhooksRouter,
   apiKeys: (await import('../routes/api-keys.js')).apiKeysRouter,
   export: (await import('../routes/export.js')).exportRouter,

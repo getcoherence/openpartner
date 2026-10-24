@@ -5,6 +5,7 @@ import { api, ApiError } from '../../api.js';
 import { alpha, theme } from '../../theme.js';
 import { Button, Card, ErrorBanner, Input, Label, Page, Select, Textarea } from '../../ui.js';
 import { PaypalPayoutsCard } from './PaypalPayoutsCard.js';
+import { ReferralStagesSection } from './ReferralStagesSection.js';
 
 type PayoutRail = 'auto' | 'stripe_connect' | 'manual';
 type PayoutCadence = 'weekly' | 'biweekly' | 'monthly' | 'manual';
@@ -91,6 +92,8 @@ export function AdminSettings() {
       <PartnerSignupSection />
       <div style={{ height: 18 }} />
       <PartnerPortalAccessSection />
+      <div style={{ height: 18 }} />
+      <ReferralStagesSection />
       <div style={{ height: 18 }} />
       <PayoutSection />
       <div style={{ height: 18 }} />
