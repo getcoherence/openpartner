@@ -13,6 +13,7 @@
 
 import { z } from 'zod';
 import * as partners from '../routes/partners.js';
+import * as signinLinks from '../routes/partner-signin-link.js';
 import * as programs from '../routes/programs.js';
 import * as assignments from '../routes/partner-campaigns.js';
 import * as links from '../routes/links.js';
@@ -225,6 +226,58 @@ Rows whose email already exists are reported as \`skipped_email_taken\` with the
     access: { kind: 'admin', scope: 'partners:write' },
     responses: { 200: { description: 'Sent.', schema: z.object({ ok: z.literal(true), approved: z.boolean() }) } },
     errors: { 404: ['not_found'], 409: ['already_activated', 'portal_access_disabled'], 422: ['mail_send_failed'] },
+  });
+
+  const signinLinkDescription = `
+Mints a link that signs the partner in to the partner portal, so your users go from your app to their referral dashboard without a second login. Call it from your backend when the user clicks through (a "Refer & earn" button that hits your server), and redirect the browser to \`url\` at once: it works **once**, for **five minutes**, and signs in whoever opens it. Don't email it, log it, or render it into a page ahead of time.
+
+The link goes to your white-label domain when one is verified (\`refer.example.com/auth/magic?…\`), otherwise to the portal on OpenPartner's own domain. \`returnTo\` (a portal path such as \`/links\`) picks the page it lands on.
+
+The partner must be one \`POST /auth/signin\` would email: active, not revoked, with portal access. Otherwise \`409\`: \`partner_revoked\`, \`pending_review\` (an applicant not yet approved), \`portal_access_disabled\` (turn it on with \`PATCH /partners/{id}\`), or \`partner_not_activated\` (invited, but hasn't accepted; partners created with \`sendInvite: false\` are active at once). The checks run again when the link is opened, along with the served-country check on the partner's own connection.
+
+**\`partners:signin\`** is the scope for this, and nothing else grants it, \`partners:write\` included. The OpenPartner Network's federation key is refused even if it holds the scope. Portal sessions get \`403 api_key_required\`: this is a server-to-server call. Each key may mint 600 links a minute, and each partner 10 (\`429 rate_limited\`), and every link minted is recorded with the key that asked for it.
+
+On OpenPartner Cloud the brand needs an approved account (\`403 brand_pending_review\`).`;
+
+  r.operation({
+    method: 'post',
+    path: '/partners/:id/signin-link',
+    tag: 'Partners',
+    operationId: 'createPartnerSigninLink',
+    summary: 'Sign a partner in to the portal from your app',
+    description: signinLinkDescription,
+    access: { kind: 'admin', scope: 'partners:signin' },
+    body: signinLinks.signinLinkSchema.openapi('PartnerSigninLinkRequest'),
+    responses: { 201: { description: 'Minted. Redirect to `url` now.', schema: S.PartnerSigninLink } },
+    errors: {
+      403: ['api_key_required', 'brand_pending_review'],
+      404: ['partner_not_found'],
+      409: ['partner_revoked', 'pending_review', 'portal_access_disabled', 'partner_not_activated'],
+      429: ['rate_limited'],
+    },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/partners/signin-link',
+    tag: 'Partners',
+    operationId: 'lookupPartnerSigninLink',
+    summary: 'Sign a partner in, by email or your own user id',
+    description: `
+The same as \`POST /partners/{id}/signin-link\`, naming the partner by something your app already holds instead of the OpenPartner id: exactly one of \`email\` or \`metadata\`.
+
+- \`email\` is unique per brand. Send only addresses your app has verified.
+- \`metadata\` is one key and value you stored on the partner when you created it, e.g. \`{ "appUserId": "u_123" }\` for \`POST /partners\` with \`"metadata": { "appUserId": "u_123" }\`. Values match as stored, so a number only matches a number. Two partners carrying the same value: \`409 ambiguous_partner\`. Storing the partner id on your user and calling the \`{id}\` form is quicker still.
+${signinLinkDescription}`,
+    access: { kind: 'admin', scope: 'partners:signin' },
+    body: signinLinks.signinLinkLookupSchema.openapi('PartnerSigninLinkLookupRequest'),
+    responses: { 201: { description: 'Minted. Redirect to `url` now.', schema: S.PartnerSigninLink } },
+    errors: {
+      403: ['api_key_required', 'brand_pending_review'],
+      404: ['partner_not_found'],
+      409: ['ambiguous_partner', 'partner_revoked', 'pending_review', 'portal_access_disabled', 'partner_not_activated'],
+      429: ['rate_limited'],
+    },
   });
 
   r.operation({

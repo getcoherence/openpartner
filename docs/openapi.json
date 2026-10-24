@@ -3,7 +3,7 @@
   "info": {
     "title": "OpenPartner API",
     "version": "1.0.0",
-    "description": "The OpenPartner tenant API: partners, programs, links, attribution, commissions, payouts, reporting, webhooks and export. Use it to run a referral or affiliate program from your own backend, for example an in-app \"Refer & earn\" page with no separate OpenPartner login. Walkthrough: [Build an in-app referral page](https://github.com/getcoherence/openpartner/blob/main/docs/headless-referral.md).\n\nThis document is generated from the API's own request validators. It is served at `/openapi.json`, and the rendered reference at `/docs`, on every deployment. White-label custom domains don't serve them; use the platform host, e.g. `https://app.openpartner.dev/api/docs`.\n\n## Base URL and tenancy\n\nEvery path below is relative to your tenant's API base:\n\n| Deployment | API base | Share links |\n| --- | --- | --- |\n| OpenPartner Cloud | `https://app.openpartner.dev/api/t/<tenant-slug>` | `https://app.openpartner.dev/r/<tenant-slug>/<linkKey>` |\n| Cloud with a white-label domain | `https://<your-domain>/api` | `https://<your-domain>/r/<linkKey>` |\n| Self-hosted, single tenant | your API origin, e.g. `https://api.example.com` (or `<portal>/api` behind the bundled proxy) | `<router origin>/r/<linkKey>` |\n| Self-hosted, multi-tenant | `<api origin>/t/<tenant-slug>` (or `<portal>/api/t/<tenant-slug>`) | `<router origin>/r/<tenant-slug>/<linkKey>` |\n\nThe slug comes **after** `/api`. `https://app.openpartner.dev/t/<slug>/api/...` reaches the portal's static site, not the API, and returns HTML. On a multi-tenant deployment a request with no `/t/<slug>` prefix fails with `400 tenant_slug_missing`, and an unknown slug gets a plain `404`. Your slug is the `/t/<slug>/` segment in your admin portal's address.\n\n**Publisher sub-IDs.** A partner may add `?sub_id=<their own id>` to a share link (trimmed, at most 255 characters). The router stores it on the click and doesn't pass it to your destination. It comes back as `subId` on `commission.*` webhooks and in the partner's `{sub_id}` postback macro, so a publisher's tracking tool can match each conversion to its own click.\n\nKeys minted through the API are bound to their tenant. A key sent to another tenant's path is `401 unauthorized`.\n\n## Authentication\n\nSend a key as a bearer token: `Authorization: Bearer op_…`. Keys are server-side credentials: never ship one to a browser or mobile app. There are three kinds:\n\n- **Admin key.** Unscoped, full access to the tenant. Minted with `POST /api-keys`, or the deployment's `ADMIN_API_KEY` (self-host). The admin portal's session cookie is accepted wherever an admin key is.\n- **Scoped key.** Minted with `POST /api-keys/scoped` and a list of scopes. It can call only the operations its scopes unlock, and it acts on any partner in the tenant. Calling something it lacks the scope for returns `403 forbidden_scope` with the `required` scope; calling an operation with no scope returns `403 forbidden`. Use one for every integration so a leaked key can't do everything.\n- **Partner key.** Minted with `POST /partners/{id}/api-keys` by an admin or the partner. It acts as that one partner and can only reach that partner's own resources (`/partners/{its id}/…`). Revoking the partner revokes its keys.\n\nEach operation says which of these it accepts. Scopes:\n\n| Scope | Unlocks |\n| --- | --- |\n| `bonuses:write` | `POST /bonuses`<br>`GET /bonuses`<br>`GET /bonuses/{id}` |\n| `clicks:write` | `POST /clicks` |\n| `commissions:read` | `GET /partners/{id}/commissions`<br>`GET /commissions`<br>`GET /bonuses`<br>`GET /bonuses/{id}` |\n| `events:write` | `POST /attribution/events`<br>`POST /attribution/conversions`<br>`POST /attribution/refunds`<br>`POST /coupons/redeem` |\n| `links:read` | `GET /partners/{id}/links` |\n| `links:write` | `POST /partners/{id}/links` |\n| `partners:create` | `POST /partners` |\n| `partners:read` | `GET /partners`<br>`GET /partners/{id}`<br>`GET /partners/{id}/dashboard`<br>`GET /partners/{id}/timeseries`<br>`GET /partners/{id}/events`<br>`GET /partners/{id}/customers`<br>`GET /partners/{id}/breakdowns` |\n| `partners:write` | `POST /partners`<br>`PATCH /partners/{id}`<br>`POST /import/partners-csv`<br>`POST /partners/{id}/invite`<br>`POST /partners/{id}/revoke`<br>`POST /partners/{id}/coupons`<br>`DELETE /partners/{id}/coupons/{couponId}` |\n| `payout_profiles:read` | `GET /partners/{id}/payout-profile` |\n| `payout_profiles:write` | `GET /partners/{id}/payout-profile`<br>`PUT /partners/{id}/payout-profile`<br>`DELETE /partners/{id}/payout-profile` |\n| `payouts:read` | `GET /payouts`<br>`GET /partners/{id}/payouts` |\n| `webhooks:write` | `POST /webhooks`<br>`DELETE /webhooks/{id}` |\n\n`partners:read` also unlocks `GET /brand-resources` (brand logo, colours and shareable assets), which this reference doesn't cover yet. The OpenPartner Network federation key holds `partners:write`, `partners:read`, `links:write`, `commissions:read`, `clicks:write`, `bonuses:write`.\n\n**Scoped reads that don't exist yet:** `GET /partners/{id}/funnel`, `/coupons` and `/commission-snapshot` accept no scope. Read them with an admin key from your server, or use `/timeseries` (which has `partners:read`) for funnel-like counts.\n\n## Requests and responses\n\n- JSON bodies (`content-type: application/json`), up to 1 MB. `POST /import` takes up to 256 MB on single-tenant installs.\n- Errors are `{ \"error\": \"<code>\", \"detail\": … }`. Branch on `error`; `detail` is for humans.\n- **Timestamps are ISO-8601 in UTC and must end in `Z`**: `2026-10-16T10:00:00Z`. An offset such as `+00:00` (Python's `isoformat()` default) is rejected with `400 invalid_body` / `invalid_query`.\n- Money in major units. Commission and payout amounts, and `eventValue` in webhook payloads, are decimal **strings** such as `\"12.50\"`. Report endpoints (dashboard, timeseries, a partner's events list) return JSON numbers.\n- Fields may be added to any response at any time. Ignore fields you don't know.\n- Send `X-Request-Id` to correlate a call; every response echoes one back (generated if you didn't send it). Quote it in support requests.\n\n## Idempotency\n\n`POST /attribution/events`, `POST /attribution/conversions`, `POST /attribution/refunds` and `POST /coupons/redeem` take an `externalEventId`: your stable id for that one event (required on conversions and refunds). A retry with the same key replays the original result (`replayed: true`) and records nothing, even when the duplicates arrive at the same moment. A key reused for a different event is `409 external_event_id_conflict`. `POST /clicks` is idempotent on the click `id`, and `POST /bonuses` on its optional `externalRef` (reused for a different partner, program, amount or currency: `409 external_ref_conflict`). Other writes are not idempotent: `POST /partners` answers a duplicate email with `409 email_taken`, so look the partner up with `GET /partners?email=`.\n\n## Pagination\n\n`GET /partners`, the commission lists and `GET /payouts` are keyset-paginated: pass the response's `nextCursor` as `cursor` until it is `null`. Cursors are opaque. `GET /partners/{id}/events` and `/customers` use `limit` + `offset`. `GET /partners/{id}/payouts` returns the 200 most recent, and `GET /webhooks/{id}/deliveries` the 100 most recent.\n\n## Rate limits\n\nThe API shares one limit of **600 requests per 5 minutes per client IP** across its routes (a few infrastructure paths are exempt). A backend calls from one IP, so that is your whole integration's budget, event ingest included: at four calls per page view, about 150 uncached page views per 5 minutes. Cache partner stats for a few minutes, don't let users force a refresh, and report events from a queue that backs off on `429`. Over the limit you get `429 rate_limited` with the IETF `RateLimit` and `RateLimit-Policy` headers.\n\n`POST /attribution/identify` has its own limit of 120 per minute per IP, answered with `429 rate_limited` and `Retry-After`. When the browser SDK calls it, that is each visitor's IP; when your backend calls it, every stitch counts against your backend's IP, so prefer the browser for identify at volume.\n\n## Webhooks\n\nSubscribe with `POST /webhooks`; the event catalogue is under **Webhook events**. Each delivery is a JSON `POST` of an envelope `{ id, event, created, data }` with:\n\n| Header | Value |\n| --- | --- |\n| `X-OpenPartner-Signature` | hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint's secret (the whole `whsec_…` string) |\n| `X-OpenPartner-Timestamp` | Unix seconds when the attempt was signed |\n| `X-OpenPartner-Event` | the event type |\n| `X-OpenPartner-Delivery` | the envelope `id` |\n\nTo verify a delivery, recompute the HMAC over the **raw** request body, before any JSON parsing, and compare it in constant time. Reject timestamps more than 5 minutes from now. Then dedupe on `id`:\n\n```js\nimport { createHmac, timingSafeEqual } from 'node:crypto';\n\nfunction verify(rawBody, headers, secret) {\n  const ts = headers['x-openpartner-timestamp'];\n  const sig = headers['x-openpartner-signature'] ?? '';\n  if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;\n  const expected = Buffer.from(createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex'));\n  const given = Buffer.from(sig);\n  return given.length === expected.length && timingSafeEqual(given, expected);\n}\n```\n\nDelivery is at most once per trigger: a non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed, and **failed deliveries are not retried automatically**. Find them with `GET /webhooks/{id}/deliveries` and resend with `POST /webhooks/{id}/deliveries/{deliveryId}/retry`. A resend carries the same `id` and a fresh signature. Treat webhooks as notifications and the list endpoints as the record: reconcile from `GET /commissions` if you can't afford to miss one.\n\nEndpoints must be publicly reachable. Private, loopback and link-local destinations are refused at delivery time, and OpenPartner Cloud delivers only to ports 80 and 443. A single-tenant self-host can allow specific private ranges with `OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS`.",
+    "description": "The OpenPartner tenant API: partners, programs, links, attribution, commissions, payouts, reporting, webhooks and export. Use it to run a referral or affiliate program from your own backend, for example an in-app \"Refer & earn\" page with no separate OpenPartner login. Walkthrough: [Build an in-app referral page](https://github.com/getcoherence/openpartner/blob/main/docs/headless-referral.md).\n\nThis document is generated from the API's own request validators. It is served at `/openapi.json`, and the rendered reference at `/docs`, on every deployment. White-label custom domains don't serve them; use the platform host, e.g. `https://app.openpartner.dev/api/docs`.\n\n## Base URL and tenancy\n\nEvery path below is relative to your tenant's API base:\n\n| Deployment | API base | Share links |\n| --- | --- | --- |\n| OpenPartner Cloud | `https://app.openpartner.dev/api/t/<tenant-slug>` | `https://app.openpartner.dev/r/<tenant-slug>/<linkKey>` |\n| Cloud with a white-label domain | `https://<your-domain>/api` | `https://<your-domain>/r/<linkKey>` |\n| Self-hosted, single tenant | your API origin, e.g. `https://api.example.com` (or `<portal>/api` behind the bundled proxy) | `<router origin>/r/<linkKey>` |\n| Self-hosted, multi-tenant | `<api origin>/t/<tenant-slug>` (or `<portal>/api/t/<tenant-slug>`) | `<router origin>/r/<tenant-slug>/<linkKey>` |\n\nThe slug comes **after** `/api`. `https://app.openpartner.dev/t/<slug>/api/...` reaches the portal's static site, not the API, and returns HTML. On a multi-tenant deployment a request with no `/t/<slug>` prefix fails with `400 tenant_slug_missing`, and an unknown slug gets a plain `404`. Your slug is the `/t/<slug>/` segment in your admin portal's address.\n\n**Publisher sub-IDs.** A partner may add `?sub_id=<their own id>` to a share link (trimmed, at most 255 characters). The router stores it on the click and doesn't pass it to your destination. It comes back as `subId` on `commission.*` webhooks and in the partner's `{sub_id}` postback macro, so a publisher's tracking tool can match each conversion to its own click.\n\nKeys minted through the API are bound to their tenant. A key sent to another tenant's path is `401 unauthorized`.\n\n## Authentication\n\nSend a key as a bearer token: `Authorization: Bearer op_…`. Keys are server-side credentials: never ship one to a browser or mobile app. There are three kinds:\n\n- **Admin key.** Unscoped, full access to the tenant. Minted with `POST /api-keys`, or the deployment's `ADMIN_API_KEY` (self-host). The admin portal's session cookie is accepted wherever an admin key is.\n- **Scoped key.** Minted with `POST /api-keys/scoped` and a list of scopes. It can call only the operations its scopes unlock, and it acts on any partner in the tenant. Calling something it lacks the scope for returns `403 forbidden_scope` with the `required` scope; calling an operation with no scope returns `403 forbidden`. Use one for every integration so a leaked key can't do everything.\n- **Partner key.** Minted with `POST /partners/{id}/api-keys` by an admin or the partner. It acts as that one partner and can only reach that partner's own resources (`/partners/{its id}/…`). Revoking the partner revokes its keys.\n\nEach operation says which of these it accepts. Scopes:\n\n| Scope | Unlocks |\n| --- | --- |\n| `bonuses:write` | `POST /bonuses`<br>`GET /bonuses`<br>`GET /bonuses/{id}` |\n| `clicks:write` | `POST /clicks` |\n| `commissions:read` | `GET /partners/{id}/commissions`<br>`GET /commissions`<br>`GET /bonuses`<br>`GET /bonuses/{id}` |\n| `events:write` | `POST /attribution/events`<br>`POST /attribution/conversions`<br>`POST /attribution/refunds`<br>`POST /coupons/redeem` |\n| `links:read` | `GET /partners/{id}/links` |\n| `links:write` | `POST /partners/{id}/links` |\n| `partners:create` | `POST /partners` |\n| `partners:read` | `GET /partners`<br>`GET /partners/{id}`<br>`GET /partners/{id}/dashboard`<br>`GET /partners/{id}/timeseries`<br>`GET /partners/{id}/events`<br>`GET /partners/{id}/customers`<br>`GET /partners/{id}/breakdowns` |\n| `partners:signin` | `POST /partners/{id}/signin-link`<br>`POST /partners/signin-link` |\n| `partners:write` | `POST /partners`<br>`PATCH /partners/{id}`<br>`POST /import/partners-csv`<br>`POST /partners/{id}/invite`<br>`POST /partners/{id}/revoke`<br>`POST /partners/{id}/coupons`<br>`DELETE /partners/{id}/coupons/{couponId}` |\n| `payout_profiles:read` | `GET /partners/{id}/payout-profile` |\n| `payout_profiles:write` | `GET /partners/{id}/payout-profile`<br>`PUT /partners/{id}/payout-profile`<br>`DELETE /partners/{id}/payout-profile` |\n| `payouts:read` | `GET /payouts`<br>`GET /partners/{id}/payouts` |\n| `webhooks:write` | `POST /webhooks`<br>`DELETE /webhooks/{id}` |\n\n`partners:read` also unlocks `GET /brand-resources` (brand logo, colours and shareable assets), which this reference doesn't cover yet. The OpenPartner Network federation key holds `partners:write`, `partners:read`, `links:write`, `commissions:read`, `clicks:write`, `bonuses:write`.\n\n**Scoped reads that don't exist yet:** `GET /partners/{id}/funnel`, `/coupons` and `/commission-snapshot` accept no scope. Read them with an admin key from your server, or use `/timeseries` (which has `partners:read`) for funnel-like counts.\n\n## Requests and responses\n\n- JSON bodies (`content-type: application/json`), up to 1 MB. `POST /import` takes up to 256 MB on single-tenant installs.\n- Errors are `{ \"error\": \"<code>\", \"detail\": … }`. Branch on `error`; `detail` is for humans.\n- **Timestamps are ISO-8601 in UTC and must end in `Z`**: `2026-10-16T10:00:00Z`. An offset such as `+00:00` (Python's `isoformat()` default) is rejected with `400 invalid_body` / `invalid_query`.\n- Money in major units. Commission and payout amounts, and `eventValue` in webhook payloads, are decimal **strings** such as `\"12.50\"`. Report endpoints (dashboard, timeseries, a partner's events list) return JSON numbers.\n- Fields may be added to any response at any time. Ignore fields you don't know.\n- Send `X-Request-Id` to correlate a call; every response echoes one back (generated if you didn't send it). Quote it in support requests.\n\n## Idempotency\n\n`POST /attribution/events`, `POST /attribution/conversions`, `POST /attribution/refunds` and `POST /coupons/redeem` take an `externalEventId`: your stable id for that one event (required on conversions and refunds). A retry with the same key replays the original result (`replayed: true`) and records nothing, even when the duplicates arrive at the same moment. A key reused for a different event is `409 external_event_id_conflict`. `POST /clicks` is idempotent on the click `id`, and `POST /bonuses` on its optional `externalRef` (reused for a different partner, program, amount or currency: `409 external_ref_conflict`). Other writes are not idempotent: `POST /partners` answers a duplicate email with `409 email_taken`, so look the partner up with `GET /partners?email=`.\n\n## Pagination\n\n`GET /partners`, the commission lists and `GET /payouts` are keyset-paginated: pass the response's `nextCursor` as `cursor` until it is `null`. Cursors are opaque. `GET /partners/{id}/events` and `/customers` use `limit` + `offset`. `GET /partners/{id}/payouts` returns the 200 most recent, and `GET /webhooks/{id}/deliveries` the 100 most recent.\n\n## Rate limits\n\nThe API shares one limit of **600 requests per 5 minutes per client IP** across its routes (a few infrastructure paths are exempt). A backend calls from one IP, so that is your whole integration's budget, event ingest included: at four calls per page view, about 150 uncached page views per 5 minutes. Cache partner stats for a few minutes, don't let users force a refresh, and report events from a queue that backs off on `429`. Over the limit you get `429 rate_limited` with the IETF `RateLimit` and `RateLimit-Policy` headers.\n\n`POST /attribution/identify` has its own limit of 120 per minute per IP, answered with `429 rate_limited` and `Retry-After`. When the browser SDK calls it, that is each visitor's IP; when your backend calls it, every stitch counts against your backend's IP, so prefer the browser for identify at volume.\n\n## Webhooks\n\nSubscribe with `POST /webhooks`; the event catalogue is under **Webhook events**. Each delivery is a JSON `POST` of an envelope `{ id, event, created, data }` with:\n\n| Header | Value |\n| --- | --- |\n| `X-OpenPartner-Signature` | hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint's secret (the whole `whsec_…` string) |\n| `X-OpenPartner-Timestamp` | Unix seconds when the attempt was signed |\n| `X-OpenPartner-Event` | the event type |\n| `X-OpenPartner-Delivery` | the envelope `id` |\n\nTo verify a delivery, recompute the HMAC over the **raw** request body, before any JSON parsing, and compare it in constant time. Reject timestamps more than 5 minutes from now. Then dedupe on `id`:\n\n```js\nimport { createHmac, timingSafeEqual } from 'node:crypto';\n\nfunction verify(rawBody, headers, secret) {\n  const ts = headers['x-openpartner-timestamp'];\n  const sig = headers['x-openpartner-signature'] ?? '';\n  if (!ts || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;\n  const expected = Buffer.from(createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex'));\n  const given = Buffer.from(sig);\n  return given.length === expected.length && timingSafeEqual(given, expected);\n}\n```\n\nDelivery is at most once per trigger: a non-2xx answer, a redirect, or no answer within 10 seconds marks the delivery failed, and **failed deliveries are not retried automatically**. Find them with `GET /webhooks/{id}/deliveries` and resend with `POST /webhooks/{id}/deliveries/{deliveryId}/retry`. A resend carries the same `id` and a fresh signature. Treat webhooks as notifications and the list endpoints as the record: reconcile from `GET /commissions` if you can't afford to miss one.\n\nEndpoints must be publicly reachable. Private, loopback and link-local destinations are refused at delivery time, and OpenPartner Cloud delivers only to ports 80 and 443. A single-tenant self-host can allow specific private ranges with `OPENPARTNER_OUTBOUND_ALLOW_PRIVATE_CIDRS`.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -584,6 +584,92 @@
           }
         },
         "additionalProperties": false
+      },
+      "PartnerSigninLink": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Redirect the partner's browser here. It signs them in to the partner portal, once, and lands on `returnTo` (or their dashboard). On your white-label domain when one is verified."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Five minutes after minting. Unused by then, the link fails.",
+            "pattern": "Z$"
+          },
+          "partnerId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "expiresAt",
+          "partnerId"
+        ]
+      },
+      "PartnerSigninLinkRequest": {
+        "type": "object",
+        "properties": {
+          "returnTo": {
+            "type": "string",
+            "maxLength": 512,
+            "pattern": "^\\/(?!\\/)[\\x21-\\x5b\\x5d-\\x7e]*$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PartnerSigninLinkLookupRequest": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "email": {
+                "type": "string",
+                "format": "email"
+              },
+              "returnTo": {
+                "type": "string",
+                "maxLength": 512,
+                "pattern": "^\\/(?!\\/)[\\x21-\\x5b\\x5d-\\x7e]*$"
+              }
+            },
+            "required": [
+              "email"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ]
+                }
+              },
+              "returnTo": {
+                "type": "string",
+                "maxLength": 512,
+                "pattern": "^\\/(?!\\/)[\\x21-\\x5b\\x5d-\\x7e]*$"
+              }
+            },
+            "required": [
+              "metadata"
+            ],
+            "additionalProperties": false
+          }
+        ]
       },
       "RevokePartnerRequest": {
         "type": "object",
@@ -6622,6 +6708,235 @@
           },
           "422": {
             "description": "`mail_send_failed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/partners/{id}/signin-link": {
+      "post": {
+        "operationId": "createPartnerSigninLink",
+        "tags": [
+          "Partners"
+        ],
+        "summary": "Sign a partner in to the portal from your app",
+        "description": "Mints a link that signs the partner in to the partner portal, so your users go from your app to their referral dashboard without a second login. Call it from your backend when the user clicks through (a \"Refer & earn\" button that hits your server), and redirect the browser to `url` at once: it works **once**, for **five minutes**, and signs in whoever opens it. Don't email it, log it, or render it into a page ahead of time.\n\nThe link goes to your white-label domain when one is verified (`refer.example.com/auth/magic?…`), otherwise to the portal on OpenPartner's own domain. `returnTo` (a portal path such as `/links`) picks the page it lands on.\n\nThe partner must be one `POST /auth/signin` would email: active, not revoked, with portal access. Otherwise `409`: `partner_revoked`, `pending_review` (an applicant not yet approved), `portal_access_disabled` (turn it on with `PATCH /partners/{id}`), or `partner_not_activated` (invited, but hasn't accepted; partners created with `sendInvite: false` are active at once). The checks run again when the link is opened, along with the served-country check on the partner's own connection.\n\n**`partners:signin`** is the scope for this, and nothing else grants it, `partners:write` included. The OpenPartner Network's federation key is refused even if it holds the scope. Portal sessions get `403 api_key_required`: this is a server-to-server call. Each key may mint 600 links a minute, and each partner 10 (`429 rate_limited`), and every link minted is recorded with the key that asked for it.\n\nOn OpenPartner Cloud the brand needs an approved account (`403 brand_pending_review`).\n\n**Access:** admin key, or a scoped key with `partners:signin`.",
+        "security": [
+          {
+            "adminKey": []
+          },
+          {
+            "scopedKey": [
+              "partners:signin"
+            ]
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [
+            "partners:signin"
+          ],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The id."
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PartnerSigninLinkRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Minted. Redirect to `url` now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartnerSigninLink"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`, `api_key_required`, `brand_pending_review`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`partner_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`partner_revoked`, `pending_review`, `portal_access_disabled`, `partner_not_activated`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/partners/signin-link": {
+      "post": {
+        "operationId": "lookupPartnerSigninLink",
+        "tags": [
+          "Partners"
+        ],
+        "summary": "Sign a partner in, by email or your own user id",
+        "description": "The same as `POST /partners/{id}/signin-link`, naming the partner by something your app already holds instead of the OpenPartner id: exactly one of `email` or `metadata`.\n\n- `email` is unique per brand. Send only addresses your app has verified.\n- `metadata` is one key and value you stored on the partner when you created it, e.g. `{ \"appUserId\": \"u_123\" }` for `POST /partners` with `\"metadata\": { \"appUserId\": \"u_123\" }`. Values match as stored, so a number only matches a number. Two partners carrying the same value: `409 ambiguous_partner`. Storing the partner id on your user and calling the `{id}` form is quicker still.\n\nMints a link that signs the partner in to the partner portal, so your users go from your app to their referral dashboard without a second login. Call it from your backend when the user clicks through (a \"Refer & earn\" button that hits your server), and redirect the browser to `url` at once: it works **once**, for **five minutes**, and signs in whoever opens it. Don't email it, log it, or render it into a page ahead of time.\n\nThe link goes to your white-label domain when one is verified (`refer.example.com/auth/magic?…`), otherwise to the portal on OpenPartner's own domain. `returnTo` (a portal path such as `/links`) picks the page it lands on.\n\nThe partner must be one `POST /auth/signin` would email: active, not revoked, with portal access. Otherwise `409`: `partner_revoked`, `pending_review` (an applicant not yet approved), `portal_access_disabled` (turn it on with `PATCH /partners/{id}`), or `partner_not_activated` (invited, but hasn't accepted; partners created with `sendInvite: false` are active at once). The checks run again when the link is opened, along with the served-country check on the partner's own connection.\n\n**`partners:signin`** is the scope for this, and nothing else grants it, `partners:write` included. The OpenPartner Network's federation key is refused even if it holds the scope. Portal sessions get `403 api_key_required`: this is a server-to-server call. Each key may mint 600 links a minute, and each partner 10 (`429 rate_limited`), and every link minted is recorded with the key that asked for it.\n\nOn OpenPartner Cloud the brand needs an approved account (`403 brand_pending_review`).\n\n**Access:** admin key, or a scoped key with `partners:signin`.",
+        "security": [
+          {
+            "adminKey": []
+          },
+          {
+            "scopedKey": [
+              "partners:signin"
+            ]
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [
+            "partners:signin"
+          ],
+          "partner": false
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PartnerSigninLinkLookupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Minted. Redirect to `url` now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartnerSigninLink"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`, `api_key_required`, `brand_pending_review`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`partner_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`ambiguous_partner`, `partner_revoked`, `pending_review`, `portal_access_disabled`, `partner_not_activated`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`",
             "content": {
               "application/json": {
                 "schema": {

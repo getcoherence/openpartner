@@ -71,6 +71,17 @@ export const PartnerAccessSettings = z
 
 export const PartnerCreated = Partner.extend({ invited: z.boolean() }).openapi('PartnerCreated');
 
+export const PartnerSigninLink = z
+  .object({
+    url: z.string().url().openapi({
+      description:
+        "Redirect the partner's browser here. It signs them in to the partner portal, once, and lands on `returnTo` (or their dashboard). On your white-label domain when one is verified.",
+    }),
+    expiresAt: z.string().datetime().openapi({ description: 'Five minutes after minting. Unused by then, the link fails.' }),
+    partnerId: z.string(),
+  })
+  .openapi('PartnerSigninLink');
+
 export const PartnerPage = z
   .object({
     partners: z.array(Partner),
