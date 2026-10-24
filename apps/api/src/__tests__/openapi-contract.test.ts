@@ -399,6 +399,10 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     const offsetQuery = await integration.get(`/partners/${partner.id}/timeseries?since=2026-01-01T00:00:00%2B00:00`);
     expect(offsetQuery.status).toBe(400);
     check('getPartnerTimeseries', offsetQuery);
+    const stats = check<{ programs: Array<{ programId: string; clicks: number }> }>('getProgramStats', await admin.get('/programs/stats'));
+    expect(stats.programs.find((p) => p.programId === program.id)?.clicks).toBe(dash.clicks);
+    check('getProgramStats', await admin.get('/programs/stats?since=2026-10-01T00:00:00Z&until=2026-09-01T00:00:00Z'));
+    check('getProgramStats', await integration.get('/programs/stats'));
     check('listPartnerEvents', await integration.get(`/partners/${partner.id}/events?limit=10`));
     check('listPartnerCustomers', await integration.get(`/partners/${partner.id}/customers`));
     check('getPartnerBreakdown', await integration.get(`/partners/${partner.id}/breakdowns?dimension=referer`));

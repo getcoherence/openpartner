@@ -359,6 +359,29 @@ The legacy \`commissionType\`/\`commissionValue\`/\`recurring\` columns are stil
 
   r.operation({
     method: 'get',
+    path: '/programs/stats',
+    tag: 'Programs',
+    operationId: 'getProgramStats',
+    summary: "Each program's results over a window",
+    description: `
+Clicks, partners, conversions, attributed revenue and commission by status for every program, over [\`since\`, \`until\`). The default window is the 30 days before \`until\`, which defaults to now.
+
+- A click, conversion or commission counts toward the program it was made in. A bonus's commission counts toward the bonus's program; a bonus with no program counts toward none.
+- \`partners\` counts the partners enrolled in the program now, plus any with clicks, conversions or commission in it during the window, such as a partner removed from the program after earning in it.
+- Amounts are per currency, never converted or added together. Commission is by accrual date, in its status today.
+
+\`since\` at or after \`until\` answers \`400 invalid_window\`.`,
+    access: { kind: 'admin' },
+    query: programs.programStatsQuerySchema.extend({
+      since: z.string().datetime().optional().openapi({ description: 'ISO-8601 start of the window (UTC, `Z`), inclusive. Default: 30 days before `until`.' }),
+      until: z.string().datetime().optional().openapi({ description: 'ISO-8601 end of the window (UTC, `Z`), exclusive. Default: now.' }),
+    }),
+    responses: { 200: { description: 'One row per program.', schema: S.ProgramStatsList } },
+    errors: { 400: ['invalid_window'] },
+  });
+
+  r.operation({
+    method: 'get',
     path: '/me/programs',
     tag: 'Programs',
     operationId: 'listMyPrograms',

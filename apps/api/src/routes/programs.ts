@@ -26,6 +26,7 @@ import { getStorage } from '../storage.js';
 import { commissionSlabFields, currencyCodeSchema, refineCommissionSubRule } from '../commission-rule-schema.js';
 import { destinationUrlSchema, destinationWarnings } from '../destination-url.js';
 import { tenantDefaultCurrency } from '../currency.js';
+import { programStats } from '../reporting.js';
 
 /**
  * Commission rule schema. The wire format is an array of triggered sub-rules.
@@ -287,6 +288,32 @@ programsRouter.get('/programs', requireAuth, requireAdmin, async (req, res) => {
   // editor is the only reader and it already loads this list — saves the
   // portal a round trip.
   res.json({ programs: campaigns, customerRewardDelivery: await customerRewardDelivery(tenantId) });
+});
+
+export const programStatsQuerySchema = z.object({
+  since: z.string().datetime().optional(),
+  until: z.string().datetime().optional(),
+});
+
+/**
+ * Each program's clicks, partners, conversions, attributed revenue and
+ * commission by status over [since, until), default the last 30 days.
+ * The same numbers GET /admin/overview?programId= reports (reporting.ts),
+ * amounts per currency and never converted.
+ */
+programsRouter.get('/programs/stats', requireAuth, requireAdmin, async (req, res) => {
+  const q = programStatsQuerySchema.safeParse(req.query);
+  if (!q.success) return res.status(400).json({ error: 'invalid_query', detail: q.error.flatten() });
+  const until = q.data.until ? new Date(q.data.until) : new Date();
+  const since = q.data.since ? new Date(q.data.since) : new Date(until.getTime() - 30 * 24 * 60 * 60 * 1000);
+  if (since >= until) return res.status(400).json({ error: 'invalid_window', detail: 'since must be before until' });
+  const { db, tenantId } = tenantOf(req);
+  res.json({
+    since: since.toISOString(),
+    until: until.toISOString(),
+    currency: await tenantDefaultCurrency(db, tenantId),
+    programs: await programStats(db, { tenantId, since, until }),
+  });
 });
 
 /**

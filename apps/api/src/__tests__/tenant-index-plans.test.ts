@@ -59,12 +59,14 @@ async function cleanup(): Promise<void> {
   for (const t of [
     TABLES.NetworkOutbox,
     TABLES.Commission,
+    TABLES.Bonus,
     TABLES.Attribution,
     TABLES.Event,
     TABLES.Click,
     TABLES.Link,
     TABLES.Coupon,
     TABLES.Payout,
+    TABLES.PartnerProgram,
     TABLES.Partner,
     TABLES.Program,
   ]) {
@@ -123,16 +125,16 @@ function only(statements: Statement[], pattern: RegExp): Statement {
 }
 
 /**
- * The plan's index conditions for `stmt` under the RLS app role, or null
- * without that role. Seq scans are switched off: on tables this small one
- * is always cheapest, so with it off the planner shows which index the
- * query can use at all. The tables are analyzed first, so the plan reflects
- * this test's rows rather than whatever an earlier file left in the stats.
+ * `stmt`'s plan under the RLS app role, or null without that role. Seq
+ * scans are switched off: on tables this small one is always cheapest, so
+ * with it off the planner shows which index the query can use at all. The
+ * tables are analyzed first, so the plan reflects this test's rows rather
+ * than whatever an earlier file left in the stats.
  */
-async function indexConds(stmt: Statement): Promise<string | null> {
+async function plan(stmt: Statement): Promise<string[] | null> {
   if (!hasAppRole) return null;
   return db.transaction(async (trx) => {
-    for (const m of stmt.sql.matchAll(/from "(\w+)"/gi)) await trx.raw('analyze ??', [m[1]!]);
+    for (const m of stmt.sql.matchAll(/(?:from|join) "(\w+)"/gi)) await trx.raw('analyze ??', [m[1]!]);
     await trx.raw('set local row_security = on');
     await trx.raw('set local role openpartner_app');
     await trx.raw(`set local app.tenant_id = '${DEFAULT_TENANT_ID}'`);
@@ -140,11 +142,32 @@ async function indexConds(stmt: Statement): Promise<string | null> {
     const out = (await trx.raw(`explain ${stmt.sql.replace(/\$\d+/g, '?')}`, stmt.bindings as never)) as {
       rows: Array<{ 'QUERY PLAN': string }>;
     };
-    return out.rows
-      .map((r) => r['QUERY PLAN'])
-      .filter((l) => l.includes('Index Cond'))
-      .join('\n');
+    return out.rows.map((r) => r['QUERY PLAN']);
   });
+}
+
+/** The plan's index conditions for `stmt`, or null without the app role. */
+async function indexConds(stmt: Statement): Promise<string | null> {
+  const lines = await plan(stmt);
+  return lines && lines.filter((l) => l.includes('Index Cond')).join('\n');
+}
+
+/** Scans in `stmt`'s plan that read a table without an index condition: a
+ *  seq scan, or an index walked end to end. Null without the app role. */
+async function unconditionedScans(stmt: Statement): Promise<string[] | null> {
+  const lines = await plan(stmt);
+  if (!lines) return null;
+  const loose: string[] = [];
+  lines.forEach((line, i) => {
+    const node = line.replace(/^\s*(->\s*)?/, '');
+    if (node.startsWith('Seq Scan')) loose.push(node);
+    if (!/^(Index Scan|Index Only Scan|Bitmap Index Scan)/.test(node)) return;
+    // The node's own detail lines run until the next node.
+    let j = i + 1;
+    while (j < lines.length && !/^\s*->/.test(lines[j]!) && !lines[j]!.includes('Index Cond')) j++;
+    if (j === lines.length || /^\s*->/.test(lines[j]!)) loose.push(node);
+  });
+  return loose;
 }
 
 /** `stmt` names tenantId, and under RLS an index condition covers one of
@@ -315,5 +338,48 @@ describe.skipIf(skipIntegration)('hot-path lookups use tenant-leading indexes', 
     expect(Number((await theirApproved())[0]!.n)).toBe(500);
 
     await expectIndexed(only(statements, /from "Commission" .*group by/i));
+  });
+
+  it('per-program reporting reads its own tenant, every table through an index condition', async () => {
+    // A sale and a bonus in each tenant's program.
+    const seeded: Array<{ programId: string; partnerId: string }> = [];
+    for (const [tenantId, tag] of [
+      [DEFAULT_TENANT_ID, 'report-ours'],
+      [OTHER_TENANT, 'report-theirs'],
+    ] as const) {
+      const p = await seedPartner(tenantId, tag);
+      seeded.push(p);
+      const [clickId, eventId, attributionId, bonusId] = [ulid(), ulid(), ulid(), ulid()];
+      await db(TABLES.PartnerProgram).insert({ id: `pc_${ulid()}`, tenantId, partnerId: p.partnerId, programId: p.programId, source: 'admin' });
+      await db(TABLES.Click).insert({ id: clickId, tenantId, partnerId: p.partnerId, programId: p.programId, landingUrl: 'https://x.test/' });
+      await db(TABLES.Event).insert({ id: eventId, tenantId, userId: `u-${tag}`, type: 'invoice_paid', value: 100, currency: 'USD' });
+      await db(TABLES.Attribution).insert({
+        id: attributionId, tenantId, eventId, partnerId: p.partnerId, programId: p.programId, clickId, model: 'last_click', weight: 1,
+      });
+      await db(TABLES.Bonus).insert({ id: bonusId, tenantId, partnerId: p.partnerId, programId: p.programId, amount: 5, currency: 'USD', source: 'manual' });
+      await db(TABLES.Commission).insert([
+        { id: ulid(), tenantId, attributionId, partnerId: p.partnerId, amount: 10, currency: 'USD', status: 'accrued' },
+        { id: ulid(), tenantId, bonusId, partnerId: p.partnerId, amount: 5, currency: 'USD', status: 'accrued' },
+      ]);
+    }
+    const [ours] = seeded;
+    const get = (path: string) => capture(() => request(app).get(path).set('Authorization', `Bearer ${ADMIN_KEY}`));
+
+    const overview = await get(`/admin/overview?programId=${ours!.programId}`);
+    expect(overview.result.status).toBe(200);
+    expect(overview.result.body.totals).toMatchObject({ partners: 1, clicks: 1, commissionByCurrency: { USD: { accrued: 15 } } });
+    const stats = await get('/programs/stats');
+    expect(stats.result.status).toBe(200);
+    expect(stats.result.body.programs).toMatchObject([{ programId: ours!.programId, partners: 1, clicks: 1 }]);
+
+    const reads = [...overview.statements, ...stats.statements].filter((s) =>
+      /"(Partner|PartnerProgram|Program|Click|Attribution|Commission|Bonus)"/.test(s.sql),
+    );
+    expect(reads.length).toBeGreaterThan(5);
+    for (const stmt of reads) {
+      expect(stmt.sql).toMatch(/"tenantId" = /);
+      const loose = await unconditionedScans(stmt);
+      if (loose) expect(loose, stmt.sql).toEqual([]);
+    }
   });
 });
