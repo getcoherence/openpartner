@@ -8,10 +8,11 @@
       <html data-theme> before first paint so the page never flashes the
       wrong palette. Mirrors src/lib/theme-preference.ts (localStorage key
       "op-theme"; anything else = follow the OS). Inline on purpose: no
-      Content-Security-Policy covers the portal HTML (nginx, App Platform
-      static site and Caddy send none; helmet only wraps the API). If a CSP
-      is ever added, allow this block by hash rather than moving it to an
-      external file: nginx caches every .js for a year as immutable.
+      Content-Security-Policy restricts scripts on the portal HTML (nginx
+      sends only frame-ancestors, the App Platform static site and Caddy
+      send none; helmet only wraps the API). If script-src is ever added,
+      allow this block by hash rather than moving it to an external file:
+      nginx caches every .js for a year as immutable.
     -->
     <script>
       (function () {
