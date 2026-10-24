@@ -99,6 +99,7 @@ v1. End-to-end attribution, payouts, and export are working; API surface is stab
 - Event ingest (`POST /attribution/events`) and Stripe webhook mapping (idempotent on retries)
 - Four attribution models — `last_click`, `first_click`, `linear`, `position` — per-campaign, re-derivable from raw tables
 - Commission accrual + review queue (approve / reverse) + Stripe Connect Standard payouts with idempotent transfers
+- Two-tier commissions: per program, partners earn a share of what the partners they recruit earn, through a recruit link ([docs/two-tier-commissions.md](./docs/two-tier-commissions.md))
 - Click velocity limits with an admin fraud-review queue that replays skipped attributions on unflag
 - Outbound webhooks with HMAC-SHA256 signing and per-event redelivery
 

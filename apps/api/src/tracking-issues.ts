@@ -1,6 +1,6 @@
 /**
  * Inputs OpenPartner had to drop, counted per (tenant, day, kind) in
- * TrackingIssue (migration 20261024000000_click_landing_tracking_issue).
+ * TrackingIssue (migration 20261024100000_click_landing_tracking_issue).
  *
  * Each is a conversion that may have belonged to a partner and silently
  * didn't: the caller got a 404 (or, from Stripe, nothing at all), and

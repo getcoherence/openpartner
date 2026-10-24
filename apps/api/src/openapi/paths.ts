@@ -107,8 +107,9 @@ Creates a partner and grants it programs.
 - \`programIds\` omitted grants **every current program**. Pass an explicit list (even \`[]\`) to control access.
 - A coupon is auto-minted per granted program.
 - Fires \`partner.created\`, then, for a \`sendInvite: false\` partner (active now), \`partner.activated\` with \`invited: false\`. An invited partner fires \`partner.activated\` when they accept.
+- \`recruitedByPartnerId\` names the partner who recruited this one (two-tier commissions). In programs with \`recruiterCommissionPercent\` that partner earns that share of this one's commissions from now on. The recruiter must be in this tenant and not revoked (\`400 recruiter_not_found\`, \`400 recruiter_revoked\`).
 
-**\`partners:create\`** is the scope for an in-app integration's runtime key: it can only create partners, and only without an invite or commission terms. A request with \`sendInvite\` omitted or \`true\`, a \`commissionSnapshot\` or \`programCommissions\` answers \`403 forbidden_scope\` with \`required: "partners:write"\`.
+**\`partners:create\`** is the scope for an in-app integration's runtime key: it can only create partners, and only without an invite or commission terms. A request with \`sendInvite\` omitted or \`true\`, a \`commissionSnapshot\`, \`programCommissions\` or \`recruitedByPartnerId\` answers \`403 forbidden_scope\` with \`required: "partners:write"\`.
 
 **\`country\`** (optional, ISO 3166-1 alpha-2) is where the partner is based. OpenPartner Cloud doesn't serve some countries: a blocked one answers \`422 country_not_supported\`, and \`"UA"\` needs \`outsideOccupiedRegions: true\` (\`422 occupied_region_confirmation_required\` otherwise). An accepted country is recorded, and if it is blocked later, the partner's Stripe payouts are held. Self-hosted installs ignore it.
 
@@ -119,7 +120,7 @@ On OpenPartner Cloud the brand needs an active plan (\`402 plan_required\`) and 
     body: partners.createSchema.openapi('CreatePartnerRequest'),
     responses: { 201: { description: 'Created.', schema: S.PartnerCreated } },
     errors: {
-      400: ['unknown_campaign_ids', 'invite_requires_portal_access'],
+      400: ['unknown_campaign_ids', 'invite_requires_portal_access', 'recruiter_not_found', 'recruiter_revoked'],
       402: ['plan_required'],
       403: ['brand_pending_review'],
       409: ['email_taken'],
@@ -157,16 +158,40 @@ On OpenPartner Cloud the brand needs an active plan (\`402 plan_required\`) and 
     path: '/partners/:id',
     tag: 'Partners',
     operationId: 'updatePartner',
-    summary: "Change a partner's portal access",
+    summary: "Change a partner's portal access or recruiter",
     description: `
 \`portalAccess: false\` ends the partner's portal sessions and unused sign-in links at once. From then on \`POST /auth/signin\` sends them nothing, and no invite or portal email goes to them. Their partner API keys (\`POST /partners/{id}/api-keys\`) keep working; revoke those with \`DELETE /api-keys/{keyId}\`.
 
 \`portalAccess: true\` sends nothing. An active partner can then request a sign-in link on the portal; one who never accepted an invite needs \`POST /partners/{id}/invite\`.
 
+\`recruitedByPartnerId\` sets, changes or (\`null\`) clears who recruited this partner, for two-tier commissions. The recruitment starts at the change (\`recruitedAt\`), so a new recruiter earns only on commissions from then on, and commissions already accrued stay with whoever earned them. Refused: the partner themselves (\`recruiter_is_partner\`), a partner this one recruited (\`recruiter_cycle\`: two partners can't recruit each other), a revoked partner or one not in this tenant.
+
 Fields this operation doesn't accept answer \`400 invalid_body\`.`,
     access: { kind: 'admin', scope: 'partners:write' },
     body: partners.updateSchema.openapi('UpdatePartnerRequest'),
     responses: { 200: { description: 'The partner, as saved.', schema: S.Partner } },
+    errors: {
+      400: ['recruiter_not_found', 'recruiter_is_partner', 'recruiter_revoked', 'recruiter_cycle'],
+      404: ['not_found'],
+    },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/partners/:id/recruits',
+    tag: 'Partners',
+    operationId: 'getPartnerRecruits',
+    summary: "A partner's recruit link and recruits",
+    description: `
+Two-tier commissions: in a program with \`recruiterCommissionPercent\`, a partner earns that share of each commission earned by the partners they recruited. One level only: they earn nothing on partners their recruits bring in.
+
+- **\`recruitUrl\`** is the join page with the partner's \`ref\`. Someone who joins through it is recorded as their recruit (\`recruitedByPartnerId\`). The code is minted on the first read while a program pays a share; until then, and for a revoked partner, the link is null.
+- **\`programs\`**: the programs that pay a share. A partner calling sees the running programs they're granted; an admin or a \`partners:read\` key sees them all.
+- **\`recruits\`**: newest first (up to \`limit\`), with what each has earned the partner per currency: live recruiter commissions net of clawbacks. \`total\` counts all of them.
+
+A recruiter commission is a commission like any other, on the recruit's sale (\`sourceCommissionId\` names the recruit's commission). It is approved together with that commission, cut by the same share when the sale is refunded, and reversed when an admin reverses it.`,
+    access: { kind: 'partnerOrAdmin', scope: 'partners:read' },
+    responses: { 200: { description: "The partner's recruiting.", schema: S.PartnerRecruits } },
     errors: { 404: ['not_found'] },
   });
 
@@ -938,10 +963,15 @@ The refund is recorded as a corrective event (type \`refund\` or \`chargeback\`,
     operationId: 'approveCommission',
     summary: 'Approve an accrued commission',
     description:
-      "Refused while the holdback is running. Fires `commission.approved`. With a holdback above 0 the scheduled jobs approve matured commissions on their own; with none, this is the only way they're approved.",
+      "Refused while the holdback is running. Fires `commission.approved`. With a holdback above 0 the scheduled jobs approve matured commissions on their own; with none, this is the only way they're approved.\n\nA recruiter's share of this commission (two-tier, `sourceCommissionId`) is approved with it and returned in `recruiterCommissions`. A recruiter commission itself can't be approved before the commission it is a share of (`409 source_not_approved`).",
     access: { kind: 'admin' },
-    responses: { 200: { description: 'Approved.', schema: z.object({ commission: S.Commission }) } },
-    errors: { 404: ['not_found'], 409: ['holdback_active', 'not_approvable'] },
+    responses: {
+      200: {
+        description: 'Approved.',
+        schema: z.object({ commission: S.Commission, recruiterCommissions: z.array(S.Commission).optional() }),
+      },
+    },
+    errors: { 404: ['not_found'], 409: ['holdback_active', 'not_approvable', 'source_not_approved'] },
   });
 
   r.operation({
@@ -950,9 +980,24 @@ The refund is recorded as a corrective event (type \`refund\` or \`chargeback\`,
     tag: 'Commissions',
     operationId: 'reverseCommission',
     summary: 'Reverse an accrued or approved commission',
-    description: 'Fires `commission.reversed` with `reason: "manual"`.',
+    description:
+      "Fires `commission.reversed` with `reason: \"manual\"`.\n\nA recruiter's share of it (two-tier, `sourceCommissionId`) goes with it, in `recruiterCommissions`: an accrued or approved one is `reversed`; a paid one stays paid and gets a refund clawback for what the recruiter holds, netted off their next manual or direct payout (`clawbacks`); one a payout is moving right now is left as it is (`heldInTransfer`).\n\nTo finish a held share, call this again on the same (already reversed) commission once the payout settles: it answers `200` with what it did to the share (a clawback, if it was paid), and `409 not_reversible` once there is nothing left to do.",
     access: { kind: 'admin' },
-    responses: { 200: { description: 'Reversed.', schema: z.object({ commission: S.Commission }) } },
+    responses: {
+      200: {
+        description: 'Reversed.',
+        schema: z.object({
+          commission: S.Commission,
+          recruiterCommissions: z
+            .object({
+              reversed: z.array(S.Commission),
+              clawbacks: z.array(z.object({ commissionId: z.string(), partnerId: z.string(), amount: S.Decimal, currency: z.string() })),
+              heldInTransfer: z.array(z.string()),
+            })
+            .optional(),
+        }),
+      },
+    },
     errors: { 409: ['commission_in_transfer', 'not_reversible'] },
   });
 

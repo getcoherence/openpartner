@@ -18,7 +18,7 @@ import type { Knex } from 'knex';
  *             carry an email or a token), so a journey that lands on
  *             www. and signs up on app. shows both.
  *
- * Exported (export v11): it's part of the click log, and a restored
+ * Exported (export v12): it's part of the click log, and a restored
  * instance shows the same landing rates.
  *
  * TrackingIssue — inputs OpenPartner had to drop, counted per day: a click

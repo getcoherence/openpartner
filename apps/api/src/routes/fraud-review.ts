@@ -96,26 +96,38 @@ fraudReviewRouter.post('/clicks/:id/unflag', requireAuth, requireAdmin, async (r
   // userId is unique per tenant only, so the event lookup names the
   // tenant: without it, a pool that bypasses RLS deleted another brand's
   // accrued commissions for a user with the same ID.
+  //
+  // An event is re-derived only while every commission on it is still
+  // accrued. One with anything approved, paid or reversed on it keeps its
+  // attributions and commissions as they are: those rows are ledger, and an
+  // attribution can't be dropped from under them. That covers a recruiter's
+  // share (recruiter-commissions.ts), which sits on its source's
+  // attribution: accrued with an accrued source, it is dropped with it and
+  // the replay accrues it again; reversed on its own, its event stays.
   for (const identity of identities) {
     const eventIds = (
       await db(TABLES.Event).where({ tenantId, userId: identity.userId }).select('id')
     ).map((r) => (r as { id: string }).id);
     if (eventIds.length === 0) continue;
 
-    const accruedCommissions = await db(TABLES.Commission)
-      .whereIn('attributionId', function () {
-        this.select('id').from(TABLES.Attribution).whereIn('eventId', eventIds);
-      })
-      .where({ status: 'accrued' })
-      .select('id', 'attributionId');
+    const onEvents = (await db(`${TABLES.Commission} as c`)
+      .join(`${TABLES.Attribution} as a`, 'a.id', 'c.attributionId')
+      .where('c.tenantId', tenantId)
+      .whereIn('a.eventId', eventIds)
+      .select('c.id', 'c.attributionId', 'c.status', 'a.eventId')) as Array<{
+      id: string;
+      attributionId: string;
+      status: string;
+      eventId: string;
+    }>;
+    const settledEvents = new Set(onEvents.filter((c) => c.status !== 'accrued').map((c) => c.eventId));
+    const accruedCommissions = onEvents.filter((c) => !settledEvents.has(c.eventId));
 
-    const attributionsToDelete = accruedCommissions
-      .map((c) => (c as { attributionId: string }).attributionId)
-      .filter(Boolean);
+    const attributionsToDelete = [...new Set(accruedCommissions.map((c) => c.attributionId))];
 
     if (accruedCommissions.length > 0) {
       await db(TABLES.Commission)
-        .whereIn('id', accruedCommissions.map((c) => (c as { id: string }).id))
+        .whereIn('id', accruedCommissions.map((c) => c.id))
         .del();
     }
     if (attributionsToDelete.length > 0) {
