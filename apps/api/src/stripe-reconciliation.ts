@@ -20,9 +20,9 @@
  *   recorded    recorded, credited to nobody (Tracking health's
  *               "conversions that credited nobody" says why)
  *   missed      not recorded, though it carries a partner signal: a
- *               customer linked to a partner click, a client_reference_id
- *               naming one of the program's clicks, or a partner's
- *               promotion code. These are the leaks: a webhook that never
+ *               customer linked to a partner click made before the
+ *               payment, a client_reference_id naming one of the
+ *               program's clicks, or a partner's promotion code. These are the leaks: a webhook that never
  *               arrived (the catch-up recovers those within 72 hours), or
  *               a payment the pipeline couldn't map.
  *   unreferred  not recorded and no partner signal: a customer who didn't
@@ -40,6 +40,7 @@ import type { Knex } from 'knex';
 import { TABLES } from '@openpartner/db';
 import { stripe as platformStripe } from './stripe.js';
 import { fromStripeMinor } from './stripe-amounts.js';
+import { CORRECTIVE_EVENT_TYPES } from './attribution.js';
 import { tenantDefaultCurrency } from './currency.js';
 import {
   StripeConnectionUnavailableError,
@@ -232,28 +233,39 @@ export async function reconcileStripe(
   const checkouts = await listCheckoutPayments(stripe, gte);
   const payments = [...invoices.payments, ...checkouts.payments];
 
-  // What the pipeline recorded from these payments, and whether it credited them.
+  // What OpenPartner recorded from these payments, and whether it credited
+  // them: revenue Events the Stripe pipeline wrote (metadata names the invoice
+  // or Checkout Session), or the brand forwarded keyed on the same id
+  // (externalEventId). Refunds and other corrective events name the invoice
+  // too but record no revenue, so they don't count.
   const recorded = (await db(`${TABLES.Event} as e`)
     .where('e.tenantId', tenantId)
     .andWhere('e.ts', '>=', since)
-    .whereNotNull('e.value')
+    .andWhere('e.value', '>', 0)
+    .whereNotIn('e.type', [...CORRECTIVE_EVENT_TYPES])
     .where((q) =>
-      q.whereRaw(`e."metadata"->>'stripeInvoiceId' is not null`).orWhereRaw(`e."metadata"->>'stripeCheckoutSessionId' is not null`),
+      q
+        .whereRaw(`e."metadata"->>'stripeInvoiceId' is not null`)
+        .orWhereRaw(`e."metadata"->>'stripeCheckoutSessionId' is not null`)
+        .orWhere('e.externalEventId', 'like', 'in\\_%')
+        .orWhere('e.externalEventId', 'like', 'cs\\_%'),
     )
     .select(
+      'e.externalEventId as externalEventId',
       db.raw(`e."metadata"->>'stripeInvoiceId' as "invoiceId"`),
       db.raw(`e."metadata"->>'stripeCheckoutSessionId' as "sessionId"`),
       db.raw(
         `exists (select 1 from ?? a where a."eventId" = e.id and a."tenantId" = e."tenantId") as credited`,
         [TABLES.Attribution],
       ),
-    )) as Array<{ invoiceId: string | null; sessionId: string | null; credited: boolean }>;
+    )) as Array<{ externalEventId: string | null; invoiceId: string | null; sessionId: string | null; credited: boolean }>;
   const recordedBy = new Map<string, { credited: boolean }>();
   for (const r of recorded) {
-    const key = r.invoiceId ?? r.sessionId;
-    if (!key) continue;
-    const seen = recordedBy.get(key);
-    recordedBy.set(key, { credited: (seen?.credited ?? false) || r.credited });
+    for (const key of new Set([r.invoiceId, r.sessionId, r.externalEventId])) {
+      if (!key) continue;
+      const seen = recordedBy.get(key);
+      recordedBy.set(key, { credited: (seen?.credited ?? false) || r.credited });
+    }
   }
 
   // Partner signals for the payments nothing was recorded from.
@@ -261,14 +273,25 @@ export async function reconcileStripe(
   const userIds = [...new Set(unrecorded.flatMap((p) => [p.customerId, p.merchantUserId]).filter((v): v is string => !!v))];
   const crefs = [...new Set(unrecorded.map((p) => p.clientReferenceId).filter((v): v is string => !!v))];
   const promoIds = [...new Set(unrecorded.flatMap((p) => p.promotionCodeIds))];
-  const linkedUsers = new Set<string>();
+  // A linked customer counts only for payments after their first partner
+  // click: a customer who paid first and clicked a partner later wasn't
+  // brought by them.
+  const firstClickAt = new Map<string, number>();
   for (let i = 0; i < userIds.length; i += 500) {
-    const rows = (await db(TABLES.Identity)
-      .where({ tenantId })
-      .whereIn('userId', userIds.slice(i, i + 500))
-      .distinct('userId')) as Array<{ userId: string }>;
-    for (const r of rows) linkedUsers.add(r.userId);
+    const rows = (await db(`${TABLES.Identity} as i`)
+      .join(`${TABLES.Click} as c`, function () {
+        this.on('c.id', '=', 'i.clickId').andOn('c.tenantId', '=', 'i.tenantId');
+      })
+      .where('i.tenantId', tenantId)
+      .whereIn('i.userId', userIds.slice(i, i + 500))
+      .groupBy('i.userId')
+      .select('i.userId as userId', db.raw('min(c.ts) as "firstClick"'))) as Array<{ userId: string; firstClick: Date }>;
+    for (const r of rows) firstClickAt.set(r.userId, Math.floor(new Date(r.firstClick).getTime() / 1000));
   }
+  const linkedBefore = (userId: string | null, createdSec: number) => {
+    const first = userId ? firstClickAt.get(userId) : undefined;
+    return first != null && first <= createdSec;
+  };
   const knownClicks = new Set<string>();
   for (let i = 0; i < crefs.length; i += 500) {
     const ids = (await db(TABLES.Click).where({ tenantId }).whereIn('id', crefs.slice(i, i + 500)).pluck('id')) as string[];
@@ -307,7 +330,7 @@ export async function reconcileStripe(
       continue;
     }
     const signals: PartnerSignal[] = [];
-    if ([p.customerId, p.merchantUserId].some((u) => u && linkedUsers.has(u))) signals.push('linked_customer');
+    if (linkedBefore(p.customerId, p.created) || linkedBefore(p.merchantUserId, p.created)) signals.push('linked_customer');
     if (p.clientReferenceId && knownClicks.has(p.clientReferenceId)) signals.push('partner_click');
     if (p.promotionCodeIds.some((id) => partnerPromos.has(id))) signals.push('partner_code');
     if (signals.length > 0) {

@@ -222,6 +222,54 @@ describe.skipIf(skipIntegration)('reconcileStripe', () => {
     expect(r).toMatchObject({ available: true, livemode: false, truncated: false, window: { days: 30 } });
   });
 
+  it("ignores refunds, matches what the brand forwarded, and needs the partner click before the payment", async () => {
+    await seedProgram();
+    // A refund names the invoice but records no revenue.
+    const refund = ulid();
+    await db(TABLES.Event).insert({
+      id: refund,
+      tenantId: T,
+      userId: 'u_refund',
+      type: 'refund',
+      value: '-30.00',
+      currency: 'USD',
+      ts: new Date(NOW.getTime() - DAY),
+      metadata: { stripeInvoiceId: 'in_refunded' },
+    });
+    // The brand reported this one itself, keyed on the invoice id.
+    await db(TABLES.Event).insert({
+      id: ulid(),
+      tenantId: T,
+      userId: 'u_fwd',
+      type: 'invoice_paid',
+      value: '12.00',
+      currency: 'USD',
+      externalEventId: 'in_forwarded',
+      ts: new Date(NOW.getTime() - DAY),
+    });
+    // Linked to a click made after this payment: the partner didn't bring it.
+    const lateClick = ulid();
+    const link = await db(TABLES.Link).where({ tenantId: T }).first('id', 'partnerId', 'programId');
+    await db(TABLES.Click).insert({
+      id: lateClick,
+      tenantId: T,
+      linkId: link.id,
+      partnerId: link.partnerId,
+      programId: link.programId,
+      landingUrl: 'https://brand.example/',
+      ts: new Date(NOW.getTime() - DAY),
+    });
+    await db(TABLES.Identity).insert({ id: ulid(), tenantId: T, clickId: lateClick, userId: 'cus_in_paid_first' });
+
+    const { client } = fakeStripe(
+      [invoice('in_refunded', 4, 3000), invoice('in_forwarded', 4, 1200), invoice('in_paid_first', 5, 900)],
+      [],
+    );
+    const r = await reconcileStripe(db, T, client, { days: 30, livemode: true, now: NOW });
+    expect(r.counts).toEqual({ payments: 3, credited: 0, recorded: 1, missed: 0, unreferred: 2 });
+    expect(r.missed).toEqual([]);
+  });
+
   it('pages through Stripe, and clamps the window to 90 days', async () => {
     await seedProgram();
     const many = Array.from({ length: 230 }, (_, i) => invoice(`in_${i}`, 1 + (i % 20), 100));
