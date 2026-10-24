@@ -87,7 +87,7 @@ Clicks from visitors who never consent can't be credited, and Admin → Tracking
 
 ### Landing report
 
-When a partner click first arrives from the URL, the SDK tells OpenPartner (`POST /attribution/landing`, the click id and nothing else; the page's hostname comes from the browser's `Origin` header). **Admin → Tracking health** compares landings with clicks to show the ones lost between the partner link and your page: a redirect that dropped `?cref=`, a page without the script, a consent banner. A `click_not_found` from it reaches `onError` and usually means `apiUrl` names another program. Turn it off with `reportLanding: false` (script tag: `data-landing="off"`).
+When a partner click first arrives from the URL, the SDK tells OpenPartner (`POST /attribution/landing`, the click id and nothing else; the page's hostname comes from the browser's `Origin` header). **Admin → Tracking health** compares landings with clicks to show the ones lost between the partner link and your page: a redirect that dropped `?cref=`, a page without the script, a consent banner. A `click_not_found` from it reaches `onError` and usually means `apiUrl` names another program; any other failure is dropped, because the report is a diagnostic and never part of attribution. Turn it off with `reportLanding: false` (script tag: `data-landing="off"`).
 
 ### Stripe links and embeds
 

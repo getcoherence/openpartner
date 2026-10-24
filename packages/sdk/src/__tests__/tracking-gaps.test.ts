@@ -216,4 +216,23 @@ describe('the landing report', () => {
     expect(onError).toHaveBeenCalledOnce();
     expect((onError.mock.calls[0]![0] as { code?: string }).code).toBe('click_not_found');
   });
+
+  it("stays quiet when the landing report fails any other way (an API that predates it, offline)", async () => {
+    const onError = vi.fn();
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ error: 'not_found' }), { status: 404 }));
+    window.history.replaceState({}, '', `/?cref=${CLICK}`);
+    init({ onError });
+    await flush();
+    await flush();
+
+    fetchMock.mockImplementation(async () => {
+      throw new TypeError('Failed to fetch');
+    });
+    localStorage.clear();
+    window.history.replaceState({}, '', `/?cref=${OTHER}`);
+    init({ onError });
+    await flush();
+    await flush();
+    expect(onError).not.toHaveBeenCalled();
+  });
 });

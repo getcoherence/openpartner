@@ -102,9 +102,10 @@ export interface OpenPartnerConfig {
    */
   reportLanding?: boolean;
   /**
-   * Called when a call to OpenPartner fails: identify(), or the landing
-   * report (a `click_not_found` there usually means `apiUrl` names another
-   * program). Default: log to console. Pass a noop to suppress entirely or
+   * Called when a call to OpenPartner fails: identify(), or a landing
+   * report OpenPartner answered with `click_not_found` (which usually means
+   * `apiUrl` names another program; other landing failures are dropped).
+   * Default: log to console. Pass a noop to suppress entirely or
    * hook into your observability stack.
    */
   onError?: (err: unknown) => void;
@@ -401,7 +402,11 @@ export class OpenPartner {
         keepalive: true,
       });
     } catch (err) {
-      this.config.onError(err);
+      // Only a click this program doesn't have is worth reporting: it
+      // usually means apiUrl names another program. Anything else (offline,
+      // rate limited, an API from before the landing report) is dropped:
+      // the report is a diagnostic, never part of attribution.
+      if (err instanceof OpenPartnerError && err.code === 'click_not_found') this.config.onError(err);
     }
   }
 
