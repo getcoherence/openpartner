@@ -11,12 +11,13 @@
  * left no trace at all.
  */
 import type { ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import { api } from '../../api.js';
 import { theme } from '../../theme.js';
 import { useIsMobile } from '../../lib/useMediaQuery.js';
-import { Card, ErrorBanner, Page, SectionHeading, Select, Stat, Table, formatDate, money } from '../../ui.js';
+import { Button, Card, ErrorBanner, Page, SectionHeading, Select, Stat, Table, formatDate, money } from '../../ui.js';
+import { TenantLink } from '../../tenant-link.js';
 
 interface FunnelCounts {
   clicks: number;
@@ -55,6 +56,36 @@ export interface TrackingHealthReport {
     lastPostbackAt: string | null;
   };
 }
+
+type PartnerSignal = 'linked_customer' | 'partner_click' | 'partner_code';
+
+/** GET /admin/tracking-health/stripe (apps/api/src/stripe-reconciliation.ts). */
+export type StripeReconciliationReport =
+  | {
+      available: true;
+      window: { days: number; since: string };
+      computedAt: string;
+      livemode: boolean;
+      truncated: boolean;
+      counts: { payments: number; credited: number; recorded: number; missed: number; unreferred: number };
+      totals: Array<{ currency: string; stripe: number; recorded: number; credited: number; missed: number; unreferred: number }>;
+      missed: Array<{
+        kind: 'invoice' | 'checkout';
+        id: string;
+        created: string;
+        amount: number;
+        currency: string;
+        signals: PartnerSignal[];
+        dashboardUrl: string | null;
+      }>;
+    }
+  | { available: false; reason: 'not_connected' | 'reconnect_needed' | 'missing_permissions' | 'stripe_error'; detail?: string };
+
+const SIGNALS: Record<PartnerSignal, string> = {
+  linked_customer: 'customer came from a partner click',
+  partner_click: 'partner click on the checkout',
+  partner_code: "partner's promotion code",
+};
 
 interface ProgramOption {
   id: string;
@@ -259,6 +290,8 @@ export function AdminTrackingHealth() {
             </Card>
           )}
 
+          <StripeReconciliationSection days={days} />
+
           <SectionHeading>By browser</SectionHeading>
           <Table
             columns={[
@@ -378,5 +411,136 @@ export function AdminTrackingHealth() {
         </>
       )}
     </Page>
+  );
+}
+
+/**
+ * The brand's own Stripe revenue next to what OpenPartner recorded from it
+ * and credited to partners. Loads on its own: listing Stripe takes a few
+ * seconds, and the rest of the page shouldn't wait for it.
+ */
+function StripeReconciliationSection({ days }: { days: number }) {
+  const qc = useQueryClient();
+  const key = ['tracking-health-stripe', days];
+  const query = useQuery({
+    queryKey: key,
+    queryFn: () => api<StripeReconciliationReport>(`/admin/tracking-health/stripe?days=${days}`),
+  });
+  const refresh = async () => {
+    const fresh = await api<StripeReconciliationReport>(`/admin/tracking-health/stripe?days=${days}&refresh=1`);
+    qc.setQueryData(key, fresh);
+  };
+  const r = query.data;
+
+  return (
+    <>
+      <SectionHeading
+        actions={
+          r?.available ? (
+            <Button variant="ghost" size="sm" onClick={() => void refresh()}>
+              Read again
+            </Button>
+          ) : undefined
+        }
+      >
+        Stripe revenue
+      </SectionHeading>
+      {query.error && <ErrorBanner error={query.error} />}
+      {query.isLoading && <Muted>Reading your Stripe account…</Muted>}
+      {r && !r.available && (
+        <Card>
+          <Muted>
+            {r.reason === 'not_connected' && (
+              <>
+                Connect your Stripe account under <TenantLink to="/admin/integrations">Integrations</TenantLink> to see
+                your Stripe revenue next to what OpenPartner recorded and credited, payment by payment.
+              </>
+            )}
+            {r.reason === 'reconnect_needed' && (
+              <>
+                Your Stripe connection needs reconnecting under{' '}
+                <TenantLink to="/admin/integrations">Integrations</TenantLink>.
+              </>
+            )}
+            {r.reason === 'missing_permissions' && (
+              <>
+                Your Stripe connection can&rsquo;t read invoices, Checkout Sessions and customers, which this needs.
+                Reconnect Stripe under <TenantLink to="/admin/integrations">Integrations</TenantLink> to accept them.
+              </>
+            )}
+            {r.reason === 'stripe_error' && (
+              <>Stripe didn&rsquo;t answer{r.detail ? `: ${r.detail}` : ''}. Try again in a minute.</>
+            )}
+          </Muted>
+        </Card>
+      )}
+      {r?.available && (
+        <>
+          <Table
+            columns={[
+              'Currency',
+              { label: 'In Stripe', align: 'right' },
+              { label: 'Recorded', align: 'right' },
+              { label: 'Credited to partners', align: 'right' },
+              { label: 'Missed', align: 'right' },
+              { label: 'No partner signal', align: 'right' },
+            ]}
+            rows={r.totals.map((t) => [
+              t.currency,
+              money(t.stripe, t.currency),
+              money(t.recorded, t.currency),
+              money(t.credited, t.currency),
+              <span key="m" style={t.missed > 0 ? { color: theme.warn, fontWeight: 600 } : undefined}>
+                {money(t.missed, t.currency)}
+              </span>,
+              money(t.unreferred, t.currency),
+            ])}
+            empty="No paid invoices or Checkout payments in Stripe in this window."
+          />
+          <div style={{ marginTop: 8 }}>
+            <Muted>
+              {r.counts.payments.toLocaleString()} paid invoices and one-time Checkout payments created in the window:{' '}
+              {r.counts.credited.toLocaleString()} credited to a partner, {r.counts.recorded.toLocaleString()} recorded
+              without credit, {r.counts.missed.toLocaleString()} missed, {r.counts.unreferred.toLocaleString()} with no
+              partner signal. Gross, before refunds. Payments taken outside invoices and Checkout aren&rsquo;t read from
+              Stripe; report those with the conversions API.
+              {r.truncated && ' Only the most recent 2,000 of each kind were read.'} Read from Stripe{' '}
+              {formatDate(r.computedAt, { relative: true })}.
+            </Muted>
+          </div>
+          {r.missed.length > 0 && (
+            <>
+              <Card style={{ marginTop: 12, borderColor: theme.warn }}>
+                <Muted>
+                  <strong style={{ color: theme.text }}>
+                    {r.counts.missed.toLocaleString()} {r.counts.missed === 1 ? 'payment carries' : 'payments carry'} a
+                    partner signal, but OpenPartner recorded nothing for {r.counts.missed === 1 ? 'it' : 'them'}.
+                  </strong>{' '}
+                  Usually a webhook that never arrived, or a payment OpenPartner couldn&rsquo;t map. Open it in
+                  Stripe to see why.
+                </Muted>
+              </Card>
+              <div style={{ marginTop: 12 }}>
+                <Table
+                  columns={['Created', 'Payment', { label: 'Amount', align: 'right' }, 'Why it should have counted']}
+                  rows={r.missed.map((m) => [
+                    formatDate(m.created, { relative: true }),
+                    m.dashboardUrl ? (
+                      <a key="l" href={m.dashboardUrl} target="_blank" rel="noreferrer" style={{ color: theme.accent }}>
+                        <code>{m.id}</code>
+                      </a>
+                    ) : (
+                      <code key="l">{m.id}</code>
+                    ),
+                    money(m.amount, m.currency),
+                    m.signals.map((sig) => SIGNALS[sig]).join('; '),
+                  ])}
+                />
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </>
   );
 }

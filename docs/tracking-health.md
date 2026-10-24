@@ -32,6 +32,44 @@ A low landing rate usually means one of three things:
 - a consent banner holds the script back (`data-consent="pending"`) and the
   visitor never answered.
 
+## Stripe revenue
+
+Your own Stripe revenue next to what OpenPartner recorded from it and credited
+to partners, payment by payment (`GET /admin/tracking-health/stripe`). It's
+read from your Stripe account when the page loads, through the OpenPartner
+Stripe App on OpenPartner Cloud or the instance's own `STRIPE_SECRET_KEY` on a
+single-tenant self-host, and kept for ten minutes (**Read again** skips that).
+Nothing is stored.
+
+It reads the two kinds of payment OpenPartner records revenue from: paid
+invoices (subscriptions and other invoices) and paid one-time Checkout
+payments, created in the window. Each is one of:
+
+| Column | Means |
+|---|---|
+| In Stripe | every such payment, gross (before refunds) |
+| Recorded | OpenPartner recorded it |
+| Credited to partners | recorded and credited to a partner |
+| Missed | **not recorded, though it carries a partner signal**: the customer is linked to a partner click made before the payment, the Checkout's `client_reference_id` is one of your program's clicks (a Checkout that made an invoice counts for that invoice), or it used a partner's code (its promotion code or Stripe coupon, on the invoice, a line item or the Checkout) |
+| No partner signal | not recorded, and nothing ties it to a partner: a customer who came on their own |
+
+**Missed** is the leak. The payments are listed with a link to each in your
+Stripe dashboard. Most are a webhook that never arrived; the rest are payments
+OpenPartner couldn't map. Open one in Stripe to see why. Codes are matched by
+id: a code you typed into a promotion of your own matches only if it's the
+promotion recorded for the partner's code.
+
+Totals are per currency, with your default currency first, and are never
+added across currencies. Up to 2,000 invoices and 2,000 Checkout payments are
+read per window (and up to 5,000 Stripe objects of each kind listed to find
+them); the page says when there were more. Payments your backend
+charges directly (a PaymentIntent outside invoices and Checkout) aren't read
+from Stripe at all: report them with the conversions API.
+
+It needs the Stripe connection to read invoices, Checkout Sessions and
+customers. The page says so when the connection is missing, needs
+reconnecting, or doesn't grant those.
+
 ## By browser
 
 The same funnel per browser and device. A row whose stitch rate is well

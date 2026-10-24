@@ -7,6 +7,16 @@
  *                   unattributed conversions stay account-wide (an event
  *                   belongs to no program until it attributes)
  *
+ * GET /admin/tracking-health/stripe — the brand's Stripe revenue next to
+ * what OpenPartner recorded and credited (stripe-reconciliation.ts).
+ *
+ *   ?days=30        window, 1–90
+ *   ?refresh=1      skip the cache
+ *
+ * Listing Stripe takes seconds, so a result is kept for CACHE_TTL_MS per
+ * (tenant, window) in this process. `available: false` with a reason when
+ * there's no Stripe of the brand's to read.
+ *
  * Admins only (a session or an admin API key): it reads every partner's
  * traffic.
  */
@@ -17,6 +27,12 @@ import { TABLES } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { tenantOf } from '../tenancy.js';
 import { TRACKING_HEALTH_MAX_DAYS, trackingHealth } from '../tracking-health.js';
+import {
+  RECONCILE_MAX_DAYS,
+  brandStripeAccess,
+  reconcileStripe,
+  type StripeReconciliationResult,
+} from '../stripe-reconciliation.js';
 
 export const trackingHealthRouter = Router();
 
@@ -35,4 +51,58 @@ trackingHealthRouter.get('/admin/tracking-health', requireAuth, requireAdmin, as
     if (!program) return res.status(404).json({ error: 'program_not_found' });
   }
   res.json(await trackingHealth(db, tenantId, { days, programId }));
+});
+
+const reconcileQuerySchema = z.object({
+  days: z.coerce.number().int().min(1).max(RECONCILE_MAX_DAYS).optional().default(30),
+  refresh: z.enum(['0', '1']).optional(),
+});
+
+const CACHE_TTL_MS = 10 * 60_000;
+const CACHE_MAX = 500;
+const reconcileCache = new Map<string, { expires: number; result: StripeReconciliationResult }>();
+
+/** For tests. */
+export function __clearReconcileCache(): void {
+  reconcileCache.clear();
+}
+
+trackingHealthRouter.get('/admin/tracking-health/stripe', requireAuth, requireAdmin, async (req, res) => {
+  const parsed = reconcileQuerySchema.safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ error: 'invalid_query', detail: parsed.error.flatten() });
+  const { db, tenantId } = tenantOf(req);
+  const { days, refresh } = parsed.data;
+
+  // Access first, every time: a disconnected brand or a revoked grant must
+  // never be served a cached report, and the cache key names the account
+  // and mode, so a reconnect to another one starts fresh.
+  let access: Awaited<ReturnType<typeof brandStripeAccess>>;
+  try {
+    access = await brandStripeAccess(db, tenantId);
+  } catch (err) {
+    // A token refresh Stripe didn't answer: no detail, it may name the grant.
+    console.error('[tracking-health] stripe access failed', { tenantId, error: (err as Error).message });
+    return res.json({ available: false, reason: 'stripe_error' } satisfies StripeReconciliationResult);
+  }
+  if (!access.ok) return res.json({ available: false, reason: access.reason } satisfies StripeReconciliationResult);
+
+  const key = `${tenantId}|${days}|${access.identity}`;
+  const cached = reconcileCache.get(key);
+  if (cached && cached.expires > Date.now() && refresh !== '1') return res.json(cached.result);
+
+  let result: StripeReconciliationResult;
+  try {
+    result = await reconcileStripe(db, tenantId, access.stripe, { days, livemode: access.livemode });
+  } catch (err) {
+    const type = (err as { type?: string }).type;
+    // A restricted key or an install without these reads: say which, not 500.
+    if (type === 'StripePermissionError') return res.json({ available: false, reason: 'missing_permissions' });
+    if (typeof type === 'string' && type.startsWith('Stripe')) {
+      return res.json({ available: false, reason: 'stripe_error', detail: (err as Error).message });
+    }
+    throw err;
+  }
+  if (reconcileCache.size >= CACHE_MAX) reconcileCache.delete(reconcileCache.keys().next().value!);
+  reconcileCache.set(key, { expires: Date.now() + CACHE_TTL_MS, result });
+  res.json(result);
 });

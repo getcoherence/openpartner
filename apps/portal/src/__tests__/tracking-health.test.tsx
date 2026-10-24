@@ -10,9 +10,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { AdminTrackingHealth, type TrackingHealthReport } from '../pages/admin/TrackingHealth.js';
+import {
+  AdminTrackingHealth,
+  type StripeReconciliationReport,
+  type TrackingHealthReport,
+} from '../pages/admin/TrackingHealth.js';
 
 let report: TrackingHealthReport;
+let stripe: StripeReconciliationReport;
 let requested: string[] = [];
 
 function json(status: number, body: unknown): Response {
@@ -50,14 +55,48 @@ function baseReport(): TrackingHealthReport {
   };
 }
 
+function stripeReport(): StripeReconciliationReport {
+  return {
+    available: true,
+    window: { days: 30, since: '2026-09-24T00:00:00.000Z' },
+    computedAt: new Date().toISOString(),
+    livemode: true,
+    truncated: false,
+    counts: { payments: 9, credited: 3, recorded: 1, missed: 2, unreferred: 3 },
+    totals: [{ currency: 'USD', stripe: 900, recorded: 400, credited: 300, missed: 150, unreferred: 350 }],
+    missed: [
+      {
+        kind: 'invoice',
+        id: 'in_missed1',
+        created: '2026-10-22T10:00:00.000Z',
+        amount: 100,
+        currency: 'USD',
+        signals: ['linked_customer', 'partner_code'],
+        dashboardUrl: 'https://dashboard.stripe.com/invoices/in_missed1',
+      },
+      {
+        kind: 'checkout',
+        id: 'cs_missed2',
+        created: '2026-10-21T10:00:00.000Z',
+        amount: 50,
+        currency: 'USD',
+        signals: ['partner_click'],
+        dashboardUrl: null,
+      },
+    ],
+  };
+}
+
 beforeEach(() => {
   report = baseReport();
+  stripe = stripeReport();
   requested = [];
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = new URL(String(input), 'http://localhost');
     requested.push(url.pathname + url.search);
     if (url.pathname === '/api/programs') return json(200, { programs: [{ id: 'p1', name: 'Main' }] });
     if (url.pathname === '/api/admin/tracking-health') return json(200, report);
+    if (url.pathname === '/api/admin/tracking-health/stripe') return json(200, stripe);
     return json(404, { error: 'not_found' });
   }) as typeof fetch;
 });
@@ -106,6 +145,24 @@ describe('Admin → Tracking health', () => {
     await screen.findByText('No partner click on record');
     expect(requested).toContain('/api/admin/tracking-health?days=90&programId=p1');
     expect(screen.getByText(/Account-wide/)).toBeTruthy();
+  });
+
+  it('puts Stripe revenue next to recorded and credited, and lists the missed payments', async () => {
+    renderPage();
+    expect(await screen.findByText('Stripe revenue')).toBeTruthy();
+    expect(await screen.findByText(/2 payments carry a partner signal, but OpenPartner recorded nothing/)).toBeTruthy();
+    const link = screen.getByText('in_missed1').closest('a')!;
+    expect(link.getAttribute('href')).toBe('https://dashboard.stripe.com/invoices/in_missed1');
+    expect(screen.getByText("customer came from a partner click; partner's promotion code")).toBeTruthy();
+    expect(screen.getByText('cs_missed2').closest('a')).toBeNull();
+    expect(requested).toContain('/api/admin/tracking-health/stripe?days=30');
+  });
+
+  it('says how to connect Stripe when there is none to read', async () => {
+    stripe = { available: false, reason: 'not_connected' };
+    renderPage();
+    expect(await screen.findByText(/to see\s+your Stripe revenue next to what OpenPartner recorded/)).toBeTruthy();
+    expect(screen.queryByText('Read again')).toBeNull();
   });
 
   it('shows empty states when nothing is wrong', async () => {
