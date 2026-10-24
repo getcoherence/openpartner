@@ -104,7 +104,8 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   if (corsOrigins.length === 0 && process.env.NODE_ENV === 'production') {
     throw new Error('PORTAL_URL must be set in production so CORS has an origin allowlist');
   }
-  // /attribution/identify is the browser SDK's stitch call, made from the
+  // /attribution/identify is the browser SDK's stitch call (and
+  // /attribution/landing its landing beacon), made from the
   // BRAND'S OWN website origin (acme.com) — an origin we can never
   // allowlist ahead of time. It gets analytics-collector CORS: any origin,
   // NO credentials (the endpoint is deliberately unauthenticated,
@@ -113,7 +114,7 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   // the OPTIONS preflight for this path; the global middleware runs after
   // but never unsets headers, so the open ACAO survives for this route
   // only. Everything else keeps the strict allowlist + credentials.
-  const IDENTIFY_PATH = /^(?:\/(?:api\/)?t\/[a-z0-9-]+)?\/attribution\/identify\/?$/;
+  const IDENTIFY_PATH = /^(?:\/(?:api\/)?t\/[a-z0-9-]+)?\/attribution\/(?:identify|landing)\/?$/;
   const identifyCors = cors({ origin: true, credentials: false });
   app.use((req, res, next) => (IDENTIFY_PATH.test(req.path) ? identifyCors(req, res, next) : next()));
 

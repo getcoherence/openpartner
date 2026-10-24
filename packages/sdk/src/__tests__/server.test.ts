@@ -106,3 +106,51 @@ describe('OpenPartnerServer', () => {
     expect(fetchMock.mock.calls[0]![0]).toBe('https://op.test/attribution/events');
   });
 });
+
+describe('the referral cookie, from the brand server', () => {
+  it('builds a Set-Cookie for a landing URL with ?cref=, and nothing otherwise', async () => {
+    const { referralCookieHeader } = await import('../server.js');
+    expect(referralCookieHeader('/pricing?cref=01M590C5ZWPP14GBCV2VJ5MFRC&utm_source=x')).toBe(
+      'op_ref=01M590C5ZWPP14GBCV2VJ5MFRC; Max-Age=7776000; Path=/; SameSite=Lax; Secure',
+    );
+    expect(
+      referralCookieHeader('https://www.acme.test/?ref=abc', {
+        queryParam: 'ref',
+        name: 'acme_ref',
+        domain: '.acme.test',
+        days: 30,
+        secure: false,
+      }),
+    ).toBe('acme_ref=abc; Max-Age=2592000; Path=/; SameSite=Lax; Domain=.acme.test');
+    expect(referralCookieHeader('/pricing')).toBeNull();
+    // Nothing a header could be split on, and nothing Stripe would drop.
+    expect(referralCookieHeader('/?cref=a%3B%20Domain%3Devil.test')).toBeNull();
+    expect(referralCookieHeader('/?cref=' + 'x'.repeat(201))).toBeNull();
+  });
+
+  it('middleware appends to Set-Cookie headers already queued', async () => {
+    const { referralCookieMiddleware } = await import('../server.js');
+    const headers = new Map<string, string | string[]>([['set-cookie', 'session=abc']]);
+    const res = {
+      getHeader: (name: string) => headers.get(name),
+      setHeader: (name: string, value: string | string[]) => headers.set(name, value),
+    };
+    const next = vi.fn();
+    referralCookieMiddleware({ secure: false })({ originalUrl: '/?cref=CLICK1' }, res, next);
+    expect(headers.get('set-cookie')).toEqual(['session=abc', 'op_ref=CLICK1; Max-Age=7776000; Path=/; SameSite=Lax']);
+    expect(next).toHaveBeenCalledOnce();
+
+    headers.clear();
+    referralCookieMiddleware()({ url: '/about' }, res, next);
+    expect(headers.has('set-cookie')).toBe(false);
+  });
+
+  it('reads the referral back off a Cookie header', async () => {
+    const { readReferralCookie } = await import('../server.js');
+    expect(readReferralCookie('a=1; op_ref=01M590C5ZWPP14GBCV2VJ5MFRC; b=2')).toBe('01M590C5ZWPP14GBCV2VJ5MFRC');
+    expect(readReferralCookie('acme_ref=xyz', 'acme_ref')).toBe('xyz');
+    expect(readReferralCookie('xop_ref=nope')).toBeNull();
+    expect(readReferralCookie('op_ref=bad%20value')).toBeNull();
+    expect(readReferralCookie(undefined)).toBeNull();
+  });
+});

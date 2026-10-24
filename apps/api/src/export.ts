@@ -47,8 +47,10 @@ import { openPostbackForExport, sealPostbackForImport } from './postback-url.js'
  *  manual payouts sent), its `details` opened (see SealedSpec).
  *  v9 → v10 (Oct 2026): Coupon rows carry `brandChosen` (the brand's admin
  *  typed the code; the Stripe webhook credits a promo the brand already had
- *  under it only then). */
-export const SCHEMA_VERSION = 10;
+ *  under it only then).
+ *  v10 → v11 (Oct 2026): added ClickLanding (the browser SDK saw the click
+ *  arrive on the brand's site; Admin → Tracking health). */
+export const SCHEMA_VERSION = 11;
 /** Older bundles still import — a v1 bundle is a v2 bundle minus three
  *  tables, a v2 bundle's PartnerCommission rows are partner-wide v3 rows
  *  (see upgradeBundle), a v3 bundle is a v4 bundle minus
@@ -64,10 +66,12 @@ export const SCHEMA_VERSION = 10;
  *  carried one before the column existed. A v8 bundle is a v9 bundle with no
  *  payout details: every restored partner starts without any. A v9 bundle's
  *  Coupon rows have no `brandChosen`, so it takes its default (false), the
- *  value the migration gave every existing code.
+ *  value the migration gave every existing code. A v10 bundle is a v11
+ *  bundle with no landings: every restored click reads as never landed,
+ *  which is what an instance that predates the beacon recorded.
  *  Dropping support for a version people hold on disk would break the
  *  portability promise, so this list only ever grows. */
-export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
+export const SUPPORTED_IMPORT_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as const;
 
 /**
  * The Config keys that travel: the brand's own program and portal settings.
@@ -208,6 +212,8 @@ export const EXPORT_TABLES = [
   { table: TABLES.Coupon, primaryKey: 'id' },
   { table: TABLES.Link, primaryKey: 'id' },
   { table: TABLES.Click, primaryKey: 'id' },
+  // Landings (v11): raw, one per click, keyed on the click.
+  { table: TABLES.ClickLanding, primaryKey: 'clickId' },
   { table: TABLES.Identity, primaryKey: 'id' },
   { table: TABLES.Event, primaryKey: 'id' },
   { table: TABLES.Attribution, primaryKey: 'id' },

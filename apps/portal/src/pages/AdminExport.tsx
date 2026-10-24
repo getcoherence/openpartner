@@ -17,6 +17,7 @@ const TABLES = [
   'Coupon',
   'Link',
   'Click',
+  'ClickLanding',
   'Identity',
   'Event',
   'Attribution',

@@ -2,7 +2,7 @@
 
 Client + server SDK for [OpenPartner](https://github.com/getcoherence/openpartner).
 
-- **Browser** — captures the `cref` attribution token from landing URLs and the first-party cookie, survives Safari / ITP cookie expiry via localStorage, and stitches to a logged-in user on auth.
+- **Browser** — captures the `cref` attribution token from landing URLs and first-party cookies, keeps it across pages and subdomains, waits for consent when you ask it to, and stitches to a logged-in user on auth.
 - **Server** — posts conversion events, stitches server-side where needed, with typed errors.
 
 Zero runtime dependencies. ~4 KB gzipped browser bundle.
@@ -13,7 +13,7 @@ npm install @openpartner/sdk
 
 ## Browser
 
-Embed once on every page of your marketing site and product. The SDK runs on init, pulling the cref out of `?cref=…` (first visit from a partner link) or the `_cref` cookie (subsequent pages) and stashing it in localStorage.
+Embed once on every page of your marketing site and product. The SDK runs on init, pulling the cref out of `?cref=…` (first visit from a partner link), or on later pages out of localStorage or a first-party cookie (`_cref` from the click router, `op_ref` from a sibling subdomain or your server), and stashing it in localStorage.
 
 ```ts
 import { OpenPartner } from '@openpartner/sdk';
@@ -40,8 +40,54 @@ OpenPartner.init({
   onError: (err) => Sentry.captureException(err),
   stripe: { linkHosts: ['pay.yourbrand.com'] }, // or false — see below
   referralCookie: { name: 'op_ref', domain: '.yourbrand.com' }, // off by default
+  consent: 'pending',           // default 'granted' — see Consent below
+  reportLanding: true,          // default on — see Landing report below
 });
 ```
+
+### Subdomains
+
+A visitor who lands on `www.yourbrand.com` and signs up on `app.yourbrand.com` has two localStorages, one per subdomain. Share the referral through a cookie on the parent domain: `referralCookie: { domain: '.yourbrand.com' }` (script tag: `data-cookie-domain=".yourbrand.com"`) on every subdomain. The SDK on `app.` reads `op_ref` back when its own storage is empty, so `identify()` and Stripe links work there too. A journey across two different domains (`yourbrand.com` → `yourbrand-shop.com`) has no shared cookie: carry `?cref=` on the link between them.
+
+### Safari and long gaps
+
+Safari deletes storage a page's scripts wrote (localStorage, and cookies set through `document.cookie`) after 7 days without a visit. A visitor who clicks, comes back after a fortnight and buys without signing up first would arrive with nothing. Two things close that gap:
+
+- **Call `identify()` as early as you can.** Once a click is stitched to a user, the link lives on OpenPartner's side and no browser storage matters. An email capture or account creation before checkout is enough.
+- **Set the referral cookie from your own server**, on the landing page's response. A cookie your server sets keeps its full lifetime in Safari, and the browser SDK reads it back:
+
+  ```ts
+  import { referralCookieHeader, referralCookieMiddleware } from '@openpartner/sdk/server';
+
+  // Express / Connect:
+  app.use(referralCookieMiddleware({ domain: '.yourbrand.com' }));
+
+  // Anything else (Next.js middleware, a Worker): set the header yourself.
+  const header = referralCookieHeader(request.url, { domain: '.yourbrand.com' });
+  if (header) response.headers.append('Set-Cookie', header);
+  ```
+
+  Set it from the server that serves the page. Safari caps a cookie at 7 days when it comes from a server on a different IP address than the site, such as an API hosted on another provider. The SDK never rewrites an `op_ref` cookie that already holds the referral, because rewriting it from script would bring the 7-day cap back.
+
+### Consent
+
+Behind a consent banner, start the SDK with `consent: 'pending'` and tell it the answer:
+
+```ts
+const op = OpenPartner.init({ apiUrl, consent: 'pending' });
+
+yourConsentBanner.onChange((choices) => {
+  op.setConsent(choices.marketing ? 'granted' : 'denied');
+});
+```
+
+While consent is pending, the SDK keeps the click from the URL in memory and does nothing else: it doesn't read or write storage or cookies, tag Stripe links, or call OpenPartner. `setConsent('granted')` then works as if the page had just loaded, even after the visitor has navigated within a single-page app. `setConsent('denied')` stops everything and deletes what was stored. `getReferral()` and `identify()` return `null` until consent is granted. Script tag: `data-consent="pending"`, then `openpartner.setConsent('granted')`.
+
+Clicks from visitors who never consent can't be credited, and Admin → Tracking health counts them among the clicks that never landed.
+
+### Landing report
+
+When a partner click first arrives from the URL, the SDK tells OpenPartner (`POST /attribution/landing`, the click id and nothing else; the page's hostname comes from the browser's `Origin` header). **Admin → Tracking health** compares landings with clicks to show the ones lost between the partner link and your page: a redirect that dropped `?cref=`, a page without the script, a consent banner. A `click_not_found` from it reaches `onError` and usually means `apiUrl` names another program. Turn it off with `reportLanding: false` (script tag: `data-landing="off"`).
 
 ### Stripe links and embeds
 
@@ -62,10 +108,11 @@ An OpenPartner portal serves a self-starting build of this SDK at `/op.js`. Past
 <script src="https://app.openpartner.dev/op.js" data-api-url="https://app.openpartner.dev/api/t/your-slug"></script>
 ```
 
-**Admin → Integrations** shows the exact tag for your program. It does everything above, keeps the referral in an `op_ref` cookie on your domain, and exposes `window.openpartner` (`openpartner.identify(userId)`, `openpartner.getReferral()`). Optional attributes:
+**Admin → Integrations** shows the exact tag for your program. It does everything above, keeps the referral in an `op_ref` cookie on your domain, and exposes `window.openpartner` (`openpartner.identify(userId)`, `openpartner.getReferral()`, `openpartner.setConsent('granted')`). Optional attributes:
 - `data-stripe-hosts="pay.yourbrand.com"`: a custom Payment Link domain.
 - `data-cookie-domain=".yourbrand.com"`: share `op_ref` across subdomains.
-- `data-stripe="off"`, `data-cookie="off"`: turn either off.
+- `data-consent="pending"`: wait for `openpartner.setConsent()` (see [Consent](#consent)).
+- `data-stripe="off"`, `data-cookie="off"`, `data-landing="off"`: turn any of them off.
 
 The npm package carries the same file at `dist-global/openpartner.js`.
 
@@ -166,7 +213,7 @@ OpenPartner has to know which Stripe customer is which referred user. Link them 
   });
   ```
 
-  With the [script tag](#script-tag-no-bundler) (or `referralCookie` set), your backend can read the referral straight off the request instead: `client_reference_id: req.cookies.op_ref`.
+  With the [script tag](#script-tag-no-bundler) (or `referralCookie` set), your backend can read the referral straight off the request instead: `client_reference_id: req.cookies.op_ref`, or `readReferralCookie(req.headers.cookie)` from `@openpartner/sdk/server` without a cookie parser. The same call lets your backend stitch at signup, which works even where browser scripts are blocked: `await op.identify({ cref, userId: user.id })`.
 
   A Stripe Payment Link can't run your code, so let the partner link fill it in: set the program's destination URL to the Payment Link with `?client_reference_id={click_id}`, and the click router puts the click id there.
 

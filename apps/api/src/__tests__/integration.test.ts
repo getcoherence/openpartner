@@ -36,6 +36,8 @@ const TABLES_TO_CLEAN = [
   TABLES.ApiKey,
   TABLES.Partner,
   TABLES.Config,
+  // identify() with an unknown click is counted (tracking-issues.ts).
+  TABLES.TrackingIssue,
 ];
 
 // Skip the whole suite if no DB configured — keeps `pnpm test` green on dev
@@ -380,7 +382,7 @@ describe.skipIf(skipIntegration)('api integration', () => {
       .get('/export.json')
       .set('Authorization', `Bearer ${ADMIN_KEY}`);
     expect(exportRes.status).toBe(200);
-    expect(exportRes.body.schemaVersion).toBe(10);
+    expect(exportRes.body.schemaVersion).toBe(11);
     expect(exportRes.body.tables.Partner).toHaveLength(1);
 
     // Wipe, re-import.

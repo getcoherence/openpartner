@@ -562,6 +562,24 @@ Unauthenticated by design. It accepts any origin (CORS) and is limited to 120 re
 
   r.operation({
     method: 'post',
+    path: '/attribution/landing',
+    tag: 'Attribution',
+    operationId: 'reportLanding',
+    summary: 'Report that a click arrived on your site',
+    description: `
+The browser SDK calls this once per click, when it first captures the click id from the landing URL. Admin → Tracking health compares landings with clicks, so clicks lost between the partner link and your page show up: a redirect that dropped \`?cref=\`, a page without the script, a consent banner holding it back.
+
+Only the first call for a click records anything (\`firstLanding\`). The page's hostname is taken from the browser's \`Origin\` header (or \`Referer\`), never its path or query. A click id this program doesn't have is a \`404\` and is counted on Tracking health, since it usually means the script's API URL names another program.
+
+Unauthenticated by design, like identify: any origin (CORS), 120 requests per minute per client IP. Turn it off in the SDK with \`reportLanding: false\` (script tag: \`data-landing="off"\`).`,
+    access: { kind: 'public' },
+    body: identify.landingSchema.openapi('LandingRequest'),
+    responses: { 200: { description: 'Recorded (or already recorded).', schema: S.LandingResult } },
+    errors: { 404: ['click_not_found'], 429: ['rate_limited'] },
+  });
+
+  r.operation({
+    method: 'post',
     path: '/attribution/events',
     tag: 'Attribution',
     operationId: 'recordEvent',

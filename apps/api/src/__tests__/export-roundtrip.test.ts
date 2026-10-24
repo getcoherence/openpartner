@@ -175,6 +175,8 @@ async function seedEverything(): Promise<Seeded> {
     subId: 'wct_9f2a-17',
     ts: new Date(),
   });
+  // The SDK saw it land (schemaVersion 11).
+  await db(TABLES.ClickLanding).insert({ clickId, tenantId: TENANT, host: 'www.x.test' });
   await db(TABLES.Identity).insert({
     id: identityId,
     tenantId: TENANT,
@@ -459,6 +461,7 @@ describe.skipIf(skipIntegration)('export coverage', () => {
     expect(at(TABLES.Program)).toBeLessThan(at(TABLES.Coupon));
     expect(at(TABLES.Link)).toBeLessThan(at(TABLES.Click));
     expect(at(TABLES.Click)).toBeLessThan(at(TABLES.Identity));
+    expect(at(TABLES.Click)).toBeLessThan(at(TABLES.ClickLanding));
     expect(at(TABLES.Event)).toBeLessThan(at(TABLES.Attribution));
     expect(at(TABLES.Attribution)).toBeLessThan(at(TABLES.Commission));
     expect(at(TABLES.Partner)).toBeLessThan(at(TABLES.Bonus));
@@ -968,8 +971,25 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(coupon).toMatchObject({ code: 'CREATOR15', brandChosen: false });
   }, 30_000);
 
-  it('exports at schemaVersion 10', () => {
-    expect(SCHEMA_VERSION).toBe(10);
+  it('accepts a v10 bundle — no landings, every click restores as never landed', async () => {
+    const seeded = await seedEverything();
+    const v10 = await exportAll(db, TENANT);
+    delete v10[TABLES.ClickLanding];
+    await wipe();
+
+    const app = createApp();
+    const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'op_test_admin_key_0123456789abcdef0123';
+    const viaRoute = await request(app)
+      .post('/import')
+      .set('Authorization', `Bearer ${ADMIN_KEY}`)
+      .send({ schemaVersion: 10, tables: v10 });
+    expect(viaRoute.status).toBe(200);
+    expect(await db(TABLES.Click).where({ id: seeded.clickId }).first()).toBeTruthy();
+    expect((await counts())[TABLES.ClickLanding]).toBe(0);
+  }, 30_000);
+
+  it('exports at schemaVersion 11', () => {
+    expect(SCHEMA_VERSION).toBe(11);
   });
 });
 

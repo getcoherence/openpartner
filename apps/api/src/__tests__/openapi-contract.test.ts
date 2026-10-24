@@ -69,6 +69,7 @@ const TABLES_TO_CLEAN = [
   TABLES.Attribution,
   TABLES.Event,
   TABLES.Identity,
+  TABLES.ClickLanding,
   TABLES.Click,
   TABLES.Coupon,
   TABLES.Link,
@@ -77,6 +78,7 @@ const TABLES_TO_CLEAN = [
   TABLES.ApiKey,
   TABLES.ConversionPostbackToken,
   TABLES.PartnerSigninLinkLog,
+  TABLES.TrackingIssue,
   TABLES.Session,
   TABLES.MagicLinkToken,
   TABLES.Program,
@@ -398,6 +400,9 @@ describe.skipIf(skipIntegration)('documented API contract', () => {
     const stitched = check<{ firstStitch: boolean }>('identify', await anon.post('/attribution/identify', { cref: clickId, userId: 'friend_1' }));
     expect(stitched.firstStitch).toBe(true);
     check('identify', await anon.post('/attribution/identify', { cref: 'missing', userId: 'friend_1' }));
+    const landed = check<{ firstLanding: boolean }>('reportLanding', await anon.post('/attribution/landing', { cref: clickId }));
+    expect(landed.firstLanding).toBe(true);
+    check('reportLanding', await anon.post('/attribution/landing', { cref: 'missing' }));
 
     check('recordEvent', await integration.post('/attribution/events', { userId: 'friend_1', type: 'signup', externalEventId: 'signup:friend_1' }));
     const paid = { userId: 'friend_1', type: 'invoice_paid', value: 300, currency: 'USD', externalEventId: 'inv_1' };

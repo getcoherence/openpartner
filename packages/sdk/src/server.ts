@@ -160,3 +160,108 @@ export class OpenPartnerServer {
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// The referral cookie, set from your own server
+// ---------------------------------------------------------------------------
+
+export interface ReferralCookieOptions {
+  /** Cookie name. Default `op_ref`, the one the browser SDK reads back. */
+  name?: string;
+  /** Share it across subdomains, e.g. ".yourbrand.com" (land on www., buy on app.). */
+  domain?: string;
+  /** Lifetime in days. Default 90. */
+  days?: number;
+  /** Send it over HTTPS only. Default true; set false for plain-http local development. */
+  secure?: boolean;
+  /** Query parameter that carries the click on the landing URL. Default `cref`. */
+  queryParam?: string;
+}
+
+/** A click id, or anything Stripe would accept as client_reference_id. */
+const REFERRAL_RE = /^[A-Za-z0-9_-]{1,200}$/;
+
+/**
+ * The `Set-Cookie` header value that keeps a partner click on your own
+ * domain, for a request whose URL carries `?cref=`; null otherwise. Send it
+ * on the landing page's own response.
+ *
+ * Why from the server: Safari deletes what a page's scripts store
+ * (localStorage, and cookies written through document.cookie) after 7 days
+ * without a visit. A cookie your server sets on the page's own response
+ * keeps its full lifetime, so a visitor who clicks today and buys in a
+ * month, without signing up in between, is still credited. Not HttpOnly:
+ * the browser SDK reads it back for identify() and Stripe links. Set it
+ * from the server that serves the page itself: Safari caps a cookie from a
+ * server on another IP (an API host on a different provider) at 7 days too.
+ *
+ *   const header = referralCookieHeader(req.url, { domain: '.yourbrand.com' });
+ *   if (header) res.append('Set-Cookie', header);
+ */
+export function referralCookieHeader(url: string, options: ReferralCookieOptions = {}): string | null {
+  let referral: string | null;
+  try {
+    referral = new URL(url, 'http://localhost').searchParams.get(options.queryParam ?? 'cref');
+  } catch {
+    return null;
+  }
+  if (!referral || !REFERRAL_RE.test(referral)) return null;
+  const name = options.name ?? 'op_ref';
+  const maxAge = Math.round((options.days ?? 90) * 86400);
+  const parts = [`${name}=${referral}`, `Max-Age=${maxAge}`, 'Path=/', 'SameSite=Lax'];
+  if (options.domain) parts.push(`Domain=${options.domain}`);
+  if (options.secure !== false) parts.push('Secure');
+  return parts.join('; ');
+}
+
+/** The slice of Node's request and response the middleware uses. */
+interface CookieRequest {
+  url?: string;
+  originalUrl?: string;
+}
+interface CookieResponse {
+  getHeader(name: string): number | string | string[] | undefined;
+  setHeader(name: string, value: string | string[]): unknown;
+}
+
+/**
+ * Express / Connect middleware: sets the referral cookie on every request
+ * that arrives with `?cref=`, adding to any Set-Cookie already queued.
+ *
+ *   app.use(referralCookieMiddleware({ domain: '.yourbrand.com' }));
+ */
+export function referralCookieMiddleware(options: ReferralCookieOptions = {}) {
+  return (req: CookieRequest, res: CookieResponse, next: () => void): void => {
+    const header = referralCookieHeader(req.originalUrl ?? req.url ?? '', options);
+    if (header) {
+      const existing = res.getHeader('set-cookie');
+      const list = existing == null ? [] : Array.isArray(existing) ? existing : [String(existing)];
+      res.setHeader('set-cookie', [...list, header]);
+    }
+    next();
+  };
+}
+
+/**
+ * Read the referral back off a request's `Cookie` header: for identify()
+ * from your backend at signup, or `client_reference_id` on a Checkout
+ * Session you create. Null when there's none.
+ *
+ *   const cref = readReferralCookie(req.headers.cookie);
+ *   if (cref) await op.identify({ cref, userId: user.id });
+ */
+export function readReferralCookie(cookieHeader: string | null | undefined, name = 'op_ref'): string | null {
+  if (!cookieHeader) return null;
+  for (const part of cookieHeader.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1 || part.slice(0, eq).trim() !== name) continue;
+    let value: string;
+    try {
+      value = decodeURIComponent(part.slice(eq + 1).trim());
+    } catch {
+      return null;
+    }
+    return REFERRAL_RE.test(value) ? value : null;
+  }
+  return null;
+}

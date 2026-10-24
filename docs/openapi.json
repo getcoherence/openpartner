@@ -2130,6 +2130,38 @@
           "userId"
         ]
       },
+      "LandingResult": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "firstLanding": {
+            "type": "boolean",
+            "description": "False when this click had already landed; nothing was written."
+          }
+        },
+        "required": [
+          "ok",
+          "firstLanding"
+        ]
+      },
+      "LandingRequest": {
+        "type": "object",
+        "properties": {
+          "cref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "cref"
+        ]
+      },
       "EventResult": {
         "type": "object",
         "properties": {
@@ -10342,6 +10374,74 @@
         }
       }
     },
+    "/attribution/landing": {
+      "post": {
+        "operationId": "reportLanding",
+        "tags": [
+          "Attribution"
+        ],
+        "summary": "Report that a click arrived on your site",
+        "description": "The browser SDK calls this once per click, when it first captures the click id from the landing URL. Admin → Tracking health compares landings with clicks, so clicks lost between the partner link and your page show up: a redirect that dropped `?cref=`, a page without the script, a consent banner holding it back.\n\nOnly the first call for a click records anything (`firstLanding`). The page's hostname is taken from the browser's `Origin` header (or `Referer`), never its path or query. A click id this program doesn't have is a `404` and is counted on Tracking health, since it usually means the script's API URL names another program.\n\nUnauthenticated by design, like identify: any origin (CORS), 120 requests per minute per client IP. Turn it off in the SDK with `reportLanding: false` (script tag: `data-landing=\"off\"`).\n\n**Access:** public, no API key. Rate-limited per client IP.",
+        "security": [],
+        "x-openpartner-access": {
+          "kind": "public",
+          "scopes": [],
+          "partner": false
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LandingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Recorded (or already recorded).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LandingResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`click_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/attribution/events": {
       "post": {
         "operationId": "recordEvent",
@@ -18021,6 +18121,7 @@
                 "Coupon",
                 "Link",
                 "Click",
+                "ClickLanding",
                 "Identity",
                 "Event",
                 "Attribution",

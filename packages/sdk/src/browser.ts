@@ -1,9 +1,9 @@
 /**
  * Browser SDK — runs inside a merchant's web app. Captures the `cref`
  * attribution token from landing-page URLs and the first-party cookie
- * the click router sets, stashes it in localStorage so it survives
- * Safari / ITP cookie expiry and SPA navigations, and stitches to the
- * authenticated user on signup or login.
+ * the click router sets, stashes it in localStorage so it survives SPA
+ * navigations and later visits, and stitches to the authenticated user on
+ * signup or login.
  *
  * Typical integration:
  *
@@ -21,6 +21,25 @@
  * to OpenPartner then needs no code for those checkouts. `stripe: false`
  * turns it off.
  *
+ * How long a referral lasts. Safari deletes storage that a page's own
+ * scripts wrote (localStorage, and cookies set through document.cookie)
+ * after 7 days without a visit, so a visitor who clicks, leaves for a
+ * fortnight and comes back to buy without signing up first arrives with
+ * nothing. A cookie the brand's own server sets on the landing response
+ * isn't capped that way: `referralCookieHeader` in `@openpartner/sdk/server`
+ * writes one, and this SDK reads it back (`op_ref`), on every subdomain it
+ * covers. Once identify() has run, the stitch lives server-side and no
+ * browser storage matters.
+ *
+ * Consent. `consent: 'pending'` holds the referral in memory until
+ * setConsent('granted'): nothing is read from or written to storage or
+ * cookies, no Stripe link is tagged and nothing is sent until then.
+ *
+ * Landing report. When a click first arrives from the URL the SDK tells
+ * OpenPartner (POST /attribution/landing), so Admin → Tracking health can
+ * count the clicks that never reached a page running it. `reportLanding:
+ * false` turns it off.
+ *
  * No bundler? The same SDK ships as a script tag that starts itself
  * (auto.ts), served at /op.js by an OpenPartner portal.
  */
@@ -35,6 +54,9 @@ export interface StripeLinkingConfig {
    *  in Stripe (e.g. "pay.yourbrand.com"). buy.stripe.com is always on. */
   linkHosts?: string[];
 }
+
+/** Whether this visitor agreed to referral tracking. */
+export type ConsentState = 'granted' | 'pending' | 'denied';
 
 export interface OpenPartnerConfig {
   /** Base URL of your OpenPartner API, e.g. "https://openpartner.example.com". */
@@ -56,11 +78,34 @@ export interface OpenPartnerConfig {
    * (`client_reference_id: req.cookies.op_ref`). Off by default; the
    * script-tag build turns it on. `domain` shares it across subdomains
    * (".yourbrand.com") when visitors land on one and check out on another.
+   *
+   * The SDK reads this cookie back whether or not it writes it (`op_ref`
+   * unless `name` says otherwise): that's how a page on another subdomain,
+   * or a visit after Safari cleared localStorage, finds the referral, and
+   * how one your server set (`referralCookieHeader`) reaches identify().
    */
   referralCookie?: false | { name?: string; domain?: string; days?: number };
   /**
-   * Called when identify() fails. Default: log to console. Pass a noop
-   * to suppress entirely or hook into your observability stack.
+   * Whether the visitor has agreed to referral tracking. Default
+   * `'granted'`: the SDK stores the referral as soon as it loads. Behind a
+   * consent banner, start at `'pending'` and call `setConsent()` from its
+   * callback. Until then the referral from the URL is held in memory only,
+   * so a visitor who agrees on the landing page is still credited.
+   * `'denied'` uses nothing.
+   */
+  consent?: ConsentState;
+  /**
+   * Tell OpenPartner when a partner click arrives on your site, so Admin →
+   * Tracking health can show clicks lost between the partner link and your
+   * page. Sends the click id once per click, nothing about the visitor.
+   * Default on; `false` turns it off.
+   */
+  reportLanding?: boolean;
+  /**
+   * Called when a call to OpenPartner fails: identify(), or the landing
+   * report (a `click_not_found` there usually means `apiUrl` names another
+   * program). Default: log to console. Pass a noop to suppress entirely or
+   * hook into your observability stack.
    */
   onError?: (err: unknown) => void;
 }
@@ -71,8 +116,10 @@ const DEFAULTS = {
   storageKey: 'openpartner:cref',
   stripe: true,
   referralCookie: false,
+  consent: 'granted',
+  reportLanding: true,
   onError: (err: unknown) => {
-    console.warn('[openpartner] identify failed', err);
+    console.warn('[openpartner] request failed', err);
   },
 };
 
@@ -81,26 +128,31 @@ const DEFAULTS = {
  *  value that doesn't came from somewhere else and isn't sent. */
 const STRIPE_REFERENCE_RE = /^[A-Za-z0-9_-]{1,200}$/;
 const STRIPE_EMBED_SELECTOR = 'stripe-pricing-table, stripe-buy-button';
+const REFERRAL_COOKIE_DEFAULT = 'op_ref';
 
 export class OpenPartner {
   private config: Required<OpenPartnerConfig>;
   private observer: MutationObserver | null = null;
+  private consent: ConsentState;
+  /** The URL's referral while consent is pending, held in memory only. */
+  private held: string | null = null;
 
   private constructor(config: OpenPartnerConfig) {
     this.config = { ...DEFAULTS, ...config } as Required<OpenPartnerConfig>;
-    this.captureCref();
-    this.writeReferralCookie();
-    if (this.config.stripe !== false) this.watchStripe();
+    this.consent = this.config.consent;
+    if (this.consent === 'granted') this.start();
+    else if (this.consent === 'pending') this.held = this.queryCref();
   }
 
   static init(config: OpenPartnerConfig): OpenPartner {
     return new OpenPartner(config);
   }
 
-  /** The cref we're holding onto, if any. Useful for debugging. */
+  /** The cref we're holding onto, if any. Useful for debugging. Null until
+   *  consent is granted. */
   getCref(): string | null {
-    if (typeof localStorage === 'undefined') return null;
-    return localStorage.getItem(this.config.storageKey);
+    if (this.consent !== 'granted') return null;
+    return this.storageGet() ?? this.readCookie(this.referralCookieName());
   }
 
   /**
@@ -113,16 +165,40 @@ export class OpenPartner {
    *     // ...
    *   });
    *
-   * Returns null if the visitor didn't arrive via a partner link.
+   * Returns null if the visitor didn't arrive via a partner link, or
+   * hasn't agreed to tracking yet.
    */
   getReferral(): string | null {
     return this.getCref();
   }
 
-  /** Explicitly discard the captured cref. */
+  /** Explicitly discard the captured cref, and the referral cookie with it. */
   clear(): void {
-    if (typeof localStorage === 'undefined') return;
-    localStorage.removeItem(this.config.storageKey);
+    this.held = null;
+    this.storageRemove();
+    if (typeof document === 'undefined') return;
+    const name = this.referralCookieName();
+    if (!this.readCookie(name)) return;
+    const cfg = this.config.referralCookie;
+    document.cookie = `${name}=; Max-Age=0; Path=/`;
+    if (cfg && cfg.domain) document.cookie = `${name}=; Max-Age=0; Path=/; Domain=${cfg.domain}`;
+  }
+
+  /**
+   * Record the visitor's answer to your consent banner. `'granted'` stores
+   * the referral (the one held since the page loaded, or one already
+   * stored), starts tagging Stripe links and sends the landing report.
+   * `'denied'` stops all of it and deletes what was stored.
+   */
+  setConsent(state: 'granted' | 'denied'): void {
+    if (state === this.consent) return;
+    this.consent = state;
+    if (state === 'granted') {
+      this.start();
+      return;
+    }
+    this.stopLinkingStripe();
+    this.clear();
   }
 
   /**
@@ -177,6 +253,15 @@ export class OpenPartner {
     return typeof cfg === 'object' && cfg.linkHosts ? cfg.linkHosts.map((h) => h.trim().toLowerCase()).filter(Boolean) : [];
   }
 
+  /** Everything the SDK does once it may: store, mirror, link, report. */
+  private start(): void {
+    const landed = this.captureCref(this.held);
+    this.held = null;
+    this.writeReferralCookie();
+    if (this.config.stripe !== false) this.watchStripe();
+    if (landed && this.config.reportLanding !== false) void this.reportLanding(landed);
+  }
+
   /**
    * Link what's on the page now, then anything added or re-pointed later
    * (SPAs, Stripe embeds mounted on demand). Only with a referral: a visitor
@@ -188,7 +273,7 @@ export class OpenPartner {
    * element is parsed, before Stripe upgrades it.
    */
   private watchStripe(): void {
-    if (typeof document === 'undefined' || !this.getReferral()) return;
+    if (typeof document === 'undefined' || this.observer || !this.getReferral()) return;
     this.linkStripe(document);
     if (typeof MutationObserver === 'undefined') return;
     this.observer = new MutationObserver((records) => {
@@ -213,36 +298,56 @@ export class OpenPartner {
     });
   }
 
-  /**
-   * Capture the cref from query string or cookie and stash in
-   * localStorage. Runs on init so the value survives SPA navigations,
-   * ITP cookie expiry, and subsequent page loads.
-   */
-  private captureCref(): void {
-    if (typeof window === 'undefined' || typeof localStorage === 'undefined') return;
-
-    const url = new URL(window.location.href);
-    const queryCref = url.searchParams.get(this.config.queryParam);
-
-    if (queryCref) {
-      localStorage.setItem(this.config.storageKey, queryCref);
-      return;
-    }
-
-    const cookieCref = this.readCookie(this.config.cookieName);
-    if (cookieCref && !localStorage.getItem(this.config.storageKey)) {
-      localStorage.setItem(this.config.storageKey, cookieCref);
-    }
+  /** The cref on the landing URL, if any. */
+  private queryCref(): string | null {
+    if (typeof window === 'undefined') return null;
+    return new URL(window.location.href).searchParams.get(this.config.queryParam);
   }
 
-  /** Mirror the referral into the brand's own first-party cookie (when
-   *  configured), refreshed on every page load that has one. */
+  /**
+   * Capture the cref from the URL (or the one held while consent was
+   * pending), else the router's cookie, else the referral cookie, and
+   * stash it in localStorage so it survives SPA navigations and later
+   * page loads. Returns the cref when it's a click arriving now, one this
+   * browser didn't have yet, for the landing report.
+   */
+  private captureCref(held: string | null): string | null {
+    if (typeof window === 'undefined') return null;
+
+    const incoming = held ?? this.queryCref();
+    if (incoming) {
+      const isNew = this.storageGet() !== incoming;
+      this.storageSet(incoming);
+      return isNew ? incoming : null;
+    }
+
+    if (this.storageGet()) return null;
+    // A page that isn't the landing page: the router's own cookie (a
+    // self-host whose router shares the brand's domain), then the referral
+    // cookie a sibling subdomain or the brand's server wrote.
+    const restored = this.readCookie(this.config.cookieName) ?? this.readCookie(this.referralCookieName());
+    if (restored) this.storageSet(restored);
+    return null;
+  }
+
+  private referralCookieName(): string {
+    const cfg = this.config.referralCookie;
+    return (cfg && cfg.name) || REFERRAL_COOKIE_DEFAULT;
+  }
+
+  /**
+   * Mirror the referral into the brand's own first-party cookie (when
+   * configured). Left alone when it already holds this referral: in Safari
+   * rewriting it from script would trade a server-set cookie's full
+   * lifetime for the 7-day cap. A new click overwrites it.
+   */
   private writeReferralCookie(): void {
     const cfg = this.config.referralCookie;
     if (!cfg || typeof document === 'undefined') return;
     const referral = this.getReferral();
     if (!referral || !STRIPE_REFERENCE_RE.test(referral)) return;
-    const name = cfg.name ?? 'op_ref';
+    const name = this.referralCookieName();
+    if (this.readCookie(name) === referral) return;
     const maxAge = Math.round((cfg.days ?? 90) * 86400);
     const secure = typeof location !== 'undefined' && location.protocol === 'https:' ? '; Secure' : '';
     const domain = cfg.domain ? `; Domain=${cfg.domain}` : '';
@@ -252,17 +357,62 @@ export class OpenPartner {
   private readCookie(name: string): string | null {
     if (typeof document === 'undefined') return null;
     const match = document.cookie.match(new RegExp(`(^|; )${name}=([^;]+)`));
-    return match ? decodeURIComponent(match[2]!) : null;
+    if (!match) return null;
+    try {
+      return decodeURIComponent(match[2]!);
+    } catch {
+      return null;
+    }
+  }
+
+  // localStorage throws in some sandboxed iframes and with site data
+  // blocked; the referral then lives in the cookie alone.
+  private storageGet(): string | null {
+    try {
+      return typeof localStorage === 'undefined' ? null : localStorage.getItem(this.config.storageKey);
+    } catch {
+      return null;
+    }
+  }
+
+  private storageSet(value: string): void {
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(this.config.storageKey, value);
+    } catch {
+      // Storage unavailable; see storageGet.
+    }
+  }
+
+  private storageRemove(): void {
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.removeItem(this.config.storageKey);
+    } catch {
+      // Storage unavailable; see storageGet.
+    }
+  }
+
+  /** Tell OpenPartner the click arrived. Best-effort, once per click. */
+  private async reportLanding(cref: string): Promise<void> {
+    if (!STRIPE_REFERENCE_RE.test(cref) || typeof fetch === 'undefined') return;
+    try {
+      await requestJson(`${this.config.apiUrl}/attribution/landing`, {
+        method: 'POST',
+        body: { cref },
+        keepalive: true,
+      });
+    } catch (err) {
+      this.config.onError(err);
+    }
   }
 
   /**
    * Stitch the current captured click to an authenticated user. Call
    * this on login, signup, or anywhere the user becomes known.
    *
-   * No-op if no cref was captured. Errors are reported through
-   * `config.onError` by default — attribution is best-effort from the
-   * browser — but you can await this and try/catch if you want to
-   * surface failures explicitly.
+   * No-op if no cref was captured, or consent isn't granted. Errors are
+   * reported through `config.onError` by default — attribution is
+   * best-effort from the browser — but you can await this and try/catch
+   * if you want to surface failures explicitly.
    */
   async identify(userId: string): Promise<IdentifyResponse | null> {
     const cref = this.getCref();

@@ -132,6 +132,7 @@ async function seedEverything(tenantId: string): Promise<void> {
     landingUrl: 'https://brand.example.test/?cref=x',
   });
   await db(TABLES.Identity).insert({ id: u(), tenantId, clickId, userId: 'user_purge' });
+  await db(TABLES.ClickLanding).insert({ clickId, tenantId, host: 'www.purge.test' });
   await db(TABLES.Event).insert({ id: eventId, tenantId, userId: 'user_purge', type: 'invoice_paid' });
   await db(TABLES.Attribution).insert({
     id: attributionId,
@@ -322,6 +323,7 @@ async function seedEverything(tenantId: string): Promise<void> {
     actorKind: 'operator_key',
     expiresAt: new Date(Date.now() + DAY),
   });
+  await db(TABLES.TrackingIssue).insert({ tenantId, day: '2026-10-01', kind: 'identify_unknown_click', count: 3 });
   await db(TABLES.PasswordCredential).insert({
     id: u(),
     tenantId,
