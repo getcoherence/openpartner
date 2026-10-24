@@ -190,6 +190,8 @@ const FOREIGN_TENANT = '01J0000000STRIPEAPPOTHER00';
 const createdAdmins: string[] = [];
 
 const PRODUCT_TABLES = [
+  // Every brand event the pipeline processes is logged (stripe-event-catchup.ts).
+  TABLES.StripeEventLog,
   TABLES.Commission,
   TABLES.Attribution,
   TABLES.Event,

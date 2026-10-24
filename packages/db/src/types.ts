@@ -1424,6 +1424,16 @@ export type StripeAppKeyMode = 'live' | 'test' | 'sandbox';
 /** Hosted-only sidecar: a brand's own Stripe account, connected through the
  *  OpenPartner Stripe App (migration 20261017000000). Credentials — never
  *  exported. At most one live row per tenant and per Stripe account. */
+/** A brand Stripe event the attribution pipeline processed (migration
+ *  20261024110000_stripe_event_log). Not exported. */
+export interface StripeEventLogRow {
+  stripeEventId: string;
+  tenantId: string;
+  type: string;
+  via: 'webhook' | 'catchup';
+  receivedAt: Date;
+}
+
 export interface TenantStripeConnectionRow {
   id: string;
   tenantId: string;
@@ -1447,6 +1457,10 @@ export interface TenantStripeConnectionRow {
    *  hourly sweep re-runs the check while it's null (migration
    *  20261021010000). */
   rewardsVerifiedAt: Date | null;
+  /** When this connection's events started being logged in StripeEventLog;
+   *  the Stripe catch-up never reaches back past it (migration
+   *  20261024110000). */
+  eventLogSince: Date;
   disconnectedAt: Date | null;
   disconnectReason: 'admin' | 'deauthorized' | 'replaced' | null;
   updatedAt: Date;

@@ -324,6 +324,7 @@ async function seedEverything(tenantId: string): Promise<void> {
     expiresAt: new Date(Date.now() + DAY),
   });
   await db(TABLES.TrackingIssue).insert({ tenantId, day: '2026-10-01', kind: 'identify_unknown_click', count: 3 });
+  await db(TABLES.StripeEventLog).insert({ stripeEventId: `evt_${u()}`, tenantId, type: 'invoice.paid', via: 'webhook' });
   await db(TABLES.PasswordCredential).insert({
     id: u(),
     tenantId,

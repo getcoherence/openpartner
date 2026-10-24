@@ -178,6 +178,45 @@ processing. Stripe has no API for an app to uninstall itself, so the admin is
 told to uninstall it under Settings → Installed apps to remove it from Stripe
 too.
 
+### Missed events — the catch-up
+
+Stripe retries a failed webhook delivery for three days and then gives up. An
+outage longer than that would lose those checkouts, invoices and refunds for
+good, while every report still looked plausible. So every six hours the
+scheduler's `stripe-event-catchup` job (`apps/api/src/stripe-event-catchup.ts`)
+lists each live connection's events through the app (`event_read`) and runs
+the ones nobody processed through the same pipeline the webhook uses.
+
+- **What counts as processed.** `processBrandStripeEvent` writes a
+  `StripeEventLog` row for every brand event it runs, whatever the event comes
+  to, in the same transaction. The catch-up replays only events with no row.
+- **Window.** The last 72 hours, never the last hour (a webhook may still be on
+  its way), and never before the connection's `eventLogSince`: the moment the
+  log started for it, so the first run after the deploy doesn't replay what
+  the webhook handled before it. (Events an older instance handled during the
+  rolling deploy itself have no row and may be replayed; the pipeline is
+  idempotent per event, so that's harmless.) A brand that disconnects and connects again gets a
+  new connection and a new start; one that only had to reconnect keeps its
+  start, so events skipped while the connection was broken are recorded when
+  it works again, within the 72 hours.
+- **Order and bounds.** The window is walked oldest first in six-hour slices,
+  and each slice's missed events are replayed in the order they happened, so
+  an original sale is recorded before the renewal that inherits its partner.
+  At most 50,000 events listed and 1,000 replayed per connection per run; a
+  run that stops early starts again from the window's start next time, and
+  the window slides with each run, so every event is listed before it ages
+  out while six hours hold fewer than 50,000 events. Events of the other mode
+  (test vs live) are ignored. One connection failing doesn't stop the others;
+  the next run retries.
+- **Tagging.** Recorded Events carry `metadata.recoveredBy = 'stripe_catchup'`.
+  **Admin → Tracking health** counts them: anything above zero means webhook
+  deliveries are failing, and the log line `[stripe-catchup] recorded events the
+  webhook missed` names the tenants.
+- **Retention.** Log rows older than 35 days are pruned by the same job: Stripe
+  lists events for 30. `StripeEventLog` is never exported (a delivery log).
+- **Self-host** isn't covered yet: there `/webhooks/stripe` shares the account
+  with OpenPartner's own billing and funding events.
+
 ### Stripe wins — forwarded conversions vs. Stripe-sourced revenue
 
 While a tenant's connection is healthy, a forwarded conversion whose
@@ -595,7 +634,8 @@ so approve it first. Once published:
 
 - **Reconnect needed.** The ops email names the brand and account. The brand
   reconnects from Integrations, and the same row is refreshed. Events delivered
-  while the connection was broken were skipped (see follow-ups).
+  while the connection was broken were skipped; the catch-up records the ones
+  from the last 72 hours on its next run (see *Missed events*).
 - **Rotating a webhook secret.** Add the new secret to
   `STRIPE_APP_WEBHOOK_SECRET` (comma-separated) before rolling it in Stripe, and
   remove the old one after.
@@ -627,8 +667,12 @@ so approve it first. Once published:
 
 - **Stripe Dashboard UI extension**: show the referring partner on a customer's
   page in the brand's Stripe Dashboard.
-- **Backfill after a reconnect**: replay the events skipped while a connection
-  needed reconnecting, through the Events API (`event_read` allows 30 days).
+- **Longer backfill after a reconnect**: the catch-up reaches back 72 hours.
+  A connection broken for longer could replay up to 30 days (`event_read`
+  allows it) with a one-off run from the reconnect.
+- **Catch-up on a self-host**: list the brand account's events with
+  `STRIPE_SECRET_KEY` and replay them through `/webhooks/stripe`'s full handler
+  (funding, billing, then attribution), not only the attribution pipeline.
 - **Per-account Coupon provenance**: deactivating a promo minted under a
   previously connected account. Needs a hosted sidecar, because Coupon is a core
   table. (A new account does get its own promos: see *Codes minted before the

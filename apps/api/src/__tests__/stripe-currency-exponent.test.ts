@@ -188,6 +188,8 @@ const TABLES_TO_CLEAN = [
   TABLES.Payout,
   TABLES.Partner,
   TABLES.Config,
+  // Every brand event the pipeline processes is logged (stripe-event-catchup.ts).
+  TABLES.StripeEventLog,
 ];
 
 beforeEach(async () => {
