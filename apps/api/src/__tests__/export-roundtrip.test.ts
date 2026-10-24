@@ -175,7 +175,7 @@ async function seedEverything(): Promise<Seeded> {
     subId: 'wct_9f2a-17',
     ts: new Date(),
   });
-  // The SDK saw it land (schemaVersion 11).
+  // The SDK saw it land (schemaVersion 12).
   await db(TABLES.ClickLanding).insert({ clickId, tenantId: TENANT, host: 'www.x.test' });
   await db(TABLES.Identity).insert({
     id: identityId,
@@ -971,10 +971,10 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     expect(coupon).toMatchObject({ code: 'CREATOR15', brandChosen: false });
   }, 30_000);
 
-  it('accepts a v10 bundle — no landings, every click restores as never landed', async () => {
+  it('accepts a v11 bundle — no landings, every click restores as never landed', async () => {
     const seeded = await seedEverything();
-    const v10 = await exportAll(db, TENANT);
-    delete v10[TABLES.ClickLanding];
+    const v11 = await exportAll(db, TENANT);
+    delete v11[TABLES.ClickLanding];
     await wipe();
 
     const app = createApp();
@@ -982,14 +982,14 @@ describe.skipIf(skipIntegration)('JSON round-trip', () => {
     const viaRoute = await request(app)
       .post('/import')
       .set('Authorization', `Bearer ${ADMIN_KEY}`)
-      .send({ schemaVersion: 10, tables: v10 });
+      .send({ schemaVersion: 11, tables: v11 });
     expect(viaRoute.status).toBe(200);
     expect(await db(TABLES.Click).where({ id: seeded.clickId }).first()).toBeTruthy();
     expect((await counts())[TABLES.ClickLanding]).toBe(0);
   }, 30_000);
 
-  it('exports at schemaVersion 11', () => {
-    expect(SCHEMA_VERSION).toBe(11);
+  it('exports at schemaVersion 12', () => {
+    expect(SCHEMA_VERSION).toBe(12);
   });
 });
 

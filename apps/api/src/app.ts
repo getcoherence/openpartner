@@ -40,6 +40,7 @@ import { adminOverviewRouter } from './routes/admin-overview.js';
 import { funnelRouter } from './routes/funnel.js';
 import { trackingHealthRouter } from './routes/tracking-health.js';
 import { referralsRouter } from './routes/referrals.js';
+import { recruitsRouter } from './routes/recruits.js';
 import { settingsRouter } from './routes/settings.js';
 import { mountStaticUploads, uploadsRouter } from './routes/uploads.js';
 import { brandResourcesRouter } from './routes/brand-resources.js';
@@ -299,6 +300,7 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(funnelRouter);
   app.use(trackingHealthRouter);
   app.use(referralsRouter);
+  app.use(recruitsRouter);
   app.use(fraudReviewRouter);
   app.use(webhooksRouter);
   app.use(identifyRouter);

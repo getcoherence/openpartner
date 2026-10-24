@@ -14,7 +14,7 @@ that overstates itself is worse than one with a documented hole.
 ```json
 {
   "exportedAt": "2026-08-09T12:00:00.000Z",
-  "schemaVersion": 10,
+  "schemaVersion": 11,
   "tables": { "Partner": [ … ], "Program": [ … ], … }
 }
 ```
@@ -119,11 +119,11 @@ account, a UPI ID or free-text instructions
 it travels opened; see [Payout details](#payout-details). A v1–v8 bundle
 restores with no payout details, and partners enter them again.
 
-Row 10 was added in schemaVersion 11 (Oct 2026). A `ClickLanding` is the
+Row 10 was added in schemaVersion 12 (Oct 2026). A `ClickLanding` is the
 browser SDK's record that a click arrived on the brand's own site
 (`POST /attribution/landing`): one row per click, the first landing, with the
 page's hostname and never its path. Admin → Tracking health compares them
-with clicks to show the ones lost before the page. A v10 bundle restores no
+with clicks to show the ones lost before the page. A v11 bundle restores no
 landings, which is what an instance that predates the beacon recorded.
 
 `Coupon` rows carry `brandChosen` (schemaVersion 10, Oct 2026): the
@@ -136,6 +136,22 @@ who picked the code, which nothing can re-derive, so the column bumps the
 version. A v1–v9 bundle's coupons restore with `brandChosen` false, the
 value the migration `20261021020000_coupon_brand_chosen` gave every
 existing code.
+
+Two-tier commissions (schemaVersion 11, Oct 2026,
+[two-tier-commissions.md](two-tier-commissions.md)) add columns to three
+tables. `Partner` rows carry `recruitedByPartnerId` and `recruitedAt` (who
+recruited the partner and when that started) and `recruitCode` (their own
+code for the join page's `?ref=`). `Program` rows carry
+`recruiterCommissionPercent` and `recruiterCommissionMonths`, the
+recruiter's share and how long it lasts. `Commission` rows carry
+`sourceCommissionId`, set on a recruiter's share and naming the recruit's
+commission it was worked out from. Who recruited whom is raw data nothing
+can re-derive, and a recruiter's share is ledger history, so the columns
+bump the version. Both self-references (a recruit and their recruiter, a
+share and its source) are checked at commit, so a SQL restore that writes
+`Partner` or `Commission` in several chunks restores them in any order. A
+v1–v10 bundle restores with every new column null: no recruiters, no codes,
+no programs paying a share.
 
 `Partner` rows carry `portalAccess` (schemaVersion 5, Oct 2026): whether
 the partner may sign in to the partner portal. A headless program turns it
@@ -425,7 +441,8 @@ that should attribute every event against the window alone.
 | 8 (Oct 2026) | `Click` rows carry `subId`, the publisher's `?sub_id=` (older bundles restore it as null) |
 | 9 (Oct 2026) | added `PartnerPayoutProfile`, its `details` opened (older bundles restore no payout details) |
 | 10 (Oct 2026) | `Coupon` rows carry `brandChosen`, whether the brand's admin typed the code (older bundles restore it as false) |
-| 11 (Oct 2026) | added `ClickLanding`, the browser SDK's record that a click reached the brand's site (older bundles restore no landings) |
+| 11 (Oct 2026) | two-tier commissions: `Partner` rows carry `recruitedByPartnerId`, `recruitedAt` and `recruitCode`, `Program` rows `recruiterCommissionPercent` and `recruiterCommissionMonths`, `Commission` rows `sourceCommissionId` (older bundles restore them as null) |
+| 12 (Oct 2026) | added `ClickLanding`, the browser SDK's record that a click reached the brand's site (older bundles restore no landings) |
 
 **Importing a v1 or v2 bundle.** `POST /import` upgrades older rows before
 inserting them (`upgradeBundle` in `apps/api/src/export.ts`). A v2
