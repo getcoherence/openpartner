@@ -72,16 +72,17 @@ the single redirect URI on the platform origin as the other flows
 leads back to `/creator/login?error=google_unavailable`.
 
 After the usual ID-token checks (issuer, audience, expiry, nonce,
-`email_verified`), the creator flow adds one more. **Google must be
-authoritative for the address**: a `@gmail.com` / `@googlemail.com` address,
-or a Workspace account (the ID token carries `hd`). A Google account opened on
-another provider's address (say a Yahoo address added to a Google account)
-proves only who could read that inbox when it was opened. If the address
-has since changed hands, the former owner would get in. Google documents
-this limit, so those creators land on
-`/creator/login?error=google_not_authoritative` and use their password or an
-emailed link instead. The brand flows from #211 don't apply this check yet
-(see the PR's follow-up note).
+`email_verified`), there is one more. **Google must be authoritative for the
+address**: a `@gmail.com` / `@googlemail.com` address, or a Workspace account
+(the ID token carries `hd`). A Google account opened on another provider's
+address (say a Yahoo address added to a Google account) proves only who could
+read that inbox when it was opened. If the address has since changed hands,
+the former owner would get in. Google documents this limit, so those creators
+land on `/creator/login?error=google_not_authoritative` and use their password
+or an emailed link instead. Every Google flow applies the same check
+(`verifiedEmailFromCode`): brand admins land back on `/signin`, operators on
+`/platform/login` and a brand's admins and partners on that brand's `/login`,
+each with the same error.
 
 Then the callback calls the Network server-to-server:
 

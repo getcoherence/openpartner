@@ -7,6 +7,10 @@
  * the existing verify endpoint. So most tests run the whole round trip —
  * password → token → verify → cookie — rather than stopping at the token.
  *
+ * Google only vouches for an address it is authoritative for: a Gmail
+ * address, or a Workspace account (`hd`). The stubbed ID tokens carry
+ * `hd: 'pw.test'` unless a test says otherwise.
+ *
  * Skipped when DATABASE_URL is unset, like the rest of the integration suite.
  */
 
@@ -598,6 +602,7 @@ async function googleCallback(started: Started, claims: Record<string, unknown>,
         exp: Math.floor(Date.now() / 1000) + 300,
         nonce: started.nonce,
         email_verified: true,
+        hd: 'pw.test',
         ...claims,
       }),
     ).toString('base64url');
@@ -757,6 +762,65 @@ describe.skipIf(skipIntegration)('Google sign-in', () => {
 
       const stranger = await googleCallback(await googleStart(`flow=portal&slug=${slug}`), { email: address('gstranger') });
       expect(stranger.headers.location).toBe(`http://localhost:5673/t/${slug}/login?error=google_no_account`);
+    } finally {
+      restore();
+    }
+  });
+
+  it('every flow refuses an address Google isn’t authoritative for, and mints no token', async () => {
+    const restore = withGoogle();
+    try {
+      const { id: tenantId, slug } = await makeTenant();
+      const admin = address('gnotauth-admin');
+      const partner = address('gnotauth-partner');
+      await makeAdmin(tenantId, admin);
+      await makePartner(tenantId, partner);
+      const next = '/admin/partners';
+      // The ops flow test already minted one for the operator.
+      const countTokens = async () =>
+        Number(
+          (await db(TABLES.MagicLinkToken).whereIn('email', [admin, partner, OPS_EMAIL]).count<{ n: string }[]>('* as n'))[0]!.n,
+        );
+      const before = await countTokens();
+
+      // A Google account opened on another provider's address: verified
+      // once, but the address may belong to someone else by now. An empty
+      // `hd` is no Workspace account either.
+      const cases: Array<[string, string, Record<string, unknown>, string]> = [
+        ['flow=account', admin, { hd: undefined }, '/signin'],
+        [`flow=account&next=${encodeURIComponent(next)}`, admin, { hd: undefined }, '/signin'],
+        ['flow=account_add', admin, { hd: '' }, '/signin'],
+        ['flow=ops', OPS_EMAIL, { hd: undefined }, '/platform/login'],
+        [`flow=portal&slug=${slug}`, partner, { hd: undefined }, `/t/${slug}/login`],
+        [`flow=portal&slug=${slug}`, admin, { hd: undefined }, `/t/${slug}/login`],
+      ];
+      for (const [query, email, claims, page] of cases) {
+        const res = await googleCallback(await googleStart(query), { email, ...claims });
+        expect(res.status).toBe(302);
+        const landing = new URL(res.headers.location as string);
+        expect(`${landing.origin}${landing.pathname}`).toBe(`http://localhost:5673${page}`);
+        expect(landing.searchParams.get('error')).toBe('google_not_authoritative');
+        // Trying again with a password or a link still lands where it would have.
+        expect(landing.searchParams.get('next')).toBe(query.includes('next=') ? next : null);
+      }
+      expect(await countTokens()).toBe(before);
+    } finally {
+      restore();
+    }
+  });
+
+  it('a Gmail address needs no `hd`: Google owns it', async () => {
+    const restore = withGoogle();
+    try {
+      for (const domain of ['gmail.com', 'googlemail.com']) {
+        const email = `gmail-${rnd()}@${domain}`;
+        emails.add(email);
+        const res = await googleCallback(await googleStart('flow=account'), { email, hd: undefined });
+        expect(res.headers.location).toMatch(/^http:\/\/localhost:5673\/auth\/magic\?token=/);
+        const verify = await request(app).post('/auth/platform-verify').send({ token: tokenFromLocation(res) });
+        expect(verify.status).toBe(200);
+        expect(verify.body.email).toBe(email);
+      }
     } finally {
       restore();
     }
