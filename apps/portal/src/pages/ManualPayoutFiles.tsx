@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCheck, Download, FilePlus2, FileSpreadsheet, RefreshCw, Send, Trash2 } from 'lucide-react';
-import { api, apiDownload, saveBlob } from '../api.js';
+import { ApiError, api, apiDownload, saveBlob } from '../api.js';
 import { TenantLink } from '../tenant-link.js';
 import { alpha, theme } from '../theme.js';
 import { Button, Card, ErrorBanner, Input, Select, Table, formatDate, money } from '../ui.js';
 import { HOLD_REASON, type HoldReason } from './payout-holds.js';
 import { usePaypalConnections, type PaypalEnvironment } from './admin/PaypalPayoutsCard.js';
+import { rateDateLabel, rateLabel, withdrawalNote } from './payout-sent.js';
 
 type Provider = 'paypal' | 'wise';
 type DoNotPay = 'country_not_supported' | 'screening_confirmed';
@@ -32,7 +33,9 @@ interface ManualRun {
   runId: string;
   createdAt: string;
   pendingCount: number;
-  ready: Array<{ provider: Provider; currency: string; count: number; total: string }>;
+  /** `sendAs`: balances PayPal can't send in `currency` (INR), which Pay
+   *  with PayPal sends in this currency at a quoted rate. No file. */
+  ready: Array<{ provider: Provider; currency: string; sendAs?: string | null; count: number; total: string }>;
   exports: Array<{
     exportId: string;
     provider: Provider;
@@ -53,6 +56,16 @@ interface PaypalItem {
   status: string;
   transactionId: string | null;
   error: string | null;
+}
+
+/** A payout a PayPal batch sends in another currency, as stamped. */
+interface Conversion {
+  sourceAmount: string;
+  sourceCurrency: string;
+  sentAmount: string;
+  sentCurrency: string;
+  rate: string;
+  rateDate: string;
 }
 
 /** GET /payouts/runs/:runId/payouts */
@@ -78,8 +91,10 @@ interface RunPayout {
     reference: string | null;
     destinationChanged: boolean;
     paypal?: PaypalItem | null;
+    conversion?: Conversion | null;
   } | null;
   ready: Provider | null;
+  sendAs?: string | null;
   excluded: Exclusion | null;
   complianceWarning: HoldReason | null;
   doNotPay: DoNotPay | null;
@@ -95,12 +110,64 @@ interface PaypalBatch {
   total: string;
   state: BatchState;
   payoutBatchId: string | null;
+  /** Balances PayPal can't send, sent in `currency` at a quoted rate. */
+  conversion?: { sourceCurrency: string; sourceTotal: string; rate: string; rateDate: string } | null;
   summary: { paid: number; released: number; unclaimed: number; processing: number };
   /** A finished sandbox batch: what PayPal's sandbox did with test money. */
   rehearsal?: { paid: number; unclaimed: number; failed: number } | null;
   lastError: string | null;
   createdAt: string;
   lastSyncedAt: string | null;
+}
+
+/** POST /payouts/runs/:runId/paypal-batches/quote */
+interface ConversionQuote {
+  quoteId: string;
+  /** The app the quote is bound to; a send after a switch is refused. */
+  environment: PaypalEnvironment;
+  currency: string;
+  sendAs: string;
+  rate: string;
+  rateDate: string;
+  expiresAt: string;
+  count: number;
+  sourceTotal: string;
+  sentTotal: string;
+  leftOut: Array<{ payoutId: string; partnerName: string; amount: string; sentAmount: string; reason: 'over_paypal_limit' | 'below_minimum' }>;
+}
+
+/** Why a converted send didn't go, in words. */
+const QUOTE_ERRORS: Record<string, string> = {
+  quote_expired: 'The exchange-rate quote expired (they last 15 minutes). Press the button again for a fresh one.',
+  quote_changed: 'These payouts, or the PayPal app sending them, changed since the quote. Press the button again for a fresh quote.',
+  conversion_not_enabled: 'Paying INR balances in USD is turned off in Settings.',
+  fx_unavailable: 'The European Central Bank reference rates can’t be read right now, so nothing was sent. Try again shortly.',
+};
+
+function quoteError(err: unknown): unknown {
+  if (!(err instanceof ApiError)) return err;
+  const body = err.detail as { error?: string; detail?: string } | undefined;
+  if (body?.error && QUOTE_ERRORS[body.error]) return QUOTE_ERRORS[body.error];
+  if (body?.error === 'nothing_to_send' && body.detail) return body.detail;
+  return err;
+}
+
+/** What the brand confirms before a converted batch goes. */
+function conversionAsk(q: ConversionQuote): string {
+  const what = `${q.count === 1 ? '1 payout' : `${q.count.toLocaleString()} payouts`} totalling ${money(q.sourceTotal, q.currency)} as ${money(q.sentTotal, q.sendAs)}`;
+  const lines = [
+    q.environment === 'sandbox'
+      ? `Test ${what} with your PayPal sandbox app? PayPal’s sandbox moves test money only: nothing is marked paid, and the payouts come back to send when it’s done.`
+      : `Send ${what} from your live PayPal account now? PayPal moves the money as soon as it accepts the batch.`,
+    `Rate: ${rateLabel(q.rate, q.currency, q.sendAs, { exact: true })}, the European Central Bank reference rate of ${rateDateLabel(q.rateDate)}. Each payout is converted and rounded to the cent on its own.`,
+    withdrawalNote(q.sendAs, q.currency, 'brand'),
+  ];
+  const over = q.leftOut.filter((l) => l.reason === 'over_paypal_limit').length;
+  const tiny = q.leftOut.length - over;
+  if (over > 0) lines.push(`${over === 1 ? '1 payout is' : `${over} payouts are`} over PayPal’s per-payment limit in ${q.sendAs} and stay out of this batch. Pay them another way.`);
+  if (tiny > 0) lines.push(`${tiny === 1 ? '1 payout is' : `${tiny} payouts are`} under a cent in ${q.sendAs} and stay out.`);
+  lines.push(`This rate holds until ${new Date(q.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`);
+  return lines.join('\n\n');
 }
 
 /** POST /payouts/runs/:runId/exports */
@@ -222,6 +289,23 @@ export function ManualPayoutFiles() {
     onSettled: refresh,
   });
 
+  // Balances PayPal can't send (INR): quote the rate, show it, then send
+  // at exactly that rate.
+  const payConverted = useMutation({
+    mutationFn: async (g: { currency: string; sendAs: string }) => {
+      const { quote } = await api<{ quote: ConversionQuote }>(`/payouts/runs/${runId}/paypal-batches/quote`, {
+        method: 'POST',
+        body: { currency: g.currency, sendAs: g.sendAs },
+      });
+      if (!window.confirm(conversionAsk(quote))) return null;
+      return api<{ batch: PaypalBatch }>(`/payouts/runs/${runId}/paypal-batches`, {
+        method: 'POST',
+        body: { currency: g.currency, sendAs: g.sendAs, quoteId: quote.quoteId },
+      });
+    },
+    onSettled: refresh,
+  });
+
   const syncBatch = useMutation({
     mutationFn: (batchId: string) => api<{ batch: PaypalBatch }>(`/payouts/paypal-batches/${batchId}/sync`, { method: 'POST' }),
     onSettled: refresh,
@@ -265,6 +349,7 @@ export function ManualPayoutFiles() {
   const busy =
     makeFile.isPending ||
     payWithPaypal.isPending ||
+    payConverted.isPending ||
     syncBatch.isPending ||
     resolveBatch.isPending ||
     cancelUnclaimed.isPending ||
@@ -327,6 +412,7 @@ export function ManualPayoutFiles() {
           batches.error ??
           makeFile.error ??
           payWithPaypal.error ??
+          quoteError(payConverted.error) ??
           syncBatch.error ??
           resolveBatch.error ??
           cancelUnclaimed.error ??
@@ -418,38 +504,72 @@ export function ManualPayoutFiles() {
 
             {run.data.ready.length > 0 && (
               <Section title="Ready to send">
-                {run.data.ready.map((g) => (
-                  <Row key={`${g.provider}:${g.currency}`}>
-                    <div style={{ flex: 1, minWidth: 220, fontSize: 13 }}>
-                      <span style={{ fontWeight: 600 }}>{PROVIDER[g.provider]}</span>
-                      <span style={{ color: theme.textMuted }}>
-                        {' '}
-                        · {g.currency} · {plural(g.count, 'payout')} · {money(g.total, g.currency)}
-                      </span>
-                    </div>
-                    <Button size="sm" variant="secondary" icon={<FilePlus2 size={13} />} onClick={() => makeFile.mutate({ provider: g.provider, currency: g.currency })} disabled={busy}>
-                      Make file
-                    </Button>
-                    {g.provider === 'paypal' && activePaypal && (
-                      <Button
-                        size="sm"
-                        icon={<Send size={13} />}
-                        onClick={() => {
-                          const n = Math.min(g.count, 5000);
-                          const what = n === g.count ? `${plural(n, 'payout')} totalling ${money(g.total, g.currency)}` : `the first ${n.toLocaleString()} of these payouts`;
-                          const ask =
-                            activePaypal.environment === 'sandbox'
-                              ? `Test ${what} with your PayPal sandbox app? PayPal’s sandbox moves test money only: nothing is marked paid, and the payouts come back to send when it’s done.`
-                              : `Send ${what} from your live PayPal account now? PayPal moves the money as soon as it accepts the batch.`;
-                          if (window.confirm(ask)) payWithPaypal.mutate(g.currency);
-                        }}
-                        disabled={busy}
-                      >
-                        {payWithPaypal.isPending ? 'Sending…' : activePaypal.environment === 'sandbox' ? 'Test with PayPal sandbox' : 'Pay with PayPal'}
+                {run.data.ready.map((g) =>
+                  g.sendAs ? (
+                    <Row key={`${g.provider}:${g.currency}:${g.sendAs}`}>
+                      <div style={{ flex: 1, minWidth: 220, fontSize: 13 }}>
+                        <span style={{ fontWeight: 600 }}>{PROVIDER[g.provider]}</span>
+                        <span style={{ color: theme.textMuted }}>
+                          {' '}
+                          · {g.currency} → {g.sendAs} · {plural(g.count, 'payout')} · {money(g.total, g.currency)}
+                        </span>
+                        <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>
+                          PayPal can’t send {g.currency}. These go out in {g.sendAs} at the European Central Bank rate, which you see
+                          before anything is sent. No file can do this.
+                        </div>
+                      </div>
+                      {activePaypal ? (
+                        <Button
+                          size="sm"
+                          icon={<Send size={13} />}
+                          onClick={() => payConverted.mutate({ currency: g.currency, sendAs: g.sendAs! })}
+                          disabled={busy}
+                        >
+                          {payConverted.isPending
+                            ? 'Getting the rate…'
+                            : activePaypal.environment === 'sandbox'
+                              ? `Test with PayPal sandbox in ${g.sendAs}`
+                              : `Pay with PayPal in ${g.sendAs}`}
+                        </Button>
+                      ) : (
+                        <span style={{ fontSize: 12.5, color: theme.textMuted }}>
+                          <TenantLink to="/admin/settings">Connect your PayPal app</TenantLink> to send these.
+                        </span>
+                      )}
+                    </Row>
+                  ) : (
+                    <Row key={`${g.provider}:${g.currency}`}>
+                      <div style={{ flex: 1, minWidth: 220, fontSize: 13 }}>
+                        <span style={{ fontWeight: 600 }}>{PROVIDER[g.provider]}</span>
+                        <span style={{ color: theme.textMuted }}>
+                          {' '}
+                          · {g.currency} · {plural(g.count, 'payout')} · {money(g.total, g.currency)}
+                        </span>
+                      </div>
+                      <Button size="sm" variant="secondary" icon={<FilePlus2 size={13} />} onClick={() => makeFile.mutate({ provider: g.provider, currency: g.currency })} disabled={busy}>
+                        Make file
                       </Button>
-                    )}
-                  </Row>
-                ))}
+                      {g.provider === 'paypal' && activePaypal && (
+                        <Button
+                          size="sm"
+                          icon={<Send size={13} />}
+                          onClick={() => {
+                            const n = Math.min(g.count, 5000);
+                            const what = n === g.count ? `${plural(n, 'payout')} totalling ${money(g.total, g.currency)}` : `the first ${n.toLocaleString()} of these payouts`;
+                            const ask =
+                              activePaypal.environment === 'sandbox'
+                                ? `Test ${what} with your PayPal sandbox app? PayPal’s sandbox moves test money only: nothing is marked paid, and the payouts come back to send when it’s done.`
+                                : `Send ${what} from your live PayPal account now? PayPal moves the money as soon as it accepts the batch.`;
+                            if (window.confirm(ask)) payWithPaypal.mutate(g.currency);
+                          }}
+                          disabled={busy}
+                        >
+                          {payWithPaypal.isPending ? 'Sending…' : activePaypal.environment === 'sandbox' ? 'Test with PayPal sandbox' : 'Pay with PayPal'}
+                        </Button>
+                      )}
+                    </Row>
+                  ),
+                )}
               </Section>
             )}
 
@@ -464,7 +584,17 @@ export function ManualPayoutFiles() {
                       <div style={{ fontWeight: 500 }}>{p.partnerName}</div>
                       <div style={{ fontSize: 12, color: theme.textDim }}>{p.partnerEmail}</div>
                     </div>,
-                    <span style={{ fontWeight: 500 }}>{money(p.amount, p.currency)}</span>,
+                    <div>
+                      <span style={{ fontWeight: 500 }}>{money(p.amount, p.currency)}</span>
+                      {p.export?.conversion && (
+                        <div
+                          style={{ fontSize: 12, color: theme.textMuted }}
+                          title={rateLabel(p.export.conversion.rate, p.export.conversion.sourceCurrency, p.export.conversion.sentCurrency, { exact: true })}
+                        >
+                          sent as {money(p.export.conversion.sentAmount, p.export.conversion.sentCurrency)}
+                        </div>
+                      )}
+                    </div>,
                     <div style={{ fontSize: 13 }}>
                       <div>{p.destination?.summary ?? <span style={{ color: theme.textDim }}>—</span>}</div>
                       <Notes p={p} />
@@ -525,7 +655,9 @@ function BatchRow({
         <span style={{ fontWeight: 600 }}>PayPal{b.environment === 'sandbox' ? ' sandbox' : ''}</span>
         <span style={{ color: theme.textMuted }}>
           {' '}
-          · {b.currency} · {plural(b.itemCount, 'payout')} · {money(b.total, b.currency)} · sent {formatDate(b.createdAt, { relative: true })}
+          · {b.currency} · {plural(b.itemCount, 'payout')} · {money(b.total, b.currency)}
+          {b.conversion && ` (${money(b.conversion.sourceTotal, b.conversion.sourceCurrency)} at ${rateLabel(b.conversion.rate, b.conversion.sourceCurrency, b.currency)}, ECB ${rateDateLabel(b.conversion.rateDate)})`} · sent{' '}
+          {formatDate(b.createdAt, { relative: true })}
         </span>
         <div style={{ fontSize: 12.5, marginTop: 2, color: b.state === 'reconcile_required' || b.state === 'failed' || b.state === 'denied' ? theme.danger : theme.textMuted }}>
           {b.state === 'submitted' && s.processing === 0 && s.unclaimed > 0 ? 'Waiting for partners to claim their payments' : BATCH_STATE[b.state]}
@@ -683,6 +815,7 @@ function FileCell({
       </div>
     );
   }
+  if (p.ready && p.sendAs) return <div style={{ fontSize: 13, color: theme.textMuted }}>Ready for {PROVIDER[p.ready]}, sent in {p.sendAs}</div>;
   if (p.ready) return <div style={{ fontSize: 13, color: theme.textMuted }}>Ready for {PROVIDER[p.ready]}</div>;
   return (
     <div style={{ fontSize: 12.5, maxWidth: 220 }}>

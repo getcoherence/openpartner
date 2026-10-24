@@ -3,10 +3,15 @@
  * sent through the PayPal Payouts API with the BRAND's own REST app
  * (paypal-connection.ts). It is the PayPal batch file of
  * manual-payout-files.ts without the upload: the same payouts, the same
- * rules (PayPal emails only, PayPal's currencies, no INR, 5,000 a batch,
- * PayPal's per-item limit, nothing on a do-not-pay hold), and the same
- * money flow, brand's PayPal balance → partner's PayPal account.
- * OpenPartner holds nothing and moves nothing; it makes the API call.
+ * rules (PayPal emails only, PayPal's currencies, 5,000 a batch, PayPal's
+ * per-item limit, nothing on a do-not-pay hold), and the same money flow,
+ * brand's PayPal balance → partner's PayPal account. OpenPartner holds
+ * nothing and moves nothing; it makes the API call.
+ *
+ * One thing a file can't do: a brand that opted in sends balances PayPal
+ * can't send (INR) in USD, at an ECB rate it was quoted and saw before
+ * sending (paypal-send-as.ts, quotePaypalConversion). The rate is frozen
+ * into the batch and onto each payout's stamp; the payouts stay in INR.
  *
  * ## One batch, at most once
  *
@@ -78,6 +83,7 @@ import type { Knex } from 'knex';
 import { ulid } from 'ulid';
 import {
   TABLES,
+  type PaypalBatchConversion,
   type PaypalBatchState,
   type PaypalConnectionRow,
   type PaypalPayoutBatchRow,
@@ -97,14 +103,30 @@ import {
   MAX_ROWS,
   PAYPAL_CURRENCIES,
   centsToString,
+  overPaypalItemLimit,
   paypalNote,
   pickReadyPayouts,
   plainText,
   stampManualPayouts,
   type ManualExportStamp,
   type PaypalItemStamp,
+  type PickedPayout,
 } from './manual-payout-files.js';
-import type { PaypalDetails } from './payout-profile.js';
+import { FxUnavailableError, crossRate, getEcbRates } from './fx.js';
+import {
+  PAYPAL_CONVERTIBLE_CURRENCIES,
+  QUOTE_TTL_MS,
+  convertAmount,
+  formatRate,
+  formatRateDate,
+  itemsDigest,
+  openQuote,
+  readPaypalPayoutSettings,
+  signQuote,
+  type PaypalConversionStamp,
+  type PaypalSendAsCurrency,
+} from './paypal-send-as.js';
+import { summarizeDetails, type PaypalDetails } from './payout-profile.js';
 import {
   PaypalApiError,
   cancelPayoutItem,
@@ -156,9 +178,14 @@ export interface PaypalBatchView {
   batchId: string;
   runId: string;
   environment: 'live' | 'sandbox';
+  /** What PayPal sends: the payouts' currency, or the one their balances
+   *  were converted to (`conversion`). */
   currency: string;
   itemCount: number;
   total: string;
+  /** A batch sending balances PayPal can't send (INR) in `currency`: their
+   *  own currency and total, and the rate frozen when it was made. */
+  conversion: PaypalBatchConversion | null;
   state: PaypalBatchState;
   /** PayPal's id and status for the batch, once PayPal has it. */
   payoutBatchId: string | null;
@@ -189,6 +216,7 @@ function view(b: PaypalPayoutBatchRow): PaypalBatchView {
     currency: b.currency,
     itemCount: b.itemCount,
     total: Number(b.total).toFixed(2),
+    conversion: b.conversion ?? null,
     state: b.state,
     payoutBatchId: b.payoutBatchId,
     batchStatus: b.batchStatus,
@@ -240,9 +268,264 @@ function emptyResult(): PaypalPassResult {
 // Create
 // ---------------------------------------------------------------------------
 
+/** A payout the next batch takes, and what PayPal is asked to send for
+ *  it: its own amount, or (converted) its amount at the batch's rate. */
+interface BatchItem extends PickedPayout {
+  sentAmount: string;
+}
+
+/** Sending balances PayPal can't send in another currency, at a rate. */
+interface Conversion {
+  sendAs: PaypalSendAsCurrency;
+  rate: string;
+  rateDate: string;
+}
+
+/** Left out of a converted batch: over PayPal's per-item limit in the
+ *  currency it's sent in, or too small to be a cent in it. */
+type LeftOutReason = 'over_paypal_limit' | 'below_minimum';
+
+/**
+ * The payouts the next batch of a run takes, in id order, up to 5,000:
+ * what a PayPal file would take, or, with a conversion, the balances
+ * PayPal can't send in `currency`, each converted at the rate on its own
+ * and kept only within PayPal's per-item limit in the currency it's sent
+ * in. A quote and the send it freezes call this with the same rate, so
+ * both see the same payouts and amounts while nothing in the run changes.
+ */
+async function pickBatchItems(
+  db: Knex,
+  tenantId: string,
+  runId: string,
+  currency: string,
+  conversion: Conversion | null,
+): Promise<{ items: BatchItem[]; leftOut: Array<BatchItem & { reason: LeftOutReason }> }> {
+  if (!conversion) {
+    const picked = await pickReadyPayouts(db, tenantId, runId, 'paypal', currency, MAX_ROWS.paypal);
+    return { items: picked.map((p) => ({ ...p, sentAmount: p.payout.amount })), leftOut: [] };
+  }
+  const sent = new Map<string, string>();
+  const leftOut: Array<BatchItem & { reason: LeftOutReason }> = [];
+  const picked = await pickReadyPayouts(db, tenantId, runId, 'paypal', currency, MAX_ROWS.paypal, {
+    sendAs: conversion.sendAs,
+    accept: (p) => {
+      const amount = convertAmount(p.payout.amount, conversion.rate, conversion.sendAs);
+      const reason: LeftOutReason | null = overPaypalItemLimit(amount, conversion.sendAs) ? 'over_paypal_limit' : Number(amount) <= 0 ? 'below_minimum' : null;
+      if (reason) {
+        leftOut.push({ ...p, sentAmount: amount, reason });
+        return false;
+      }
+      sent.set(p.payout.id, amount);
+      return true;
+    },
+  });
+  return { items: picked.map((p) => ({ ...p, sentAmount: sent.get(p.payout.id)! })), leftOut };
+}
+
+/** How many times PayPal has given this payout back (paypalReleases). */
+function releasesOf(p: Pick<PayoutRow, 'metadata'>): number {
+  return ((p.metadata as { paypalReleases?: unknown[] } | null)?.paypalReleases ?? []).length;
+}
+
+function digestOf(items: readonly BatchItem[]): string {
+  return itemsDigest(
+    items.map((i) => ({
+      payoutId: i.payout.id,
+      amount: Number(i.payout.amount).toFixed(2),
+      sentAmount: i.sentAmount,
+      releases: releasesOf(i.payout),
+      destination: (i.details as PaypalDetails).email.toLowerCase(),
+    })),
+  );
+}
+
+const sumOf = (amounts: readonly string[]) => centsToString(amounts.reduce((s, a) => s + majorToCents(a), 0));
+
+/** "1,500.00": PayPal's note is plain text, so no currency symbols. */
+function grouped(amount: string): string {
+  return Number(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** The note on a converted item: both amounts, the rate's date, and whose
+ *  the conversion to INR afterwards is. */
+function convertedNote(brandName: string | null, c: PaypalConversionStamp): string {
+  return plainText(
+    `${paypalNote(brandName)}: ${c.sourceCurrency} ${grouped(c.sourceAmount)}, sent as ${c.sentCurrency} ${grouped(c.sentAmount)} at the ECB reference rate of ${formatRateDate(c.rateDate)}. PayPal converts it to ${c.sourceCurrency} at its own rate.`,
+    400,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Quote (balances PayPal can't send)
+// ---------------------------------------------------------------------------
+
+export interface PaypalQuoteItem {
+  payoutId: string;
+  partnerId: string;
+  partnerName: string;
+  /** The PayPal account it goes to, masked. */
+  destination: string;
+  /** The payout's own amount, in the quote's `currency`. */
+  amount: string;
+  /** What PayPal would send for it, in `sendAs`: rounded on its own. */
+  sentAmount: string;
+}
+
+export interface PaypalConversionQuote {
+  /** Send with this (`POST …/paypal-batches` `{ currency, sendAs, quoteId }`)
+   *  until `expiresAt`. Signed; it holds nothing. */
+  quoteId: string;
+  runId: string;
+  /** The PayPal app it sends from. A send after another app was made
+   *  active is refused (quote_changed). */
+  environment: 'live' | 'sandbox';
+  currency: string;
+  sendAs: PaypalSendAsCurrency;
+  /** Units of sendAs per unit of currency. */
+  rate: string;
+  rateSource: 'ecb';
+  /** The ECB reference date (YYYY-MM-DD). */
+  rateDate: string;
+  quotedAt: string;
+  expiresAt: string;
+  count: number;
+  /** What the quoted payouts add up to, in `currency`. */
+  sourceTotal: string;
+  /** What PayPal would send: the sum of the per-item amounts, which can
+   *  differ by a few cents from sourceTotal × rate. */
+  sentTotal: string;
+  items: PaypalQuoteItem[];
+  /** Payouts this batch can't take at this rate; pay them another way. */
+  leftOut: Array<PaypalQuoteItem & { reason: LeftOutReason }>;
+}
+
+export type QuotePaypalResult =
+  | { ok: true; quote: PaypalConversionQuote }
+  | {
+      ok: false;
+      error: 'paypal_not_connected' | 'nothing_to_send' | 'currency_not_supported' | 'conversion_not_needed' | 'conversion_not_enabled' | 'fx_unavailable';
+      detail?: string;
+      /** nothing_to_send because every payout was left out at this rate. */
+      leftOut?: PaypalConversionQuote['leftOut'];
+    };
+
+const quoteItem = (i: BatchItem): PaypalQuoteItem => ({
+  payoutId: i.payout.id,
+  partnerId: i.payout.partnerId,
+  partnerName: i.partner.name,
+  destination: summarizeDetails(i.details),
+  amount: Number(i.payout.amount).toFixed(2),
+  sentAmount: i.sentAmount,
+});
+
+/**
+ * Quote the next batch of a run's balances PayPal can't send in
+ * `currency` (INR), sent in `sendAs` (USD): the ECB reference rate, each
+ * payout's converted amount, the totals, and a signed quote id the send
+ * takes within QUOTE_TTL_MS. Fails closed: no rate, no quote. Nothing is
+ * stamped or held; the send re-checks that the payouts are still these.
+ */
+export async function quotePaypalConversion(
+  tenantId: string,
+  runId: string,
+  currency: string,
+  sendAs: PaypalSendAsCurrency,
+  opts: { now?: () => Date } = {},
+): Promise<QuotePaypalResult> {
+  if (PAYPAL_CURRENCIES.has(currency)) return { ok: false, error: 'conversion_not_needed' };
+  if (!PAYPAL_CONVERTIBLE_CURRENCIES.has(currency)) return { ok: false, error: 'currency_not_supported' };
+  const now = (opts.now ?? (() => new Date()))();
+
+  const conn = await withTenantTransaction(tenantId, async (trx) => {
+    if ((await readPaypalPayoutSettings(trx, tenantId)).sendUnsupportedAs !== sendAs) return 'conversion_not_enabled' as const;
+    return (await activePaypalConnection(trx, tenantId)) ?? ('paypal_not_connected' as const);
+  });
+  if (typeof conn === 'string') return { ok: false, error: conn };
+
+  let conversion: Conversion;
+  try {
+    const rates = await getEcbRates();
+    const rate = crossRate(rates, currency, sendAs);
+    if (rate === null) return { ok: false, error: 'fx_unavailable', detail: `The ECB published no ${currency} to ${sendAs} rate.` };
+    conversion = { sendAs, rate: formatRate(rate), rateDate: rates.date };
+  } catch (err) {
+    if (err instanceof FxUnavailableError) return { ok: false, error: 'fx_unavailable', detail: 'The ECB reference rates can’t be read right now. Try again shortly.' };
+    throw err;
+  }
+
+  const { items, leftOut } = await withTenantTransaction(tenantId, (trx) => pickBatchItems(trx, tenantId, runId, currency, conversion));
+  if (items.length === 0) {
+    if (leftOut.length === 0) return { ok: false, error: 'nothing_to_send' };
+    const over = leftOut.filter((l) => l.reason === 'over_paypal_limit').length;
+    const tiny = leftOut.length - over;
+    const why = [
+      over > 0 && `${over === 1 ? '1 is' : `${over} are`} over PayPal’s per-payment limit in ${sendAs}`,
+      tiny > 0 && `${tiny === 1 ? '1 is' : `${tiny} are`} under a cent in ${sendAs}`,
+    ].filter(Boolean);
+    return {
+      ok: false,
+      error: 'nothing_to_send',
+      detail: `None of these payouts can go through PayPal at this rate: ${why.join(', and ')}. Pay them another way.`,
+      leftOut: leftOut.map((i) => ({ ...quoteItem(i), reason: i.reason })),
+    };
+  }
+  const quotedAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + QUOTE_TTL_MS).toISOString();
+  return {
+    ok: true,
+    quote: {
+      quoteId: signQuote({
+        tenantId,
+        runId,
+        connectionId: conn.id,
+        currency,
+        sendAs,
+        rate: conversion.rate,
+        rateDate: conversion.rateDate,
+        quotedAt,
+        expiresAt,
+        items: digestOf(items),
+      }),
+      environment: conn.environment,
+      runId,
+      currency,
+      sendAs,
+      rate: conversion.rate,
+      rateSource: 'ecb',
+      rateDate: conversion.rateDate,
+      quotedAt,
+      expiresAt,
+      count: items.length,
+      sourceTotal: sumOf(items.map((i) => i.payout.amount)),
+      sentTotal: sumOf(items.map((i) => i.sentAmount)),
+      items: items.map(quoteItem),
+      leftOut: leftOut.map((i) => ({ ...quoteItem(i), reason: i.reason })),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Create
+// ---------------------------------------------------------------------------
+
 export type SendWithPaypalResult =
   | { ok: true; batch: PaypalBatchView }
-  | { ok: false; error: 'paypal_not_connected' | 'nothing_to_send' | 'currency_not_supported' };
+  | {
+      ok: false;
+      error:
+        | 'paypal_not_connected'
+        | 'nothing_to_send'
+        | 'currency_not_supported'
+        | 'conversion_not_needed'
+        | 'conversion_not_enabled'
+        | 'invalid_quote'
+        | 'quote_expired'
+        | 'quote_changed';
+    };
+
+/** Thrown inside the create transaction to roll its stamps back. */
+class QuoteChanged extends Error {}
+class QuoteExpired extends Error {}
 
 /**
  * Send the next PayPal batch of a run, in one currency: the first 5,000
@@ -250,74 +533,151 @@ export type SendWithPaypalResult =
  * email (the same payouts a PayPal file would take). Commits the intent,
  * then posts it outside any transaction. A batch whose POST had an
  * unknown outcome comes back `posted` and is retried by the scheduler.
+ *
+ * With `sendAs` and `quoteId` (quotePaypalConversion): the balances PayPal
+ * can't send in `currency`, sent in `sendAs` at exactly the quoted rate,
+ * and only if the payouts and amounts are exactly the quoted ones;
+ * otherwise nothing is stamped and the brand quotes again.
  */
 export async function sendRunWithPaypal(
   tenantId: string,
   runId: string,
   currency: string,
   by: 'admin' | 'api',
-  opts: { now?: () => Date } = {},
+  opts: { now?: () => Date; sendAs?: PaypalSendAsCurrency; quoteId?: string } = {},
 ): Promise<SendWithPaypalResult> {
-  if (!PAYPAL_CURRENCIES.has(currency)) return { ok: false, error: 'currency_not_supported' };
   const now = opts.now ?? (() => new Date());
-
-  const created = await withTenantTransaction(tenantId, async (trx): Promise<string | 'paypal_not_connected' | 'nothing_to_send'> => {
-    const conn = await activePaypalConnection(trx, tenantId);
-    if (!conn) return 'paypal_not_connected';
-    const picked = await pickReadyPayouts(trx, tenantId, runId, 'paypal', currency, MAX_ROWS.paypal);
-    if (picked.length === 0) return 'nothing_to_send';
-
-    const id = ulid();
-    const at = now();
-    const stamp: ManualExportStamp = { exportId: id, provider: 'paypal', currency, at: at.toISOString(), by, via: 'api' };
-    const stamped = await stampManualPayouts(
-      trx,
-      tenantId,
-      picked.map((p) => p.payout.id),
-      stamp,
-    );
-    const rows = picked.filter((p) => stamped.has(p.payout.id));
-    if (rows.length === 0) return 'nothing_to_send';
-
-    const brandName = await resolveBrandName(trx, tenantId);
-    const note = paypalNote(brandName);
-    const request: PaypalCreateBatchRequest = {
-      sender_batch_header: {
-        sender_batch_id: id,
-        email_subject: plainText(brandName ? `You have a payout from ${brandName}` : 'You have a commission payout', 255),
-        // PayPal's email shows this with each item's note, so it doesn't
-        // repeat it.
-        email_message: plainText(brandName ? `${brandName} sent you your partner commission through PayPal.` : 'You were sent your partner commission through PayPal.', 1000),
-      },
-      items: rows.map((r) => ({
-        recipient_type: 'EMAIL',
-        receiver: (r.details as PaypalDetails).email,
-        amount: { value: paypalApiAmount(r.payout.amount, currency), currency },
-        sender_item_id: r.payout.id,
-        note,
-        recipient_wallet: 'PAYPAL',
-        purpose: 'SERVICES',
-      })),
+  let conversion: (Conversion & { quotedAt: string; expiresAt: string; items: string; connectionId: string }) | null = null;
+  if (opts.sendAs || opts.quoteId) {
+    if (PAYPAL_CURRENCIES.has(currency)) return { ok: false, error: 'conversion_not_needed' };
+    if (!PAYPAL_CONVERTIBLE_CURRENCIES.has(currency)) return { ok: false, error: 'currency_not_supported' };
+    const q = opts.quoteId ? openQuote(opts.quoteId) : null;
+    if (!q || q.tenantId !== tenantId || q.runId !== runId || q.currency !== currency || q.sendAs !== opts.sendAs) {
+      return { ok: false, error: 'invalid_quote' };
+    }
+    if (now().getTime() > Date.parse(q.expiresAt)) return { ok: false, error: 'quote_expired' };
+    conversion = {
+      sendAs: q.sendAs,
+      rate: q.rate,
+      rateDate: q.rateDate,
+      quotedAt: q.quotedAt,
+      expiresAt: q.expiresAt,
+      items: q.items,
+      connectionId: q.connectionId,
     };
-    await trx(TABLES.PaypalPayoutBatch).insert({
-      id,
-      tenantId,
-      connectionId: conn.id,
-      environment: conn.environment,
-      runId,
-      currency,
-      itemCount: rows.length,
-      total: centsToString(rows.reduce((s, r) => s + majorToCents(r.payout.amount), 0)),
-      state: 'intent',
-      requestEnc: encryptSecret(JSON.stringify(request)),
-      itemSummary: { processing: rows.length },
-      createdBy: by,
-      createdAt: at,
-      updatedAt: at,
+  } else if (!PAYPAL_CURRENCIES.has(currency)) {
+    return { ok: false, error: 'currency_not_supported' };
+  }
+
+  let created: string | 'paypal_not_connected' | 'nothing_to_send' | 'conversion_not_enabled' | 'quote_changed';
+  try {
+    created = await withTenantTransaction(tenantId, async (trx): Promise<typeof created> => {
+      const conn = await activePaypalConnection(trx, tenantId);
+      if (!conn) return 'paypal_not_connected';
+      if (conversion && (await readPaypalPayoutSettings(trx, tenantId)).sendUnsupportedAs !== conversion.sendAs) return 'conversion_not_enabled';
+      // The brand confirmed a send from this app (live, or a sandbox test):
+      // another app made active since is not what it agreed to.
+      if (conversion && conn.id !== conversion.connectionId) return 'quote_changed';
+      const { items: picked } = await pickBatchItems(trx, tenantId, runId, currency, conversion);
+      // A quote covers exactly the payouts and amounts it showed.
+      if (conversion && digestOf(picked) !== conversion.items) return 'quote_changed';
+      if (picked.length === 0) return 'nothing_to_send';
+
+      const id = ulid();
+      const at = now();
+      const sendCurrency = conversion?.sendAs ?? currency;
+      const stamp: ManualExportStamp = { exportId: id, provider: 'paypal', currency: sendCurrency, at: at.toISOString(), by, via: 'api' };
+      const converted = new Map<string, PaypalConversionStamp>();
+      if (conversion) {
+        for (const p of picked) {
+          converted.set(p.payout.id, {
+            sourceAmount: Number(p.payout.amount).toFixed(2),
+            sourceCurrency: currency,
+            sentAmount: p.sentAmount,
+            sentCurrency: conversion.sendAs,
+            rate: conversion.rate,
+            rateSource: 'ecb',
+            rateDate: conversion.rateDate,
+          });
+        }
+      }
+      const stamped = await stampManualPayouts(
+        trx,
+        tenantId,
+        picked.map((p) => p.payout.id),
+        stamp,
+        conversion ? new Map([...converted].map(([pid, c]) => [pid, { conversion: c }])) : undefined,
+        // Decided on the row being stamped, not on the read above: a payout
+        // another batch took and PayPal gave back in between has a new
+        // release, or a changed amount, and isn't the one quoted.
+        conversion ? new Map(picked.map((p) => [p.payout.id, { releases: releasesOf(p.payout), amount: p.payout.amount }])) : undefined,
+      );
+      const rows = picked.filter((p) => stamped.has(p.payout.id));
+      // A converted batch is exactly what the brand was shown, or nothing:
+      // a payout another batch took in the meantime voids the quote.
+      if (conversion && rows.length !== picked.length) throw new QuoteChanged();
+      if (rows.length === 0) return 'nothing_to_send';
+
+      const brandName = await resolveBrandName(trx, tenantId);
+      const note = paypalNote(brandName);
+      const request: PaypalCreateBatchRequest = {
+        sender_batch_header: {
+          sender_batch_id: id,
+          email_subject: plainText(brandName ? `You have a payout from ${brandName}` : 'You have a commission payout', 255),
+          // PayPal's email shows this with each item's note, so it doesn't
+          // repeat it.
+          email_message: plainText(brandName ? `${brandName} sent you your partner commission through PayPal.` : 'You were sent your partner commission through PayPal.', 1000),
+        },
+        items: rows.map((r) => ({
+          recipient_type: 'EMAIL',
+          receiver: (r.details as PaypalDetails).email,
+          amount: { value: paypalApiAmount(r.sentAmount, sendCurrency), currency: sendCurrency },
+          sender_item_id: r.payout.id,
+          note: converted.has(r.payout.id) ? convertedNote(brandName, converted.get(r.payout.id)!) : note,
+          recipient_wallet: 'PAYPAL',
+          purpose: 'SERVICES',
+        })),
+      };
+      const batchConversion: PaypalBatchConversion | null = conversion
+        ? {
+            sourceCurrency: currency,
+            sourceTotal: sumOf(rows.map((r) => r.payout.amount)),
+            rate: conversion.rate,
+            rateSource: 'ecb',
+            rateDate: conversion.rateDate,
+            quotedAt: conversion.quotedAt,
+          }
+        : null;
+      await trx(TABLES.PaypalPayoutBatch).insert({
+        id,
+        tenantId,
+        connectionId: conn.id,
+        environment: conn.environment,
+        runId,
+        currency: sendCurrency,
+        itemCount: rows.length,
+        total: sumOf(rows.map((r) => r.sentAmount)),
+        conversion: batchConversion,
+        state: 'intent',
+        requestEnc: encryptSecret(JSON.stringify(request)),
+        itemSummary: { processing: rows.length },
+        createdBy: by,
+        createdAt: at,
+        updatedAt: at,
+      });
+      // Checked again at the end: waiting for a connection or for row
+      // locks mustn't stretch a quote past its 15 minutes.
+      if (conversion && now().getTime() > Date.parse(conversion.expiresAt)) throw new QuoteExpired();
+      return id;
     });
-    return id;
-  });
-  if (created === 'paypal_not_connected' || created === 'nothing_to_send') return { ok: false, error: created };
+  } catch (err) {
+    if (err instanceof QuoteChanged) return { ok: false, error: 'quote_changed' };
+    if (err instanceof QuoteExpired) return { ok: false, error: 'quote_expired' };
+    throw err;
+  }
+  if (created === 'paypal_not_connected' || created === 'nothing_to_send' || created === 'conversion_not_enabled' || created === 'quote_changed') {
+    return { ok: false, error: created };
+  }
 
   // The intent is committed: post it on the privileged pool, outside any
   // transaction, scoped to this tenant.
@@ -560,6 +920,9 @@ interface AlertItem {
   error: string | null;
 }
 
+/** One entry of `metadata.paypalReleases`. A converted payout's
+ *  conversion is added from its stamp by RELEASE_SQL: the next send quotes
+ *  a fresh rate, and this keeps what the released attempt was. */
 function releaseRecord(batchId: string, reason: string, item: PaypalItemStamp | null, detail?: string): string {
   return JSON.stringify({
     batchId,
@@ -572,7 +935,7 @@ function releaseRecord(batchId: string, reason: string, item: PaypalItemStamp | 
   });
 }
 
-const RELEASE_SQL = `(metadata - 'manualExport') || jsonb_build_object('paypalReleases', coalesce(metadata->'paypalReleases', '[]'::jsonb) || jsonb_build_array(?::jsonb))`;
+const RELEASE_SQL = `(metadata - 'manualExport') || jsonb_build_object('paypalReleases', coalesce(metadata->'paypalReleases', '[]'::jsonb) || jsonb_build_array(?::jsonb || jsonb_strip_nulls(jsonb_build_object('conversion', metadata->'manualExport'->'conversion'))))`;
 
 /** Every pending payout still stamped with this batch: unstamped, its
  *  history recorded. Idempotent. */

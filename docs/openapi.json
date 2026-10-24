@@ -3966,6 +3966,48 @@
           "transfers"
         ]
       },
+      "PayoutSent": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "description": "What PayPal was asked to send."
+              }
+            ]
+          },
+          "currency": {
+            "type": "string"
+          },
+          "rate": {
+            "type": "string",
+            "pattern": "^\\d+(\\.\\d+)?$",
+            "description": "Units of the sent currency per unit of the payout’s currency, as a decimal string (ECB reference rates, crossed through EUR).",
+            "example": "0.011958904110"
+          },
+          "rateSource": {
+            "type": "string",
+            "enum": [
+              "ecb"
+            ]
+          },
+          "rateDate": {
+            "type": "string",
+            "description": "The ECB reference date of the rate (YYYY-MM-DD)."
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "rate",
+          "rateSource",
+          "rateDate"
+        ],
+        "description": "A payout PayPal can’t send in its own currency (INR), sent through Pay with PayPal in another (USD) at the ECB reference rate frozen when the batch was made. `amount` and `currency` on the payout stay its own. PayPal’s own conversion of it into the partner’s currency is between the partner and PayPal."
+      },
       "Payout": {
         "type": "object",
         "properties": {
@@ -4055,10 +4097,22 @@
                   "null"
                 ],
                 "description": "The partner's name. Null only if the partner record is gone."
+              },
+              "sent": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PayoutSent"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Set while (or once) a PayPal batch sends this payout in another currency; gone if PayPal returns it."
               }
             },
             "required": [
-              "partnerName"
+              "partnerName",
+              "sent"
             ]
           }
         ]
@@ -4152,6 +4206,32 @@
         },
         "required": [
           "holds"
+        ]
+      },
+      "PayoutWithSent": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Payout"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "sent": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PayoutSent"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Set while (or once) a PayPal batch sends this payout in another currency; gone if PayPal returns it."
+              }
+            },
+            "required": [
+              "sent"
+            ]
+          }
         ]
       },
       "BulkConfirmResult": {
@@ -4302,16 +4382,31 @@
                 "currency": {
                   "type": "string"
                 },
+                "sendAs": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Balances PayPal can’t send in `currency` (INR) that Pay with PayPal sends in this currency instead (the `paypal_payouts` setting): quote with `POST /payouts/runs/{runId}/paypal-batches/quote`, then send. No file takes them. Null for every other group."
+                },
                 "count": {
                   "type": "integer"
                 },
                 "total": {
-                  "$ref": "#/components/schemas/Decimal"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Decimal"
+                    },
+                    {
+                      "description": "In `currency`."
+                    }
+                  ]
                 }
               },
               "required": [
                 "provider",
                 "currency",
+                "sendAs",
                 "count",
                 "total"
               ]
@@ -4476,6 +4571,63 @@
           "error"
         ]
       },
+      "PaypalConversion": {
+        "type": "object",
+        "properties": {
+          "sourceAmount": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "description": "The payout’s own amount."
+              }
+            ]
+          },
+          "sourceCurrency": {
+            "type": "string"
+          },
+          "sentAmount": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "description": "What PayPal was asked to send: sourceAmount × rate, rounded to the cent on its own."
+              }
+            ]
+          },
+          "sentCurrency": {
+            "type": "string"
+          },
+          "rate": {
+            "type": "string",
+            "pattern": "^\\d+(\\.\\d+)?$",
+            "description": "Units of the sent currency per unit of the payout’s currency, as a decimal string (ECB reference rates, crossed through EUR).",
+            "example": "0.011958904110"
+          },
+          "rateSource": {
+            "type": "string",
+            "enum": [
+              "ecb"
+            ]
+          },
+          "rateDate": {
+            "type": "string",
+            "description": "The ECB reference date of the rate (YYYY-MM-DD)."
+          }
+        },
+        "required": [
+          "sourceAmount",
+          "sourceCurrency",
+          "sentAmount",
+          "sentCurrency",
+          "rate",
+          "rateSource",
+          "rateDate"
+        ],
+        "description": "Stamped on a payout a PayPal batch sends in another currency (`metadata.manualExport.conversion`); exported with the payout."
+      },
       "ManualRunPayout": {
         "type": "object",
         "properties": {
@@ -4608,6 +4760,17 @@
                       }
                     ],
                     "description": "A PayPal Payouts batch: this payout’s item, once PayPal has listed it."
+                  },
+                  "conversion": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/PaypalConversion"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "A PayPal Payouts batch sending this payout in another currency (an INR balance sent in USD): its amounts and the rate, frozen when the batch was made."
                   }
                 },
                 "required": [
@@ -4617,7 +4780,8 @@
                   "createdAt",
                   "reference",
                   "destinationChanged",
-                  "paypal"
+                  "paypal",
+                  "conversion"
                 ]
               },
               {
@@ -4637,6 +4801,13 @@
               null
             ],
             "description": "The file a new export would put this payout in."
+          },
+          "sendAs": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Ready for a Pay with PayPal batch only, sent in this currency at a quoted rate (a balance PayPal can’t send in its own). No file takes it."
           },
           "excluded": {
             "type": [
@@ -4694,6 +4865,7 @@
           "destination",
           "export",
           "ready",
+          "sendAs",
           "excluded",
           "complianceWarning",
           "doNotPay"
@@ -4911,13 +5083,71 @@
             ]
           },
           "currency": {
-            "type": "string"
+            "type": "string",
+            "description": "What PayPal sends: the payouts’ currency, or the one their balances were converted to (`conversion`)."
           },
           "itemCount": {
             "type": "integer"
           },
           "total": {
-            "$ref": "#/components/schemas/Decimal"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "description": "In `currency`: what PayPal is asked to send."
+              }
+            ]
+          },
+          "conversion": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "sourceCurrency": {
+                    "type": "string",
+                    "description": "The payouts’ own currency (INR)."
+                  },
+                  "sourceTotal": {
+                    "$ref": "#/components/schemas/Decimal"
+                  },
+                  "rate": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d+)?$",
+                    "description": "Units of the sent currency per unit of the payout’s currency, as a decimal string (ECB reference rates, crossed through EUR).",
+                    "example": "0.011958904110"
+                  },
+                  "rateSource": {
+                    "type": "string",
+                    "enum": [
+                      "ecb"
+                    ]
+                  },
+                  "rateDate": {
+                    "type": "string",
+                    "description": "The ECB reference date of the rate (YYYY-MM-DD)."
+                  },
+                  "quotedAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "When the quote this batch was sent with was made.",
+                    "pattern": "Z$"
+                  }
+                },
+                "required": [
+                  "sourceCurrency",
+                  "sourceTotal",
+                  "rate",
+                  "rateSource",
+                  "rateDate",
+                  "quotedAt"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A batch sending balances PayPal can’t send in their own currency, at a quoted rate. Null otherwise."
           },
           "state": {
             "type": "string",
@@ -5041,6 +5271,7 @@
           "currency",
           "itemCount",
           "total",
+          "conversion",
           "state",
           "payoutBatchId",
           "batchStatus",
@@ -5051,6 +5282,229 @@
           "createdBy",
           "completedAt",
           "lastSyncedAt"
+        ]
+      },
+      "PaypalConversionQuote": {
+        "type": "object",
+        "properties": {
+          "quoteId": {
+            "type": "string",
+            "description": "Send with it (`POST /payouts/runs/{runId}/paypal-batches` with `currency`, `sendAs` and `quoteId`) before `expiresAt`. Signed; it reserves nothing."
+          },
+          "runId": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "sandbox"
+            ],
+            "description": "The PayPal app the batch would send from: your live app, or a sandbox test. If another app is made active before you send, the send is refused (`409 quote_changed`)."
+          },
+          "currency": {
+            "type": "string",
+            "description": "The payouts’ own currency (INR)."
+          },
+          "sendAs": {
+            "type": "string",
+            "enum": [
+              "USD"
+            ]
+          },
+          "rate": {
+            "type": "string",
+            "pattern": "^\\d+(\\.\\d+)?$",
+            "description": "Units of the sent currency per unit of the payout’s currency, as a decimal string (ECB reference rates, crossed through EUR).",
+            "example": "0.011958904110"
+          },
+          "rateSource": {
+            "type": "string",
+            "enum": [
+              "ecb"
+            ]
+          },
+          "rateDate": {
+            "type": "string",
+            "description": "The ECB reference date (YYYY-MM-DD). The ECB publishes once a business day, around 16:00 CET."
+          },
+          "quotedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "15 minutes after `quotedAt`.",
+            "pattern": "Z$"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "sourceTotal": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "description": "What the quoted payouts add up to, in `currency`."
+              }
+            ]
+          },
+          "sentTotal": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "description": "What PayPal would send, in `sendAs`: the sum of the per-item amounts, which can differ by a few cents from sourceTotal × rate."
+              }
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "payoutId": {
+                  "type": "string"
+                },
+                "partnerId": {
+                  "type": "string"
+                },
+                "partnerName": {
+                  "type": "string"
+                },
+                "destination": {
+                  "type": "string",
+                  "description": "The PayPal account it goes to, masked. A change before sending voids the quote."
+                },
+                "amount": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Decimal"
+                    },
+                    {
+                      "description": "The payout’s own amount, in `currency`."
+                    }
+                  ]
+                },
+                "sentAmount": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Decimal"
+                    },
+                    {
+                      "description": "What PayPal would send for it, in `sendAs`: amount × rate, rounded half up to the cent on its own."
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "payoutId",
+                "partnerId",
+                "partnerName",
+                "destination",
+                "amount",
+                "sentAmount"
+              ]
+            }
+          },
+          "leftOut": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "payoutId": {
+                  "type": "string"
+                },
+                "partnerId": {
+                  "type": "string"
+                },
+                "partnerName": {
+                  "type": "string"
+                },
+                "destination": {
+                  "type": "string",
+                  "description": "The PayPal account it goes to, masked. A change before sending voids the quote."
+                },
+                "amount": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Decimal"
+                    },
+                    {
+                      "description": "The payout’s own amount, in `currency`."
+                    }
+                  ]
+                },
+                "sentAmount": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Decimal"
+                    },
+                    {
+                      "description": "What PayPal would send for it, in `sendAs`: amount × rate, rounded half up to the cent on its own."
+                    }
+                  ]
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "over_paypal_limit",
+                    "below_minimum"
+                  ]
+                }
+              },
+              "required": [
+                "payoutId",
+                "partnerId",
+                "partnerName",
+                "destination",
+                "amount",
+                "sentAmount",
+                "reason"
+              ]
+            },
+            "description": "Payouts this batch can’t take at this rate: over PayPal’s per-payment limit in `sendAs` (USD 60,000), or under a cent in it. Pay them another way."
+          }
+        },
+        "required": [
+          "quoteId",
+          "runId",
+          "environment",
+          "currency",
+          "sendAs",
+          "rate",
+          "rateSource",
+          "rateDate",
+          "quotedAt",
+          "expiresAt",
+          "count",
+          "sourceTotal",
+          "sentTotal",
+          "items",
+          "leftOut"
+        ]
+      },
+      "PaypalPayoutSettings": {
+        "type": "object",
+        "properties": {
+          "sendUnsupportedAs": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "USD",
+              null
+            ],
+            "description": "Pay balances PayPal can’t send in their own currency (INR) through Pay with PayPal in this currency, at the ECB reference rate quoted before each batch. Null (the default): off, and those payouts stay `currency_not_supported`."
+          }
+        },
+        "required": [
+          "sendUnsupportedAs"
         ]
       },
       "PayoutDetails": {
@@ -11612,7 +12066,7 @@
           "Payouts"
         ],
         "summary": "List a partner's payouts",
-        "description": "The 200 most recent, newest first.\n\n**Access:** admin key, a scoped key with `payouts:read`, or the partner's own key (`:id` must be that partner).",
+        "description": "The 200 most recent, newest first. A payout PayPal can’t send in its own currency (INR) that Pay with PayPal sent in USD carries `sent`: the USD amount and the ECB rate and date it was converted at. Its `amount` and `currency` stay its own.\n\n**Access:** admin key, a scoped key with `payouts:read`, or the partner's own key (`:id` must be that partner).",
         "security": [
           {
             "adminKey": []
@@ -11655,7 +12109,7 @@
                     "payouts": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/Payout"
+                        "$ref": "#/components/schemas/PayoutWithSent"
                       }
                     }
                   },
@@ -12931,7 +13385,7 @@
           "Payouts"
         ],
         "summary": "Pay a run’s PayPal partners through your PayPal app",
-        "description": "Sends the next PayPal Payouts batch of a run, in one currency, with your active PayPal app: the same payouts a PayPal file would take (partners whose payout details are a PayPal email, a currency PayPal sends, under PayPal's per-payment limit, nothing on a do-not-pay hold), up to 5,000. The money goes from your PayPal balance to the partners; it never passes through OpenPartner.\n\nThe payouts are stamped with the batch id (`exportId`, `via: \"api\"`) before anything is sent, so they are in no other file or batch. The batch id is also PayPal's `sender_batch_id` and `PayPal-Request-Id`: a re-send after a timeout or crash reaches the same batch, and PayPal never pays one twice.\n\nPayPal pays asynchronously. Follow the batch with `GET /payouts/paypal-batches/{batchId}`: paid items confirm their payouts; failed, returned or refunded ones go back to pending (and your admins are emailed); unclaimed ones wait for the partner to claim them. No INR: PayPal pays Indian PayPal accounts in USD only.\n\nWith your **sandbox** app active, the batch is a rehearsal: PayPal's sandbox moves test money, so no payout is marked paid, and once PayPal settles every item the payouts go back to pending (`rehearsal` on the batch says what happened).\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "description": "Sends the next PayPal Payouts batch of a run, in one currency, with your active PayPal app: the same payouts a PayPal file would take (partners whose payout details are a PayPal email, a currency PayPal sends, under PayPal's per-payment limit, nothing on a do-not-pay hold), up to 5,000. The money goes from your PayPal balance to the partners; it never passes through OpenPartner.\n\nThe payouts are stamped with the batch id (`exportId`, `via: \"api\"`) before anything is sent, so they are in no other file or batch. The batch id is also PayPal's `sender_batch_id` and `PayPal-Request-Id`: a re-send after a timeout or crash reaches the same batch, and PayPal never pays one twice.\n\nPayPal pays asynchronously. Follow the batch with `GET /payouts/paypal-batches/{batchId}`: paid items confirm their payouts; failed, returned or refunded ones go back to pending (and your admins are emailed); unclaimed ones wait for the partner to claim them.\n\n**INR.** PayPal can't send INR (it isn't a PayPal API currency): an INR payout is `currency_not_supported` unless you turn on `POST /config/paypal-payouts` `{\"sendUnsupportedAs\": \"USD\"}`. Then quote first (`POST /payouts/runs/{runId}/paypal-batches/quote`) and send with `{\"currency\": \"INR\", \"sendAs\": \"USD\", \"quoteId\": \"…\"}` within 15 minutes: the batch sends exactly the quoted payouts at exactly the quoted ECB rate. A quote that expired is `409 quote_expired`; one whose payouts changed since (another batch took one, a partner changed their PayPal email, PayPal gave one back) or whose PayPal app is no longer the active one is `409 quote_changed`; quote again. The payouts stay in INR; each one's stamp records what was sent (`conversion`).\n\nWith your **sandbox** app active, the batch is a rehearsal: PayPal's sandbox moves test money, so no payout is marked paid, and once PayPal settles every item the payouts go back to pending (`rehearsal` on the batch says what happened).\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
         "security": [
           {
             "adminKey": []
@@ -12963,6 +13417,19 @@
                   "currency": {
                     "type": "string",
                     "pattern": "^[A-Za-z]{3}$"
+                  },
+                  "sendAs": {
+                    "type": "string",
+                    "enum": [
+                      "USD"
+                    ],
+                    "description": "Send balances PayPal can’t send in `currency` (INR) in this currency instead, at the rate of `quoteId`. Needs the `paypal_payouts` setting."
+                  },
+                  "quoteId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2048,
+                    "description": "With `sendAs`: from `POST /payouts/runs/{runId}/paypal-batches/quote`, within 15 minutes. The batch is sent at exactly its rate, and only if the payouts are still exactly the quoted ones."
                   }
                 },
                 "required": [
@@ -12992,7 +13459,7 @@
             }
           },
           "400": {
-            "description": "`invalid_body`, `tenant_slug_missing`",
+            "description": "`invalid_body`, `tenant_slug_missing`, `invalid_quote`",
             "content": {
               "application/json": {
                 "schema": {
@@ -13032,7 +13499,7 @@
             }
           },
           "409": {
-            "description": "`paypal_not_connected`",
+            "description": "`paypal_not_connected`, `conversion_not_enabled`, `quote_expired`, `quote_changed`",
             "content": {
               "application/json": {
                 "schema": {
@@ -13042,7 +13509,7 @@
             }
           },
           "422": {
-            "description": "`currency_not_supported`",
+            "description": "`currency_not_supported`, `conversion_not_needed`",
             "content": {
               "application/json": {
                 "schema": {
@@ -13105,6 +13572,298 @@
           },
           "400": {
             "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/runs/{runId}/paypal-batches/quote": {
+      "post": {
+        "operationId": "quotePaypalConversion",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Quote sending INR balances through PayPal in USD",
+        "description": "For balances PayPal can't send in their own currency (INR), with `POST /config/paypal-payouts` `{\"sendUnsupportedAs\": \"USD\"}` on. Quotes the next batch the send would make: the European Central Bank reference rate (crossed through EUR, published once a business day), its date, each payout's USD amount (its INR amount × rate, rounded half up to the cent on its own), the INR and USD totals, and a signed `quoteId` valid for 15 minutes.\n\nSend with `POST /payouts/runs/{runId}/paypal-batches` `{\"currency\": \"INR\", \"sendAs\": \"USD\", \"quoteId\": \"…\"}`. Nothing is held: the send checks the payouts are still exactly these. A payout over PayPal's per-payment limit in USD, or under a cent, is listed in `leftOut` instead; when that's every payout, the `404 nothing_to_send` carries the `leftOut` list.\n\nThe rate is the ECB mid-market reference rate; you send that USD amount from your PayPal balance. PayPal then converts it to INR for the partner's Indian bank at PayPal's own rate, which is between the partner and PayPal. If the ECB rates can't be read, nothing is quoted (`503 fx_unavailable`): no rate is ever guessed.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The runId."
+            },
+            "required": true,
+            "name": "runId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "currency": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z]{3}$"
+                  },
+                  "sendAs": {
+                    "type": "string",
+                    "enum": [
+                      "USD"
+                    ]
+                  }
+                },
+                "required": [
+                  "currency",
+                  "sendAs"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The quote.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "quote": {
+                      "$ref": "#/components/schemas/PaypalConversionQuote"
+                    }
+                  },
+                  "required": [
+                    "quote"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`nothing_to_send`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`paypal_not_connected`, `conversion_not_enabled`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`currency_not_supported`, `conversion_not_needed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`fx_unavailable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config/paypal-payouts": {
+      "get": {
+        "operationId": "getPaypalPayoutSettings",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Your Pay with PayPal settings",
+        "description": "Whether balances PayPal can’t send in their own currency (INR) are sent in USD instead. Off by default. Exported with your settings (the `paypal_payouts` Config key).\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "responses": {
+          "200": {
+            "description": "Settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaypalPayoutSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`tenant_slug_missing`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `forbidden_scope`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "updatePaypalPayoutSettings",
+        "tags": [
+          "Payouts"
+        ],
+        "summary": "Change your Pay with PayPal settings",
+        "description": "`{\"sendUnsupportedAs\": \"USD\"}`: INR payouts to partners with a PayPal email become ready for Pay with PayPal, sent in USD at an ECB rate you are quoted and see before each batch. `null` turns it off; batches already sent are unaffected. Omitted fields keep their value.\n\n**Access:** admin key only. Scoped keys get `403 forbidden`.",
+        "security": [
+          {
+            "adminKey": []
+          }
+        ],
+        "x-openpartner-access": {
+          "kind": "admin",
+          "scopes": [],
+          "partner": false
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sendUnsupportedAs": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "enum": [
+                      "USD",
+                      null
+                    ],
+                    "description": "Pay balances PayPal can’t send (INR) through Pay with PayPal in this currency, at the ECB reference rate quoted before each batch. `null` turns it off."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaypalPayoutSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_body`, `tenant_slug_missing`",
             "content": {
               "application/json": {
                 "schema": {

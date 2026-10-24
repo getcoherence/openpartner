@@ -25,6 +25,11 @@ export interface PaypalConnection {
 
 export const PAYPAL_ENV_LABEL: Record<PaypalEnvironment, string> = { live: 'Live', sandbox: 'Sandbox' };
 
+/** GET /config/paypal-payouts */
+interface PaypalPayoutSettings {
+  sendUnsupportedAs: 'USD' | null;
+}
+
 /** The brand's connected PayPal apps (shared with the Payouts page). */
 export function usePaypalConnections() {
   return useQuery({
@@ -106,7 +111,56 @@ export function PaypalPayoutsCard() {
           );
         })}
       </div>
+      <SendUnsupportedAs />
     </Card>
+  );
+}
+
+/**
+ * "Pay balances PayPal can't send in: USD" (docs/paypal-payouts.md).
+ * PayPal has no INR; with this on, INR payouts to a PayPal email go out
+ * through Pay with PayPal in USD, at an ECB rate the brand sees before
+ * each batch. Off by default.
+ */
+function SendUnsupportedAs() {
+  const qc = useQueryClient();
+  const { data, error } = useQuery({
+    queryKey: ['paypal-payout-settings'],
+    queryFn: () => api<PaypalPayoutSettings>('/config/paypal-payouts'),
+  });
+  const save = useMutation({
+    mutationFn: (sendUnsupportedAs: PaypalPayoutSettings['sendUnsupportedAs']) =>
+      api<PaypalPayoutSettings>('/config/paypal-payouts', { method: 'POST', body: { sendUnsupportedAs } }),
+    onSuccess: (next) => {
+      qc.setQueryData(['paypal-payout-settings'], next);
+      qc.invalidateQueries({ queryKey: ['manual-payout-run'] });
+      qc.invalidateQueries({ queryKey: ['manual-payout-run-payouts'] });
+    },
+  });
+  const on = data?.sendUnsupportedAs === 'USD';
+
+  return (
+    <div style={{ marginTop: 18, paddingTop: 16, borderTop: `1px solid ${theme.borderSubtle}`, maxWidth: 760 }}>
+      <ErrorBanner error={error ?? save.error} />
+      <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 13, cursor: 'pointer' }}>
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={(e) => save.mutate(e.target.checked ? 'USD' : null)}
+          disabled={!data || save.isPending}
+          style={{ marginTop: 2 }}
+        />
+        <span>
+          <strong>Pay INR balances with PayPal in USD</strong>
+          <span style={{ color: theme.textMuted, display: 'block', lineHeight: 1.55, marginTop: 2 }}>
+            PayPal can’t send INR. With this on, INR payouts to partners with a PayPal email can go out with Pay with
+            PayPal in USD, converted at the European Central Bank reference rate. You see the rate and both totals before
+            each batch, the payouts stay in INR in your records, and your partners see both amounts. PayPal then converts
+            the USD to INR for the partner’s bank at its own rate; that conversion is between them and PayPal.
+          </span>
+        </span>
+      </label>
+    </div>
   );
 }
 

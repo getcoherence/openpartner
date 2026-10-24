@@ -1054,9 +1054,10 @@ The body is optional. For a payout you sent one at a time (a bank transfer, UPI,
     tag: 'Payouts',
     operationId: 'listPartnerPayouts',
     summary: "List a partner's payouts",
-    description: 'The 200 most recent, newest first.',
+    description:
+      'The 200 most recent, newest first. A payout PayPal can’t send in its own currency (INR) that Pay with PayPal sent in USD carries `sent`: the USD amount and the ECB rate and date it was converted at. Its `amount` and `currency` stay its own.',
     access: { kind: 'partnerOrAdmin', scope: 'payouts:read' },
-    responses: { 200: { description: 'Payouts.', schema: z.object({ payouts: z.array(S.Payout) }) } },
+    responses: { 200: { description: 'Payouts.', schema: z.object({ payouts: z.array(S.PayoutWithSent) }) } },
   });
 
   r.operation({
@@ -1285,13 +1286,66 @@ OpenPartner also registers a webhook on the app for the Payouts events, when the
 
 The payouts are stamped with the batch id (\`exportId\`, \`via: "api"\`) before anything is sent, so they are in no other file or batch. The batch id is also PayPal's \`sender_batch_id\` and \`PayPal-Request-Id\`: a re-send after a timeout or crash reaches the same batch, and PayPal never pays one twice.
 
-PayPal pays asynchronously. Follow the batch with \`GET /payouts/paypal-batches/{batchId}\`: paid items confirm their payouts; failed, returned or refunded ones go back to pending (and your admins are emailed); unclaimed ones wait for the partner to claim them. No INR: PayPal pays Indian PayPal accounts in USD only.
+PayPal pays asynchronously. Follow the batch with \`GET /payouts/paypal-batches/{batchId}\`: paid items confirm their payouts; failed, returned or refunded ones go back to pending (and your admins are emailed); unclaimed ones wait for the partner to claim them.
+
+**INR.** PayPal can't send INR (it isn't a PayPal API currency): an INR payout is \`currency_not_supported\` unless you turn on \`POST /config/paypal-payouts\` \`{"sendUnsupportedAs": "USD"}\`. Then quote first (\`POST /payouts/runs/{runId}/paypal-batches/quote\`) and send with \`{"currency": "INR", "sendAs": "USD", "quoteId": "…"}\` within 15 minutes: the batch sends exactly the quoted payouts at exactly the quoted ECB rate. A quote that expired is \`409 quote_expired\`; one whose payouts changed since (another batch took one, a partner changed their PayPal email, PayPal gave one back) or whose PayPal app is no longer the active one is \`409 quote_changed\`; quote again. The payouts stay in INR; each one's stamp records what was sent (\`conversion\`).
 
 With your **sandbox** app active, the batch is a rehearsal: PayPal's sandbox moves test money, so no payout is marked paid, and once PayPal settles every item the payouts go back to pending (\`rehearsal\` on the batch says what happened).`,
     access: { kind: 'admin' },
     body: paypal.sendWithPaypalSchema,
     responses: { 201: { description: 'The batch, as it stands after the first send.', schema: batchResponse } },
-    errors: { 404: ['nothing_to_send'], 409: ['paypal_not_connected'], 422: ['currency_not_supported'] },
+    errors: {
+      400: ['invalid_quote'],
+      404: ['nothing_to_send'],
+      409: ['paypal_not_connected', 'conversion_not_enabled', 'quote_expired', 'quote_changed'],
+      422: ['currency_not_supported', 'conversion_not_needed'],
+    },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/payouts/runs/:runId/paypal-batches/quote',
+    tag: 'Payouts',
+    operationId: 'quotePaypalConversion',
+    summary: 'Quote sending INR balances through PayPal in USD',
+    description: `For balances PayPal can't send in their own currency (INR), with \`POST /config/paypal-payouts\` \`{"sendUnsupportedAs": "USD"}\` on. Quotes the next batch the send would make: the European Central Bank reference rate (crossed through EUR, published once a business day), its date, each payout's USD amount (its INR amount × rate, rounded half up to the cent on its own), the INR and USD totals, and a signed \`quoteId\` valid for 15 minutes.
+
+Send with \`POST /payouts/runs/{runId}/paypal-batches\` \`{"currency": "INR", "sendAs": "USD", "quoteId": "…"}\`. Nothing is held: the send checks the payouts are still exactly these. A payout over PayPal's per-payment limit in USD, or under a cent, is listed in \`leftOut\` instead; when that's every payout, the \`404 nothing_to_send\` carries the \`leftOut\` list.
+
+The rate is the ECB mid-market reference rate; you send that USD amount from your PayPal balance. PayPal then converts it to INR for the partner's Indian bank at PayPal's own rate, which is between the partner and PayPal. If the ECB rates can't be read, nothing is quoted (\`503 fx_unavailable\`): no rate is ever guessed.`,
+    access: { kind: 'admin' },
+    body: paypal.quotePaypalConversionSchema,
+    responses: { 200: { description: 'The quote.', schema: z.object({ quote: S.PaypalConversionQuote }) } },
+    errors: {
+      404: ['nothing_to_send'],
+      409: ['paypal_not_connected', 'conversion_not_enabled'],
+      422: ['currency_not_supported', 'conversion_not_needed'],
+      503: ['fx_unavailable'],
+    },
+  });
+
+  r.operation({
+    method: 'get',
+    path: '/config/paypal-payouts',
+    tag: 'Payouts',
+    operationId: 'getPaypalPayoutSettings',
+    summary: 'Your Pay with PayPal settings',
+    description: 'Whether balances PayPal can’t send in their own currency (INR) are sent in USD instead. Off by default. Exported with your settings (the `paypal_payouts` Config key).',
+    access: { kind: 'admin' },
+    responses: { 200: { description: 'Settings.', schema: S.PaypalPayoutSettings } },
+  });
+
+  r.operation({
+    method: 'post',
+    path: '/config/paypal-payouts',
+    tag: 'Payouts',
+    operationId: 'updatePaypalPayoutSettings',
+    summary: 'Change your Pay with PayPal settings',
+    description:
+      '`{"sendUnsupportedAs": "USD"}`: INR payouts to partners with a PayPal email become ready for Pay with PayPal, sent in USD at an ECB rate you are quoted and see before each batch. `null` turns it off; batches already sent are unaffected. Omitted fields keep their value.',
+    access: { kind: 'admin' },
+    body: paypal.paypalPayoutSettingsSchema,
+    responses: { 200: { description: 'Saved.', schema: S.PaypalPayoutSettings } },
   });
 
   r.operation({

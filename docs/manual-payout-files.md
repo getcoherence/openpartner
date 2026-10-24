@@ -135,7 +135,7 @@ went through.
 | `no_payout_details` | the partner hasn't given any |
 | `details_unreadable` | sealed under another deployment's key |
 | `pay_individually` | UPI or `other`: pay it yourself, then mark it sent |
-| `currency_not_supported` | PayPal can't send the payout currency (INR, for one); Wise can't send from it, or can't pay the account's currency yet (INR) |
+| `currency_not_supported` | PayPal can't send the payout currency (INR, for one; Pay with PayPal can send INR in USD once the brand turns that on, [paypal-payouts.md](paypal-payouts.md#balances-paypal-cant-send-inr)); Wise can't send from it, or can't pay the account's currency yet (INR) |
 | `details_incomplete` | Wise needs the holder's address for a payout sent in USD or AUD, and the bank details have none |
 | `over_paypal_limit` | more than PayPal sends in one payment in this currency (USD 60,000, EUR 55,000, GBP 50,000…; `PAYPAL_ITEM_LIMITS`, from PayPal's "Payout transaction limits", checked 2026-10-22) |
 | `country_not_supported` | OpenPartner Cloud: the partner's declared country, or the account's or address's country, is on the country list ([country-access.md](country-access.md)) |
@@ -206,9 +206,12 @@ and [currency codes](https://developer.paypal.com/api/rest/reference/currency-co
   older PayPal page says the decimal separator follows the sender's locale.
 - Supported currencies: AUD, BRL, CAD, CNY, CZK, DKK, EUR, HKD, HUF, ILS,
   JPY, MYR, MXN, TWD, NZD, NOK, PHP, PLN, GBP, RUB, SGD, SEK, CHF, THB, USD.
-  No INR: since April 2021 Indian PayPal accounts receive international
-  payments in USD only. Pay Indian PayPal partners in USD. They need a
-  verified PAN and a purpose code on their side.
+  No INR: it isn't a PayPal API currency, and Indian PayPal accounts take
+  payments in the sender's currency, converted to INR by PayPal. Pay Indian
+  PayPal partners in USD: Pay with PayPal
+  can convert INR balances at a quoted ECB rate
+  ([paypal-payouts.md](paypal-payouts.md#balances-paypal-cant-send-inr));
+  a file can't. They need a verified PAN and a purpose code on their side.
 - 5,000 rows per file. PayPal's default per-item cap is USD 20,000. The
   account needs Payouts enabled by PayPal.
 

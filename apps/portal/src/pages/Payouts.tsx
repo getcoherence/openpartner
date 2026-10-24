@@ -8,6 +8,7 @@ import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, SectionHeading, St
 import { HOLD_REASON, type HoldReason } from './payout-holds.js';
 import { ManualPayoutFiles } from './ManualPayoutFiles.js';
 import { PayoutRunSummary, payoutMethodLabel, type PayoutRunResult } from './PayoutRunSummary.js';
+import { SentAs, withdrawalNote, type PayoutSent } from './payout-sent.js';
 
 interface Payout {
   id: string;
@@ -19,6 +20,26 @@ interface Payout {
   createdAt: string;
   completedAt: string | null;
   stripeTransferId: string | null;
+  /** Sent through Pay with PayPal in another currency (an INR balance in
+   *  USD); `amount` and `currency` stay the payout's own. */
+  sent?: PayoutSent | null;
+}
+
+/** The payout's own amount, and what PayPal sent when it was converted. */
+function PayoutAmount({ p }: { p: Payout }) {
+  return (
+    <div style={{ textAlign: 'right' }}>
+      <span style={{ fontWeight: 500 }}>{money(p.amount, p.currency)}</span>
+      {p.sent && <SentAs sent={p.sent} pending={p.status !== 'paid'} />}
+    </div>
+  );
+}
+
+/** Under a list with converted payouts: whose the conversion at withdrawal is. */
+function ConvertedNote({ rows, to }: { rows: Payout[]; to: 'partner' | 'brand' }) {
+  const p = rows.find((r) => r.sent);
+  if (!p?.sent) return null;
+  return <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 10, lineHeight: 1.5, maxWidth: 760 }}>{withdrawalNote(p.sent.currency, p.currency.toUpperCase(), to)}</div>;
 }
 
 /** GET /payouts: every partner's payouts, with the partner's name. */
@@ -144,18 +165,21 @@ export function PayoutsPage({ principal }: { principal: Principal }) {
           icon={<Banknote size={28} strokeWidth={1.25} />}
         />
       ) : (
-        <Table
-          columns={['ID', { label: 'Amount', align: 'right' }, 'Method', 'Status', 'Created', 'Completed', 'Statement']}
-          rows={(payouts.data?.payouts ?? []).map((p) => [
-            <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(p.id)}</code>,
-            <span style={{ fontWeight: 500 }}>{money(p.amount, p.currency)}</span>,
-            <span style={{ color: theme.textMuted }}>{payoutMethodLabel(p.method)}</span>,
-            <StatusPill status={p.status} />,
-            <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
-            <span style={{ color: theme.textMuted }}>{formatDate(p.completedAt, { relative: true })}</span>,
-            <StatementLink payoutId={p.id} />,
-          ])}
-        />
+        <>
+          <Table
+            columns={['ID', { label: 'Amount', align: 'right' }, 'Method', 'Status', 'Created', 'Completed', 'Statement']}
+            rows={(payouts.data?.payouts ?? []).map((p) => [
+              <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(p.id)}</code>,
+              <PayoutAmount p={p} />,
+              <span style={{ color: theme.textMuted }}>{payoutMethodLabel(p.method)}</span>,
+              <StatusPill status={p.status} />,
+              <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
+              <span style={{ color: theme.textMuted }}>{formatDate(p.completedAt, { relative: true })}</span>,
+              <StatementLink payoutId={p.id} />,
+            ])}
+          />
+          <ConvertedNote rows={payouts.data?.payouts ?? []} to={isAdmin ? 'brand' : 'partner'} />
+        </>
       )}
     </Page>
   );
@@ -230,7 +254,7 @@ function RecentPayouts() {
                   <code style={{ color: theme.textDim, fontSize: 12 }}>{shortId(p.partnerId)}</code>
                 )}
               </TenantLink>,
-              <span style={{ fontWeight: 500 }}>{money(p.amount, p.currency)}</span>,
+              <PayoutAmount p={p} />,
               <span style={{ color: theme.textMuted }}>{payoutMethodLabel(p.method)}</span>,
               <StatusPill status={p.status} />,
               <span style={{ color: theme.textMuted }}>{formatDate(p.createdAt, { relative: true })}</span>,
@@ -238,6 +262,7 @@ function RecentPayouts() {
               <StatementLink payoutId={p.id} />,
             ])}
           />
+          <ConvertedNote rows={rows} to="brand" />
           {hasNextPage && (
             <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16 }}>
               <Button variant="secondary" size="sm" onClick={() => void fetchNextPage()} disabled={isFetchingNextPage}>

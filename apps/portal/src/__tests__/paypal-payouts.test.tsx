@@ -113,6 +113,7 @@ beforeEach(() => {
     if (path === '/payouts/holds') return json(200, { holds: [] });
     if (path === '/payouts') return json(200, { payouts: [], nextCursor: null });
     if (path === '/config/paypal' && method === 'GET') return json(200, { connections });
+    if (path === '/config/paypal-payouts') return json(200, { sendUnsupportedAs: null });
     if (path === '/config/paypal' && method === 'POST') {
       connections = [CONNECTED];
       return json(201, { connection: CONNECTED });

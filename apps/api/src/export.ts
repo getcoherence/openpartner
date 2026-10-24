@@ -96,6 +96,11 @@ export const PORTABLE_CONFIG_KEYS = [
   // as for 'onboarding': an older instance skips it and prints statements
   // under the brand name until the settings are entered again.
   'payout_statements',
+  // "Pay balances PayPal can't send in: USD" (paypal-send-as.ts). A brand
+  // setting with no credential in it (the PayPal app never travels). Added
+  // without a version bump, like `onboarding`: an instance that predates it
+  // skips the key, and the setting reads as off.
+  'paypal_payouts',
 ] as const;
 
 /**
