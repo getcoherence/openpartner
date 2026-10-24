@@ -3,11 +3,11 @@
  * magic-link page can be overlaid and clicked through (clickjacking).
  * Nothing embeds the portal, so this matches nginx's frame-ancestors 'none'.
  *
- * Self-hosted nginx refuses framing with headers (nginx.conf.template). The
- * hosted portal is an App Platform static site, which can't send response
- * headers, and a <meta> CSP ignores frame-ancestors, so app.openpartner.dev
- * and every white-label domain rely on this check
- * (docs/deploy-production.md, "Portal frame protection"). main.tsx mounts
+ * The portal's nginx refuses framing with headers (nginx.conf.template),
+ * self-hosted and on App Platform alike. A host that can't send them, such
+ * as an App Platform static site, relies on this check instead, since a
+ * <meta> CSP ignores frame-ancestors (docs/deploy-production.md, "Portal
+ * frame protection"); so does a proxy that drops them. main.tsx mounts
  * nothing when it's framed. A frame sandboxed without scripts gets a blank
  * page: the SPA renders nothing without JS.
  */
