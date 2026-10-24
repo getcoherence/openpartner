@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import {
   SCHEMA_VERSION,
@@ -126,7 +126,7 @@ function literalTenant(query: unknown): { tenantId?: string } | null {
 
 export const importSchema = z.object({
   schemaVersion: z.number().int(),
-  tables: z.record(z.array(z.record(z.unknown()))),
+  tables: z.record(z.string(), z.array(z.record(z.string(), z.unknown()))),
 });
 
 exportRouter.post('/import', requireAuth, requireAdmin, async (req, res) => {

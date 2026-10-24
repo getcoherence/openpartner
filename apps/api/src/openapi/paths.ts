@@ -11,7 +11,7 @@
  * UNDOCUMENTED_ROUTES with a reason.
  */
 
-import { z } from 'zod';
+import { utcDateTime, z } from '../zod.js';
 import * as partners from '../routes/partners.js';
 import * as programs from '../routes/programs.js';
 import * as assignments from '../routes/partner-campaigns.js';
@@ -85,7 +85,7 @@ export const UNDOCUMENTED_ROUTES: Record<string, string> = {
 };
 
 const sinceQuery = z.object({
-  since: z.string().datetime().optional().openapi({ description: 'ISO-8601 start of the window. Default: 30 days ago. Not validated by the route: send a valid timestamp.' }),
+  since: utcDateTime().optional().openapi({ description: 'ISO-8601 start of the window. Default: 30 days ago. Not validated by the route: send a valid timestamp.' }),
 });
 
 export function registerPaths(r: OperationRegistry): void {
@@ -1437,7 +1437,7 @@ The file's payouts are fixed here: each is stamped with the \`exportId\`, held o
       200: {
         description: 'The table.',
         content: {
-          'application/json': { schema: z.array(z.record(z.unknown())) },
+          'application/json': { schema: z.array(z.record(z.string(), z.unknown())) },
           'text/csv': { schema: z.string() },
           'application/sql': { schema: z.string() },
         },

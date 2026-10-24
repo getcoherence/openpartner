@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { z } from 'zod';
+import { utcDateTime, z } from '../zod.js';
 import { ulid } from 'ulid';
 import {
   PROGRAM_CATEGORY_SLUGS,
@@ -66,11 +66,33 @@ const legacyRuleSchema = z.discriminatedUnion('type', [
   }),
 ]);
 
+const ruleArraySchema = z.array(subRuleSchema).min(1).max(10);
+const legacyAsArraySchema = legacyRuleSchema.transform((legacy) => [{
+  trigger: 'every' as const,
+  type: legacy.type,
+  value: legacy.value,
+  ...('currency' in legacy && legacy.currency ? { currency: legacy.currency } : {}),
+  ...(legacy.recurring ? { recurring: legacy.recurring } : {}),
+}]);
+
+/** Would zod 3 have abandoned the array form over this issue? It gave up
+ *  on a value of the wrong type or option, and carried on past failed
+ *  checks (a non-integer, a size limit, a refinement). */
+function zod3Abandons(issue: z.core.$ZodIssue): boolean {
+  if (issue.code === 'invalid_type') return issue.expected !== 'int';
+  return issue.code === 'invalid_value' || issue.code === 'invalid_union' || issue.code === 'invalid_key';
+}
+
 // The legacy object shape predates slabs and its schema strips unknown
 // keys, so `{type, value, bands}` used to save as a flat rule — the brand
 // asked for slabs and silently got none. Refuse it and point at the array
-// form instead. (Checked before the union: inside it the strip has already
-// happened.)
+// form instead. (Checked before parsing either form: by then the strip has
+// already happened.)
+//
+// The input's shape picks the form. This was a zod 3 union, which said
+// "Invalid input" for any bad legacy object and for an array it abandoned,
+// and gave an array's own errors otherwise. zod 4's union abandons more (a
+// non-integer, an over-long slab table), so the choice is made here.
 const commissionRuleSchema = z
   .unknown()
   .superRefine((raw, ctx) => {
@@ -81,18 +103,16 @@ const commissionRuleSchema = z
       });
     }
   })
-  .pipe(
-    z.union([
-      z.array(subRuleSchema).min(1).max(10),
-      legacyRuleSchema.transform((legacy) => [{
-        trigger: 'every' as const,
-        type: legacy.type,
-        value: legacy.value,
-        ...('currency' in legacy && legacy.currency ? { currency: legacy.currency } : {}),
-        ...(legacy.recurring ? { recurring: legacy.recurring } : {}),
-      }]),
-    ]),
-  );
+  .transform((raw, ctx) => {
+    const form = Array.isArray(raw) ? ruleArraySchema.safeParse(raw) : legacyAsArraySchema.safeParse(raw);
+    if (form.success) return form.data;
+    if (!Array.isArray(raw) || form.error.issues.some(zod3Abandons)) {
+      ctx.addIssue({ code: 'custom', message: 'Invalid input' });
+    } else {
+      for (const issue of form.error.issues) ctx.addIssue(issue as z.core.$ZodRawIssue);
+    }
+    return z.NEVER;
+  });
 
 /**
  * Customer-side reward (dual-sided). Validated by reward type:
@@ -209,8 +229,8 @@ export const createSchema = z.object({
   /** Holdback before commissions become approvable. Used to align
    *  payouts with refund / trial windows. 0 / omitted = no holdback. */
   holdbackDays: z.number().int().min(0).max(365).optional(),
-  startsAt: z.string().datetime().nullable().optional(),
-  endsAt: z.string().datetime().nullable().optional(),
+  startsAt: utcDateTime().nullable().optional(),
+  endsAt: utcDateTime().nullable().optional(),
   /** Customer-side reward provisioned as a Stripe Coupon + PromotionCode
    *  on every auto-minted Coupon for this campaign. Null/omitted = no
    *  customer-side reward (partner-only program). */
@@ -263,8 +283,8 @@ export const updateSchema = z.object({
   destinationUrl: destinationUrlSchema.optional(),
   deepLinkAllowedDomains: z.string().max(1000).nullable().optional(),
   holdbackDays: z.number().int().min(0).max(365).nullable().optional(),
-  startsAt: z.string().datetime().nullable().optional(),
-  endsAt: z.string().datetime().nullable().optional(),
+  startsAt: utcDateTime().nullable().optional(),
+  endsAt: utcDateTime().nullable().optional(),
   customerReward: customerRewardSchema.nullable().optional(),
   shareOnNetwork: z.boolean().optional(),
   marketplaceDescription: z.string().max(4000).nullable().optional(),

@@ -126,6 +126,24 @@
       }
     },
     "schemas": {
+      "PartnerCreated": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Partner"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "invited": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "invited"
+            ]
+          }
+        ]
+      },
       "Partner": {
         "type": "object",
         "properties": {
@@ -206,24 +224,6 @@
           "portalAccess"
         ]
       },
-      "PartnerCreated": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/Partner"
-          },
-          {
-            "type": "object",
-            "properties": {
-              "invited": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "invited"
-            ]
-          }
-        ]
-      },
       "Error": {
         "type": "object",
         "properties": {
@@ -238,6 +238,7 @@
         "required": [
           "error"
         ],
+        "additionalProperties": {},
         "description": "Every non-2xx response. `error` is stable and safe to branch on; `detail` is for humans and may change. Some errors carry extra fields (e.g. `required` on `forbidden_scope`, `matureAt` on `holdback_active`)."
       },
       "CreatePartnerRequest": {
@@ -611,109 +612,6 @@
           "ok"
         ]
       },
-      "Decimal": {
-        "type": "string",
-        "pattern": "^-?\\d+(\\.\\d+)?$",
-        "description": "A decimal amount as a string, e.g. `\"12.50\"`. Major currency units.",
-        "example": "12.50"
-      },
-      "CommissionBands": {
-        "type": "object",
-        "properties": {
-          "mode": {
-            "type": "string",
-            "enum": [
-              "whole",
-              "marginal"
-            ],
-            "default": "whole"
-          },
-          "levels": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "above": {
-                  "type": "number",
-                  "exclusiveMinimum": 0
-                },
-                "value": {
-                  "type": "number",
-                  "minimum": 0
-                }
-              },
-              "required": [
-                "above",
-                "value"
-              ]
-            },
-            "minItems": 1,
-            "maxItems": 10
-          }
-        },
-        "required": [
-          "levels"
-        ],
-        "description": "Value bands: the rate steps up with the event's value. The sub-rule's own `value` is the base band; `levels` lists the steps above it. `whole` pays the reached band's rate on the whole value, `marginal` pays each slice at its own band's rate."
-      },
-      "CommissionTiers": {
-        "type": "object",
-        "properties": {
-          "metric": {
-            "type": "string",
-            "enum": [
-              "revenue",
-              "conversions"
-            ]
-          },
-          "window": {
-            "type": "string",
-            "enum": [
-              "lifetime",
-              "calendar_month",
-              "rolling_days"
-            ]
-          },
-          "windowDays": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 3650
-          },
-          "eventType": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 80
-          },
-          "levels": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "atLeast": {
-                  "type": "number",
-                  "exclusiveMinimum": 0
-                },
-                "value": {
-                  "type": "number",
-                  "minimum": 0
-                }
-              },
-              "required": [
-                "atLeast",
-                "value"
-              ]
-            },
-            "minItems": 1,
-            "maxItems": 10
-          }
-        },
-        "required": [
-          "metric",
-          "window",
-          "levels"
-        ],
-        "description": "Performance tiers: the rate steps up with the partner's own revenue or conversions over a window. Not combined with `bands`."
-      },
       "CommissionSnapshot": {
         "type": "object",
         "properties": {
@@ -830,6 +728,109 @@
           "snapshottedAt"
         ],
         "description": "A per-partner commission override. When present it replaces the program's rule for this partner's future commissions: on every program (partner-wide, `programId` null) or on one program. On that program, program-scoped terms beat partner-wide ones."
+      },
+      "Decimal": {
+        "type": "string",
+        "pattern": "^-?\\d+(\\.\\d+)?$",
+        "description": "A decimal amount as a string, e.g. `\"12.50\"`. Major currency units.",
+        "example": "12.50"
+      },
+      "CommissionBands": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "whole",
+              "marginal"
+            ],
+            "default": "whole"
+          },
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "above": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "value": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "above",
+                "value"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 10
+          }
+        },
+        "required": [
+          "levels"
+        ],
+        "description": "Value bands: the rate steps up with the event's value. The sub-rule's own `value` is the base band; `levels` lists the steps above it. `whole` pays the reached band's rate on the whole value, `marginal` pays each slice at its own band's rate."
+      },
+      "CommissionTiers": {
+        "type": "object",
+        "properties": {
+          "metric": {
+            "type": "string",
+            "enum": [
+              "revenue",
+              "conversions"
+            ]
+          },
+          "window": {
+            "type": "string",
+            "enum": [
+              "lifetime",
+              "calendar_month",
+              "rolling_days"
+            ]
+          },
+          "windowDays": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 3650
+          },
+          "eventType": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "atLeast": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "value": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "atLeast",
+                "value"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 10
+          }
+        },
+        "required": [
+          "metric",
+          "window",
+          "levels"
+        ],
+        "description": "Performance tiers: the rate steps up with the partner's own revenue or conversions over a window. Not combined with `bands`."
       },
       "CommissionOverrideRequest": {
         "type": "object",
@@ -1007,120 +1008,28 @@
           "commissionValue"
         ]
       },
-      "CommissionRule": {
-        "anyOf": [
-          {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "trigger": {
-                  "type": "string",
-                  "enum": [
-                    "every",
-                    "first",
-                    "subsequent"
-                  ]
-                },
-                "eventType": {
-                  "type": "string"
-                },
-                "type": {
-                  "type": "string",
-                  "enum": [
-                    "percent",
-                    "fixed"
-                  ]
-                },
-                "value": {
-                  "type": "number"
-                },
-                "currency": {
-                  "type": "string"
-                },
-                "recurring": {
-                  "type": "boolean",
-                  "description": "Keeps paying on renewals, including renewals past the attribution window that the program's `renewalsStayWithPartner` carries. A rule without it pays only while the click that earned the customer is inside the window."
-                },
-                "recurringMonths": {
-                  "type": "integer",
-                  "description": "Stop paying this many months after the customer's first attributed event of the rule's type for this partner. Omitted: no cap."
-                },
-                "bands": {
-                  "$ref": "#/components/schemas/CommissionBands"
-                },
-                "tiers": {
-                  "$ref": "#/components/schemas/CommissionTiers"
-                }
-              },
-              "required": [
-                "trigger",
-                "type",
-                "value"
-              ]
-            }
-          },
-          {
-            "type": "object",
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": [
-                  "percent",
-                  "fixed"
-                ]
-              },
-              "value": {
-                "type": "number"
-              },
-              "currency": {
-                "type": "string"
-              },
-              "recurring": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "type",
-              "value"
-            ]
-          }
-        ],
-        "description": "An array of triggered sub-rules. Programs written through this API always store the array; rows created before compound rules may still hold the legacy single-rule object."
-      },
-      "CustomerReward": {
+      "ProgramList": {
         "type": "object",
         "properties": {
-          "type": {
+          "programs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Program"
+            }
+          },
+          "customerRewardDelivery": {
             "type": "string",
             "enum": [
-              "percent_off",
-              "amount_off",
-              "free_months"
-            ]
-          },
-          "value": {
-            "type": "number"
-          },
-          "currency": {
-            "type": "string"
-          },
-          "duration": {
-            "type": "string",
-            "enum": [
-              "once",
-              "forever",
-              "repeating"
-            ]
-          },
-          "durationInMonths": {
-            "type": "integer"
+              "stripe",
+              "unconfigured",
+              "brand"
+            ],
+            "description": "How customer-side rewards reach the customer on this deployment: minted in Stripe, not configured, or applied by the brand itself."
           }
         },
         "required": [
-          "type",
-          "value",
-          "duration"
+          "programs",
+          "customerRewardDelivery"
         ]
       },
       "Program": {
@@ -1304,28 +1213,120 @@
           "createdAt"
         ]
       },
-      "ProgramList": {
-        "type": "object",
-        "properties": {
-          "programs": {
+      "CommissionRule": {
+        "anyOf": [
+          {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Program"
+              "type": "object",
+              "properties": {
+                "trigger": {
+                  "type": "string",
+                  "enum": [
+                    "every",
+                    "first",
+                    "subsequent"
+                  ]
+                },
+                "eventType": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "percent",
+                    "fixed"
+                  ]
+                },
+                "value": {
+                  "type": "number"
+                },
+                "currency": {
+                  "type": "string"
+                },
+                "recurring": {
+                  "type": "boolean",
+                  "description": "Keeps paying on renewals, including renewals past the attribution window that the program's `renewalsStayWithPartner` carries. A rule without it pays only while the click that earned the customer is inside the window."
+                },
+                "recurringMonths": {
+                  "type": "integer",
+                  "description": "Stop paying this many months after the customer's first attributed event of the rule's type for this partner. Omitted: no cap."
+                },
+                "bands": {
+                  "$ref": "#/components/schemas/CommissionBands"
+                },
+                "tiers": {
+                  "$ref": "#/components/schemas/CommissionTiers"
+                }
+              },
+              "required": [
+                "trigger",
+                "type",
+                "value"
+              ]
             }
           },
-          "customerRewardDelivery": {
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "percent",
+                  "fixed"
+                ]
+              },
+              "value": {
+                "type": "number"
+              },
+              "currency": {
+                "type": "string"
+              },
+              "recurring": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ]
+          }
+        ],
+        "description": "An array of triggered sub-rules. Programs written through this API always store the array; rows created before compound rules may still hold the legacy single-rule object."
+      },
+      "CustomerReward": {
+        "type": "object",
+        "properties": {
+          "type": {
             "type": "string",
             "enum": [
-              "stripe",
-              "unconfigured",
-              "brand"
-            ],
-            "description": "How customer-side rewards reach the customer on this deployment: minted in Stripe, not configured, or applied by the brand itself."
+              "percent_off",
+              "amount_off",
+              "free_months"
+            ]
+          },
+          "value": {
+            "type": "number"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "string",
+            "enum": [
+              "once",
+              "forever",
+              "repeating"
+            ]
+          },
+          "durationInMonths": {
+            "type": "integer"
           }
         },
         "required": [
-          "programs",
-          "customerRewardDelivery"
+          "type",
+          "value",
+          "duration"
         ]
       },
       "PartnerVisibleProgram": {
@@ -1396,6 +1397,21 @@
           "customerReward"
         ]
       },
+      "ProgramSaved": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Program"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "warnings": {
+                "$ref": "#/components/schemas/SaveWarnings"
+              }
+            }
+          }
+        ]
+      },
       "SaveWarnings": {
         "type": "array",
         "items": {
@@ -1417,21 +1433,6 @@
           ]
         },
         "description": "Present only when there is something to fix. Today: a Stripe Payment Link (`buy.stripe.com`, `checkout.stripe.com`) without `client_reference_id={click_id}`. Stripe reads the referral only from that parameter, so without it no purchase through the link can be credited to the partner."
-      },
-      "ProgramSaved": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/Program"
-          },
-          {
-            "type": "object",
-            "properties": {
-              "warnings": {
-                "$ref": "#/components/schemas/SaveWarnings"
-              }
-            }
-          }
-        ]
       },
       "CreateProgramRequest": {
         "type": "object",
@@ -1954,6 +1955,35 @@
           "userId"
         ]
       },
+      "EventResult": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "eventId": {
+            "type": "string"
+          },
+          "attribution": {
+            "$ref": "#/components/schemas/AttributionResult"
+          },
+          "replayed": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "Present when an earlier call with the same `externalEventId` already recorded this event. `eventId` and `attribution` are that call's."
+          }
+        },
+        "required": [
+          "ok",
+          "eventId",
+          "attribution"
+        ]
+      },
       "AttributionResult": {
         "type": "object",
         "properties": {
@@ -2020,35 +2050,6 @@
         },
         "required": [
           "status"
-        ]
-      },
-      "EventResult": {
-        "type": "object",
-        "properties": {
-          "ok": {
-            "type": "boolean",
-            "enum": [
-              true
-            ]
-          },
-          "eventId": {
-            "type": "string"
-          },
-          "attribution": {
-            "$ref": "#/components/schemas/AttributionResult"
-          },
-          "replayed": {
-            "type": "boolean",
-            "enum": [
-              true
-            ],
-            "description": "Present when an earlier call with the same `externalEventId` already recorded this event. `eventId` and `attribution` are that call's."
-          }
-        },
-        "required": [
-          "ok",
-          "eventId",
-          "attribution"
         ]
       },
       "RecordEventRequest": {
@@ -2339,86 +2340,6 @@
           "eventTypes"
         ]
       },
-      "RefundCommission": {
-        "type": "object",
-        "properties": {
-          "commissionId": {
-            "type": "string",
-            "description": "The commission the conversion originally accrued."
-          },
-          "partnerId": {
-            "type": "string"
-          },
-          "currency": {
-            "type": "string"
-          },
-          "originalAmount": {
-            "$ref": "#/components/schemas/Decimal"
-          },
-          "keptAmount": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Decimal"
-              },
-              {
-                "description": "What the partner keeps for this conversion now: the live commission's amount, or a paid one's amount net of adjustments."
-              }
-            ]
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "reversed",
-              "reduced",
-              "clawback_recorded",
-              "held_in_transfer",
-              "unchanged"
-            ],
-            "description": "`reversed`: unpaid, and nothing is kept (a full refund), so it was reversed. `reduced`: unpaid; reversed and replaced by `currentCommissionId` for the kept amount (a partial refund). `clawback_recorded`: already paid. It stays paid, and a negative adjustment of `clawbackAmount` records the refunded revenue the partner holds. OpenPartner deducts it from the partner's next manual or self-hosted Stripe Connect payout; funded Stripe Connect payouts on hosted OpenPartner don't, so recover those with the partner. `held_in_transfer`: a payout for it is in flight, so nothing changed. Retry this request (same `externalEventId`) once the payout settles. `unchanged`: nothing to take back."
-          },
-          "currentCommissionId": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The live commission row: the original, its replacement, or null once reversed."
-          },
-          "currentStatus": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "accrued",
-              "approved",
-              "paid",
-              null
-            ]
-          },
-          "clawbackAmount": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Decimal"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Paid commissions only: the refund clawbacks recorded against it, negative. Null when none."
-          }
-        },
-        "required": [
-          "commissionId",
-          "partnerId",
-          "currency",
-          "originalAmount",
-          "keptAmount",
-          "status",
-          "currentCommissionId",
-          "currentStatus",
-          "clawbackAmount"
-        ]
-      },
       "RefundResult": {
         "type": "object",
         "properties": {
@@ -2512,6 +2433,86 @@
           "fullRefund",
           "actionRequired",
           "commissions"
+        ]
+      },
+      "RefundCommission": {
+        "type": "object",
+        "properties": {
+          "commissionId": {
+            "type": "string",
+            "description": "The commission the conversion originally accrued."
+          },
+          "partnerId": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "originalAmount": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "keptAmount": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "description": "What the partner keeps for this conversion now: the live commission's amount, or a paid one's amount net of adjustments."
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "reversed",
+              "reduced",
+              "clawback_recorded",
+              "held_in_transfer",
+              "unchanged"
+            ],
+            "description": "`reversed`: unpaid, and nothing is kept (a full refund), so it was reversed. `reduced`: unpaid; reversed and replaced by `currentCommissionId` for the kept amount (a partial refund). `clawback_recorded`: already paid. It stays paid, and a negative adjustment of `clawbackAmount` records the refunded revenue the partner holds. OpenPartner deducts it from the partner's next manual or self-hosted Stripe Connect payout; funded Stripe Connect payouts on hosted OpenPartner don't, so recover those with the partner. `held_in_transfer`: a payout for it is in flight, so nothing changed. Retry this request (same `externalEventId`) once the payout settles. `unchanged`: nothing to take back."
+          },
+          "currentCommissionId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The live commission row: the original, its replacement, or null once reversed."
+          },
+          "currentStatus": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "accrued",
+              "approved",
+              "paid",
+              null
+            ]
+          },
+          "clawbackAmount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Paid commissions only: the refund clawbacks recorded against it, negative. Null when none."
+          }
+        },
+        "required": [
+          "commissionId",
+          "partnerId",
+          "currency",
+          "originalAmount",
+          "keptAmount",
+          "status",
+          "currentCommissionId",
+          "currentStatus",
+          "clawbackAmount"
         ]
       },
       "RecordRefundRequest": {
@@ -2964,6 +2965,27 @@
           "userId"
         ]
       },
+      "CommissionPage": {
+        "type": "object",
+        "properties": {
+          "commissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommissionListItem"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "commissions",
+          "nextCursor"
+        ]
+      },
       "CommissionListItem": {
         "type": "object",
         "properties": {
@@ -3151,27 +3173,6 @@
           "bonus"
         ]
       },
-      "CommissionPage": {
-        "type": "object",
-        "properties": {
-          "commissions": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/CommissionListItem"
-            }
-          },
-          "nextCursor": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "commissions",
-          "nextCursor"
-        ]
-      },
       "Commission": {
         "type": "object",
         "properties": {
@@ -3254,6 +3255,28 @@
           "metadata"
         ]
       },
+      "BonusAwarded": {
+        "type": "object",
+        "properties": {
+          "replayed": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "Set on a replay of an `externalRef` already used: the original bonus."
+          },
+          "bonus": {
+            "$ref": "#/components/schemas/Bonus"
+          },
+          "commission": {
+            "$ref": "#/components/schemas/Commission"
+          }
+        },
+        "required": [
+          "bonus",
+          "commission"
+        ]
+      },
       "Bonus": {
         "type": "object",
         "properties": {
@@ -3333,28 +3356,6 @@
           "createdAt"
         ]
       },
-      "BonusAwarded": {
-        "type": "object",
-        "properties": {
-          "replayed": {
-            "type": "boolean",
-            "enum": [
-              true
-            ],
-            "description": "Set on a replay of an `externalRef` already used: the original bonus."
-          },
-          "bonus": {
-            "$ref": "#/components/schemas/Bonus"
-          },
-          "commission": {
-            "$ref": "#/components/schemas/Commission"
-          }
-        },
-        "required": [
-          "bonus",
-          "commission"
-        ]
-      },
       "AwardBonusRequest": {
         "type": "object",
         "properties": {
@@ -3395,6 +3396,27 @@
           "partnerId",
           "amount",
           "currency"
+        ]
+      },
+      "BonusPage": {
+        "type": "object",
+        "properties": {
+          "bonuses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BonusListItem"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "bonuses",
+          "nextCursor"
         ]
       },
       "BonusListItem": {
@@ -3447,27 +3469,6 @@
               "commission"
             ]
           }
-        ]
-      },
-      "BonusPage": {
-        "type": "object",
-        "properties": {
-          "bonuses": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/BonusListItem"
-            }
-          },
-          "nextCursor": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "bonuses",
-          "nextCursor"
         ]
       },
       "PayoutRunResult": {
@@ -3791,6 +3792,49 @@
           "transfers"
         ]
       },
+      "PayoutPage": {
+        "type": "object",
+        "properties": {
+          "payouts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayoutListItem"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "payouts",
+          "nextCursor"
+        ]
+      },
+      "PayoutListItem": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Payout"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "partnerName": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The partner's name. Null only if the partner record is gone."
+              }
+            },
+            "required": [
+              "partnerName"
+            ]
+          }
+        ]
+      },
       "Payout": {
         "type": "object",
         "properties": {
@@ -3864,49 +3908,6 @@
           "metadata",
           "createdAt",
           "completedAt"
-        ]
-      },
-      "PayoutListItem": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/Payout"
-          },
-          {
-            "type": "object",
-            "properties": {
-              "partnerName": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "description": "The partner's name. Null only if the partner record is gone."
-              }
-            },
-            "required": [
-              "partnerName"
-            ]
-          }
-        ]
-      },
-      "PayoutPage": {
-        "type": "object",
-        "properties": {
-          "payouts": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/PayoutListItem"
-            }
-          },
-          "nextCursor": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "payouts",
-          "nextCursor"
         ]
       },
       "PayoutHolds": {
@@ -4230,6 +4231,28 @@
           "excluded"
         ]
       },
+      "ManualRunPayoutPage": {
+        "type": "object",
+        "properties": {
+          "payouts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManualRunPayout"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` for the next page; null on the last."
+          }
+        },
+        "required": [
+          "payouts",
+          "nextCursor"
+        ]
+      },
       "ManualRunPayout": {
         "type": "object",
         "properties": {
@@ -4431,28 +4454,6 @@
           "doNotPay"
         ]
       },
-      "ManualRunPayoutPage": {
-        "type": "object",
-        "properties": {
-          "payouts": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ManualRunPayout"
-            }
-          },
-          "nextCursor": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Pass as `cursor` for the next page; null on the last."
-          }
-        },
-        "required": [
-          "payouts",
-          "nextCursor"
-        ]
-      },
       "ManualExportFile": {
         "type": "object",
         "properties": {
@@ -4525,6 +4526,105 @@
           "export",
           "filename",
           "csv"
+        ]
+      },
+      "PartnerPayoutProfileResponse": {
+        "type": "object",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PayoutProfile"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null until the partner (or you) gives payout details."
+          },
+          "paidVia": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "stripe_connect"
+            ],
+            "description": "How this partner's payouts go out under your payout rail today. Payout details are only used for `manual`."
+          },
+          "rail": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "stripe_connect",
+              "manual"
+            ],
+            "description": "The brand's payout rail setting. `manual`: the brand pays every partner itself (bank transfer, PayPal or Wise batch files) from these details, and Stripe Connect isn't used. `stripe_connect`: every partner is paid through Stripe Connect. `auto`: Stripe Connect when the partner has connected an account, otherwise manual."
+          }
+        },
+        "required": [
+          "profile",
+          "paidVia",
+          "rail"
+        ]
+      },
+      "PayoutProfile": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string",
+            "enum": [
+              "paypal",
+              "bank",
+              "upi",
+              "other"
+            ]
+          },
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the account is held (ISO 3166-1 alpha-2); `IN` for UPI; null for a PayPal email or instructions without one."
+          },
+          "details": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PayoutDetails"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when the stored details can't be read on this deployment (restored from an encrypted copy elsewhere): the partner has to enter them again."
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A masked one-line description, safe to show anywhere, e.g. `Bank IBAN GB •••• 5432 (GBP)`."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "updatedBy": {
+            "type": "string",
+            "enum": [
+              "partner",
+              "admin",
+              "api"
+            ],
+            "description": "Who saved them last: the partner (portal), an admin (portal) or an API key."
+          }
+        },
+        "required": [
+          "method",
+          "country",
+          "details",
+          "summary",
+          "updatedAt",
+          "updatedBy"
         ]
       },
       "PayoutDetails": {
@@ -4698,105 +4798,6 @@
           }
         ],
         "description": "Where the partner wants manual payouts sent, by `method`: `paypal` (the PayPal account email), `bank` (an IBAN, or a local account number with what routes to it: `sortCode` for GBP, `routingNumber` + `accountType` + `address` for USD, `ifsc` for INR, `bic` + `address` for any other currency; an `address` for any USD, PHP, THB or TRY account, with its `state` in the US, Canada or Brazil), `upi` (an Indian UPI ID), or `other` (free-text instructions). Values are validated (IBAN checksum, ABA checksum, IFSC shape) and normalised (upper case, spaces removed)."
-      },
-      "PayoutProfile": {
-        "type": "object",
-        "properties": {
-          "method": {
-            "type": "string",
-            "enum": [
-              "paypal",
-              "bank",
-              "upi",
-              "other"
-            ]
-          },
-          "country": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Where the account is held (ISO 3166-1 alpha-2); `IN` for UPI; null for a PayPal email or instructions without one."
-          },
-          "details": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PayoutDetails"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Null when the stored details can't be read on this deployment (restored from an encrypted copy elsewhere): the partner has to enter them again."
-          },
-          "summary": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "A masked one-line description, safe to show anywhere, e.g. `Bank IBAN GB •••• 5432 (GBP)`."
-          },
-          "updatedAt": {
-            "type": "string",
-            "format": "date-time",
-            "pattern": "Z$"
-          },
-          "updatedBy": {
-            "type": "string",
-            "enum": [
-              "partner",
-              "admin",
-              "api"
-            ],
-            "description": "Who saved them last: the partner (portal), an admin (portal) or an API key."
-          }
-        },
-        "required": [
-          "method",
-          "country",
-          "details",
-          "summary",
-          "updatedAt",
-          "updatedBy"
-        ]
-      },
-      "PartnerPayoutProfileResponse": {
-        "type": "object",
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PayoutProfile"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Null until the partner (or you) gives payout details."
-          },
-          "paidVia": {
-            "type": "string",
-            "enum": [
-              "manual",
-              "stripe_connect"
-            ],
-            "description": "How this partner's payouts go out under your payout rail today. Payout details are only used for `manual`."
-          },
-          "rail": {
-            "type": "string",
-            "enum": [
-              "auto",
-              "stripe_connect",
-              "manual"
-            ],
-            "description": "The brand's payout rail setting. `manual`: the brand pays every partner itself (bank transfer, PayPal or Wise batch files) from these details, and Stripe Connect isn't used. `stripe_connect`: every partner is paid through Stripe Connect. `auto`: Stripe Connect when the partner has connected an account, otherwise manual."
-          }
-        },
-        "required": [
-          "profile",
-          "paidVia",
-          "rail"
-        ]
       },
       "PartnerDashboard": {
         "type": "object",
@@ -6070,6 +6071,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -6158,6 +6160,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -6256,14 +6259,15 @@
             "schema": {
               "type": "string",
               "enum": [
-                "true",
+                "0",
                 "1",
-                "false",
-                "0"
+                "true",
+                "false"
               ],
               "description": "Validate and report without writing. Not validated by the route: only `true` and `1` switch it on."
             },
             "required": false,
+            "description": "Validate and report without writing. Not validated by the route: only `true` and `1` switch it on.",
             "name": "dryRun",
             "in": "query"
           }
@@ -6451,6 +6455,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -6576,6 +6581,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -6707,6 +6713,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -6803,6 +6810,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -6889,6 +6897,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -6988,6 +6997,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -7074,6 +7084,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           },
@@ -7083,6 +7094,7 @@
               "description": "The programId."
             },
             "required": true,
+            "description": "The programId.",
             "name": "programId",
             "in": "path"
           }
@@ -7169,6 +7181,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           },
@@ -7178,6 +7191,7 @@
               "description": "The programId."
             },
             "required": true,
+            "description": "The programId.",
             "name": "programId",
             "in": "path"
           }
@@ -7277,6 +7291,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           },
@@ -7286,6 +7301,7 @@
               "description": "The programId."
             },
             "required": true,
+            "description": "The programId.",
             "name": "programId",
             "in": "path"
           }
@@ -7587,6 +7603,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -7680,6 +7697,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -7772,6 +7790,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -7876,6 +7895,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           },
@@ -7885,6 +7905,7 @@
               "description": "The programId."
             },
             "required": true,
+            "description": "The programId.",
             "name": "programId",
             "in": "path"
           }
@@ -7996,6 +8017,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -8088,6 +8110,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -8457,6 +8480,7 @@
               "description": "The conversion postback token, `opcp_…`. Required."
             },
             "required": true,
+            "description": "The conversion postback token, `opcp_…`. Required.",
             "name": "token",
             "in": "query"
           },
@@ -8467,6 +8491,7 @@
               "description": "The click id, from the destination URL's `{click_id}` macro. Alias: `cref`. Required."
             },
             "required": true,
+            "description": "The click id, from the destination URL's `{click_id}` macro. Alias: `cref`. Required.",
             "name": "click_id",
             "in": "query"
           },
@@ -8477,6 +8502,7 @@
               "description": "Event type, e.g. `sale`, `loan_funded`. Required."
             },
             "required": true,
+            "description": "Event type, e.g. `sale`, `loan_funded`. Required.",
             "name": "type",
             "in": "query"
           },
@@ -8487,6 +8513,7 @@
               "description": "The sender's transaction id: the idempotency key (`externalEventId`). Alias: `transaction_id`. Required."
             },
             "required": true,
+            "description": "The sender's transaction id: the idempotency key (`externalEventId`). Alias: `transaction_id`. Required.",
             "name": "txn_id",
             "in": "query"
           },
@@ -8496,6 +8523,7 @@
               "description": "Decimal value, e.g. `49.00`. Alias: `value`. Empty (an unfilled macro) means no amount."
             },
             "required": false,
+            "description": "Decimal value, e.g. `49.00`. Alias: `value`. Empty (an unfilled macro) means no amount.",
             "name": "amount",
             "in": "query"
           },
@@ -8507,6 +8535,7 @@
               "description": "ISO 4217 code."
             },
             "required": false,
+            "description": "ISO 4217 code.",
             "name": "currency",
             "in": "query"
           },
@@ -8517,6 +8546,7 @@
               "description": "Your own id for the user, as on `POST /attribution/conversions`."
             },
             "required": false,
+            "description": "Your own id for the user, as on `POST /attribution/conversions`.",
             "name": "user_id",
             "in": "query"
           },
@@ -8529,6 +8559,7 @@
               "description": "`1` answers a 1×1 transparent GIF instead of `ok`, for senders that fire the postback as an image."
             },
             "required": false,
+            "description": "`1` answers a 1×1 transparent GIF instead of `ok`, for senders that fire the postback as an image.",
             "name": "pixel",
             "in": "query"
           }
@@ -9253,6 +9284,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -9345,6 +9377,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -9488,6 +9521,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           },
@@ -9497,6 +9531,7 @@
               "description": "The couponId."
             },
             "required": true,
+            "description": "The couponId.",
             "name": "couponId",
             "in": "path"
           }
@@ -9699,6 +9734,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           },
@@ -9909,6 +9945,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -10010,6 +10047,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -10367,6 +10405,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -10688,6 +10727,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -10799,6 +10839,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -11054,6 +11095,7 @@
               "description": "The runId."
             },
             "required": true,
+            "description": "The runId.",
             "name": "runId",
             "in": "path"
           }
@@ -11137,6 +11179,7 @@
               "description": "The runId."
             },
             "required": true,
+            "description": "The runId.",
             "name": "runId",
             "in": "path"
           },
@@ -11240,6 +11283,7 @@
               "description": "The runId."
             },
             "required": true,
+            "description": "The runId.",
             "name": "runId",
             "in": "path"
           }
@@ -11350,6 +11394,7 @@
               "description": "The exportId."
             },
             "required": true,
+            "description": "The exportId.",
             "name": "exportId",
             "in": "path"
           }
@@ -11433,6 +11478,7 @@
               "description": "The exportId."
             },
             "required": true,
+            "description": "The exportId.",
             "name": "exportId",
             "in": "path"
           }
@@ -11516,6 +11562,7 @@
               "description": "The exportId."
             },
             "required": true,
+            "description": "The exportId.",
             "name": "exportId",
             "in": "path"
           }
@@ -11624,6 +11671,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -11715,6 +11763,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -11816,6 +11865,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -11902,6 +11952,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           },
@@ -11913,6 +11964,7 @@
               "pattern": "Z$"
             },
             "required": false,
+            "description": "ISO-8601 start of the window. Default: 30 days ago. Not validated by the route: send a valid timestamp.",
             "name": "since",
             "in": "query"
           },
@@ -11920,14 +11972,15 @@
             "schema": {
               "type": "string",
               "enum": [
-                "true",
+                "0",
                 "1",
-                "false",
-                "0"
+                "true",
+                "false"
               ],
               "description": "Add a per-link breakdown."
             },
             "required": false,
+            "description": "Add a per-link breakdown.",
             "name": "includeLinks",
             "in": "query"
           }
@@ -12011,6 +12064,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           },
@@ -12135,6 +12189,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           },
@@ -12279,6 +12334,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           },
@@ -12393,6 +12449,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           },
@@ -12526,6 +12583,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           },
@@ -12537,6 +12595,7 @@
               "pattern": "Z$"
             },
             "required": false,
+            "description": "ISO-8601 start of the window. Default: 30 days ago. Not validated by the route: send a valid timestamp.",
             "name": "since",
             "in": "query"
           }
@@ -12773,6 +12832,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -12862,6 +12922,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -12968,6 +13029,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           },
@@ -12980,6 +13042,7 @@
               "description": "Not validated by the route: only `1` has an effect."
             },
             "required": false,
+            "description": "Not validated by the route: only `1` has an effect.",
             "name": "hard",
             "in": "query"
           }
@@ -13053,6 +13116,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -13149,6 +13213,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -13233,6 +13298,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           },
@@ -13358,6 +13424,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           },
@@ -13367,6 +13434,7 @@
               "description": "The deliveryId."
             },
             "required": true,
+            "description": "The deliveryId.",
             "name": "deliveryId",
             "in": "path"
           }
@@ -13704,6 +13772,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -13803,6 +13872,7 @@
               "description": "The id."
             },
             "required": true,
+            "description": "The id.",
             "name": "id",
             "in": "path"
           }
@@ -14024,6 +14094,7 @@
               "description": "The keyId."
             },
             "required": true,
+            "description": "The keyId.",
             "name": "keyId",
             "in": "path"
           }
@@ -14132,6 +14203,7 @@
               "description": "Table name."
             },
             "required": true,
+            "description": "Table name.",
             "name": "table",
             "in": "path"
           },
@@ -14154,6 +14226,7 @@
               "description": "SQL only. Bake this literal tenant id into the dump instead of the portable `:tenant_id` psql variable."
             },
             "required": false,
+            "description": "SQL only. Bake this literal tenant id into the dump instead of the portable `:tenant_id` psql variable.",
             "name": "tenantId",
             "in": "query"
           }
@@ -14313,6 +14386,7 @@
               "description": "Bake a literal tenant id instead of the psql variable."
             },
             "required": false,
+            "description": "Bake a literal tenant id instead of the psql variable.",
             "name": "tenantId",
             "in": "query"
           }
@@ -14796,6 +14870,7 @@
               "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
             },
             "required": true,
+            "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret.",
             "name": "x-openpartner-signature",
             "in": "header"
           },
@@ -14805,6 +14880,7 @@
               "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
             },
             "required": true,
+            "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off.",
             "name": "x-openpartner-timestamp",
             "in": "header"
           },
@@ -14814,6 +14890,7 @@
               "description": "The event type, e.g. `commission.accrued`."
             },
             "required": true,
+            "description": "The event type, e.g. `commission.accrued`.",
             "name": "x-openpartner-event",
             "in": "header"
           },
@@ -14823,6 +14900,7 @@
               "description": "The envelope `id`."
             },
             "required": true,
+            "description": "The envelope `id`.",
             "name": "x-openpartner-delivery",
             "in": "header"
           }
@@ -14949,6 +15027,7 @@
               "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
             },
             "required": true,
+            "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret.",
             "name": "x-openpartner-signature",
             "in": "header"
           },
@@ -14958,6 +15037,7 @@
               "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
             },
             "required": true,
+            "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off.",
             "name": "x-openpartner-timestamp",
             "in": "header"
           },
@@ -14967,6 +15047,7 @@
               "description": "The event type, e.g. `commission.accrued`."
             },
             "required": true,
+            "description": "The event type, e.g. `commission.accrued`.",
             "name": "x-openpartner-event",
             "in": "header"
           },
@@ -14976,6 +15057,7 @@
               "description": "The envelope `id`."
             },
             "required": true,
+            "description": "The envelope `id`.",
             "name": "x-openpartner-delivery",
             "in": "header"
           }
@@ -15107,6 +15189,7 @@
               "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
             },
             "required": true,
+            "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret.",
             "name": "x-openpartner-signature",
             "in": "header"
           },
@@ -15116,6 +15199,7 @@
               "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
             },
             "required": true,
+            "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off.",
             "name": "x-openpartner-timestamp",
             "in": "header"
           },
@@ -15125,6 +15209,7 @@
               "description": "The event type, e.g. `commission.accrued`."
             },
             "required": true,
+            "description": "The event type, e.g. `commission.accrued`.",
             "name": "x-openpartner-event",
             "in": "header"
           },
@@ -15134,6 +15219,7 @@
               "description": "The envelope `id`."
             },
             "required": true,
+            "description": "The envelope `id`.",
             "name": "x-openpartner-delivery",
             "in": "header"
           }
@@ -15256,6 +15342,7 @@
               "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
             },
             "required": true,
+            "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret.",
             "name": "x-openpartner-signature",
             "in": "header"
           },
@@ -15265,6 +15352,7 @@
               "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
             },
             "required": true,
+            "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off.",
             "name": "x-openpartner-timestamp",
             "in": "header"
           },
@@ -15274,6 +15362,7 @@
               "description": "The event type, e.g. `commission.accrued`."
             },
             "required": true,
+            "description": "The event type, e.g. `commission.accrued`.",
             "name": "x-openpartner-event",
             "in": "header"
           },
@@ -15283,6 +15372,7 @@
               "description": "The envelope `id`."
             },
             "required": true,
+            "description": "The envelope `id`.",
             "name": "x-openpartner-delivery",
             "in": "header"
           }
@@ -15409,6 +15499,7 @@
               "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
             },
             "required": true,
+            "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret.",
             "name": "x-openpartner-signature",
             "in": "header"
           },
@@ -15418,6 +15509,7 @@
               "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
             },
             "required": true,
+            "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off.",
             "name": "x-openpartner-timestamp",
             "in": "header"
           },
@@ -15427,6 +15519,7 @@
               "description": "The event type, e.g. `commission.accrued`."
             },
             "required": true,
+            "description": "The event type, e.g. `commission.accrued`.",
             "name": "x-openpartner-event",
             "in": "header"
           },
@@ -15436,6 +15529,7 @@
               "description": "The envelope `id`."
             },
             "required": true,
+            "description": "The envelope `id`.",
             "name": "x-openpartner-delivery",
             "in": "header"
           }
@@ -15576,6 +15670,7 @@
               "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
             },
             "required": true,
+            "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret.",
             "name": "x-openpartner-signature",
             "in": "header"
           },
@@ -15585,6 +15680,7 @@
               "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
             },
             "required": true,
+            "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off.",
             "name": "x-openpartner-timestamp",
             "in": "header"
           },
@@ -15594,6 +15690,7 @@
               "description": "The event type, e.g. `commission.accrued`."
             },
             "required": true,
+            "description": "The event type, e.g. `commission.accrued`.",
             "name": "x-openpartner-event",
             "in": "header"
           },
@@ -15603,6 +15700,7 @@
               "description": "The envelope `id`."
             },
             "required": true,
+            "description": "The envelope `id`.",
             "name": "x-openpartner-delivery",
             "in": "header"
           }
@@ -15734,6 +15832,7 @@
               "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
             },
             "required": true,
+            "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret.",
             "name": "x-openpartner-signature",
             "in": "header"
           },
@@ -15743,6 +15842,7 @@
               "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
             },
             "required": true,
+            "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off.",
             "name": "x-openpartner-timestamp",
             "in": "header"
           },
@@ -15752,6 +15852,7 @@
               "description": "The event type, e.g. `commission.accrued`."
             },
             "required": true,
+            "description": "The event type, e.g. `commission.accrued`.",
             "name": "x-openpartner-event",
             "in": "header"
           },
@@ -15761,6 +15862,7 @@
               "description": "The envelope `id`."
             },
             "required": true,
+            "description": "The envelope `id`.",
             "name": "x-openpartner-delivery",
             "in": "header"
           }
@@ -15879,6 +15981,7 @@
               "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
             },
             "required": true,
+            "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret.",
             "name": "x-openpartner-signature",
             "in": "header"
           },
@@ -15888,6 +15991,7 @@
               "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
             },
             "required": true,
+            "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off.",
             "name": "x-openpartner-timestamp",
             "in": "header"
           },
@@ -15897,6 +16001,7 @@
               "description": "The event type, e.g. `commission.accrued`."
             },
             "required": true,
+            "description": "The event type, e.g. `commission.accrued`.",
             "name": "x-openpartner-event",
             "in": "header"
           },
@@ -15906,6 +16011,7 @@
               "description": "The envelope `id`."
             },
             "required": true,
+            "description": "The envelope `id`.",
             "name": "x-openpartner-delivery",
             "in": "header"
           }
@@ -16028,6 +16134,7 @@
               "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
             },
             "required": true,
+            "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret.",
             "name": "x-openpartner-signature",
             "in": "header"
           },
@@ -16037,6 +16144,7 @@
               "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
             },
             "required": true,
+            "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off.",
             "name": "x-openpartner-timestamp",
             "in": "header"
           },
@@ -16046,6 +16154,7 @@
               "description": "The event type, e.g. `commission.accrued`."
             },
             "required": true,
+            "description": "The event type, e.g. `commission.accrued`.",
             "name": "x-openpartner-event",
             "in": "header"
           },
@@ -16055,6 +16164,7 @@
               "description": "The envelope `id`."
             },
             "required": true,
+            "description": "The envelope `id`.",
             "name": "x-openpartner-delivery",
             "in": "header"
           }
@@ -16182,6 +16292,7 @@
               "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
             },
             "required": true,
+            "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret.",
             "name": "x-openpartner-signature",
             "in": "header"
           },
@@ -16191,6 +16302,7 @@
               "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
             },
             "required": true,
+            "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off.",
             "name": "x-openpartner-timestamp",
             "in": "header"
           },
@@ -16200,6 +16312,7 @@
               "description": "The event type, e.g. `commission.accrued`."
             },
             "required": true,
+            "description": "The event type, e.g. `commission.accrued`.",
             "name": "x-openpartner-event",
             "in": "header"
           },
@@ -16209,6 +16322,7 @@
               "description": "The envelope `id`."
             },
             "required": true,
+            "description": "The envelope `id`.",
             "name": "x-openpartner-delivery",
             "in": "header"
           }
@@ -16326,6 +16440,7 @@
               "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
             },
             "required": true,
+            "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret.",
             "name": "x-openpartner-signature",
             "in": "header"
           },
@@ -16335,6 +16450,7 @@
               "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
             },
             "required": true,
+            "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off.",
             "name": "x-openpartner-timestamp",
             "in": "header"
           },
@@ -16344,6 +16460,7 @@
               "description": "The event type, e.g. `commission.accrued`."
             },
             "required": true,
+            "description": "The event type, e.g. `commission.accrued`.",
             "name": "x-openpartner-event",
             "in": "header"
           },
@@ -16353,6 +16470,7 @@
               "description": "The envelope `id`."
             },
             "required": true,
+            "description": "The envelope `id`.",
             "name": "x-openpartner-delivery",
             "in": "header"
           }
@@ -16453,6 +16571,7 @@
               "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
             },
             "required": true,
+            "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret.",
             "name": "x-openpartner-signature",
             "in": "header"
           },
@@ -16462,6 +16581,7 @@
               "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
             },
             "required": true,
+            "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off.",
             "name": "x-openpartner-timestamp",
             "in": "header"
           },
@@ -16471,6 +16591,7 @@
               "description": "The event type, e.g. `commission.accrued`."
             },
             "required": true,
+            "description": "The event type, e.g. `commission.accrued`.",
             "name": "x-openpartner-event",
             "in": "header"
           },
@@ -16480,6 +16601,7 @@
               "description": "The envelope `id`."
             },
             "required": true,
+            "description": "The envelope `id`.",
             "name": "x-openpartner-delivery",
             "in": "header"
           }
@@ -16570,6 +16692,7 @@
               "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret."
             },
             "required": true,
+            "description": "Hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed with the endpoint secret.",
             "name": "x-openpartner-signature",
             "in": "header"
           },
@@ -16579,6 +16702,7 @@
               "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off."
             },
             "required": true,
+            "description": "Unix seconds when this attempt was signed. Reject anything more than 5 minutes off.",
             "name": "x-openpartner-timestamp",
             "in": "header"
           },
@@ -16588,6 +16712,7 @@
               "description": "The event type, e.g. `commission.accrued`."
             },
             "required": true,
+            "description": "The event type, e.g. `commission.accrued`.",
             "name": "x-openpartner-event",
             "in": "header"
           },
@@ -16597,6 +16722,7 @@
               "description": "The envelope `id`."
             },
             "required": true,
+            "description": "The envelope `id`.",
             "name": "x-openpartner-delivery",
             "in": "header"
           }

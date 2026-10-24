@@ -14,7 +14,7 @@
  */
 
 import { Router } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { TABLES, type PartnerRow } from '@openpartner/db';
 import { requireAuth, requirePartnerOrAdmin } from '../auth.js';
 import { requireStripe } from '../stripe.js';

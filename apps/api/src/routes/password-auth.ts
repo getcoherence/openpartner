@@ -30,7 +30,7 @@
  */
 
 import { Router, type Request } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { DEFAULT_TENANT_ID, TABLES, type AdminRow, type PartnerRow } from '@openpartner/db';
 import { db as platformDb } from '../db.js';
 import { consumeMagicLink, issueMagicLink } from '../auth-sessions.js';

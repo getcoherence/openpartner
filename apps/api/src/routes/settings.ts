@@ -11,7 +11,7 @@
 
 import { Router } from 'express';
 import type { Knex } from 'knex';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import {
   PAYOUT_CADENCES,
   PAYOUT_RAIL_PREFERENCES,

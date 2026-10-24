@@ -44,7 +44,7 @@
  */
 
 import { Router } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { ulid } from 'ulid';
 import {
   AUDIENCE_SIZES,
@@ -102,20 +102,23 @@ const applicationSchema = z.object(
       .min(L.socialMin, 'Add at least one social profile')
       .max(L.socialMax, `Add at most ${L.socialMax} social profiles`)
       .transform((urls) => [...new Set(urls)]),
-    audienceSize: z.enum(AUDIENCE_SIZES, { errorMap: () => ({ message: 'Pick your audience size' }) }),
+    audienceSize: z.enum(AUDIENCE_SIZES, { error: 'Pick your audience size' }),
     pitch: z
       .string()
       .trim()
       .min(L.pitchMin, `Tell the brand how you'd promote it, in at least ${L.pitchMin} characters`)
       .max(L.pitchMax, `Keep your pitch under ${L.pitchMax} characters`),
   },
-  { required_error: 'Complete the application: website, social profiles, audience size and pitch' },
+  {
+    error: (issue) =>
+      issue.input === undefined ? 'Complete the application: website, social profiles, audience size and pitch' : undefined,
+  },
 );
 
 const schema = z.object({
   email: z.string().trim().email().max(254),
   name: z.string().trim().min(1).max(120),
-  profile: z.record(z.unknown()).optional(),
+  profile: z.record(z.string(), z.unknown()).optional(),
   application: applicationSchema,
   /** The join page's optional "also join the OpenPartner Network"
    *  checkbox. Unchecked (or absent) = not asked yet: the partner gets the

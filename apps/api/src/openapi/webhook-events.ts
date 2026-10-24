@@ -11,7 +11,7 @@
  * this catalogue matches what actually arrives.
  */
 
-import { z } from 'zod';
+import { z } from '../zod.js';
 import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
 import { KNOWN_EVENTS } from '../routes/webhooks.js';
 import { ATTRIBUTION_MODELS, BONUS_SOURCES, PAYOUT_METHODS } from './enums.js';
@@ -196,7 +196,7 @@ export const WEBHOOK_PAYLOADS = {
       description: 'The `refund_clawback` commission adjustments this payout deducted.',
     }),
   }),
-} satisfies Record<Exclude<(typeof KNOWN_EVENTS)[number], '*'>, z.AnyZodObject>;
+} satisfies Record<Exclude<(typeof KNOWN_EVENTS)[number], '*'>, z.ZodObject>;
 
 export type WebhookEventName = keyof typeof WEBHOOK_PAYLOADS;
 
@@ -247,7 +247,7 @@ export const WEBHOOK_HEADERS = z.object({
 });
 
 export function registerWebhooks(registry: OpenAPIRegistry): void {
-  for (const [event, data] of Object.entries(WEBHOOK_PAYLOADS) as Array<[WebhookEventName, z.AnyZodObject]>) {
+  for (const [event, data] of Object.entries(WEBHOOK_PAYLOADS) as Array<[WebhookEventName, z.ZodObject]>) {
     registry.registerWebhook({
       method: 'post',
       path: event,

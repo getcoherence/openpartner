@@ -39,7 +39,7 @@
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { Router, type CookieOptions, type Request, type Response } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { DEFAULT_TENANT_ID, TABLES, safeNextPath, type TenantRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { clearSessionCookie } from '../auth-sessions.js';

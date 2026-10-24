@@ -14,14 +14,12 @@
  *     (dashboard revenue, earnings) are JSON numbers
  */
 
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { ATTRIBUTION_MODELS, BONUS_SOURCES, COMMISSION_STATUSES, PAYOUT_METHODS, PAYOUT_RAILS, PAYOUT_STATUSES } from './enums.js';
 import { commissionBandsSchema, commissionTiersSchema } from '../commission-rule-schema.js';
 import { PAYOUT_PROFILE_METHODS } from '@openpartner/db';
 import { payoutDetailsSchema } from '../payout-profile.js';
 import { DO_NOT_PAY_REASONS, MANUAL_EXCLUSION_REASONS, MANUAL_PAYOUT_PROVIDERS } from '../manual-payout-files.js';
-
-import './registry.js'; // extendZodWithOpenApi before any .openapi() call
 
 /** Nullable reference. `.nullable()` on a registered (`$ref`) schema comes
  *  out of the 3.1 generator as an `allOf` with conflicting types; a union
@@ -47,7 +45,7 @@ export const Partner = z
     email: z.string().email(),
     name: z.string(),
     stripeConnectAccountId: z.string().nullable(),
-    metadata: z.record(z.unknown()).openapi({ description: 'Free-form JSON you supplied at creation. OpenPartner may add a `network` key when the partner is synced to the Network.' }),
+    metadata: z.record(z.string(), z.unknown()).openapi({ description: 'Free-form JSON you supplied at creation. OpenPartner may add a `network` key when the partner is synced to the Network.' }),
     createdAt: ts,
     updatedAt: ts,
     activatedAt: tsNullable.openapi({ description: 'Null until the partner accepts their invite. `sendInvite: false` sets it at creation.' }),
@@ -456,7 +454,7 @@ const CommissionRowShape = z.object({
   accruedAt: ts,
   paidAt: tsNullable,
   payoutId: z.string().nullable(),
-  metadata: z.record(z.unknown()).openapi({
+  metadata: z.record(z.string(), z.unknown()).openapi({
     description:
       "How the amount was worked out. `rateType` is the sub-rule's `percent` or `fixed` (absent on commissions accrued before October 2026). A banded or tiered rule also records `slab`: which sub-rule (`ruleIndex`), `kind` (`band` or `tier`), the `level` reached and its `threshold` and `value`, and for tiers the `metric` and its `metricValue` over the `window`. A replacement accrued for what a partial refund left records `refund`.",
   }),
@@ -546,7 +544,7 @@ export const Payout = z
     status: z.enum(PAYOUT_STATUSES).openapi({
       description: 'A `manual` payout stays `pending` until you send the money and confirm it; only `paid` means it went out.',
     }),
-    metadata: z.record(z.unknown()),
+    metadata: z.record(z.string(), z.unknown()),
     createdAt: ts,
     completedAt: tsNullable,
   })
@@ -810,7 +808,7 @@ const amountsByCurrency = z.record(z.string(), z.number()).openapi({
   description: 'Amount per ISO 4217 currency code. Currencies with nothing are absent; nothing is converted.',
 });
 
-const commissionByStatusAndCurrency = z.record(z.string(), z.record(z.enum(COMMISSION_STATUSES), z.number())).openapi({
+const commissionByStatusAndCurrency = z.record(z.string(), z.partialRecord(z.enum(COMMISSION_STATUSES), z.number())).openapi({
   description: 'Commission totals per currency, then per status. Currencies and statuses with nothing are absent.',
 });
 
@@ -826,7 +824,7 @@ export const PartnerDashboard = z
     attributedEvents: z.number().int(),
     attributedRevenue: z.number().openapi({ description: 'Attributed revenue in `currency` only.' }),
     attributedRevenueByCurrency: amountsByCurrency,
-    commissionByStatus: z.record(z.enum(COMMISSION_STATUSES), z.number()).openapi({
+    commissionByStatus: z.partialRecord(z.enum(COMMISSION_STATUSES), z.number()).openapi({
       description:
         'Sum of commission amounts in `currency` accrued since `since`, keyed by status. Statuses with nothing are absent. Commissions in other currencies are in `commissionByCurrency`. `paid` includes manual payouts not yet sent: read payouts for money that went out.',
     }),
@@ -1018,7 +1016,7 @@ export const ExportBundle = z
   .object({
     exportedAt: ts,
     schemaVersion: z.number().int(),
-    tables: z.record(z.array(z.record(z.unknown()))),
+    tables: z.record(z.string(), z.array(z.record(z.string(), z.unknown()))),
   })
   .openapi('ExportBundle', { description: 'The whole tenant, re-importable by a self-hosted instance (`POST /import`).' });
 
@@ -1026,9 +1024,9 @@ export const ImportResult = z
   .object({
     ok: z.literal(true),
     report: z.object({
-      inserted: z.record(z.number().int()),
-      skipped: z.record(z.number().int()),
-      credentials: z.record(z.array(z.record(z.unknown()))).openapi({
+      inserted: z.record(z.string(), z.number().int()),
+      skipped: z.record(z.string(), z.number().int()),
+      credentials: z.record(z.string(), z.array(z.record(z.string(), z.unknown()))).openapi({
         description:
           'Fresh credentials for restored rows, per table, shown once. `WebhookEndpoint`: `{ id, url, secret }` for each endpoint restored (paused until you turn it back on).',
       }),

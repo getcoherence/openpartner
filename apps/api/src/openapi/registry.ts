@@ -15,10 +15,8 @@
  * __tests__/openapi.test.ts, so the auth docs can't drift either.
  */
 
-import { z } from 'zod';
-import { OpenAPIRegistry, extendZodWithOpenApi, type RouteConfig, type ZodContentObject } from '@asteasolutions/zod-to-openapi';
-
-extendZodWithOpenApi(z);
+import { z } from '../zod.js';
+import { OpenAPIRegistry, type RouteConfig, type ZodContentObject } from '@asteasolutions/zod-to-openapi';
 
 /**
  * Who can call an operation.
@@ -71,7 +69,7 @@ export interface OperationSpec {
   access: Access;
   /** Overrides for path params; any `:param` not listed is a plain string. */
   params?: Record<string, z.ZodTypeAny>;
-  query?: z.AnyZodObject;
+  query?: z.ZodObject;
   body?: z.ZodTypeAny;
   /** A non-JSON request body (e.g. text/csv), instead of `body`. */
   requestContent?: ZodContentObject;

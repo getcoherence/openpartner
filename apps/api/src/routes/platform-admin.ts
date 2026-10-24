@@ -20,7 +20,7 @@
  */
 
 import { Router, type NextFunction, type Request, type Response } from 'express';
-import { z } from 'zod';
+import { offsetDateTime, z } from '../zod.js';
 import { ulid } from 'ulid';
 import {
   DEFAULT_TENANT_ID,
@@ -750,7 +750,7 @@ const featuredSchema = z.object({
     .array(
       z.object({
         id: z.string().min(1).max(64),
-        until: z.string().datetime({ offset: true }).nullable().optional(),
+        until: offsetDateTime().nullable().optional(),
       }),
     )
     .max(24)
@@ -1413,7 +1413,7 @@ const feeRatesSchema = z
 const feeSettingsSchema = z
   .object({
     shadow: z.boolean().optional(),
-    cutoverAt: z.string().datetime({ offset: true }).nullable().optional(),
+    cutoverAt: offsetDateTime().nullable().optional(),
     rates: z.object({ flat: feeRatesSchema.optional(), revshare: feeRatesSchema.optional() }).strict().optional(),
   })
   .strict();
@@ -1479,7 +1479,7 @@ const contractTermsSchema = z
     revenueRate: z.number().min(0).max(1).nullable(),
     commissionRate: z.number().min(0).max(1).nullable(),
     monthlyMinimumUsd: z.number().min(0).max(10_000_000).nullable(),
-    effectiveAt: z.string().datetime({ offset: true }).nullable(),
+    effectiveAt: offsetDateTime().nullable(),
     note: z.string().trim().max(2000).nullable(),
   })
   .strict();

@@ -22,7 +22,7 @@
  */
 
 import { Router } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { TABLES, type ClickRow, type IdentityRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { attributeBacklogForUser } from '../attribution.js';

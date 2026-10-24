@@ -18,7 +18,7 @@
 
 import { Router, type Request } from 'express';
 import type { Knex } from 'knex';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { TABLES, type BonusRow, type CommissionRow } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth } from '../auth.js';
 import {

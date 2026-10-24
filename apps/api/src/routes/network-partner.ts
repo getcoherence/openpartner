@@ -21,7 +21,7 @@
  */
 
 import express, { Router, type Request, type Response } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import type { Knex } from 'knex';
 import { AUDIENCE_SIZES, TABLES, type PartnerRow } from '@openpartner/db';
 import { requireAuth } from '../auth.js';
@@ -296,7 +296,7 @@ const updateProfileSchema = z.object({
     .nullable()
     .optional(),
   bio: z.string().max(2000).nullable().optional(),
-  profile: z.record(z.unknown()).optional(),
+  profile: z.record(z.string(), z.unknown()).optional(),
   categories: z.array(z.string().trim().toLowerCase().min(1).max(40)).max(12).optional(),
   audienceLocations: z.array(isoCountry).max(5).optional(),
   audienceAgeRange: z.enum(['13-17', '18-24', '25-34', '35-44', '45-54', '55+']).nullable().optional(),

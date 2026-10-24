@@ -32,7 +32,7 @@
 
 import { Router } from 'express';
 import type { Knex } from 'knex';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import type { TenantStripeConnectionRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { decryptSecret, encryptSecret } from '../crypto.js';

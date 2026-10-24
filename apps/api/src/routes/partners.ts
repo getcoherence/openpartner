@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { Knex } from 'knex';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { ulid } from 'ulid';
 import { TABLES, type ApiKeyRow, type CommissionSubRule, type PartnerRow, type SessionRow } from '@openpartner/db';
 import { grantScope, requireAdmin, requireAuth, requirePartnerOrAdmin, scopedKeyLacks } from '../auth.js';
@@ -68,7 +68,7 @@ export const overrideSchema = z.object({
 export const createSchema = z.object({
   email: z.string().email(),
   name: z.string().min(1),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   // Admin can opt out of the invite email (e.g. federation creating a
   // Partner row on behalf of an external creator network). Default is
   // "invite them" since that's the intent of the admin UI.

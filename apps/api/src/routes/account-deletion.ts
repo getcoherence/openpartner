@@ -27,7 +27,7 @@
  */
 
 import { Router } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { TABLES, type TenantRow } from '@openpartner/db';
 import { db } from '../db.js';
 import { requireAdmin, requireAuth } from '../auth.js';

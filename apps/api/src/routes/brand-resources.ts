@@ -21,7 +21,7 @@
 
 import express, { Router, type NextFunction, type Request, type Response } from 'express';
 import type { Knex } from 'knex';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { ulid } from 'ulid';
 import {
   TABLES,

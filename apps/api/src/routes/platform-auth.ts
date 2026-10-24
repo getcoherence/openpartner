@@ -10,7 +10,7 @@
  */
 
 import { Router, type Request } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { ulid } from 'ulid';
 import { TABLES, type AdminRow, type PlatformSessionRow, type TenantRow } from '@openpartner/db';
 import { db, appDb } from '../db.js';

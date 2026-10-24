@@ -18,7 +18,7 @@
 import { Router } from 'express';
 import type { Knex } from 'knex';
 import { ulid } from 'ulid';
-import { z } from 'zod';
+import { utcDateTime, z } from '../zod.js';
 import { TABLES, renderBountySummary, type BonusRow, type BountyRow, type BountyStatus, type CommissionRow } from '@openpartner/db';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { currencyInputSchema } from '../currency.js';
@@ -57,8 +57,8 @@ const goalFields = {
 const editableFields = {
   name: z.string().trim().min(1).max(200),
   description: z.string().max(MAX_BOUNTY_DESCRIPTION_LENGTH).nullable().optional(),
-  startsAt: z.string().datetime(),
-  endsAt: z.string().datetime().nullable(),
+  startsAt: utcDateTime(),
+  endsAt: utcDateTime().nullable(),
   partnerIds: z.array(z.string().min(1).max(64)).min(1).max(10_000).nullable(),
 };
 

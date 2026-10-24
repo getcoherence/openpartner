@@ -18,7 +18,7 @@
  */
 
 import { Router, type Request } from 'express';
-import { z } from 'zod';
+import { z } from '../zod.js';
 import { TABLES, type AdminRow, DEFAULT_TENANT_ID, safeNextPath } from '@openpartner/db';
 import { db } from '../db.js';
 import { issueMagicLink } from '../auth-sessions.js';
