@@ -1,7 +1,12 @@
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { Receipt } from 'lucide-react';
 import { api, type Principal } from '../api.js';
-import { commissionSourceLabel, isBonusCommission, type CommissionSourceFields } from '../lib/commission-source.js';
+import {
+  commissionSourceLabel,
+  isBonusCommission,
+  isRecruiterCommission,
+  type CommissionSourceFields,
+} from '../lib/commission-source.js';
 import { theme } from '../theme.js';
 import { Avatar, Button, Card, EmptyState, ErrorBanner, Page, StatusPill, Table, formatDate, money, shortId } from '../ui.js';
 
@@ -36,12 +41,13 @@ export function CommissionPartnerCell({ c }: { c: Pick<Commission, 'partnerId' |
 
 /** What it was earned on, with the program underneath. A bonus's note is
  *  the brand's own words to the partner, so it wraps rather than truncates.
+ *  A bonus and a recruiter's share stand out from the sales around them.
  *  Shared with the review queue (AdminReview.tsx). */
 export function CommissionSourceCell({ c }: { c: CommissionSourceFields & { campaignName?: string | null } }) {
-  const bonus = isBonusCommission(c);
+  const standOut = isBonusCommission(c) || isRecruiterCommission(c);
   return (
     <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 2, maxWidth: 320, whiteSpace: 'normal' }}>
-      <span style={{ color: bonus ? theme.accentText : theme.text, fontWeight: bonus ? 500 : 400, overflowWrap: 'anywhere' }}>
+      <span style={{ color: standOut ? theme.accentText : theme.text, fontWeight: standOut ? 500 : 400, overflowWrap: 'anywhere' }}>
         {commissionSourceLabel(c)}
       </span>
       {c.campaignName && <span style={{ fontSize: 12, color: theme.textDim }}>{c.campaignName}</span>}

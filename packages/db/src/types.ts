@@ -347,6 +347,19 @@ export interface PartnerRow {
   // links, no sessions. For headless programs, where the brand's own app
   // is the partner's only view. Default true. See partner-portal-access.ts.
   portalAccess: boolean;
+  /** The partner who recruited this one (docs/two-tier-commissions.md), or
+   *  null. Set from the recruiter's join-page link or by an admin; in a
+   *  program with recruiterCommissionPercent the recruiter earns that share
+   *  of this partner's commissions. */
+  recruitedByPartnerId: string | null;
+  /** When the recruitment started: the join, or the admin setting it. Only
+   *  this partner's events from then on pay their recruiter, and
+   *  Program.recruiterCommissionMonths counts from here. Set iff
+   *  recruitedByPartnerId is. */
+  recruitedAt: Date | null;
+  /** This partner's own code for recruiting others (`?ref=` on the join
+   *  page). Minted the first time they ask for it; unique per tenant. */
+  recruitCode: string | null;
 }
 
 export type CommissionType = 'percent' | 'fixed';
@@ -821,6 +834,13 @@ export interface ProgramRow {
   blockedReason: string | null;
   /** Email of the operator who blocked it. */
   blockedByEmail: string | null;
+  /** Two-tier commissions (docs/two-tier-commissions.md): a recruiter earns
+   *  this percent of each commission their recruit earns in this program
+   *  (10 = 10%). Decimal, comes back as string from pg. Null = off. */
+  recruiterCommissionPercent: string | null;
+  /** How many months after Partner.recruitedAt the recruiter keeps earning
+   *  that share. Null = for as long as the recruit earns. */
+  recruiterCommissionMonths: number | null;
   createdAt: Date;
 }
 
@@ -927,6 +947,12 @@ export interface CommissionRow {
    *  an attributed sale's commission, or a bonus's (BonusRow). */
   attributionId: string | null;
   bonusId: string | null;
+  /** Set on a recruiter commission (docs/two-tier-commissions.md): the
+   *  recruit's commission it is a share of. It sits on that commission's
+   *  attribution, so `partnerId` (the recruiter) differs from the
+   *  attribution's partner. A refund's replacement of a recruiter commission
+   *  keeps the same source. Null on every other commission. */
+  sourceCommissionId: string | null;
   partnerId: string;
   amount: string; // decimal as string
   currency: string;

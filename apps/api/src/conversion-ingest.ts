@@ -81,6 +81,9 @@ export async function storedAttribution(db: Knex, eventId: string): Promise<Repl
   const touches = rows.filter((r) => r.model === model);
   const commissions = await db<CommissionRow>(TABLES.Commission)
     .whereIn('attributionId', touches.map((t) => t.id))
+    // The touch's own partner's: a recruiter's share sits on the same
+    // attribution, and its id can sort first.
+    .whereNull('sourceCommissionId')
     .orderBy('id', 'asc')
     .select('id', 'attributionId');
   // One commission per touch in the response, as attributeEvent reports it.

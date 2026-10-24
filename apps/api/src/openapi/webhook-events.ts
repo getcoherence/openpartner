@@ -46,6 +46,17 @@ const partnerSource = z.enum(PARTNER_SOURCES).openapi({
     'How the partner was added. `api`: `POST /partners` (the admin portal, an integration, or a Network approval, which also fires `partnership.approved`). `join_page`: they applied on the public join page. New values may be added.',
 });
 
+/** On a recruiter commission (two-tier, docs/two-tier-commissions.md). */
+const recruiterFields = {
+  sourceCommissionId: id.optional().openapi({
+    description:
+      "Set on a recruiter commission: the recruited partner's commission this one is a share of. `partnerId` is the recruiter; the attribution, click and event are the recruit's sale.",
+  }),
+  recruitedPartnerId: id.optional().openapi({
+    description: 'Set on a recruiter commission: the recruited partner whose sale it was.',
+  }),
+};
+
 const lifecycleBase = z.object({
   commissionId: id,
   partnerId: id,
@@ -53,6 +64,7 @@ const lifecycleBase = z.object({
   amount: Decimal,
   currency: z.string(),
   ...commissionOrigin,
+  ...recruiterFields,
 });
 
 /** Bonus fields that come from the Bonus row. On approved / paid /
@@ -116,6 +128,7 @@ export const WEBHOOK_PAYLOADS = {
       description:
         'Set when a partial refund reduced a commission: this one carries the amount the partner keeps, and replaces the commission named here (reversed in the `commission.reversed` sent just before).',
     }),
+    ...recruiterFields,
   }),
   'commission.approved': lifecycleBase,
   'commission.paid': lifecycleBase.extend({ payoutId: id }),
@@ -159,6 +172,10 @@ export const WEBHOOK_PAYLOADS = {
     portalAccess: z.boolean().openapi({ description: 'The partner may sign in to the partner portal. See `portalAccess` on `POST /partners`.' }),
     programIds: z.array(id).openapi({ description: 'The programs the partner was granted. Join-page applicants start with none.' }),
     source: partnerSource,
+    recruitedByPartnerId: id.optional().openapi({
+      description:
+        "Set when a partner recruited them: the one whose recruit link (`?ref=`) they joined through, or the one `POST /partners` named. Programs with a recruiter commission pay that partner a share of this one's commissions. Absent when nobody did.",
+    }),
   }),
   'partner.activated': z.object({
     partnerId: id,

@@ -66,6 +66,14 @@ export function AdminReview() {
           rows={rows.map((c) => {
             const inHoldback = c.matureAt ? Date.parse(c.matureAt) > Date.now() : false;
             const daysLeft = c.matureAt ? daysFromNow(c.matureAt) : 0;
+            // A recruiter's share is approved with the recruit's commission
+            // it is a share of, so it has no Approve of its own.
+            const followsRecruit = !!c.recruiter;
+            const approveHint = followsRecruit
+              ? `Approved with ${c.recruiter!.recruitedPartnerName ?? 'the recruit'}'s commission`
+              : inHoldback
+                ? `In holdback until ${new Date(c.matureAt!).toLocaleDateString()}`
+                : '';
             return [
               <CommissionPartnerCell c={c} />,
               <CommissionSourceCell c={c} />,
@@ -91,11 +99,11 @@ export function AdminReview() {
               ),
               <span style={{ color: theme.textMuted }}>{formatDate(c.accruedAt, { relative: true })}</span>,
               <div style={{ display: 'flex', gap: 6 }}>
-                <span title={inHoldback ? `In holdback until ${new Date(c.matureAt!).toLocaleDateString()}` : ''}>
+                <span title={approveHint}>
                   <Button
                     size="sm"
                     onClick={() => approve.mutate(c.id)}
-                    disabled={approve.isPending || inHoldback}
+                    disabled={approve.isPending || inHoldback || followsRecruit}
                   >
                     Approve
                   </Button>
