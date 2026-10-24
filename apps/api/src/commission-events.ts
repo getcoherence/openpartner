@@ -20,6 +20,12 @@
  * bonuses.ts), never commission.*: those payloads promise an attributionId,
  * a click and an event, and integrations rely on that.
  *
+ * A recruiter commission (sourceCommissionId set, recruiter-commissions.ts)
+ * is on the recruit's attribution, so its origin is the recruit's click and
+ * event. Its payload adds `sourceCommissionId` and `recruitedPartnerId`, and
+ * the dispatcher keeps the recruit's click and sub-ID out of the
+ * recruiter's own postback (webhook-dispatcher.ts).
+ *
  * Like dispatchEvent this is fire-and-forget: the returned promise never
  * rejects, and a failed origin lookup still dispatches the bare payload
  * (a missing macro beats a missing event). Callers invoke it AFTER the
@@ -37,7 +43,10 @@ export type CommissionLifecycleEvent = 'commission.approved' | 'commission.rever
 
 /** `bonusId` is required so no caller can forget it and announce a bonus
  *  as an attributed commission. */
-type CommissionLike = Pick<CommissionRow, 'id' | 'partnerId' | 'attributionId' | 'bonusId' | 'amount' | 'currency'>;
+type CommissionLike = Pick<
+  CommissionRow,
+  'id' | 'partnerId' | 'attributionId' | 'bonusId' | 'sourceCommissionId' | 'amount' | 'currency'
+>;
 
 const BONUS_EVENT: Record<CommissionLifecycleEvent, WebhookEventType> = {
   'commission.approved': 'bonus.approved',
@@ -54,6 +63,9 @@ export interface CommissionOrigin {
   eventValue: string | null;
   /** Click.subId: the publisher's `?sub_id=`, or null. */
   subId: string | null;
+  /** Attribution.partnerId: the partner the sale is attributed to, which
+   *  is the recruit on a recruiter commission. */
+  attributedPartnerId?: string;
 }
 
 /** Bind-parameter headroom: a holdback sweep can approve thousands of
@@ -107,6 +119,12 @@ export async function dispatchCommissionEvents(
             subId: origin.subId,
           }
         : {}),
+      ...(c.sourceCommissionId
+        ? {
+            sourceCommissionId: c.sourceCommissionId,
+            ...(origin?.attributedPartnerId ? { recruitedPartnerId: origin.attributedPartnerId } : {}),
+          }
+        : {}),
       ...extra,
     });
   }
@@ -126,6 +144,7 @@ async function loadOrigins(tenantId: string, attributionIds: string[]): Promise<
         'a.clickId',
         'a.eventId',
         'a.programId',
+        'a.partnerId as attributedPartnerId',
         'e.type as eventType',
         'e.value as eventValue',
         'c.subId as subId',
@@ -138,6 +157,7 @@ async function loadOrigins(tenantId: string, attributionIds: string[]): Promise<
         programId: r.programId,
         eventValue: r.eventValue,
         subId: r.subId,
+        attributedPartnerId: r.attributedPartnerId,
       });
     }
   }

@@ -60,8 +60,8 @@ curl -s -X POST $OP/api-keys/scoped -H "Authorization: Bearer $ADMIN" -H 'conten
 
 | Scope | Used for |
 | --- | --- |
-| `partners:create` | `POST /partners` with `sendInvite: false`, and nothing else. It can't send an invite, set commission terms, change, revoke or import partners. |
-| `partners:read` | `GET /partners`, `GET /partners/{id}`, `/dashboard`, `/timeseries`, `/events`, `/customers`, `/breakdowns` |
+| `partners:create` | `POST /partners` with `sendInvite: false`, and nothing else. It can't send an invite, set commission terms or a recruiter, change, revoke or import partners. |
+| `partners:read` | `GET /partners`, `GET /partners/{id}`, `/dashboard`, `/timeseries`, `/events`, `/customers`, `/breakdowns`, `/recruits` |
 | `links:write` / `links:read` | `POST` / `GET /partners/{id}/links` |
 | `commissions:read` | `GET /partners/{id}/commissions` |
 | `payouts:read` | `GET /partners/{id}/payouts` |
@@ -74,6 +74,7 @@ curl -s -X POST $OP/api-keys/scoped -H "Authorization: Bearer $ADMIN" -H 'conten
 | --- | --- | --- |
 | Create a partner **with an invite** (the default when `sendInvite` is omitted) | `POST /partners` | Yes, a sign-in link |
 | Set a partner's commission terms at creation | `POST /partners` (`commissionSnapshot`, `programCommissions`) | No |
+| Set who recruited a partner, for [two-tier commissions](two-tier-commissions.md) | `POST /partners` / `PATCH /partners/{id}` (`recruitedByPartnerId`) | No |
 | Send or resend an invite | `POST /partners/{id}/invite` | Yes, a sign-in link |
 | Suspend a partner | `POST /partners/{id}/revoke` | Yes, unless `"notify": false` (partners without portal access: only with `"notify": true`) |
 | Turn a partner's portal access on or off | `PATCH /partners/{id}` | No |

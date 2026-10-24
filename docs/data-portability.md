@@ -14,7 +14,7 @@ that overstates itself is worse than one with a documented hole.
 ```json
 {
   "exportedAt": "2026-08-09T12:00:00.000Z",
-  "schemaVersion": 10,
+  "schemaVersion": 11,
   "tables": { "Partner": [ … ], "Program": [ … ], … }
 }
 ```
@@ -128,6 +128,22 @@ who picked the code, which nothing can re-derive, so the column bumps the
 version. A v1–v9 bundle's coupons restore with `brandChosen` false, the
 value the migration `20261021020000_coupon_brand_chosen` gave every
 existing code.
+
+Two-tier commissions (schemaVersion 11, Oct 2026,
+[two-tier-commissions.md](two-tier-commissions.md)) add columns to three
+tables. `Partner` rows carry `recruitedByPartnerId` and `recruitedAt` (who
+recruited the partner and when that started) and `recruitCode` (their own
+code for the join page's `?ref=`). `Program` rows carry
+`recruiterCommissionPercent` and `recruiterCommissionMonths`, the
+recruiter's share and how long it lasts. `Commission` rows carry
+`sourceCommissionId`, set on a recruiter's share and naming the recruit's
+commission it was worked out from. Who recruited whom is raw data nothing
+can re-derive, and a recruiter's share is ledger history, so the columns
+bump the version. Both self-references (a recruit and their recruiter, a
+share and its source) are checked at commit, so a SQL restore that writes
+`Partner` or `Commission` in several chunks restores them in any order. A
+v1–v10 bundle restores with every new column null: no recruiters, no codes,
+no programs paying a share.
 
 `Partner` rows carry `portalAccess` (schemaVersion 5, Oct 2026): whether
 the partner may sign in to the partner portal. A headless program turns it

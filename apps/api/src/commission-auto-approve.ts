@@ -23,6 +23,10 @@
  * was awarded, the commission is reversed instead of approved, and comes
  * back in `requalified` for bonus.reversed (reason bounty_requalification).
  *
+ * A recruiter commission (recruiter-commissions.ts) isn't matured on its
+ * own: it is approved in the same pass as the recruit's commission it is a
+ * share of.
+ *
  * Returns the approved rows so the caller can fire commission.approved
  * once the sweep's transaction has committed — this runs inside the
  * scheduler's per-tenant transaction, so dispatching from here would
@@ -33,6 +37,7 @@ import type { Knex } from 'knex';
 import { TABLES, type CommissionRow } from '@openpartner/db';
 import { EFFECTIVE_HOLDBACK_SQL } from './partner-commission.js';
 import { bountyStillMet } from './performance-bounties.js';
+import { approveRecruiterCommissions } from './recruiter-commissions.js';
 
 export interface AutoApproveResult {
   approvedCount: number;
@@ -69,6 +74,8 @@ function matureSql(columns: string, extraWhere = ''): string {
                on pcw."partnerId" = c."partnerId" and pcw."programId" is null
        where c."tenantId" = ?
          and c.status = 'accrued'
+         -- A recruiter commission is approved with its source, below.
+         and c."sourceCommissionId" is null
          and (a.id is not null or b.id is not null)
          and ${EFFECTIVE_HOLDBACK_SQL} is not null
          and ${EFFECTIVE_HOLDBACK_SQL} > 0
@@ -97,6 +104,18 @@ export async function autoApproveMatureCommissions(
     if (reversed) requalified.push(reversed);
   }
 
+  // The conversions of what's due, in id order, as refunds.ts locks them
+  // before the commissions on them: approving a commission and then its
+  // recruiter's share (which can sort first) must not deadlock with a
+  // refund of the same sale.
+  await db.raw(
+    `select e.id from "${TABLES.Event}" e
+      where e.id in (select d."eventId" from (${matureSql('a."eventId" as "eventId"')}) d)
+      order by e.id
+      for update of e`,
+    [tenantId],
+  );
+
   // Single statement so two scheduler ticks racing don't double-
   // process the same row: the second UPDATE re-checks `status =
   // 'accrued'` on the row the first committed, and skips it.
@@ -119,5 +138,9 @@ export async function autoApproveMatureCommissions(
     [tenantId, tenantId],
   )) as { rows: CommissionRow[] };
 
-  return { approvedCount: result.rows.length, approved: result.rows, requalified };
+  // Recruiter shares of what was just approved go with it, whatever the
+  // recruiter's own holdback: the recruit's holdback is the refund window
+  // of the sale both were earned on.
+  const approved = [...result.rows, ...(await approveRecruiterCommissions(db, tenantId, result.rows))];
+  return { approvedCount: approved.length, approved, requalified };
 }

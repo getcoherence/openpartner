@@ -143,15 +143,24 @@ export function PartnerJoinPage() {
   // Hosted platform only: where the applicant is based (country-access).
   const [country, setCountry] = useState('');
   const [outsideOccupiedRegions, setOutsideOccupiedRegions] = useState(false);
+  // A partner's recruit link (two-tier commissions) carries ?ref=<code>:
+  // sent with the application, it makes them this applicant's recruiter.
+  const [ref] = useState(() => new URLSearchParams(window.location.search).get('ref')?.trim() || null);
   // Closed (or reviewed) is known before anyone fills in the form. If the
   // check fails (an older API without it), the form still works and a
   // closed program answers the submit with signup_disabled.
   const status = useQuery({
-    queryKey: ['partner-signup-status', currentTenantSlug()],
+    // Without a ref the key is what it always was.
+    queryKey: ref ? ['partner-signup-status', currentTenantSlug(), ref] : ['partner-signup-status', currentTenantSlug()],
     queryFn: () =>
-      api<{ open: boolean; reviewRequired: boolean; networkOffered?: boolean; countryRequired?: boolean }>(
-        '/partner-signup/status',
-      ),
+      api<{
+        open: boolean;
+        reviewRequired: boolean;
+        networkOffered?: boolean;
+        countryRequired?: boolean;
+        /** Whose recruit link this is, when ?ref= names a partner. */
+        recruiter?: { name: string } | null;
+      }>(`/partner-signup/status${ref ? `?ref=${encodeURIComponent(ref)}` : ''}`),
     retry: false,
     staleTime: 60_000,
   });
@@ -181,6 +190,7 @@ export function PartnerJoinPage() {
           application,
           ...(networkOffered && networkOptIn ? { networkOptIn: true } : {}),
           ...(countryRequired ? { country, ...(country === 'UA' ? { outsideOccupiedRegions } : {}) } : {}),
+          ...(ref ? { ref } : {}),
         },
       });
       setPhase({ kind: 'sent', review: r.status.startsWith('pending_review') });
@@ -263,6 +273,21 @@ export function PartnerJoinPage() {
       }
     >
       <form onSubmit={submit} noValidate>
+        {status.data?.recruiter && (
+          <div
+            style={{
+              background: theme.accentA10,
+              border: `1px solid ${theme.accentA55}`,
+              borderRadius: theme.radiusSm,
+              padding: '10px 12px',
+              fontSize: 13,
+              color: theme.text,
+              marginBottom: 14,
+            }}
+          >
+            {status.data.recruiter.name} invited you to join.
+          </div>
+        )}
         <div style={{ position: 'relative' }}>
           <User size={15} style={{ position: 'absolute', left: 12, top: 12, color: theme.textDim, pointerEvents: 'none' }} />
           <input
