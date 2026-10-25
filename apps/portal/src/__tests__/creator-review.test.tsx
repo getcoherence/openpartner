@@ -274,6 +274,14 @@ describe('creator portal: review and messages', () => {
     expect(screen.queryByRole('region', { name: 'Profile review' })).toBeNull();
   });
 
+  it('adds the approval step to the Getting started checklist', async () => {
+    routes['GET /creators/me/requests'] = () => ({ status: 200, body: { requests: [] } });
+    shell('/creator/discover');
+    expect(await screen.findByText('Get approved by OpenPartner')).toBeTruthy();
+    expect(screen.getByText('We check every new creator profile before brands see it.')).toBeTruthy();
+    expect(screen.getByText('You can apply once your profile is approved. Browse below in the meantime.')).toBeTruthy();
+  });
+
   it('shows an unread message until it is marked read', async () => {
     me = { ...me, reviewStatus: 'approved', unreadMessageCount: 1 };
     messages = [{ id: 'cmsg_1', body: 'Please write your bio in English.', createdAt: '2026-10-25T10:00:00.000Z', readAt: null }];
