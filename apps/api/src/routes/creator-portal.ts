@@ -98,6 +98,8 @@ const ALLOWED_EXACT = new Set([
   // chosen items (the Network's docs/creator-storefront.md §7.3).
   '/creators/me/storefront/import/preview',
   '/creators/me/storefront/import/apply',
+  // Messages from OpenPartner's operators (the Network's creator-review.ts).
+  '/creators/me/messages',
   // A brand confirming a storefront request from the emailed link (no auth).
   '/bookings/confirm',
   '/offerings',
@@ -108,6 +110,8 @@ const ALLOWED_PREFIX: Array<{ prefix: string; methods: Set<string> }> = [
   { prefix: '/vendors/', methods: new Set(['GET']) },                // /vendors/:id (public profile)
   { prefix: '/creators/me/affiliations/', methods: new Set(['GET']) },
   { prefix: '/creators/me/requests/', methods: new Set(['POST']) },
+  // Mark an operator message read: POST /creators/me/messages/:id/read.
+  { prefix: '/creators/me/messages/', methods: new Set(['POST']) },
   // Custom share-domain management — POST /verify, DELETE the domain.
   { prefix: '/creators/me/domains/', methods: new Set(['POST', 'DELETE']) },
   // Per-partnership operations: slug edit (PATCH), coupon

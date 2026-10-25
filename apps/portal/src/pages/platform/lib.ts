@@ -175,6 +175,38 @@ export interface NetworkCreator {
     attempts: number;
     lastAttemptAt: string;
   }>;
+  // ---- Review (absent on a Network that predates creator review) ----
+  /** Brands and the public see the creator only once 'approved' (and
+   *  complete). */
+  reviewStatus?: ApprovalStatus;
+  reviewedAt?: string | null;
+  /** Internal note on the last decision. */
+  reviewReason?: string | null;
+  reviewedByEmail?: string | null;
+  /** When the creator last edited their profile. */
+  profileUpdatedAt?: string;
+  platforms?: Array<{
+    platform: string;
+    handle: string;
+    profileUrl: string | null;
+    followerCount: number | null;
+    verified: boolean;
+  }>;
+  messageCount?: number;
+  unreadMessageCount?: number;
+  lastMessageAt?: string | null;
+}
+
+/** An operator's message to a creator (shown in their portal). */
+export interface NetworkCreatorMessage {
+  id: string;
+  body: string;
+  sentByEmail: string | null;
+  createdAt: string;
+  /** Null when it wasn't emailed. */
+  emailedAt: string | null;
+  /** When the creator marked it read. */
+  readAt: string | null;
 }
 
 /** A Network vendor (brand) as the marketplace sees it. Featured fields are
@@ -507,6 +539,8 @@ export function friendlyPlatformError(err: unknown): string {
       return 'The email couldn’t be sent — check the platform mail settings and try again.';
     case 'vendor_not_found':
       return 'That brand is no longer on the Network — refresh and try again.';
+    case 'creator_not_active':
+      return 'That creator is blocked or deleting their account, so they can’t read a message.';
     case 'managed_by_brand_review':
       return 'That vendor is one of our hosted brands — approve or reject it on the Brands tab.';
     case 'network_not_configured':

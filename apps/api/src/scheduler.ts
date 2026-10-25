@@ -245,6 +245,16 @@ const JOBS: ScheduledJob[] = [
     },
   },
   {
+    name: 'network-creator-review-alert',
+    cronExpr: '5,20,35,50 * * * *',
+    description:
+      'Hosted multi-tenant: email the ops inbox when Network creators finish their profile and wait for review (every 15 minutes)',
+    handler: async () => {
+      const { alertOpsToCreatorsAwaitingReview } = await import('./network-creator-review-alert.js');
+      return alertOpsToCreatorsAwaitingReview();
+    },
+  },
+  {
     name: 'network-country-access-sync',
     cronExpr: '45 3 * * *',
     description:

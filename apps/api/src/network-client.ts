@@ -1025,6 +1025,42 @@ export interface NetworkCreatorSummary {
    *  (the Network's docs/creator-storefront.md §7.3). Absent on an older
    *  Network. */
   importConflicts?: NetworkImportConflict[];
+  // ---- Creator review (the Network's creator-review.ts). All absent on a
+  // Network that predates the review gate. ----
+  /** Shown to brands and the public only once 'approved' (and complete). */
+  reviewStatus?: CreatorReviewStatus;
+  reviewedAt?: string | null;
+  /** The operator's internal note on the last decision. */
+  reviewReason?: string | null;
+  reviewedByEmail?: string | null;
+  /** When the creator last changed their profile; compare with
+   *  lastMessageAt for "edited since your message". */
+  profileUpdatedAt?: string;
+  /** Their platforms, for the reviewer to read (text, never links). */
+  platforms?: Array<{
+    platform: string;
+    handle: string;
+    profileUrl: string | null;
+    followerCount: number | null;
+    verified: boolean;
+  }>;
+  messageCount?: number;
+  unreadMessageCount?: number;
+  lastMessageAt?: string | null;
+}
+
+export type CreatorReviewStatus = 'pending' | 'approved' | 'rejected';
+
+/** An operator's message to a creator, as the ops console sees it. */
+export interface NetworkCreatorMessage {
+  id: string;
+  body: string;
+  sentByEmail: string | null;
+  createdAt: string;
+  /** Null when it wasn't emailed (asked not to, or the send failed). */
+  emailedAt: string | null;
+  /** When the creator marked it read in their portal. */
+  readAt: string | null;
 }
 
 export interface NetworkImportConflict {
@@ -1041,13 +1077,61 @@ export interface NetworkImportConflict {
   lastAttemptAt: string;
 }
 
-export async function adminListCreators(networkUrl: string): Promise<NetworkCreatorSummary[]> {
+export async function adminListCreators(
+  networkUrl: string,
+  opts: { review?: CreatorReviewStatus } = {},
+): Promise<NetworkCreatorSummary[]> {
   const body = await callNetworkAdmin<{ creators: NetworkCreatorSummary[] }>(
     networkUrl,
     'GET',
-    '/admin/creators?limit=500',
+    `/admin/creators?limit=500${opts.review ? `&review=${opts.review}` : ''}`,
   );
   return body.creators ?? [];
+}
+
+/** Record an operator decision on a creator. Idempotent on the Network;
+ *  `notifyCreator` emails the outcome (approved/rejected, on a change). */
+export async function adminSetCreatorReview(
+  networkUrl: string,
+  creatorId: string,
+  decision: {
+    status: CreatorReviewStatus;
+    reason: string | null;
+    reviewedByEmail: string;
+    notifyCreator: boolean;
+    replyTo: string | null;
+  },
+): Promise<{ reviewStatus: CreatorReviewStatus; changed: boolean; notified: boolean }> {
+  return callNetworkAdmin(networkUrl, 'POST', `/admin/creators/${encodeURIComponent(creatorId)}/review`, {
+    status: decision.status,
+    ...(decision.reason ? { reason: decision.reason } : {}),
+    reviewedByEmail: decision.reviewedByEmail,
+    notifyCreator: decision.notifyCreator,
+    ...(decision.replyTo ? { replyTo: decision.replyTo } : {}),
+  });
+}
+
+/** Send a creator a message: shown in their portal, emailed when `email`. */
+export async function adminSendCreatorMessage(
+  networkUrl: string,
+  creatorId: string,
+  msg: { body: string; sentByEmail: string; email: boolean; replyTo: string | null },
+): Promise<{ message: NetworkCreatorMessage; emailed: boolean }> {
+  return callNetworkAdmin(networkUrl, 'POST', `/admin/creators/${encodeURIComponent(creatorId)}/messages`, {
+    body: msg.body,
+    sentByEmail: msg.sentByEmail,
+    email: msg.email,
+    ...(msg.replyTo ? { replyTo: msg.replyTo } : {}),
+  });
+}
+
+export async function adminListCreatorMessages(networkUrl: string, creatorId: string): Promise<NetworkCreatorMessage[]> {
+  const body = await callNetworkAdmin<{ messages: NetworkCreatorMessage[] }>(
+    networkUrl,
+    'GET',
+    `/admin/creators/${encodeURIComponent(creatorId)}/messages`,
+  );
+  return body.messages ?? [];
 }
 
 export async function adminBlockCreator(

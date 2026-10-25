@@ -713,6 +713,30 @@ export function opsNetworkVendorsPendingEmail(
   return { subject, text, html: wrap(text, reviewUrl, 'Review vendors') };
 }
 
+/** Platform ops: Network creators finished their profile and are waiting
+ *  for review (brands and the public don't see them until approved). */
+export function opsNetworkCreatorsPendingEmail(
+  creators: Array<{ name: string; handle: string | null }>,
+  reviewUrl: string,
+): EmailTemplate {
+  const n = creators.length;
+  const label = (c: { name: string; handle: string | null }) => (c.handle ? `${c.name} (@${c.handle})` : c.name);
+  const subject =
+    n === 1 ? `[Review] Creator ${label(creators[0]!)} is waiting` : `[Review] ${n} creators are waiting`;
+  const text = [
+    `${n === 1 ? 'A creator has' : `${n} creators have`} finished their OpenPartner Network profile and ${n === 1 ? 'is' : 'are'} waiting for review.`,
+    `Brands and the public don't see them until approved.`,
+    ``,
+    // Indented so the HTML wrapper renders what the creator typed as text.
+    ...creators.map((c) => `  ${label(c)}`),
+    ``,
+    `Approve, reject or message them in the ops console:`,
+    ``,
+    reviewUrl,
+  ].join('\n');
+  return { subject, text, html: wrap(text, reviewUrl, 'Review creators') };
+}
+
 /** Platform ops: a decision was recorded (audit copy to the ops inbox). */
 export function opsBrandDecisionEmail(
   brandName: string,

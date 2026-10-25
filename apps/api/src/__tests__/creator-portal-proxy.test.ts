@@ -254,6 +254,18 @@ describe('creator-api proxy: storefront', () => {
     ]);
   });
 
+  it('forwards operator messages: the list and marking one read', async () => {
+    const cookie = 'op_network_creator_session=abc';
+    expect((await request(app).get('/creator-api/creators/me/messages').set('Cookie', cookie)).status).toBe(200);
+    expect((await request(app).post('/creator-api/creators/me/messages/cmsg_1/read').set('Cookie', cookie).send({})).status).toBe(200);
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /creators/me/messages', 'POST /creators/me/messages/cmsg_1/read']);
+    expect(calls.every((c) => c.cookie === cookie)).toBe(true);
+    // Deleting or editing a message isn't a creator action.
+    expect((await request(app).delete('/creator-api/creators/me/messages/cmsg_1')).status).toBe(404);
+    expect((await request(app).get('/creator-api/creators/me/messages/cmsg_1')).status).toBe(404);
+    expect(calls).toHaveLength(2);
+  });
+
   it('keeps the methods it does not need off the allowlist', async () => {
     expect((await request(app).put('/creator-api/creators/me/packages/cpk_1').send({})).status).toBe(404);
     expect((await request(app).get('/creator-api/creators/me/bookings/bkr_1')).status).toBe(404);

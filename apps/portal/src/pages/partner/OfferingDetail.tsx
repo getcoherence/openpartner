@@ -9,7 +9,9 @@ import { theme } from '../../theme.js';
 import { NetworkPortalLink } from '../../lib/network-portal.js';
 import {
   ProfileIncompleteNotice,
+  ProfileReviewNotice,
   missingFromProfile,
+  notApprovedFrom,
   profileIncompleteFrom,
   type ProfileCompleteness,
 } from '../../lib/profile-incomplete.js';
@@ -85,6 +87,9 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
   const refusedMissing = profileIncompleteFrom(apply.error);
   const missing = refusedMissing ?? profileMissing;
   const alreadyApplied = alreadyAppliedFrom(apply.error);
+  // The brand's proxy doesn't carry the partner's Network review state, so
+  // only the Network's refusal says it.
+  const notApproved = notApprovedFrom(apply.error);
 
   return (
     <Page title={offering?.title ?? 'Program'} subtitle={offering?.vendorName}>
@@ -146,7 +151,8 @@ export function OfferingDetailPage({ principal }: { principal: Principal }) {
                         link={<TenantLink to="/network/profile" style={{ color: theme.accentText, fontWeight: 500 }}>Go to your profile →</TenantLink>}
                       />
                     )}
-                    {!refusedMissing && !alreadyApplied && (
+                    {notApproved && <ProfileReviewNotice />}
+                    {!refusedMissing && !alreadyApplied && !notApproved && (
                       <ErrorBanner error={apply.error ? (countryErrorMessage(apply.error.message) ?? apply.error) : null} />
                     )}
                     {alreadyApplied && (

@@ -60,11 +60,14 @@ import {
 } from '../brand-review.js';
 import {
   adminBlockCreator,
+  adminListCreatorMessages,
   adminListCreators,
   adminListVendors,
   adminReleaseStorefrontImport,
   adminRemindCreator,
   adminRunCreatorReminders,
+  adminSendCreatorMessage,
+  adminSetCreatorReview,
   adminSetFeaturedVendors,
   adminSetVendorReview,
   adminUnblockCreator,
@@ -73,6 +76,7 @@ import {
   platformNetworkUrl,
 } from '../network-client.js';
 import { linkVendorsToTenants } from '../network-review-reconcile.js';
+import { platformOpsEmail } from '../platform-ops-mail.js';
 import {
   MATCH_SCORE_THRESHOLD,
   cslConfigured,
@@ -666,10 +670,130 @@ platformAdminRouter.get('/platform-admin/creators', requirePlatformAdmin, async 
   const networkUrl = networkOr503(res);
   if (!networkUrl) return;
   try {
-    const creators = await adminListCreators(networkUrl);
+    // The newest 500, plus every creator waiting for review in case the
+    // queue reaches past them (a held creator can be older). A Network that
+    // predates the review gate ignores ?review= and the merge dedupes.
+    const [recent, pending] = await Promise.all([
+      adminListCreators(networkUrl),
+      adminListCreators(networkUrl, { review: 'pending' }),
+    ]);
+    const seen = new Set(recent.map((c) => c.id));
+    const creators = [...recent, ...pending.filter((c) => !seen.has(c.id))];
     res.json({ creators });
   } catch (err) {
     res.status(502).json(networkErrorBody(err));
+  }
+});
+
+// Creator review: a new creator isn't shown to brands or the public until
+// an operator approves them (the Network's creator-review.ts). The
+// operator's email goes on the record; replies to anything the creator is
+// emailed go to the ops inbox.
+
+/** A Network refusal with a code (404 not_found, 409 creator_not_active)
+ *  passes through; anything else is a 502. */
+function sendNetworkFailure(res: Response, err: unknown) {
+  if (err instanceof NetworkAdminError && err.code && err.status < 500) {
+    return res.status(err.status).json({ error: err.code });
+  }
+  return res.status(502).json(networkErrorBody(err));
+}
+
+const creatorReviewSchema = z.object({
+  /** 'pending' holds an approved creator back for another look. */
+  status: z.enum(['approved', 'rejected', 'pending']),
+  /** Stored on the Network; included in the creator's email only on a
+   *  rejection that notifies them. */
+  reason: z.string().trim().max(500).optional(),
+  notifyCreator: z.boolean().optional(),
+});
+
+const CREATOR_REVIEW_ACTIONS = {
+  approved: 'creator.approve',
+  rejected: 'creator.reject',
+  pending: 'creator.hold',
+} as const;
+
+platformAdminRouter.post(
+  '/platform-admin/creators/:id/review',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = creatorReviewSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    const actor = req.platformAdminActor!;
+    let result;
+    try {
+      result = await adminSetCreatorReview(networkUrl, req.params.id!, {
+        status: body.data.status,
+        reason: body.data.reason || null,
+        reviewedByEmail: actor.email,
+        notifyCreator: body.data.notifyCreator ?? false,
+        replyTo: platformOpsEmail(),
+      });
+    } catch (err) {
+      return sendNetworkFailure(res, err);
+    }
+    if (result.changed) {
+      await writeAudit(db, {
+        actor,
+        action: CREATOR_REVIEW_ACTIONS[body.data.status],
+        targetType: 'creator',
+        targetId: req.params.id!,
+        detail: { reason: body.data.reason || null, notified: !!result.notified },
+      });
+    }
+    res.json({ ok: true, reviewStatus: result.reviewStatus, changed: !!result.changed, notified: !!result.notified });
+  },
+);
+
+const creatorMessageSchema = z.object({
+  body: z.string().trim().min(1).max(2000),
+  /** Also email it (default). It shows in the creator's portal either way. */
+  email: z.boolean().optional(),
+});
+
+platformAdminRouter.post(
+  '/platform-admin/creators/:id/messages',
+  requirePlatformAdmin,
+  requirePlatformAdminWrite,
+  async (req, res) => {
+    const body = creatorMessageSchema.safeParse(req.body ?? {});
+    if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+    const networkUrl = networkOr503(res);
+    if (!networkUrl) return;
+    const actor = req.platformAdminActor!;
+    let result;
+    try {
+      result = await adminSendCreatorMessage(networkUrl, req.params.id!, {
+        body: body.data.body,
+        sentByEmail: actor.email,
+        email: body.data.email ?? true,
+        replyTo: platformOpsEmail(),
+      });
+    } catch (err) {
+      return sendNetworkFailure(res, err);
+    }
+    await writeAudit(db, {
+      actor,
+      action: 'creator.message',
+      targetType: 'creator',
+      targetId: req.params.id!,
+      detail: { messageId: result.message.id, body: body.data.body, emailed: !!result.emailed },
+    });
+    res.status(201).json({ ok: true, message: result.message, emailed: !!result.emailed });
+  },
+);
+
+platformAdminRouter.get('/platform-admin/creators/:id/messages', requirePlatformAdmin, async (req, res) => {
+  const networkUrl = networkOr503(res);
+  if (!networkUrl) return;
+  try {
+    res.json({ messages: await adminListCreatorMessages(networkUrl, req.params.id!) });
+  } catch (err) {
+    sendNetworkFailure(res, err);
   }
 });
 
