@@ -254,77 +254,122 @@ abandoned instances (and prune them from creator-facing search).
 Headers
   Authorization: Bearer <vendorToken>
 Body
-  { "partnerCount": 42, "lastEventAt": "2026-04-25T...Z" }
+  { "partnerCount": 42, "lastEventAt": "2026-04-25T...Z", "logoUrl": "https://…",
+    "bookingFeeBps": 1000 }
 Response 204
 ```
 
-### Storefront bookings (`/vendors/me/bookings`, Oct 2026)
+`bookingFeeBps` is the storefront booking fee the brand's plan gives it
+(see Storefront bookings below), honoured from hosted vendors only.
+
+### Storefront bookings and conversations (`/vendors/me/bookings`, `/vendors/me/conversations`)
 
 Creators on the Network list priced packages on their public profile.
-A brand books one as a **tracked deal**: when the creator accepts they
-become the brand's partner on an offering (a tracked link), they deliver
-the post URLs, and the brand's approval pays the agreed amount as a bonus
-through `POST /bonuses` on the brand's instance (see Bonuses below).
+Since phase 3 (openpartner-network docs/creator-storefront.md §8) brands
+and creators talk in a **conversation**, one per (creator, brand), and
+every booking lives in it. The creator accepts a brand's request at a price
+(or sends an offer), and the brand **pays upfront** through Stripe Checkout:
+a direct charge on the creator's own Stripe account, with OpenPartner's
+booking fee on top as the application fee. Nobody is paid through
+`POST /bonuses` for a booking any more.
 
 ```
 Headers
   Authorization: Bearer <vendorToken>
 
+GET  /vendors/me/conversations                    → 200 { conversations[], unreadTotal }
+POST /vendors/me/conversations                    { creatorId, body, authorName?, authorEmail? }
+                                                  → 201 { conversationId, message }
+GET  /vendors/me/conversations/:id?before=<msgId> → 200 { conversation, messages[], hasMore, bookings[] }
+POST /vendors/me/conversations/:id/messages       { body, authorName?, authorEmail? } → 201 { message }
+
 POST /vendors/me/bookings
-  { "creatorId": "crt_…", "offeringId": "off_…", "packageId": "cpk_…" | null,
-    "brief": "20–2000 chars", "amount": 500, "currency": "USD" }
-  → 201 { "booking": Booking }
+  { "creatorId": "crt_…", "packageId": "cpk_…" | null, "brief": "20–2000 chars",
+    "amount": 500 | null, "currency": "USD" | null, "offeringId": "off_…" | null,
+    "authorName"?, "authorEmail"?, "bookingFeeBps"? }
+  → 201 { "booking": Booking, "conversationId": "cnv_…" }
 
 GET  /vendors/me/bookings?status=<status>         → 200 { "bookings": Booking[] }
-POST /vendors/me/bookings/:id/cancel              pending | accepted → cancelled
-POST /vendors/me/bookings/:id/approve             delivered → approved → paid
-POST /vendors/me/bookings/:id/retry-payout        payout_failed → approved → paid
+POST /vendors/me/bookings/claim                   { token, authorName?, authorEmail?, bookingFeeBps? }
+                                                  → 201 { booking, conversationId }
+POST /vendors/me/bookings/:id/checkout            { feeRateBps?, returnPath? } → 200 { url }
+POST /vendors/me/bookings/:id/sync                record a finished Checkout now
+POST /vendors/me/bookings/:id/cancel              pending | awaiting_payment → cancelled (an offer → declined)
+POST /vendors/me/bookings/:id/track               { offeringId } — make it a tracked deal
+POST /vendors/me/bookings/:id/approve             delivered → completed
+POST /vendors/me/bookings/:id/recheck             re-run the delivery checks
+POST /vendors/me/bookings/:id/retry-payout        410 gone
 ```
 
-- **`amount`** is whole currency units: the price the brand pays on
-  approval.
-- **Booking statuses:** `pending → accepted → delivered → approved →
-  paid`, plus `declined`, `cancelled` and `payout_failed`.
-- **A `Booking` contains:** the creator's public fields (`id`, `name`,
-  `handle`, `avatarUrl`; never their email), the package snapshot, the
-  offering, `amount` / `currency`, `deliverableUrls`, `partnerId` (the
-  creator's Partner id on the brand's instance, once accepted), `bonusId`,
-  `payoutError` and the timestamps.
-- **Booking refusals:**
-  - `403 vendor_pending_review` and `403 vendor_not_active`;
-  - `404 offering_not_found` (not the vendor's own published offering);
-  - `404 creator_not_found` (not publicly visible);
-  - `409 bookings_closed`;
+- **`amount`** is whole currency units: the creator's price. It's
+  optional on a request (a fixed-price package defaults to its price, and
+  otherwise the creator names it when accepting).
+- **The booking fee** is the brand's commission rate for its plan
+  (`booking-fee.ts`: 10% Revshare or no plan, 5% Flex, contract overrides
+  honoured), sent as `bookingFeeBps` / `feeRateBps` (basis points, at most
+  3,000) on every booking call and in the heartbeat. The Network trusts it
+  from hosted vendors only; self-hosted vendors pay the Network's own rate,
+  set in the ops console (Fees → Storefront bookings).
+- **`authorName` / `authorEmail`** are the signed-in admin. The creator
+  sees the name; the email is where the brand's notifications for that
+  conversation go, and is never shown to the creator. An API key sends
+  neither.
+- **Booking statuses:** `pending → awaiting_payment → paid → delivered →
+  completed`, plus `declined`, `cancelled` and `refunded`. `accepted`,
+  `approved` and `payout_failed` exist only on rows from before.
+- **A `Booking` contains:** the creator's public fields (never their
+  email), `conversationId`, `proposedBy`, the package snapshot, the
+  offering, `amount` / `currency`, `amountMinor` / `feeMinor` /
+  `totalMinor` (Stripe's integer form) and `total`, `deliverableUrls`,
+  `partnerId` (once tracked), `refundedMinor`, `disputedAt`, the delivery
+  checks and the timestamps.
+- **Refusals:**
+  - `403 vendor_pending_review` (a new booking or conversation needs an
+    approved brand; a brand in review may claim, write, pay and approve in
+    the conversation its claimed request opened);
+  - `403 conversation_blocked` (the creator blocked the brand);
+  - `404 creator_not_found`, `404 offering_not_found`;
+  - `409 bookings_closed` (the storefront isn't open: bookings off, or the
+    creator's Stripe account can't take payments);
   - `409 too_many_open_bookings` (3 in flight per brand and creator);
-  - `409 bonuses_scope_missing` (the federation key lacks `bonuses:write`; the brand re-authorizes through `POST /config/network/authorize-bonuses`);
-  - `422 vendor_unreachable` (the Network couldn't introspect the key).
-- **Other refusals:** cancel, approve and retry answer
-  `409 not_cancellable`, `409 not_delivered` and `409 not_failed`
-  respectively when the booking is in the wrong state.
+  - `409 payments_not_ready`, `409 not_awaiting_payment`, `409 already_paid`;
+  - `422 amount_too_large`; `429 rate_limited`.
+- **A claim** (`token`) continues a public storefront request as this brand
+  (routes/booking-claims.ts below). `404 invalid_or_used`, `410 expired`
+  and `410 creator_unavailable` say why it can't.
 
-**Accepting a booking** federates the partnership the same way an
-approved application does: `POST /partners` + `POST /partners/:id/links`
-with the offering's `programIds` and commission snapshot. A creator who
-already has an active partnership on the offering is linked to it
-instead.
+**Tracking** (an `offeringId` on the request, or `track` later)
+federates the partnership the same way an approved application does:
+`POST /partners` + `POST /partners/:id/links` with the offering's
+`programIds` and commission snapshot.
 
-**This repo's side.** The brand portal reaches these routes through
-admin proxies:
-- `GET|POST /admin/network/bookings`;
-- `POST /admin/network/bookings/:id/{cancel,approve,retry-payout}`.
+**This repo's side.** The brand portal reaches these routes through admin
+proxies in `routes/settings.ts`, which add `authorName` / `authorEmail`
+and the fee rate:
+- `GET|POST /admin/network/conversations`, `GET /admin/network/conversations/:id`,
+  `POST /admin/network/conversations/:id/messages`;
+- `GET|POST /admin/network/bookings`, `POST /admin/network/bookings/claim`;
+- `POST /admin/network/bookings/:id/{checkout,sync,cancel,track,approve,recheck}`.
 
-Booking (it adds a partner) and approve / retry-payout (they pay one)
-sit behind the go-live and plan-required gates
-(`middleware/approval-gate.ts`, `middleware/trial-gate.ts`), like
-approving a Network request and `POST /bonuses`.
+Starting a conversation, booking, and tracking sit behind the go-live
+gate (`middleware/approval-gate.ts`). Tracking (it adds a partner), and a
+booking that names an offering, need an active plan
+(`middleware/trial-gate.ts`, `settings.ts`); bookings themselves don't,
+because they carry their own fee.
 
-**Delivery checks** arrive with openpartner-network#21 and openpartner#217.
-They add:
-- `deliveryChecks` / `deliveryCheckedAt` on each Booking;
-- `POST /vendors/me/bookings/:id/recheck`, proxied as
-  `POST /admin/network/bookings/:id/recheck` and not gated;
-- reads of `GET /partners/:id/timeseries` and `GET /partners/:id/breakdowns`
-  for clicks since delivery.
+**Public requests become brands.** A request sent from a creator's public
+storefront is emailed a link to `PORTAL_URL/booking/confirm?token=`. The
+portal reads it through `POST /booking-claims/preview` (this repo), which
+calls the Network's `POST /bookings/preview` with the Network admin key. A
+new address names its brand and `POST /booking-claims/signup` creates it
+(activated, signed in, pending review, no plan), enrols it on the Network
+and claims the request. An address that has a brand signs in and lands on
+`/admin/network/claim?token=`, which calls the claim proxy.
+
+**Delivery checks** add `deliveryChecks` / `deliveryCheckedAt` on each
+Booking and read `GET /partners/:id/timeseries` and
+`GET /partners/:id/breakdowns` for clicks since delivery on tracked
+bookings.
 
 ## Endpoints (Vendor-side, called by Network)
 
@@ -357,22 +402,10 @@ external_ref_conflict`. A brand that hasn't re-authorized its key answers
 `403 forbidden_scope` with `required: "bonuses:write"`. The brand's
 `bonus.*` webhooks fire, never `commission.*`.
 
-**Storefront bookings (Oct 2026)** pay the same way. When the brand
-approves a delivered booking, the Network calls `POST /bonuses` with:
-- the creator's partner id;
-- the offering's `programId`;
-- the agreed `amount` and `currency`;
-- `note: "Storefront booking: <package title>"`;
-- `externalRef: "booking:<bookingId>"`.
-
-How the Network handles the answer:
-- **Attempts:** the first runs inline with the approval; failures retry
-  with backoff for up to 8 attempts.
-- **A final answer:** a `4xx` other than `408` or `429`, such as a
-  revoked partner or the missing scope, marks the booking
-  `payout_failed`. The vendor's answer is shown to the brand, which can
-  retry once the cause is fixed.
-- **Retries never pay twice,** because the `externalRef` stays the same.
+**Storefront bookings no longer pay through bonuses** (openpartner-network
+docs/creator-storefront.md §8). The brand pays the creator upfront through
+Stripe Checkout on the creator's own account; bookings paid as bonuses
+before phase 3 keep their `externalRef: "booking:<bookingId>"`.
 
 **Commission lists and the timeseries include bonuses (Oct 2026).** A
 bonus is paid through one commission, so `GET /partners/:id/commissions`

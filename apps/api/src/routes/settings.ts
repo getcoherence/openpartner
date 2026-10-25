@@ -49,7 +49,8 @@ import { clearNetworkListingSkip } from '../onboarding-settings.js';
 import { createApiKeyRow } from '../auth.js';
 import { getTenancyMode, tenantOf } from '../tenancy.js';
 import { NETWORK_FEDERATION_SCOPES } from './api-keys.js';
-import { getTenantBillingState } from '../billing-plan.js';
+import { getTenantBillingState, hasActivePlan } from '../billing-plan.js';
+import { bookingFeeBpsFor } from '../booking-fee.js';
 import { connectPayoutsAvailable } from '../payout-method.js';
 import { isWhiteLabelEntitled, getWhiteLabelState } from '../white-label.js';
 import { currencyInputSchema } from '../currency.js';
@@ -945,24 +946,120 @@ settingsRouter.post('/admin/network/offerings/:id/invite-creator', requireAuth, 
   proxy(req, res, (db, tenantId) => networkProxy.inviteCreator(db, tenantId, req.params.id!, req.body ?? {}), 201),
 );
 
-// Tracked storefront bookings — the brand books a creator's package from
-// Discover creators, then approves the delivered work here; the Network pays
-// it as a bonus through POST /bonuses. Bodies go through verbatim; the
-// Network validates them.
+// Storefront bookings and conversations (openpartner-network
+// docs/creator-storefront.md §8). The brand talks to creators in the app,
+// books a package, pays upfront through Checkout on the creator's own Stripe
+// account once they agree a price, and approves the delivered work. Every
+// call that writes carries who at the brand is acting (the creator sees the
+// name; the email is where the brand's notifications go) and the booking fee
+// rate of the brand's plan (booking-fee.ts). The Network validates the rest.
+
+/** The signed-in admin, for the Network's authorName/authorEmail. An API
+ *  key has no person behind it, so it sends neither. */
+async function actingAdmin(req: Request): Promise<{ authorName?: string; authorEmail?: string }> {
+  const principal = req.principal;
+  if (principal?.role !== 'admin' || principal.source !== 'session') return {};
+  const { db, tenantId } = tenantOf(req);
+  const admin = (await db(TABLES.Admin).where({ id: principal.adminId, tenantId }).first(['name', 'email'])) as
+    | { name: string | null; email: string }
+    | undefined;
+  if (!admin) return {};
+  return { ...(admin.name ? { authorName: admin.name.slice(0, 120) } : {}), authorEmail: admin.email };
+}
+
+async function feeRate(db: Knex, tenantId: string): Promise<{ bookingFeeBps?: number }> {
+  const bps = await bookingFeeBpsFor(db, tenantId);
+  return bps == null ? {} : { bookingFeeBps: bps };
+}
+
+function bodyOf(req: Request): Record<string, unknown> {
+  return req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? (req.body as Record<string, unknown>) : {};
+}
+
 settingsRouter.get('/admin/network/bookings', requireAuth, requireAdmin, async (req, res) => {
   const status = typeof req.query.status === 'string' ? req.query.status : undefined;
   return proxy(req, res, (db, tenantId) => networkProxy.listBookings(db, tenantId, status));
 });
 
-settingsRouter.post('/admin/network/bookings', requireAuth, requireAdmin, async (req, res) =>
-  proxy(req, res, (db, tenantId) => networkProxy.createBooking(db, tenantId, req.body ?? {}), 201),
+settingsRouter.post('/admin/network/bookings', requireAuth, requireAdmin, async (req, res) => {
+  const { db, tenantId } = tenantOf(req);
+  // A booking on one of the brand's offerings makes the creator its
+  // partner when they accept, and adding partners needs an active plan
+  // (trial-gate.ts). Refuse it here, not on the creator's accept.
+  if (bodyOf(req).offeringId && !hasActivePlan(await getTenantBillingState(db, tenantId))) {
+    return res.status(402).json({ error: 'plan_required', detail: 'Tracking a booking adds the creator as a partner, which needs an active plan.' });
+  }
+  return proxy(
+    req,
+    res,
+    async (db, tenantId) =>
+      networkProxy.createBooking(db, tenantId, { ...bodyOf(req), ...(await actingAdmin(req)), ...(await feeRate(db, tenantId)) }),
+    201,
+  );
+});
+
+settingsRouter.post('/admin/network/bookings/claim', requireAuth, requireAdmin, async (req, res) =>
+  proxy(
+    req,
+    res,
+    async (db, tenantId) =>
+      networkProxy.claimBooking(db, tenantId, { token: bodyOf(req).token, ...(await actingAdmin(req)), ...(await feeRate(db, tenantId)) }),
+    201,
+  ),
 );
 
-for (const action of ['cancel', 'approve', 'retry-payout', 'recheck'] as const) {
+settingsRouter.post('/admin/network/bookings/:id/checkout', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, async (db, tenantId) => {
+    const rate = await bookingFeeBpsFor(db, tenantId);
+    return networkProxy.bookingAction(db, tenantId, req.params.id!, 'checkout', {
+      returnPath: typeof bodyOf(req).returnPath === 'string' ? bodyOf(req).returnPath : undefined,
+      ...(rate == null ? {} : { feeRateBps: rate }),
+    });
+  }),
+);
+
+for (const action of ['cancel', 'approve', 'recheck', 'sync'] as const) {
   settingsRouter.post(`/admin/network/bookings/:id/${action}`, requireAuth, requireAdmin, async (req, res) =>
     proxy(req, res, (db, tenantId) => networkProxy.bookingAction(db, tenantId, req.params.id!, action)),
   );
 }
+
+settingsRouter.post('/admin/network/bookings/:id/track', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.bookingAction(db, tenantId, req.params.id!, 'track', { offeringId: bodyOf(req).offeringId })),
+);
+
+settingsRouter.get('/admin/network/conversations', requireAuth, requireAdmin, async (req, res) =>
+  proxy(req, res, (db, tenantId) => networkProxy.listConversations(db, tenantId)),
+);
+
+settingsRouter.post('/admin/network/conversations', requireAuth, requireAdmin, async (req, res) =>
+  proxy(
+    req,
+    res,
+    async (db, tenantId) =>
+      networkProxy.startConversation(db, tenantId, {
+        creatorId: bodyOf(req).creatorId,
+        body: bodyOf(req).body,
+        ...(await actingAdmin(req)),
+      }),
+    201,
+  ),
+);
+
+settingsRouter.get('/admin/network/conversations/:id', requireAuth, requireAdmin, async (req, res) => {
+  const before = typeof req.query.before === 'string' ? req.query.before : undefined;
+  return proxy(req, res, (db, tenantId) => networkProxy.getConversation(db, tenantId, req.params.id!, before));
+});
+
+settingsRouter.post('/admin/network/conversations/:id/messages', requireAuth, requireAdmin, async (req, res) =>
+  proxy(
+    req,
+    res,
+    async (db, tenantId) =>
+      networkProxy.postConversationMessage(db, tenantId, req.params.id!, { body: bodyOf(req).body, ...(await actingAdmin(req)) }),
+    201,
+  ),
+);
 
 // ---------- Network billing proxy ----------
 // Self-hosted vendors subscribe to Network access ($29/mo + 3% metered)

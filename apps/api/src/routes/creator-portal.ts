@@ -98,8 +98,11 @@ const ALLOWED_EXACT = new Set([
   // chosen items (the Network's docs/creator-storefront.md §7.3).
   '/creators/me/storefront/import/preview',
   '/creators/me/storefront/import/apply',
-  // A brand confirming a storefront request from the emailed link (no auth).
-  '/bookings/confirm',
+  // Conversations with brands, and the creator's own Stripe account that
+  // bookings are paid into (the Network's docs/creator-storefront.md §8).
+  '/creators/me/conversations',
+  '/creators/me/payments',
+  '/creators/me/payments/onboarding',
   '/offerings',
 ]);
 
@@ -122,13 +125,17 @@ const ALLOWED_PREFIX: Array<{ prefix: string; methods: Set<string> }> = [
   // Public profile lookup — no creator session required, lets brands
   // and the open web hit /creators/by-handle/<handle> on the portal.
   // POST is the storefront request form: /creators/by-handle/<handle>/bookings
-  // (no auth; the Network confirms the requester's email before the creator
-  // sees it).
+  // (no auth; the requester continues from an emailed link as a brand before
+  // the creator sees it).
   { prefix: '/creators/by-handle/', methods: new Set(['GET', 'POST']) },
   // Storefront: edit/delete a package (PATCH/DELETE /creators/me/packages/:id),
-  // answer or delete a request (POST .../:id/accept|decline, DELETE .../:id).
+  // answer, withdraw, deliver, refund or delete a booking (POST
+  // .../:id/accept|decline|withdraw|deliver|refund, DELETE .../:id).
   { prefix: '/creators/me/packages/', methods: new Set(['PATCH', 'DELETE']) },
   { prefix: '/creators/me/bookings/', methods: new Set(['POST', 'DELETE']) },
+  // A conversation: read it (GET .../:id), write, send an offer, block
+  // (POST .../:id/messages|offers|block|unblock).
+  { prefix: '/creators/me/conversations/', methods: new Set(['GET', 'POST']) },
   // Invitation deeplink resolver (no auth) + consume (creator auth).
   // GET /invitations/:token, POST /invitations/:token/consume
   { prefix: '/invitations/', methods: new Set(['GET', 'POST']) },

@@ -228,7 +228,17 @@ describe('creator-api proxy: storefront', () => {
       ['GET', '/creators/me/bookings?status=pending'],
       ['POST', '/creators/me/bookings/bkr_1/accept'],
       ['POST', '/creators/me/bookings/bkr_1/decline'],
+      ['POST', '/creators/me/bookings/bkr_1/withdraw'],
+      ['POST', '/creators/me/bookings/bkr_1/deliver'],
+      ['POST', '/creators/me/bookings/bkr_1/refund'],
       ['DELETE', '/creators/me/bookings/bkr_1'],
+      ['GET', '/creators/me/conversations'],
+      ['GET', '/creators/me/conversations/cnv_1?before=cnm_9'],
+      ['POST', '/creators/me/conversations/cnv_1/messages'],
+      ['POST', '/creators/me/conversations/cnv_1/offers'],
+      ['POST', '/creators/me/conversations/cnv_1/block'],
+      ['GET', '/creators/me/payments?refresh=1'],
+      ['POST', '/creators/me/payments/onboarding'],
       ['POST', '/creators/me/storefront/import/preview'],
       ['POST', '/creators/me/storefront/import/apply'],
     ];
@@ -241,24 +251,24 @@ describe('creator-api proxy: storefront', () => {
     expect(calls.every((c) => c.cookie === cookie)).toBe(true);
   });
 
-  it('forwards the public request form and the confirm link without a session', async () => {
+  it('forwards the public request form without a session; the old confirm link is not proxied', async () => {
     const send = await request(app)
       .post('/creator-api/creators/by-handle/ada/bookings')
       .send({ contactName: 'Grace', contactEmail: 'g@example.com', brief: 'A sponsored post about our app.' });
     expect(send.status).toBe(200);
-    const confirm = await request(app).post('/creator-api/bookings/confirm').send({ token: 'opbk_x' });
-    expect(confirm.status).toBe(200);
-    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
-      'POST /creators/by-handle/ada/bookings',
-      'POST /bookings/confirm',
-    ]);
+    // A request is continued as a brand now (routes/booking-claims.ts), and
+    // the preview behind it is read with the admin key, never by a browser.
+    expect((await request(app).post('/creator-api/bookings/confirm').send({ token: 'opbk_x' })).status).toBe(404);
+    expect((await request(app).post('/creator-api/bookings/preview').send({ token: 'opbk_x' })).status).toBe(404);
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['POST /creators/by-handle/ada/bookings']);
   });
 
   it('keeps the methods it does not need off the allowlist', async () => {
     expect((await request(app).put('/creator-api/creators/me/packages/cpk_1').send({})).status).toBe(404);
     expect((await request(app).get('/creator-api/creators/me/bookings/bkr_1')).status).toBe(404);
-    expect((await request(app).get('/creator-api/bookings/confirm')).status).toBe(200); // exact paths forward any method; the Network answers
-    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /bookings/confirm']);
+    expect((await request(app).delete('/creator-api/creators/me/conversations/cnv_1')).status).toBe(404);
+    expect((await request(app).get('/creator-api/creators/me/payments')).status).toBe(200); // exact paths forward any method; the Network answers
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /creators/me/payments']);
   });
 });
 

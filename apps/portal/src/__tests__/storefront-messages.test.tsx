@@ -1,0 +1,273 @@
+// @vitest-environment jsdom
+/**
+ * Storefront conversations and paid bookings in the portal (the Network's
+ * docs/creator-storefront.md §8):
+ *
+ *   - /booking/confirm: a public requester continues as a brand: a new
+ *     address names its brand there; a signed-in brand admin sends it as
+ *     that brand; an address with an account signs in first.
+ *   - The brand's thread: a creator's offer shows the price, the booking
+ *     fee and the total, and Pay opens Checkout for it.
+ *   - The creator's thread: accepting needs a Stripe account that can take
+ *     payments, and sends the creator's price.
+ */
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { BrowserRouter, Route, Routes } from 'react-router';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { BookingConfirmPage } from '../pages/creator/BookingConfirm.js';
+import { AdminNetworkThread } from '../pages/admin/NetworkMessages.js';
+import { CreatorThreadPage } from '../pages/creator/CreatorMessages.js';
+
+const TOKEN = `opbk_${'a'.repeat(48)}`;
+
+interface Sent {
+  method: string;
+  url: string;
+  body: Record<string, unknown> | null;
+}
+let sent: Sent[];
+let routes: Record<string, (body: Record<string, unknown> | null) => [number, unknown]>;
+
+function json(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+}
+
+beforeEach(() => {
+  sent = [];
+  routes = {};
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? 'GET';
+    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null;
+    sent.push({ method, url, body });
+    const handler = routes[`${method} ${url.split('?')[0]}`];
+    if (handler) {
+      const [status, payload] = handler(body);
+      return json(status, payload);
+    }
+    return json(404, { error: 'not_found' });
+  }) as typeof fetch;
+});
+
+afterEach(() => {
+  cleanup();
+  window.history.pushState({}, '', '/');
+});
+
+function renderAt(path: string, routeTree: React.ReactNode) {
+  window.history.pushState({}, '', path);
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <BrowserRouter>
+        <Routes>{routeTree}</Routes>
+      </BrowserRouter>
+    </QueryClientProvider>,
+  );
+}
+
+const PREVIEW = {
+  creator: { id: 'crt_ada', name: 'Ada Lovelace', handle: 'ada', avatarUrl: null },
+  packageTitle: 'Deep dive',
+  contactName: 'Grace Hopper',
+  company: 'New Brand Co',
+  brief: 'A deep-dive post about our app, please.',
+  email: 'grace@newbrand.test',
+  accountExists: false,
+  suggested: { displayName: 'New Brand Co', slug: 'new-brand-co' },
+};
+
+describe('/booking/confirm', () => {
+  it('creates a brand for a new address and sends the request', async () => {
+    routes['POST /api/booking-claims/preview'] = () => [200, PREVIEW];
+    routes['GET /api/session/home'] = () => [200, { home: null }];
+    routes['POST /api/booking-claims/signup'] = () => [201, { tenant: { slug: 'new-brand-co' }, conversationId: 'cnv_1' }];
+    renderAt(`/booking/confirm?token=${TOKEN}`, <Route path="/booking/confirm" element={<BookingConfirmPage />} />);
+
+    expect(await screen.findByText('Send your request to Ada Lovelace')).toBeTruthy();
+    expect(screen.getByText('grace@newbrand.test')).toBeTruthy();
+    expect((screen.getByDisplayValue('New Brand Co') as HTMLInputElement).value).toBe('New Brand Co');
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'US' } });
+    fireEvent.click(screen.getByRole('button', { name: /create brand and send to ada/i }));
+
+    await waitFor(() => expect(sent.some((s) => s.url === '/api/booking-claims/signup')).toBe(true));
+    expect(sent.find((s) => s.url === '/api/booking-claims/signup')!.body).toEqual({
+      token: TOKEN,
+      displayName: 'New Brand Co',
+      slug: 'new-brand-co',
+      adminName: 'Grace Hopper',
+      country: 'US',
+    });
+  });
+
+  it('sends it as the signed-in brand, or asks an existing account to sign in', async () => {
+    routes['POST /api/booking-claims/preview'] = () => [200, PREVIEW];
+    routes['GET /api/session/home'] = () => [200, { home: '/t/acme/', kind: 'admin', tenantSlug: 'acme' }];
+    renderAt(
+      `/booking/confirm?token=${TOKEN}`,
+      <>
+        <Route path="/booking/confirm" element={<BookingConfirmPage />} />
+        <Route path="/t/:slug/admin/network/claim" element={<div>claim page</div>} />
+      </>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Send it as your brand' }));
+    expect(await screen.findByText('claim page')).toBeTruthy();
+    expect(window.location.pathname).toBe('/t/acme/admin/network/claim');
+    expect(new URLSearchParams(window.location.search).get('token')).toBe(TOKEN);
+    cleanup();
+
+    routes['POST /api/booking-claims/preview'] = () => [200, { ...PREVIEW, accountExists: true }];
+    routes['GET /api/session/home'] = () => [200, { home: null }];
+    renderAt(
+      `/booking/confirm?token=${TOKEN}`,
+      <>
+        <Route path="/booking/confirm" element={<BookingConfirmPage />} />
+        <Route path="/signin" element={<div>sign in page</div>} />
+      </>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in to send it' }));
+    expect(await screen.findByText('sign in page')).toBeTruthy();
+    expect(new URLSearchParams(window.location.search).get('next')).toBe(`/admin/network/claim?token=${TOKEN}`);
+  });
+
+  it('says so when the link has expired', async () => {
+    routes['POST /api/booking-claims/preview'] = () => [410, { error: 'expired' }];
+    routes['GET /api/session/home'] = () => [200, { home: null }];
+    renderAt(`/booking/confirm?token=${TOKEN}`, <Route path="/booking/confirm" element={<BookingConfirmPage />} />);
+    expect(await screen.findByText(/This link has expired/)).toBeTruthy();
+  });
+});
+
+const OFFER = {
+  id: 'bkr_1',
+  conversationId: 'cnv_1',
+  proposedBy: 'creator',
+  status: 'awaiting_payment',
+  creator: { id: 'crt_ada', name: 'Ada Lovelace', handle: 'ada', avatarUrl: null },
+  package: { title: 'YouTube integration', priceAmount: 2000, priceIsFrom: false, currency: 'USD' },
+  offering: null,
+  brief: 'A 60-second read in my weekly video.',
+  amount: 2000,
+  currency: 'USD',
+  feeRateBps: 1000,
+  amountMinor: 200000,
+  feeMinor: 20000,
+  totalMinor: 220000,
+  creatorMessage: null,
+  deliverableUrls: [],
+  partnerId: null,
+  createdAt: '2026-10-25T10:00:00Z',
+  paidAt: null,
+  deliveredAt: null,
+  completedAt: null,
+  refundedMinor: 0,
+  disputedAt: null,
+};
+
+describe('brand thread', () => {
+  it('shows what the brand pays for an offer, and Pay opens Checkout', async () => {
+    routes['GET /api/t/acme/admin/network/conversations/cnv_1'] = () => [
+      200,
+      {
+        conversation: { id: 'cnv_1', creator: OFFER.creator, blocked: false, canWrite: true, cannotWriteReason: null, canBook: true },
+        messages: [
+          { id: 'cnm_1', author: 'vendor', authorName: 'Grace', kind: 'text', body: 'What would a video cost?', event: null, bookingId: null, createdAt: '2026-10-25T09:00:00Z' },
+          { id: 'cnm_2', author: 'creator', authorName: null, kind: 'event', body: null, event: 'offered', bookingId: 'bkr_1', createdAt: '2026-10-25T10:00:00Z' },
+        ],
+        hasMore: false,
+        bookings: [OFFER],
+      },
+    ];
+    routes['POST /api/t/acme/admin/network/bookings/bkr_1/checkout'] = () => [200, { url: 'https://checkout.stripe.test/cs_1' }];
+    renderAt('/t/acme/admin/network/messages/cnv_1', <Route path="/t/:slug/admin/network/messages/:id" element={<AdminNetworkThread />} />);
+
+    expect(await screen.findByText('What would a video cost?')).toBeTruthy();
+    expect(screen.getByText('Ada Lovelace sent an offer', { exact: false })).toBeTruthy();
+    expect(screen.getByText(/\$2,000 to Ada Lovelace and the \$200 OpenPartner booking fee/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Pay $2,200' }));
+    await waitFor(() => expect(sent.some((s) => s.url.endsWith('/bookings/bkr_1/checkout'))).toBe(true));
+    expect(sent.find((s) => s.url.endsWith('/checkout'))!.body).toEqual({ returnPath: '/admin/network/messages/cnv_1' });
+  });
+
+  it('explains why it cannot write when the creator blocked the brand', async () => {
+    routes['GET /api/t/acme/admin/network/conversations/cnv_1'] = () => [
+      200,
+      {
+        conversation: { id: 'cnv_1', creator: OFFER.creator, blocked: true, canWrite: false, cannotWriteReason: 'conversation_blocked', canBook: false },
+        messages: [],
+        hasMore: false,
+        bookings: [],
+      },
+    ];
+    renderAt('/t/acme/admin/network/messages/cnv_1', <Route path="/t/:slug/admin/network/messages/:id" element={<AdminNetworkThread />} />);
+    expect(await screen.findByText('This creator isn’t taking messages from you.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Request a booking' })).toBeNull();
+  });
+});
+
+const REQUEST = {
+  id: 'bkr_2',
+  conversationId: 'cnv_2',
+  proposedBy: 'vendor',
+  packageId: 'cpk_1',
+  package: { title: 'Deep dive', platform: null, priceAmount: 900, priceIsFrom: true, currency: 'USD' },
+  contactName: 'Grace Hopper',
+  company: 'New Brand Co',
+  website: null,
+  brief: 'A deep-dive post about our app, please.',
+  budgetNote: null,
+  status: 'pending',
+  creatorMessage: null,
+  createdAt: '2026-10-25T10:00:00Z',
+  tracked: false,
+  amount: null,
+  currency: null,
+  amountMinor: null,
+  deliverableUrls: [],
+  deliveredAt: null,
+  completedAt: null,
+  paidAt: null,
+  refundedMinor: 0,
+  disputedAt: null,
+};
+
+function creatorThread() {
+  return {
+    conversation: { id: 'cnv_2', brand: { id: 'vnd_1', name: 'New Brand Co', logoUrl: null }, contactName: 'Grace Hopper', blocked: false, brandActive: true },
+    messages: [
+      { id: 'cnm_1', author: 'vendor', authorName: 'Grace Hopper', kind: 'text', body: REQUEST.brief, event: null, bookingId: null, createdAt: '2026-10-25T10:00:00Z' },
+      { id: 'cnm_2', author: 'vendor', authorName: 'Grace Hopper', kind: 'event', body: null, event: 'requested', bookingId: 'bkr_2', createdAt: '2026-10-25T10:00:01Z' },
+    ],
+    hasMore: false,
+    bookings: [REQUEST],
+  };
+}
+
+describe('creator thread', () => {
+  it('accepts a request only with Stripe ready, at the creator price', async () => {
+    let ready = false;
+    routes['GET /api/creator-api/creators/me/conversations/cnv_2'] = () => [200, creatorThread()];
+    routes['GET /api/creator-api/creators/me/payments'] = () => [
+      200,
+      { connected: ready, ready, cardPayments: ready ? 'active' : null, country: 'US', currency: 'USD', checkedAt: null },
+    ];
+    routes['POST /api/creator-api/creators/me/bookings/bkr_2/accept'] = () => [200, { booking: { ...REQUEST, status: 'awaiting_payment' } }];
+    renderAt('/creator/messages/cnv_2', <Route path="/creator/messages/:id" element={<CreatorThreadPage />} />);
+
+    expect(await screen.findByText(/Connect Stripe to accept bookings/)).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Accept' }) as HTMLButtonElement).disabled).toBe(true);
+    cleanup();
+
+    ready = true;
+    renderAt('/creator/messages/cnv_2', <Route path="/creator/messages/:id" element={<CreatorThreadPage />} />);
+    const price = await screen.findByLabelText('Your price');
+    await waitFor(() => expect(screen.queryByText(/Connect Stripe to accept bookings/)).toBeNull());
+    fireEvent.change(price, { target: { value: '1200' } });
+    const accept = await screen.findByRole('button', { name: 'Accept at $1,200' });
+    await waitFor(() => expect((accept as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(accept);
+    await waitFor(() => expect(sent.some((s) => s.url.endsWith('/bookings/bkr_2/accept'))).toBe(true));
+    expect(sent.find((s) => s.url.endsWith('/accept'))!.body).toEqual({ amount: 1200, currency: 'USD' });
+  });
+});

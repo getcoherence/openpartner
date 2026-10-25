@@ -37,6 +37,7 @@ import {
   type StorefrontChannel,
   type StorefrontPackage,
 } from './storefront-shared.js';
+import { PaymentsCard, creatorErrorCode } from './CreatorPayments.js';
 
 const STEPS = [
   { key: 'intro', label: 'How it works' },
@@ -269,12 +270,12 @@ function HowItWorks({ onNext }: { onNext: () => void }) {
     {
       icon: <Inbox size={20} />,
       title: 'Brands send requests',
-      text: 'Your packages show on your public page. Brands confirm their email before a request reaches you, and brands on OpenPartner can book you directly.',
+      text: 'Your packages show on your public page. Brands sign in to OpenPartner to send a request, and you talk it through in Messages. Neither side sees the other’s email address.',
     },
     {
       icon: <Wallet size={20} />,
-      title: 'Deliver and get paid',
-      text: 'You accept the work you want. Bookings made on OpenPartner are tracked like any partnership, and the brand pays you once it approves your post.',
+      title: 'Get paid upfront',
+      text: 'Accept at your price, or send an offer. The brand pays before you start, straight into your own Stripe account; OpenPartner’s booking fee is added on top for them.',
     },
   ];
   return (
@@ -699,14 +700,19 @@ function PreviewStep({
           <Link to="/creator/profile" style={{ color: theme.warn, fontWeight: 600 }}>Finish your profile</Link>
         </div>
       )}
-      <ErrorBanner error={open.error} />
+      {/* Bookings are paid upfront into the creator's own Stripe account,
+          so it has to take card payments before bookings can open. */}
+      <div style={{ marginTop: 14 }}>
+        <PaymentsCard returnPath="/creator/storefront/setup?step=preview" />
+      </div>
+      <ErrorBanner error={creatorErrorCode(open.error) === 'payments_not_ready' ? 'Connect Stripe first: bookings are paid into your own Stripe account.' : open.error} />
       <StepNav
         onBack={onBack}
         next={
-          storefront.bookingsOpen ? (
+          storefront.bookingsOpen && storefront.storefrontOpen !== false ? (
             <Button onClick={onFinished}>Go to your storefront</Button>
           ) : (
-            <Button onClick={() => open.mutate()} disabled={open.isPending}>
+            <Button onClick={() => open.mutate()} disabled={open.isPending || storefront.payments?.ready === false}>
               {open.isPending ? 'Turning on…' : 'Turn on bookings'}
             </Button>
           )

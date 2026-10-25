@@ -70,6 +70,7 @@ export function FeesPage({ operator }: { operator: PlatformOperator }) {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <SettingsCard state={state.data} canWrite={canWrite} />
+          <BookingFeeCard state={state.data} canWrite={canWrite} />
           <TenantsCard state={state.data} canWrite={canWrite} />
           <EstimateCard tenants={state.data.tenants} />
           <NoticeCard state={state.data} canWrite={canWrite} />
@@ -204,6 +205,62 @@ function SettingsCard({ state, canWrite }: { state: FeesState; canWrite: boolean
           </Button>
         </div>
       )}
+    </Card>
+  );
+}
+
+/**
+ * Storefront bookings are paid on the Network with OpenPartner's fee on top
+ * (openpartner-network docs/creator-storefront.md §8.5). Hosted brands pay
+ * their plan's commission floor (above); the rate self-hosted brands pay
+ * lives on the Network and is set here.
+ */
+function BookingFeeCard({ state, canWrite }: { state: FeesState; canWrite: boolean }) {
+  const qc = useQueryClient();
+  const fee = useQuery({
+    queryKey: ['platform-booking-fee'],
+    queryFn: () => papi<{ settings: { defaultBps: number }; maxBps: number }>('/platform-admin/fees/booking-fee'),
+  });
+  const [draft, setDraft] = useState<string | null>(null);
+  const save = useMutation({
+    mutationFn: (defaultBps: number) => papi('/platform-admin/fees/booking-fee', { method: 'PUT', body: { defaultBps } }),
+    onSuccess: () => {
+      setDraft(null);
+      qc.invalidateQueries({ queryKey: ['platform-booking-fee'] });
+    },
+  });
+  const current = fee.data ? String(fee.data.settings.defaultBps / 100) : '';
+  const value = draft ?? current;
+
+  function submit() {
+    const pctValue = Number(value);
+    if (!Number.isFinite(pctValue) || pctValue < 0 || pctValue > (fee.data?.maxBps ?? 3000) / 100) {
+      window.alert(`The rate is a percentage between 0 and ${(fee.data?.maxBps ?? 3000) / 100}.`);
+      return;
+    }
+    if (window.confirm('Self-hosted brands pay this on bookings they pay from now on. Save?')) save.mutate(Math.round(pctValue * 100));
+  }
+
+  return (
+    <Card>
+      <div style={sectionTitle}>Storefront bookings</div>
+      <div style={{ ...muted, marginTop: 6 }}>
+        Brands pay creators upfront through Stripe Checkout on the creator&apos;s own account, with OpenPartner&apos;s fee added on
+        top. Hosted brands pay their plan&apos;s commission floor: {pct(state.settings.rates.revshare.commissionRate)} on Revshare
+        or with no plan yet, {pct(state.settings.rates.flat.commissionRate)} on Flex, or a contract rate.
+      </div>
+      <ErrorBanner error={fee.error ?? (save.error ? friendlyPlatformError(save.error) : null)} />
+      <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div>
+          <Label>Self-hosted brands %</Label>
+          <Input value={value} disabled={!canWrite || !fee.data} onChange={(e) => setDraft(e.target.value)} style={{ maxWidth: 120 }} />
+        </div>
+        {canWrite && (
+          <Button size="sm" variant="secondary" disabled={save.isPending || !fee.data || draft === null} onClick={submit}>
+            Save
+          </Button>
+        )}
+      </div>
     </Card>
   );
 }
