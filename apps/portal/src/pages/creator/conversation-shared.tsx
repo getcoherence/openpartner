@@ -27,7 +27,8 @@ export type BookingEvent =
   | 'cancelled'
   | 'refunded'
   | 'disputed'
-  | 'expired';
+  | 'expired'
+  | 'tracked';
 
 export interface ConversationMessage {
   id: string;
@@ -135,6 +136,10 @@ export function eventText(
       return `${by ?? names.creator} refunded the booking${m.body ? ` (${m.body.replace(/^Refunded /, '')})` : ''}`;
     case 'payment_failed':
       return 'The payment didn’t go through. The booking is waiting for payment again';
+    case 'tracked':
+      return side === 'creator'
+        ? `${names.brand} tracks this booking${m.body ? ` on ${m.body}` : ''}: you’re its partner there, and it has your name and email as its partner`
+        : `You track this booking${m.body ? ` on ${m.body}` : ''}. ${names.creator} is now your partner there`;
     case 'disputed':
       return 'The payment was disputed with the card issuer';
     case 'expired':

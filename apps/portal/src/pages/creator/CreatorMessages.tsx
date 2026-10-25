@@ -64,6 +64,8 @@ export interface CreatorBooking {
   creatorMessage: string | null;
   createdAt: string;
   tracked: boolean;
+  /** Accepting makes you the brand's partner on one of its programs. */
+  tracksOnAccept?: boolean;
   amount: number | null;
   currency: string | null;
   amountMinor: number | null;
@@ -267,7 +269,7 @@ export function CreatorThreadPage() {
           onLoadEarlier={() => messages[0] && earlier.mutate(messages[0].id)}
           renderBooking={(bookingId) => {
             const b = bookings.get(bookingId);
-            return b ? <CreatorBookingCard booking={b} brand={brand} canAccept={ready} onChanged={refresh} /> : null;
+            return b ? <CreatorBookingCard booking={b} brand={brand} brandName={names.brand} canAccept={ready} onChanged={refresh} /> : null;
           }}
         />
         <div style={{ marginTop: 16, borderTop: `1px solid ${theme.borderSubtle}`, paddingTop: 14 }}>
@@ -298,11 +300,15 @@ export function CreatorThreadPage() {
 function CreatorBookingCard({
   booking: b,
   brand,
+  brandName,
   canAccept,
   onChanged,
 }: {
   booking: CreatorBooking;
+  /** "Grace at Acme", for who you're talking to. */
   brand: string;
+  /** "Acme", for what the brand itself does or gets. */
+  brandName: string;
   canAccept: boolean;
   onChanged: () => void;
 }) {
@@ -335,7 +341,7 @@ function CreatorBookingCard({
             <span style={{ fontSize: 15, fontWeight: 500 }}>{b.package?.title ?? 'Custom collaboration'}</span>
             <BookingStatusPill status={b.status} />
             {b.proposedBy === 'creator' && <span style={{ fontSize: 12, color: theme.textDim }}>your offer</span>}
-            {b.tracked && <span style={{ fontSize: 12, color: theme.textDim }}>tracked</span>}
+            {b.tracked && <span style={{ fontSize: 12, color: theme.textDim }}>tracked: you&rsquo;re {brandName}&rsquo;s partner</span>}
           </div>
           <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 3 }}>
             {b.contactName}
@@ -377,6 +383,13 @@ function CreatorBookingCard({
           </div>
           <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
             {brand} pays this upfront, into your Stripe account, before you start. OpenPartner&rsquo;s fee is added on top for them.
+            {b.tracksOnAccept && (
+              <>
+                {' '}
+                This request is tracked: accepting makes you {brandName}&rsquo;s partner on one of its programs, with a tracked link, and
+                gives {brandName} your name and email for its partner records.
+              </>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
             <Button
@@ -440,7 +453,7 @@ function CreatorBookingCard({
             variant="ghost"
             disabled={act.isPending}
             onClick={() => {
-              if (window.confirm(`Refund ${brand} in full? The money goes back to their card from your Stripe account, and OpenPartner refunds its fee.`)) {
+              if (window.confirm(`Refund ${brand} in full? The money goes back to them from your Stripe account, and OpenPartner refunds its fee.`)) {
                 act.mutate({ action: 'refund' });
               }
             }}

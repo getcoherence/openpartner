@@ -43,6 +43,8 @@ import * as S from './schemas.js';
  *  so the generated scope table can't silently omit one. */
 export const SCOPED_ROUTES_OUTSIDE_SPEC: Record<string, string> = {
   'GET /brand-resources': 'partners:read: brand logo, colours and shareable assets, read by Network creator dashboards.',
+  'POST /network/notify-recipients':
+    'partners:read: which addresses are still active admins, asked by the Network before each conversation or booking email to the brand.',
 };
 
 /** Authenticated routes outside the spec that carry no admin, partner or

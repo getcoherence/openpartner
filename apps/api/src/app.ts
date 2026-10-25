@@ -64,6 +64,7 @@ import { creatorPortalRouter } from './routes/creator-portal.js';
 import { signinRouter } from './routes/signin.js';
 import { portalDomainGateRouter, portalDomainsRouter } from './routes/portal-domains.js';
 import { clicksRouter } from './routes/clicks.js';
+import { networkRecipientsRouter } from './routes/network-recipients.js';
 import { sessionHomeRouter } from './routes/session-home.js';
 import { platformAuthRouter } from './routes/platform-auth.js';
 import { platformAdminRouter } from './routes/platform-admin.js';
@@ -315,6 +316,7 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(programsRouter);
   app.use(linksRouter);
   app.use(clicksRouter);
+  app.use(networkRecipientsRouter);
   app.use(dashboardRouter);
   app.use(apiKeysRouter);
   app.use(connectRouter);

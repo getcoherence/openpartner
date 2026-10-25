@@ -262,16 +262,18 @@ export function AdminNetworkThread() {
   const back = returned ? bookings.get(returned) : undefined;
   const banner = !back
     ? null
-    : back.paidAt
+    : back.status === 'paid'
       ? { tone: 'success' as const, text: `Payment received. ${names.creator} has been told, and can start now.` }
-      : back.status === 'awaiting_payment'
-        ? {
-            tone: 'info' as const,
-            text: back.paymentProcessing
-              ? 'Your payment is processing. Bank payments can take a few days; the booking is confirmed once it’s through.'
-              : 'We’re confirming your payment with Stripe. This page updates once it’s through.',
-          }
-        : null;
+      : back.status === 'refunded'
+        ? { tone: 'info' as const, text: `${names.creator} has refunded this booking.` }
+        : back.status === 'awaiting_payment'
+          ? {
+              tone: 'info' as const,
+              text: back.paymentProcessing
+                ? 'Your payment is processing. Bank payments can take a few days; the booking is confirmed once it’s through.'
+                : 'We’re confirming your payment with Stripe. This page updates once it’s through.',
+            }
+          : null;
 
   return (
     <Page

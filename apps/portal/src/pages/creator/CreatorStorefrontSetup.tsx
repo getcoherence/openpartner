@@ -270,7 +270,7 @@ function HowItWorks({ onNext }: { onNext: () => void }) {
     {
       icon: <Inbox size={20} />,
       title: 'Brands send requests',
-      text: 'Your packages show on your public page. Brands sign in to OpenPartner to send a request, and you talk it through in Messages. Neither side sees the other’s email address.',
+      text: 'Your packages show on your public page. Brands sign in to OpenPartner to send a request, and you talk it through in Messages. We don’t share your email address with brands, unless one tracks a booking and you become its partner.',
     },
     {
       icon: <Wallet size={20} />,

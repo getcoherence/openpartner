@@ -306,14 +306,15 @@ POST /vendors/me/bookings/:id/retry-payout        410 gone
   otherwise the creator names it when accepting).
 - **The booking fee** is the brand's commission rate for its plan
   (`booking-fee.ts`: 10% Revshare or no plan, 5% Flex, contract overrides
-  honoured), sent as `bookingFeeBps` / `feeRateBps` (basis points, at most
+  honoured up to a 30% cap), sent as `bookingFeeBps` / `feeRateBps` (basis points, at most
   3,000) on every booking call and in the heartbeat. The Network trusts it
   from hosted vendors only; self-hosted vendors pay the Network's own rate,
   set in the ops console (Fees → Storefront bookings).
 - **`authorName` / `authorEmail`** are the signed-in admin. The creator
   sees the name; the email is where the brand's notifications for that
   conversation go, and is never shown to the creator. An API key sends
-  neither.
+  neither. Before each brand email the Network checks the address is still
+  an admin's (`POST /network/notify-recipients`, below).
 - **Booking statuses:** `pending → awaiting_payment → paid → delivered →
   completed`, plus `declined`, `cancelled` and `refunded`. `accepted`,
   `approved` and `payout_failed` exist only on rows from before.
@@ -336,12 +337,35 @@ POST /vendors/me/bookings/:id/retry-payout        410 gone
   - `422 amount_too_large`; `429 rate_limited`.
 - **A claim** (`token`) continues a public storefront request as this brand
   (routes/booking-claims.ts below). `404 invalid_or_used`, `410 expired`
-  and `410 creator_unavailable` say why it can't.
+  and `410 creator_unavailable` say why it can't. A brand in review may
+  claim only while it talks to no other creator (`403
+  vendor_pending_review`), and a new conversation counts against the
+  daily limit (`429 rate_limited`).
 
 **Tracking** (an `offeringId` on the request, or `track` later)
 federates the partnership the same way an approved application does:
 `POST /partners` + `POST /partners/:id/links` with the offering's
-`programIds` and commission snapshot.
+`programIds` and commission snapshot. That gives the brand the creator's
+name and email in its partner records. The creator is told before
+accepting a tracked request, and a later `track` posts a `tracked` event in
+the thread.
+
+**Who receives the brand's mail.** The Network asks the brand's instance,
+with the federation key, before every conversation or booking email to the
+brand:
+
+```
+POST /network/notify-recipients   (partners:read)
+  { "emails": ["grace@acme.test", "owner@acme.test"] }        1–5 addresses
+  → 200 { "active": ["owner@acme.test"], "fallback": null }
+```
+
+`active` lists the asked-about addresses that are activated, unrevoked
+admins of this tenant. `fallback` is the longest-standing such admin, given
+only when none of them is. The Network sends to the conversation's last
+writer if active, else the Vendor's contact if active, else the fallback.
+An instance without this route (404) gets the old behaviour; one that
+errors gets no email that time.
 
 **This repo's side.** The brand portal reaches these routes through admin
 proxies in `routes/settings.ts`, which add `authorName` / `authorEmail`
@@ -363,8 +387,11 @@ portal reads it through `POST /booking-claims/preview` (this repo), which
 calls the Network's `POST /bookings/preview` with the Network admin key. A
 new address names its brand and `POST /booking-claims/signup` creates it
 (activated, signed in, pending review, no plan), enrols it on the Network
-and claims the request. An address that has a brand signs in and lands on
-`/admin/network/claim?token=`, which calls the claim proxy.
+and claims the request. An address with any identity here (an Admin row,
+revoked or not; an operator; a platform password) signs in instead and
+lands on `/admin/network/claim?token=`, which shows the request and calls
+the claim proxy when the admin clicks to send it. Signups for one address
+run one at a time, re-checked under a lock, so one link makes one brand.
 
 **Delivery checks** add `deliveryChecks` / `deliveryCheckedAt` on each
 Booking and read `GET /partners/:id/timeseries` and

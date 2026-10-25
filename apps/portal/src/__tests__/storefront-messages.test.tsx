@@ -251,6 +251,16 @@ describe('brand thread', () => {
       <Route path="/t/:slug/admin/network/messages/:id" element={<AdminNetworkThread />} />,
     );
     expect(await screen.findByText(/Payment received\. Ada Lovelace has been told/)).toBeTruthy();
+    cleanup();
+
+    // Refunded before the brand got back: no "can start now".
+    booking = { ...OFFER, status: 'refunded', paidAt: '2026-10-25T11:00:00Z', refundedMinor: 220000 };
+    renderAt(
+      '/t/acme/admin/network/messages/cnv_1?booking=bkr_1&checkout=success',
+      <Route path="/t/:slug/admin/network/messages/:id" element={<AdminNetworkThread />} />,
+    );
+    expect(await screen.findByText('Ada Lovelace has refunded this booking.')).toBeTruthy();
+    expect(screen.queryByText(/Payment received/)).toBeNull();
   });
 
   it('explains why it cannot write when the creator blocked the brand', async () => {
@@ -295,15 +305,16 @@ const REQUEST = {
   disputedAt: null,
 };
 
-function creatorThread() {
+function creatorThread(booking: Record<string, unknown> = REQUEST, extra: unknown[] = []) {
   return {
     conversation: { id: 'cnv_2', brand: { id: 'vnd_1', name: 'New Brand Co', logoUrl: null }, contactName: 'Grace Hopper', blocked: false, brandActive: true },
     messages: [
       { id: 'cnm_1', author: 'vendor', authorName: 'Grace Hopper', kind: 'text', body: REQUEST.brief, event: null, bookingId: null, createdAt: '2026-10-25T10:00:00Z' },
       { id: 'cnm_2', author: 'vendor', authorName: 'Grace Hopper', kind: 'event', body: null, event: 'requested', bookingId: 'bkr_2', createdAt: '2026-10-25T10:00:01Z' },
+      ...extra,
     ],
     hasMore: false,
-    bookings: [REQUEST],
+    bookings: [booking],
   };
 }
 
@@ -332,5 +343,23 @@ describe('creator thread', () => {
     fireEvent.click(accept);
     await waitFor(() => expect(sent.some((s) => s.url.endsWith('/bookings/bkr_2/accept'))).toBe(true));
     expect(sent.find((s) => s.url.endsWith('/accept'))!.body).toEqual({ amount: 1200, currency: 'USD' });
+  });
+
+  it('says before accepting that a tracked request shares their name and email, and when a brand tracks one', async () => {
+    routes['GET /api/creator-api/creators/me/payments'] = () => [200, { connected: true, ready: true, cardPayments: 'active', country: 'US', currency: 'USD', checkedAt: null }];
+    routes['GET /api/creator-api/creators/me/conversations/cnv_2'] = () => [200, creatorThread({ ...REQUEST, tracksOnAccept: true })];
+    renderAt('/creator/messages/cnv_2', <Route path="/creator/messages/:id" element={<CreatorThreadPage />} />);
+    expect(await screen.findByText(/This request is tracked: accepting makes you New Brand Co’s partner/)).toBeTruthy();
+    expect(screen.getByText(/gives New Brand Co your name and email for its partner records/)).toBeTruthy();
+    cleanup();
+
+    routes['GET /api/creator-api/creators/me/conversations/cnv_2'] = () => [
+      200,
+      creatorThread({ ...REQUEST, status: 'awaiting_payment', amount: 1200, currency: 'USD', amountMinor: 120000, tracked: true }, [
+        { id: 'cnm_3', author: 'vendor', authorName: null, kind: 'event', body: 'Acme Pro', event: 'tracked', bookingId: 'bkr_2', createdAt: '2026-10-25T11:00:00Z' },
+      ]),
+    ];
+    renderAt('/creator/messages/cnv_2', <Route path="/creator/messages/:id" element={<CreatorThreadPage />} />);
+    expect(await screen.findByText(/tracks this booking on Acme Pro: you’re its partner there, and it has your name and email/)).toBeTruthy();
   });
 });

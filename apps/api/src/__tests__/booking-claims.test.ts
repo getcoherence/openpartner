@@ -42,6 +42,8 @@ const { encryptSecret } = await import('../crypto.js');
 const { settleBackgroundScreeningsForTesting } = await import('../sanctions-screening.js');
 const { suggestSlug } = await import('../routes/booking-claims.js');
 const { platformCredential, setPassword } = await import('../passwords.js');
+const { createApiKeyRow } = await import('../auth.js');
+const { NETWORK_FEDERATION_SCOPES } = await import('../routes/api-keys.js');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
@@ -51,7 +53,7 @@ const EXPIRED = `opbk_${'e'.repeat(48)}`;
 const REQUESTER = `grace-${ulid().slice(-6).toLowerCase()}@newbrand.test`;
 /** Links sent to addresses that already have some identity here. */
 const OTHER_TOKENS = new Map<string, string>(
-  ['revoked', 'operator', 'envop', 'password'].map((k, i) => [`opbk_${String(i + 1).repeat(48)}`, `${k}-${ulid().slice(-6).toLowerCase()}@other.test`]),
+  ['revoked', 'operator', 'envop', 'password', 'race'].map((k, i) => [`opbk_${String(i + 1).repeat(48)}`, `${k}-${ulid().slice(-6).toLowerCase()}@other.test`]),
 );
 
 interface Call {
@@ -145,11 +147,12 @@ afterEach(async () => {
 afterAll(async () => {
   if (!skipIntegration) {
     for (const s of slugs) await purge(s);
-    const sessions = (await db(TABLES.PlatformSession).where({ email: REQUESTER }).select('bundleId')) as Array<{ bundleId: string | null }>;
-    await db(TABLES.PlatformSession).where({ email: REQUESTER }).del();
+    const others = [...OTHER_TOKENS.values()];
+    const signedIn = [REQUESTER, ...others];
+    const sessions = (await db(TABLES.PlatformSession).whereIn('email', signedIn).select('bundleId')) as Array<{ bundleId: string | null }>;
+    await db(TABLES.PlatformSession).whereIn('email', signedIn).del();
     const bundles = sessions.map((s) => s.bundleId).filter((b): b is string => !!b);
     if (bundles.length) await db(TABLES.PlatformSessionBundle).whereIn('id', bundles).del();
-    const others = [...OTHER_TOKENS.values()];
     await db(TABLES.PlatformAdmin).whereIn('email', others).del();
     await db(TABLES.PasswordCredential).where({ principalKind: 'platform' }).whereIn('principalId', others).del();
   }
@@ -263,6 +266,19 @@ describe.skipIf(skipIntegration)('booking claims', () => {
     }
   });
 
+  it('two signups from one link at once make one brand', async () => {
+    const [token, email] = [...OTHER_TOKENS.entries()].find(([, e]) => e.startsWith('race-'))!;
+    const pick = () => {
+      const slug = `rc${ulid().slice(-8).toLowerCase()}`;
+      slugs.push(slug);
+      return request(app).post('/booking-claims/signup').send({ token, displayName: 'Race Co', slug, country: 'US' });
+    };
+    const results = await Promise.all([pick(), pick()]);
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+    expect(results.find((r) => r.status === 409)!.body).toEqual({ error: 'account_exists' });
+    expect(await db(TABLES.Admin).whereRaw('lower("email") = ?', [email])).toHaveLength(1);
+  });
+
   it('refuses reserved and taken workspace addresses, and countries it does not serve', async () => {
     expect((await request(app).post('/booking-claims/signup').send({ token: TOKEN, displayName: 'X', slug: 'admin', country: 'US' })).body).toEqual({
       error: 'slug_reserved',
@@ -334,5 +350,29 @@ describe.skipIf(skipIntegration)('brand proxies', () => {
     const b = await brand();
     await request(app).post(`/t/${b.slug}/admin/network/conversations/cnv_1/messages`).set('Authorization', `Bearer ${ADMIN_KEY}`).send({ body: 'Automated hello' });
     expect(last(/\/vendors\/me\/conversations\/cnv_1\/messages$/)!.body).toEqual({ body: 'Automated hello' });
+  });
+});
+
+describe.skipIf(skipIntegration)('who may receive the brand’s Network mail', () => {
+  it('names the addresses still activated, unrevoked admins, else the longest-standing one', async () => {
+    const b = await brand();
+    const later = new Date(Date.now() + 60_000);
+    await db<AdminRow>(TABLES.Admin).insert([
+      { id: ulid(), tenantId: b.tenantId, email: 'gone@acme.test', name: 'Gone', activatedAt: new Date(), revokedAt: new Date(), createdAt: later },
+      { id: ulid(), tenantId: b.tenantId, email: 'invited@acme.test', name: 'Invited', activatedAt: null, createdAt: later },
+      { id: ulid(), tenantId: b.tenantId, email: 'second@acme.test', name: 'Second', activatedAt: new Date(), createdAt: later },
+    ] as never);
+    const network = await createApiKeyRow(db, { tenantId: b.tenantId, scopes: [...NETWORK_FEDERATION_SCOPES], label: 'network_federation' });
+    const ask = (emails: string[], key = network.plaintext) =>
+      request(app).post(`/t/${b.slug}/network/notify-recipients`).set('Authorization', `Bearer ${key}`).send({ emails });
+
+    expect((await ask(['Second@Acme.test', 'gone@acme.test'])).body).toEqual({ active: ['second@acme.test'], fallback: null });
+    expect((await ask(['gone@acme.test', 'invited@acme.test'])).body).toEqual({ active: [], fallback: b.email });
+    expect((await ask([])).status).toBe(400);
+
+    // Only the Network's key (or an admin) may ask.
+    const clicksOnly = await createApiKeyRow(db, { tenantId: b.tenantId, scopes: ['clicks:write'], label: 'clicks' });
+    expect((await ask(['second@acme.test'], clicksOnly.plaintext)).status).toBe(403);
+    expect((await request(app).post(`/t/${b.slug}/network/notify-recipients`).send({ emails: ['second@acme.test'] })).status).toBe(401);
   });
 });

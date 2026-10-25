@@ -27,6 +27,7 @@
  */
 
 import { Router, type Response } from 'express';
+import type { Knex } from 'knex';
 import { z } from '../zod.js';
 import { ulid } from 'ulid';
 import { TABLES, type AdminRow, type TenantRow } from '@openpartner/db';
@@ -115,12 +116,12 @@ async function previewOrAnswer(token: string, res: Response): Promise<BookingCla
  * (revoked, or on a suspended brand, too), as do operators (PlatformAdmin
  * rows, PLATFORM_ADMIN_EMAILS) and a platform password.
  */
-async function accountExists(email: string): Promise<boolean> {
+async function accountExists(email: string, q: Knex = db): Promise<boolean> {
   const e = email.trim().toLowerCase();
-  if (await db(TABLES.Admin).whereRaw(`lower("email") = ?`, [e]).first('id')) return true;
-  if (await db(TABLES.PlatformAdmin).whereRaw(`lower("email") = ?`, [e]).first('id')) return true;
+  if (await q(TABLES.Admin).whereRaw(`lower("email") = ?`, [e]).first('id')) return true;
+  if (await q(TABLES.PlatformAdmin).whereRaw(`lower("email") = ?`, [e]).first('id')) return true;
   if (await isAllowedOperator(e)) return true;
-  return hasPassword(db, platformCredential(e));
+  return hasPassword(q, platformCredential(e));
 }
 
 /** A workspace address to start the form with: from the company, else the
@@ -194,6 +195,10 @@ bookingClaimsRouter.post('/booking-claims/signup', claimLimit, async (req, res) 
   const now = new Date();
   try {
     await db.transaction(async (trx) => {
+      // One signup per address at a time, re-checked under the lock: two
+      // requests from the same link can't both pass the check above.
+      await trx.raw('select pg_advisory_xact_lock(hashtext(?))', [`booking-claim-signup:${email}`]);
+      if (await accountExists(email, trx)) throw new ClaimSignupError('account_exists');
       const existing = await trx<TenantRow>(TABLES.Tenant).where({ slug }).first(['id']);
       if (existing) throw new ClaimSignupError('slug_taken');
       await trx<TenantRow>(TABLES.Tenant).insert({
