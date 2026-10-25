@@ -9,6 +9,8 @@
  *     corrective events never appear
  *   - a coupon that took credit from another partner's in-window link
  *     click is counted
+ *   - per partner credited through a code, the customers who came through
+ *     it with no link click of the partner's (renewals count once)
  *   - Stripe catch-up recoveries, dropped input and last-seen signals
  *   - admin-only, a bounded window, a program that must exist
  */
@@ -231,6 +233,48 @@ describe.skipIf(skipIntegration)('trackingHealth', () => {
     // Nor when that partner is revoked: their click could never have earned.
     await db(TABLES.Partner).where({ id: seeded.partnerA }).update({ revokedAt: new Date() });
     expect((await trackingHealth(db, T, { days: 30 })).coupons.overrodeLink).toBe(0);
+  });
+
+  it("lists each code partner's customers, and those with no link click of the partner's", async () => {
+    const seeded = await seed();
+    const report = await trackingHealth(db, T, { days: 30 });
+    // Partner B's code won user_coupon, who only ever clicked partner A's
+    // link. Partner A was credited through links only, so isn't listed.
+    expect(report.codes).toEqual([{ partnerId: expect.any(String), partnerName: 'B', customers: 1, codeOnly: 1 }]);
+    const partnerB = report.codes[0]!.partnerId;
+
+    // A renewal through the same code is the same customer.
+    const couponClick = await db(TABLES.Click).where({ tenantId: T, landingUrl: 'coupon://BCODE' }).first('id');
+    const renewal = ulid();
+    await db(TABLES.Event).insert({ id: renewal, tenantId: T, userId: 'user_coupon', type: 'invoice_paid', value: '80.00', currency: 'USD', ts: ago(0) });
+    await db(TABLES.Attribution).insert({ id: ulid(), tenantId: T, eventId: renewal, clickId: couponClick.id, partnerId: partnerB, programId: seeded.programId, model: 'last_click', weight: '1.0000' });
+    expect((await trackingHealth(db, T, { days: 30 })).codes[0]).toMatchObject({ customers: 1, codeOnly: 1 });
+    // A later re-run under another model that also credits the link doesn't
+    // change the live (first-computed) decision.
+    await db(TABLES.Attribution).insert({
+      id: ulid(),
+      tenantId: T,
+      eventId: seeded.couponEventId,
+      clickId: seeded.couponLinkClick,
+      partnerId: partnerB,
+      programId: seeded.programId,
+      model: 'linear',
+      weight: '0.5000',
+      computedAt: new Date(Date.now() + 1000),
+    });
+    expect((await trackingHealth(db, T, { days: 30 })).codes[0]).toMatchObject({ customers: 1, codeOnly: 1 });
+
+    // Once the customer had clicked partner B's own link first, the code
+    // isn't clickless any more.
+    const linkB = ulid();
+    await db(TABLES.Link).insert({ id: linkB, tenantId: T, partnerId: partnerB, programId: seeded.programId, linkKey: `lk-${linkB}` });
+    const clickB = ulid();
+    await db(TABLES.Click).insert({ id: clickB, tenantId: T, linkId: linkB, partnerId: partnerB, programId: seeded.programId, landingUrl: 'https://brand.example/', ts: ago(5) });
+    await db(TABLES.Identity).insert({ id: ulid(), tenantId: T, clickId: clickB, userId: 'user_coupon' });
+    expect((await trackingHealth(db, T, { days: 30 })).codes).toEqual([{ partnerId: partnerB, partnerName: 'B', customers: 1, codeOnly: 0 }]);
+
+    // Another program's view has no code credits.
+    expect((await trackingHealth(db, T, { days: 30, programId: seeded.otherProgramId })).codes).toEqual([]);
   });
 
   it('counts recovered Stripe events, not the Event rows they made', async () => {

@@ -50,14 +50,42 @@ payments, created in the window. Each is one of:
 | In Stripe | every such payment, gross (before refunds) |
 | Recorded | OpenPartner recorded it |
 | Credited to partners | recorded and credited to a partner |
-| Missed | **not recorded, though it carries a partner signal**: the customer is linked to a partner click made before the payment, the Checkout's `client_reference_id` is one of your program's clicks (a Checkout that made an invoice counts for that invoice), or it used a partner's code (its promotion code or Stripe coupon, on the invoice, a line item or the Checkout) |
-| No partner signal | not recorded, and nothing ties it to a partner: a customer who came on their own |
+| Missed sales | **not recorded, and it would have credited a partner** had it been |
+| Not creditable | not recorded, and it carries a partner signal, but that signal wouldn't have credited anyone |
+| No partner signal | not recorded, and nothing ties it to a partner: usually a customer who came on their own |
 
-**Missed** is the leak. The payments are listed with a link to each in your
-Stripe dashboard. Most are a webhook that never arrived; the rest are payments
-OpenPartner couldn't map. Open one in Stripe to see why. Codes are matched by
-id: a code you typed into a promotion of your own matches only if it's the
-promotion recorded for the partner's code.
+A partner signal is one of: the customer is linked to a partner click made
+before the payment, the Checkout's `client_reference_id` is one of your
+program's clicks (a Checkout that made an invoice counts for that invoice), or
+it used a partner's code (its promotion code or Stripe coupon, on the invoice, a
+line item or the Checkout). Codes are matched by id: a code you typed into a
+promotion of your own matches only if it's the promotion recorded for the
+partner's code.
+
+Whether a signal would have credited is decided the way attribution would
+have decided the payment had its webhook arrived when it was paid (an invoice's
+paid time; a Checkout's creation, as Stripe doesn't record its completion),
+for the customer the payment would be recorded under: the `openpartner_user_id`
+on the Stripe customer, else the `cus_` id. It credits through a click that
+isn't flagged and whose partner isn't revoked (as of now, as any replay is
+judged), inside its program's attribution window; or through an earlier
+credited conversion of the customer's that carries the payment the way a
+renewal does (unless that program lets renewals go). A partner code still
+active at the payment adds a click stamped then, unless the customer already
+had a click of that partner's, which the redemption reuses whatever its age. A
+signal that fails is **Not creditable**, counted by why:
+
+| Why | Means |
+|---|---|
+| outside the window | usable partner clicks, all older than the program's window, and no earlier credited conversion carrying the customer |
+| a code deactivated before the payment | the only partner code was deactivated before it was used |
+| only flagged clicks or revoked partners | every click is flagged as fraud or belongs to a revoked partner |
+
+**Missed sales** is the leak. The most recent (up to 50) are listed with a
+link to each in your Stripe dashboard. The usual causes are a webhook that
+never arrived and a payment OpenPartner couldn't map; open one in Stripe to see
+which. A missed sale is about credit, not commission: once recorded, the
+program's commission rules still apply.
 
 Totals are per currency, with your default currency first, and are never
 added across currencies. Up to 2,000 invoices and 2,000 Checkout payments are
@@ -134,8 +162,22 @@ an export (see [data portability](data-portability.md)).
   hosted Stripe connections) recorded after the webhook missed them. Any
   number above zero means webhook deliveries are failing.
 
+## Partner codes
+
+Per partner credited through a code in the window: the customers credited to
+them, and how many of those came through the partner's code without ever
+clicking the partner's own link first (**Code, no click of theirs**).
+Customers, not conversions, so a customer's renewals count once. Only partners
+with a code-credited conversion are listed, most clickless customers first.
+
+A code that brings almost nobody through the partner's link (highlighted at 5
+or more such customers and 80% or more of the partner's customers) may have
+spread beyond the partner's audience: a coupon site, a browser extension. For a
+podcast or video read, where people type the code they heard, it's normal.
+Tracking is fine either way: this is about whether the credit is deserved.
+
 ## What it can't see
 
-A sale that left no trace at all: a partner's visitor who blocked the script,
-declined cookies and paid without an account. No tool can count those. What
-this page does show is every point where a trace started and then stopped.
+A sale that left no trace at all: no click kept in the browser or by your
+server, no linked account, no partner code. No tool can credit those. What this
+page shows are the common places where a trace starts and then stops.

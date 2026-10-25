@@ -4,7 +4,9 @@
  * the funnel with landing rate (or "Not measured" before any landing has
  * been reported), a browser that stitches far below the rest highlighted,
  * conversions that credited nobody by why, and the input OpenPartner
- * dropped, with what to fix.
+ * dropped, with what to fix. Stripe revenue splits missed sales from
+ * signals that couldn't have credited, and partner codes whose customers
+ * almost never clicked the partner's link are highlighted.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
@@ -41,6 +43,10 @@ function baseReport(): TrackingHealthReport {
       ],
     },
     coupons: { overrodeLink: 3 },
+    codes: [
+      { partnerId: 'pa1', partnerName: 'Deal Hunters', customers: 10, codeOnly: 9 },
+      { partnerId: 'pa2', partnerName: 'The Podcast', customers: 4, codeOnly: 1 },
+    ],
     stripe: { recovered: 1 },
     issues: [
       { kind: 'stripe_foreign_reference', count: 12, days: 3, sampleRef: 'order-1234', lastSeenAt: '2026-10-23T10:00:00.000Z' },
@@ -62,8 +68,9 @@ function stripeReport(): StripeReconciliationReport {
     computedAt: new Date().toISOString(),
     livemode: true,
     truncated: false,
-    counts: { payments: 9, credited: 3, recorded: 1, missed: 2, unreferred: 3 },
-    totals: [{ currency: 'USD', stripe: 900, recorded: 400, credited: 300, missed: 150, unreferred: 350 }],
+    counts: { payments: 11, credited: 3, recorded: 1, missed: 2, notCreditable: 2, unreferred: 3 },
+    notCreditableReasons: { outside_window: 1, inactive_code: 0, excluded: 1 },
+    totals: [{ currency: 'USD', stripe: 1000, recorded: 400, credited: 300, missed: 150, notCreditable: 100, unreferred: 350 }],
     missed: [
       {
         kind: 'invoice',
@@ -150,7 +157,12 @@ describe('Admin → Tracking health', () => {
   it('puts Stripe revenue next to recorded and credited, and lists the missed payments', async () => {
     renderPage();
     expect(await screen.findByText('Stripe revenue')).toBeTruthy();
-    expect(await screen.findByText(/2 payments carry a partner signal, but OpenPartner recorded nothing/)).toBeTruthy();
+    expect(await screen.findByText(/2 payments would have credited a partner, but OpenPartner recorded nothing/)).toBeTruthy();
+    expect(screen.getByText('Missed sales')).toBeTruthy();
+    expect(screen.getByText('Not creditable')).toBeTruthy();
+    expect(
+      screen.getByText(/\(1 outside the window, 1 with only flagged clicks or revoked partners\), 3 with no partner signal/),
+    ).toBeTruthy();
     const link = screen.getByText('in_missed1').closest('a')!;
     expect(link.getAttribute('href')).toBe('https://dashboard.stripe.com/invoices/in_missed1');
     expect(screen.getByText("customer came from a partner click; partner's promotion code")).toBeTruthy();
@@ -165,10 +177,20 @@ describe('Admin → Tracking health', () => {
     expect(screen.queryByText('Read again')).toBeNull();
   });
 
+  it("highlights a code whose customers almost never clicked the partner's link", async () => {
+    renderPage();
+    expect(await screen.findByText('Partner codes')).toBeTruthy();
+    const dealHunters = screen.getByText('90%');
+    expect(dealHunters.getAttribute('title')).toMatch(/came through the code alone/);
+    // 1 of 4: not highlighted.
+    expect(screen.getByText('25%').getAttribute('title')).toBeNull();
+  });
+
   it('shows empty states when nothing is wrong', async () => {
-    report = { ...baseReport(), unattributed: { events: 0, byReason: [] }, issues: [] };
+    report = { ...baseReport(), unattributed: { events: 0, byReason: [] }, issues: [], codes: [] };
     renderPage();
     expect(await screen.findByText('Every conversion in this window credited a partner.')).toBeTruthy();
     expect(screen.getByText('Nothing dropped in this window.')).toBeTruthy();
+    expect(screen.queryByText('Partner codes')).toBeNull();
   });
 });

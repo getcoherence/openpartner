@@ -16,20 +16,32 @@
  * Sessions without an invoice (metadata.stripeCheckoutSessionId), created
  * in the window. Each is one of:
  *
- *   credited    recorded, and credited to a partner
- *   recorded    recorded, credited to nobody (Tracking health's
- *               "conversions that credited nobody" says why)
- *   missed      not recorded, though it carries a partner signal: a
- *               customer linked to a partner click made before the
- *               payment, a client_reference_id naming one of the
- *               program's clicks (an invoiced Checkout's counts for its
- *               invoice), or a partner's code (its promotion code or Stripe
- *               coupon, by id, on the invoice, a line item or the
- *               Checkout). These are the leaks: a webhook that never
- *               arrived, or a payment the pipeline couldn't map.
- *   unreferred  not recorded and no partner signal: a customer who didn't
- *               come through a partner. The pipeline only records
- *               payments it can tie to one, so most revenue is here.
+ *   credited       recorded, and credited to a partner
+ *   recorded       recorded, credited to nobody (Tracking health's
+ *                  "conversions that credited nobody" says why)
+ *   missed         not recorded, though it carries a partner signal that
+ *                  would have credited a partner. These are the leaks: a
+ *                  webhook that never arrived, or a payment the pipeline
+ *                  couldn't map.
+ *   notCreditable  not recorded, and it carries a partner signal, but the
+ *                  signal wouldn't have credited anyone had it been
+ *                  recorded (notCreditableReasons says why). Not a leak.
+ *   unreferred     not recorded and no partner signal: a customer who
+ *                  didn't come through a partner. The pipeline only records
+ *                  payments it can tie to one, so most revenue is here.
+ *
+ * The partner signals: a customer linked to a partner click made before the
+ * payment, a client_reference_id naming one of the program's clicks (an
+ * invoiced Checkout's counts for its invoice), or a partner's code (its
+ * promotion code or Stripe coupon, by id, on the invoice, a line item or the
+ * Checkout). Whether a signal would have credited is decided the way
+ * attributeEvent would decide the payment had its webhook arrived when it
+ * was paid (wouldCredit), for the user the pipeline keys it on: a usable
+ * click (not flagged, partner not revoked, as of now, as any replay is
+ * judged) inside its program's window, or the customer's earlier credited
+ * conversion carrying it the way a renewal does. A code still active at
+ * the payment adds a click stamped then, unless the customer already had
+ * one of that partner's (ensureCouponClickAndIdentity reuses it).
  *
  * Amounts are gross (before refunds), per currency, never added across
  * currencies. Payments taken outside invoices and Checkout (a PaymentIntent
@@ -66,13 +78,31 @@ const MISSED_LISTED = 50;
 export const RECONCILE_PERMISSIONS = ['invoice_read', 'checkout_session_read', 'customer_read'] as const;
 
 export type PaymentKind = 'invoice' | 'checkout';
-export type PaymentClass = 'credited' | 'recorded' | 'missed' | 'unreferred';
+export type PaymentClass = 'credited' | 'recorded' | 'missed' | 'notCreditable' | 'unreferred';
 export type PartnerSignal = 'linked_customer' | 'partner_click' | 'partner_code';
+/**
+ * Why a partner signal wouldn't have credited anyone, in the order the
+ * engine stops at (the same words as Tracking health's uncredited reasons):
+ *   outside_window  usable partner clicks, none inside the program's window,
+ *                   and no earlier credited conversion carrying the customer
+ *   inactive_code   the only code was deactivated before the payment
+ *   excluded        every click is flagged as fraud or a revoked partner's
+ */
+export type NotCreditableReason = 'outside_window' | 'inactive_code' | 'excluded';
+
+/** attribution.ts: a click stamped this long after its conversion still counts. */
+const CLICK_AFTER_EVENT_GRACE_SEC = 5 * 60;
+/** The event type the pipeline records a paid invoice or Checkout as. */
+const PAYMENT_EVENT_TYPE = 'invoice_paid';
 
 interface StripePayment {
   kind: PaymentKind;
   id: string;
   created: number;
+  /** When it was paid, as near as the object says: an invoice's
+   *  status_transitions.paid_at, else its creation. A Checkout Session
+   *  doesn't record its completion, and completes within a day. */
+  paidAt: number;
   amountMinor: number;
   currency: string;
   customerId: string | null;
@@ -95,6 +125,7 @@ export interface CurrencyTotals {
   recorded: number;
   credited: number;
   missed: number;
+  notCreditable: number;
   unreferred: number;
 }
 
@@ -116,6 +147,8 @@ export interface StripeReconciliation {
   /** A kind hit MAX_PAYMENTS_PER_KIND: the oldest payments weren't read. */
   truncated: boolean;
   counts: Record<PaymentClass, number> & { payments: number };
+  /** The notCreditable payments, by why. */
+  notCreditableReasons: Record<NotCreditableReason, number>;
   totals: CurrencyTotals[];
   missed: MissedPayment[];
 }
@@ -200,6 +233,7 @@ async function listInvoices(stripe: Stripe, gte: number): Promise<Listed> {
         kind: 'invoice',
         id: inv.id,
         created: inv.created,
+        paidAt: inv.status_transitions?.paid_at ?? inv.created,
         amountMinor: inv.amount_paid,
         currency: (inv.currency ?? 'usd').toUpperCase(),
         customerId: customer.id,
@@ -253,6 +287,7 @@ async function listCheckoutPayments(
         kind: 'checkout',
         id: s.id,
         created: s.created,
+        paidAt: s.created,
         amountMinor: s.amount_total ?? 0,
         currency: (s.currency ?? 'usd').toUpperCase(),
         customerId: customer.id,
@@ -274,6 +309,91 @@ function dashboardUrl(p: StripePayment, livemode: boolean): string | null {
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+const toSec = (d: Date | string) => Math.floor(new Date(d).getTime() / 1000);
+
+/** The user the pipeline keys the payment on (resolveUserIdFromCustomer):
+ *  the brand's openpartner_user_id on the Customer, else the cus_ id. A
+ *  guest Checkout has neither; its click's own user holds only that click. */
+const userOf = (p: StripePayment): string | null => p.merchantUserId ?? p.customerId;
+
+function* chunks<T>(values: T[], size = 500): Generator<T[]> {
+  for (let i = 0; i < values.length; i += size) yield values.slice(i, i + size);
+}
+
+/** A click as attributeEvent weighs it. */
+interface CandidateClick {
+  id: string;
+  partnerId: string;
+  tsSec: number;
+  /** Not flagged as fraud, partner not revoked, program still there. */
+  usable: boolean;
+  windowSec: number;
+  /** Its program keeps renewals with the partner who won the customer. */
+  renewals: boolean;
+}
+
+/** A partner's code, as the click a redemption would stamp. */
+interface PartnerCode {
+  id: string;
+  partnerId: string;
+  deactivatedSec: number | null;
+  usable: boolean;
+  windowSec: number;
+  renewals: boolean;
+}
+
+/** One of the customer's earlier credited conversions, under its
+ *  first-computed model. */
+interface CreditedConversion {
+  eventId: string;
+  type: string;
+  tsSec: number;
+  model: string;
+  clickIds: string[];
+}
+
+interface ClickTermsRow {
+  id: string;
+  partnerId: string;
+  ts: Date;
+  fraudFlag: string | null;
+  revokedAt: Date | null;
+  programFound: string | null;
+  windowDays: number | null;
+  renewals: boolean | null;
+}
+
+/** A query over Click `c`, joined to what decides whether the click can earn. */
+function withClickTerms(q: Knex.QueryBuilder): Knex.QueryBuilder {
+  return q
+    .leftJoin(`${TABLES.Program} as pr`, function () {
+      this.on('pr.id', '=', 'c.programId').andOn('pr.tenantId', '=', 'c.tenantId');
+    })
+    .leftJoin(`${TABLES.Partner} as pa`, function () {
+      this.on('pa.id', '=', 'c.partnerId').andOn('pa.tenantId', '=', 'c.tenantId');
+    })
+    .select(
+      'c.id as id',
+      'c.partnerId as partnerId',
+      'c.ts as ts',
+      'c.fraudFlag as fraudFlag',
+      'pa.revokedAt as revokedAt',
+      'pr.id as programFound',
+      'pr.attributionWindowDays as windowDays',
+      'pr.renewalsStayWithPartner as renewals',
+    );
+}
+
+function candidateClick(r: ClickTermsRow): CandidateClick {
+  return {
+    id: r.id,
+    partnerId: r.partnerId,
+    tsSec: toSec(r.ts),
+    usable: r.fraudFlag == null && r.revokedAt == null && r.programFound != null,
+    windowSec: (r.windowDays ?? 0) * 86_400,
+    renewals: r.renewals === true,
+  };
+}
 
 export async function reconcileStripe(
   db: Knex,
@@ -331,65 +451,208 @@ export async function reconcileStripe(
     }
   }
 
-  // Partner signals for the payments nothing was recorded from.
+  // Partner signals for the payments nothing was recorded from, with what
+  // wouldCredit needs to decide each one: every click linked to the
+  // customer, the click a Checkout carried, and the partner's codes.
   const unrecorded = payments.filter((p) => !recordedBy.has(p.id));
-  const userIds = [...new Set(unrecorded.flatMap((p) => [p.customerId, p.merchantUserId]).filter((v): v is string => !!v))];
+  const userIds = [...new Set(unrecorded.map(userOf).filter((v): v is string => !!v))];
   const crefs = [...new Set(unrecorded.map((p) => p.clientReferenceId).filter((v): v is string => !!v))];
   const promoIds = [...new Set(unrecorded.flatMap((p) => p.discounts.map((d) => d.promotionCode)).filter((v): v is string => !!v))];
   const couponIds = [...new Set(unrecorded.flatMap((p) => p.discounts.map((d) => d.coupon)).filter((v): v is string => !!v))];
+
+  const clicksByUser = new Map<string, CandidateClick[]>();
+  for (const ids of chunks(userIds)) {
+    const rows = (await withClickTerms(db(`${TABLES.Identity} as i`).join(`${TABLES.Click} as c`, function () {
+      this.on('c.id', '=', 'i.clickId').andOn('c.tenantId', '=', 'i.tenantId');
+    }))
+      .where('i.tenantId', tenantId)
+      .whereIn('i.userId', ids)
+      .select('i.userId as userId')) as Array<ClickTermsRow & { userId: string }>;
+    for (const r of rows) {
+      const list = clicksByUser.get(r.userId) ?? [];
+      list.push(candidateClick(r));
+      clicksByUser.set(r.userId, list);
+    }
+  }
   // A linked customer counts only for payments after their first partner
   // click: a customer who paid first and clicked a partner later wasn't
   // brought by them.
-  const firstClickAt = new Map<string, number>();
-  for (let i = 0; i < userIds.length; i += 500) {
-    const rows = (await db(`${TABLES.Identity} as i`)
-      .join(`${TABLES.Click} as c`, function () {
-        this.on('c.id', '=', 'i.clickId').andOn('c.tenantId', '=', 'i.tenantId');
-      })
-      .where('i.tenantId', tenantId)
-      .whereIn('i.userId', userIds.slice(i, i + 500))
-      .groupBy('i.userId')
-      .select('i.userId as userId', db.raw('min(c.ts) as "firstClick"'))) as Array<{ userId: string; firstClick: Date }>;
-    for (const r of rows) firstClickAt.set(r.userId, Math.floor(new Date(r.firstClick).getTime() / 1000));
-  }
-  const linkedBefore = (userId: string | null, createdSec: number) => {
-    const first = userId ? firstClickAt.get(userId) : undefined;
-    return first != null && first <= createdSec;
-  };
-  const knownClicks = new Set<string>();
-  for (let i = 0; i < crefs.length; i += 500) {
-    const ids = (await db(TABLES.Click).where({ tenantId }).whereIn('id', crefs.slice(i, i + 500)).pluck('id')) as string[];
-    for (const id of ids) knownClicks.add(id);
+  const linkedBefore = (userId: string | null, atSec: number) =>
+    !!userId && (clicksByUser.get(userId) ?? []).some((c) => c.tsSec <= atSec);
+  const knownClicks = new Map<string, CandidateClick>();
+  for (const ids of chunks(crefs)) {
+    const rows = (await withClickTerms(db(`${TABLES.Click} as c`))
+      .where('c.tenantId', tenantId)
+      .whereIn('c.id', ids)) as ClickTermsRow[];
+    for (const r of rows) knownClicks.set(r.id, candidateClick(r));
   }
   // A partner's code, matched by id: its promotion code, or the Stripe
-  // coupon minted for it. Deactivated codes too: what counts is that the
-  // code was a partner's when it was used.
-  const partnerPromos = new Set<string>();
-  for (let i = 0; i < promoIds.length; i += 500) {
-    const ids = (await db(TABLES.Coupon)
-      .where({ tenantId })
-      .whereIn('stripePromotionCodeId', promoIds.slice(i, i + 500))
-      .pluck('stripePromotionCodeId')) as string[];
-    for (const id of ids) partnerPromos.add(id);
+  // coupon minted for it. Deactivated codes too: what counts as a signal is
+  // that the code was a partner's when it was used. wouldCredit then asks
+  // whether it was still active.
+  const partnerPromos = new Map<string, PartnerCode>();
+  const partnerCoupons = new Map<string, PartnerCode>();
+  for (const [column, ids, into] of [
+    ['stripePromotionCodeId', promoIds, partnerPromos],
+    ['stripeCouponId', couponIds, partnerCoupons],
+  ] as const) {
+    for (const chunk of chunks(ids)) {
+      const rows = (await db(`${TABLES.Coupon} as k`)
+        .leftJoin(`${TABLES.Program} as pr`, function () {
+          this.on('pr.id', '=', 'k.programId').andOn('pr.tenantId', '=', 'k.tenantId');
+        })
+        .leftJoin(`${TABLES.Partner} as pa`, function () {
+          this.on('pa.id', '=', 'k.partnerId').andOn('pa.tenantId', '=', 'k.tenantId');
+        })
+        .where('k.tenantId', tenantId)
+        .whereIn(`k.${column}`, chunk)
+        .select(
+          'k.id as id',
+          'k.partnerId as partnerId',
+          `k.${column} as stripeId`,
+          'k.deactivatedAt as deactivatedAt',
+          'pa.revokedAt as revokedAt',
+          'pr.id as programFound',
+          'pr.attributionWindowDays as windowDays',
+          'pr.renewalsStayWithPartner as renewals',
+        )) as Array<{
+        id: string;
+        partnerId: string;
+        stripeId: string;
+        deactivatedAt: Date | null;
+        revokedAt: Date | null;
+        programFound: string | null;
+        windowDays: number | null;
+        renewals: boolean | null;
+      }>;
+      for (const r of rows) {
+        into.set(r.stripeId, {
+          id: r.id,
+          partnerId: r.partnerId,
+          deactivatedSec: r.deactivatedAt ? toSec(r.deactivatedAt) : null,
+          usable: r.revokedAt == null && r.programFound != null,
+          windowSec: (r.windowDays ?? 0) * 86_400,
+          renewals: r.renewals === true,
+        });
+      }
+    }
   }
-  const partnerCoupons = new Set<string>();
-  for (let i = 0; i < couponIds.length; i += 500) {
-    const ids = (await db(TABLES.Coupon)
-      .where({ tenantId })
-      .whereIn('stripeCouponId', couponIds.slice(i, i + 500))
-      .pluck('stripeCouponId')) as string[];
-    for (const id of ids) partnerCoupons.add(id);
+  const signalsOf = (p: StripePayment): PartnerSignal[] => {
+    const signals: PartnerSignal[] = [];
+    if (linkedBefore(userOf(p), p.paidAt)) signals.push('linked_customer');
+    if (p.clientReferenceId && knownClicks.has(p.clientReferenceId)) signals.push('partner_click');
+    if (p.discounts.some((d) => (d.promotionCode && partnerPromos.has(d.promotionCode)) || (d.coupon && partnerCoupons.has(d.coupon)))) {
+      signals.push('partner_code');
+    }
+    return signals;
+  };
+
+  // The customers' earlier credited conversions, which carry a renewal
+  // (priorConversions in attribution.ts). Only for payments with a signal:
+  // the rest are unreferred whatever their history.
+  const signalled = unrecorded.filter((p) => signalsOf(p).length > 0);
+  const creditedByUser = new Map<string, CreditedConversion[]>();
+  const before = new Date(now.getTime() + 60_000);
+  for (const ids of chunks([...new Set(signalled.map(userOf).filter((v): v is string => !!v))])) {
+    const rows = (await db(`${TABLES.Attribution} as a`)
+      .join(`${TABLES.Event} as e`, function () {
+        this.on('e.id', '=', 'a.eventId').andOn('e.tenantId', '=', 'a.tenantId');
+      })
+      .where('e.tenantId', tenantId)
+      .whereIn('e.userId', ids)
+      .andWhere('e.ts', '<', before)
+      .whereNotIn('e.type', [...CORRECTIVE_EVENT_TYPES])
+      .orderBy([
+        { column: 'e.ts', order: 'asc' },
+        { column: 'e.id', order: 'asc' },
+        { column: 'a.computedAt', order: 'asc' },
+        { column: 'a.id', order: 'asc' },
+      ])
+      .select('e.userId as userId', 'e.id as eventId', 'e.type as type', 'e.ts as ts', 'a.clickId as clickId', 'a.model as model')) as Array<{
+      userId: string;
+      eventId: string;
+      type: string;
+      ts: Date;
+      clickId: string;
+      model: string;
+    }>;
+    for (const r of rows) {
+      const list = creditedByUser.get(r.userId) ?? [];
+      const last = list[list.length - 1];
+      // One conversion's rows under its first-computed model, as
+      // priorConversions reads them.
+      if (last && last.eventId === r.eventId) {
+        if (r.model === last.model) last.clickIds.push(r.clickId);
+      } else {
+        list.push({ eventId: r.eventId, type: r.type, tsSec: toSec(r.ts), model: r.model, clickIds: [r.clickId] });
+      }
+      creditedByUser.set(r.userId, list);
+    }
   }
 
+  /**
+   * Would this payment have credited a partner had it been recorded?
+   * attributeEvent's decision, from the same rows: the usable clicks
+   * (not flagged, partner not revoked, program still there, not after the
+   * payment), one inside its program's window, and the customer's earlier
+   * credited conversions (priorConversions): the first of this type decides
+   * it when its program keeps renewals with the partner, and the latest of
+   * any type does when no click is left in the window.
+   */
+  const wouldCredit = (p: StripePayment): { credit: true } | { credit: false; reason: NotCreditableReason } => {
+    const at = p.paidAt;
+    const user = userOf(p);
+    const clicks = new Map<string, CandidateClick>();
+    for (const c of (user ? clicksByUser.get(user) : undefined) ?? []) clicks.set(c.id, c);
+    const carried = p.clientReferenceId ? knownClicks.get(p.clientReferenceId) : undefined;
+    if (carried) clicks.set(carried.id, carried);
+    const isUsable = (c: CandidateClick | undefined): c is CandidateClick => !!c && c.usable && c.tsSec <= at + CLICK_AFTER_EVENT_GRACE_SEC;
+    // A code credits through a click stamped at the redemption: this
+    // payment. Unless the customer already had a click of that partner's,
+    // which the redemption reuses instead, whatever its age or flag.
+    let inactiveCode = false;
+    for (const d of p.discounts) {
+      const code = (d.promotionCode ? partnerPromos.get(d.promotionCode) : undefined) ?? (d.coupon ? partnerCoupons.get(d.coupon) : undefined);
+      if (!code) continue;
+      if (code.deactivatedSec != null && code.deactivatedSec <= at) {
+        inactiveCode = true;
+        continue;
+      }
+      const hadOne = [...clicks.values()].some((c) => c.partnerId === code.partnerId && c.tsSec <= at + CLICK_AFTER_EVENT_GRACE_SEC);
+      if (hadOne) continue;
+      const id = `code:${code.id}`;
+      clicks.set(id, { id, partnerId: code.partnerId, tsSec: at, usable: code.usable, windowSec: code.windowSec, renewals: code.renewals });
+    }
+    const usable = [...clicks.values()].filter(isUsable);
+    const inWindow = usable.some((c) => at - c.tsSec <= c.windowSec);
+
+    let sameType: boolean | undefined;
+    let latest = false;
+    const prior = ((user ? creditedByUser.get(user) : undefined) ?? []).filter((c) => c.tsSec < at);
+    for (const conv of prior) {
+      const touches = conv.clickIds.map((id) => clicks.get(id)).filter(isUsable);
+      if (touches.length === 0) continue;
+      const control = touches.reduce((a, b) => (b.tsSec > a.tsSec ? b : a));
+      if (sameType === undefined && conv.type === PAYMENT_EVENT_TYPE) sameType = control.renewals;
+      latest = control.renewals;
+    }
+    // A first conversion of this type whose program lets renewals go is
+    // decided by the window alone, with no fallback.
+    const credit = sameType === undefined ? inWindow || latest : sameType || inWindow;
+    if (credit) return { credit: true };
+    return { credit: false, reason: usable.length > 0 ? 'outside_window' : inactiveCode ? 'inactive_code' : 'excluded' };
+  };
+
   const primary = await tenantDefaultCurrency(db, tenantId);
-  const counts = { payments: payments.length, credited: 0, recorded: 0, missed: 0, unreferred: 0 };
+  const counts = { payments: payments.length, credited: 0, recorded: 0, missed: 0, notCreditable: 0, unreferred: 0 };
+  const notCreditableReasons: Record<NotCreditableReason, number> = { outside_window: 0, inactive_code: 0, excluded: 0 };
   const totals = new Map<string, CurrencyTotals>();
   const missed: Array<MissedPayment & { createdSec: number }> = [];
   for (const p of payments) {
     const amount = fromStripeMinor(p.amountMinor, p.currency);
     const t =
       totals.get(p.currency) ??
-      { currency: p.currency, stripe: 0, recorded: 0, credited: 0, missed: 0, unreferred: 0 };
+      { currency: p.currency, stripe: 0, recorded: 0, credited: 0, missed: 0, notCreditable: 0, unreferred: 0 };
     totals.set(p.currency, t);
     t.stripe += amount;
 
@@ -404,13 +667,18 @@ export async function reconcileStripe(
       }
       continue;
     }
-    const signals: PartnerSignal[] = [];
-    if (linkedBefore(p.customerId, p.created) || linkedBefore(p.merchantUserId, p.created)) signals.push('linked_customer');
-    if (p.clientReferenceId && knownClicks.has(p.clientReferenceId)) signals.push('partner_click');
-    if (p.discounts.some((d) => (d.promotionCode && partnerPromos.has(d.promotionCode)) || (d.coupon && partnerCoupons.has(d.coupon)))) {
-      signals.push('partner_code');
+    const signals = signalsOf(p);
+    if (signals.length === 0) {
+      t.unreferred += amount;
+      counts.unreferred += 1;
+      continue;
     }
-    if (signals.length > 0) {
+    const verdict = wouldCredit(p);
+    if (!verdict.credit) {
+      t.notCreditable += amount;
+      counts.notCreditable += 1;
+      notCreditableReasons[verdict.reason] += 1;
+    } else {
       t.missed += amount;
       counts.missed += 1;
       missed.push({
@@ -423,9 +691,6 @@ export async function reconcileStripe(
         signals,
         dashboardUrl: dashboardUrl(p, opts.livemode),
       });
-    } else {
-      t.unreferred += amount;
-      counts.unreferred += 1;
     }
   }
 
@@ -436,6 +701,7 @@ export async function reconcileStripe(
     livemode: opts.livemode,
     truncated: invoices.truncated || checkouts.truncated,
     counts,
+    notCreditableReasons,
     totals: [...totals.values()]
       .map((t) => ({
         currency: t.currency,
@@ -443,6 +709,7 @@ export async function reconcileStripe(
         recorded: round2(t.recorded),
         credited: round2(t.credited),
         missed: round2(t.missed),
+        notCreditable: round2(t.notCreditable),
         unreferred: round2(t.unreferred),
       }))
       // The brand's default currency first, then by code: amounts in
