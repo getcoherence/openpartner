@@ -575,11 +575,13 @@ async function callNetwork<T>(
   path: string,
   body?: unknown,
   /** `rawContentType`: send a Buffer body as-is with this content-type
-   *  (image uploads) instead of JSON. */
-  opts?: { actingVendorPartnerId?: string; rawContentType?: string },
+   *  (image uploads) instead of JSON. `evenIfDisabled`: call with the stored
+   *  token when the membership is switched off, for reading back what the
+   *  Network already holds (the export); nothing that acts on the Network. */
+  opts?: { actingVendorPartnerId?: string; rawContentType?: string; evenIfDisabled?: boolean },
 ): Promise<T> {
   const m = await getNetworkMembership(db, tenantId);
-  if (!m || !m.enabled || !m.vendorTokenCiphertext) {
+  if (!m || (!m.enabled && !opts?.evenIfDisabled) || !m.vendorTokenCiphertext) {
     throw new NetworkProxyError(503, 'network_not_configured');
   }
   // Fall back to process.env.NETWORK_URL when the membership row has
@@ -648,6 +650,16 @@ export class NetworkProxyError extends Error {
     super(message);
     this.name = 'NetworkProxyError';
   }
+}
+
+/** GET /vendors/me/export (docs/network-protocol.md): Network rows keyed by
+ *  table name, minus what is the creator's, and the creators they name as
+ *  their public face. */
+export interface NetworkVendorExport {
+  exportedAt: string;
+  vendorId: string;
+  tables: Record<string, Array<Record<string, unknown>>>;
+  creators: Array<{ id: string; name: string | null; handle: string | null; avatarUrl: string | null }>;
 }
 
 // Thin wrappers — they're a 1:1 with Network endpoints. Kept here so
@@ -726,6 +738,12 @@ export const networkProxy = {
     ),
   postConversationMessage: (db: Knex, tenantId: string, id: string, body: unknown) =>
     callNetwork<{ message: unknown }>(db, tenantId, 'POST', `/vendors/me/conversations/${encodeURIComponent(id)}/messages`, body),
+  /** All of the above the Network holds for this brand: its conversations,
+   *  their messages, and its bookings with their payment records, for the
+   *  workspace export (export.ts exportNetwork). Also while the membership
+   *  is switched off: the records are still there, and still the brand's. */
+  exportVendorData: (db: Knex, tenantId: string) =>
+    callNetwork<NetworkVendorExport>(db, tenantId, 'GET', '/vendors/me/export', undefined, { evenIfDisabled: true }),
 
   /** Invite a creator to apply to one of this vendor's offerings.
    *  Network mints an OfferingInvitation + emails the creator a

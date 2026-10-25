@@ -22,6 +22,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { Knex } from 'knex';
 import { DEFAULT_TENANT_ID, TABLES } from '@openpartner/db';
+import { z } from './zod.js';
+import { getNetworkMembership, networkProxy, NetworkProxyError } from './network-client.js';
 import { mintSecret } from './webhook-secret.js';
 import { openForExport, sealForImport } from './payout-profile.js';
 import { openPostbackForExport, sealPostbackForImport } from './postback-url.js';
@@ -459,6 +461,75 @@ export async function exportAll(db: Knex, tenantId: string): Promise<Record<stri
     out[table] = await exportTable(db, table as ExportableTable, tenantId);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// The brand's records on the OpenPartner Network
+// ---------------------------------------------------------------------------
+
+/**
+ * What the Network holds for this brand and no local table has: its
+ * storefront conversations with creators, their messages, and its bookings
+ * with their payment records (GET /vendors/me/export, docs/network-protocol.md).
+ * The JSON bundle carries it as `network`, next to `tables`.
+ *
+ * A record, not a restore: the rows live on the Network, `POST /import`
+ * ignores the section, and the SQL dump doesn't carry it.
+ *
+ * The local export never depends on it. When the call fails, the section
+ * says `skipped` and why, so the file says what it's missing rather than
+ * looking complete.
+ */
+export type NetworkExportSection =
+  | { status: 'not_connected' }
+  | { status: 'skipped'; reason: string; httpStatus?: number }
+  | {
+      status: 'included';
+      exportedAt: string;
+      tables: Record<string, Array<Record<string, unknown>>>;
+      creators: Array<Record<string, unknown>>;
+    };
+
+const networkRows = z.array(z.record(z.string(), z.unknown()));
+
+/** The three tables must be there for the section to count as included;
+ *  a table the Network adds later travels too. */
+const networkExportSchema = z.object({
+  exportedAt: z.string().datetime(),
+  tables: z
+    .object({ Conversation: networkRows, ConversationMessage: networkRows, BookingRequest: networkRows })
+    .catchall(networkRows),
+  creators: z.array(z.object({ id: z.string() }).catchall(z.unknown())),
+});
+
+/** Failures that happen before the Network answers keep their own code;
+ *  anything the Network answered with is `network_error`. */
+const LOCAL_NETWORK_FAILURE = /^(network_unreachable|network_url_unresolvable|vendor_token_undecryptable)\b/;
+
+export async function exportNetwork(db: Knex, tenantId: string): Promise<NetworkExportSection> {
+  // A stored token is enough: a brand that switched the Network off still
+  // has its conversations and bookings there.
+  const membership = await getNetworkMembership(db, tenantId);
+  if (!membership?.vendorTokenCiphertext) return { status: 'not_connected' };
+  let skipped: Extract<NetworkExportSection, { status: 'skipped' }>;
+  try {
+    const parsed = networkExportSchema.safeParse(await networkProxy.exportVendorData(db, tenantId));
+    if (parsed.success) return { status: 'included', ...parsed.data };
+    skipped = { status: 'skipped', reason: 'invalid_response' };
+  } catch (err) {
+    if (err instanceof NetworkProxyError) {
+      const local = LOCAL_NETWORK_FAILURE.exec(err.message);
+      skipped = local ? { status: 'skipped', reason: local[1]! } : { status: 'skipped', reason: 'network_error', httpStatus: err.status };
+    } else if (err instanceof SyntaxError) {
+      // A 2xx body that isn't JSON.
+      skipped = { status: 'skipped', reason: 'invalid_response' };
+    } else {
+      // The body stopped arriving: the timeout, or a dropped connection.
+      skipped = { status: 'skipped', reason: 'network_unreachable' };
+    }
+  }
+  console.warn('[export] Network records skipped', { tenantId, reason: skipped.reason, httpStatus: skipped.httpStatus });
+  return skipped;
 }
 
 export function rowsToCsv(rows: Record<string, unknown>[]): string {

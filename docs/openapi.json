@@ -7557,14 +7557,67 @@
                 "additionalProperties": {}
               }
             }
+          },
+          "network": {
+            "$ref": "#/components/schemas/ExportNetworkSection"
           }
         },
         "required": [
           "exportedAt",
           "schemaVersion",
-          "tables"
+          "tables",
+          "network"
         ],
         "description": "The whole tenant, re-importable by a self-hosted instance (`POST /import`)."
+      },
+      "ExportNetworkSection": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "included",
+              "skipped",
+              "not_connected"
+            ],
+            "description": "`included`: the rows below came from the Network (also while the brand has the Network switched off). `skipped`: the call failed, so this file has none of it (see `reason`, and `httpStatus` when the Network answered). `not_connected`: the brand never finished connecting to the Network, so there is nothing to read."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why it was skipped: `network_unreachable`, `network_error` (with `httpStatus`), `invalid_response`, `network_url_unresolvable` or `vendor_token_undecryptable`."
+          },
+          "httpStatus": {
+            "type": "integer"
+          },
+          "exportedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "tables": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            },
+            "description": "Network rows by table: `Conversation`, `ConversationMessage` and `BookingRequest` (with its payment columns), minus what is the creator's. See docs/network-protocol.md."
+          },
+          "creators": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            },
+            "description": "The creators those rows name: `id`, `name`, `handle`, `avatarUrl`. Never their email."
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "description": "What the OpenPartner Network holds for the brand: its storefront conversations, their messages, and its bookings with their payments. A record: `POST /import` does not restore it."
       },
       "ImportResult": {
         "type": "object",
