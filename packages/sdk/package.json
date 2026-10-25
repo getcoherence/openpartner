@@ -1,6 +1,6 @@
 {
   "name": "@openpartner/sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "OpenPartner SDK. Browser client for click → identity stitching + Node server SDK for conversion events and attribution reads.",
   "type": "module",
   "main": "./dist/browser.cjs",
@@ -38,7 +38,8 @@
   "files": [
     "dist",
     "dist-global",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public"
