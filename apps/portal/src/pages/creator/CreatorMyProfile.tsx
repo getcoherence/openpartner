@@ -13,6 +13,7 @@ import {
 import { publicStorefrontUrl } from '../../lib/public-site.js';
 import { PasswordSection, type PasswordBody } from '../Account.js';
 import { creatorErrorCode } from './CreatorSignin.js';
+import { CreatorMessagesCard } from './CreatorReview.js';
 
 /** The creator portal talks to the Network through /api/creator-api. */
 export const creatorProfileAdapter: NetworkProfileAdapter = {
@@ -50,6 +51,7 @@ export function CreatorMyProfilePage() {
         />
       ) : null}
       <div style={{ height: 18 }} />
+      <CreatorMessagesCard />
       <CreatorPasswordCard pendingDeletion={!!(data as NetworkProfile & { pendingDeletionAt?: string | null })?.pendingDeletionAt} />
       <div style={{ height: 18 }} />
       <CreatorDangerZone email={data?.email ?? ''} pendingDeletionAt={(data as NetworkProfile & { pendingDeletionAt?: string | null })?.pendingDeletionAt ?? null} />

@@ -42,6 +42,9 @@ export interface Storefront {
   payments?: PaymentsView;
   handle: string | null;
   profileComplete: boolean;
+  /** Operator review: the public page exists only once 'approved'. Absent
+   *  on a Network before creator review. */
+  reviewStatus?: 'pending' | 'approved' | 'rejected';
   maxPackages: number;
   packages: OwnPackage[];
   /** The creator's platforms; absent on a Network before channel pitches. */
@@ -292,6 +295,8 @@ function BookingsCard({
   // package (the Network decides).
   const publicUrl = storefront.handle ? publicStorefrontUrl(storefront.handle) : null;
   const hasPublished = storefront.packages.some((p) => p.published);
+  // Not approved by an operator yet: no public page either.
+  const notApproved = !!storefront.reviewStatus && storefront.reviewStatus !== 'approved';
   const marketplace = (
     <a href={MARKETPLACE_CREATORS_URL} target="_blank" rel="noopener noreferrer" style={{ color: theme.accentText }}>
       OpenPartner marketplace
@@ -314,6 +319,8 @@ function BookingsCard({
               <>Bookings are on. Publish a package to show it on your public profile and list your storefront in the {marketplace}.</>
             ) : !storefront.profileComplete ? (
               <>Your packages and a request form go on your public profile, and into the {marketplace}, once your profile is complete.</>
+            ) : notApproved ? (
+              <>Your packages and a request form go on your public profile, and into the {marketplace}, once OpenPartner approves your profile.</>
             ) : (
               <>Your packages and a request form are on your public profile, and your storefront is listed in the {marketplace}. Brands sign in to OpenPartner before a request reaches you, you talk in Messages, and they pay before you start.</>
             )}
@@ -332,6 +339,12 @@ function BookingsCard({
         <div style={{ marginTop: 14, fontSize: 13, color: theme.warn, background: theme.warnSoft, borderRadius: theme.radiusSm, padding: '10px 12px' }}>
           Your profile isn&rsquo;t complete, so it has no public page yet and brands can&rsquo;t see your storefront.{' '}
           <Link to="/creator/profile" style={{ color: theme.warn, fontWeight: 600 }}>Finish your profile</Link>
+        </div>
+      ) : notApproved ? (
+        <div style={{ marginTop: 14, fontSize: 13, color: theme.textMuted, background: theme.surface2, borderRadius: theme.radiusSm, padding: '10px 12px' }}>
+          {storefront.reviewStatus === 'rejected'
+            ? 'Your profile wasn’t approved for the OpenPartner Network, so it has no public page and brands can’t see your storefront.'
+            : 'Your profile is in review. Your public page and storefront go live once OpenPartner approves it.'}
         </div>
       ) : (
         publicUrl && (

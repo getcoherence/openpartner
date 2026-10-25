@@ -25,6 +25,7 @@ import { CreatorBookingsPage } from './CreatorBookings.js';
 import { CreatorMessagesPage, CreatorThreadPage, useCreatorUnreadMessages } from './CreatorMessages.js';
 import { UnreadDot } from './conversation-shared.js';
 import { CreatorLocationPrompt, useCreatorLocationMissing } from './CreatorLocation.js';
+import { CreatorReviewBanners } from './CreatorReview.js';
 
 interface Whoami {
   creator: { id: string; name: string; email: string; handle: string | null; avatarUrl: string | null; bio: string | null } | null;
@@ -67,6 +68,9 @@ export function CreatorShell() {
         {isMobile && <CreatorMobileTopBar onMenu={() => setDrawerOpen(true)} />}
         <CreatorLocationGate isMobile={isMobile} />
         {!location.pathname.startsWith('/creator/profile') && <ProfileIncompleteBanner isMobile={isMobile} />}
+        {/* Everywhere, the profile page included: a message usually asks
+            for a profile change. */}
+        <CreatorReviewBanners isMobile={isMobile} />
         {/* Redirects are absolute on purpose: this shell sits on a splat
             route (/creator/*), where React Router 7 resolves a relative
             "discover" against the whole URL — /creator/a/b → /creator/a/b/discover,

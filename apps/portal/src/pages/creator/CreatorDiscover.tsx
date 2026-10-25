@@ -761,6 +761,8 @@ interface CreatorProfile {
   /** The Network's discovery bar. Absent on an older Network. */
   profileComplete?: boolean;
   profileMissing?: Array<{ field: string; label: string }>;
+  /** Operator review. Absent on an older Network. */
+  reviewStatus?: 'pending' | 'approved' | 'rejected';
 }
 
 interface RequestRow {
@@ -769,8 +771,8 @@ interface RequestRow {
 }
 
 /** Nudge for new creators: finish the profile (the Network's discovery
- *  bar, so brands can find them) and send a first application. Card
- *  disappears once both are done. */
+ *  bar, so brands can find them), get approved, and send a first
+ *  application. Card disappears once all are done. */
 function CreatorOnboarding() {
   const profile = useQuery({
     queryKey: ['creator-my-profile'],
@@ -792,7 +794,10 @@ function CreatorOnboarding() {
     profile.data.profileComplete ?? (!!profile.data.handle && !!profile.data.bio && profile.data.bio.length > 0);
   const missing = profile.data.profileMissing ?? [];
   const hasApplied = (requests.data?.requests ?? []).length > 0;
-  if (profileDone && hasApplied) return null;
+  // An older Network has no review step.
+  const review = profile.data.reviewStatus;
+  const approved = !review || review === 'approved';
+  if (profileDone && approved && hasApplied) return null;
 
   const items = [
     { done: true, label: 'Account created', href: null as string | null },
@@ -806,7 +811,28 @@ function CreatorOnboarding() {
           : 'Add a handle, photo, bio, a category, and a social platform.',
       href: '/creator/profile',
     },
-    { done: hasApplied, label: 'Apply to your first program', hint: 'Browse below and click "View & apply" on anything that fits.', href: null },
+    ...(review
+      ? [
+          {
+            done: approved,
+            label: 'Get approved by OpenPartner',
+            hint: approved
+              ? 'Your profile is approved.'
+              : review === 'rejected'
+                ? 'Your profile wasn’t approved for the OpenPartner Network.'
+                : 'We check every new creator profile before brands see it.',
+            href: null,
+          },
+        ]
+      : []),
+    {
+      done: hasApplied,
+      label: 'Apply to your first program',
+      hint: approved
+        ? 'Browse below and click "View & apply" on anything that fits.'
+        : 'You can apply once your profile is approved. Browse below in the meantime.',
+      href: null,
+    },
   ];
 
   return (

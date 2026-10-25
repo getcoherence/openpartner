@@ -9,7 +9,10 @@ import { categoryLabel } from '@openpartner/db';
 import { ListingBanner, ListingVideo, type OfferingVideo } from './ListingBanner.js';
 import {
   ProfileIncompleteNotice,
+  ProfileReviewNotice,
+  awaitingApproval,
   missingFromProfile,
+  notApprovedFrom,
   profileIncompleteFrom,
   type MissingProfileField,
   type ProfileCompleteness,
@@ -235,6 +238,7 @@ export function CreatorOfferingDetailPage() {
           setPreferredSlug={setPreferredSlug}
           apply={apply}
           profileMissing={missingFromProfile(myProfile)}
+          awaitingReview={awaitingApproval(myProfile)}
         />
       )}
     </Page>
@@ -261,6 +265,7 @@ function OfferingDetailBody({
   setPreferredSlug,
   apply,
   profileMissing,
+  awaitingReview,
 }: ApplyOrStatusProps) {
   const cats = offering.terms.categories ?? [];
   return (
@@ -396,6 +401,7 @@ function OfferingDetailBody({
               setPreferredSlug={setPreferredSlug}
               apply={apply}
               profileMissing={profileMissing}
+              awaitingReview={awaitingReview}
               embedded
             />
           </Card>
@@ -647,6 +653,9 @@ interface ApplyOrStatusProps {
   /** From the creator's profile checklist: non-null = the Network will
    *  refuse the application, so Apply is disabled up front. */
   profileMissing: MissingProfileField[] | null;
+  /** The creator's profile is still waiting for (or was refused) operator
+   *  approval, which the Network also refuses applications for. */
+  awaitingReview: boolean;
 }
 
 /** Brand mark used in the offering header. Sizable so the same component
@@ -701,7 +710,7 @@ function formatOfferingDuration(endsAt: string | null | undefined): string | nul
   })}`;
 }
 
-function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlug, setPreferredSlug, apply, profileMissing, embedded }: ApplyOrStatusProps & { embedded?: boolean }) {
+function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlug, setPreferredSlug, apply, profileMissing, awaitingReview, embedded }: ApplyOrStatusProps & { embedded?: boolean }) {
   // `embedded` skips the outer <Card> wrapper — the caller has already
   // wrapped this in their own Card so we just render bare contents.
   // We branch in render rather than synthesizing a wrapper component
@@ -742,6 +751,10 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
   // at submit time); the checklist lets us block before they write a pitch.
   const refusedMissing = profileIncompleteFrom(apply.error);
   const missing = refusedMissing ?? profileMissing;
+  // Review comes after the profile: an incomplete profile hears about that
+  // first, as the Network answers in that order.
+  const refusedReview = notApprovedFrom(apply.error);
+  const showReview = !missing && (refusedReview || awaitingReview);
   const inner = (
     <>
       {!embedded && <h3 style={{ marginTop: 0 }}>{offering.myStatus === 'rejected' ? 'Re-apply' : 'Apply to promote'}</h3>}
@@ -756,7 +769,8 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
           link={<Link to="/creator/profile" style={{ color: theme.accentText, fontWeight: 500 }}>Go to your profile →</Link>}
         />
       )}
-      {!refusedMissing && (
+      {showReview && <ProfileReviewNotice />}
+      {!refusedMissing && !refusedReview && (
         <ErrorBanner error={apply.error ? (countryErrorMessage(apply.error.message) ?? apply.error) : null} />
       )}
       {apply.error instanceof ApiError && apply.error.message === 'request_already_exists' && (
@@ -782,7 +796,7 @@ function ApplyOrStatusCard({ offering, whoami, message, setMessage, preferredSlu
       <div style={{ marginTop: 12 }}>
         {/* Only the checklist disables: after a refusal the creator can
             fix their profile in another tab and retry from here. */}
-        <Button onClick={() => apply.mutate()} disabled={apply.isPending || !!profileMissing}>
+        <Button onClick={() => apply.mutate()} disabled={apply.isPending || !!profileMissing || awaitingReview}>
           {apply.isPending ? 'Applying…' : 'Submit application'}
         </Button>
       </div>

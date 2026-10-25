@@ -43,11 +43,39 @@ export function profileIncompleteFrom(err: unknown): MissingProfileField[] | nul
   return Array.isArray(missing) ? missing.filter(isMissingField) : [];
 }
 
+/**
+ * True when `err` is the Network's review refusal:
+ *   403 { error: 'creator_not_approved' }
+ * A new creator can't apply until an OpenPartner operator approves their
+ * profile. Same two shapes as profile_incomplete above.
+ */
+export function notApprovedFrom(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const { status, detail } = err as { status?: unknown; detail?: unknown };
+  if (status !== 403 || !detail || typeof detail !== 'object') return false;
+  if ((detail as { error?: unknown }).error === 'creator_not_approved') return true;
+  const wrapped = (detail as { detail?: unknown }).detail;
+  return (
+    (detail as { error?: unknown }).error === 'network_call_failed' &&
+    typeof wrapped === 'string' &&
+    wrapped.includes('"creator_not_approved"')
+  );
+}
+
 /** Subset of GET /creators/me the apply pages read up front. */
 export interface ProfileCompleteness {
   profileComplete?: boolean;
   profileMissing?: MissingProfileField[];
   profileChecklist?: Array<MissingProfileField & { done: boolean }>;
+  /** Operator review. Only the creator's own session gets it (a brand
+   *  acting for its partner doesn't), and an older Network has none. */
+  reviewStatus?: 'pending' | 'approved' | 'rejected';
+}
+
+/** The creator's own profile says the Network will refuse an application
+ *  until an operator approves them. */
+export function awaitingApproval(profile: ProfileCompleteness | null | undefined): boolean {
+  return !!profile?.reviewStatus && profile.reviewStatus !== 'approved';
 }
 
 /** What's left before this profile can apply, or null when it can (or
@@ -79,6 +107,33 @@ export function ProfileIncompleteNotice({ missing, link }: { missing: MissingPro
         {missing.length > 0 ? <> Still missing: {missing.map((m) => m.label).join(', ')}.</> : null}
       </div>
       <div style={{ marginTop: 6 }}>{link}</div>
+    </div>
+  );
+}
+
+/** "You can apply once your profile is approved." For a rejected creator
+ *  too: "hasn't been approved" is true either way, and the reason reaches
+ *  them by email or as a message in their Network portal. */
+export function ProfileReviewNotice() {
+  return (
+    <div
+      role="status"
+      style={{
+        border: `1px solid ${theme.border}`,
+        borderLeft: `3px solid ${theme.info}`,
+        background: theme.infoSoft,
+        borderRadius: theme.radiusSm,
+        padding: 12,
+        margin: '0 0 12px',
+        fontSize: 13,
+        lineHeight: 1.55,
+      }}
+    >
+      <div style={{ fontWeight: 600, color: theme.text }}>Your profile hasn&rsquo;t been approved yet</div>
+      <div style={{ color: theme.textMuted, marginTop: 2 }}>
+        OpenPartner checks every new creator profile before brands see it. You can apply to programs once yours is
+        approved.
+      </div>
     </div>
   );
 }
