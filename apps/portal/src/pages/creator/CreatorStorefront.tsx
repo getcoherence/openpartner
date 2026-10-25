@@ -32,9 +32,14 @@ import {
   type StorefrontChannel,
   type StorefrontPackage,
 } from './storefront-shared.js';
+import { PaymentsCard, creatorErrorCode, usePayments, type PaymentsView } from './CreatorPayments.js';
 
 export interface Storefront {
   bookingsOpen: boolean;
+  /** Taking bookings now: bookings on AND a Stripe account that can take
+   *  card payments (the Network's docs/creator-storefront.md §8.2). */
+  storefrontOpen?: boolean;
+  payments?: PaymentsView;
   handle: string | null;
   profileComplete: boolean;
   maxPackages: number;
@@ -178,7 +183,13 @@ export function CreatorStorefrontPage() {
           </div>
         </Card>
       )}
-      <BookingsCard storefront={data} pending={toggle.isPending} onToggle={() => toggle.mutate(!data.bookingsOpen)} />
+      <PaymentsCard />
+      <BookingsCard
+        storefront={data}
+        pending={toggle.isPending}
+        error={toggle.error}
+        onToggle={() => toggle.mutate(!data.bookingsOpen)}
+      />
       {channels.length === 0 && (
         <Card>
           <div style={{ fontSize: 13, color: theme.textMuted }}>
@@ -260,7 +271,22 @@ export function CreatorStorefrontPage() {
   );
 }
 
-function BookingsCard({ storefront, pending, onToggle }: { storefront: Storefront; pending: boolean; onToggle: () => void }) {
+function BookingsCard({
+  storefront,
+  pending,
+  error,
+  onToggle,
+}: {
+  storefront: Storefront;
+  pending: boolean;
+  error: unknown;
+  onToggle: () => void;
+}) {
+  // Every booking is paid upfront into the creator's Stripe account, so
+  // bookings can't open without one (the Payments card connects it). The
+  // card's own read is the freshest; the storefront's is from page load.
+  const payments = usePayments();
+  const paymentsReady = payments.data?.ready ?? storefront.payments?.ready ?? true;
   // The storefront lives on the public site; the marketplace lists it there
   // while the creator has a public profile, bookings on and a published
   // package (the Network decides).
@@ -277,24 +303,31 @@ function BookingsCard({ storefront, pending, onToggle }: { storefront: Storefron
         <div style={{ flex: 1, minWidth: 220 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 15, fontWeight: 500 }}>Booking requests</span>
-            <StatusPill status={storefront.bookingsOpen ? 'active' : 'paused'} />
+            <StatusPill status={storefront.bookingsOpen && paymentsReady ? 'active' : 'paused'} />
           </div>
           <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 4 }}>
-            {!storefront.bookingsOpen ? (
+            {!paymentsReady ? (
+              <>Connect Stripe above first: brands pay you upfront for every booking. Then turn bookings on to show your packages and a request form on your public profile, and to list your storefront in the {marketplace}.</>
+            ) : !storefront.bookingsOpen ? (
               <>Turn on to show your packages and a request form on your public profile, and to list your storefront in the {marketplace} for brands to find.</>
             ) : !hasPublished ? (
               <>Bookings are on. Publish a package to show it on your public profile and list your storefront in the {marketplace}.</>
             ) : !storefront.profileComplete ? (
               <>Your packages and a request form go on your public profile, and into the {marketplace}, once your profile is complete.</>
             ) : (
-              <>Your packages and a request form are on your public profile, and your storefront is listed in the {marketplace}. Brands confirm their email before a request reaches you.</>
+              <>Your packages and a request form are on your public profile, and your storefront is listed in the {marketplace}. Brands sign in to OpenPartner before a request reaches you, you talk in Messages, and they pay before you start.</>
             )}
           </div>
         </div>
-        <Button variant={storefront.bookingsOpen ? 'secondary' : 'primary'} onClick={onToggle} disabled={pending}>
+        <Button
+          variant={storefront.bookingsOpen ? 'secondary' : 'primary'}
+          onClick={onToggle}
+          disabled={pending || (!storefront.bookingsOpen && !paymentsReady)}
+        >
           {storefront.bookingsOpen ? 'Pause bookings' : 'Turn on bookings'}
         </Button>
       </div>
+      <ErrorBanner error={creatorErrorCode(error) === 'payments_not_ready' ? 'Connect Stripe first: bookings are paid into your own Stripe account.' : error} />
       {!storefront.profileComplete ? (
         <div style={{ marginTop: 14, fontSize: 13, color: theme.warn, background: theme.warnSoft, borderRadius: theme.radiusSm, padding: '10px 12px' }}>
           Your profile isn&rsquo;t complete, so it has no public page yet and brands can&rsquo;t see your storefront.{' '}

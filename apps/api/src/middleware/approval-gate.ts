@@ -65,10 +65,13 @@ const GO_LIVE_ROUTES: GatedRoute[] = [
   { method: 'POST', test: (p) => p === '/bonuses' },
   // Opens the partner portal for a partner (routes/partner-signin-link.ts).
   { method: 'POST', test: (p) => /^\/partners(\/[^/]+)?\/signin-link$/.test(p) },
-  // Storefront bookings: booking leads to a new partner, approving pays one
-  // (through POST /bonuses).
+  // Storefront outreach (openpartner-network docs/creator-storefront.md
+  // §8): booking a creator or starting a conversation with one, and tracking
+  // a booking, which makes the creator a partner. A brand in review can still
+  // answer, pay and approve in a conversation its own claimed request opened.
   { method: 'POST', test: (p) => p === '/admin/network/bookings' },
-  { method: 'POST', test: (p) => /^\/admin\/network\/bookings\/[^/]+\/(approve|retry-payout)$/.test(p) },
+  { method: 'POST', test: (p) => p === '/admin/network/conversations' },
+  { method: 'POST', test: (p) => /^\/admin\/network\/bookings\/[^/]+\/track$/.test(p) },
   {
     method: 'POST',
     test: (p) => p === '/config/network',

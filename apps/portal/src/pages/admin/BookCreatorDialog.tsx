@@ -1,12 +1,16 @@
 /**
- * Book a creator from Discover creators or their storefront page: pick one of their storefront
- * packages (or a custom collaboration), the offering it's for, and the
- * amount you'll pay. The creator accepts in their inbox (becoming your
- * partner on that offering, with a tracked link), delivers the post, and
- * you approve it on Network → Bookings; the Network then pays the amount
- * as a bonus through your program.
+ * Request a booking from a creator's storefront: pick one of their packages
+ * (or a custom collaboration), say what you'd like and, if you know it, what
+ * you'll pay. It goes into your conversation with them (Network → Messages):
+ * they accept at a price or decline, you pay upfront through Stripe
+ * Checkout on their own Stripe account (the price plus OpenPartner's
+ * booking fee), they deliver, you approve.
+ *
+ * Optionally track it on one of your offerings: the creator then becomes
+ * your partner there, with a link you can measure. That adds a partner, so
+ * it needs an active plan.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { api, ApiError } from '../../api.js';
 import { Button, ErrorBanner, Input, Label, Select, Textarea } from '../../ui.js';
@@ -48,7 +52,12 @@ const ERROR_TEXT: Record<string, string> = {
   too_many_open_bookings: 'You already have the maximum of 3 open bookings with this creator.',
   offering_not_found: 'That offering isn’t published any more.',
   package_not_found: 'That package isn’t available any more.',
-  vendor_unreachable: 'The Network couldn’t reach your OpenPartner instance. Try again in a moment.',
+  conversation_blocked: 'This creator isn’t taking requests from your brand.',
+  amount_too_large: 'That amount is too large to charge in one payment.',
+  brand_pending_review: 'Your brand is still being reviewed. You can book creators once it’s approved.',
+  vendor_pending_review: 'Your brand is still being reviewed. You can book creators once it’s approved.',
+  plan_required: 'Tracking a booking adds the creator as your partner, which needs an active plan. Leave the offering empty to book without tracking.',
+  rate_limited: 'You’ve started a lot of conversations today. Try again tomorrow.',
 };
 
 export function BookCreatorDialog({
@@ -75,61 +84,37 @@ export function BookCreatorDialog({
   const packages = useMemo(() => storefront.data?.packages ?? [], [storefront.data]);
   const open = storefront.data?.bookingsOpen === true;
 
-  const [packageId, setPackageId] = useState('');
+  const [packageId, setPackageId] = useState<string | null>(null);
   const [offeringId, setOfferingId] = useState('');
-  const [amount, setAmount] = useState('');
-  const [currency, setCurrency] = useState('USD');
+  const [amount, setAmount] = useState<string | null>(null);
+  const [currency, setCurrency] = useState<string | null>(null);
   const [brief, setBrief] = useState('');
 
-  useEffect(() => {
-    if (!offeringId && published.length === 1) setOfferingId(published[0]!.id);
-  }, [offeringId, published]);
-
-  // Packages arrive after the dialog opens; apply the starting one once.
-  const [preselected, setPreselected] = useState(false);
-  useEffect(() => {
-    if (preselected || !initialPackageId || packages.length === 0) return;
-    setPreselected(true);
-    const p = packages.find((x) => x.id === initialPackageId);
-    if (!p) return;
-    setPackageId(p.id);
-    setCurrency(p.currency);
-    if (p.priceAmount != null) setAmount(String(p.priceAmount));
-  }, [preselected, initialPackageId, packages]);
-
-  // Picking a package fills in its price as the starting amount.
-  function pickPackage(id: string) {
-    setPackageId(id);
-    const p = packages.find((x) => x.id === id);
-    if (p) {
-      setCurrency(p.currency);
-      if (p.priceAmount != null) setAmount(String(p.priceAmount));
-    }
-  }
+  // The starting package (from its Book button), once packages load.
+  const pickedId = packageId ?? (initialPackageId && packages.some((p) => p.id === initialPackageId) ? initialPackageId : '');
+  const picked = packages.find((p) => p.id === pickedId) ?? null;
+  const fixedPrice = picked && picked.priceAmount != null && !picked.priceIsFrom ? picked.priceAmount : null;
+  const amountText = amount ?? (fixedPrice != null ? String(fixedPrice) : '');
+  const cur = currency ?? picked?.currency ?? 'USD';
 
   const book = useMutation({
     mutationFn: () =>
-      api<{ booking: { id: string } }>('/admin/network/bookings', {
+      api<{ booking: { id: string }; conversationId: string }>('/admin/network/bookings', {
         method: 'POST',
         body: {
           creatorId: creator.id,
-          offeringId,
-          packageId: packageId || null,
-          amount: Number(amount),
-          currency,
+          packageId: pickedId || null,
+          ...(offeringId ? { offeringId } : {}),
+          ...(amountText.trim() ? { amount: Number(amountText), currency: cur } : {}),
           brief: brief.trim(),
         },
       }),
   });
-  const authorize = useMutation({
-    mutationFn: () => api('/config/network/authorize-bonuses', { method: 'POST', body: {} }),
-    onSuccess: () => book.reset(),
-  });
 
-  const code = networkErrorCode(book.error);
-  const amountOk = /^\d{1,8}$/.test(amount.trim()) && Number(amount) >= 1;
-  const canBook = !!offeringId && amountOk && brief.trim().length >= 20 && !book.isPending;
-  const currencies = (PACKAGE_CURRENCIES as readonly string[]).includes(currency) ? PACKAGE_CURRENCIES : [currency, ...PACKAGE_CURRENCIES];
+  const code = networkErrorCode(book.error) ?? (book.error instanceof ApiError ? book.error.message : null);
+  const amountOk = amountText.trim() === '' || (/^\d{1,8}$/.test(amountText.trim()) && Number(amountText) >= 1);
+  const canBook = amountOk && brief.trim().length >= 20 && !book.isPending;
+  const currencies = (PACKAGE_CURRENCIES as readonly string[]).includes(cur) ? PACKAGE_CURRENCIES : [cur, ...PACKAGE_CURRENCIES];
 
   return (
     <div
@@ -152,10 +137,10 @@ export function BookCreatorDialog({
           overflow: 'auto',
         }}
       >
-        <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Book @{creator.handle}</div>
+        <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Request a booking from @{creator.handle}</div>
         <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 16px', lineHeight: 1.5 }}>
-          A tracked deal: when {creator.name} accepts, they become your partner on the offering with a tracked link.
-          After they deliver, approve it under Network → Bookings and the amount is paid as a bonus through your program.
+          {creator.name} accepts at a price or declines, in your conversation. You pay once they&rsquo;ve accepted, through
+          Stripe, straight to their own Stripe account, with OpenPartner&rsquo;s booking fee added on top.
         </p>
 
         {book.isSuccess ? (
@@ -171,11 +156,11 @@ export function BookCreatorDialog({
                 marginBottom: 14,
               }}
             >
-              Booking sent. {creator.name} has it in their inbox.
+              Request sent. {creator.name} has it in their messages.
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <TenantLink to="/admin/network/bookings" style={{ textDecoration: 'none' }}>
-                <Button>View bookings</Button>
+              <TenantLink to={`/admin/network/messages/${book.data.conversationId}`} style={{ textDecoration: 'none' }}>
+                <Button>Open the conversation</Button>
               </TenantLink>
               <Button onClick={onClose} variant="secondary">Close</Button>
             </div>
@@ -189,23 +174,17 @@ export function BookCreatorDialog({
           </>
         ) : (
           <>
-            {code === 'bonuses_scope_missing' ? (
-              <div style={{ background: alpha(theme.info, 0.08), border: `1px solid ${alpha(theme.info, 0.333)}`, borderRadius: theme.radiusSm, padding: 12, fontSize: 13, marginBottom: 14 }}>
-                <div style={{ marginBottom: 8 }}>
-                  Bookings are paid as bonuses through your program, and your Network connection doesn&rsquo;t have permission to record
-                  a bonus yet. Re-authorize once, then book again.
-                </div>
-                <ErrorBanner error={authorize.error} />
-                <Button size="sm" onClick={() => authorize.mutate()} disabled={authorize.isPending}>
-                  {authorize.isPending ? 'Authorizing…' : 'Re-authorize'}
-                </Button>
-              </div>
-            ) : (
-              book.error && <ErrorBanner error={code && ERROR_TEXT[code] ? ERROR_TEXT[code] : book.error} />
-            )}
+            {book.error && <ErrorBanner error={code && ERROR_TEXT[code] ? ERROR_TEXT[code] : book.error} />}
             <div style={{ marginBottom: 14 }}>
               <Label>Package</Label>
-              <Select value={packageId} onChange={(e) => pickPackage(e.target.value)}>
+              <Select
+                value={pickedId}
+                onChange={(e) => {
+                  setPackageId(e.target.value);
+                  setAmount(null);
+                  setCurrency(null);
+                }}
+              >
                 <option value="">Custom collaboration</option>
                 {packages.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -214,40 +193,34 @@ export function BookCreatorDialog({
                 ))}
               </Select>
             </div>
-            <div style={{ marginBottom: 14 }}>
-              <Label>Offering</Label>
-              {published.length === 0 ? (
-                <p style={{ fontSize: 13, color: theme.textMuted, margin: '6px 0 0' }}>
-                  No published offerings yet. <TenantLink to="/admin/network" style={{ color: theme.accentText }}>Publish one</TenantLink> first — the
-                  creator&rsquo;s tracked link points at it.
-                </p>
-              ) : (
-                <Select value={offeringId} onChange={(e) => setOfferingId(e.target.value)}>
-                  <option value="">— pick an offering —</option>
-                  {published.map((o) => (
-                    <option key={o.id} value={o.id}>{o.title}</option>
-                  ))}
-                </Select>
-              )}
-            </div>
-            <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, marginBottom: 14 }}>
+            <div className="op-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, marginBottom: 6 }}>
               <div>
-                <Label>Amount you&rsquo;ll pay</Label>
-                <Input value={amount} inputMode="numeric" aria-label="Amount" onChange={(e) => setAmount(e.target.value)} placeholder="500" />
+                <Label>Your price (optional)</Label>
+                <Input
+                  value={amountText}
+                  inputMode="numeric"
+                  aria-label="Amount"
+                  onChange={(e) => setAmount(e.target.value)}
+                  placeholder={picked?.priceAmount != null ? String(picked.priceAmount) : 'Let them name it'}
+                />
               </div>
               <div>
                 <Label>Currency</Label>
-                <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
+                <Select value={cur} onChange={(e) => setCurrency(e.target.value)}>
                   {currencies.map((c) => (
                     <option key={c} value={c}>{c}</option>
                   ))}
                 </Select>
               </div>
             </div>
-            {amount.trim() !== '' && !amountOk && (
-              <div style={{ fontSize: 13, color: theme.danger, marginTop: -6, marginBottom: 12 }}>Use a whole number, like 500.</div>
-            )}
-            <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, color: theme.textDim, marginBottom: 14 }}>
+              {!amountOk ? (
+                <span style={{ color: theme.danger }}>Use a whole number, like 500.</span>
+              ) : (
+                `${creator.name} can accept at this price or name their own. Nothing is charged until you pay.`
+              )}
+            </div>
+            <div style={{ marginBottom: 14 }}>
               <Label>Brief</Label>
               <Textarea
                 value={brief}
@@ -257,9 +230,22 @@ export function BookCreatorDialog({
                 placeholder="What you'd like the post to cover, links to include, and timing."
               />
             </div>
+            <div style={{ marginBottom: 16 }}>
+              <Label>Track it on an offering (optional)</Label>
+              <Select value={offeringId} onChange={(e) => setOfferingId(e.target.value)} disabled={published.length === 0}>
+                <option value="">{published.length === 0 ? 'No published offerings' : 'Don’t track it'}</option>
+                {published.map((o) => (
+                  <option key={o.id} value={o.id}>{o.title}</option>
+                ))}
+              </Select>
+              <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+                {creator.name} becomes your partner on it when they accept, with a tracked link, so you see what the post drives.
+                You can also add tracking later.
+              </div>
+            </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <Button onClick={() => book.mutate()} disabled={!canBook}>
-                {book.isPending ? 'Booking…' : 'Send booking'}
+                {book.isPending ? 'Sending…' : 'Send request'}
               </Button>
               <Button variant="secondary" onClick={onClose}>Cancel</Button>
             </div>

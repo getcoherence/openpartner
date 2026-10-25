@@ -141,10 +141,12 @@ describe('plan-required route matching', () => {
     // creator self-signup without ever activating a plan.
     expect(isPlanRequiredRoute('POST', '/partner-signup')).toBe(true);
     expect(isPlanRequiredRoute('POST', '/admin/network/requests/abc123/approve')).toBe(true);
-    // Storefront bookings: booking adds a partner, approving pays one.
-    expect(isPlanRequiredRoute('POST', '/admin/network/bookings')).toBe(true);
-    expect(isPlanRequiredRoute('POST', '/admin/network/bookings/bkr_1/approve')).toBe(true);
-    expect(isPlanRequiredRoute('POST', '/admin/network/bookings/bkr_1/retry-payout')).toBe(true);
+    // Storefront bookings carry their own fee, paid at Checkout; tracking
+    // one adds the creator as a partner.
+    expect(isPlanRequiredRoute('POST', '/admin/network/bookings/bkr_1/track')).toBe(true);
+    expect(isPlanRequiredRoute('POST', '/admin/network/bookings')).toBe(false);
+    expect(isPlanRequiredRoute('POST', '/admin/network/bookings/bkr_1/checkout')).toBe(false);
+    expect(isPlanRequiredRoute('POST', '/admin/network/bookings/bkr_1/approve')).toBe(false);
     expect(isPlanRequiredRoute('POST', '/admin/network/bookings/bkr_1/cancel')).toBe(false);
   });
 
