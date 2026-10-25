@@ -57,7 +57,9 @@ import {
   type BookingClaimPreview,
 } from '../network-client.js';
 import { bookingFeeBpsFor } from '../booking-fee.js';
+import { hasPassword, platformCredential } from '../passwords.js';
 import { autoEnrollBrandOnNetwork } from './signup.js';
+import { isAllowedOperator } from './platform-admin.js';
 
 export const bookingClaimsRouter = Router();
 
@@ -106,15 +108,19 @@ async function previewOrAnswer(token: string, res: Response): Promise<BookingCla
   }
 }
 
-/** Does this address already admin a brand? Then it signs in instead. */
-async function hasBrand(email: string): Promise<boolean> {
-  const row = await db(TABLES.Admin)
-    .join(TABLES.Tenant, `${TABLES.Tenant}.id`, `${TABLES.Admin}.tenantId`)
-    .whereRaw(`lower("${TABLES.Admin}"."email") = ?`, [email.toLowerCase()])
-    .whereNull(`${TABLES.Admin}.revokedAt`)
-    .andWhere(`${TABLES.Tenant}.status`, 'active')
-    .first(`${TABLES.Admin}.id`);
-  return !!row;
+/**
+ * Does this address already have an OpenPartner identity? Then it signs in
+ * the usual way: a 48-hour link only ever creates a new one, since /signup
+ * hands out a platform session for the address. Any Admin row counts
+ * (revoked, or on a suspended brand, too), as do operators (PlatformAdmin
+ * rows, PLATFORM_ADMIN_EMAILS) and a platform password.
+ */
+async function accountExists(email: string): Promise<boolean> {
+  const e = email.trim().toLowerCase();
+  if (await db(TABLES.Admin).whereRaw(`lower("email") = ?`, [e]).first('id')) return true;
+  if (await db(TABLES.PlatformAdmin).whereRaw(`lower("email") = ?`, [e]).first('id')) return true;
+  if (await isAllowedOperator(e)) return true;
+  return hasPassword(db, platformCredential(e));
 }
 
 /** A workspace address to start the form with: from the company, else the
@@ -148,7 +154,7 @@ bookingClaimsRouter.post('/booking-claims/preview', claimLimit, async (req, res)
     // The link was sent to this address, so showing it to whoever holds the
     // link is no disclosure; the form says the brand is created for it.
     email: preview.contactEmail,
-    accountExists: await hasBrand(preview.contactEmail),
+    accountExists: await accountExists(preview.contactEmail),
     suggested: { displayName: preview.company ?? '', slug: suggestSlug(preview.company, preview.contactEmail) },
   });
 });
@@ -164,7 +170,7 @@ bookingClaimsRouter.post('/booking-claims/signup', claimLimit, async (req, res) 
   if (!preview) return;
   const email = preview.contactEmail.toLowerCase();
   // An existing account signs in the usual way; this link only creates.
-  if (await hasBrand(email)) return res.status(409).json({ error: 'account_exists' });
+  if (await accountExists(email)) return res.status(409).json({ error: 'account_exists' });
 
   const location = await checkCountryAccess(db, {
     declared: body.data.country,

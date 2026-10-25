@@ -71,6 +71,8 @@ export interface CreatorBooking {
   deliveredAt: string | null;
   completedAt: string | null;
   paidAt: string | null;
+  /** The brand paid by a method that takes days to settle (bank debits). */
+  paymentProcessing?: boolean;
   refundedMinor: number;
   disputedAt: string | null;
 }
@@ -99,6 +101,7 @@ const ERRORS: Record<string, string> = {
   too_many_open_bookings: 'You already have 3 open bookings with this brand.',
   not_paid: 'The brand hasn’t paid yet. Deliver once the booking is paid.',
   not_withdrawable: 'This booking can’t be withdrawn now.',
+  payment_processing: 'The brand’s payment is processing, so this can’t be withdrawn. Refund it once it’s through if you need to.',
   not_refundable: 'This booking can’t be refunded.',
   already_refunded: 'This booking has already been refunded in full.',
   stripe_error: 'Stripe couldn’t do that just now. Try again, or refund from your Stripe Dashboard.',
@@ -396,7 +399,10 @@ function CreatorBookingCard({
       )}
 
       <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 10 }}>
-        {b.status === 'awaiting_payment' && (
+        {b.status === 'awaiting_payment' && b.paymentProcessing && (
+          <>{brand} paid by bank, which can take a few days to clear. Wait for it to clear before starting the work.</>
+        )}
+        {b.status === 'awaiting_payment' && !b.paymentProcessing && (
           <>Waiting for {brand} to pay. You&rsquo;re paid {b.amountMinor != null && b.currency ? formatMinor(b.amountMinor, b.currency) : priceShown} into your Stripe account, less Stripe&rsquo;s fees.</>
         )}
         {b.status === 'paid' && <>Paid {formatDate(b.paidAt)}. Mark it delivered once it&rsquo;s live.</>}
@@ -418,7 +424,7 @@ function CreatorBookingCard({
             Mark delivered
           </Button>
         )}
-        {b.status === 'awaiting_payment' && (
+        {b.status === 'awaiting_payment' && !b.paymentProcessing && (
           <Button
             variant="secondary"
             disabled={act.isPending}

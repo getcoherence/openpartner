@@ -21,6 +21,7 @@ export type BookingEvent =
   | 'declined'
   | 'withdrawn'
   | 'paid'
+  | 'payment_failed'
   | 'delivered'
   | 'completed'
   | 'cancelled'
@@ -132,6 +133,8 @@ export function eventText(
       return `${by ?? names.brand} cancelled the request`;
     case 'refunded':
       return `${by ?? names.creator} refunded the booking${m.body ? ` (${m.body.replace(/^Refunded /, '')})` : ''}`;
+    case 'payment_failed':
+      return 'The payment didn’t go through. The booking is waiting for payment again';
     case 'disputed':
       return 'The payment was disputed with the card issuer';
     case 'expired':

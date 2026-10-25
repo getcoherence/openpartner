@@ -989,11 +989,16 @@ settingsRouter.post('/admin/network/bookings', requireAuth, requireAdmin, async 
   if (bodyOf(req).offeringId && !hasActivePlan(await getTenantBillingState(db, tenantId))) {
     return res.status(402).json({ error: 'plan_required', detail: 'Tracking a booking adds the creator as a partner, which needs an active plan.' });
   }
+  // Only the booking's own fields come from the browser; who is acting and
+  // the fee rate are the server's to say.
+  const b = bodyOf(req);
+  const fields = Object.fromEntries(
+    (['creatorId', 'packageId', 'brief', 'amount', 'currency', 'offeringId'] as const).filter((k) => k in b).map((k) => [k, b[k]]),
+  );
   return proxy(
     req,
     res,
-    async (db, tenantId) =>
-      networkProxy.createBooking(db, tenantId, { ...bodyOf(req), ...(await actingAdmin(req)), ...(await feeRate(db, tenantId)) }),
+    async (db, tenantId) => networkProxy.createBooking(db, tenantId, { ...fields, ...(await actingAdmin(req)), ...(await feeRate(db, tenantId)) }),
     201,
   );
 });

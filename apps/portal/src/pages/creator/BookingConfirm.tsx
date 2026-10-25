@@ -23,7 +23,7 @@ import { PUBLIC_SITE_URL, publicStorefrontUrl } from '../../lib/public-site.js';
 import { CountryField, countryErrorMessage } from '../../lib/CountryField.js';
 import { withNext } from '../../lib/signin-next.js';
 
-interface ClaimPreview {
+export interface ClaimPreview {
   creator: { id: string; name: string; handle: string | null; avatarUrl: string | null };
   packageTitle: string | null;
   contactName: string;
@@ -39,7 +39,7 @@ interface SessionHome {
   kind?: string;
 }
 
-class ClaimError extends Error {
+export class ClaimError extends Error {
   constructor(public status: number, public code: string) {
     super(code);
   }
@@ -55,6 +55,11 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) throw new ClaimError(res.status, String(data.error ?? res.status));
   return data as T;
+}
+
+/** The request behind a link, for showing before anything is sent. */
+export function fetchClaimPreview(token: string): Promise<ClaimPreview> {
+  return post<ClaimPreview>('/booking-claims/preview', { token });
 }
 
 const LINK_ERRORS: Record<string, string> = {
@@ -84,7 +89,7 @@ export function BookingConfirmPage() {
 
   const preview = useQuery({
     queryKey: ['booking-claim-preview', token],
-    queryFn: () => post<ClaimPreview>('/booking-claims/preview', { token }),
+    queryFn: () => fetchClaimPreview(token),
     enabled: !!token,
     retry: false,
   });
@@ -130,7 +135,8 @@ export function BookingConfirmPage() {
                   <div style={{ fontSize: 14, color: theme.textMuted, marginTop: 6, lineHeight: 1.5 }}>
                     {p.packageTitle ? <>For <strong style={{ color: theme.text }}>{p.packageTitle}</strong>. </> : null}
                     You&rsquo;ll talk it through with {p.creator.name.split(' ')[0]} on OpenPartner, and pay through the booking once you
-                    agree, straight to their Stripe account. Neither of you sees the other&rsquo;s email address.
+                    agree, straight to their Stripe account. We don&rsquo;t share your email address with them; when you pay, Stripe
+                    shows them the name and email you pay with, as it does for any seller.
                   </div>
                 </div>
               </div>

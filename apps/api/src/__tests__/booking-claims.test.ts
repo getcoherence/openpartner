@@ -9,7 +9,8 @@
  *      no plan, activated, signed in (platform + tenant sessions), enrolled
  *      on the Network, and claims the request into it with the brand's
  *      booking fee rate (Revshare with no plan).
- *   3. An address that already has a brand must sign in instead.
+ *   3. An address that already has any identity here (an admin row, even
+ *      revoked; an operator; a platform password) must sign in instead.
  *   4. The brand's proxies send the signed-in admin and the fee rate;
  *      a brand in review can claim, write and pay but not reach out.
  *   5. Tracking a booking (an offering) needs a plan.
@@ -40,6 +41,7 @@ const { createSession } = await import('../auth-sessions.js');
 const { encryptSecret } = await import('../crypto.js');
 const { settleBackgroundScreeningsForTesting } = await import('../sanctions-screening.js');
 const { suggestSlug } = await import('../routes/booking-claims.js');
+const { platformCredential, setPassword } = await import('../passwords.js');
 
 const skipIntegration = !process.env.DATABASE_URL || process.env.INTEGRATION === 'skip';
 const app = createApp({ enableLogger: false });
@@ -47,6 +49,10 @@ const app = createApp({ enableLogger: false });
 const TOKEN = `opbk_${'a'.repeat(48)}`;
 const EXPIRED = `opbk_${'e'.repeat(48)}`;
 const REQUESTER = `grace-${ulid().slice(-6).toLowerCase()}@newbrand.test`;
+/** Links sent to addresses that already have some identity here. */
+const OTHER_TOKENS = new Map<string, string>(
+  ['revoked', 'operator', 'envop', 'password'].map((k, i) => [`opbk_${String(i + 1).repeat(48)}`, `${k}-${ulid().slice(-6).toLowerCase()}@other.test`]),
+);
 
 interface Call {
   method: string;
@@ -76,12 +82,13 @@ beforeAll(async () => {
         if (path === '/bookings/preview') {
           if (req.headers.authorization !== `Bearer ${NETWORK_ADMIN}`) return json(401, { error: 'unauthorized' });
           if (body?.token === EXPIRED) return json(410, { error: 'expired' });
-          if (body?.token !== TOKEN) return json(404, { error: 'invalid_or_used' });
+          const other = OTHER_TOKENS.get(String(body?.token));
+          if (body?.token !== TOKEN && !other) return json(404, { error: 'invalid_or_used' });
           return json(200, {
             creator: { id: 'crt_ada', name: 'Ada Lovelace', handle: 'ada', avatarUrl: null },
             packageTitle: 'Deep dive',
             contactName: 'Grace Hopper',
-            contactEmail: REQUESTER,
+            contactEmail: other ?? REQUESTER,
             company: 'New Brand Co',
             website: null,
             brief: 'A deep-dive post about our app, please.',
@@ -142,6 +149,9 @@ afterAll(async () => {
     await db(TABLES.PlatformSession).where({ email: REQUESTER }).del();
     const bundles = sessions.map((s) => s.bundleId).filter((b): b is string => !!b);
     if (bundles.length) await db(TABLES.PlatformSessionBundle).whereIn('id', bundles).del();
+    const others = [...OTHER_TOKENS.values()];
+    await db(TABLES.PlatformAdmin).whereIn('email', others).del();
+    await db(TABLES.PasswordCredential).where({ principalKind: 'platform' }).whereIn('principalId', others).del();
   }
   if (network) await new Promise<void>((r) => network.close(() => r()));
   await db.destroy();
@@ -227,6 +237,32 @@ describe.skipIf(skipIntegration)('booking claims', () => {
     expect(again).toMatchObject({ status: 409, body: { error: 'account_exists' } });
   });
 
+  it('any existing identity for the address signs in instead: a revoked admin, an operator, a platform password', async () => {
+    const [revoked, operator, envop, password] = [...OTHER_TOKENS.entries()];
+    // An admin revoked from a suspended brand.
+    const old = await brand();
+    await db(TABLES.Admin).where({ tenantId: old.tenantId }).update({ email: revoked![1], revokedAt: new Date() });
+    await db(TABLES.Tenant).where({ id: old.tenantId }).update({ status: 'suspended' });
+    // An ops-console operator, even a revoked one.
+    await db(TABLES.PlatformAdmin).insert({ id: ulid(), email: operator![1], name: 'Op', role: 'support', revokedAt: new Date() });
+    // An operator only in PLATFORM_ADMIN_EMAILS.
+    const before = process.env.PLATFORM_ADMIN_EMAILS;
+    process.env.PLATFORM_ADMIN_EMAILS = envop![1];
+    // A platform password with no brand left.
+    await setPassword(db, platformCredential(password![1]), 'correct horse battery staple');
+    try {
+      for (const [token] of [revoked!, operator!, envop!, password!]) {
+        expect((await request(app).post('/booking-claims/preview').send({ token })).body.accountExists).toBe(true);
+        const res = await request(app).post('/booking-claims/signup').send({ token, displayName: 'X', slug: `y${ulid().slice(-8).toLowerCase()}`, country: 'US' });
+        expect(res).toMatchObject({ status: 409, body: { error: 'account_exists' } });
+        expect(res.headers['set-cookie']).toBeUndefined();
+      }
+    } finally {
+      if (before === undefined) delete process.env.PLATFORM_ADMIN_EMAILS;
+      else process.env.PLATFORM_ADMIN_EMAILS = before;
+    }
+  });
+
   it('refuses reserved and taken workspace addresses, and countries it does not serve', async () => {
     expect((await request(app).post('/booking-claims/signup').send({ token: TOKEN, displayName: 'X', slug: 'admin', country: 'US' })).body).toEqual({
       error: 'slug_reserved',
@@ -271,9 +307,19 @@ describe.skipIf(skipIntegration)('brand proxies', () => {
     expect(start.status).toBe(201);
     expect(last('/vendors/me/conversations')!.body).toEqual({ creatorId: 'crt_ada', body: 'Hi Ada!', authorName: 'Owen Owner', authorEmail: b.email });
 
-    const book = await request(app).post(`/t/${b.slug}/admin/network/bookings`).set('Cookie', b.cookie).send({ creatorId: 'crt_ada', brief: 'A deep-dive post, please, in November.' });
+    // The browser can't set the fee rate or who is acting.
+    const book = await request(app)
+      .post(`/t/${b.slug}/admin/network/bookings`)
+      .set('Cookie', b.cookie)
+      .send({ creatorId: 'crt_ada', brief: 'A deep-dive post, please, in November.', bookingFeeBps: 0, authorEmail: 'someone@else.test', extra: 'x' });
     expect(book.status).toBe(201);
-    expect(last('/vendors/me/bookings')!.body).toMatchObject({ creatorId: 'crt_ada', authorEmail: b.email, bookingFeeBps: 1000 });
+    expect(last('/vendors/me/bookings')!.body).toEqual({
+      creatorId: 'crt_ada',
+      brief: 'A deep-dive post, please, in November.',
+      authorName: 'Owen Owner',
+      authorEmail: b.email,
+      bookingFeeBps: 1000,
+    });
 
     const tracked = await request(app)
       .post(`/t/${b.slug}/admin/network/bookings`)

@@ -6,8 +6,10 @@
  *   - /booking/confirm: a public requester continues as a brand: a new
  *     address names its brand there; a signed-in brand admin sends it as
  *     that brand; an address with an account signs in first.
+ *   - The brand's claim page shows the request and sends it only on a click.
  *   - The brand's thread: a creator's offer shows the price, the booking
- *     fee and the total, and Pay opens Checkout for it.
+ *     fee and the total, and Pay opens Checkout for it; a payment still
+ *     processing replaces Pay, and the return banner follows the booking.
  *   - The creator's thread: accepting needs a Stripe account that can take
  *     payments, and sends the creator's price.
  */
@@ -16,7 +18,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { BrowserRouter, Route, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BookingConfirmPage } from '../pages/creator/BookingConfirm.js';
-import { AdminNetworkThread } from '../pages/admin/NetworkMessages.js';
+import { AdminNetworkClaim, AdminNetworkThread } from '../pages/admin/NetworkMessages.js';
 import { CreatorThreadPage } from '../pages/creator/CreatorMessages.js';
 
 const TOKEN = `opbk_${'a'.repeat(48)}`;
@@ -139,6 +141,35 @@ describe('/booking/confirm', () => {
   });
 });
 
+describe('brand claim page', () => {
+  it('shows the request and sends it as the brand only on a click', async () => {
+    routes['POST /api/booking-claims/preview'] = () => [200, PREVIEW];
+    routes['POST /api/t/acme/admin/network/bookings/claim'] = () => [201, { conversationId: 'cnv_9' }];
+    renderAt(
+      `/t/acme/admin/network/claim?token=${TOKEN}`,
+      <>
+        <Route path="/t/:slug/admin/network/claim" element={<AdminNetworkClaim />} />
+        <Route path="/t/:slug/admin/network/messages/:id" element={<div>thread page</div>} />
+      </>,
+    );
+    expect(await screen.findByText('A deep-dive post about our app, please.')).toBeTruthy();
+    expect(screen.getByText('To Ada Lovelace')).toBeTruthy();
+    expect(sent.some((s) => s.url.endsWith('/bookings/claim'))).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Send as your brand' }));
+    expect(await screen.findByText('thread page')).toBeTruthy();
+    expect(window.location.pathname).toBe('/t/acme/admin/network/messages/cnv_9');
+    expect(sent.find((s) => s.url.endsWith('/bookings/claim'))!.body).toEqual({ token: TOKEN });
+  });
+
+  it('explains a brand in review that already talks to another creator', async () => {
+    routes['POST /api/booking-claims/preview'] = () => [200, PREVIEW];
+    routes['POST /api/t/acme/admin/network/bookings/claim'] = () => [403, { error: 'vendor_pending_review' }];
+    renderAt(`/t/acme/admin/network/claim?token=${TOKEN}`, <Route path="/t/:slug/admin/network/claim" element={<AdminNetworkClaim />} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Send as your brand' }));
+    expect(await screen.findByText(/it can talk to one creator only/)).toBeTruthy();
+  });
+});
+
 const OFFER = {
   id: 'bkr_1',
   conversationId: 'cnv_1',
@@ -188,6 +219,38 @@ describe('brand thread', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Pay $2,200' }));
     await waitFor(() => expect(sent.some((s) => s.url.endsWith('/bookings/bkr_1/checkout'))).toBe(true));
     expect(sent.find((s) => s.url.endsWith('/checkout'))!.body).toEqual({ returnPath: '/admin/network/messages/cnv_1' });
+  });
+
+  it('says a payment is processing instead of offering Pay, and the return banner follows the booking', async () => {
+    let booking: Record<string, unknown> = { ...OFFER, paymentProcessing: true };
+    routes['GET /api/t/acme/admin/network/conversations/cnv_1'] = () => [
+      200,
+      {
+        conversation: { id: 'cnv_1', creator: OFFER.creator, blocked: false, canWrite: true, cannotWriteReason: null, canBook: true },
+        messages: [{ id: 'cnm_2', author: 'creator', authorName: null, kind: 'event', body: null, event: 'offered', bookingId: 'bkr_1', createdAt: '2026-10-25T10:00:00Z' }],
+        hasMore: false,
+        bookings: [booking],
+      },
+    ];
+    routes['POST /api/t/acme/admin/network/bookings/bkr_1/sync'] = () => [200, { booking }];
+    renderAt(
+      '/t/acme/admin/network/messages/cnv_1?booking=bkr_1&checkout=success',
+      <Route path="/t/:slug/admin/network/messages/:id" element={<AdminNetworkThread />} />,
+    );
+    expect(await screen.findByText(/Your payment is processing/)).toBeTruthy();
+    expect(screen.getByText(/^Payment processing\./)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Pay/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Decline offer' })).toBeNull();
+    expect(screen.queryByText(/Payment received/)).toBeNull();
+    await waitFor(() => expect(sent.some((s) => s.url.endsWith('/bookings/bkr_1/sync'))).toBe(true));
+    cleanup();
+
+    booking = { ...OFFER, status: 'paid', paidAt: '2026-10-25T11:00:00Z' };
+    renderAt(
+      '/t/acme/admin/network/messages/cnv_1?booking=bkr_1&checkout=success',
+      <Route path="/t/:slug/admin/network/messages/:id" element={<AdminNetworkThread />} />,
+    );
+    expect(await screen.findByText(/Payment received\. Ada Lovelace has been told/)).toBeTruthy();
   });
 
   it('explains why it cannot write when the creator blocked the brand', async () => {

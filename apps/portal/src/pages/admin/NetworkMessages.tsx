@@ -34,6 +34,7 @@ import {
   type ConversationMessage,
   type LastMessage,
 } from '../creator/conversation-shared.js';
+import { ClaimError, fetchClaimPreview } from '../creator/BookingConfirm.js';
 import { BookCreatorDialog, networkErrorCode } from './BookCreatorDialog.js';
 import { DeliveryChecksPanel, type DeliveryChecks } from './DeliveryChecks.js';
 
@@ -74,6 +75,8 @@ export interface VendorBooking {
   partnerId: string | null;
   createdAt: string;
   paidAt: string | null;
+  /** Checkout finished but the payment hasn't settled (bank debits). */
+  paymentProcessing?: boolean;
   deliveredAt: string | null;
   completedAt: string | null;
   refundedMinor: number;
@@ -108,6 +111,7 @@ const ACTION_ERRORS: Record<string, string> = {
   conversation_blocked: 'This creator isn’t taking messages or bookings from you.',
   not_awaiting_payment: 'This booking isn’t waiting for payment any more.',
   already_paid: 'This booking is already paid.',
+  payment_processing: 'Your payment is still processing. This updates once it’s through.',
   amount_too_large: 'That amount is too large to charge in one payment.',
   creator_unavailable: 'This creator is no longer on the Network.',
   vendor_rejected: 'Your brand can’t book creators.',
@@ -199,7 +203,7 @@ export function AdminNetworkThread() {
   const [older, setOlder] = useState<ConversationMessage[]>([]);
   const [olderHasMore, setOlderHasMore] = useState<boolean | null>(null);
   const [booking, setBooking] = useState(false);
-  const [paidBanner, setPaidBanner] = useState(false);
+  const [returned, setReturned] = useState<string | null>(null);
 
   const thread = useQuery({
     queryKey: ['admin-network-thread', id],
@@ -221,7 +225,7 @@ export function AdminNetworkThread() {
     next.delete('checkout');
     setParams(next, { replace: true });
     if (outcome !== 'success') return;
-    setPaidBanner(true);
+    setReturned(bookingId);
     void api(`/admin/network/bookings/${encodeURIComponent(bookingId)}/sync`, { method: 'POST', body: {} })
       .catch(() => undefined)
       .finally(refresh);
@@ -254,6 +258,20 @@ export function AdminNetworkThread() {
   const names = { creator: creator?.name ?? 'The creator', brand: 'You' };
   const messages = [...older, ...t.messages];
   const bookings = new Map(t.bookings.map((b) => [b.id, b]));
+  // Back from Checkout: say what the booking says, not what the return URL does.
+  const back = returned ? bookings.get(returned) : undefined;
+  const banner = !back
+    ? null
+    : back.paidAt
+      ? { tone: 'success' as const, text: `Payment received. ${names.creator} has been told, and can start now.` }
+      : back.status === 'awaiting_payment'
+        ? {
+            tone: 'info' as const,
+            text: back.paymentProcessing
+              ? 'Your payment is processing. Bank payments can take a few days; the booking is confirmed once it’s through.'
+              : 'We’re confirming your payment with Stripe. This page updates once it’s through.',
+          }
+        : null;
 
   return (
     <Page
@@ -275,9 +293,20 @@ export function AdminNetworkThread() {
           ← All messages
         </TenantLink>
       </div>
-      {paidBanner && (
-        <div style={{ background: theme.successSoft, border: `1px solid ${alpha(theme.success, 0.333)}`, color: theme.success, borderRadius: theme.radiusSm, padding: '10px 12px', fontSize: 13, marginBottom: 12 }}>
-          Payment received. {names.creator} has been told, and can start now.
+      {banner && (
+        <div
+          role="status"
+          style={{
+            background: banner.tone === 'success' ? theme.successSoft : theme.surface2,
+            border: `1px solid ${banner.tone === 'success' ? alpha(theme.success, 0.333) : theme.borderSubtle}`,
+            color: banner.tone === 'success' ? theme.success : theme.textMuted,
+            borderRadius: theme.radiusSm,
+            padding: '10px 12px',
+            fontSize: 13,
+            marginBottom: 12,
+          }}
+        >
+          {banner.text}
         </div>
       )}
       <Card>
@@ -386,7 +415,10 @@ function VendorBookingCard({
 
       <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 10 }}>
         {b.status === 'pending' && <>Waiting for {creatorName} to accept and name the price.</>}
-        {b.status === 'awaiting_payment' && lines && (
+        {b.status === 'awaiting_payment' && b.paymentProcessing && (
+          <>Payment processing. Bank payments can take a few days; the booking is confirmed once it&rsquo;s through.</>
+        )}
+        {b.status === 'awaiting_payment' && !b.paymentProcessing && lines && (
           <>
             You pay <strong style={{ color: theme.text }}>{lines.total}</strong>: {lines.price} to {creatorName} and the {lines.fee} OpenPartner booking fee. The
             booking is confirmed once you pay, and {creatorName} starts then. Payment goes to {creatorName}&rsquo;s own Stripe account.
@@ -395,13 +427,13 @@ function VendorBookingCard({
         {b.status === 'paid' && <>Paid {formatDate(b.paidAt)}. {creatorName} is working on it and marks it delivered once it&rsquo;s live.</>}
         {b.status === 'delivered' && <>Delivered {formatDate(b.deliveredAt)}. Approve it once you&rsquo;re happy; it completes by itself after 14 days.</>}
         {b.status === 'completed' && <>Completed {formatDate(b.completedAt)}.</>}
-        {b.status === 'refunded' && b.currency && <>Refunded {formatMinor(b.refundedMinor, b.currency)} to your card, booking fee included.</>}
+        {b.status === 'refunded' && b.currency && <>Refunded {formatMinor(b.refundedMinor, b.currency)}, booking fee included.</>}
         {b.status !== 'refunded' && b.refundedMinor > 0 && b.currency && <> {formatMinor(b.refundedMinor, b.currency)} refunded so far.</>}
         {b.disputedAt && <> The payment is disputed with your card issuer.</>}
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        {b.status === 'awaiting_payment' && (
+        {b.status === 'awaiting_payment' && !b.paymentProcessing && (
           <Button onClick={() => pay.mutate()} disabled={pay.isPending || pay.isSuccess}>
             {pay.isPending || pay.isSuccess ? 'Opening Checkout…' : `Pay ${lines?.total ?? ''}`.trim()}
           </Button>
@@ -416,7 +448,7 @@ function VendorBookingCard({
             Approve
           </Button>
         )}
-        {(b.status === 'pending' || b.status === 'awaiting_payment') && (
+        {(b.status === 'pending' || (b.status === 'awaiting_payment' && !b.paymentProcessing)) && (
           <Button
             variant="secondary"
             disabled={act.isPending}
@@ -500,47 +532,96 @@ function TrackControl({ booking, onTracked, billingHref }: { booking: VendorBook
   );
 }
 
+const CLAIM_ERRORS: Record<string, string> = {
+  invalid_or_used: 'This request has already been sent, or the link isn’t valid.',
+  expired: 'This link has expired. Send your request again from the creator’s page.',
+  creator_unavailable: 'This creator isn’t taking bookings right now.',
+  vendor_rejected: 'Your brand can’t book creators.',
+  vendor_pending_review: 'Your brand is still being reviewed. Until it’s approved, it can talk to one creator only.',
+  conversation_blocked: 'This creator isn’t taking requests from your brand.',
+  too_many_open_bookings: 'You already have the maximum of 3 open bookings with this creator.',
+  rate_limited: 'Your brand has started a lot of conversations today. Try again tomorrow.',
+  network_not_configured: 'Your brand isn’t connected to the OpenPartner Network yet.',
+};
+
 /** /admin/network/claim?token=… — where a public request continues for a
- *  signed-in brand (the landing page /booking/confirm sends them here). */
+ *  signed-in brand (the landing page /booking/confirm sends them here). It
+ *  shows the request, and sends it as this brand only on a click: the link
+ *  may have come from someone else's inbox. */
 export function AdminNetworkClaim() {
   const [params] = useSearchParams();
   const nav = useNavigate();
   const base = useTenantBase();
   const token = params.get('token') ?? '';
+  const preview = useQuery({
+    queryKey: ['booking-claim-preview', token],
+    queryFn: () => fetchClaimPreview(token),
+    enabled: !!token,
+    retry: false,
+  });
   const claim = useMutation({
     mutationFn: () => api<{ conversationId: string }>('/admin/network/bookings/claim', { method: 'POST', body: { token } }),
     onSuccess: (r) => nav(`${base}/admin/network/messages/${r.conversationId}`, { replace: true }),
   });
-  // Signed in to the app already, so no link scanner can get here: claim
-  // straight away.
-  useEffect(() => {
-    if (token && claim.isIdle) claim.mutate();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
   const code = networkErrorCode(claim.error) ?? (claim.error instanceof ApiError ? claim.error.message : null);
-  const text: Record<string, string> = {
-    invalid_or_used: 'This request has already been sent, or the link isn’t valid.',
-    expired: 'This link has expired. Send your request again from the creator’s page.',
-    creator_unavailable: 'This creator isn’t taking bookings right now.',
-    vendor_rejected: 'Your brand can’t book creators.',
-    conversation_blocked: 'This creator isn’t taking requests from your brand.',
-    too_many_open_bookings: 'You already have the maximum of 3 open bookings with this creator.',
-    network_not_configured: 'Your brand isn’t connected to the OpenPartner Network yet.',
-  };
+  const previewCode = preview.error instanceof ClaimError ? preview.error.code : null;
+  const p = preview.data;
   return (
     <Page title="Send your request">
       <Card>
         {!token ? (
           <div style={{ fontSize: 14, color: theme.textMuted }}>This link is missing its request.</div>
-        ) : claim.isError ? (
+        ) : claim.isError || preview.isError ? (
           <>
-            <ErrorBanner error={code && text[code] ? text[code] : claim.error} />
+            <ErrorBanner
+              error={
+                claim.isError
+                  ? code && CLAIM_ERRORS[code]
+                    ? CLAIM_ERRORS[code]
+                    : claim.error
+                  : (previewCode && CLAIM_ERRORS[previewCode]) || 'This request can’t be loaded. Try again in a moment.'
+              }
+            />
             <TenantLink to="/admin/network/messages" style={{ fontSize: 13, color: theme.accentText }}>
               Go to your messages
             </TenantLink>
           </>
+        ) : !p ? (
+          <div style={{ fontSize: 14, color: theme.textMuted }}>Loading…</div>
         ) : (
-          <div style={{ fontSize: 14, color: theme.textMuted }}>Sending your request…</div>
+          <>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+              <Face name={p.creator.name} src={p.creator.avatarUrl} />
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 500 }}>To {p.creator.name}</div>
+                {p.packageTitle && <div style={{ fontSize: 13, color: theme.textMuted }}>For {p.packageTitle}</div>}
+              </div>
+            </div>
+            <blockquote
+              style={{
+                borderLeft: `3px solid ${theme.border}`,
+                margin: '14px 0 0',
+                padding: '2px 0 2px 12px',
+                fontSize: 13,
+                color: theme.textMuted,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}
+            >
+              {p.brief}
+            </blockquote>
+            <div style={{ fontSize: 13, color: theme.textMuted, margin: '14px 0', lineHeight: 1.5 }}>
+              It goes out from your brand, under your name, and opens a conversation with {p.creator.name.split(' ')[0]} in Messages.
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <Button onClick={() => claim.mutate()} disabled={claim.isPending || claim.isSuccess}>
+                {claim.isPending || claim.isSuccess ? 'Sending…' : 'Send as your brand'}
+              </Button>
+              <TenantLink to="/admin/network/messages" style={{ textDecoration: 'none' }}>
+                <Button variant="secondary">Not now</Button>
+              </TenantLink>
+            </div>
+          </>
         )}
       </Card>
     </Page>
@@ -576,7 +657,7 @@ export function MessageCreatorDialog({ creator, onClose }: { creator: { id: stri
       <div style={{ background: theme.surface, border: `1px solid ${theme.borderSubtle}`, borderRadius: theme.radiusSm, padding: 24, maxWidth: 520, width: '92%' }}>
         <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Message {creator.name}</div>
         <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 14px', lineHeight: 1.5 }}>
-          Ask about dates, formats or a custom deal. {creator.name} answers here on OpenPartner; neither of you sees the other&rsquo;s email address.
+          Ask about dates, formats or a custom deal. {creator.name} answers here on OpenPartner, and we don&rsquo;t share your email address with them.
         </p>
         <ErrorBanner error={start.error ? (code && text[code] ? text[code] : start.error) : null} />
         <Composer onSend={(body) => start.mutateAsync(body)} pending={start.isPending} placeholder={`Hi ${creator.name.split(' ')[0]}, …`} />
