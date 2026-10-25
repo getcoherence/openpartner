@@ -150,7 +150,7 @@ describe('ops console: creator review', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(requests.some((r) => r.path === '/platform-admin/creators/fyhgj/messages')).toBe(true));
     const sent = requests.find((r) => r.path === '/platform-admin/creators/fyhgj/messages')!;
-    expect(sent.body).toEqual({ body: box.value.trim(), email: true });
+    expect(sent.body).toEqual({ body: box.value.trim(), email: true, idempotencyKey: expect.any(String) });
     expect(await screen.findByText('Message sent to نتنتم and emailed.')).toBeTruthy();
     // The form closes once it's sent.
     expect(screen.queryByPlaceholderText('Write to the creator…')).toBeNull();

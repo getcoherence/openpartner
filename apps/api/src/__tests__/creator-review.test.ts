@@ -150,7 +150,7 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe.skipIf(skipIntegration)('GET /platform-admin/creators', () => {
-  it('adds pending creators beyond the newest page, once each', async () => {
+  it('adds complete pending creators beyond the newest page, once each', async () => {
     const op = await makeOperator('support');
     netHandler = (call) =>
       call.path.includes('review=pending')
@@ -159,7 +159,7 @@ describe.skipIf(skipIntegration)('GET /platform-admin/creators', () => {
     const res = await request(app).get('/platform-admin/creators').set('Cookie', op.cookie);
     expect(res.status).toBe(200);
     expect(res.body.creators.map((c: { id: string }) => c.id)).toEqual(['crt_new', 'crt_old', 'crt_held']);
-    expect(netCalls.map((c) => c.path).sort()).toEqual(['/admin/creators?limit=500', '/admin/creators?limit=500&review=pending']);
+    expect(netCalls.map((c) => c.path).sort()).toEqual(['/admin/creators?limit=500', '/admin/creators?limit=500&review=pending&complete=true']);
   });
 });
 
@@ -275,6 +275,30 @@ describe.skipIf(skipIntegration)('creator messages', () => {
     expect((netCalls.at(-1)!.body as { email: boolean }).email).toBe(false);
   });
 
+  it('passes the send key through, and audits a replay only once', async () => {
+    const admin = await makeOperator('admin');
+    netHandler = () => ({ status: 201, body: { ok: true, message: { ...MESSAGE, id: 'cmsg_key' }, emailed: true } });
+    const first = await request(app)
+      .post('/platform-admin/creators/crt_k/messages')
+      .set('Cookie', admin.cookie)
+      .send({ body: 'hello', idempotencyKey: 'send_0123456789' });
+    expect(first.status).toBe(201);
+    expect((netCalls.at(-1)!.body as { idempotencyKey: string }).idempotencyKey).toBe('send_0123456789');
+
+    netHandler = () => ({ status: 200, body: { ok: true, message: { ...MESSAGE, id: 'cmsg_key' }, emailed: true, replayed: true } });
+    const retry = await request(app)
+      .post('/platform-admin/creators/crt_k/messages')
+      .set('Cookie', admin.cookie)
+      .send({ body: 'hello', idempotencyKey: 'send_0123456789' });
+    expect(retry.status).toBe(200);
+    expect(await db(TABLES.PlatformAuditLog).where({ action: 'creator.message', targetId: 'crt_k' })).toHaveLength(1);
+
+    // The first try reached the creator but was never audited here: the replay is.
+    netHandler = () => ({ status: 200, body: { ok: true, message: { ...MESSAGE, id: 'cmsg_lost' }, emailed: true, replayed: true } });
+    await request(app).post('/platform-admin/creators/crt_k/messages').set('Cookie', admin.cookie).send({ body: 'x', idempotencyKey: 'send_abcdefghij' });
+    expect(await db(TABLES.PlatformAuditLog).where({ action: 'creator.message', targetId: 'crt_k' })).toHaveLength(2);
+  });
+
   it('passes on a blocked creator, and lets any operator read the history', async () => {
     const admin = await makeOperator('admin');
     netHandler = () => ({ status: 409, body: { error: 'creator_not_active' } });
@@ -304,7 +328,7 @@ describe.skipIf(skipIntegration)('ops alert for creators ready for review', () =
     netHandler = () => ({ status: 200, body: { creators: pending } });
 
     expect(await alertOpsToCreatorsAwaitingReview()).toEqual({ ready: 1, alerted: 1 });
-    expect(netCalls[0]!.path).toBe('/admin/creators?limit=500&review=pending');
+    expect(netCalls[0]!.path).toBe('/admin/creators?limit=500&review=pending&complete=true');
     const [mail] = opsMail();
     expect(mail).toMatchObject({ to: 'ops-inbox@openpartner.test', subject: '[Review] Creator Ada (@ada) is waiting' });
     expect(mail!.text).toContain('http://localhost:5673/platform/creators');
@@ -317,6 +341,30 @@ describe.skipIf(skipIntegration)('ops alert for creators ready for review', () =
     expect(await alertOpsToCreatorsAwaitingReview()).toEqual({ ready: 2, alerted: 1 });
     expect(opsMail().at(-1)!.text).toContain('Grace (@grace)');
     expect(opsMail().at(-1)!.text).not.toContain('Ada');
+  });
+
+  it('announces again once a messaged creator edits their profile', async () => {
+    let row: Record<string, unknown> = creator('crt_ar', {
+      name: 'Ar',
+      handle: 'ar',
+      lastMessageAt: null,
+      profileUpdatedAt: '2026-10-25T08:00:00.000Z',
+    });
+    netHandler = () => ({ status: 200, body: { creators: [row] } });
+    expect((await alertOpsToCreatorsAwaitingReview(new Date('2026-10-25T09:00:00.000Z'))).alerted).toBe(1);
+
+    // The operator writes; nothing to announce until the creator edits.
+    row = { ...row, lastMessageAt: '2026-10-25T10:00:00.000Z' };
+    expect((await alertOpsToCreatorsAwaitingReview(new Date('2026-10-25T10:15:00.000Z'))).alerted).toBe(0);
+
+    row = { ...row, profileUpdatedAt: '2026-10-25T11:00:00.000Z' };
+    expect((await alertOpsToCreatorsAwaitingReview(new Date('2026-10-25T11:15:00.000Z'))).alerted).toBe(1);
+    const mail = opsMail().at(-1)!;
+    expect(mail.subject).toBe('[Review] Creator Ar (@ar) updated their profile');
+    expect(mail.text).toContain('Updated their profile after your message:');
+
+    // Once is enough for that edit.
+    expect((await alertOpsToCreatorsAwaitingReview(new Date('2026-10-25T11:30:00.000Z'))).alerted).toBe(0);
   });
 
   it('retries next run when the email fails', async () => {

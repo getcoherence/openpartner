@@ -156,7 +156,7 @@ export function CreatorReviewBanners({ isMobile }: { isMobile: boolean }) {
             {review === 'pending' ? (
               <>
                 <strong>Your profile is in review.</strong> OpenPartner checks every new creator profile before brands can
-                see it. You can keep setting up in the meantime, and we&rsquo;ll email you once it&rsquo;s approved.
+                see it. You can keep setting up in the meantime; this note goes away once you&rsquo;re approved.
               </>
             ) : (
               <>

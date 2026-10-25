@@ -72,6 +72,12 @@ interface ReviewVars {
 interface MessageVars {
   body: string;
   email: boolean;
+  /** One per open form: a retry after a lost answer isn't a second message. */
+  idempotencyKey: string;
+}
+
+function newSendKey(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
 /**
@@ -141,7 +147,7 @@ export function CreatorsPage({ operator }: { operator: PlatformOperator }) {
     mutationFn: (v: MessageVars & { creator: NetworkCreator }) =>
       papi<{ emailed: boolean }>(`/platform-admin/creators/${v.creator.id}/messages`, {
         method: 'POST',
-        body: { body: v.body, email: v.email },
+        body: { body: v.body, email: v.email, idempotencyKey: v.idempotencyKey },
       }),
     onSuccess: (r, v) => {
       setNotice(
@@ -181,7 +187,8 @@ export function CreatorsPage({ operator }: { operator: PlatformOperator }) {
       title="Creators"
       subtitle="New creators wait here for review: brands and the public don’t see them until you approve. Blocking removes a creator everywhere and signs them out."
     >
-      <div style={{ display: 'flex', gap: 6, marginBottom: 18, flexWrap: 'wrap' }}>
+      {/* Until the list loads it isn't known which filters apply. */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 18, flexWrap: 'wrap', visibility: creators.isLoading ? 'hidden' : 'visible' }}>
         {filters.map((f) => {
           const isActive = active === f.key;
           const count = all.filter((c) => matches(c, f.key)).length;
@@ -600,6 +607,7 @@ function MessageForm({
 }) {
   const [body, setBody] = useState('');
   const [email, setEmail] = useState(true);
+  const [sendKey] = useState(newSendKey);
   return (
     <FormPanel>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
@@ -621,7 +629,7 @@ function MessageForm({
         Also email it to {creator.email}
       </label>
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button disabled={busy || body.trim() === ''} onClick={() => onSubmit({ body: body.trim(), email })}>
+        <Button disabled={busy || body.trim() === ''} onClick={() => onSubmit({ body: body.trim(), email, idempotencyKey: sendKey })}>
           {busy ? 'Sending…' : 'Send message'}
         </Button>
         <Button variant="secondary" onClick={onCancel} disabled={busy}>

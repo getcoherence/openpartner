@@ -1077,14 +1077,17 @@ export interface NetworkImportConflict {
   lastAttemptAt: string;
 }
 
+/** `review` narrows to one review state; `complete` to complete profiles
+ *  (with review 'pending': the creators ready for review). A Network that
+ *  predates creator review ignores both. */
 export async function adminListCreators(
   networkUrl: string,
-  opts: { review?: CreatorReviewStatus } = {},
+  opts: { review?: CreatorReviewStatus; complete?: boolean } = {},
 ): Promise<NetworkCreatorSummary[]> {
   const body = await callNetworkAdmin<{ creators: NetworkCreatorSummary[] }>(
     networkUrl,
     'GET',
-    `/admin/creators?limit=500${opts.review ? `&review=${opts.review}` : ''}`,
+    `/admin/creators?limit=500${opts.review ? `&review=${opts.review}` : ''}${opts.complete ? '&complete=true' : ''}`,
   );
   return body.creators ?? [];
 }
@@ -1111,17 +1114,20 @@ export async function adminSetCreatorReview(
   });
 }
 
-/** Send a creator a message: shown in their portal, emailed when `email`. */
+/** Send a creator a message: shown in their portal, emailed when `email`.
+ *  A retry with the same `idempotencyKey` returns the first send
+ *  (`replayed`) instead of messaging the creator twice. */
 export async function adminSendCreatorMessage(
   networkUrl: string,
   creatorId: string,
-  msg: { body: string; sentByEmail: string; email: boolean; replyTo: string | null },
-): Promise<{ message: NetworkCreatorMessage; emailed: boolean }> {
+  msg: { body: string; sentByEmail: string; email: boolean; replyTo: string | null; idempotencyKey: string | null },
+): Promise<{ message: NetworkCreatorMessage; emailed: boolean; replayed?: boolean }> {
   return callNetworkAdmin(networkUrl, 'POST', `/admin/creators/${encodeURIComponent(creatorId)}/messages`, {
     body: msg.body,
     sentByEmail: msg.sentByEmail,
     email: msg.email,
     ...(msg.replyTo ? { replyTo: msg.replyTo } : {}),
+    ...(msg.idempotencyKey ? { idempotencyKey: msg.idempotencyKey } : {}),
   });
 }
 

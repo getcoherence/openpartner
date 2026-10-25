@@ -670,12 +670,13 @@ platformAdminRouter.get('/platform-admin/creators', requirePlatformAdmin, async 
   const networkUrl = networkOr503(res);
   if (!networkUrl) return;
   try {
-    // The newest 500, plus every creator waiting for review in case the
-    // queue reaches past them (a held creator can be older). A Network that
-    // predates the review gate ignores ?review= and the merge dedupes.
+    // The newest 500, plus every complete creator waiting for review in case
+    // they're older (a held creator, or one buried under the many signups
+    // that never finish their profile). A Network that predates the review
+    // gate ignores the filters and the merge dedupes.
     const [recent, pending] = await Promise.all([
       adminListCreators(networkUrl),
-      adminListCreators(networkUrl, { review: 'pending' }),
+      adminListCreators(networkUrl, { review: 'pending', complete: true }),
     ]);
     const seen = new Set(recent.map((c) => c.id));
     const creators = [...recent, ...pending.filter((c) => !seen.has(c.id))];
@@ -753,6 +754,10 @@ const creatorMessageSchema = z.object({
   body: z.string().trim().min(1).max(2000),
   /** Also email it (default). It shows in the creator's portal either way. */
   email: z.boolean().optional(),
+  /** The console's key for this send, kept across retries: if the first
+   *  try reached the creator but its answer didn't reach us, a retry
+   *  returns that message instead of sending a second. */
+  idempotencyKey: z.string().trim().min(8).max(100).optional(),
 });
 
 platformAdminRouter.post(
@@ -772,18 +777,28 @@ platformAdminRouter.post(
         sentByEmail: actor.email,
         email: body.data.email ?? true,
         replyTo: platformOpsEmail(),
+        idempotencyKey: body.data.idempotencyKey ?? null,
       });
     } catch (err) {
       return sendNetworkFailure(res, err);
     }
-    await writeAudit(db, {
-      actor,
-      action: 'creator.message',
-      targetType: 'creator',
-      targetId: req.params.id!,
-      detail: { messageId: result.message.id, body: body.data.body, emailed: !!result.emailed },
-    });
-    res.status(201).json({ ok: true, message: result.message, emailed: !!result.emailed });
+    // A replay is audited only if the first try never got that far.
+    const audited =
+      result.replayed &&
+      !!(await db(TABLES.PlatformAuditLog)
+        .where({ action: 'creator.message', targetId: req.params.id! })
+        .whereRaw(`detail->>'messageId' = ?`, [result.message.id])
+        .first('id'));
+    if (!audited) {
+      await writeAudit(db, {
+        actor,
+        action: 'creator.message',
+        targetType: 'creator',
+        targetId: req.params.id!,
+        detail: { messageId: result.message.id, body: result.message.body, emailed: !!result.emailed },
+      });
+    }
+    res.status(result.replayed ? 200 : 201).json({ ok: true, message: result.message, emailed: !!result.emailed });
   },
 );
 
