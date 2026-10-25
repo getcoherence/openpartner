@@ -20,6 +20,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BookingConfirmPage } from '../pages/creator/BookingConfirm.js';
 import { AdminNetworkClaim, AdminNetworkThread } from '../pages/admin/NetworkMessages.js';
 import { CreatorThreadPage } from '../pages/creator/CreatorMessages.js';
+import { CreatorBookingsPage } from '../pages/creator/CreatorBookings.js';
 
 const TOKEN = `opbk_${'a'.repeat(48)}`;
 
@@ -343,6 +344,39 @@ describe('creator thread', () => {
     fireEvent.click(accept);
     await waitFor(() => expect(sent.some((s) => s.url.endsWith('/bookings/bkr_2/accept'))).toBe(true));
     expect(sent.find((s) => s.url.endsWith('/accept'))!.body).toEqual({ amount: 1200, currency: 'USD' });
+  });
+
+  it('the Bookings list opens a booking in Messages, and an older request with no brand can be declined', async () => {
+    routes['GET /api/creator-api/creators/me/bookings'] = () => [
+      200,
+      {
+        bookings: [
+          { ...REQUEST, id: 'bkr_2', conversationId: 'cnv_2', package: { ...REQUEST.package, title: 'Repost with comment' } },
+          { ...REQUEST, id: 'bkr_old', conversationId: null, package: null, contactName: 'Old Requester', company: null },
+        ],
+      },
+    ];
+    routes['POST /api/creator-api/creators/me/bookings/bkr_old/decline'] = () => [200, { booking: { ...REQUEST, id: 'bkr_old', status: 'declined' } }];
+    const confirm = window.confirm;
+    window.confirm = () => true;
+    try {
+      renderAt(
+        '/creator/bookings',
+        <>
+          <Route path="/creator/bookings" element={<CreatorBookingsPage />} />
+          <Route path="/creator/messages/:id" element={<div>thread page</div>} />
+        </>,
+      );
+      expect(await screen.findByText('Repost with comment')).toBeTruthy();
+      expect(screen.getByText(/with no brand account behind it/)).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Decline' }));
+      await waitFor(() => expect(sent.some((s) => s.url.endsWith('/bookings/bkr_old/decline'))).toBe(true));
+      fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+      expect(await screen.findByText('thread page')).toBeTruthy();
+      expect(window.location.pathname).toBe('/creator/messages/cnv_2');
+    } finally {
+      window.confirm = confirm;
+    }
   });
 
   it('says before accepting that a tracked request shares their name and email, and when a brand tracks one', async () => {
