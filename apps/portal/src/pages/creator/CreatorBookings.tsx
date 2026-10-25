@@ -5,8 +5,11 @@
  * once the brand has paid, and refunds. Brands pay upfront into the
  * creator's own Stripe account (the Network's docs/creator-storefront.md §8).
  *
- * Older requests from before conversations (accepted over email) show here
- * too, and can be deleted once answered.
+ * Older requests from before conversations show here too. A brand's older
+ * booking was given its conversation when phase 3 shipped (the Network's
+ * backfill migration), so it opens like any other. One with no brand behind
+ * it (a public request from before requesters became brands) can't be
+ * booked: it can be declined, and deleted once answered.
  */
 import { useState } from 'react';
 import { Link } from 'react-router';
@@ -48,6 +51,10 @@ export function CreatorBookingsPage() {
     mutationFn: (id: string) => creatorApi(`/creators/me/bookings/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['creator-bookings'] }),
   });
+  const decline = useMutation({
+    mutationFn: (id: string) => creatorApi(`/creators/me/bookings/${encodeURIComponent(id)}/decline`, { method: 'POST', body: {} }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['creator-bookings'] }),
+  });
 
   return (
     <Page title="Bookings" subtitle="Requests and offers from your storefront. Answer, deliver and refund them in Messages.">
@@ -58,7 +65,7 @@ export function CreatorBookingsPage() {
           </Button>
         ))}
       </div>
-      <ErrorBanner error={list.error ?? remove.error} />
+      <ErrorBanner error={list.error ?? remove.error ?? decline.error} />
       {list.isLoading ? (
         <Card>Loading…</Card>
       ) : !list.data || list.data.bookings.length === 0 ? (
@@ -80,12 +87,29 @@ export function CreatorBookingsPage() {
                   {b.contactName}
                   {b.company ? ` · ${b.company}` : ''} · {formatDate(b.createdAt)}
                 </div>
+                {!b.conversationId && b.status === 'pending' && (
+                  <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+                    An older request from your public page, with no brand account behind it, so it can&rsquo;t be booked here. Decline it,
+                    or ask them to send it again from your page, which now sets them up to book and pay.
+                  </div>
+                )}
               </div>
               <div style={{ fontSize: 14, fontWeight: 600 }}>{amountText(b)}</div>
               {b.conversationId ? (
                 <Link to={`/creator/messages/${b.conversationId}`} style={{ textDecoration: 'none' }}>
                   <Button size="sm" variant="secondary">Open</Button>
                 </Link>
+              ) : b.status === 'pending' ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={decline.isPending}
+                  onClick={() => {
+                    if (window.confirm('Decline this request?')) decline.mutate(b.id);
+                  }}
+                >
+                  Decline
+                </Button>
               ) : (
                 DELETABLE.includes(b.status) && (
                   <Button
