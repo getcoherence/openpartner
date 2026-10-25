@@ -20,10 +20,16 @@ describe('isGoLiveRoute', () => {
     expect(isGoLiveRoute('POST', '/bonuses')).toBe(true);
     expect(isGoLiveRoute('POST', '/Bonuses/')).toBe(true);
     expect(isGoLiveRoute('GET', '/bonuses')).toBe(false);
-    // Storefront bookings: booking adds a partner, approving pays one.
+    // Storefront outreach: booking or messaging a creator first, and
+    // tracking a booking (adds a partner). Answering, paying and approving in
+    // a conversation the brand's own claimed request opened stay open.
     expect(isGoLiveRoute('POST', '/admin/network/bookings')).toBe(true);
-    expect(isGoLiveRoute('POST', '/admin/network/bookings/bkr_1/approve')).toBe(true);
-    expect(isGoLiveRoute('POST', '/admin/network/bookings/bkr_1/retry-payout')).toBe(true);
+    expect(isGoLiveRoute('POST', '/admin/network/conversations')).toBe(true);
+    expect(isGoLiveRoute('POST', '/admin/network/bookings/bkr_1/track')).toBe(true);
+    expect(isGoLiveRoute('POST', '/admin/network/conversations/cnv_1/messages')).toBe(false);
+    expect(isGoLiveRoute('POST', '/admin/network/bookings/claim')).toBe(false);
+    expect(isGoLiveRoute('POST', '/admin/network/bookings/bkr_1/checkout')).toBe(false);
+    expect(isGoLiveRoute('POST', '/admin/network/bookings/bkr_1/approve')).toBe(false);
     expect(isGoLiveRoute('POST', '/admin/network/bookings/bkr_1/cancel')).toBe(false);
     expect(isGoLiveRoute('GET', '/admin/network/bookings')).toBe(false);
   });

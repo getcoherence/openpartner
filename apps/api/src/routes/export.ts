@@ -8,6 +8,7 @@ import {
   isSafeTenantId,
   exportAll,
   exportColumnTypes,
+  exportNetwork,
   exportTable,
   tableColumnTypes,
   importBundle,
@@ -63,12 +64,16 @@ exportRouter.get('/export/:table.:format', requireAuth, requireAdmin, async (req
 exportRouter.get('/export.json', requireAuth, requireAdmin, async (req, res) => {
   const { db, tenantId } = tenantOf(req);
   const bundle = await exportAll(db, tenantId);
+  // The brand's conversations and bookings on the Network. Never fails the
+  // export: a Network outage comes back as `status: 'skipped'`.
+  const network = await exportNetwork(db, tenantId);
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Content-Disposition', 'attachment; filename="openpartner-export.json"');
   res.json({
     exportedAt: new Date().toISOString(),
     schemaVersion: SCHEMA_VERSION,
     tables: bundle,
+    network,
   });
 });
 

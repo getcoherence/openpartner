@@ -53,8 +53,8 @@ export function StorefrontSection({
         <h3 style={{ marginTop: 0, marginBottom: 4, fontSize: 15, fontWeight: 500 }}>Work with {firstName}</h3>
         <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 14 }}>
           {preview
-            ? `Pick a package and send a request. ${firstName} gets back to you by email.`
-            : `Book a package as a tracked deal. ${firstName} gets a tracked link for the post, and you pay once you approve it.`}
+            ? `Pick a package and send a request. You talk it through with ${firstName} on OpenPartner, and pay through the booking once you agree.`
+            : `Request a package. ${firstName} accepts at a price, you pay upfront straight to their Stripe account, and you can track the post with a link of its own.`}
         </div>
         <div style={{ display: 'grid', gap: 18 }}>
           {groups.map((g) => (

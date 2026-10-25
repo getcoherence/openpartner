@@ -74,6 +74,8 @@ import {
   adminVendorReviewQueue,
   NetworkAdminError,
   platformNetworkUrl,
+  getNetworkBookingFee,
+  setNetworkBookingFee,
 } from '../network-client.js';
 import { linkVendorsToTenants } from '../network-review-reconcile.js';
 import { platformOpsEmail } from '../platform-ops-mail.js';
@@ -1569,6 +1571,38 @@ platformAdminRouter.put('/platform-admin/fees/settings', requirePlatformAdmin, r
   const settings = await setFeeRuleSettings(db, body.data, actor.email);
   await writeAudit(db, { actor, action: 'fees.settings', targetType: 'platform', detail: body.data });
   res.json({ settings });
+});
+
+// Storefront bookings (openpartner-network docs/creator-storefront.md §8.5)
+// are paid on the Network, with OpenPartner's fee on top. Hosted brands pay
+// their plan's commission rate (the settings above, booking-fee.ts);
+// self-hosted brands pay the Network's own rate, kept there and edited here.
+
+platformAdminRouter.get('/platform-admin/fees/booking-fee', requirePlatformAdmin, async (_req, res) => {
+  const networkUrl = platformNetworkUrl();
+  if (!networkUrl) return res.status(503).json({ error: 'network_not_configured' });
+  try {
+    res.json(await getNetworkBookingFee(networkUrl));
+  } catch (err) {
+    console.error('[platform-admin] booking fee read failed', err);
+    res.status(502).json({ error: 'network_unavailable' });
+  }
+});
+
+platformAdminRouter.put('/platform-admin/fees/booking-fee', requirePlatformAdmin, requirePlatformAdminWrite, async (req, res) => {
+  const body = z.object({ defaultBps: z.number().int().min(0).max(3000) }).strict().safeParse(req.body ?? {});
+  if (!body.success) return res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+  const networkUrl = platformNetworkUrl();
+  if (!networkUrl) return res.status(503).json({ error: 'network_not_configured' });
+  const actor = req.platformAdminActor!;
+  try {
+    const out = await setNetworkBookingFee(networkUrl, { defaultBps: body.data.defaultBps, updatedByEmail: actor.email });
+    await writeAudit(db, { actor, action: 'fees.booking_fee', targetType: 'platform', detail: body.data });
+    res.json(out);
+  } catch (err) {
+    console.error('[platform-admin] booking fee write failed', err);
+    res.status(502).json({ error: 'network_unavailable' });
+  }
 });
 
 const feeEstimateSchema = z.object({ days: z.number().int().min(1).max(365).default(90) });

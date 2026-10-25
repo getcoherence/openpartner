@@ -1,101 +1,63 @@
 /**
- * /creator/bookings — booking requests brands sent from the creator's
- * storefront. Only confirmed requests show (a public requester proved
- * their email first). Accepting emails the brand with Reply-To set to the
- * creator, so the deal continues over email; declining doesn't reveal the
- * creator's address.
+ * /creator/bookings — every booking from the creator's storefront at a
+ * glance. Each one lives in the conversation with that brand (Messages),
+ * where the creator accepts at a price or declines, sends offers, delivers
+ * once the brand has paid, and refunds. Brands pay upfront into the
+ * creator's own Stripe account (the Network's docs/creator-storefront.md §8).
  *
- * Tracked bookings come from brands on OpenPartner: accepting makes the
- * creator that brand's partner (a tracked link), they deliver the post
- * URLs here, and the brand's approval pays the agreed amount through its
- * program.
+ * Older requests from before conversations show here too. A brand's older
+ * booking was given its conversation when phase 3 shipped (the Network's
+ * backfill migration), so it opens like any other. One with no brand behind
+ * it (a public request from before requesters became brands) can't be
+ * booked: it can be declined, and deleted once answered.
  */
 import { useState } from 'react';
 import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Inbox, Link2 } from 'lucide-react';
-import { Button, Card, EmptyState, ErrorBanner, Label, Page, StatusPill, Textarea, formatDate } from '../../ui.js';
+import { Inbox } from 'lucide-react';
+import { Button, Card, EmptyState, ErrorBanner, Page, formatDate } from '../../ui.js';
 import { theme } from '../../theme.js';
 import { creatorApi } from './creator-api.js';
-import { formatPackagePrice } from './storefront-shared.js';
-
-type BookingStatus =
-  | 'pending'
-  | 'accepted'
-  | 'declined'
-  | 'cancelled'
-  | 'delivered'
-  | 'approved'
-  | 'paid'
-  | 'payout_failed';
-
-interface Booking {
-  id: string;
-  packageId: string | null;
-  package: { title: string; priceAmount: number | null; priceIsFrom: boolean; currency: string; platform: string | null } | null;
-  contactName: string;
-  contactEmail: string;
-  company: string | null;
-  website: string | null;
-  brief: string;
-  budgetNote: string | null;
-  status: BookingStatus;
-  creatorMessage: string | null;
-  createdAt: string;
-  confirmedAt: string | null;
-  respondedAt: string | null;
-  /** A brand on OpenPartner booked: paid through its program on approval. */
-  tracked?: boolean;
-  amount?: number | null;
-  currency?: string | null;
-  deliverableUrls?: string[];
-  deliveredAt?: string | null;
-  paidAt?: string | null;
-}
+import { BookingStatusPill, formatMinor, formatWholeAmount, type BookingStatus } from './conversation-shared.js';
+import type { CreatorBooking } from './CreatorMessages.js';
 
 const FILTERS: Array<{ key: BookingStatus | 'all'; label: string }> = [
-  { key: 'pending', label: 'Pending' },
-  { key: 'accepted', label: 'Accepted' },
+  { key: 'pending', label: 'To answer' },
+  { key: 'awaiting_payment', label: 'Awaiting payment' },
+  { key: 'paid', label: 'To deliver' },
   { key: 'delivered', label: 'Delivered' },
-  { key: 'paid', label: 'Paid' },
-  { key: 'declined', label: 'Declined' },
+  { key: 'completed', label: 'Completed' },
   { key: 'all', label: 'All' },
 ];
 
-/** What the creator reads on a tracked booking's pill. */
-const TRACKED_LABEL: Partial<Record<BookingStatus, string>> = {
-  delivered: 'awaiting approval',
-  approved: 'payment processing',
-  payout_failed: 'payment processing',
-};
+/** Answered, and no money ever moved on it: the Network lets these go. */
+const DELETABLE: BookingStatus[] = ['declined', 'cancelled', 'accepted'];
 
-/** Tracked statuses the Network won't let the creator delete. */
-const IN_FLIGHT: BookingStatus[] = ['pending', 'accepted', 'delivered', 'approved', 'payout_failed'];
-
-function trackedAmount(b: Booking): string | null {
-  if (!b.tracked || b.amount == null || !b.currency) return null;
-  return formatPackagePrice({ priceAmount: b.amount, priceIsFrom: false, currency: b.currency });
+function amountText(b: CreatorBooking): string {
+  if (b.amountMinor != null && b.currency) return formatMinor(b.amountMinor, b.currency);
+  if (b.amount != null && b.currency) return formatWholeAmount(b.amount, b.currency);
+  return b.package?.priceAmount != null ? `From ${formatWholeAmount(b.package.priceAmount, b.package.currency)}` : 'Price to agree';
 }
 
 export function CreatorBookingsPage() {
+  const qc = useQueryClient();
   const [filter, setFilter] = useState<BookingStatus | 'all'>('pending');
   const list = useQuery({
     queryKey: ['creator-bookings', filter],
-    queryFn: () =>
-      creatorApi<{ bookings: Booking[] }>(`/creators/me/bookings${filter === 'all' ? '' : `?status=${filter}`}`),
+    queryFn: () => creatorApi<{ bookings: CreatorBooking[] }>(`/creators/me/bookings${filter === 'all' ? '' : `?status=${filter}`}`),
     retry: false,
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => creatorApi(`/creators/me/bookings/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['creator-bookings'] }),
+  });
+  const decline = useMutation({
+    mutationFn: (id: string) => creatorApi(`/creators/me/bookings/${encodeURIComponent(id)}/decline`, { method: 'POST', body: {} }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['creator-bookings'] }),
   });
 
   return (
-    <Page
-      title="Bookings"
-      subtitle="Requests brands sent from your storefront."
-      actions={
-        <Link to="/creator/storefront" style={{ textDecoration: 'none' }}>
-          <Button variant="secondary">Edit storefront</Button>
-        </Link>
-      }
-    >
+    <Page title="Bookings" subtitle="Requests and offers from your storefront. Answer, deliver and refund them in Messages.">
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
         {FILTERS.map((f) => (
           <Button key={f.key} size="sm" variant={filter === f.key ? 'primary' : 'secondary'} onClick={() => setFilter(f.key)}>
@@ -103,261 +65,69 @@ export function CreatorBookingsPage() {
           </Button>
         ))}
       </div>
-      <ErrorBanner error={list.error} />
+      <ErrorBanner error={list.error ?? remove.error ?? decline.error} />
       {list.isLoading ? (
         <Card>Loading…</Card>
       ) : !list.data || list.data.bookings.length === 0 ? (
         <EmptyState
-          title={filter === 'pending' ? 'No pending requests' : 'Nothing here'}
-          hint="Turn on bookings in your storefront and share your public profile link — requests land here."
+          title="Nothing here"
+          hint="When a brand requests one of your packages, or you send one an offer, it shows up here and in Messages."
           icon={<Inbox size={28} strokeWidth={1.25} />}
         />
       ) : (
-        <div style={{ display: 'grid', gap: 10 }}>
-          {list.data.bookings.map((b) => (
-            <BookingCard key={b.id} booking={b} />
+        <Card padded={false}>
+          {list.data.bookings.map((b, i) => (
+            <div key={b.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderTop: i === 0 ? 'none' : `1px solid ${theme.borderSubtle}`, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 14, fontWeight: 500 }}>{b.package?.title ?? 'Custom collaboration'}</span>
+                  <BookingStatusPill status={b.status} />
+                </div>
+                <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 2 }}>
+                  {b.contactName}
+                  {b.company ? ` · ${b.company}` : ''} · {formatDate(b.createdAt)}
+                </div>
+                {!b.conversationId && b.status === 'pending' && (
+                  <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+                    An older request from your public page, with no brand account behind it, so it can&rsquo;t be booked here. Decline it,
+                    or ask them to send it again from your page, which now sets them up to book and pay.
+                  </div>
+                )}
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>{amountText(b)}</div>
+              {b.conversationId ? (
+                <Link to={`/creator/messages/${b.conversationId}`} style={{ textDecoration: 'none' }}>
+                  <Button size="sm" variant="secondary">Open</Button>
+                </Link>
+              ) : b.status === 'pending' ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={decline.isPending}
+                  onClick={() => {
+                    if (window.confirm('Decline this request?')) decline.mutate(b.id);
+                  }}
+                >
+                  Decline
+                </Button>
+              ) : (
+                DELETABLE.includes(b.status) && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={remove.isPending}
+                    onClick={() => {
+                      if (window.confirm('Delete this request for good?')) remove.mutate(b.id);
+                    }}
+                  >
+                    Delete
+                  </Button>
+                )
+              )}
+            </div>
           ))}
-        </div>
+        </Card>
       )}
     </Page>
   );
-}
-
-function BookingCard({ booking: b }: { booking: Booking }) {
-  const qc = useQueryClient();
-  const [answering, setAnswering] = useState<'accept' | 'decline' | null>(null);
-  const [message, setMessage] = useState('');
-  const [delivering, setDelivering] = useState(false);
-  const [urls, setUrls] = useState('');
-  const invalidate = () => qc.invalidateQueries({ queryKey: ['creator-bookings'] });
-
-  const respond = useMutation({
-    mutationFn: (outcome: 'accept' | 'decline') =>
-      creatorApi(`/creators/me/bookings/${b.id}/${outcome}`, { method: 'POST', body: { message: message.trim() || null } }),
-    onSuccess: () => {
-      setAnswering(null);
-      setMessage('');
-      invalidate();
-    },
-  });
-  const deliver = useMutation({
-    mutationFn: () =>
-      creatorApi(`/creators/me/bookings/${b.id}/deliver`, {
-        method: 'POST',
-        body: { urls: deliverUrls(urls) },
-      }),
-    onSuccess: () => {
-      setDelivering(false);
-      setUrls('');
-      invalidate();
-    },
-  });
-  const remove = useMutation({
-    mutationFn: () => creatorApi(`/creators/me/bookings/${b.id}`, { method: 'DELETE' }),
-    onSuccess: invalidate,
-  });
-
-  const safeWebsite = b.website && /^https?:\/\//i.test(b.website) ? b.website : null;
-  const from = b.company ? `${b.contactName} · ${b.company}` : b.contactName;
-  const amount = trackedAmount(b);
-  const brand = b.company ?? b.contactName;
-  const urlList = deliverUrls(urls);
-  const urlsValid = urlList.length >= 1 && urlList.length <= 5 && urlList.every((u) => /^https?:\/\/\S+$/i.test(u));
-  const canDelete = !(b.tracked && IN_FLIGHT.includes(b.status));
-
-  return (
-    <Card>
-      <ErrorBanner error={respond.error ?? deliver.error ?? remove.error} />
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 220 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 15, fontWeight: 500 }}>{b.package?.title ?? 'Custom collaboration'}</span>
-            <StatusPill status={(b.tracked && TRACKED_LABEL[b.status]) || b.status} />
-            {b.tracked && (
-              <span
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600, color: theme.accentText }}
-                title="Booked through OpenPartner: you become their partner with a tracked link and are paid through their program."
-              >
-                <Link2 size={12} /> Tracked deal
-              </span>
-            )}
-          </div>
-          <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 4 }}>
-            {from} ·{' '}
-            <a href={`mailto:${b.contactEmail}`} style={{ color: theme.accentText }}>{b.contactEmail}</a>
-            {safeWebsite && (
-              <>
-                {' '}·{' '}
-                <a href={safeWebsite} target="_blank" rel="noopener noreferrer nofollow" style={{ color: theme.accentText }}>
-                  {safeWebsite.replace(/^https?:\/\//i, '')}
-                </a>
-              </>
-            )}
-          </div>
-        </div>
-        <div style={{ textAlign: 'right' }}>
-          {amount ? (
-            <div style={{ fontSize: 14, fontWeight: 600 }}>{amount}</div>
-          ) : (
-            b.package && <div style={{ fontSize: 14, fontWeight: 600 }}>{formatPackagePrice(b.package)}</div>
-          )}
-          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 2 }}>{formatDate(b.paidAt ?? b.confirmedAt ?? b.createdAt)}</div>
-        </div>
-      </div>
-
-      {b.budgetNote && (
-        <div style={{ fontSize: 13, marginTop: 10 }}>
-          <span style={{ color: theme.textMuted }}>Budget:</span> {b.budgetNote}
-        </div>
-      )}
-      <div
-        style={{
-          fontSize: 14,
-          marginTop: 10,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          background: theme.surface2,
-          border: `1px solid ${theme.borderSubtle}`,
-          borderRadius: theme.radiusSm,
-          padding: '10px 12px',
-        }}
-      >
-        {b.brief}
-      </div>
-
-      {b.creatorMessage && (
-        <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 10, whiteSpace: 'pre-wrap' }}>
-          Your reply: {b.creatorMessage}
-        </div>
-      )}
-
-      {b.tracked && (b.deliverableUrls?.length ?? 0) > 0 && (
-        <div style={{ fontSize: 13, marginTop: 10 }}>
-          <span style={{ color: theme.textMuted }}>Delivered:</span>{' '}
-          {b.deliverableUrls!.map((u, i) => (
-            <span key={u}>
-              {i > 0 && ', '}
-              <a href={u} target="_blank" rel="noopener noreferrer" style={{ color: theme.accentText, wordBreak: 'break-all' }}>{u}</a>
-            </span>
-          ))}
-        </div>
-      )}
-
-      {b.tracked && <TrackedNote booking={b} brand={brand} amount={amount} />}
-
-      {b.status === 'pending' && answering && (
-        <div style={{ marginTop: 14 }}>
-          <Label>{answering === 'accept' ? 'Message to the brand (optional)' : 'Note to the brand (optional)'}</Label>
-          <Textarea
-            value={message}
-            rows={3}
-            maxLength={1000}
-            onChange={(e) => setMessage(e.target.value)}
-            placeholder={
-              answering === 'accept'
-                ? 'Thanks — happy to do this. My next free slot is…'
-                : 'Thanks for reaching out — this one isn’t a fit for my audience.'
-            }
-          />
-          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
-            {answering === 'accept'
-              ? `We email ${b.contactEmail}; their reply comes straight to your email.${b.tracked ? ` You also become ${brand}’s partner, with a tracked link.` : ''}`
-              : `We email ${b.contactEmail}. Your email address isn’t shared.`}
-          </div>
-        </div>
-      )}
-
-      {b.status === 'accepted' && b.tracked && delivering && (
-        <div style={{ marginTop: 14 }}>
-          <Label>Links to the published content (one per line, up to 5)</Label>
-          <Textarea
-            value={urls}
-            rows={3}
-            onChange={(e) => setUrls(e.target.value)}
-            placeholder="https://www.linkedin.com/posts/…"
-          />
-          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
-            {brand} reviews them and approves payment of {amount}.
-          </div>
-        </div>
-      )}
-
-      <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
-        {b.status === 'pending' ? (
-          answering ? (
-            <>
-              <Button
-                variant={answering === 'accept' ? 'primary' : 'danger'}
-                disabled={respond.isPending}
-                onClick={() => respond.mutate(answering)}
-              >
-                {respond.isPending ? 'Sending…' : answering === 'accept' ? 'Accept & email brand' : 'Decline & email brand'}
-              </Button>
-              <Button variant="secondary" onClick={() => setAnswering(null)}>Cancel</Button>
-            </>
-          ) : (
-            <>
-              <Button onClick={() => setAnswering('accept')}>Accept</Button>
-              <Button variant="secondary" onClick={() => setAnswering('decline')}>Decline</Button>
-            </>
-          )
-        ) : (
-          <>
-            {b.status === 'accepted' && b.tracked && (
-              delivering ? (
-                <>
-                  <Button onClick={() => deliver.mutate()} disabled={!urlsValid || deliver.isPending}>
-                    {deliver.isPending ? 'Sending…' : 'Mark as delivered'}
-                  </Button>
-                  <Button variant="secondary" onClick={() => setDelivering(false)}>Cancel</Button>
-                </>
-              ) : (
-                <Button onClick={() => setDelivering(true)}>Deliver</Button>
-              )
-            )}
-            <a href={`mailto:${b.contactEmail}`} style={{ textDecoration: 'none' }}>
-              <Button variant="secondary" size="sm">Email {b.contactName.split(' ')[0]}</Button>
-            </a>
-            <div style={{ flex: 1 }} />
-            {canDelete && (
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={remove.isPending}
-                onClick={() => {
-                  if (window.confirm('Delete this request? This can’t be undone.')) remove.mutate();
-                }}
-              >
-                Delete
-              </Button>
-            )}
-          </>
-        )}
-      </div>
-    </Card>
-  );
-}
-
-/** One line on where a tracked deal stands. */
-function TrackedNote({ booking: b, brand, amount }: { booking: Booking; brand: string; amount: string | null }) {
-  const text =
-    b.status === 'pending'
-      ? `${brand} will pay ${amount} through OpenPartner once they approve your published post.`
-      : b.status === 'accepted'
-        ? `You're ${brand}'s partner now — share your tracked link from My partnerships. When the post is live, mark it as delivered.`
-        : b.status === 'delivered'
-          ? `Waiting for ${brand} to approve. You'll get an email when ${amount} is added to your earnings.`
-          : b.status === 'approved' || b.status === 'payout_failed'
-            ? `${brand} approved your work. The payment of ${amount} is being recorded.`
-            : b.status === 'paid'
-              ? `${amount} was added to your earnings with ${brand} and is paid out with their next payout run.`
-              : b.status === 'cancelled'
-                ? `${brand} cancelled this booking.`
-                : null;
-  if (!text) return null;
-  return <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 10 }}>{text}</div>;
-}
-
-function deliverUrls(raw: string): string[] {
-  return [...new Set(raw.split(/\s+/).map((u) => u.trim()).filter(Boolean))];
 }

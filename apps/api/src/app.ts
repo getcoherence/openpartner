@@ -50,6 +50,7 @@ import { fraudReviewRouter } from './routes/fraud-review.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { metricsRouter } from './routes/metrics.js';
 import { signupRouter } from './routes/signup.js';
+import { bookingClaimsRouter } from './routes/booking-claims.js';
 import { partnerSignupRouter } from './routes/partner-signup.js';
 import { networkPartnerRouter } from './routes/network-partner.js';
 import { accountDeletionRouter } from './routes/account-deletion.js';
@@ -63,6 +64,7 @@ import { creatorPortalRouter } from './routes/creator-portal.js';
 import { signinRouter } from './routes/signin.js';
 import { portalDomainGateRouter, portalDomainsRouter } from './routes/portal-domains.js';
 import { clicksRouter } from './routes/clicks.js';
+import { networkRecipientsRouter } from './routes/network-recipients.js';
 import { sessionHomeRouter } from './routes/session-home.js';
 import { platformAuthRouter } from './routes/platform-auth.js';
 import { platformAdminRouter } from './routes/platform-admin.js';
@@ -237,6 +239,8 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   // directly and are responsible for their own access control.
   app.use(installRouter);
   app.use(signupRouter);
+  // A public storefront request continuing as a brand (booking-claims.ts).
+  app.use(bookingClaimsRouter);
   app.use(signinRouter);
   app.use(sessionHomeRouter);
   app.use(platformAuthRouter);
@@ -312,6 +316,7 @@ export function createApp(options: { enableLogger?: boolean; logDestination?: De
   app.use(programsRouter);
   app.use(linksRouter);
   app.use(clicksRouter);
+  app.use(networkRecipientsRouter);
   app.use(dashboardRouter);
   app.use(apiKeysRouter);
   app.use(connectRouter);

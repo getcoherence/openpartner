@@ -30,6 +30,7 @@ import {
   KeyRound,
   Landmark,
   CalendarCheck,
+  MessagesSquare,
   UserCheck,
   UserPlus,
   Activity,
@@ -70,6 +71,8 @@ import { AdminNetworkRequests } from './pages/admin/NetworkRequests.js';
 import { AdminNetworkCreators } from './pages/admin/NetworkCreators.js';
 import { NetworkCreatorStorefrontPage } from './pages/admin/NetworkCreatorStorefront.js';
 import { AdminNetworkBookings } from './pages/admin/NetworkBookings.js';
+import { AdminNetworkClaim, AdminNetworkMessages, AdminNetworkThread, useBrandUnreadMessages } from './pages/admin/NetworkMessages.js';
+import { UnreadDot } from './pages/creator/conversation-shared.js';
 import { AdminNetworkBilling } from './pages/admin/NetworkBilling.js';
 import { BrandLocationPrompt, useBrandLocationMissing } from './pages/admin/BrandLocation.js';
 import { DiscoverPage } from './pages/partner/Discover.js';
@@ -371,6 +374,9 @@ function Shell() {
                   <Route path="admin/network/creators" element={<AdminNetworkCreators />} />
                   <Route path="admin/network/creators/:handle" element={<NetworkCreatorStorefrontPage />} />
                   <Route path="admin/network/bookings" element={<AdminNetworkBookings />} />
+                  <Route path="admin/network/messages" element={<AdminNetworkMessages />} />
+                  <Route path="admin/network/messages/:id" element={<AdminNetworkThread />} />
+                  <Route path="admin/network/claim" element={<AdminNetworkClaim />} />
                   <Route path="admin/network/billing" element={<AdminNetworkBilling />} />
                 </>
               )}
@@ -1333,6 +1339,7 @@ function NetworkNav() {
     retry: false,
   });
   const connected = !!(data?.enabled && data.hasVendorToken);
+  const unread = useBrandUnreadMessages(connected);
   return (
     <NavSection title="Network" collapsible storageKey="admin-network">
       <NavItem to="/admin/network" icon={<Globe size={16} />} exact>{connected ? 'Connection' : 'Get connected'}</NavItem>
@@ -1340,6 +1347,11 @@ function NetworkNav() {
         <>
           <NavItem to="/admin/network/requests" icon={<Inbox size={16} />}>Requests</NavItem>
           <NavItem to="/admin/network/creators" icon={<Users size={16} />}>Discover creators</NavItem>
+          <NavItem to="/admin/network/messages" icon={<MessagesSquare size={16} />}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              Messages <UnreadDot count={unread} />
+            </span>
+          </NavItem>
           <NavItem to="/admin/network/bookings" icon={<CalendarCheck size={16} />}>Bookings</NavItem>
           <NavItem to="/admin/network/billing" icon={<CreditCard size={16} />}>Billing</NavItem>
         </>
